@@ -22,7 +22,10 @@ import getpass
 import json
 import logging
 import os
+import random
+import string
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -101,6 +104,14 @@ def _auto_reuse_skip_reason(acc: dict | None) -> str | None:
     if provider == "google":
         return "Google 登录账号暂不支持自动复用"
     return None
+
+
+def _with_random_suffix_prefix(prefix: str | None) -> str | None:
+    base = (prefix or "").strip()
+    if not base:
+        return None
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
+    return f"{base}{suffix}"
 
 
 # Team 子账号(非主号)硬上限。主号 + 4 子号 = 5 席,与 cmd_rotate / cmd_fill 默认 target=5 一致。
@@ -2182,7 +2193,16 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         return success
 
 
-def create_account_direct(mail_client, *, leave_workspace=False, out_outcome=None):
+def create_account_direct(
+    mail_client,
+    *,
+    leave_workspace=False,
+    out_outcome=None,
+    email_prefix=None,
+    password=None,
+    domain=None,
+    skip_post_register=False,
+):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
     流程：创建邮箱 → 注册 ChatGPT → 自动加入 workspace → Codex 登录
@@ -2197,8 +2217,10 @@ def create_account_direct(mail_client, *, leave_workspace=False, out_outcome=Non
     """
     from autoteam.invite import RegisterBlocked
 
-    account_id, email = mail_client.create_temp_email()
-    password = random_password()
+    resolved_prefix = _with_random_suffix_prefix(email_prefix)
+    account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
+    chosen_password = password or random_password()
+    password = chosen_password
 
     def _record_outcome(status, **extra):
         if out_outcome is not None:
@@ -2267,8 +2289,8 @@ def create_account_direct(mail_client, *, leave_workspace=False, out_outcome=Non
                     )
                     return None
                 _discard_email("duplicate")
-                account_id, email = mail_client.create_temp_email()
-                password = random_password()
+                account_id, email = mail_client.create_temp_email(prefix=_with_random_suffix_prefix(email_prefix), domain=domain)
+                password = chosen_password
                 logger.info("[直接注册] 已换新临时邮箱: %s", email)
                 continue
             # 其他阻断按普通失败处理
@@ -2325,6 +2347,16 @@ def create_account_direct(mail_client, *, leave_workspace=False, out_outcome=Non
         return None
 
     add_account(email, password, cloudmail_account_id=account_id)
+    if skip_post_register:
+        logger.info("[直接注册] 注册完成，按要求跳过后续 OAuth/入池流程: %s", email)
+        _record_outcome("success", email=email, password=password, skipped_post_register=True)
+        return {
+            "email": email,
+            "password": password,
+            "cloudmail_account_id": account_id,
+            "status": "registered",
+            "skipped_post_register": True,
+        }
 
     return _run_post_register_oauth(
         email,
@@ -2335,7 +2367,17 @@ def create_account_direct(mail_client, *, leave_workspace=False, out_outcome=Non
     )
 
 
-def create_new_account(chatgpt_api, mail_client, *, leave_workspace=False, out_outcome=None):
+def create_new_account(
+    chatgpt_api,
+    mail_client,
+    *,
+    leave_workspace=False,
+    out_outcome=None,
+    email_prefix=None,
+    password=None,
+    domain=None,
+    skip_post_register=False,
+):
     """
     创建新账号。优先用直接注册模式（域名自动加入 workspace）。
     chatgpt_api 可为 None（直接注册不需要）。
@@ -2359,7 +2401,15 @@ def create_new_account(chatgpt_api, mail_client, *, leave_workspace=False, out_o
     logger.info("[创建] 使用直接注册模式...")
     if chatgpt_api and chatgpt_api.browser:
         chatgpt_api.stop()
-    return create_account_direct(mail_client, leave_workspace=leave_workspace, out_outcome=out_outcome)
+    return create_account_direct(
+        mail_client,
+        leave_workspace=leave_workspace,
+        out_outcome=out_outcome,
+        email_prefix=email_prefix,
+        password=password,
+        domain=domain,
+        skip_post_register=skip_post_register,
+    )
 
 
 def reinvite_account(chatgpt_api, mail_client, acc):
@@ -2996,23 +3046,166 @@ def cmd_rotate(target_seats=5):
         logger.info("[轮转] 完成，使用 status 命令查看最新状态")
 
 
-def cmd_add():
-    """手动添加一个新账号"""
-    chatgpt = ChatGPTTeamAPI()
-    chatgpt.start()
+def cmd_add(*, email_prefix=None, password=None, domain=None):
+    """兼容旧入口：保留原行为。"""
+    chatgpt = None
     mail_client = TemporaryEmailClient()
     mail_client.login()
 
     try:
-        result = create_new_account(chatgpt, mail_client)  # 内部会 stop chatgpt
+        result = create_new_account(
+            chatgpt,
+            mail_client,
+            email_prefix=email_prefix,
+            password=password,
+            domain=domain,
+        )
         if result:
             logger.info("[添加] 新账号添加成功: %s", result)
             sync_to_cpa()
         else:
             logger.error("[添加] 添加失败")
     finally:
-        if chatgpt.browser:
+        if chatgpt and chatgpt.browser:
             chatgpt.stop()
+
+
+def cmd_register_accounts(
+    *,
+    count=1,
+    concurrency=1,
+    interval_seconds=12.0,
+    jitter_min_seconds=8.0,
+    jitter_max_seconds=20.0,
+    email_prefix=None,
+    password=None,
+    domain=None,
+):
+    """只执行注册，不进行后续 OAuth / 入池流程。
+
+    batch 模式支持受控并发；interval_seconds 作用于每个 worker 启动下一个账号前的冷却，
+    降低瞬时并发注册带来的风控概率。
+    """
+    total = max(1, int(count))
+    workers = max(1, min(int(concurrency or 1), total))
+    spacing = max(0.0, float(interval_seconds or 0.0))
+    jitter_min = max(0.0, float(jitter_min_seconds or 0.0))
+    jitter_max = max(0.0, float(jitter_max_seconds or 0.0))
+    results = [None] * total
+    next_index = 0
+    index_lock = threading.Lock()
+
+    # cloud-mail 看起来对同一管理员账号的并发 login/token 刷新不友好：
+    # 后一个 worker 登录后，前一个 worker 的 token 会被服务端判成“身份认证失效”。
+    # 这里对 mail client 做共享 + 串行化，浏览器注册流程仍可并发，只有邮箱后端 API 被串行化。
+    shared_mail_client = TemporaryEmailClient()
+    shared_mail_client.login()
+
+    class _SynchronizedMailClient:
+        def __init__(self, inner):
+            self._inner = inner
+            self._lock = threading.Lock()
+
+        def __getattr__(self, name):
+            attr = getattr(self._inner, name)
+            if not callable(attr):
+                return attr
+
+            def _wrapped(*args, **kwargs):
+                with self._lock:
+                    try:
+                        return attr(*args, **kwargs)
+                    except Exception as exc:
+                        message = str(exc)
+                        if "身份认证失效" not in message:
+                            raise
+                        step_name = name
+                        logger.warning("[注册账号] 邮箱服务步骤 %s 返回身份认证失效，10s 后自动重登并重试一次", step_name)
+                        time.sleep(10)
+                        self._inner.login()
+                        try:
+                            return attr(*args, **kwargs)
+                        except Exception as retry_exc:
+                            retry_message = str(retry_exc)
+                            if "身份认证失效" in retry_message:
+                                logger.error(
+                                    "[注册账号] 邮箱服务步骤 %s 在自动重登后仍失败: %s",
+                                    step_name,
+                                    retry_message,
+                                )
+                                raise Exception(
+                                    f"邮箱服务步骤 {step_name} 身份认证失效，自动重登后重试仍失败: {retry_message}"
+                                ) from retry_exc
+                            raise
+
+            return _wrapped
+
+    mail_client = _SynchronizedMailClient(shared_mail_client)
+
+    def _worker(worker_id):
+        nonlocal next_index
+        logger.info("[注册账号] worker-%d 已启动", worker_id)
+
+        while True:
+            with index_lock:
+                if next_index >= total:
+                    break
+                job_index = next_index
+                next_index += 1
+
+            outcome = {}
+            logger.info("[注册账号] worker-%d 开始第 %d/%d 个", worker_id, job_index + 1, total)
+            try:
+                result = create_account_direct(
+                    mail_client,
+                    out_outcome=outcome,
+                    email_prefix=email_prefix,
+                    password=password,
+                    domain=domain,
+                    skip_post_register=True,
+                )
+                results[job_index] = result or {"status": outcome.get("status") or "failed", **outcome}
+            except Exception as exc:
+                logger.error("[注册账号] worker-%d 第 %d 个异常: %s", worker_id, job_index + 1, exc)
+                results[job_index] = {"status": "exception", "reason": str(exc)}
+
+            if job_index + 1 < total:
+                sleep_seconds = spacing
+                if jitter_max > 0:
+                    low = min(jitter_min, jitter_max)
+                    high = max(jitter_min, jitter_max)
+                    sleep_seconds += random.uniform(low, high)
+                if sleep_seconds > 0:
+                    logger.info("[注册账号] worker-%d 冷却 %.1fs 后继续", worker_id, sleep_seconds)
+                    time.sleep(sleep_seconds)
+
+    threads = [threading.Thread(target=_worker, args=(idx + 1,), daemon=True) for idx in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    normalized_results = [item or {"status": "failed", "reason": "unknown"} for item in results]
+    ok = [item for item in normalized_results if item.get("status") == "registered"]
+    logger.info(
+        "[注册账号] 完成: 成功 %d / %d (并发=%d, 固定间隔=%.1fs, 抖动=%.1f-%.1fs)",
+        len(ok),
+        len(normalized_results),
+        workers,
+        spacing,
+        jitter_min,
+        jitter_max,
+    )
+    return {
+        "count": len(normalized_results),
+        "ok": len(ok),
+        "failed": len(normalized_results) - len(ok),
+        "concurrency": workers,
+        "interval_seconds": spacing,
+        "jitter_min_seconds": jitter_min,
+        "jitter_max_seconds": jitter_max,
+        "results": normalized_results,
+    }
 
 
 def cmd_manual_add():

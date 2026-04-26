@@ -17,9 +17,9 @@
           <button
             v-if="selectedEmails.length"
             @click="batchDelete"
-            :disabled="actionDisabled || batchDeleting"
+            :disabled="deleteDisabled || batchDeleting"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-            :class="actionDisabled || batchDeleting
+            :class="deleteDisabled || batchDeleting
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-rose-600/10 text-rose-400 border-rose-500/30 hover:bg-rose-600/20'">
             {{ batchDeleting ? `批量删除中 ${batchProgress}` : `批量删除 (${selectedEmails.length})` }}
@@ -30,7 +30,7 @@
             class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             取消选择
           </button>
-          <button @click="syncAccounts" :disabled="syncing"
+          <button @click="syncAccounts" :disabled="syncDisabled || syncing"
             class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition disabled:opacity-50 text-gray-400 hover:text-white">
             {{ syncing ? '同步中...' : '同步账号' }}
           </button>
@@ -38,9 +38,6 @@
       </div>
       <div v-if="message" class="mx-4 mt-4 px-4 py-3 rounded-lg text-sm border" :class="messageClass">
         {{ message }}
-      </div>
-      <div v-if="!adminReady" class="mx-4 mt-4 px-4 py-3 rounded-lg text-sm border bg-amber-500/10 text-amber-300 border-amber-500/20">
-        请先在「设置」页完成管理员登录后，才能操作账号。
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
@@ -106,9 +103,9 @@
                 <button
                   v-if="canLogin(acc)"
                   @click="loginAccount(acc.email)"
-                  :disabled="actionDisabled || actionEmail === acc.email"
+                  :disabled="loginDisabled || actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="actionDisabled || actionEmail === acc.email
+                  :class="loginDisabled || actionEmail === acc.email
                     ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                     : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
                   {{ actionEmail === acc.email && actionType === 'login' ? '登录中...' : loginLabel(acc) }}
@@ -116,9 +113,9 @@
                 <button
                   v-if="!acc.is_main_account && acc.status === 'active'"
                   @click="kickAccount(acc.email)"
-                  :disabled="actionDisabled || actionEmail === acc.email"
+                  :disabled="kickDisabled || actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="actionDisabled || actionEmail === acc.email
+                  :class="kickDisabled || actionEmail === acc.email
                     ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                     : 'bg-amber-600/10 text-amber-400 border-amber-500/30 hover:bg-amber-600/20'">
                   {{ actionEmail === acc.email && actionType === 'kick' ? '移出中...' : '移出' }}
@@ -133,9 +130,9 @@
                 <button
                   v-if="!acc.is_main_account"
                   @click="removeAccount(acc.email)"
-                  :disabled="actionDisabled || actionEmail === acc.email"
+                  :disabled="deleteDisabled || actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="actionDisabled || actionEmail === acc.email
+                  :class="deleteDisabled || actionEmail === acc.email
                     ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                     : 'bg-rose-600/10 text-rose-400 border-rose-500/30 hover:bg-rose-600/20'">
                   {{ actionEmail === acc.email && actionType === 'delete' ? '删除中...' : '删除' }}
@@ -327,7 +324,11 @@ watch(() => props.runningTask, (cur, prev) => {
   if (prev && !cur) loadFailures()
 })
 const adminReady = computed(() => !!props.adminStatus?.configured)
-const actionDisabled = computed(() => !!props.runningTask || !adminReady.value)
+const actionDisabled = computed(() => !!props.runningTask)
+const syncDisabled = computed(() => !!props.runningTask)
+const loginDisabled = computed(() => !!props.runningTask)
+const kickDisabled = computed(() => !!props.runningTask || !adminReady.value)
+const deleteDisabled = computed(() => !!props.runningTask || !adminReady.value)
 
 const selectableEmails = computed(() =>
   (props.status?.accounts || []).filter(a => !a.is_main_account).map(a => a.email)
@@ -487,6 +488,7 @@ function downloadExport() {
 }
 
 async function syncAccounts() {
+  if (syncDisabled.value) return
   syncing.value = true
   message.value = ''
   try {
@@ -518,7 +520,7 @@ function loginLabel(acc) {
 }
 
 async function loginAccount(email) {
-  if (actionDisabled.value) return
+  if (loginDisabled.value) return
 
   actionEmail.value = email
   actionType.value = 'login'
@@ -539,7 +541,12 @@ async function loginAccount(email) {
 }
 
 async function kickAccount(email) {
-  if (actionDisabled.value) return
+  if (kickDisabled.value) {
+    message.value = '移出 Team 需要先完成管理员登录'
+    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+    setTimeout(() => { message.value = '' }, 8000)
+    return
+  }
 
   const ok = window.confirm(`确认将 ${email} 移出 Team？\n账号会变为 standby 状态，额度恢复后可重新复用。`)
   if (!ok) return
@@ -563,7 +570,12 @@ async function kickAccount(email) {
 }
 
 async function removeAccount(email) {
-  if (actionDisabled.value) return
+  if (deleteDisabled.value) {
+    message.value = '删除账号的远端清理需要先完成管理员登录'
+    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+    setTimeout(() => { message.value = '' }, 8000)
+    return
+  }
 
   const ok = window.confirm(`确认删除账号 ${email}？\n这会同时清理本地记录、CPA、Team/Invite 和临时邮箱服务。`)
   if (!ok) return
@@ -587,7 +599,13 @@ async function removeAccount(email) {
 }
 
 async function batchDelete() {
-  if (actionDisabled.value || batchDeleting.value) return
+  if (deleteDisabled.value) {
+    message.value = '批量删除的远端清理需要先完成管理员登录'
+    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+    setTimeout(() => { message.value = '' }, 8000)
+    return
+  }
+  if (batchDeleting.value) return
   const emails = selectedEmails.value
   if (!emails.length) return
 

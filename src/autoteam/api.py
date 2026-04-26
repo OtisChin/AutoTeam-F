@@ -420,6 +420,23 @@ class RegisterDomainParams(BaseModel):
     verify: bool = True  # 默认写入前试探一次临时邮箱服务是否接受该域
 
 
+class RegisterDomainsParams(BaseModel):
+    domains: list[str]
+    selected: str | None = None
+
+
+class ManualRegisterParams(BaseModel):
+    mode: str = "single"
+    count: int = 1
+    concurrency: int = 3
+    interval_seconds: float = 12.0
+    jitter_min_seconds: float = 8.0
+    jitter_max_seconds: float = 20.0
+    domain: str | None = None
+    prefix: str | None = None
+    password: str | None = None
+
+
 class DeleteBatchParams(BaseModel):
     emails: list[str]
     continue_on_error: bool = True  # 部分失败时继续剩余账号,False 则遇错即停
@@ -1657,11 +1674,12 @@ def get_register_failures_api(limit: int = 50):
 def get_register_domain_api():
     """读取当前子号注册使用的临时邮箱域名。"""
     from autoteam.config import CLOUD_MAIL_DOMAIN, CLOUDFLARE_TEMP_EMAIL_DOMAIN
-    from autoteam.runtime_config import get, get_register_domain
+    from autoteam.runtime_config import get, get_register_domain, get_register_domains
 
     override = (get("register_domain") or "").strip()
     return {
         "domain": get_register_domain(),
+        "domains": get_register_domains(),
         "override": override,
         "env_default": (CLOUD_MAIL_DOMAIN or CLOUDFLARE_TEMP_EMAIL_DOMAIN or "").lstrip("@").strip(),
     }
@@ -1710,6 +1728,39 @@ def put_register_domain_api(params: RegisterDomainParams):
         )
         resp["leaked_probe"] = leaked_probe
     return resp
+
+
+@app.put("/api/config/register-domains")
+def put_register_domains_api(params: RegisterDomainsParams):
+    """保存手动注册可选域名列表，并可同步切换当前默认域名。"""
+    from autoteam.runtime_config import set_register_domain, set_register_domains
+
+    cleaned = []
+    seen = set()
+    for domain in params.domains or []:
+        value = (domain or "").strip().lstrip("@").strip()
+        if not value:
+            continue
+        lowered = value.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        cleaned.append(value)
+
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="domains 不能为空")
+
+    selected = (params.selected or "").strip().lstrip("@").strip()
+    if selected and selected not in cleaned:
+        raise HTTPException(status_code=400, detail="selected 必须在 domains 列表中")
+
+    saved = set_register_domains(cleaned)
+    active = set_register_domain(selected or saved[0])
+    return {
+        "message": f"已保存 {len(saved)} 个注册域名",
+        "domains": saved,
+        "selected": active,
+    }
 
 
 @app.post("/api/sync/accounts")
@@ -1961,11 +2012,65 @@ def post_replace(params: ReplaceParams):
 
 
 @app.post("/api/tasks/add", status_code=202)
-def post_add():
-    """添加新账号（后台执行）"""
-    from autoteam.manager import cmd_add
+def post_add(params: ManualRegisterParams = ManualRegisterParams()):
+    """注册账号（后台执行，只注册，不进行后续流程）"""
+    from autoteam.manager import cmd_register_accounts
+    from autoteam.identity import random_password
+    from autoteam.runtime_config import get_register_domain, get_register_domains
 
-    task = _start_task("add", cmd_add, {})
+    domains = get_register_domains()
+    selected_domain = (params.domain or "").strip().lstrip("@").strip()
+    if selected_domain:
+        if domains and selected_domain not in domains:
+            raise HTTPException(status_code=400, detail=f"域名 @{selected_domain} 不在可选列表中")
+    else:
+        selected_domain = get_register_domain()
+
+    if not selected_domain:
+        raise HTTPException(status_code=400, detail="未配置可用注册域名")
+
+    prefix = (params.prefix or "").strip() or None
+    password = (params.password or "").strip() or None
+    resolved_password = password or random_password()
+    mode = (params.mode or "single").strip().lower()
+    count = max(1, int(params.count or 1))
+    concurrency = max(1, min(20, int(params.concurrency or 1)))
+    interval_seconds = max(0.0, float(params.interval_seconds or 0.0))
+    jitter_min_seconds = max(0.0, float(params.jitter_min_seconds or 0.0))
+    jitter_max_seconds = max(0.0, float(params.jitter_max_seconds or 0.0))
+    if mode not in ("single", "batch"):
+        raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
+    if mode == "single":
+        count = 1
+        concurrency = 1
+        jitter_min_seconds = 0.0
+        jitter_max_seconds = 0.0
+    if jitter_min_seconds > jitter_max_seconds:
+        raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
+
+    task = _start_task(
+        "register",
+        cmd_register_accounts,
+        {
+            "mode": mode,
+            "count": count,
+            "concurrency": concurrency,
+            "interval_seconds": interval_seconds,
+            "jitter_min_seconds": jitter_min_seconds,
+            "jitter_max_seconds": jitter_max_seconds,
+            "domain": selected_domain,
+            "prefix": prefix or "",
+            "password_mode": "provided" if password else "random",
+        },
+        count=count,
+        concurrency=concurrency,
+        interval_seconds=interval_seconds,
+        jitter_min_seconds=jitter_min_seconds,
+        jitter_max_seconds=jitter_max_seconds,
+        email_prefix=prefix,
+        password=resolved_password,
+        domain=selected_domain,
+    )
     return task
 
 

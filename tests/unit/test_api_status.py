@@ -134,3 +134,51 @@ def test_get_setup_status_uses_provider_specific_required_fields(monkeypatch):
     assert result["provider"] == "cloud-mail"
     assert any(field["key"] == "CLOUD_MAIL_API_URL" for field in result["fields"])
     assert all(field["key"] != "CLOUDFLARE_TEMP_EMAIL_BASE_URL" for field in result["fields"])
+
+
+def test_get_register_domain_api_returns_domains(monkeypatch):
+    monkeypatch.setattr("autoteam.runtime_config.get", lambda key, default=None: "mail-a.com" if key == "register_domain" else default)
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domain", lambda: "mail-a.com")
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domains", lambda: ["mail-a.com", "mail-b.com"])
+    monkeypatch.setattr("autoteam.config.CLOUD_MAIL_DOMAIN", "@env-mail.com")
+    monkeypatch.setattr("autoteam.config.CLOUDFLARE_TEMP_EMAIL_DOMAIN", "")
+
+    result = api.get_register_domain_api()
+
+    assert result["domain"] == "mail-a.com"
+    assert result["domains"] == ["mail-a.com", "mail-b.com"]
+    assert result["override"] == "mail-a.com"
+    assert result["env_default"] == "env-mail.com"
+
+
+def test_post_add_uses_selected_domain_and_random_password(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domains", lambda: ["openaibus.com", "altbus.com"])
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domain", lambda: "openaibus.com")
+    monkeypatch.setattr("autoteam.identity.random_password", lambda: "RandomPass123!")
+    monkeypatch.setattr("autoteam.manager.cmd_add", lambda **kwargs: kwargs)
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        captured["command"] = command
+        captured["func"] = func
+        captured["params"] = params
+        captured["kwargs"] = kwargs
+        return {"task_id": "task-123", "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    result = api.post_add(api.ManualRegisterParams(domain="altbus.com", prefix="demo", password=""))
+
+    assert result["task_id"] == "task-123"
+    assert captured["command"] == "add"
+    assert captured["params"] == {
+        "domain": "altbus.com",
+        "prefix": "demo",
+        "password_mode": "random",
+    }
+    assert captured["kwargs"] == {
+        "email_prefix": "demo",
+        "password": "RandomPass123!",
+        "domain": "altbus.com",
+    }

@@ -54,6 +54,7 @@ defineEmits(['navigate', 'refresh', 'logout'])
 
 const items = [
   { key: 'dashboard', icon: '📊', label: '仪表盘', mobileLabel: '仪表盘' },
+  { key: 'register', icon: '🆕', label: '注册账号', mobileLabel: '注册' },
   { key: 'team', icon: '👥', label: 'Team 成员', mobileLabel: '成员' },
   { key: 'pool', icon: '🔁', label: '账号池操作', mobileLabel: '账号池' },
   { key: 'sync', icon: '🔄', label: '同步中心', mobileLabel: '同步' },

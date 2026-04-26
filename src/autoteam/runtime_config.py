@@ -8,6 +8,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -69,7 +70,8 @@ def set_value(key, value):
 def get_register_domain():
     """返回用于子号注册的临时邮箱域名。
 
-    优先级：runtime_config.json → 环境变量 CLOUD_MAIL_DOMAIN / CLOUDFLARE_TEMP_EMAIL_DOMAIN（向后兼容）。
+    优先级：runtime_config.json 的 register_domain → register_domains[0] →
+    环境变量 CLOUD_MAIL_DOMAIN / CLOUDFLARE_TEMP_EMAIL_DOMAIN（向后兼容）。
     返回值已 lstrip "@"。
     """
     from autoteam.config import CLOUD_MAIL_DOMAIN, CLOUDFLARE_TEMP_EMAIL_DOMAIN
@@ -77,6 +79,9 @@ def get_register_domain():
     override = (get("register_domain") or "").strip()
     if override:
         return override.lstrip("@").strip()
+    domains = get_register_domains()
+    if domains:
+        return domains[0]
     return (CLOUD_MAIL_DOMAIN or CLOUDFLARE_TEMP_EMAIL_DOMAIN or "").lstrip("@").strip()
 
 
@@ -84,4 +89,55 @@ def set_register_domain(domain):
     """写入 register_domain 覆盖值。空串表示清除 override 走环境变量。"""
     cleaned = (domain or "").strip().lstrip("@").strip()
     set_value("register_domain", cleaned)
+    return cleaned
+
+
+def _normalize_domain(domain):
+    return (domain or "").strip().lstrip("@").strip()
+
+
+def _split_domains(raw):
+    if isinstance(raw, list):
+        values = raw
+    else:
+        values = re.split(r"[\s,;|]+", str(raw or ""))
+
+    out = []
+    seen = set()
+    for value in values:
+        cleaned = _normalize_domain(value)
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        out.append(cleaned)
+    return out
+
+
+def get_register_domains():
+    """返回可用于子号注册的域名列表。
+
+    支持 runtime_config.json 的 register_domains 数组 / 字符串，以及环境变量里
+    逗号、空格、分号分隔的多域名写法。
+    """
+    from autoteam.config import CLOUD_MAIL_DOMAIN, CLOUDFLARE_TEMP_EMAIL_DOMAIN
+
+    runtime_domains = _split_domains(get("register_domains"))
+    if runtime_domains:
+        return runtime_domains
+
+    return _split_domains(CLOUD_MAIL_DOMAIN or CLOUDFLARE_TEMP_EMAIL_DOMAIN or "")
+
+
+def set_register_domains(domains):
+    """写入可选注册域名列表，返回清洗后的唯一域名列表。"""
+    cleaned = _split_domains(domains)
+    set_value("register_domains", cleaned)
+
+    current = _normalize_domain(get("register_domain"))
+    if current and current not in cleaned:
+        set_value("register_domain", cleaned[0] if cleaned else "")
+
     return cleaned

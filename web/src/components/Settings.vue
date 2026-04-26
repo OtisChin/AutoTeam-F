@@ -318,6 +318,44 @@
     </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold text-white">注册域名设置</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            维护“注册账号”页面可选的域名列表。一个域名一行，或使用逗号分隔。
+          </p>
+        </div>
+        <button
+          @click="loadRegisterDomains"
+          :disabled="registerDomainLoading"
+          class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50"
+        >
+          {{ registerDomainLoading ? '刷新中...' : '刷新域名' }}
+        </button>
+      </div>
+
+      <div class="space-y-3">
+        <textarea
+          v-model="registerDomainsText"
+          rows="4"
+          spellcheck="false"
+          placeholder="openaibus.com&#10;mail2.example.com"
+          class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+        ></textarea>
+        <div class="flex items-center justify-between gap-3">
+          <div class="text-xs text-gray-500">当前共 {{ parsedRegisterDomains.length }} 个域名</div>
+          <button
+            @click="saveRegisterDomains"
+            :disabled="registerDomainSaving || !parsedRegisterDomains.length"
+            class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+          >
+            {{ registerDomainSaving ? '保存中...' : '保存域名列表' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold text-white">巡检设置</h2>
         <span v-if="saved" class="text-xs text-green-400 transition">已保存</span>
@@ -399,10 +437,21 @@ const message = ref('')
 const messageClass = ref('')
 const adminSubmittingHint = ref('')
 const codexSubmittingHint = ref('')
+const registerDomainsText = ref('')
+const registerDomainLoading = ref(false)
+const registerDomainSaving = ref(false)
 
 const adminConfigured = computed(() => !!props.adminStatus?.configured)
 const adminBusy = computed(() => !!props.adminStatus?.login_in_progress)
 const codexBusy = computed(() => !!props.codexStatus?.in_progress)
+const parsedRegisterDomains = computed(() =>
+  Array.from(new Set(
+    registerDomainsText.value
+      .split(/[\s,;|]+/)
+      .map(v => v.trim().replace(/^@/, ''))
+      .filter(Boolean)
+  ))
+)
 
 watch(
   () => props.adminStatus,
@@ -449,6 +498,7 @@ onMounted(async () => {
   } catch (e) {
     console.error('加载巡检配置失败:', e)
   }
+  loadRegisterDomains()
 })
 
 function setMessage(text, type = 'success') {
@@ -648,6 +698,33 @@ async function save() {
     console.error('保存失败:', e)
   } finally {
     saving.value = false
+  }
+}
+
+async function loadRegisterDomains() {
+  registerDomainLoading.value = true
+  try {
+    const result = await api.getRegisterDomain()
+    const domains = result.domains?.length ? result.domains : (result.domain ? [result.domain] : [])
+    registerDomainsText.value = domains.join('\n')
+  } catch (e) {
+    console.error('加载注册域名失败:', e)
+  } finally {
+    registerDomainLoading.value = false
+  }
+}
+
+async function saveRegisterDomains() {
+  registerDomainSaving.value = true
+  try {
+    const domains = parsedRegisterDomains.value
+    const result = await api.setRegisterDomains(domains, domains[0] || null)
+    registerDomainsText.value = (result.domains || domains).join('\n')
+    setMessage(result.message || '注册域名已保存')
+  } catch (e) {
+    setMessage(e.message, 'error')
+  } finally {
+    registerDomainSaving.value = false
   }
 }
 </script>

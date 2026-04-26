@@ -79,7 +79,7 @@ export const api = {
 
   startRotate: (target = 5) => request('POST', '/tasks/rotate', { target }),
   startCheck: () => request('POST', '/tasks/check'),
-  startAdd: () => request('POST', '/tasks/add'),
+  startAdd: (payload = {}) => request('POST', '/tasks/add', payload),
   startFill: (target = 5) => request('POST', '/tasks/fill', { target, leave_workspace: false }),
   startFillPersonal: (count = 1) => request('POST', '/tasks/fill', { target: count, leave_workspace: true }),
   startCleanup: (maxSeats = null) => request('POST', '/tasks/cleanup', { max_seats: maxSeats }),
@@ -93,10 +93,11 @@ export const api = {
 
   getRegisterDomain: () => request('GET', '/config/register-domain'),
   setRegisterDomain: (domain, verify = true) => request('PUT', '/config/register-domain', { domain, verify }),
+  setRegisterDomains: (domains, selected = null) => request('PUT', '/config/register-domains', { domains, selected }),
+  getLogs: (limit = 100, since = 0) => request('GET', `/logs?limit=${limit}&since=${since}`),
 
   getRegisterFailures: (limit = 50) => request('GET', `/register-failures?limit=${limit}`),
 
   getTeamMembers: () => request('GET', '/team/members'),
   removeTeamMember: (payload) => request('POST', '/team/members/remove', payload),
-  getLogs: (limit = 100, since = 0) => request('GET', `/logs?limit=${limit}&since=${since}`),
 }
