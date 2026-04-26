@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.pyc
+screenshots/
+auths/
+accounts.json
+state.json
+session
+bearer_token
+.env
+data/
+web/node_modules/

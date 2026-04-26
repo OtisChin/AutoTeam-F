@@ -1,0 +1,8 @@
+services:
+  autoteam:
+    build: .
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

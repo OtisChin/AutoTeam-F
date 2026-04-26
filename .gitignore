@@ -1,0 +1,30 @@
+__pycache__/
+*.pyc
+*.egg-info/
+/dist/
+.venv/
+screenshots/
+auth_state/
+auths/
+accounts.json
+state.json
+session
+bearer_token
+test.py
+.env
+web/node_modules/
+.codex
+.coverage
+
+# 运行时配置 / 失败记录 / 备份(含真实邮箱与 session,严禁入库)
+runtime_config.json
+register_failures.json
+*.bak-*
+auths.bak-*/
+.backup_docker/
+
+# IDE
+.idea/
+.vscode/
+.ruff_cache/
+.pre-commit-config.yaml.local
