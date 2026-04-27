@@ -121,16 +121,18 @@ def _write_auth_file(filepath, bundle):
     ensure_auth_dir()
     filepath.parent.mkdir(exist_ok=True)
 
-    auth_data = {
-        "type": "codex",
-        "id_token": bundle.get("id_token", ""),
-        "access_token": bundle.get("access_token", ""),
-        "refresh_token": bundle.get("refresh_token", ""),
-        "account_id": bundle.get("account_id", ""),
-        "email": bundle.get("email", ""),
-        "expired": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bundle.get("expired", 0))),
-        "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    auth_data = bundle.get("session_json")
+    if not isinstance(auth_data, dict):
+        auth_data = {
+            "type": "codex",
+            "id_token": bundle.get("id_token", ""),
+            "access_token": bundle.get("access_token", ""),
+            "refresh_token": bundle.get("refresh_token", ""),
+            "account_id": bundle.get("account_id", ""),
+            "email": bundle.get("email", ""),
+            "expired": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bundle.get("expired", 0))),
+            "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
 
     write_text(filepath, json.dumps(auth_data, indent=2))
     ensure_auth_file_permissions(filepath)
@@ -613,6 +615,15 @@ def login_codex_via_browser(email, password, mail_client=None, *, use_personal=F
             if auth_code:
                 break
 
+            try:
+                current_url = page.url or ""
+                if "auth.openai.com/add-phone" in current_url:
+                    _screenshot(page, "codex_04_add_phone_blocked.png")
+                    logger.error("[Codex] OAuth 被 add-phone 阻断，当前 URL: %s", current_url)
+                    break
+            except Exception:
+                pass
+
             _screenshot(page, f"codex_04_step{step + 1}_before.png")
 
             # 在任何页面中，如果有 workspace/组织选择，先选 Team（personal 模式下选个人）
@@ -901,7 +912,10 @@ def login_codex_via_browser(email, password, mail_client=None, *, use_personal=F
 
         if not auth_code:
             _screenshot(page, "codex_05_no_callback.png")
-            logger.warning("[Codex] 未获取到 auth code，当前 URL: %s", page.url)
+            if "auth.openai.com/add-phone" in (page.url or ""):
+                logger.error("[Codex] OAuth 被 add-phone 阻断，未获取到 auth code，当前 URL: %s", page.url)
+            else:
+                logger.warning("[Codex] 未获取到 auth code，当前 URL: %s", page.url)
 
         browser.close()
 

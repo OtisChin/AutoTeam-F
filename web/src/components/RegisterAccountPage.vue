@@ -443,9 +443,16 @@ async function loadRegisterStats() {
         today.failed += failedCount
       }
       if (latestTask && task.task_id === latestTask.task_id) {
-        taskScope.total += count
-        taskScope.ok += okCount
-        taskScope.failed += failedCount
+        const progress = task.progress || null
+        if (progress && (task.status === 'running' || task.status === 'pending')) {
+          taskScope.total += Number(progress.total || count || 0)
+          taskScope.ok += Number(progress.ok || 0)
+          taskScope.failed += Number(progress.failed || 0)
+        } else {
+          taskScope.total += count
+          taskScope.ok += okCount
+          taskScope.failed += failedCount
+        }
       }
     }
 

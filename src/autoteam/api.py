@@ -8,6 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
+import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -312,6 +313,20 @@ def _prune_tasks():
             del _tasks[tid]
 
 
+def _update_current_task_progress(progress: dict):
+    """更新当前运行任务的实时进度。"""
+    if not _current_task_id:
+        return
+    task = _tasks.get(_current_task_id)
+    if not task:
+        return
+    task["progress"] = {
+        **(task.get("progress") or {}),
+        **progress,
+        "updated_at": time.time(),
+    }
+
+
 def _run_task(task_id: str, func, *args, **kwargs):
     """在后台线程中执行任务"""
     from autoteam import cancel_signal
@@ -425,6 +440,47 @@ class RegisterDomainsParams(BaseModel):
     selected: str | None = None
 
 
+class BindLinkParams(BaseModel):
+    access_token: str
+    plan_name: str
+    promo_campaign: dict
+    billing_details: dict
+    checkout_ui_mode: str = "hosted"
+    team_plan_data: dict | None = None
+
+
+class CardPoolImportParams(BaseModel):
+    pool_type: str
+    text: str
+    provider: str = ""
+
+
+class CardPoolDeleteParams(BaseModel):
+    pool_type: str
+    ids: list[str]
+
+
+class CardPoolUpdateParams(BaseModel):
+    pool_type: str
+    item_id: str
+    status: str | None = None
+    provider: str | None = None
+    used_by: str | None = None
+    expires_at: str | None = None
+
+
+class CardPoolRedeemParams(BaseModel):
+    item_id: str
+
+
+class CardPoolRedeemBatchParams(BaseModel):
+    item_ids: list[str]
+
+
+class CardPoolFetchSmsParams(BaseModel):
+    url: str
+
+
 class ManualRegisterParams(BaseModel):
     mode: str = "single"
     count: int = 1
@@ -472,6 +528,15 @@ def _resolve_status_auth_file(acc: dict) -> str:
     if auth_file and Path(auth_file).exists():
         return auth_file
 
+    try:
+        from autoteam.auth_session_store import get_auth_session_file
+
+        session_file = get_auth_session_file(acc.get("email") or "")
+        if session_file and Path(session_file).exists():
+            return session_file
+    except Exception:
+        pass
+
     if _is_main_account_email(acc.get("email")):
         from autoteam.codex_auth import get_saved_main_auth_file
 
@@ -499,6 +564,12 @@ def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
     sanitized["is_main_account"] = _is_main_account_email(acc.get("email"))
     sanitized["status"] = _display_account_status(acc, quota_snapshot)
+    try:
+        from autoteam.auth_session_store import get_auth_session_file
+
+        sanitized["auth_session_file"] = get_auth_session_file(acc.get("email") or "")
+    except Exception:
+        sanitized["auth_session_file"] = ""
     return sanitized
 
 
@@ -1257,9 +1328,26 @@ def post_manual_account_cancel():
 @app.get("/api/accounts")
 def get_accounts():
     """获取所有账号列表"""
-    from autoteam.accounts import load_accounts
+    from autoteam.accounts import find_account, load_accounts
+    from autoteam.auth_session_store import list_auth_session_emails
 
     accounts = load_accounts()
+    existing_emails = {str(acc.get("email") or "").strip().lower() for acc in accounts}
+    for email in list_auth_session_emails():
+        if email in existing_emails:
+            continue
+        accounts.append(
+            {
+                "email": email,
+                "password": "",
+                "cloudmail_account_id": None,
+                "status": "personal",
+                "seat_type": "codex",
+                "auth_file": "",
+                "created_at": 0,
+                "last_active_at": None,
+            }
+        )
     return [_sanitize_account(a) for a in accounts]
 
 
@@ -1267,6 +1355,7 @@ def get_accounts():
 def get_codex_auth(email: str):
     """导出账号的 Codex CLI 格式认证文件（~/.codex/auth.json）"""
     from autoteam.accounts import find_account, load_accounts
+    from autoteam.auth_session_store import get_auth_session_file
     from autoteam.codex_auth import get_saved_main_auth_file
 
     email = email.strip().lower()
@@ -1278,13 +1367,23 @@ def get_codex_auth(email: str):
             raise HTTPException(status_code=404, detail="主号没有可导出的认证文件")
     else:
         acc = find_account(load_accounts(), email)
-        if not acc:
-            raise HTTPException(status_code=404, detail="账号不存在")
-        auth_file = acc.get("auth_file") or ""
+        auth_file = ""
+        if acc:
+            auth_file = acc.get("auth_file") or ""
+        if not auth_file:
+            auth_file = get_auth_session_file(email) or ""
         if not auth_file or not Path(auth_file).exists():
             raise HTTPException(status_code=404, detail="该账号没有认证文件")
 
     auth_data = json.loads(Path(auth_file).read_text())
+
+    access_token = auth_data.get("access_token", "")
+    if not access_token:
+        access_token = auth_data.get("accessToken", "")
+
+    account_id = auth_data.get("account_id", "")
+    if not account_id:
+        account_id = ((auth_data.get("account") or {}).get("id") or "")
 
     # 转换为 Codex CLI 的 auth.json 格式
     codex_auth = {
@@ -1292,9 +1391,9 @@ def get_codex_auth(email: str):
         "OPENAI_API_KEY": None,
         "tokens": {
             "id_token": auth_data.get("id_token", ""),
-            "access_token": auth_data.get("access_token", ""),
+            "access_token": access_token,
             "refresh_token": auth_data.get("refresh_token", ""),
-            "account_id": auth_data.get("account_id", ""),
+            "account_id": account_id,
         },
         "last_refresh": auth_data.get("last_refresh", ""),
     }
@@ -1302,6 +1401,7 @@ def get_codex_auth(email: str):
     return {
         "email": email,
         "codex_auth": codex_auth,
+        "auth_file": auth_file,
         "hint": "将内容保存到 ~/.codex/auth.json（Linux/macOS）或 %APPDATA%\\codex\\auth.json（Windows）",
     }
 
@@ -1343,6 +1443,7 @@ def delete_account(email: str):
     try:
         from autoteam.account_ops import delete_managed_account
         from autoteam.accounts import load_accounts
+        from autoteam.admin_state import get_admin_session_token, get_chatgpt_account_id
 
         if _is_main_account_email(email):
             raise HTTPException(status_code=400, detail="主号不允许删除")
@@ -1351,11 +1452,13 @@ def delete_account(email: str):
         if not any(a["email"].lower() == email.lower() for a in accounts):
             raise HTTPException(status_code=404, detail="账号不存在")
 
-        cleanup = _pw_executor.run(delete_managed_account, email)
+        remote_cleanup = bool(get_admin_session_token() and get_chatgpt_account_id())
+        cleanup = _pw_executor.run(delete_managed_account, email, remove_remote=remote_cleanup)
         return {
             "message": "账号删除完成",
             "deleted_email": email,
             "cleanup": cleanup,
+            "remote_cleanup": remote_cleanup,
         }
     finally:
         _playwright_lock.release()
@@ -1372,6 +1475,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
     from autoteam.chatgpt_api import ChatGPTTeamAPI
     from autoteam.mail import TemporaryEmailClient
     from autoteam.cpa_sync import sync_to_cpa
+    from autoteam.admin_state import get_admin_session_token, get_chatgpt_account_id
 
     raw_emails = [(e or "").strip() for e in (params.emails or [])]
     emails = [e for e in raw_emails if e]
@@ -1399,17 +1503,19 @@ def delete_accounts_batch(params: DeleteBatchParams):
     def _run():
         accounts = load_accounts()
         existing = {(a.get("email") or "").lower(): a for a in accounts}
+        remote_cleanup = bool(get_admin_session_token() and get_chatgpt_account_id())
 
         chatgpt_api = None
         mail_client = None
         results = []
         try:
-            chatgpt_api = ChatGPTTeamAPI()
-            chatgpt_api.start()
+            if remote_cleanup:
+                chatgpt_api = ChatGPTTeamAPI()
+                chatgpt_api.start()
             mail_client = TemporaryEmailClient()
             mail_client.login()
             # 整批共享一次 Team 状态快照,避免每个删除都重查一次
-            remote_state = fetch_team_state(chatgpt_api)
+            remote_state = fetch_team_state(chatgpt_api) if remote_cleanup else None
 
             for email in emails:
                 if email.lower() not in existing:
@@ -1420,6 +1526,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
                 try:
                     cleanup = delete_managed_account(
                         email,
+                        remove_remote=remote_cleanup,
                         chatgpt_api=chatgpt_api,
                         mail_client=mail_client,
                         remote_state=remote_state,
@@ -1450,6 +1557,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
                 "ok": ok_count,
                 "failed": len(results) - ok_count,
                 "skipped": len(emails) - len(results),
+                "remote_cleanup": remote_cleanup,
             },
         }
 
@@ -1839,7 +1947,7 @@ def get_team_members():
 
 
 @app.post("/api/team/members/remove")
-def post_team_member_remove(params: TeamMemberRemoveParams):
+def post_team_members_remove(params: TeamMemberRemoveParams):
     """移出 Team 成员或取消邀请。"""
     from autoteam.admin_state import get_admin_session_token, get_chatgpt_account_id
 
@@ -1899,6 +2007,369 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
         }
     finally:
         _playwright_lock.release()
+
+
+@app.post("/api/bind/link")
+def post_bind_link(params: BindLinkParams):
+    """生成 ChatGPT 绑卡链接"""
+    if not params.access_token:
+        raise HTTPException(status_code=400, detail="请提供 access_token")
+
+    def _do_generate_link():
+        from autoteam.chatgpt_api import ChatGPTTeamAPI
+
+        def _friendly_goto_error(exc):
+            text = str(exc)
+            if "ERR_CONNECTION_CLOSED" in text:
+                return "打开 ChatGPT 首页失败：网络连接被关闭，可能是代理/IP/风控问题"
+            if "ERR_TIMED_OUT" in text or "Timeout" in text:
+                return "打开 ChatGPT 首页失败：请求超时，可能是网络波动、代理不稳定或风控问题"
+            if "ERR_CONNECTION_RESET" in text:
+                return "打开 ChatGPT 首页失败：网络连接被重置，可能是代理/IP/风控问题"
+            return f"打开 ChatGPT 首页失败：{text}"
+
+        payload = {
+            "plan_name": params.plan_name,
+            "promo_campaign": params.promo_campaign,
+            "billing_details": params.billing_details,
+            "checkout_ui_mode": params.checkout_ui_mode,
+        }
+        if params.team_plan_data:
+            payload["team_plan_data"] = params.team_plan_data
+
+        api = ChatGPTTeamAPI()
+        try:
+            api._launch_browser()
+            logger.info("[bind/link] open chatgpt.com to pass Cloudflare")
+            goto_ok = False
+            last_goto_exc = None
+            for attempt in range(3):
+                try:
+                    api.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
+                    goto_ok = True
+                    break
+                except Exception as exc:
+                    last_goto_exc = exc
+                    logger.warning(
+                        "[bind/link] 打开 ChatGPT 首页失败，第 %d/3 次: %s",
+                        attempt + 1,
+                        _friendly_goto_error(exc),
+                    )
+                    if attempt < 2:
+                        time.sleep(3)
+            if not goto_ok:
+                raise RuntimeError(_friendly_goto_error(last_goto_exc))
+
+            time.sleep(5)
+            api._wait_for_cloudflare()
+            api.access_token = params.access_token.strip()
+
+            result = api.page.evaluate(
+                """async (payload) => {
+                    try {
+                        const resp = await fetch("/backend-api/payments/checkout", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Authorization": `Bearer ${payload.access_token}`,
+                                "Accept": "application/json, text/plain, */*"
+                            },
+                            body: JSON.stringify(payload.body)
+                        });
+
+                        const text = await resp.text();
+                        let data = null;
+                        try {
+                            data = text ? JSON.parse(text) : {};
+                        } catch (err) {
+                            return {
+                                ok: false,
+                                status: resp.status,
+                                non_json: true,
+                                body: text.slice(0, 500)
+                            };
+                        }
+
+                        return {
+                            ok: resp.ok,
+                            status: resp.status,
+                            data
+                        };
+                    } catch (err) {
+                        return {
+                            ok: false,
+                            status: 0,
+                            fetch_error: String(err && err.message ? err.message : err)
+                        };
+                    }
+                }""",
+                {"access_token": params.access_token.strip(), "body": payload},
+            )
+
+            if result.get("fetch_error"):
+                raise HTTPException(status_code=502, detail=f"页面请求失败: {result['fetch_error']}")
+
+            if result.get("non_json"):
+                raise HTTPException(
+                    status_code=result.get("status") or 502,
+                    detail=f"上游错误({result.get('status')})，返回非 JSON 响应: {(result.get('body') or '')[:200]}",
+                )
+
+            data = result.get("data") or {}
+            if not result.get("ok"):
+                detail = data.get("detail") if isinstance(data, dict) else None
+                if isinstance(detail, dict):
+                    detail = detail.get("message") or json.dumps(detail, ensure_ascii=False)
+                raise HTTPException(
+                    status_code=result.get("status") or 502,
+                    detail=detail or f"上游错误({result.get('status')})",
+                )
+
+            if data.get("url"):
+                return {"url": data["url"]}
+            if data.get("checkout_session_id"):
+                return {"checkout_session_id": data["checkout_session_id"]}
+            return {"detail": data.get("detail") or str(data)}
+        finally:
+            try:
+                api.stop()
+            except Exception:
+                pass
+
+    if not _playwright_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行"))
+
+    try:
+        try:
+            result = _pw_executor.run(_do_generate_link)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[bind/link] unexpected error")
+            raise HTTPException(status_code=500, detail=f"生成绑卡链接失败: {exc}") from exc
+        if "detail" in result:
+            raise HTTPException(status_code=400, detail=result["detail"])
+        return result
+    finally:
+        _playwright_lock.release()
+
+
+# ---------------------------------------------------------------------------
+# 卡池
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/card-pool/{pool_type}")
+def get_card_pool(pool_type: str):
+    from autoteam.card_pool import list_items, stats_for
+
+    try:
+        return {
+            "pool_type": pool_type,
+            "stats": stats_for(pool_type),
+            "items": list_items(pool_type),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/card-pool/import")
+def post_card_pool_import(params: CardPoolImportParams):
+    from autoteam.card_pool import import_text_lines, stats_for
+
+    try:
+        items = import_text_lines(params.pool_type, params.text, provider=params.provider)
+        return {
+            "message": f"导入成功，新增 {len(items)} 条",
+            "imported": items,
+            "stats": stats_for(params.pool_type),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/card-pool/delete")
+def post_card_pool_delete(params: CardPoolDeleteParams):
+    from autoteam.card_pool import delete_items, stats_for
+
+    try:
+        deleted = delete_items(params.pool_type, params.ids)
+        return {
+            "message": f"已删除 {deleted} 条记录",
+            "deleted": deleted,
+            "stats": stats_for(params.pool_type),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/card-pool/update")
+def post_card_pool_update(params: CardPoolUpdateParams):
+    from autoteam.card_pool import stats_for, update_item
+
+    try:
+        item = update_item(
+            params.pool_type,
+            params.item_id,
+            status=params.status,
+            provider=params.provider,
+            used_by=params.used_by,
+            expires_at=params.expires_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not item:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    return {
+        "message": "更新成功",
+        "item": item,
+        "stats": stats_for(params.pool_type),
+    }
+
+
+@app.post("/api/card-pool/redeem")
+def post_card_pool_redeem(params: CardPoolRedeemParams):
+    from autoteam.card_pool import add_card_item, find_item, stats_for, update_item
+
+    redeem_item = find_item("redeem", params.item_id)
+    if not redeem_item:
+        raise HTTPException(status_code=404, detail="兑换码不存在")
+
+    code = str(redeem_item.get("value") or "").strip()
+    provider = str(redeem_item.get("provider") or "").strip().upper()
+    if not code:
+        raise HTTPException(status_code=400, detail="兑换码为空")
+    if redeem_item.get("status") == "used":
+        raise HTTPException(status_code=400, detail="该兑换码已使用")
+
+    if provider not in {"988", "EFUN"}:
+        raise HTTPException(status_code=400, detail="暂不支持该供应商兑换")
+
+    if provider == "EFUN":
+        url = "https://card.efuncard.com/api/external/redeem"
+        headers = {
+            "Authorization": "Bearer b352d13f20462ed46cff0aa417065496bd811eb8396b2e2fee11aeacb796fc00",
+            "Content-Type": "application/json",
+        }
+        resp = requests.post(url, json={"code": code}, headers=headers, timeout=30, verify=False)
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=f"EFUN 返回了非 JSON 响应: {(resp.text or '')[:200]}") from exc
+        if not resp.ok or not data.get("success"):
+            raise HTTPException(status_code=resp.status_code or 502, detail=data.get("message") or f"EFUN 兑换失败({resp.status_code})")
+        card = data.get("data") or {}
+        card_number = str(card.get("cardNumber") or "").strip()
+        if not card_number:
+            raise HTTPException(status_code=502, detail="EFUN 返回缺少卡券信息")
+        card_item = add_card_item(
+            value=card_number,
+            provider=provider,
+            status="unused",
+            expires_at=str(card.get("autoCancelAt") or ""),
+            meta=card,
+        )
+        update_item("redeem", params.item_id, status="used")
+        return {
+            "message": "兑换成功",
+            "redeem_item": find_item("redeem", params.item_id),
+            "card_item": card_item,
+            "stats": {
+                "redeem": stats_for("redeem"),
+                "card": stats_for("card"),
+            },
+        }
+
+    if provider == "988":
+        url = "https://cards.779.chat/api/exchange/verify"
+        resp = requests.post(url, json={"key": code}, timeout=30, verify=False)
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=f"988 返回了非 JSON 响应: {(resp.text or '')[:200]}") from exc
+
+        if not resp.ok or not data.get("success"):
+            raise HTTPException(status_code=resp.status_code or 502, detail=data.get("message") or f"988 兑换失败({resp.status_code})")
+
+        card_info = data.get("card") or {}
+        content = data.get("content") or {}
+        card_number = str(content.get("card_number") or content.get("cardNumber") or card_info.get("card_number") or card_info.get("cardNumber") or "").strip()
+        if not card_number:
+            raise HTTPException(status_code=502, detail="988 返回缺少卡券信息")
+
+        expiry = card_info.get("expires_at") or content.get("expiry_date") or ""
+        card_item = add_card_item(
+            value=card_number,
+            provider=provider,
+            status="unused",
+            expires_at=str(expiry or ""),
+            meta=data,
+        )
+        update_item("redeem", params.item_id, status="used")
+        return {
+            "message": "兑换成功",
+            "redeem_item": find_item("redeem", params.item_id),
+            "card_item": card_item,
+            "stats": {
+                "redeem": stats_for("redeem"),
+                "card": stats_for("card"),
+            },
+        }
+
+    raise HTTPException(status_code=501, detail="暂不支持该供应商兑换")
+
+
+@app.post("/api/card-pool/redeem-batch")
+def post_card_pool_redeem_batch(params: CardPoolRedeemBatchParams):
+    results = []
+    for item_id in params.item_ids:
+        try:
+            result = post_card_pool_redeem(CardPoolRedeemParams(item_id=item_id))
+            results.append({"item_id": item_id, "ok": True, "result": result})
+        except HTTPException as exc:
+            results.append({"item_id": item_id, "ok": False, "error": exc.detail, "status_code": exc.status_code})
+        except Exception as exc:
+            results.append({"item_id": item_id, "ok": False, "error": str(exc), "status_code": 500})
+
+    ok_count = sum(1 for item in results if item["ok"])
+    return {
+        "message": f"批量兑换完成，成功 {ok_count}/{len(results)}",
+        "results": results,
+    }
+
+
+@app.post("/api/card-pool/fetch-sms")
+def post_card_pool_fetch_sms(params: CardPoolFetchSmsParams):
+    sms_url = (params.url or "").strip()
+    if not sms_url:
+        raise HTTPException(status_code=400, detail="接码 API 为空")
+    if not (sms_url.startswith("http://") or sms_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="接码 API 格式无效")
+
+    try:
+        resp = requests.get(
+            sms_url,
+            timeout=20,
+            verify=False,
+            headers={
+                "User-Agent": "Mozilla/5.0 AutoTeam/1.0",
+                "Accept": "text/plain, text/html, */*",
+            },
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"请求接码接口失败: {exc}") from exc
+
+    text = (resp.text or "").strip()
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code or 502, detail=text[:200] or f"接码接口返回异常({resp.status_code})")
+
+    return {
+        "url": sms_url,
+        "status_code": resp.status_code,
+        "text": text,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2013,7 +2484,7 @@ def post_replace(params: ReplaceParams):
 
 @app.post("/api/tasks/add", status_code=202)
 def post_add(params: ManualRegisterParams = ManualRegisterParams()):
-    """注册账号（后台执行，只注册，不进行后续流程）"""
+    """注册账号（后台执行，注册成功后继续执行 personal OAuth 并生成 auth_file）"""
     from autoteam.manager import cmd_register_accounts
     from autoteam.identity import random_password
     from autoteam.runtime_config import get_register_domain, get_register_domains
@@ -2070,6 +2541,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         email_prefix=prefix,
         password=resolved_password,
         domain=selected_domain,
+        progress_callback=_update_current_task_progress,
     )
     return task
 

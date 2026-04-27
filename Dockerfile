@@ -28,7 +28,14 @@ COPY src/ src/
 COPY web/ web/
 
 # 构建前端静态资源
-RUN cd web && npm install && npm run build
+RUN cd web \
+    && npm config set fetch-retries 5 \
+    && npm config set fetch-retry-factor 2 \
+    && npm config set fetch-retry-mintimeout 20000 \
+    && npm config set fetch-retry-maxtimeout 120000 \
+    && npm config set fetch-timeout 300000 \
+    && npm ci \
+    && npm run build
 
 # 数据卷（.env、accounts.json、auths/、state.json、screenshots/）
 VOLUME ["/app/data"]

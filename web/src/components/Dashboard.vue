@@ -328,7 +328,7 @@ const actionDisabled = computed(() => !!props.runningTask)
 const syncDisabled = computed(() => !!props.runningTask)
 const loginDisabled = computed(() => !!props.runningTask)
 const kickDisabled = computed(() => !!props.runningTask || !adminReady.value)
-const deleteDisabled = computed(() => !!props.runningTask || !adminReady.value)
+const deleteDisabled = computed(() => !!props.runningTask)
 
 const selectableEmails = computed(() =>
   (props.status?.accounts || []).filter(a => !a.is_main_account).map(a => a.email)
@@ -570,12 +570,7 @@ async function kickAccount(email) {
 }
 
 async function removeAccount(email) {
-  if (deleteDisabled.value) {
-    message.value = '删除账号的远端清理需要先完成管理员登录'
-    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-    setTimeout(() => { message.value = '' }, 8000)
-    return
-  }
+  if (deleteDisabled.value) return
 
   const ok = window.confirm(`确认删除账号 ${email}？\n这会同时清理本地记录、CPA、Team/Invite 和临时邮箱服务。`)
   if (!ok) return
@@ -599,12 +594,7 @@ async function removeAccount(email) {
 }
 
 async function batchDelete() {
-  if (deleteDisabled.value) {
-    message.value = '批量删除的远端清理需要先完成管理员登录'
-    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-    setTimeout(() => { message.value = '' }, 8000)
-    return
-  }
+  if (deleteDisabled.value) return
   if (batchDeleting.value) return
   const emails = selectedEmails.value
   if (!emails.length) return

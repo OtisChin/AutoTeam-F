@@ -1416,6 +1416,65 @@ def _run_post_register_oauth(email, password, mail_client, leave_workspace=False
     return email
 
 
+def _save_auth_from_session_page(email, password, cloudmail_account_id, session_data, out_outcome=None):
+    """
+    在已登录的 ChatGPT 页面里直接调用 /api/auth/session 提取 accessToken，
+    并把完整 JSON 保存到 data/auth_session/<email>.json。
+    """
+    from autoteam.accounts import SEAT_CODEX, STATUS_PERSONAL, add_account, update_account
+    from autoteam.auth_session_store import save_auth_session
+
+    def _record_outcome(status, **extra):
+        if out_outcome is not None:
+            out_outcome.clear()
+            out_outcome.update(status=status, email=email, **extra)
+
+    if not isinstance(session_data, dict):
+        logger.warning("[注册] /api/auth/session 返回为空或格式无效")
+        _record_outcome("session_auth_failed", reason="/api/auth/session 返回为空或格式无效")
+        return None
+
+    data = session_data.get("data") or {}
+    access_token = str(data.get("accessToken") or data.get("access_token") or "").strip()
+    if not access_token:
+        logger.warning(
+            "[注册] /api/auth/session 未返回 accessToken: status=%s raw=%s",
+            session_data.get("status"),
+            session_data.get("raw"),
+        )
+        _record_outcome(
+            "session_auth_failed",
+            reason=f"/api/auth/session 未返回 accessToken (status={session_data.get('status')})",
+        )
+        return None
+
+    account_id = str(
+        data.get("accountId")
+        or data.get("account_id")
+        or data.get("account", {}).get("id")
+        or data.get("user", {}).get("account_id")
+        or ""
+    ).strip()
+    auth_file = save_auth_session(email, data)
+    add_account(email, password, cloudmail_account_id=cloudmail_account_id, seat_type=SEAT_CODEX)
+    logger.info("[注册] auth_session 已保存: %s", auth_file)
+    update_account(
+        email,
+        status=STATUS_PERSONAL,
+        seat_type=SEAT_CODEX,
+        auth_file=auth_file,
+        last_active_at=time.time(),
+    )
+    logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)
+    _record_outcome("success", plan="free", auth_file=auth_file, source="auth_session")
+    return {
+        "email": email,
+        "status": "success",
+        "plan_type": "free",
+        "auth_file": auth_file,
+    }
+
+
 def _complete_registration(email, password, invite_link, mail_client, *, leave_workspace=False, out_outcome=None):
     """完成注册 + Codex 登录（从已有邀请链接继续）。out_outcome 透传给 _run_post_register_oauth。"""
     from playwright.sync_api import sync_playwright
@@ -1890,7 +1949,7 @@ def _complete_direct_about_you(page):
     return False
 
 
-def _register_direct_once(mail_client, email, password, cloudmail_account_id=None):
+def _register_direct_once(mail_client, email, password, cloudmail_account_id=None, return_session=False):
     """执行一次直接注册，返回是否完成注册并进入 Team。
 
     在邮箱/密码/验证码/about-you 四个提交节点调用 assert_not_blocked，
@@ -1903,6 +1962,16 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
     logger.info("[直接注册] %s", email)
     signup_url = "https://chatgpt.com/auth/login"
 
+    def _friendly_goto_error(exc):
+        text = str(exc)
+        if "ERR_CONNECTION_CLOSED" in text:
+            return "打开 ChatGPT 登录页失败：网络连接被关闭，可能是代理/IP/风控问题"
+        if "ERR_TIMED_OUT" in text or "Timeout" in text:
+            return "打开 ChatGPT 登录页失败：请求超时，可能是网络波动、代理不稳定或风控问题"
+        if "ERR_CONNECTION_RESET" in text:
+            return "打开 ChatGPT 登录页失败：网络连接被重置，可能是代理/IP/风控问题"
+        return f"打开 ChatGPT 登录页失败：{text}"
+
     with sync_playwright() as p:
         launch_kwargs = get_playwright_launch_options()
         if sys.platform.startswith("win"):
@@ -1914,7 +1983,34 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         )
         page = context.new_page()
 
-        page.goto(signup_url, wait_until="domcontentloaded", timeout=60000)
+        def _finish(success, session_data=None):
+            try:
+                browser.close()
+            except Exception:
+                pass
+            if return_session:
+                return success, session_data
+            return success
+
+        goto_ok = False
+        last_goto_exc = None
+        for attempt in range(3):
+            try:
+                page.goto(signup_url, wait_until="domcontentloaded", timeout=60000)
+                goto_ok = True
+                break
+            except Exception as exc:
+                last_goto_exc = exc
+                logger.warning(
+                    "[直接注册] 打开 ChatGPT 登录页失败，第 %d/3 次: %s",
+                    attempt + 1,
+                    _friendly_goto_error(exc),
+                )
+                if attempt < 2:
+                    time.sleep(3)
+        if not goto_ok:
+            raise RuntimeError(_friendly_goto_error(last_goto_exc))
+
         time.sleep(5)
 
         for i in range(12):
@@ -1974,12 +2070,10 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
 
         if email_step == "google":
             logger.warning("[直接注册] 邮箱步骤误跳转到 Google 登录页")
-            browser.close()
-            return False
+            return _finish(False)
         if email_step == "unknown":
             logger.warning("[直接注册] 未识别到邮箱步骤 | URL: %s | body=%s", page.url, _page_excerpt(page))
-            browser.close()
-            return False
+            return _finish(False)
 
         try:
             for attempt in range(3):
@@ -2028,6 +2122,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
                     page.url,
                     _page_excerpt(page),
                 )
+                last_failure_reason = f"邮箱步骤未推进 | URL: {page.url} | body={_page_excerpt(page)}"
         except Exception as exc:
             logger.warning("[直接注册] 邮箱步骤异常: %s | URL: %s", exc, page.url)
 
@@ -2036,17 +2131,16 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         logger.info("[直接注册] 邮箱步骤结束状态: %s | URL: %s", current_step, page.url)
         if current_step == "google":
             logger.warning("[直接注册] 邮箱步骤仍停留在 Google 登录页")
-            browser.close()
-            return False
+            return _finish(False)
         if current_step == "email":
             logger.warning("[直接注册] 邮箱步骤未推进 | URL: %s | body=%s", page.url, _page_excerpt(page))
-            browser.close()
-            return False
+            last_failure_reason = f"邮箱步骤未推进 | URL: {page.url} | body={_page_excerpt(page)}"
+            return _finish(False)
 
         try:
             assert_not_blocked(page, "email_submit")
         except RegisterBlocked:
-            browser.close()
+            _finish(False)
             raise
 
         # 等待页面跳转完成（可能跳到 create-account/password）
@@ -2103,17 +2197,15 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         current_step = _detect_direct_register_step(page)
         if current_step == "google":
             logger.warning("[直接注册] 密码步骤仍停留在 Google 登录页")
-            browser.close()
-            return False
+            return _finish(False)
         if current_step == "email":
             logger.warning("[直接注册] 提交密码前流程回退到邮箱页 | URL: %s | body=%s", page.url, _page_excerpt(page))
-            browser.close()
-            return False
+            return _finish(False)
 
         try:
             assert_not_blocked(page, "password_submit")
         except RegisterBlocked:
-            browser.close()
+            _finish(False)
             raise
 
         code_input = None
@@ -2148,8 +2240,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
                 time.sleep(8)
             else:
                 logger.error("[直接注册] 未收到验证码")
-                browser.close()
-                return False
+                return _finish(False)
 
         _safe_invite_screenshot(page, "direct_05_after_code.png")
         logger.info("[直接注册] 当前 URL: %s", page.url)
@@ -2157,14 +2248,14 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         try:
             assert_not_blocked(page, "code_submit")
         except RegisterBlocked:
-            browser.close()
+            _finish(False)
             raise
 
         try:
             _complete_direct_about_you(page)
         except RegisterBlocked:
             # add-phone / duplicate 必须穿透给 create_account_direct 处理
-            browser.close()
+            _finish(False)
             raise
         except Exception as exc:
             logger.warning("[直接注册] about-you 步骤异常: %s | URL: %s", exc, page.url)
@@ -2189,8 +2280,22 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         else:
             logger.warning("[直接注册] 注册可能未完成，URL: %s", current_url)
 
-        browser.close()
-        return success
+        session_data = None
+        if success and return_session:
+            try:
+                session_data = page.evaluate(
+                    """async () => {
+                        const resp = await fetch('/api/auth/session', { credentials: 'include' });
+                        const text = await resp.text();
+                        let data = {};
+                        try { data = JSON.parse(text || '{}'); } catch {}
+                        return { status: resp.status, data, raw: text.slice(0, 400) };
+                    }"""
+                )
+            except Exception as exc:
+                logger.warning("[注册] 在注册页内调用 /api/auth/session 失败: %s", exc)
+
+        return _finish(success, session_data)
 
 
 def create_account_direct(
@@ -2202,10 +2307,11 @@ def create_account_direct(
     password=None,
     domain=None,
     skip_post_register=False,
+    check_team_membership=True,
 ):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
-    流程：创建邮箱 → 注册 ChatGPT → 自动加入 workspace → Codex 登录
+    流程：创建邮箱 → 注册 ChatGPT → （可选）自动加入 workspace → Codex 登录
     leave_workspace: 加入 workspace 后是否立即退出，转为 personal 模式跑 OAuth。
     out_outcome:     可选 dict，函数会把最终结局（success/phone_blocked/duplicate_exhausted/register_failed/...）
                      + 统计信息（register_attempts / duplicate_swaps / last_email / reason）写入，供上游汇总。
@@ -2221,6 +2327,7 @@ def create_account_direct(
     account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
     chosen_password = password or random_password()
     password = chosen_password
+    last_failure_reason = ""
 
     def _record_outcome(status, **extra):
         if out_outcome is not None:
@@ -2255,7 +2362,17 @@ def create_account_direct(
             MAX_DUPLICATE_SWAPS,
         )
         try:
-            success = _register_direct_once(mail_client, email, password, cloudmail_account_id=account_id)
+            result = _register_direct_once(
+                mail_client,
+                email,
+                password,
+                cloudmail_account_id=account_id,
+                return_session=not check_team_membership,
+            )
+            if not check_team_membership:
+                success, session_data = result
+            else:
+                success = result
         except RegisterBlocked as blocked:
             logger.error("[直接注册] %s 被阻断: %s", email, blocked)
             if blocked.is_phone:
@@ -2294,6 +2411,7 @@ def create_account_direct(
                 logger.info("[直接注册] 已换新临时邮箱: %s", email)
                 continue
             # 其他阻断按普通失败处理
+            last_failure_reason = str(blocked)
             success = False
         except Exception as exc:
             # Playwright 崩溃 / 网络异常等:不清理邮箱会让临时邮箱服务积压,必须补一刀 discard 再抛。
@@ -2316,16 +2434,41 @@ def create_account_direct(
         # 只有真正走完 _register_direct_once 的一次（无论成功失败）才消耗 register_attempts
         register_attempts += 1
 
+        if not success and out_outcome is not None:
+            last_failure_reason = str(out_outcome.get("reason") or last_failure_reason or "")
+
         if success:
+            if not check_team_membership:
+                try:
+                    logger.info("[注册] 独立注册成功，开始调用 /api/auth/session 保存 auth_session: %s", email)
+                    session_auth = _save_auth_from_session_page(
+                        email,
+                        password,
+                        account_id,
+                        session_data,
+                        out_outcome=out_outcome,
+                    )
+                    if session_auth:
+                        return session_auth
+                    logger.warning("[注册] /api/auth/session 未生成 auth_session 文件，继续按注册成功收尾: %s", email)
+                except Exception as exc:
+                    logger.warning("[注册] /api/auth/session 提取 access_token 失败: %s", exc)
             break
 
-        if _is_email_in_team(email):
+        if check_team_membership and _is_email_in_team(email):
             logger.info("[直接注册] 远端确认账号已在 Team 中，视为注册成功: %s", email)
             success = True
             break
 
         if register_attempts < MAX_REGISTER_ATTEMPTS:
-            logger.warning("[直接注册] 注册失败且账号不在 Team 中，60 秒后重试: %s", email)
+            if check_team_membership:
+                logger.warning("[直接注册] 注册失败且账号不在 Team 中，60 秒后重试: %s", email)
+            else:
+                logger.warning(
+                    "[直接注册] 注册失败，60 秒后重试: %s | reason=%s",
+                    email,
+                    last_failure_reason or "未知错误",
+                )
             time.sleep(60)
 
     if not success:
@@ -2339,16 +2482,19 @@ def create_account_direct(
         record_failure(
             email,
             "register_failed",
-            f"连续 {register_attempts} 次注册尝试均未进入 Team",
+            last_failure_reason or f"连续 {register_attempts} 次注册尝试失败",
             register_attempts=register_attempts,
             duplicate_swaps=duplicate_swaps,
         )
-        _record_outcome("register_failed", reason=f"注册 {register_attempts} 次均未进入 Team")
+        _record_outcome("register_failed", reason=last_failure_reason or f"注册 {register_attempts} 次均失败")
         return None
 
     add_account(email, password, cloudmail_account_id=account_id)
     if skip_post_register:
-        logger.info("[直接注册] 注册完成，按要求跳过后续 OAuth/入池流程: %s", email)
+        if check_team_membership:
+            logger.info("[直接注册] 注册完成，按要求跳过后续 OAuth/入池流程: %s", email)
+        else:
+            logger.info("[直接注册] 注册完成，未生成 auth_session，按当前流程结束: %s", email)
         _record_outcome("success", email=email, password=password, skipped_post_register=True)
         return {
             "email": email,
@@ -3080,8 +3226,9 @@ def cmd_register_accounts(
     email_prefix=None,
     password=None,
     domain=None,
+    progress_callback=None,
 ):
-    """只执行注册，不进行后续 OAuth / 入池流程。
+    """执行独立注册，并在成功后继续执行 personal OAuth / 落 auth_file。
 
     batch 模式支持受控并发；interval_seconds 作用于每个 worker 启动下一个账号前的冷却，
     降低瞬时并发注册带来的风控概率。
@@ -3094,6 +3241,24 @@ def cmd_register_accounts(
     results = [None] * total
     next_index = 0
     index_lock = threading.Lock()
+    progress_lock = threading.Lock()
+    progress = {
+        "total": total,
+        "completed": 0,
+        "ok": 0,
+        "failed": 0,
+        "running": 0,
+    }
+
+    def _emit_progress():
+        if not progress_callback:
+            return
+        progress_callback(
+            {
+                **progress,
+                "successRate": (progress["ok"] / total * 100) if total > 0 else 0,
+            }
+        )
 
     # cloud-mail 看起来对同一管理员账号的并发 login/token 刷新不友好：
     # 后一个 worker 登录后，前一个 worker 的 token 会被服务端判成“身份认证失效”。
@@ -3141,6 +3306,7 @@ def cmd_register_accounts(
             return _wrapped
 
     mail_client = _SynchronizedMailClient(shared_mail_client)
+    _emit_progress()
 
     def _worker(worker_id):
         nonlocal next_index
@@ -3152,6 +3318,9 @@ def cmd_register_accounts(
                     break
                 job_index = next_index
                 next_index += 1
+            with progress_lock:
+                progress["running"] += 1
+                _emit_progress()
 
             outcome = {}
             logger.info("[注册账号] worker-%d 开始第 %d/%d 个", worker_id, job_index + 1, total)
@@ -3163,11 +3332,23 @@ def cmd_register_accounts(
                     password=password,
                     domain=domain,
                     skip_post_register=True,
+                    check_team_membership=False,
                 )
                 results[job_index] = result or {"status": outcome.get("status") or "failed", **outcome}
             except Exception as exc:
                 logger.error("[注册账号] worker-%d 第 %d 个异常: %s", worker_id, job_index + 1, exc)
                 results[job_index] = {"status": "exception", "reason": str(exc)}
+            finally:
+                item = results[job_index] or {}
+                is_ok = item.get("status") in ("registered", "success") or bool(item.get("email"))
+                with progress_lock:
+                    progress["running"] = max(0, progress["running"] - 1)
+                    progress["completed"] += 1
+                    if is_ok:
+                        progress["ok"] += 1
+                    else:
+                        progress["failed"] += 1
+                    _emit_progress()
 
             if job_index + 1 < total:
                 sleep_seconds = spacing
@@ -3186,7 +3367,7 @@ def cmd_register_accounts(
         t.join()
 
     normalized_results = [item or {"status": "failed", "reason": "unknown"} for item in results]
-    ok = [item for item in normalized_results if item.get("status") == "registered"]
+    ok = [item for item in normalized_results if item.get("status") in ("registered", "success") or item.get("email")]
     logger.info(
         "[注册账号] 完成: 成功 %d / %d (并发=%d, 固定间隔=%.1fs, 抖动=%.1f-%.1fs)",
         len(ok),

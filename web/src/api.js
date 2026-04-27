@@ -30,7 +30,14 @@ async function request(method, path, body = null) {
     throw err
   }
   if (!resp.ok) {
-    const msg = data?.detail?.message || data?.detail || `HTTP ${resp.status}`
+    let msg = data?.detail?.message || data?.detail || `HTTP ${resp.status}`
+    if (typeof msg === 'object') {
+      try {
+        msg = JSON.stringify(msg)
+      } catch {
+        msg = String(msg)
+      }
+    }
     const err = new Error(msg)
     err.status = resp.status
     throw err
@@ -100,4 +107,12 @@ export const api = {
 
   getTeamMembers: () => request('GET', '/team/members'),
   removeTeamMember: (payload) => request('POST', '/team/members/remove', payload),
+  generateBindLink: (payload) => request('POST', '/bind/link', payload),
+  getCardPool: (poolType) => request('GET', `/card-pool/${encodeURIComponent(poolType)}`),
+  importCardPool: (payload) => request('POST', '/card-pool/import', payload),
+  deleteCardPoolItems: (payload) => request('POST', '/card-pool/delete', payload),
+  updateCardPoolItem: (payload) => request('POST', '/card-pool/update', payload),
+  redeemCardPoolItem: (payload) => request('POST', '/card-pool/redeem', payload),
+  redeemCardPoolItems: (payload) => request('POST', '/card-pool/redeem-batch', payload),
+  fetchCardPoolSms: (url) => request('POST', '/card-pool/fetch-sms', { url }),
 }
