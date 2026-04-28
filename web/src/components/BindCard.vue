@@ -38,8 +38,8 @@
         {{ message }}
       </div>
 
-      <div class="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-4">
-        <div class="space-y-3">
+      <div class="grid grid-cols-1 xl:grid-cols-[380px_minmax(0,1fr)] gap-4">
+        <div class="min-w-0 space-y-3">
           <div>
             <label class="block text-sm text-gray-400 mb-1">套餐类型</label>
             <div class="grid grid-cols-2 gap-2">
@@ -85,7 +85,7 @@
                 :disabled="generating || loadingAccounts"
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
               >
-                <option value="">{{ loadingAccounts ? '加载账号中...' : '请选择号池账号' }}</option>
+                <option value="">{{ loadingAccounts ? '加载账号中...' : '支持选择号池账号' }}</option>
                 <option v-for="account in accountOptions" :key="account.email" :value="account.email">
                   {{ account.email }}
                 </option>
@@ -120,18 +120,9 @@
 
           <div>
             <label class="block text-sm text-gray-400 mb-1">货币</label>
-            <select
-              v-model="bindForm.currency"
-              :disabled="generating"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-            >
-              <option value="USD">美元 (USD)</option>
-              <option value="GBP">英镑 (GBP)</option>
-              <option value="EUR">欧元 (EUR)</option>
-              <option value="CAD">加元 (CAD)</option>
-              <option value="AUD">澳元 (AUD)</option>
-              <option value="JPY">日元 (JPY)</option>
-            </select>
+            <div class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white">
+              {{ bindForm.currency }}
+            </div>
           </div>
 
           <div>
@@ -155,7 +146,7 @@
 
         </div>
 
-        <div class="min-h-0 space-y-4">
+        <div class="min-w-0 min-h-0 space-y-4">
           <div class="border border-gray-800 rounded-xl bg-gray-950/60 p-4 h-[270px] flex flex-col">
             <div class="mb-3 flex items-start justify-between gap-3">
               <div>
@@ -189,12 +180,6 @@
               <div v-else class="space-y-3">
                 <div class="text-sm text-blue-400 whitespace-nowrap font-mono select-all overflow-x-auto" style="scrollbar-width: none; -ms-overflow-style: none;">
                   {{ currentLink }}
-                </div>
-                <div v-if="backupLink" class="border-t border-gray-800 pt-3">
-                  <div class="text-xs text-gray-500 mb-1">备用链接</div>
-                  <div class="text-xs text-green-400 whitespace-nowrap font-mono select-all overflow-x-auto" style="scrollbar-width: none; -ms-overflow-style: none;">
-                    {{ backupLink }}
-                  </div>
                 </div>
               </div>
             </div>
@@ -263,6 +248,7 @@ const messageClass = ref('')
 const generating = ref(false)
 const currentLink = ref('')
 const checkoutSessionId = ref('')
+const rawGeneratedUrl = ref('')
 const history = ref([])
 const accountOptions = ref([])
 const loadingAccounts = ref(false)
@@ -273,10 +259,22 @@ const bindForm = ref({
   accessToken: '',
   planType: 'plus',
   promoId: 'plus-1-month-free',
-  country: 'US',
-  currency: 'USD',
+  country: 'SG',
+  currency: 'SGD',
   checkoutMode: 'custom',
 })
+
+const countryCurrencyMap = {
+  US: 'USD',
+  GB: 'GBP',
+  DE: 'EUR',
+  FR: 'EUR',
+  CA: 'CAD',
+  AU: 'AUD',
+  JP: 'JPY',
+  SG: 'SGD',
+  HK: 'HKD',
+}
 
 const promoOptions = [
   { id: 'plus-1-month-free', name: 'Plus 1个月免费试用', plan: 'plus' },
@@ -290,12 +288,6 @@ const filteredPromoOptions = computed(() => {
 const selectedPromoName = computed(() => {
   const promo = promoOptions.find(p => p.id === bindForm.value.promoId)
   return promo?.name || bindForm.value.promoId
-})
-
-const backupLink = computed(() => {
-  if (!checkoutSessionId.value) return ''
-  const link = `https://chatgpt.com/checkout/openai_llc/${checkoutSessionId.value}`
-  return link === currentLink.value ? '' : link
 })
 
 function setMessage(text, ok = true) {
@@ -355,7 +347,22 @@ watch(
     if (nextPromo && nextPromo.id !== bindForm.value.promoId) {
       bindForm.value.promoId = nextPromo.id
     }
+    bindForm.value.country = 'SG'
+    bindForm.value.currency = 'SGD'
+    if (planType === 'team') {
+      bindForm.value.checkoutMode = 'custom'
+    } else if (!['custom', 'hosted'].includes(bindForm.value.checkoutMode)) {
+      bindForm.value.checkoutMode = 'custom'
+    }
   }
+)
+
+watch(
+  () => bindForm.value.country,
+  (country) => {
+    bindForm.value.currency = countryCurrencyMap[country] || 'USD'
+  },
+  { immediate: true }
 )
 
 async function useAccountToken() {
@@ -388,6 +395,7 @@ async function generateLink() {
   generating.value = true
   currentLink.value = ''
   checkoutSessionId.value = ''
+  rawGeneratedUrl.value = ''
 
   try {
     const planName = bindForm.value.planType === 'plus' ? 'chatgptplusplan' : 'chatgptteamplan'
@@ -397,7 +405,7 @@ async function generateLink() {
       plan_name: planName,
       promo_campaign: {
         promo_campaign_id: bindForm.value.promoId,
-        is_coupon_from_query_param: false,
+        is_coupon_from_query_param: bindForm.value.planType === 'team',
       },
       billing_details: {
         country: bindForm.value.country,
@@ -408,9 +416,9 @@ async function generateLink() {
 
     if (bindForm.value.planType === 'team') {
       payload.team_plan_data = {
-        workspace_name: 'My Workspace',
+        workspace_name: 'Sam Altman',
         price_interval: 'month',
-        seat_quantity: 2,
+        seat_quantity: 5,
       }
     }
 
@@ -422,11 +430,15 @@ async function generateLink() {
 
     if (result.url) {
       link = result.url
+      sessionId = result.checkout_session_id || ''
+      rawGeneratedUrl.value = result.url
       success = true
       setMessage('生成成功！请点击链接或复制到浏览器打开')
     } else if (result.checkout_session_id) {
       sessionId = result.checkout_session_id
-      link = `https://chatgpt.com/checkout/openai_llc/${sessionId}`
+      link = bindForm.value.planType === 'team'
+        ? `https://chatgpt.com/checkout/openai_ie/${sessionId}`
+        : `https://chatgpt.com/checkout/openai_llc/${sessionId}`
       success = true
       setMessage('生成成功！请点击链接或复制到浏览器打开')
     } else {
@@ -487,7 +499,10 @@ function openLink() {
 
 function openBackupLink() {
   if (checkoutSessionId.value) {
-    window.open(`https://chatgpt.com/checkout/openai_llc/${checkoutSessionId.value}`, '_blank')
+    const link = bindForm.value.planType === 'team'
+      ? `https://chatgpt.com/checkout/openai_ie/${checkoutSessionId.value}`
+      : `https://chatgpt.com/checkout/openai_llc/${checkoutSessionId.value}`
+    window.open(link, '_blank')
   }
 }
 

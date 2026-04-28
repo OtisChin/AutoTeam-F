@@ -2067,12 +2067,16 @@ def post_bind_link(params: BindLinkParams):
             result = api.page.evaluate(
                 """async (payload) => {
                     try {
-                        const resp = await fetch("/backend-api/payments/checkout", {
+                        try {
+                            await fetch("/api/auth/session", { credentials: "include" });
+                        } catch (_) {}
+
+                        const resp = await fetch("https://chatgpt.com/backend-api/payments/checkout", {
                             method: "POST",
+                            credentials: "include",
                             headers: {
                                 "Content-Type": "application/json",
-                                "Authorization": `Bearer ${payload.access_token}`,
-                                "Accept": "application/json, text/plain, */*"
+                                "Authorization": `Bearer ${payload.access_token}`
                             },
                             body: JSON.stringify(payload.body)
                         });
@@ -2125,10 +2129,13 @@ def post_bind_link(params: BindLinkParams):
                     detail=detail or f"上游错误({result.get('status')})",
                 )
 
-            if data.get("url"):
-                return {"url": data["url"]}
-            if data.get("checkout_session_id"):
-                return {"checkout_session_id": data["checkout_session_id"]}
+            if data.get("url") or data.get("checkout_session_id"):
+                result_payload = {}
+                if data.get("url"):
+                    result_payload["url"] = data["url"]
+                if data.get("checkout_session_id"):
+                    result_payload["checkout_session_id"] = data["checkout_session_id"]
+                return result_payload
             return {"detail": data.get("detail") or str(data)}
         finally:
             try:
