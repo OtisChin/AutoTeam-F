@@ -656,6 +656,7 @@
                 type="text"
                 :disabled="gopaySubmitting || gopayTaskRunning"
                 placeholder="62"
+                @blur="normalizeGoPayPhoneFields({ forceLocal: true })"
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -665,7 +666,9 @@
                 v-model.trim="gopayForm.phoneNumber"
                 type="text"
                 :disabled="gopaySubmitting || gopayTaskRunning"
-                placeholder="+6287761973970"
+                placeholder="87761973970（不含国家区号）"
+                @blur="normalizeGoPayPhoneFields({ forceLocal: true })"
+                @paste="scheduleGoPayPhoneNormalize"
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -741,14 +744,14 @@
           </button>
         </div>
 
-        <div class="border border-gray-800 rounded-xl bg-gray-950/60 p-4 min-w-0 flex flex-col">
+        <div class="border border-gray-800 rounded-xl bg-gray-950/60 p-4 min-w-0 flex flex-col h-[calc(100vh-220px)] min-h-[520px] max-h-[760px]">
           <div class="flex items-center justify-between gap-3 mb-3">
             <div class="text-sm text-gray-400">实时 GoPay 日志</div>
             <div v-if="gopayTask" class="text-xs text-gray-500 font-mono">
               {{ gopayTask.task_id }}
             </div>
           </div>
-          <div class="rounded-lg border border-gray-800 bg-gray-900 p-3 flex-1 min-h-[420px] overflow-y-auto space-y-2">
+          <div ref="gopayLogScrollRef" class="rounded-lg border border-gray-800 bg-gray-900 p-3 flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
             <div v-if="!gopayLogEntries.length" class="text-sm text-gray-500">
               尚未提交 GoPay 任务。
             </div>
@@ -797,11 +800,12 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import BindCardPool from './BindCardPool.vue'
 
 const BIND_HISTORY_KEY = 'autoteam_bind_history_v1'
+const GOPAY_FORM_STATE_KEY = 'autoteam_gopay_form_state_v1'
 
 const activeTab = ref('bind')
 const message = ref('')
@@ -828,7 +832,7 @@ const gopayForm = ref({
   accountEmails: [],
   checkoutUrl: '',
   countryCode: '62',
-  phoneNumber: '+6287761973970',
+  phoneNumber: '81997420107',
   smsUrl: '',
   gopayPin: '',
   billingName: '',
@@ -846,6 +850,7 @@ const gopaySubmitting = ref(false)
 const gopayCancelling = ref(false)
 const gopayTask = ref(null)
 const gopayLogEntries = ref([])
+const gopayLogScrollRef = ref(null)
 let bindTaskPollTimer = 0
 let gopayTaskPollTimer = 0
 
@@ -943,6 +948,104 @@ const gopayCanSubmit = computed(() => {
   )
 })
 
+let normalizingGoPayPhone = false
+
+function digitsOnly(value) {
+  return String(value || '').replace(/\D/g, '')
+}
+
+function splitGoPayPhoneInput(phoneValue, countryCodeValue, { forceLocal = false } = {}) {
+  const rawPhone = String(phoneValue || '').trim()
+  const phoneDigits = digitsOnly(rawPhone)
+  const fallbackCountryCode = digitsOnly(countryCodeValue) || '62'
+  const hasExplicitCountryCode = Boolean(digitsOnly(countryCodeValue))
+  if (!phoneDigits) return null
+
+  const candidateCodes = Array.from(new Set([
+    fallbackCountryCode,
+    '62',
+    '86',
+    '1',
+    '60',
+    '65',
+    '852',
+    '886',
+    '81',
+    '82',
+    '44',
+  ].filter(Boolean)))
+  let countryCode = ''
+
+  if (rawPhone.startsWith('+')) {
+    countryCode = candidateCodes.find(code => phoneDigits.startsWith(code) && phoneDigits.length >= code.length + 6) || ''
+  }
+  if (!countryCode && phoneDigits.startsWith(fallbackCountryCode) && phoneDigits.length >= fallbackCountryCode.length + 6) {
+    countryCode = fallbackCountryCode
+  }
+  if (!countryCode && !hasExplicitCountryCode && !rawPhone.startsWith('0')) {
+    countryCode = candidateCodes.find(code => phoneDigits.startsWith(code) && phoneDigits.length >= code.length + 7) || ''
+  }
+  if (!countryCode && (forceLocal || hasExplicitCountryCode)) {
+    countryCode = fallbackCountryCode
+  }
+  if (!countryCode) return null
+
+  let localNumber = countryCode && phoneDigits.startsWith(countryCode)
+    ? phoneDigits.slice(countryCode.length)
+    : phoneDigits
+  if (countryCode === '62' && localNumber.startsWith('0')) {
+    localNumber = localNumber.slice(1)
+  }
+  if (!localNumber) return null
+  return { countryCode, phoneNumber: localNumber }
+}
+
+function normalizeGoPayPhoneFields(options = {}) {
+  if (normalizingGoPayPhone) return
+  const cleanedCountryCode = digitsOnly(gopayForm.value.countryCode) || '62'
+  const split = splitGoPayPhoneInput(gopayForm.value.phoneNumber, cleanedCountryCode, options)
+  const nextCountryCode = split?.countryCode || cleanedCountryCode
+  const nextPhoneNumber = split?.phoneNumber || String(gopayForm.value.phoneNumber || '').trim()
+  if (nextCountryCode === gopayForm.value.countryCode && nextPhoneNumber === gopayForm.value.phoneNumber) return
+
+  normalizingGoPayPhone = true
+  gopayForm.value.countryCode = nextCountryCode
+  gopayForm.value.phoneNumber = nextPhoneNumber
+  nextTick(() => {
+    normalizingGoPayPhone = false
+  })
+}
+
+function scheduleGoPayPhoneNormalize() {
+  nextTick(() => normalizeGoPayPhoneFields())
+}
+
+watch(
+  () => gopayForm.value.phoneNumber,
+  () => normalizeGoPayPhoneFields()
+)
+
+watch(
+  () => gopayForm.value.countryCode,
+  () => {
+    if (normalizingGoPayPhone) return
+    const cleaned = digitsOnly(gopayForm.value.countryCode)
+    if (cleaned && cleaned !== gopayForm.value.countryCode) {
+      normalizingGoPayPhone = true
+      gopayForm.value.countryCode = cleaned
+      nextTick(() => {
+        normalizingGoPayPhone = false
+      })
+    }
+  }
+)
+
+watch(
+  () => getRememberedGoPayForm(),
+  () => saveGoPayFormState(),
+  { deep: true }
+)
+
 const availableCards = computed(() => {
   return (cardOptions.value || []).filter(card => card?.id && card?.status === 'unused')
 })
@@ -997,20 +1100,24 @@ const gopayStageLabelMap = {
   stripe_confirm: '确认 Stripe GoPay 支付方式',
   chatgpt_approve: '确认 ChatGPT checkout',
   chatgpt_approve_blocked_rotate: 'ChatGPT approve 被拦截，切换账号',
+  chatgpt_approve_blocked_cooldown: 'ChatGPT approve 被拦截，账号进入冷却',
   gopay_all_accounts_blocked: '所有账号 approve 均被拦截',
   resolve_midtrans_redirect: '解析 Midtrans 跳转',
   pm_redirect: '跟随 Stripe 跳转',
   midtrans_load_transaction: '读取 Midtrans 交易',
+  stripe_zero_due_confirmed: '确认 Stripe 应付金额为 0',
+  stripe_nonzero_amount_blocked: 'Stripe 金额非 0，已停止',
+  midtrans_nonzero_amount_blocked: 'Midtrans 金额非 0，已停止',
   midtrans_linking: '发起 GoPay 账户绑定',
   midtrans_already_linked: '手机号已绑定其他账号，等待解绑后重试',
   midtrans_already_linked_failed: '手机号仍绑定其他账号，已停止',
   gopay_validate_reference: '校验 GoPay 绑定引用',
   gopay_user_consent: '确认 GoPay 授权',
   gopay_rate_limited: 'GoPay 尝试过多，请稍后再试',
-  wait_sms_otp_window: '等待 SMS OTP 通道',
-  trigger_sms_otp: '点击 SMS OTP 按钮',
-  sms_otp_triggered: '已切换到 SMS OTP',
-  sms_otp_trigger_failed: '切换 SMS OTP 失败',
+  wait_sms_otp_window: '等待 GoPay SMS 可重发',
+  trigger_sms_otp: '协议触发 GoPay SMS OTP',
+  sms_otp_triggered: '已触发 GoPay SMS OTP',
+  sms_otp_trigger_failed: '触发 GoPay SMS OTP 失败',
   wait_otp: '等待 GoPay OTP',
   fetch_otp: '拉取 GoPay OTP',
   gopay_validate_otp: '校验 GoPay OTP',
@@ -1067,6 +1174,61 @@ function loadHistory() {
     }
   } catch (e) {
     console.error('loadHistory', e)
+  }
+}
+
+function normalizeEmailList(value) {
+  if (!Array.isArray(value)) return []
+  const seen = new Set()
+  return value
+    .map(email => String(email || '').trim().toLowerCase())
+    .filter(email => {
+      if (!email || seen.has(email)) return false
+      seen.add(email)
+      return true
+    })
+}
+
+function getRememberedGoPayForm() {
+  return {
+    email: String(gopayForm.value.email || '').trim().toLowerCase(),
+    batchMode: Boolean(gopayForm.value.batchMode),
+    accountEmails: normalizeEmailList(gopayForm.value.accountEmails),
+    countryCode: digitsOnly(gopayForm.value.countryCode) || '62',
+    phoneNumber: String(gopayForm.value.phoneNumber || '').trim(),
+    smsUrl: String(gopayForm.value.smsUrl || '').trim(),
+    proxyLabel: String(gopayForm.value.proxyLabel || '').trim(),
+    proxyUrl: String(gopayForm.value.proxyUrl || '').trim(),
+  }
+}
+
+function loadGoPayFormState() {
+  try {
+    const raw = localStorage.getItem(GOPAY_FORM_STATE_KEY)
+    if (!raw) return
+    const saved = JSON.parse(raw)
+    if (!saved || typeof saved !== 'object') return
+    gopayForm.value = {
+      ...gopayForm.value,
+      email: String(saved.email || '').trim().toLowerCase(),
+      batchMode: Boolean(saved.batchMode),
+      accountEmails: normalizeEmailList(saved.accountEmails),
+      countryCode: digitsOnly(saved.countryCode) || '62',
+      phoneNumber: String(saved.phoneNumber || '').trim(),
+      smsUrl: String(saved.smsUrl || '').trim(),
+      proxyLabel: String(saved.proxyLabel || '').trim(),
+      proxyUrl: String(saved.proxyUrl || '').trim(),
+    }
+  } catch (e) {
+    console.error('loadGoPayFormState', e)
+  }
+}
+
+function saveGoPayFormState() {
+  try {
+    localStorage.setItem(GOPAY_FORM_STATE_KEY, JSON.stringify(getRememberedGoPayForm()))
+  } catch (e) {
+    console.error('saveGoPayFormState', e)
   }
 }
 
@@ -1133,6 +1295,15 @@ function pushBindLog(message, level = 'info') {
   }
 }
 
+function scrollGoPayLogToBottom() {
+  nextTick(() => {
+    const el = gopayLogScrollRef.value
+    if (el) {
+      el.scrollTop = el.scrollHeight
+    }
+  })
+}
+
 function pushGoPayLog(message, level = 'info') {
   const levelMap = {
     info: { label: 'INFO', levelClass: 'text-blue-400' },
@@ -1151,6 +1322,7 @@ function pushGoPayLog(message, level = 'info') {
   if (gopayLogEntries.value.length > 200) {
     gopayLogEntries.value.splice(0, gopayLogEntries.value.length - 200)
   }
+  scrollGoPayLogToBottom()
 }
 
 function formatCardOption(card) {
@@ -1512,6 +1684,8 @@ async function cancelBindTask() {
 
 async function startGoPayBind() {
   if (gopaySubmitting.value || gopayTaskRunning.value) return
+  normalizeGoPayPhoneFields({ forceLocal: true })
+  saveGoPayFormState()
   if (!gopayCanSubmit.value) {
     setMessage('请填写完整的 GoPay 参数', false)
     return
@@ -1592,6 +1766,7 @@ function openHistoryLink(link) {
 
 onMounted(() => {
   loadHistory()
+  loadGoPayFormState()
   loadAccounts()
   loadCards()
 })

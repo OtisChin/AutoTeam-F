@@ -157,7 +157,6 @@ def test_post_add_uses_selected_domain_and_random_password(monkeypatch):
     monkeypatch.setattr("autoteam.runtime_config.get_register_domains", lambda: ["openaibus.com", "altbus.com"])
     monkeypatch.setattr("autoteam.runtime_config.get_register_domain", lambda: "openaibus.com")
     monkeypatch.setattr("autoteam.identity.random_password", lambda: "RandomPass123!")
-    monkeypatch.setattr("autoteam.manager.cmd_add", lambda **kwargs: kwargs)
 
     def fake_start_task(command, func, params, *args, **kwargs):
         captured["command"] = command
@@ -171,14 +170,47 @@ def test_post_add_uses_selected_domain_and_random_password(monkeypatch):
     result = api.post_add(api.ManualRegisterParams(domain="altbus.com", prefix="demo", password=""))
 
     assert result["task_id"] == "task-123"
-    assert captured["command"] == "add"
-    assert captured["params"] == {
-        "domain": "altbus.com",
-        "prefix": "demo",
-        "password_mode": "random",
-    }
-    assert captured["kwargs"] == {
-        "email_prefix": "demo",
-        "password": "RandomPass123!",
-        "domain": "altbus.com",
-    }
+    assert captured["command"] == "register"
+    assert captured["params"]["domain"] == "altbus.com"
+    assert captured["params"]["domains"] == ["altbus.com"]
+    assert captured["params"]["prefix"] == "demo"
+    assert captured["params"]["password_mode"] == "random"
+    assert captured["kwargs"]["email_prefix"] == "demo"
+    assert captured["kwargs"]["password"] == "RandomPass123!"
+    assert captured["kwargs"]["domain"] == "altbus.com"
+    assert captured["kwargs"]["domains"] == ["altbus.com"]
+
+
+def test_post_add_batch_accepts_multiple_domains(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domains", lambda: ["mail-a.com", "mail-b.com", "mail-c.com"])
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domain", lambda: "mail-a.com")
+    monkeypatch.setattr("autoteam.identity.random_password", lambda: "RandomPass123!")
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        captured["command"] = command
+        captured["params"] = params
+        captured["kwargs"] = kwargs
+        return {"task_id": "task-456", "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    result = api.post_add(
+        api.ManualRegisterParams(
+            mode="batch",
+            count=5,
+            concurrency=2,
+            domains=["mail-b.com", "@mail-c.com", "mail-b.com"],
+            prefix="demo",
+        )
+    )
+
+    assert result["task_id"] == "task-456"
+    assert captured["command"] == "register"
+    assert captured["params"]["domain"] == "mail-b.com"
+    assert captured["params"]["domains"] == ["mail-b.com", "mail-c.com"]
+    assert captured["kwargs"]["domain"] == "mail-b.com"
+    assert captured["kwargs"]["domains"] == ["mail-b.com", "mail-c.com"]
+    assert captured["kwargs"]["count"] == 5
+    assert captured["kwargs"]["concurrency"] == 2

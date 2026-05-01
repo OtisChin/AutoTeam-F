@@ -82,6 +82,7 @@
           <div>
             <label class="block text-sm text-gray-400 mb-1">注册域名</label>
             <select
+              v-if="registerForm.mode === 'single'"
               v-model="registerForm.domain"
               :disabled="registeringBusy || !registerDomainOptions.length"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
@@ -90,8 +91,25 @@
                 @{{ domain }}
               </option>
             </select>
+            <select
+              v-else
+              v-model="registerForm.selectedDomains"
+              multiple
+              size="5"
+              :disabled="registeringBusy || !registerDomainOptions.length"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            >
+              <option v-for="domain in registerDomainOptions" :key="`batch-domain-${domain}`" :value="domain">
+                @{{ domain }}
+              </option>
+            </select>
             <div class="mt-1 text-xs text-gray-500">
-              可选域名列表在“设置”页面维护。当前共 {{ registerDomainOptions.length }} 个域名。
+              <span v-if="registerForm.mode === 'batch'">
+                已选择 {{ selectedRegisterDomains.length }} / {{ registerDomainOptions.length }} 个域名，批量注册时每个账号随机使用一个。
+              </span>
+              <span v-else>
+                可选域名列表在“设置”页面维护。当前共 {{ registerDomainOptions.length }} 个域名。
+              </span>
             </div>
           </div>
 
@@ -170,7 +188,7 @@
                 class="flex-1 px-3 py-2 bg-transparent text-sm text-white focus:outline-none"
               />
               <div class="px-3 text-xs text-gray-500 border-l border-gray-700">
-                +5位随机字母数字 @{{ registerForm.domain || 'domain.com' }}
+                +5位随机字母数字 {{ registerDomainSuffixLabel }}
               </div>
             </div>
           </div>
@@ -190,13 +208,14 @@
             <div>预览邮箱：<span class="font-mono text-gray-200">{{ registerPreviewEmail }}</span></div>
             <div>密码：<span class="text-gray-200">{{ registerForm.password || '自动随机生成' }}</span></div>
             <div>行为：<span class="text-gray-200">只注册免费账号</span></div>
+            <div v-if="registerForm.mode === 'batch'">域名轮换：<span class="text-gray-200">{{ selectedRegisterDomainsLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch'">批量策略：<span class="text-gray-200">并发 {{ validConcurrency }}，固定间隔 {{ validIntervalSeconds }}s，随机抖动 {{ validJitterMinSeconds }}-{{ validJitterMaxSeconds }}s</span></div>
           </div>
 
           <div class="flex items-center gap-3">
             <button
               @click="submitManualRegister"
-              :disabled="registeringBusy || registeringAccount || !registerForm.domain || !validBatchCount"
+              :disabled="registeringBusy || registeringAccount || !canSubmitRegister"
               class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg transition disabled:opacity-50">
               {{ registeringAccount ? '提交中...' : (registerForm.mode === 'batch' ? '开始批量注册' : '开始注册') }}
             </button>
@@ -280,6 +299,7 @@ const registerForm = ref({
   jitterMinSeconds: 8,
   jitterMaxSeconds: 20,
   domain: '',
+  selectedDomains: [],
   prefix: '',
   password: '',
 })
@@ -305,10 +325,46 @@ const validJitterMaxSeconds = computed(() => {
   const value = Number(registerForm.value.jitterMaxSeconds ?? 20)
   return Math.max(validJitterMinSeconds.value, value)
 })
+const selectedRegisterDomains = computed(() => {
+  const source = registerForm.value.mode === 'batch'
+    ? registerForm.value.selectedDomains
+    : [registerForm.value.domain]
+  const seen = new Set()
+  return (Array.isArray(source) ? source : [])
+    .map(domain => String(domain || '').trim().replace(/^@/, ''))
+    .filter(domain => {
+      if (!domain || seen.has(domain)) return false
+      if (registerDomainOptions.value.length && !registerDomainOptions.value.includes(domain)) return false
+      seen.add(domain)
+      return true
+    })
+})
+const selectedRegisterDomainsLabel = computed(() => {
+  const domains = selectedRegisterDomains.value
+  if (!domains.length) return '未选择'
+  if (domains.length <= 3) return domains.map(domain => `@${domain}`).join(' / ')
+  return `${domains.slice(0, 3).map(domain => `@${domain}`).join(' / ')} 等 ${domains.length} 个`
+})
+const registerDomainSuffixLabel = computed(() => {
+  if (registerForm.value.mode === 'batch') {
+    return selectedRegisterDomains.value.length
+      ? `@随机域名(${selectedRegisterDomains.value.length})`
+      : '@domain.com'
+  }
+  return `@${registerForm.value.domain || 'domain.com'}`
+})
 const registerPreviewEmail = computed(() => {
   const prefix = registerForm.value.prefix ? `${registerForm.value.prefix}a8k3p` : '__random__'
-  const domain = registerForm.value.domain || 'domain.com'
+  const domain = registerForm.value.mode === 'batch'
+    ? (selectedRegisterDomains.value[0] || 'domain.com')
+    : (registerForm.value.domain || 'domain.com')
   return `${prefix}@${domain}`
+})
+const canSubmitRegister = computed(() => {
+  if (!validBatchCount.value) return false
+  return registerForm.value.mode === 'batch'
+    ? selectedRegisterDomains.value.length > 0
+    : Boolean(registerForm.value.domain)
 })
 let logsTimer = null
 let statsTimer = null
@@ -353,6 +409,9 @@ function loadSavedRegisterForm() {
       jitterMinSeconds: Number(saved.jitterMinSeconds ?? registerForm.value.jitterMinSeconds),
       jitterMaxSeconds: Number(saved.jitterMaxSeconds ?? registerForm.value.jitterMaxSeconds),
       domain: String(saved.domain || ''),
+      selectedDomains: Array.isArray(saved.selectedDomains)
+        ? saved.selectedDomains.map(domain => String(domain || '').trim()).filter(Boolean)
+        : [],
       prefix: String(saved.prefix || ''),
       // 密码不持久化，避免明文留在本地存储
       password: '',
@@ -374,6 +433,7 @@ function saveRegisterForm() {
         jitterMinSeconds: registerForm.value.jitterMinSeconds,
         jitterMaxSeconds: registerForm.value.jitterMaxSeconds,
         domain: registerForm.value.domain,
+        selectedDomains: selectedRegisterDomains.value,
         prefix: registerForm.value.prefix,
       })
     )
@@ -391,6 +451,10 @@ async function reloadRegisterDomains() {
     if (!registerForm.value.domain || !domains.includes(registerForm.value.domain)) {
       registerForm.value.domain = result.domain || domains[0] || ''
     }
+    const selected = selectedRegisterDomains.value.filter(domain => domains.includes(domain))
+    registerForm.value.selectedDomains = selected.length
+      ? selected
+      : (registerForm.value.domain ? [registerForm.value.domain] : [])
   } catch (e) {
     setMessage(`读取注册域名失败: ${e.message}`, false)
   } finally {
@@ -492,6 +556,7 @@ async function submitManualRegister() {
       jitter_min_seconds: registerForm.value.mode === 'batch' ? validJitterMinSeconds.value : 0,
       jitter_max_seconds: registerForm.value.mode === 'batch' ? validJitterMaxSeconds.value : 0,
       domain: registerForm.value.domain,
+      domains: registerForm.value.mode === 'batch' ? selectedRegisterDomains.value : [],
       prefix: registerForm.value.prefix || null,
       password: registerForm.value.password || null,
     }
@@ -512,6 +577,18 @@ watch(
     saveRegisterForm()
   },
   { deep: true }
+)
+
+watch(
+  () => registerForm.value.mode,
+  mode => {
+    if (mode === 'batch' && !selectedRegisterDomains.value.length && registerForm.value.domain) {
+      registerForm.value.selectedDomains = [registerForm.value.domain]
+    }
+    if (mode === 'single' && !registerForm.value.domain && selectedRegisterDomains.value.length) {
+      registerForm.value.domain = selectedRegisterDomains.value[0]
+    }
+  }
 )
 
 onMounted(reloadRegisterDomains)

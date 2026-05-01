@@ -249,7 +249,7 @@ def _wait_for_otp_submit_result(page, timeout=12):
     return "pending", None
 
 
-def login_codex_via_browser(email, password, mail_client=None, *, use_personal=False):
+def login_codex_via_browser(email, password, mail_client=None, *, use_personal=False, headless=False):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
     mail_client: 临时邮箱客户端实例，用于自动读取登录验证码。
@@ -271,7 +271,7 @@ def login_codex_via_browser(email, password, mail_client=None, *, use_personal=F
     auth_code = None
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**get_playwright_launch_options())
+        browser = p.chromium.launch(**get_playwright_launch_options(headless=headless))
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",

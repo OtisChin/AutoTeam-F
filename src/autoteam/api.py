@@ -82,6 +82,7 @@ class SetupConfig(BaseModel):
     CPA_KEY: str = ""
     PLAYWRIGHT_PROXY_URL: str = ""
     PLAYWRIGHT_PROXY_BYPASS: str = ""
+    PLAYWRIGHT_BACKGROUND: str = "1"
     API_KEY: str = ""
 
 
@@ -135,7 +136,15 @@ def post_setup_save(config: SetupConfig):
             "CLOUD_MAIL_DOMAIN",
         },
     }
-    allowed_keys = {"MAIL_PROVIDER", "CPA_URL", "CPA_KEY", "PLAYWRIGHT_PROXY_URL", "PLAYWRIGHT_PROXY_BYPASS", "API_KEY"}
+    allowed_keys = {
+        "MAIL_PROVIDER",
+        "CPA_URL",
+        "CPA_KEY",
+        "PLAYWRIGHT_PROXY_URL",
+        "PLAYWRIGHT_PROXY_BYPASS",
+        "PLAYWRIGHT_BACKGROUND",
+        "API_KEY",
+    }
     allowed_keys.update(provider_fields[provider])
 
     compat_mirrors = {
@@ -535,6 +544,7 @@ class ManualRegisterParams(BaseModel):
     jitter_min_seconds: float = 8.0
     jitter_max_seconds: float = 20.0
     domain: str | None = None
+    domains: list[str] = []
     prefix: str | None = None
     password: str | None = None
 
@@ -2686,7 +2696,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     from autoteam.accounts import find_account, load_accounts, save_accounts, update_account
     from autoteam.auth_session_store import get_auth_session_file
     from autoteam.bind_audit import record_bind_audit
-    from autoteam.gopay_executor import run_gopay_bind_task
+    from autoteam.gopay_executor import (
+        _compact_log_text,
+        _safe_email_summary,
+        _safe_phone_summary,
+        _safe_proxy_summary,
+        _safe_url_summary,
+        run_gopay_bind_task,
+    )
 
     email = _normalized_email(params.email)
     account_emails = []
@@ -2721,6 +2738,16 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         raise HTTPException(status_code=400, detail="sms_url 不能为空")
     if not gopay_pin:
         raise HTTPException(status_code=400, detail="gopay_pin 不能为空")
+    logger.info(
+        "[gopay-bind] task submitted: email=%s account_count=%s checkout=%s phone=%s proxy_label=%s proxy=%s timeout=%s",
+        _safe_email_summary(email),
+        len(account_emails) if account_emails else 1,
+        _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
+        _safe_phone_summary(phone_number, country_code),
+        params.proxy_label or "<none>",
+        _safe_proxy_summary(params.proxy_url),
+        max(120, int(params.timeout_seconds or 900)),
+    )
 
     accounts = load_accounts()
     account = find_account(accounts, email)
@@ -2755,6 +2782,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         result = None
 
         try:
+            logger.info(
+                "[gopay-bind] runner started: task_id=%s email=%s account_count=%s checkout=%s proxy_label=%s",
+                task_id[:8] or "<unknown>",
+                _safe_email_summary(email),
+                len(account_emails) if account_emails else 1,
+                _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
+                params.proxy_label or "<none>",
+            )
             _update_current_task_progress(
                 {
                     "stage": "gopay_binding",
@@ -2818,6 +2853,15 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         else:
             task_status = "failed"
         result["task_status"] = task_status
+        logger.info(
+            "[gopay-bind] runner finished: task_id=%s status=%s failure_stage=%s actual_email=%s message=%s checkout=%s",
+            task_id[:8] or "<unknown>",
+            result.get("status") or "",
+            result.get("failure_stage") or "",
+            _safe_email_summary(actual_email),
+            _compact_log_text(result.get("message") or "", limit=220),
+            _safe_url_summary(result.get("checkout_url") or ""),
+        )
 
         update_account(
             actual_email,
@@ -2930,17 +2974,6 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
     from autoteam.identity import random_password
     from autoteam.runtime_config import get_register_domain, get_register_domains
 
-    domains = get_register_domains()
-    selected_domain = (params.domain or "").strip().lstrip("@").strip()
-    if selected_domain:
-        if domains and selected_domain not in domains:
-            raise HTTPException(status_code=400, detail=f"域名 @{selected_domain} 不在可选列表中")
-    else:
-        selected_domain = get_register_domain()
-
-    if not selected_domain:
-        raise HTTPException(status_code=400, detail="未配置可用注册域名")
-
     prefix = (params.prefix or "").strip() or None
     password = (params.password or "").strip() or None
     resolved_password = password or random_password()
@@ -2952,11 +2985,47 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
     jitter_max_seconds = max(0.0, float(params.jitter_max_seconds or 0.0))
     if mode not in ("single", "batch"):
         raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
+
+    configured_domains = get_register_domains()
+
+    def _clean_domain(value) -> str:
+        return str(value or "").strip().lstrip("@").strip()
+
+    def _validate_domain(value: str):
+        if configured_domains and value not in configured_domains:
+            raise HTTPException(status_code=400, detail=f"域名 @{value} 不在可选列表中")
+
+    selected_domain = _clean_domain(params.domain)
+    selected_domains = []
+    if mode == "batch":
+        seen = set()
+        for raw_domain in params.domains or []:
+            value = _clean_domain(raw_domain)
+            if not value or value in seen:
+                continue
+            _validate_domain(value)
+            seen.add(value)
+            selected_domains.append(value)
+
+    if not selected_domains:
+        if selected_domain:
+            _validate_domain(selected_domain)
+        else:
+            selected_domain = get_register_domain()
+        if selected_domain:
+            selected_domains = [selected_domain]
+
+    if not selected_domains:
+        raise HTTPException(status_code=400, detail="未配置可用注册域名")
+
+    selected_domain = selected_domains[0]
+
     if mode == "single":
         count = 1
         concurrency = 1
         jitter_min_seconds = 0.0
         jitter_max_seconds = 0.0
+        selected_domains = [selected_domain]
     if jitter_min_seconds > jitter_max_seconds:
         raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
 
@@ -2971,6 +3040,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             "jitter_min_seconds": jitter_min_seconds,
             "jitter_max_seconds": jitter_max_seconds,
             "domain": selected_domain,
+            "domains": selected_domains,
             "prefix": prefix or "",
             "password_mode": "provided" if password else "random",
         },
@@ -2982,6 +3052,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         email_prefix=prefix,
         password=resolved_password,
         domain=selected_domain,
+        domains=selected_domains,
         progress_callback=_update_current_task_progress,
     )
     return task
@@ -3074,6 +3145,9 @@ def post_task_cancel():
 # ---------------------------------------------------------------------------
 
 from autoteam.config import (
+    AUTO_CHECK_ENABLED as _DEFAULT_ENABLED,
+)
+from autoteam.config import (
     AUTO_CHECK_INTERVAL as _DEFAULT_INTERVAL,
 )
 from autoteam.config import (
@@ -3085,6 +3159,7 @@ from autoteam.config import (
 
 # 运行时可修改的巡检配置
 _auto_check_config = {
+    "enabled": _DEFAULT_ENABLED,
     "interval": _DEFAULT_INTERVAL,
     "threshold": _DEFAULT_THRESHOLD,
     "min_low": _DEFAULT_MIN_LOW,
@@ -3106,6 +3181,11 @@ def _auto_check_loop():
 
     while not _auto_check_stop.is_set():
         cfg = _auto_check_config
+        if not cfg["enabled"]:
+            _auto_check_restart.clear()
+            logger.info("[巡检] 自动巡检已关闭，等待重新启用")
+            _auto_check_restart.wait(60)
+            continue
         logger.info(
             "[巡检] 等待 %d 分钟后执行下一轮检查（阈值: %d%%, 模式: 任意失效立即 1v1 替换）",
             cfg["interval"] // 60,
@@ -3253,6 +3333,7 @@ def _auto_check_loop():
 
 
 class AutoCheckConfig(BaseModel):
+    enabled: bool | None = None
     interval: int = 300  # 巡检间隔（秒）
     threshold: int = 10  # 额度阈值（%）
     min_low: int = 2  # 触发轮转的最少账号数
@@ -3267,12 +3348,15 @@ def get_auto_check_config():
 @app.put("/api/config/auto-check")
 def set_auto_check_config(cfg: AutoCheckConfig):
     """修改巡检配置（运行时生效）"""
+    if cfg.enabled is not None:
+        _auto_check_config["enabled"] = bool(cfg.enabled)
     _auto_check_config["interval"] = max(60, cfg.interval)  # 最少 1 分钟
     _auto_check_config["threshold"] = max(1, min(100, cfg.threshold))
     _auto_check_config["min_low"] = max(1, cfg.min_low)
     _auto_check_restart.set()  # 唤醒巡检线程，立即应用新配置
     logger.info(
-        "[巡检] 配置已更新: 间隔=%ds 阈值=%d%%（min_low 已废弃,任意失效立即 1v1 替换）",
+        "[巡检] 配置已更新: enabled=%s 间隔=%ds 阈值=%d%%（min_low 已废弃,任意失效立即 1v1 替换）",
+        _auto_check_config["enabled"],
         _auto_check_config["interval"],
         _auto_check_config["threshold"],
     )
@@ -3289,6 +3373,10 @@ def _start_auto_check():
             logger.info("[启动] 已修复 %d 个 auths 认证文件权限", fixed)
     except Exception as exc:
         logger.warning("[启动] 修复 auths 认证文件权限失败: %s", exc)
+
+    if not _auto_check_config["enabled"]:
+        logger.info("[巡检] 自动巡检已关闭，启动时跳过后台线程")
+        return
 
     thread = threading.Thread(target=_auto_check_loop, daemon=True)
     thread.start()

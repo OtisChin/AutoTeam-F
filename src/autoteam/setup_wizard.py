@@ -32,6 +32,7 @@ COMMON_SETUP_FIELDS = [
     ("CPA_KEY", "CPA 管理密钥", "", False),
     ("PLAYWRIGHT_PROXY_URL", "Playwright 浏览器代理 URL（可选，如 socks5://host:port）", "", True),
     ("PLAYWRIGHT_PROXY_BYPASS", "Playwright 代理绕过列表（可选，如 localhost,127.0.0.1）", "", True),
+    ("PLAYWRIGHT_BACKGROUND", "Playwright 后台运行（1=最小化/屏幕外，0=显示窗口）", "1", True),
     ("API_KEY", "API 鉴权密钥（回车自动生成）", "", False),
 ]
 

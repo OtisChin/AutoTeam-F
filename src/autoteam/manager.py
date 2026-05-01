@@ -1416,6 +1416,212 @@ def _run_post_register_oauth(email, password, mail_client, leave_workspace=False
     return email
 
 
+_AUTH_SESSION_CONTEXT_KEYS = (
+    "cookie_header",
+    "user_agent",
+    "accept_language",
+    "oai_language",
+    "device_id",
+    "oai_device_id",
+    "oai_client_version",
+    "oai_client_build_number",
+    "openai_sentinel_token",
+    "sentinel_url",
+    "sentinel_body",
+    "sentinel_headers",
+)
+
+
+def _new_auth_context_capture_state() -> dict:
+    return {key: "" for key in _AUTH_SESSION_CONTEXT_KEYS}
+
+
+def _merge_auth_session_context(data: dict, context: dict | None) -> dict:
+    if not isinstance(data, dict) or not isinstance(context, dict):
+        return data
+    for key in _AUTH_SESSION_CONTEXT_KEYS:
+        value = context.get(key)
+        if value:
+            data[key] = value
+    return data
+
+
+def _capture_auth_context_request(request, state: dict):
+    try:
+        headers = {str(k).lower(): str(v) for k, v in (request.headers or {}).items()}
+        url = str(getattr(request, "url", "") or "")
+        if headers.get("user-agent"):
+            state["user_agent"] = headers["user-agent"]
+        if headers.get("accept-language"):
+            state["accept_language"] = headers["accept-language"]
+        if headers.get("oai-language"):
+            state["oai_language"] = headers["oai-language"]
+        if headers.get("oai-device-id"):
+            state["device_id"] = headers["oai-device-id"]
+            state["oai_device_id"] = headers["oai-device-id"]
+        if headers.get("oai-client-version"):
+            state["oai_client_version"] = headers["oai-client-version"]
+        if headers.get("oai-client-build-number"):
+            state["oai_client_build_number"] = headers["oai-client-build-number"]
+        if headers.get("openai-sentinel-token"):
+            state["openai_sentinel_token"] = headers["openai-sentinel-token"]
+        if "https://chatgpt.com/backend-api/sentinel/req" in url:
+            state["sentinel_url"] = url
+            try:
+                state["sentinel_body"] = request.post_data or ""
+            except Exception:
+                state["sentinel_body"] = ""
+            state["sentinel_headers"] = {
+                key: headers.get(key, "")
+                for key in (
+                    "content-type",
+                    "origin",
+                    "referer",
+                    "user-agent",
+                    "accept-language",
+                    "sec-ch-ua",
+                    "sec-ch-ua-mobile",
+                    "sec-ch-ua-platform",
+                    "oai-device-id",
+                )
+                if headers.get(key)
+            }
+    except Exception:
+        logger.debug("[注册] 捕获 auth session 请求上下文失败", exc_info=True)
+
+
+def _capture_auth_context_response(response, state: dict):
+    try:
+        if "https://chatgpt.com/backend-api/sentinel/req" not in str(getattr(response, "url", "") or ""):
+            return
+        if int(getattr(response, "status", 0) or 0) != 200:
+            return
+        data = response.json()
+        token = str((data or {}).get("token") or "").strip() if isinstance(data, dict) else ""
+        if token:
+            state["openai_sentinel_token"] = token
+    except Exception:
+        logger.debug("[注册] 捕获 sentinel token 响应失败", exc_info=True)
+
+
+def _collect_auth_session_context(page, context, state: dict | None = None) -> dict:
+    result = dict(state or {})
+    try:
+        browser_info = page.evaluate(
+            """() => ({
+                user_agent: navigator.userAgent || "",
+                accept_language: navigator.language || "",
+                oai_language: navigator.language || ""
+            })"""
+        )
+        if isinstance(browser_info, dict):
+            for key in ("user_agent", "accept_language", "oai_language"):
+                if browser_info.get(key):
+                    result[key] = str(browser_info[key])
+    except Exception:
+        pass
+    try:
+        cookies = context.cookies("https://chatgpt.com")
+        parts = []
+        seen = set()
+        for cookie in cookies or []:
+            name = str(cookie.get("name") or "").strip()
+            value = str(cookie.get("value") or "").strip()
+            if not name or not value or name in seen:
+                continue
+            seen.add(name)
+            parts.append(f"{name}={value}")
+            if name == "oai-did" and not result.get("device_id"):
+                result["device_id"] = value
+                result["oai_device_id"] = value
+        if parts:
+            result["cookie_header"] = "; ".join(parts)
+    except Exception:
+        pass
+    return {key: value for key, value in result.items() if value}
+
+
+def _auth_session_has_access_token(session_data: dict | None) -> bool:
+    if not isinstance(session_data, dict):
+        return False
+    data = session_data.get("data")
+    if not isinstance(data, dict):
+        return False
+    return bool(str(data.get("accessToken") or data.get("access_token") or "").strip())
+
+
+def _warm_chatgpt_session_page(page):
+    try:
+        page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
+    except Exception as exc:
+        logger.warning("[注册] 重试 /api/auth/session 前打开 ChatGPT 首页失败: %s", exc)
+        return
+    try:
+        page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        pass
+
+
+def _fetch_auth_session_from_page(
+    page,
+    context,
+    auth_context_state: dict | None = None,
+    *,
+    max_attempts: int = 4,
+    retry_delay_seconds: float = 3.0,
+) -> dict | None:
+    last_result = None
+    attempts = max(1, int(max_attempts or 1))
+    fetch_script = """async () => {
+        const resp = await fetch('https://chatgpt.com/api/auth/session', {
+            credentials: 'include',
+            cache: 'no-store',
+            headers: { accept: 'application/json' }
+        });
+        const text = await resp.text();
+        let data = {};
+        try { data = JSON.parse(text || '{}'); } catch {}
+        return {
+            status: resp.status,
+            data,
+            raw: text.slice(0, 400),
+            url: resp.url || 'https://chatgpt.com/api/auth/session'
+        };
+    }"""
+
+    for attempt in range(1, attempts + 1):
+        try:
+            session_data = page.evaluate(fetch_script)
+            if isinstance(session_data, dict):
+                session_data["auth_context"] = _collect_auth_session_context(page, context, auth_context_state)
+                last_result = session_data
+                if _auth_session_has_access_token(session_data):
+                    if attempt > 1:
+                        logger.info("[注册] /api/auth/session 第 %s/%s 次重试成功", attempt, attempts)
+                    return session_data
+                logger.warning(
+                    "[注册] /api/auth/session 第 %s/%s 次未返回 accessToken: status=%s raw=%s",
+                    attempt,
+                    attempts,
+                    session_data.get("status"),
+                    session_data.get("raw"),
+                )
+            else:
+                last_result = {"status": None, "data": {}, "raw": "返回值格式无效"}
+                logger.warning("[注册] /api/auth/session 第 %s/%s 次返回值格式无效", attempt, attempts)
+        except Exception as exc:
+            last_result = {"status": 0, "data": {}, "raw": str(exc)[:400]}
+            logger.warning("[注册] /api/auth/session 第 %s/%s 次调用失败: %s", attempt, attempts, exc)
+
+        if attempt >= attempts:
+            break
+        _warm_chatgpt_session_page(page)
+        if retry_delay_seconds > 0:
+            time.sleep(retry_delay_seconds)
+
+    return last_result
+
+
 def _save_auth_from_session_page(email, password, cloudmail_account_id, session_data, out_outcome=None):
     """
     在已登录的 ChatGPT 页面里直接调用 /api/auth/session 提取 accessToken，
@@ -1435,6 +1641,7 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         return None
 
     data = session_data.get("data") or {}
+    _merge_auth_session_context(data, session_data.get("auth_context") or session_data.get("sentinel"))
     access_token = str(data.get("accessToken") or data.get("access_token") or "").strip()
     if not access_token:
         logger.warning(
@@ -1594,7 +1801,13 @@ _DIRECT_EMAIL_SELECTORS = (
     'input[placeholder*="email" i], input[placeholder*="Email" i]'
 )
 _DIRECT_PASSWORD_SELECTORS = 'input[name="password"], input[type="password"]'
-_DIRECT_CODE_SELECTORS = 'input[name="code"], input[placeholder*="验证码"], input[placeholder*="code" i]'
+_DIRECT_CODE_SELECTORS = (
+    'input[name="code"], input[name*="code" i], input[name*="otp" i], '
+    'input[id*="code" i], input[id*="otp" i], input[autocomplete="one-time-code"], '
+    'input[inputmode="numeric"], input[type="tel"], input[placeholder*="验证码"], '
+    'input[placeholder*="code" i], input[placeholder*="verification" i], '
+    'input[aria-label*="code" i], input[aria-label*="verification" i]'
+)
 
 
 def _safe_invite_screenshot(page, name):
@@ -1647,6 +1860,71 @@ def _first_visible_editable_locator(page, selectors, timeout=800):
     except Exception:
         return None
     return None
+
+
+def _visible_editable_locators(locator):
+    visible = []
+    try:
+        for item in locator.all():
+            try:
+                if item.is_visible(timeout=300) and item.is_editable(timeout=300):
+                    visible.append(item)
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return visible
+
+
+def _fill_direct_verification_code(page, verification_code: str) -> bool:
+    code = str(verification_code or "").strip()
+    if not code:
+        return False
+
+    try:
+        single_inputs = _visible_editable_locators(
+            page.locator(
+                'input[maxlength="1"], input[aria-label*="digit" i], '
+                'input[aria-label*="character" i], input[data-testid*="code" i]'
+            )
+        )
+        if len(single_inputs) >= 4:
+            logger.info("[直接注册] 检测到 %d 个 OTP 单字符输入框", len(single_inputs))
+            try:
+                single_inputs[0].click(force=True)
+                time.sleep(0.2)
+                page.keyboard.type(code, delay=80)
+                time.sleep(1)
+            except Exception:
+                pass
+            for index, char in enumerate(code):
+                if index >= len(single_inputs):
+                    break
+                try:
+                    single_inputs[index].fill(char)
+                    time.sleep(0.15)
+                except Exception:
+                    continue
+            return True
+    except Exception:
+        pass
+
+    code_input = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=3000)
+    if code_input:
+        code_input.fill(code)
+        return True
+
+    try:
+        generic_inputs = _visible_editable_locators(
+            page.locator('input[type="text"], input:not([type]), input[inputmode="numeric"]')
+        )
+        if generic_inputs:
+            generic_inputs[0].fill(code)
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 def _collect_date_spinbutton_meta(page):
@@ -1982,6 +2260,9 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
         )
         page = context.new_page()
+        auth_context_state = _new_auth_context_capture_state()
+        page.on("request", lambda request: _capture_auth_context_request(request, auth_context_state))
+        page.on("response", lambda response: _capture_auth_context_response(response, auth_context_state))
 
         def _finish(success, session_data=None):
             try:
@@ -2208,15 +2489,12 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             _finish(False)
             raise
 
-        code_input = None
-        try:
-            code_input = page.locator(_DIRECT_CODE_SELECTORS).first
-            if not code_input.is_visible(timeout=5000):
-                code_input = None
-        except Exception:
-            code_input = None
-
-        if code_input:
+        code_step = _wait_for_direct_register_step(
+            page,
+            {"code", "profile", "completed", "google", "email", "password"},
+            timeout=8,
+        )
+        if code_step == "code":
             logger.info("[直接注册] 等待验证码...")
             verification_code = None
             start_t = time.time()
@@ -2234,13 +2512,23 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
 
             if verification_code:
                 logger.info("[直接注册] 输入验证码: %s", verification_code)
-                code_input.fill(verification_code)
+                if not _fill_direct_verification_code(page, verification_code):
+                    logger.warning("[直接注册] 未找到验证码输入框 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                    _safe_invite_screenshot(page, "direct_05_no_code_input.png")
+                    return _finish(False)
                 time.sleep(0.5)
-                _click_primary_auth_button(page, code_input, ["Continue", "继续"])
+                anchor = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=800)
+                _click_primary_auth_button(page, anchor, ["Continue", "Verify", "Submit", "继续"])
                 time.sleep(8)
             else:
                 logger.error("[直接注册] 未收到验证码")
                 return _finish(False)
+        elif code_step == "google":
+            logger.warning("[直接注册] 验证码步骤误跳转到 Google 登录页")
+            return _finish(False)
+        elif code_step in {"email", "password"}:
+            logger.warning("[直接注册] 验证码前流程回退到 %s | URL: %s | body=%s", code_step, page.url, _page_excerpt(page))
+            return _finish(False)
 
         _safe_invite_screenshot(page, "direct_05_after_code.png")
         logger.info("[直接注册] 当前 URL: %s", page.url)
@@ -2282,18 +2570,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
 
         session_data = None
         if success and return_session:
-            try:
-                session_data = page.evaluate(
-                    """async () => {
-                        const resp = await fetch('/api/auth/session', { credentials: 'include' });
-                        const text = await resp.text();
-                        let data = {};
-                        try { data = JSON.parse(text || '{}'); } catch {}
-                        return { status: resp.status, data, raw: text.slice(0, 400) };
-                    }"""
-                )
-            except Exception as exc:
-                logger.warning("[注册] 在注册页内调用 /api/auth/session 失败: %s", exc)
+            session_data = _fetch_auth_session_from_page(page, context, auth_context_state)
 
         return _finish(success, session_data)
 
@@ -3226,6 +3503,7 @@ def cmd_register_accounts(
     email_prefix=None,
     password=None,
     domain=None,
+    domains=None,
     progress_callback=None,
 ):
     """执行独立注册，并在成功后继续执行 personal OAuth / 落 auth_file。
@@ -3238,6 +3516,15 @@ def cmd_register_accounts(
     spacing = max(0.0, float(interval_seconds or 0.0))
     jitter_min = max(0.0, float(jitter_min_seconds or 0.0))
     jitter_max = max(0.0, float(jitter_max_seconds or 0.0))
+    domain_pool = []
+    seen_domains = set()
+    for raw_domain in list(domains or []) + ([domain] if domain else []):
+        value = str(raw_domain or "").strip().lstrip("@").strip()
+        if not value or value in seen_domains:
+            continue
+        seen_domains.add(value)
+        domain_pool.append(value)
+    selected_fallback_domain = domain_pool[0] if domain_pool else domain
     results = [None] * total
     next_index = 0
     index_lock = threading.Lock()
@@ -3323,14 +3610,21 @@ def cmd_register_accounts(
                 _emit_progress()
 
             outcome = {}
-            logger.info("[注册账号] worker-%d 开始第 %d/%d 个", worker_id, job_index + 1, total)
+            job_domain = random.choice(domain_pool) if domain_pool else selected_fallback_domain
+            logger.info(
+                "[注册账号] worker-%d 开始第 %d/%d 个 domain=@%s",
+                worker_id,
+                job_index + 1,
+                total,
+                job_domain or "",
+            )
             try:
                 result = create_account_direct(
                     mail_client,
                     out_outcome=outcome,
                     email_prefix=email_prefix,
                     password=password,
-                    domain=domain,
+                    domain=job_domain,
                     skip_post_register=True,
                     check_team_membership=False,
                 )

@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from autoteam.textio import parse_env_line, parse_env_value, read_text
 
@@ -93,6 +93,9 @@ def _get_bool_env(name: str, default: bool) -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on", "y", "t")
 
 
+AUTO_CHECK_ENABLED = _get_bool_env("AUTO_CHECK_ENABLED", False)
+
+
 # 对账策略开关
 # RECONCILE_KICK_ORPHAN=true: 残废成员(workspace 有 + 本地 auth_file 缺失)自动 kick。
 #   关掉后改为打 STATUS_ORPHAN 标记等人工处理,避免"席位卡死"时仍被本地策略自动清理。
@@ -107,6 +110,7 @@ PLAYWRIGHT_PROXY_SERVER = os.environ.get("PLAYWRIGHT_PROXY_SERVER", "").strip()
 PLAYWRIGHT_PROXY_USERNAME = os.environ.get("PLAYWRIGHT_PROXY_USERNAME", "").strip()
 PLAYWRIGHT_PROXY_PASSWORD = os.environ.get("PLAYWRIGHT_PROXY_PASSWORD", "").strip()
 PLAYWRIGHT_PROXY_BYPASS = os.environ.get("PLAYWRIGHT_PROXY_BYPASS", "").strip()
+PLAYWRIGHT_BACKGROUND = _get_bool_env("PLAYWRIGHT_BACKGROUND", True)
 
 
 def _format_proxy_host(hostname: str) -> str:
@@ -115,13 +119,46 @@ def _format_proxy_host(hostname: str) -> str:
     return hostname
 
 
+def normalize_proxy_url(proxy_url: str | None) -> str:
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return ""
+
+    if "://" not in raw:
+        parts = raw.split(":")
+        if len(parts) == 4 and parts[1].isdigit():
+            host, port, username, password = parts
+            raw = f"http://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+        else:
+            raw = f"http://{raw}"
+
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https", "socks4", "socks5"} or not parsed.hostname:
+        raise ValueError(
+            "代理 URL 格式无效，请使用 http://user:pass@host:port 或 socks5://user:pass@host:port"
+        )
+    try:
+        if parsed.port is None:
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError(
+            "代理 URL 格式无效，请确认包含有效端口，例如 http://host:port"
+        ) from exc
+
+    host = _format_proxy_host(parsed.hostname)
+    auth = ""
+    if parsed.username:
+        auth = quote(unquote(parsed.username), safe="")
+        if parsed.password:
+            auth = f"{auth}:{quote(unquote(parsed.password), safe='')}"
+        auth = f"{auth}@"
+    return f"{parsed.scheme}://{auth}{host}:{parsed.port}"
+
+
 def _parse_proxy_url(proxy_url: str):
-    if "://" not in proxy_url:
-        return {"server": proxy_url}
+    proxy_url = normalize_proxy_url(proxy_url)
 
     parsed = urlsplit(proxy_url)
-    if not parsed.scheme or not parsed.hostname:
-        return {"server": proxy_url}
 
     host = _format_proxy_host(parsed.hostname)
     server = f"{parsed.scheme}://{host}"
@@ -136,11 +173,28 @@ def _parse_proxy_url(proxy_url: str):
     return proxy
 
 
-def get_playwright_launch_options(proxy_url: str | None = None, proxy_bypass: str | None = None):
+def get_playwright_launch_options(
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
+    *,
+    headless: bool | None = None,
+):
     """统一的 Playwright Chromium 启动参数。"""
+    resolved_headless = False if headless is None else bool(headless)
+    args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+    if PLAYWRIGHT_BACKGROUND and not resolved_headless:
+        args.extend(
+            [
+                "--window-position=-32000,-32000",
+                "--window-size=1280,800",
+                "--start-minimized",
+                "--disable-background-timer-throttling",
+                "--disable-renderer-backgrounding",
+            ]
+        )
     options = {
-        "headless": False,
-        "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        "headless": resolved_headless,
+        "args": args,
     }
 
     proxy = None

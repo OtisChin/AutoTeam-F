@@ -1,5 +1,6 @@
 from autoteam import bind_executor, config, gopay_executor
 from autoteam.gopay_executor import (
+    GoPayFlowError,
     GoPayHttpCharger,
     GoPayPINRejected,
     _build_result,
@@ -10,6 +11,9 @@ from autoteam.gopay_executor import (
     _generate_id_checkout_http,
     _poll_otp_from_sms_url,
     _looks_like_phone_number,
+    _safe_error_summary,
+    _safe_proxy_summary,
+    _safe_url_summary,
     _resolve_page_billing_locator,
     _submit_checkout_with_retries,
     _value_matches,
@@ -71,6 +75,118 @@ def test_get_playwright_launch_options_prefers_task_override(monkeypatch):
         "password": "pass",
         "bypass": "localhost",
     }
+
+
+def test_get_playwright_launch_options_normalizes_colon_proxy_with_spaces():
+    raw = "us.1024proxy.io:3000:user-region-US-st-Delaware-city-Dewey Beach-sid-abc:secret"
+
+    options = config.get_playwright_launch_options(proxy_url=raw)
+
+    assert options["proxy"] == {
+        "server": "http://us.1024proxy.io:3000",
+        "username": "user-region-US-st-Delaware-city-Dewey Beach-sid-abc",
+        "password": "secret",
+    }
+    assert config.normalize_proxy_url(raw) == (
+        "http://user-region-US-st-Delaware-city-Dewey%20Beach-sid-abc:secret@us.1024proxy.io:3000"
+    )
+
+
+def test_get_playwright_launch_options_preserves_socks5_scheme():
+    options = config.get_playwright_launch_options(
+        proxy_url="socks5://user name:pass@socks.example:1080",
+    )
+
+    assert options["proxy"] == {
+        "server": "socks5://socks.example:1080",
+        "username": "user name",
+        "password": "pass",
+    }
+
+
+def test_get_playwright_launch_options_background_keeps_headful_offscreen(monkeypatch):
+    monkeypatch.setattr(config, "PLAYWRIGHT_BACKGROUND", True)
+
+    options = config.get_playwright_launch_options()
+
+    assert options["headless"] is False
+    assert "--window-position=-32000,-32000" in options["args"]
+    assert "--start-minimized" in options["args"]
+
+
+def test_get_playwright_launch_options_background_skips_headless(monkeypatch):
+    monkeypatch.setattr(config, "PLAYWRIGHT_BACKGROUND", True)
+
+    options = config.get_playwright_launch_options(headless=True)
+
+    assert options["headless"] is True
+    assert "--window-position=-32000,-32000" not in options["args"]
+
+
+def test_chatgpt_http_session_requires_curl_cffi(monkeypatch):
+    monkeypatch.setattr(gopay_executor, "_CurlCffiSession", None)
+
+    try:
+        gopay_executor._build_chatgpt_http_session(access_token="access")
+    except GoPayFlowError as exc:
+        assert exc.stage == "chatgpt_http_session"
+        assert "curl-cffi" in str(exc)
+    else:
+        raise AssertionError("expected missing curl_cffi to fail for ChatGPT checkout HTTP session")
+
+
+def test_approve_checkout_http_uses_reference_style_session_headers():
+    http = FakeHttp(
+        [
+            ("POST", "/backend-api/sentinel/ping", FakeResponse(json_data={})),
+            ("POST", "/backend-api/payments/checkout/approve", FakeResponse(json_data={"result": "approved"})),
+        ]
+    )
+
+    result = gopay_executor._approve_checkout_http(
+        http,
+        access_token="access",
+        checkout_session_id="cs_test",
+        processor_entity="openai_llc",
+        cookie_header="__Secure-next-auth.session-token=session",
+        account_id="account",
+        device_id="device",
+        openai_sentinel_token="sentinel",
+    )
+
+    assert result == {"result": "approved"}
+    assert http.requests[0]["url"].endswith("/backend-api/sentinel/ping")
+    approve_request = http.requests[1]
+    assert "headers" not in approve_request["kwargs"]
+    assert http.headers["Authorization"] == "Bearer access"
+    assert http.headers["Cookie"] == "__Secure-next-auth.session-token=session; oai-did=device"
+    assert http.headers["oai-device-id"] == "device"
+    assert http.headers["openai-sentinel-token"] == "sentinel"
+
+
+def test_gopay_log_summaries_redact_sensitive_values():
+    proxy = "us.1024proxy.io:3000:user-region-US-st-Delaware-city-Dewey Beach-sid-abc:secret"
+    proxy_summary = _safe_proxy_summary(proxy)
+
+    assert "us.1024proxy.io" in proxy_summary
+    assert "password_present=True" in proxy_summary
+    assert "secret" not in proxy_summary
+    assert "Dewey Beach" not in proxy_summary
+
+    checkout_summary = _safe_url_summary("https://chatgpt.com/checkout/openai_llc/cs_live_abcdefghijklmnopqrstuvwxyz")
+    assert "chatgpt.com" in checkout_summary
+    assert "cs_live_abcdefghijklmnopqrstuvwxyz" not in checkout_summary
+
+    sms_summary = _safe_url_summary("https://it.tgflare.com/api/record?token=demo-secret&phone=6287761973970")
+    assert "demo-secret" not in sms_summary
+    assert "6287761973970" not in sms_summary
+
+    error_summary = _safe_error_summary(
+        "ProxyError http://user:secret@proxy.example:3000/path?token=demo-secret Authorization Bearer abc.def"
+    )
+    assert "user:secret" not in error_summary
+    assert "demo-secret" not in error_summary
+    assert "abc.def" not in error_summary
 
 
 def test_normalize_expiry_and_classify_checkout_state():
@@ -135,135 +251,6 @@ def test_poll_otp_waits_sms_window_before_fetch(monkeypatch):
     assert progress_events[1] == {"stage": "fetch_otp"}
 
 
-class FakeGoPayBody:
-    def __init__(self, text):
-        self.text = text
-
-    def inner_text(self, timeout=None):
-        return self.text
-
-
-class FakeGoPayLocator:
-    first = None
-
-    def __init__(self, page, visible=False):
-        self.first = self
-        self.page = page
-        self.visible = visible
-
-    def is_visible(self, timeout=None):
-        return self.visible
-
-    def click(self, timeout=None):
-        self.page.clicked = True
-
-
-class FakeGoPayPage:
-    def __init__(self, body_text="", sms_visible=True):
-        self.body_text = body_text
-        self.sms_visible = sms_visible
-        self.clicked = False
-        self.goto_url = ""
-        self.waits = []
-
-    def goto(self, url, wait_until=None, timeout=None):
-        self.goto_url = url
-
-    def locator(self, selector):
-        return FakeGoPayBody(self.body_text)
-
-    def get_by_role(self, role, name=None):
-        return FakeGoPayLocator(self, visible=self.sms_visible and role == "button")
-
-    def evaluate(self, script):
-        return False
-
-    def wait_for_timeout(self, timeout):
-        self.waits.append(timeout)
-
-
-class FakeGoPayContext:
-    def __init__(self, page):
-        self.page = page
-        self.closed = False
-
-    def new_page(self):
-        return self.page
-
-    def close(self):
-        self.closed = True
-
-
-class FakeGoPayBrowser:
-    def __init__(self, context):
-        self.context = context
-        self.new_context_calls = 0
-
-    def new_context(self, **kwargs):
-        self.new_context_calls += 1
-        self.context_options = kwargs
-        return self.context
-
-
-def test_trigger_sms_otp_uses_isolated_browser_context():
-    page = FakeGoPayPage()
-    isolated_context = FakeGoPayContext(page)
-    browser = FakeGoPayBrowser(isolated_context)
-    progress_events = []
-
-    class SharedContext:
-        def new_page(self):
-            raise AssertionError("GoPay SMS page must not reuse ChatGPT context")
-
-    class FakeApi:
-        pass
-
-    fake_api = FakeApi()
-    fake_api.browser = browser
-    fake_api.context = SharedContext()
-
-    gopay_executor._trigger_sms_otp_in_page(
-        fake_api,
-        activation_link_url="https://merchants-gws-app.gopayapi.com/app/authorize?reference=ref&target=gwc",
-        wait_seconds=0,
-        progress=lambda stage, **extra: progress_events.append({"stage": stage, **extra}),
-    )
-
-    assert browser.new_context_calls == 1
-    assert browser.context_options["locale"] == "en-US"
-    assert page.clicked is True
-    assert isolated_context.closed is True
-    assert {"stage": "sms_otp_triggered"} in progress_events
-
-
-def test_trigger_sms_otp_marks_gopay_rate_limited_and_closes_context():
-    page = FakeGoPayPage(body_text="请稍后再试。 个人隐私政策 条款与条件", sms_visible=False)
-    isolated_context = FakeGoPayContext(page)
-    browser = FakeGoPayBrowser(isolated_context)
-    progress_events = []
-
-    class FakeApi:
-        pass
-
-    fake_api = FakeApi()
-    fake_api.browser = browser
-
-    try:
-        gopay_executor._trigger_sms_otp_in_page(
-            fake_api,
-            activation_link_url="https://merchants-gws-app.gopayapi.com/app/authorize?reference=ref&target=gwc",
-            wait_seconds=0,
-            progress=lambda stage, **extra: progress_events.append({"stage": stage, **extra}),
-        )
-    except gopay_executor.GoPayRateLimited as exc:
-        assert exc.stage == "gopay_rate_limited"
-    else:
-        raise AssertionError("expected GoPayRateLimited")
-
-    assert isolated_context.closed is True
-    assert {"stage": "gopay_rate_limited"} in progress_events
-
-
 def test_extract_checkout_session_id_from_response_or_url():
     assert _extract_checkout_session_id(raw={"checkout_session_id": "cs_test_123"}) == "cs_test_123"
     assert _extract_checkout_session_id("https://chatgpt.com/checkout/openai_llc/cs_live_abc") == "cs_live_abc"
@@ -283,8 +270,19 @@ def test_gopay_http_charger_success_flow(monkeypatch):
     activation_link = f"https://gopay.local/link?reference={reference_id}"
     http = FakeHttp(
         [
-            ("POST", "/v1/payment_methods", FakeResponse(json_data={"id": "pm_test"})),
             ("POST", "/v1/payment_pages/cs_test/init", FakeResponse(json_data={"init_checksum": "init_123"})),
+            (
+                "GET",
+                "/v1/elements/sessions",
+                FakeResponse(
+                    json_data={
+                        "session_id": "elements_session_real",
+                        "config_id": "checkout_config_real",
+                        "elements_session_config_id": "elements_config_real",
+                    }
+                ),
+            ),
+            ("POST", "/v1/payment_methods", FakeResponse(json_data={"id": "pm_test"})),
             ("POST", "/v1/payment_pages/cs_test/confirm", FakeResponse(json_data={"payment_status": "open"})),
             (
                 "GET",
@@ -384,7 +382,7 @@ def test_gopay_http_charger_success_flow(monkeypatch):
     assert result["snap_token"] == snap_token
     assert result["reference_id"] == reference_id
     assert result["charge_ref"] == "CHARGE123"
-    assert approved == ["cs_test"]
+    assert approved == []
     assert verified == ["cs_test"]
     assert sms_triggers == [(reference_id, activation_link)]
     linking_request = next(request for request in http.requests if request["url"].endswith("/linking"))
@@ -394,6 +392,205 @@ def test_gopay_http_charger_success_flow(monkeypatch):
         "phone_number": "87761973970",
     }
     assert any(event["stage"] == "gopay_payment_process" for event in progress_events)
+    payment_method_request = next(request for request in http.requests if request["url"].endswith("/v1/payment_methods"))
+    assert payment_method_request["kwargs"]["data"]["client_attribution_metadata[elements_session_id]"] == "elements_session_real"
+    assert payment_method_request["kwargs"]["data"]["client_attribution_metadata[checkout_config_id]"] == "checkout_config_real"
+    assert http.responses == []
+
+
+def test_gopay_http_charger_skips_approve_when_confirm_returns_redirect(monkeypatch):
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda *args, **kwargs: None)
+
+    snap_token = "11111111-1111-4111-8111-111111111111"
+    reference_id = "22222222-2222-4222-8222-222222222222"
+    activation_link = f"https://gopay.local/link?reference={reference_id}"
+    http = FakeHttp(
+        [
+            ("POST", "/v1/payment_pages/cs_test/init", FakeResponse(json_data={"init_checksum": "init_123"})),
+            (
+                "GET",
+                "/v1/elements/sessions",
+                FakeResponse(json_data={"session_id": "elements_session_real", "config_id": "checkout_config_real"}),
+            ),
+            ("POST", "/v1/payment_methods", FakeResponse(json_data={"id": "pm_test"})),
+            (
+                "POST",
+                "/v1/payment_pages/cs_test/confirm",
+                FakeResponse(
+                    json_data={
+                        "setup_intent": {
+                            "next_action": {
+                                "type": "redirect_to_url",
+                                "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/direct"},
+                            }
+                        }
+                    }
+                ),
+            ),
+            (
+                "GET",
+                "pm-redirects.stripe.com/authorize/direct",
+                FakeResponse(
+                    status_code=302,
+                    headers={"Location": f"https://app.midtrans.com/snap/v4/redirection/{snap_token}"},
+                ),
+            ),
+            ("GET", f"/snap/v1/transactions/{snap_token}", FakeResponse(json_data={"enabled_payments": ["gopay"]})),
+            (
+                "POST",
+                f"/snap/v3/accounts/{snap_token}/linking",
+                FakeResponse(status_code=201, json_data={"activation_link_url": activation_link}),
+            ),
+            ("POST", "/v1/linking/validate-reference", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/user-consent", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                "/v1/linking/validate-otp",
+                FakeResponse(
+                    json_data={
+                        "success": True,
+                        "data": {
+                            "challenge": {
+                                "action": {
+                                    "value": {"challenge_id": "challenge_link", "client_id": "client_link"}
+                                }
+                            }
+                        },
+                    }
+                ),
+            ),
+            ("POST", "/api/v1/users/pin/tokens/nb", FakeResponse(json_data={"token": "pin_link"})),
+            ("POST", "/v1/linking/validate-pin", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                f"/snap/v2/transactions/{snap_token}/charge",
+                FakeResponse(json_data={"gopay_verification_link_url": "https://gopay.local/pay?reference=CHARGE123"}),
+            ),
+            ("GET", "/v1/payment/validate", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                "/v1/payment/confirm",
+                FakeResponse(
+                    json_data={
+                        "success": True,
+                        "data": {
+                            "challenge": {
+                                "action": {
+                                    "value": {"challenge_id": "challenge_pay", "client_id": "client_pay"}
+                                }
+                            }
+                        },
+                    }
+                ),
+            ),
+            ("POST", "/api/v1/users/pin/tokens/nb", FakeResponse(json_data={"token": "pin_pay"})),
+            ("POST", "/v1/payment/process", FakeResponse(json_data={"success": True, "data": {"next_action": "payment-success"}})),
+        ]
+    )
+    approved = []
+    progress_events = []
+
+    charger = GoPayHttpCharger(
+        http=http,
+        phone_number="+6287761973970",
+        gopay_pin="558023",
+        otp_provider=lambda: "123456",
+        approve_callback=lambda session_id: approved.append(session_id) or {"result": "approved"},
+        verify_callback=lambda session_id: {"state": "succeeded"},
+        progress_callback=progress_events.append,
+    )
+
+    result = charger.run(checkout_session_id="cs_test", stripe_pk="pk_test")
+
+    assert result["state"] == "succeeded"
+    assert result["snap_token"] == snap_token
+    assert approved == []
+    assert any(
+        event["stage"] == "resolve_midtrans_redirect" and event.get("source") == "stripe_confirm"
+        for event in progress_events
+    )
+    assert http.responses == []
+
+
+def test_gopay_http_charger_triggers_sms_otp_via_protocol(monkeypatch):
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda *args, **kwargs: None)
+
+    snap_token = "11111111-1111-4111-8111-111111111111"
+    reference_id = "22222222-2222-4222-8222-222222222222"
+    http = FakeHttp(
+        [
+            ("GET", f"/snap/v1/transactions/{snap_token}", FakeResponse(json_data={"enabled_payments": ["gopay"]})),
+            (
+                "POST",
+                f"/snap/v3/accounts/{snap_token}/linking",
+                FakeResponse(status_code=201, json_data={"activation_link_url": f"https://gopay.local/link?reference={reference_id}"}),
+            ),
+            ("POST", "/v1/linking/validate-reference", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/user-consent", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/resend-otp", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                "/v1/linking/validate-otp",
+                FakeResponse(
+                    json_data={
+                        "success": True,
+                        "data": {
+                            "challenge": {
+                                "action": {
+                                    "value": {"challenge_id": "challenge_link", "client_id": "client_link"}
+                                }
+                            }
+                        },
+                    }
+                ),
+            ),
+            ("POST", "/api/v1/users/pin/tokens/nb", FakeResponse(json_data={"token": "pin_link"})),
+            ("POST", "/v1/linking/validate-pin", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                f"/snap/v2/transactions/{snap_token}/charge",
+                FakeResponse(json_data={"gopay_verification_link_url": "https://gopay.local/pay?reference=CHARGE123"}),
+            ),
+            ("GET", "/v1/payment/validate", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                "/v1/payment/confirm",
+                FakeResponse(
+                    json_data={
+                        "success": True,
+                        "data": {
+                            "challenge": {
+                                "action": {
+                                    "value": {"challenge_id": "challenge_pay", "client_id": "client_pay"}
+                                }
+                            }
+                        },
+                    }
+                ),
+            ),
+            ("POST", "/api/v1/users/pin/tokens/nb", FakeResponse(json_data={"token": "pin_pay"})),
+            ("POST", "/v1/payment/process", FakeResponse(json_data={"success": True, "data": {"next_action": "payment-success"}})),
+        ]
+    )
+    progress_events = []
+
+    charger = GoPayHttpCharger(
+        http=http,
+        phone_number="+6287761973970",
+        gopay_pin="558023",
+        otp_provider=lambda: "123456",
+        otp_channel="sms",
+        sms_resend_wait_seconds=0,
+        progress_callback=progress_events.append,
+    )
+
+    result = charger.run_from_snap_token(snap_token=snap_token, checkout_session_id="cs_test")
+
+    assert result["state"] == "succeeded"
+    resend_request = next(request for request in http.requests if request["url"].endswith("/resend-otp"))
+    assert resend_request["kwargs"]["json"] == {"reference_id": reference_id}
+    assert [event["stage"] for event in progress_events].count("trigger_sms_otp") == 1
+    assert any(event["stage"] == "sms_otp_triggered" for event in progress_events)
     assert http.responses == []
 
 
@@ -488,6 +685,9 @@ def test_generate_id_checkout_http_builds_canonical_url():
         session_token="session",
         account_id="account",
         device_id="device",
+        openai_sentinel_token="sentinel",
+        oai_client_version="web-1",
+        oai_client_build_number="123",
     )
 
     assert result["url"] == "https://chatgpt.com/checkout/openai_llc/cs_test_123"
@@ -497,6 +697,9 @@ def test_generate_id_checkout_http_builds_canonical_url():
     assert "__Secure-next-auth.session-token=session" in http.headers["Cookie"]
     assert "_account=" not in http.headers["Cookie"]
     assert "chatgpt-account-id" not in http.headers
+    assert http.headers["openai-sentinel-token"] == "sentinel"
+    assert http.headers["oai-client-version"] == "web-1"
+    assert http.headers["oai-client-build-number"] == "123"
 
 
 def test_gopay_http_charger_retries_linking_when_account_already_linked(monkeypatch):
@@ -644,12 +847,11 @@ def test_gopay_http_charger_exits_after_repeated_already_linked(monkeypatch):
     assert http.responses == []
 
 
-def test_gopay_http_charger_blocks_nonzero_charge_after_linking_pin(monkeypatch):
+def test_gopay_http_charger_blocks_midtrans_nonzero_before_linking(monkeypatch):
     monkeypatch.setattr(gopay_executor.time, "sleep", lambda *args, **kwargs: None)
     monkeypatch.delenv("GOPAY_ALLOW_NONZERO_CHARGE", raising=False)
 
     snap_token = "11111111-1111-4111-8111-111111111111"
-    reference_id = "22222222-2222-4222-8222-222222222222"
     http = FakeHttp(
         [
             (
@@ -662,31 +864,6 @@ def test_gopay_http_charger_blocks_nonzero_charge_after_linking_pin(monkeypatch)
                     }
                 ),
             ),
-            (
-                "POST",
-                f"/snap/v3/accounts/{snap_token}/linking",
-                FakeResponse(status_code=201, json_data={"activation_link_url": f"https://gopay.local/link?reference={reference_id}"}),
-            ),
-            ("POST", "/v1/linking/validate-reference", FakeResponse(json_data={"success": True})),
-            ("POST", "/v1/linking/user-consent", FakeResponse(json_data={"success": True})),
-            (
-                "POST",
-                "/v1/linking/validate-otp",
-                FakeResponse(
-                    json_data={
-                        "success": True,
-                        "data": {
-                            "challenge": {
-                                "action": {
-                                    "value": {"challenge_id": "challenge_link", "client_id": "client_link"}
-                                }
-                            }
-                        },
-                    }
-                ),
-            ),
-            ("POST", "/api/v1/users/pin/tokens/nb", FakeResponse(json_data={"token": "pin_link"})),
-            ("POST", "/v1/linking/validate-pin", FakeResponse(json_data={"success": True})),
         ]
     )
     progress_events = []
@@ -707,6 +884,80 @@ def test_gopay_http_charger_blocks_nonzero_charge_after_linking_pin(monkeypatch)
         raise AssertionError("expected GoPayChargeBlocked")
 
     assert any(event["stage"] == "midtrans_nonzero_amount_blocked" for event in progress_events)
+    assert not any(request["url"].endswith("/linking") for request in http.requests)
+    assert http.responses == []
+
+
+def test_gopay_http_charger_blocks_stripe_nonzero_before_approve(monkeypatch):
+    monkeypatch.delenv("GOPAY_ALLOW_NONZERO_CHARGE", raising=False)
+
+    http = FakeHttp(
+        [
+            (
+                "POST",
+                "/v1/payment_pages/cs_test/init",
+                FakeResponse(json_data={"init_checksum": "init_123", "total_summary": {"due": 34900000}}),
+            ),
+        ]
+    )
+    progress_events = []
+    charger = GoPayHttpCharger(
+        http=http,
+        phone_number="+6287761973970",
+        gopay_pin="558023",
+        otp_provider=lambda: "123456",
+        approve_callback=lambda session_id: (_ for _ in ()).throw(AssertionError("approve must not run for nonzero due")),
+        progress_callback=progress_events.append,
+    )
+
+    try:
+        charger.run(checkout_session_id="cs_test", stripe_pk="pk_test")
+    except gopay_executor.GoPayChargeBlocked as exc:
+        assert exc.stage == "stripe_charge_guard"
+        assert "ChatGPT approve" in str(exc)
+    else:
+        raise AssertionError("expected GoPayChargeBlocked")
+
+    assert any(event["stage"] == "stripe_nonzero_amount_blocked" for event in progress_events)
+    assert not any(event["stage"] == "chatgpt_approve" for event in progress_events)
+    assert not any(request["url"].endswith("/v1/payment_methods") for request in http.requests)
+    assert not any(request["url"].endswith("/confirm") for request in http.requests)
+    assert http.responses == []
+
+
+def test_gopay_http_charger_blocks_stripe_nonzero_before_linking(monkeypatch):
+    monkeypatch.delenv("GOPAY_ALLOW_NONZERO_CHARGE", raising=False)
+
+    snap_token = "11111111-1111-4111-8111-111111111111"
+    http = FakeHttp(
+        [
+            (
+                "GET",
+                f"/snap/v1/transactions/{snap_token}",
+                FakeResponse(json_data={"enabled_payments": ["gopay"]}),
+            ),
+        ]
+    )
+    progress_events = []
+    charger = GoPayHttpCharger(
+        http=http,
+        phone_number="+6287761973970",
+        gopay_pin="558023",
+        otp_provider=lambda: "123456",
+        progress_callback=progress_events.append,
+    )
+    charger.expected_due_amount = 34900000
+
+    try:
+        charger.run_from_snap_token(snap_token=snap_token, checkout_session_id="cs_test")
+    except gopay_executor.GoPayChargeBlocked as exc:
+        assert exc.stage == "stripe_charge_guard"
+        assert "GoPay 绑定前停止" in str(exc)
+    else:
+        raise AssertionError("expected GoPayChargeBlocked")
+
+    assert any(event["stage"] == "stripe_nonzero_amount_blocked" for event in progress_events)
+    assert not any(request["url"].endswith("/linking") for request in http.requests)
     assert http.responses == []
 
 
@@ -901,6 +1152,7 @@ def test_gopay_bind_task_rotates_on_chatgpt_approve_blocked(monkeypatch):
 
 
 def test_gopay_bind_task_single_account_does_not_rotate_on_blocked(monkeypatch):
+    monkeypatch.setenv("GOPAY_APPROVE_BLOCKED_COOLDOWN_SECONDS", "123")
     gopay_executor._GOPAY_APPROVE_BLOCKED_UNTIL.clear()
     monkeypatch.setattr(
         gopay_executor,
@@ -918,6 +1170,7 @@ def test_gopay_bind_task_single_account_does_not_rotate_on_blocked(monkeypatch):
         }
 
     monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    progress_events = []
 
     result = gopay_executor.run_gopay_bind_task(
         email="primary@example.com",
@@ -925,12 +1178,27 @@ def test_gopay_bind_task_single_account_does_not_rotate_on_blocked(monkeypatch):
         phone_number="+6287761973970",
         sms_url="https://sms.example.test",
         gopay_pin="558023",
+        progress_callback=progress_events.append,
     )
 
     assert calls == ["primary@example.com"]
     assert result["failure_stage"] == "chatgpt_approve"
     assert result["email_used"] == "primary@example.com"
+    assert "approve_blocked_cooldown_seconds" not in result
     assert gopay_executor._GOPAY_APPROVE_BLOCKED_UNTIL == {}
+    assert not any(event["stage"] == "chatgpt_approve_blocked_cooldown" for event in progress_events)
+
+    retried = gopay_executor.run_gopay_bind_task(
+        email="primary@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://sms.example.test",
+        gopay_pin="558023",
+    )
+
+    assert calls == ["primary@example.com", "primary@example.com"]
+    assert retried["failure_stage"] == "chatgpt_approve"
+    assert "冷却" not in retried["message"]
 
 
 def test_gopay_bind_task_checkout_url_disables_rotation(monkeypatch):
@@ -1011,6 +1279,118 @@ def test_gopay_bind_task_direct_midtrans_link_skips_checkout_and_approve(monkeyp
     assert any(event["stage"] == "checkout_ready" and event.get("mode") == "redirect" for event in progress_events)
     assert callable(created["approve_callback"])
     assert callable(created["verify_callback"])
+    assert created["otp_channel"] == "sms"
+    assert "sms_otp_trigger_callback" not in created or created["sms_otp_trigger_callback"] is None
+
+
+def test_gopay_bind_task_uses_browser_fallback_when_http_approve_blocked(monkeypatch):
+    progress_events = []
+    checkout_url = "https://chatgpt.com/checkout/openai_llc/cs_test"
+    fallback_calls = []
+
+    monkeypatch.setattr(
+        gopay_executor,
+        "load_auth_session",
+        lambda email: {
+            "accessToken": "access",
+            "sessionToken": "session",
+            "account": {"id": "account"},
+            "device_id": "device",
+            "cookie_header": "__Secure-next-auth.session-token=session; old=1",
+        },
+    )
+    monkeypatch.setattr(gopay_executor, "_build_chatgpt_http_session", lambda **kwargs: object())
+    monkeypatch.setattr(gopay_executor, "_new_http_session", lambda *args, **kwargs: object())
+
+    def fake_approve_http(*args, **kwargs):
+        raise gopay_executor.GoPayFlowError(
+            gopay_executor._chatgpt_approve_blocked_message({"result": "blocked"}),
+            stage="chatgpt_approve",
+        )
+
+    def fake_browser_fallback(api, **kwargs):
+        fallback_calls.append(kwargs)
+        return {
+            "result": "approved",
+            "_browser_cookie_header": "fresh=1",
+            "_browser_openai_sentinel_token": "sentinel",
+        }
+
+    monkeypatch.setattr(gopay_executor, "_approve_checkout_http", fake_approve_http)
+    monkeypatch.setattr(gopay_executor, "_approve_checkout_with_browser_context", fake_browser_fallback)
+
+    class FakeGoPayCharger:
+        def __init__(self, **kwargs):
+            self.approve_callback = kwargs["approve_callback"]
+
+        def run(self, *, checkout_session_id, stripe_pk):
+            assert self.approve_callback(checkout_session_id)["result"] == "approved"
+            return {
+                "state": "succeeded",
+                "snap_token": "11111111-1111-4111-8111-111111111111",
+                "charge_ref": "CHARGE123",
+                "reference_id": "REF123",
+            }
+
+        def run_from_redirect(self, **kwargs):
+            raise AssertionError("not a direct redirect flow")
+
+    monkeypatch.setattr(gopay_executor, "GoPayHttpCharger", FakeGoPayCharger)
+
+    result = gopay_executor._run_gopay_bind_task_once(
+        email="primary@example.com",
+        checkout_url=checkout_url,
+        phone_number="+6287761973970",
+        sms_url="https://sms.example.test",
+        gopay_pin="558023",
+        progress_callback=progress_events.append,
+    )
+
+    assert result["status"] == "success"
+    assert fallback_calls
+    assert fallback_calls[0]["checkout_session_id"] == "cs_test"
+    assert fallback_calls[0]["session_token"] == "session"
+    assert any(event["stage"] == "chatgpt_approve_browser_fallback" for event in progress_events)
+    assert any(event["stage"] == "chatgpt_approve_browser_fallback_succeeded" for event in progress_events)
+
+
+def test_gopay_bind_task_missing_access_token_does_not_launch_playwright(monkeypatch):
+    class FakeApi:
+        def _launch_browser(self, *args, **kwargs):
+            raise AssertionError("GoPay protocol mode must not launch Playwright")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(gopay_executor, "ChatGPTTeamAPI", FakeApi)
+    monkeypatch.setattr(
+        gopay_executor,
+        "load_auth_session",
+        lambda email: {
+            "sessionToken": "session",
+            "account": {"id": "account"},
+        },
+    )
+
+    result = gopay_executor._run_gopay_bind_task_once(
+        email="primary@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://sms.example.test",
+        gopay_pin="558023",
+        billing_info={
+            "name": "John Smith",
+            "country": "US",
+            "state": "CA",
+            "city": "San Mateo",
+            "zip": "94401",
+            "address1": "1 Main St",
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "generate_checkout"
+    assert "GoPay 协议模式不会启动 Playwright" in result["message"]
 
 
 def test_looks_like_phone_number():

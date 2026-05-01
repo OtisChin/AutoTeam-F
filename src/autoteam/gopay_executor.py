@@ -6,17 +6,19 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 import requests
 
 from autoteam.auth_session_store import list_auth_session_emails, load_auth_session
 from autoteam.chatgpt_api import ChatGPTTeamAPI
+from autoteam.config import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +72,14 @@ TRANSIENT_HTTP_RETRY_SLEEP_S = 2.0
 TRANSIENT_RETRY_STAGES = {
     "stripe_payment_method",
     "stripe_init",
+    "stripe_elements_session",
     "stripe_confirm",
     "resolve_midtrans_redirect",
     "pm_redirect",
     "midtrans_load_transaction",
     "gopay_validate_reference",
     "gopay_user_consent",
+    "trigger_sms_otp",
     "gopay_validate_otp",
     "gopay_tokenize_pin",
     "gopay_validate_pin",
@@ -114,11 +118,25 @@ class GoPayRateLimited(GoPayFlowError):
     pass
 
 
-def _new_http_session(proxy_url: str | None = None) -> Any:
+def _new_http_session(proxy_url: str | None = None, *, require_curl_cffi: bool = False) -> Any:
     if _CurlCffiSession is not None:
         session = _CurlCffiSession(impersonate=os.environ.get("GOPAY_TLS_IMPERSONATE", "chrome136"))
+        try:
+            session._autoteam_transport = "curl_cffi"  # type: ignore[attr-defined]
+        except Exception:
+            pass
     else:
+        if require_curl_cffi:
+            raise GoPayFlowError(
+                "GoPay ChatGPT checkout/approve 需要 curl-cffi 的 Chrome TLS 指纹；"
+                "当前环境未安装 curl_cffi，请执行 `pip install curl-cffi` 或重新安装项目依赖后重试",
+                stage="chatgpt_http_session",
+            )
         session = requests.Session()
+        try:
+            session._autoteam_transport = "requests"  # type: ignore[attr-defined]
+        except Exception:
+            pass
     session.headers.update(
         {
             "User-Agent": (
@@ -128,12 +146,27 @@ def _new_http_session(proxy_url: str | None = None) -> Any:
             "Accept-Language": "en-US,en;q=0.9",
         }
     )
-    if proxy_url:
+    normalized_proxy_url = normalize_proxy_url(proxy_url)
+    if normalized_proxy_url:
+        logger.info("[gopay_executor] HTTP session proxy enabled: %s", _safe_proxy_summary(normalized_proxy_url))
         try:
-            session.proxies = {"http": proxy_url, "https": proxy_url}
+            session.proxies = {"http": normalized_proxy_url, "https": normalized_proxy_url}
         except Exception:
-            pass
+            logger.exception("[gopay_executor] HTTP session proxy assignment failed")
     return session
+
+
+def _http_transport_name(http: Any) -> str:
+    try:
+        value = getattr(http, "_autoteam_transport", "")
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    module = http.__class__.__module__
+    if module.startswith("curl_cffi"):
+        return "curl_cffi"
+    return "requests"
 
 
 def _response_json(resp, stage: str) -> dict:
@@ -152,6 +185,12 @@ def _ensure_ok(resp, stage: str):
         return
     text = str(getattr(resp, "text", "") or "")
     if _looks_like_gopay_rate_limit_text(text):
+        logger.info(
+            "[gopay_executor] %s returned GoPay rate-limit payload: http_status=%s body=%s",
+            stage,
+            getattr(resp, "status_code", "?"),
+            _compact_log_text(text),
+        )
         raise GoPayRateLimited(_gopay_rate_limited_message(), stage="gopay_rate_limited")
     raise GoPayFlowError(
         f"{stage} 失败: HTTP {getattr(resp, 'status_code', '?')} {(getattr(resp, 'text', '') or '')[:500]}",
@@ -171,6 +210,13 @@ def _is_transient_http_error(exc: Exception) -> bool:
 
 def _env_truthy(name: str) -> bool:
     return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_enabled(name: str, default: bool = True) -> bool:
+    raw = str(os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _parse_amount(value: Any) -> int | None:
@@ -193,6 +239,109 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _mask_log_value(value: Any, *, left: int = 6, right: int = 4) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= left + right:
+        return f"{raw[:2]}***len={len(raw)}"
+    return f"{raw[:left]}...{raw[-right:]}(len={len(raw)})"
+
+
+def _compact_log_text(text: Any, *, limit: int = 220) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}..."
+
+
+def _safe_url_summary(url: Any) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return _mask_log_value(raw)
+
+    host = parsed.hostname or ""
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port:
+        host = f"{host}:{port}"
+    safe_path_segments = []
+    for segment in (parsed.path or "/").split("/"):
+        if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", segment, re.IGNORECASE):
+            safe_path_segments.append(_mask_log_value(segment))
+        elif re.match(r"^(cs|pm|pi|seti|tok|src|snap)_[A-Za-z0-9_=-]{12,}$", segment):
+            safe_path_segments.append(_mask_log_value(segment))
+        elif len(segment) >= 40 and re.fullmatch(r"[A-Za-z0-9_.=-]+", segment):
+            safe_path_segments.append(_mask_log_value(segment))
+        else:
+            safe_path_segments.append(segment)
+    safe_path = "/".join(safe_path_segments) or "/"
+    parts = [f"host={host}", f"path={safe_path}"]
+    query_parts = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        key_lower = key.lower()
+        if key_lower in {"reference", "checkout_session_id", "session_id", "snap_token", "token", "client_secret"}:
+            query_parts.append(f"{key}={_mask_log_value(value)}")
+        elif key_lower in {"target", "locale", "payment_type"}:
+            query_parts.append(f"{key}={value}")
+        else:
+            query_parts.append(f"{key}=<redacted>")
+    if query_parts:
+        parts.append(f"query={','.join(query_parts)}")
+    return " ".join(parts)
+
+
+def _safe_proxy_summary(proxy_url: str | None) -> str:
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return "disabled"
+    try:
+        normalized = normalize_proxy_url(raw)
+        parsed = urlsplit(normalized)
+        username = unquote(parsed.username or "")
+        fields = [
+            "enabled",
+            f"scheme={parsed.scheme}",
+            f"host={parsed.hostname or ''}",
+            f"port={parsed.port or ''}",
+            f"username={_mask_log_value(username, left=8, right=4) if username else '<none>'}",
+            f"password_present={bool(parsed.password)}",
+        ]
+        return " ".join(fields)
+    except Exception as exc:
+        return f"invalid error={exc}"
+
+
+def _safe_email_summary(email: Any) -> str:
+    raw = str(email or "").strip()
+    if "@" not in raw:
+        return _mask_log_value(raw, left=3, right=2)
+    local, domain = raw.split("@", 1)
+    return f"{_mask_log_value(local, left=3, right=2)}@{domain}"
+
+
+def _safe_phone_summary(phone_number: Any, country_code: str = "") -> str:
+    digits = re.sub(r"\D+", "", str(phone_number or ""))
+    prefix = re.sub(r"\D+", "", str(country_code or ""))
+    if not digits:
+        return f"country_code={prefix or '<auto>'} phone=<empty>"
+    return f"country_code={prefix or '<auto>'} phone=***{digits[-4:]}(len={len(digits)})"
+
+
+def _safe_error_summary(error: Any, *, limit: int = 240) -> str:
+    text = _compact_log_text(error, limit=limit)
+    text = re.sub(r"://[^@\s]+@", "://<auth>@", text)
+    text = re.sub(r"([?&](?:token|access_token|session_token|client_secret|otp|pin)=)[^&\s]+", r"\1<redacted>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(Bearer\s+)[A-Za-z0-9._=-]+", r"\1<redacted>", text, flags=re.IGNORECASE)
+    return text
+
+
 def _is_chatgpt_approve_blocked_result(result: dict | None) -> bool:
     if not isinstance(result, dict):
         return False
@@ -212,13 +361,38 @@ def _looks_like_gopay_rate_limit_text(text: str) -> bool:
     return any(
         marker in normalized
         for marker in (
+            "请求过多",
+            "请求太多",
+            "请求频繁",
+            "操作过于频繁",
+            "访问过于频繁",
             "请稍后再试",
             "稍后再试",
             "too many attempts",
+            "too many requests",
+            "rate limited",
+            "rate limit",
             "try again later",
             "please try again later",
             "terlalu banyak",
+            "terlalu banyak permintaan",
+            "terlalu banyak percobaan",
+            "permintaan terlalu banyak",
+            "terlalu sering",
+            "anda sudah mencoba terlalu banyak",
+            "kamu sudah mencoba terlalu banyak",
+            "kamu udah kebanyakan nyoba",
+            "udah kebanyakan nyoba",
+            "kebanyakan nyoba",
+            "kebanyakan mencoba",
+            "sudah terlalu banyak mencoba",
+            "coba lagi setelah beberapa saat",
+            "setelah beberapa saat",
             "coba lagi nanti",
+            "coba beberapa saat lagi",
+            "silakan coba lagi nanti",
+            "silahkan coba lagi nanti",
+            "mohon coba lagi nanti",
         )
     )
 
@@ -370,6 +544,9 @@ def _configure_chatgpt_http_session(
     account_id: str = "",
     device_id: str = "",
     user_agent: str = "",
+    openai_sentinel_token: str = "",
+    oai_client_version: str = "",
+    oai_client_build_number: str = "",
 ) -> dict:
     device_id = str(device_id or "").strip() or str(uuid.uuid4())
     user_agent = str(user_agent or "").strip() or (
@@ -400,6 +577,12 @@ def _configure_chatgpt_http_session(
     }
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
+    if openai_sentinel_token:
+        headers["openai-sentinel-token"] = openai_sentinel_token
+    if oai_client_version:
+        headers["oai-client-version"] = oai_client_version
+    if oai_client_build_number:
+        headers["oai-client-build-number"] = oai_client_build_number
     if resolved_cookie:
         headers["Cookie"] = resolved_cookie
     try:
@@ -419,9 +602,12 @@ def _build_chatgpt_http_session(
     account_id: str = "",
     device_id: str = "",
     user_agent: str = "",
+    openai_sentinel_token: str = "",
+    oai_client_version: str = "",
+    oai_client_build_number: str = "",
     proxy_url: str | None = None,
 ) -> Any:
-    http = _new_http_session(proxy_url)
+    http = _new_http_session(proxy_url, require_curl_cffi=True)
     _configure_chatgpt_http_session(
         http,
         access_token=access_token,
@@ -430,6 +616,9 @@ def _build_chatgpt_http_session(
         account_id=account_id,
         device_id=device_id,
         user_agent=user_agent,
+        openai_sentinel_token=openai_sentinel_token,
+        oai_client_version=oai_client_version,
+        oai_client_build_number=oai_client_build_number,
     )
     return http
 
@@ -576,6 +765,9 @@ def _generate_id_checkout_http(
     account_id: str = "",
     device_id: str = "",
     user_agent: str = "",
+    openai_sentinel_token: str = "",
+    oai_client_version: str = "",
+    oai_client_build_number: str = "",
 ) -> dict:
     _configure_chatgpt_http_session(
         http,
@@ -585,6 +777,9 @@ def _generate_id_checkout_http(
         account_id=account_id,
         device_id=device_id,
         user_agent=user_agent,
+        openai_sentinel_token=openai_sentinel_token,
+        oai_client_version=oai_client_version,
+        oai_client_build_number=oai_client_build_number,
     )
 
     resp = http.post(
@@ -608,6 +803,16 @@ def _generate_id_checkout_http(
     return {"url": checkout_url, "raw": data}
 
 
+def _chatgpt_approve_blocked_message(payload: dict) -> str:
+    return (
+        f"ChatGPT approve 未通过: {payload}；"
+        "这发生在 GoPay/Midtrans 前，表示 ChatGPT checkout approve 被风控拦截。"
+        "浏览器能打开 checkout 页不等于协议 approve 会通过。"
+        "可等待账号冷却、切换 auth_session，或在浏览器手动选择 GoPay 后把 "
+        "pm-redirects.stripe.com / app.midtrans.com/snap 链接粘到 Checkout 链接继续接管 GoPay"
+    )
+
+
 def _approve_checkout_http(
     http: Any,
     *,
@@ -619,19 +824,15 @@ def _approve_checkout_http(
     device_id: str = "",
     openai_sentinel_token: str = "",
 ) -> dict:
-    if access_token or cookie_header or account_id or device_id:
+    if access_token or cookie_header or account_id or device_id or openai_sentinel_token:
         _configure_chatgpt_http_session(
             http,
             access_token=access_token,
             cookie_header=cookie_header,
             account_id=account_id,
             device_id=device_id,
+            openai_sentinel_token=openai_sentinel_token,
         )
-    if openai_sentinel_token:
-        try:
-            http.headers.update({"openai-sentinel-token": openai_sentinel_token})
-        except Exception:
-            pass
     try:
         http.post(
             "https://chatgpt.com/backend-api/sentinel/ping",
@@ -639,8 +840,13 @@ def _approve_checkout_http(
             timeout=HTTP_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        logger.info("[gopay_executor] sentinel ping before approve skipped: %s", exc)
-
+        logger.info("[gopay_executor] sentinel ping before approve skipped: %s", _safe_error_summary(exc))
+    logger.info(
+        "[gopay_executor] ChatGPT approve request using reference-style session headers: cookie_present=%s auth_present=%s sentinel_present=%s",
+        bool(cookie_header or _cookie_header_from_http_session(http)),
+        bool(access_token),
+        bool(openai_sentinel_token),
+    )
     resp = http.post(
         "https://chatgpt.com/backend-api/payments/checkout/approve",
         json={
@@ -656,7 +862,7 @@ def _approve_checkout_http(
         )
     payload = _response_json(resp, "chatgpt_approve")
     if payload.get("result") not in (None, "approved"):
-        raise GoPayFlowError(f"ChatGPT approve 未通过: {payload}", stage="chatgpt_approve")
+        raise GoPayFlowError(_chatgpt_approve_blocked_message(payload), stage="chatgpt_approve")
     return payload
 
 
@@ -671,19 +877,15 @@ def _verify_checkout_http(
     device_id: str = "",
     openai_sentinel_token: str = "",
 ) -> dict:
-    if access_token or cookie_header or account_id or device_id:
-        _configure_chatgpt_http_session(
-            http,
-            access_token=access_token,
-            cookie_header=cookie_header,
-            account_id=account_id,
-            device_id=device_id,
-        )
-    if openai_sentinel_token:
-        try:
-            http.headers.update({"openai-sentinel-token": openai_sentinel_token})
-        except Exception:
-            pass
+    headers = _chatgpt_checkout_headers(
+        access_token=access_token,
+        checkout_session_id=checkout_session_id,
+        processor_entity=processor_entity,
+        cookie_header=cookie_header,
+        account_id=account_id,
+        device_id=device_id,
+        openai_sentinel_token=openai_sentinel_token,
+    )
     resp = http.get(
         "https://chatgpt.com/checkout/verify",
         params={
@@ -691,6 +893,7 @@ def _verify_checkout_http(
             "processor_entity": processor_entity,
             "plan_type": "plus",
         },
+        headers=headers,
         timeout=HTTP_TIMEOUT_SECONDS,
     )
     if resp.status_code == 200:
@@ -715,6 +918,71 @@ def _collect_page_cookie_header(api: ChatGPTTeamAPI) -> str:
         seen.add(name)
         parts.append(f"{name}={value}")
     return "; ".join(parts)
+
+
+def _inject_chatgpt_browser_cookies(
+    api: ChatGPTTeamAPI,
+    *,
+    session_token: str = "",
+    cookie_header: str = "",
+    account_id: str = "",
+    device_id: str = "",
+):
+    if not getattr(api, "context", None):
+        raise GoPayFlowError("浏览器上下文未初始化，无法注入 ChatGPT 登录态", stage="chatgpt_approve")
+
+    cookies = []
+    seen = set()
+    token = str(session_token or "").strip()
+    if token:
+        for cookie in api._build_session_cookies(token, "chatgpt.com"):
+            seen.add(str(cookie.get("name") or ""))
+            cookies.append(cookie)
+
+    for raw in str(cookie_header or "").split(";"):
+        if "=" not in raw:
+            continue
+        name, value = raw.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not name or not value or name in seen:
+            continue
+        seen.add(name)
+        cookies.append(
+            {
+                "name": name,
+                "value": value,
+                "domain": "chatgpt.com",
+                "path": "/",
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        )
+
+    if account_id and "_account" not in seen:
+        cookies.append(
+            {
+                "name": "_account",
+                "value": account_id,
+                "domain": "chatgpt.com",
+                "path": "/",
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        )
+    if device_id and "oai-did" not in seen:
+        cookies.append(
+            {
+                "name": "oai-did",
+                "value": device_id,
+                "domain": "chatgpt.com",
+                "path": "/",
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        )
+    if cookies:
+        api.context.add_cookies(cookies)
 
 
 def _load_checkout_context_in_page(
@@ -781,11 +1049,7 @@ def _approve_checkout_in_page(
                         body: "{}"
                     });
                 } catch (_) {}
-                const headers = {
-                    "Content-Type": "application/json",
-                    "x-openai-target-path": "/backend-api/payments/checkout/approve",
-                    "x-openai-target-route": "/backend-api/payments/checkout/approve"
-                };
+                const headers = { "Content-Type": "application/json" };
                 if (payload.access_token) {
                     headers.Authorization = "Bearer " + payload.access_token;
                 }
@@ -818,8 +1082,56 @@ def _approve_checkout_in_page(
         raise GoPayFlowError(
             f"ChatGPT approve 失败: HTTP {result.get('status')} {detail or result.get('data')}",
             stage="chatgpt_approve",
-        )
+    )
     return result.get("data") or {}
+
+
+def _approve_checkout_with_browser_context(
+    api: ChatGPTTeamAPI,
+    *,
+    access_token: str,
+    session_token: str = "",
+    cookie_header: str = "",
+    checkout_session_id: str,
+    processor_entity: str,
+    account_id: str = "",
+    device_id: str = "",
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
+) -> dict:
+    if not _env_enabled("GOPAY_APPROVE_BROWSER_FALLBACK", True):
+        raise GoPayFlowError("ChatGPT approve 浏览器 fallback 已禁用", stage="chatgpt_approve")
+    if not getattr(api, "browser", None):
+        api.account_id = account_id or getattr(api, "account_id", "")
+        api.oai_device_id = device_id or getattr(api, "oai_device_id", "") or str(uuid.uuid4())
+        api._launch_browser(proxy_url=proxy_url, proxy_bypass=proxy_bypass)
+        _inject_chatgpt_browser_cookies(
+            api,
+            session_token=session_token,
+            cookie_header=cookie_header,
+            account_id=account_id,
+            device_id=device_id,
+        )
+
+    context = _load_checkout_context_in_page(
+        api,
+        checkout_session_id=checkout_session_id,
+        processor_entity=processor_entity,
+        timeout_ms=20000,
+    )
+    result = _approve_checkout_in_page(
+        api,
+        access_token=access_token,
+        checkout_session_id=checkout_session_id,
+        processor_entity=processor_entity,
+    )
+    if result.get("result") not in (None, "approved"):
+        raise GoPayFlowError(_chatgpt_approve_blocked_message(result), stage="chatgpt_approve")
+    if context.get("cookie_header"):
+        result["_browser_cookie_header"] = context["cookie_header"]
+    if context.get("openai_sentinel_token"):
+        result["_browser_openai_sentinel_token"] = context["openai_sentinel_token"]
+    return result
 
 
 def _verify_checkout_in_page(
@@ -863,175 +1175,12 @@ def _verify_checkout_in_page(
     return {"state": "verify_timeout", "verify": result}
 
 
-def _new_isolated_gopay_context(api: ChatGPTTeamAPI):
-    browser = getattr(api, "browser", None)
-    if not browser:
-        raise GoPayFlowError("浏览器尚未启动，无法打开 GoPay 授权页", stage="trigger_sms_otp")
-    return browser.new_context(
-        viewport={"width": 1280, "height": 800},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
-        ),
-        locale="en-US",
-        extra_http_headers={
-            "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
-        },
-    )
-
-
-def _page_text(page, limit: int = 2000) -> str:
-    try:
-        return str(page.locator("body").inner_text(timeout=1200) or "")[:limit]
-    except Exception:
-        return ""
-
-
-def _raise_if_gopay_rate_limited_page(page, progress: Callable[..., None] | None = None):
-    if _looks_like_gopay_rate_limit_text(_page_text(page)):
-        if callable(progress):
-            progress("gopay_rate_limited")
-        raise GoPayRateLimited(_gopay_rate_limited_message(), stage="gopay_rate_limited")
-
-
-def _trigger_sms_otp_in_page(
-    api: ChatGPTTeamAPI,
-    *,
-    activation_link_url: str,
-    proxy_url: str | None = None,
-    proxy_bypass: str | None = None,
-    wait_seconds: float | None = None,
-    is_cancelled=None,
-    progress: Callable[..., None] | None = None,
-):
-    url = str(activation_link_url or "").strip()
-    if not url:
-        raise GoPayFlowError("缺少 GoPay activation_link_url，无法切换 SMS OTP", stage="trigger_sms_otp")
-
-    wait_seconds = (
-        _env_float("GOPAY_SMS_OTP_DELAY_SECONDS", GOPAY_SMS_OTP_DELAY_S)
-        if wait_seconds is None
-        else float(wait_seconds or 0)
-    )
-    if callable(progress):
-        progress("wait_sms_otp_window", wait_seconds=int(wait_seconds))
-
-    isolated_context = None
-    try:
-        if not getattr(api, "browser", None):
-            api._launch_browser(proxy_url=proxy_url, proxy_bypass=proxy_bypass)
-        isolated_context = _new_isolated_gopay_context(api)
-        page = isolated_context.new_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        _raise_if_gopay_rate_limited_page(page, progress)
-    except Exception as exc:
-        try:
-            if isolated_context:
-                isolated_context.close()
-        except Exception:
-            pass
-        if isinstance(exc, GoPayFlowError):
-            raise
-        raise GoPayFlowError(f"打开 GoPay SMS OTP 页面失败: {exc}", stage="trigger_sms_otp") from exc
-
-    try:
-        deadline = time.time() + max(30.0, wait_seconds + 45.0)
-        last_error = ""
-        patterns = (
-            r"\bSMS\b",
-            r"kirim.*sms",
-            r"send.*sms",
-            r"via.*sms",
-            r"text\s*message",
-            r"gunakan.*sms",
-        )
-        while time.time() < deadline:
-            if callable(is_cancelled) and is_cancelled():
-                raise GoPayOTPCancelled("任务已取消", stage="trigger_sms_otp")
-            _raise_if_gopay_rate_limited_page(page, progress)
-            if callable(progress):
-                progress("trigger_sms_otp")
-
-            for pattern in patterns:
-                try:
-                    locator = page.get_by_role("button", name=re.compile(pattern, re.IGNORECASE)).first
-                    if locator.is_visible(timeout=500):
-                        locator.click(timeout=5000)
-                        page.wait_for_timeout(1500)
-                        _raise_if_gopay_rate_limited_page(page, progress)
-                        if callable(progress):
-                            progress("sms_otp_triggered")
-                        return
-                except GoPayFlowError:
-                    raise
-                except Exception as exc:
-                    last_error = str(exc)
-                try:
-                    locator = page.get_by_role("link", name=re.compile(pattern, re.IGNORECASE)).first
-                    if locator.is_visible(timeout=500):
-                        locator.click(timeout=5000)
-                        page.wait_for_timeout(1500)
-                        _raise_if_gopay_rate_limited_page(page, progress)
-                        if callable(progress):
-                            progress("sms_otp_triggered")
-                        return
-                except GoPayFlowError:
-                    raise
-                except Exception as exc:
-                    last_error = str(exc)
-
-            try:
-                clicked = page.evaluate(
-                    """() => {
-                        const re = /sms/i;
-                        const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],[onclick]'));
-                        for (const el of nodes) {
-                            const text = (el.innerText || el.textContent || '').trim();
-                            const rect = el.getBoundingClientRect();
-                            const style = window.getComputedStyle(el);
-                            if (!re.test(text) || rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') {
-                                continue;
-                            }
-                            el.click();
-                            return true;
-                        }
-                        return false;
-                    }"""
-                )
-                if clicked:
-                    page.wait_for_timeout(1500)
-                    _raise_if_gopay_rate_limited_page(page, progress)
-                    if callable(progress):
-                        progress("sms_otp_triggered")
-                    return
-            except GoPayFlowError:
-                raise
-            except Exception as exc:
-                last_error = str(exc)
-
-            try:
-                page.wait_for_timeout(1000)
-            except Exception:
-                time.sleep(1)
-
-        if callable(progress):
-            progress("sms_otp_trigger_failed")
-        raise GoPayFlowError(f"未找到或无法点击 GoPay SMS OTP 按钮: {last_error}", stage="trigger_sms_otp")
-    finally:
-        try:
-            if isolated_context:
-                isolated_context.close()
-        except Exception:
-            pass
-
-
 class GoPayHttpCharger:
     """Stripe -> Midtrans -> GoPay tokenization flow.
 
-    ChatGPT endpoints still run through Playwright page callbacks so the
-    project keeps using its existing logged-in browser context. External
-    Stripe/Midtrans/GoPay calls are plain HTTP and no longer depend on the
-    fragile checkout DOM.
+    ChatGPT/Stripe/Midtrans/GoPay calls are plain HTTP. The production GoPay
+    path does not open the GoPay authorize page; SMS OTP is triggered by the
+    same /v1/linking/resend-otp endpoint used by the web client.
     """
 
     def __init__(
@@ -1048,6 +1197,8 @@ class GoPayHttpCharger:
         approve_callback: Callable[[str], dict] | None = None,
         verify_callback: Callable[[str], dict] | None = None,
         sms_otp_trigger_callback: Callable[[str, str], None] | None = None,
+        otp_channel: str = "whatsapp",
+        sms_resend_wait_seconds: float | None = None,
         is_cancelled=None,
         progress_callback=None,
     ):
@@ -1063,10 +1214,17 @@ class GoPayHttpCharger:
         self.approve_callback = approve_callback
         self.verify_callback = verify_callback
         self.sms_otp_trigger_callback = sms_otp_trigger_callback
+        self.otp_channel = str(otp_channel or "whatsapp").strip().lower()
+        self.sms_resend_wait_seconds = (
+            _env_float("GOPAY_SMS_OTP_DELAY_SECONDS", GOPAY_SMS_OTP_DELAY_S)
+            if sms_resend_wait_seconds is None
+            else float(sms_resend_wait_seconds or 0)
+        )
         self.is_cancelled = is_cancelled
         self.progress_callback = progress_callback
         self.expected_due_amount: int | None = None
         self.expected_due_currency = ""
+        self._stripe_expected_due_checked = False
         self.activation_link_url = ""
 
     def _progress(self, stage: str, **extra):
@@ -1079,6 +1237,12 @@ class GoPayHttpCharger:
         if callable(self.is_cancelled) and self.is_cancelled():
             raise GoPayFlowError("任务已取消", stage="cancelled")
 
+    def _sleep_with_cancel(self, seconds: float):
+        deadline = time.time() + max(0.0, float(seconds or 0))
+        while time.time() < deadline:
+            self._check_cancelled()
+            time.sleep(min(1.0, max(0.0, deadline - time.time())))
+
     def _request(self, method: str, url: str, *, stage: str, **kwargs):
         func = getattr(self.http, method.lower())
         timeout = kwargs.pop("timeout", HTTP_TIMEOUT_SECONDS)
@@ -1087,7 +1251,23 @@ class GoPayHttpCharger:
         for attempt in range(1, attempts + 1):
             self._check_cancelled()
             try:
-                return func(url, timeout=timeout, **kwargs)
+                logger.info(
+                    "[gopay_executor] HTTP request: stage=%s method=%s attempt=%s/%s timeout=%s url=%s",
+                    stage,
+                    method.upper(),
+                    attempt,
+                    attempts,
+                    timeout,
+                    _safe_url_summary(url),
+                )
+                resp = func(url, timeout=timeout, **kwargs)
+                logger.info(
+                    "[gopay_executor] HTTP response: stage=%s status=%s url=%s",
+                    stage,
+                    getattr(resp, "status_code", "?"),
+                    _safe_url_summary(url),
+                )
+                return resp
             except Exception as exc:
                 last_exc = exc
                 if attempt >= attempts or not _is_transient_http_error(exc):
@@ -1097,14 +1277,22 @@ class GoPayHttpCharger:
                     stage,
                     attempt + 1,
                     attempts,
-                    exc,
+                    _safe_error_summary(exc),
                 )
                 time.sleep(TRANSIENT_HTTP_RETRY_SLEEP_S)
         raise last_exc or GoPayFlowError(f"{stage} HTTP 请求失败", stage=stage)
 
-    def _stripe_create_payment_method(self, checkout_session_id: str, stripe_pk: str) -> str:
+    def _stripe_create_payment_method(self, checkout_session_id: str, stripe_pk: str, init_ctx: dict | None = None) -> str:
         self._progress("stripe_create_payment_method")
         billing = self.billing_info
+        init_ctx = init_ctx or {}
+        runtime = _stripe_runtime_from_env()
+        runtime.update({k: v for k, v in self.runtime.items() if v})
+        runtime_version = runtime.get("version") or DEFAULT_STRIPE_RUNTIME_VERSION
+        stripe_js_id = init_ctx.get("stripe_js_id") or str(uuid.uuid4())
+        elements_session_id = init_ctx.get("elements_session_id") or f"elements_session_{uuid.uuid4().hex[:11]}"
+        elements_session_config_id = init_ctx.get("elements_session_config_id") or str(uuid.uuid4())
+        checkout_config_id = init_ctx.get("payment_method_checkout_config_id") or init_ctx.get("config_id") or ""
         data = {
             "billing_details[name]": billing.get("name") or "John Doe",
             "billing_details[email]": billing.get("email") or "buyer@example.com",
@@ -1114,7 +1302,25 @@ class GoPayHttpCharger:
             "billing_details[address][postal_code]": billing.get("zip") or "90026",
             "billing_details[address][state]": billing.get("state") or "CA",
             "type": "gopay",
+            "payment_user_agent": f"stripe.js/{runtime_version}; stripe-js-v3/{runtime_version}; payment-element; deferred-intent",
+            "referrer": "https://chatgpt.com",
+            "time_on_page": str(random.randint(25000, 55000)),
+            "client_attribution_metadata[client_session_id]": stripe_js_id,
             "client_attribution_metadata[checkout_session_id]": checkout_session_id,
+            "client_attribution_metadata[checkout_config_id]": checkout_config_id,
+            "client_attribution_metadata[elements_session_id]": elements_session_id,
+            "client_attribution_metadata[elements_session_config_id]": elements_session_config_id,
+            "client_attribution_metadata[merchant_integration_source]": "elements",
+            "client_attribution_metadata[merchant_integration_subtype]": "payment-element",
+            "client_attribution_metadata[merchant_integration_version]": "2021",
+            "client_attribution_metadata[payment_intent_creation_flow]": "deferred",
+            "client_attribution_metadata[payment_method_selection_flow]": "automatic",
+            "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
+            "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
+            "guid": init_ctx.get("guid") or uuid.uuid4().hex,
+            "muid": init_ctx.get("muid") or uuid.uuid4().hex,
+            "sid": init_ctx.get("sid") or uuid.uuid4().hex,
+            "_stripe_version": STRIPE_VERSION_FULL,
             "key": stripe_pk,
         }
         resp = self._request("post", f"{STRIPE_API}/v1/payment_methods", data=data, stage="stripe_payment_method")
@@ -1180,14 +1386,65 @@ class GoPayHttpCharger:
             "elements_options_client": elements_options,
             "config_id": str(payload.get("config_id") or ""),
             "expected_amount": self._checkout_amount(payload),
+            "currency": str(payload.get("currency") or "idr").lower(),
             "return_url": str(payload.get("return_url") or ""),
             "stripe_hosted_url": str(payload.get("stripe_hosted_url") or ""),
             "locale": str(payload.get("locale") or "en"),
         }
 
-    def _stripe_confirm(self, checkout_session_id: str, payment_method_id: str, stripe_pk: str) -> dict:
+    def _stripe_elements_session(self, checkout_session_id: str, stripe_pk: str, init_ctx: dict) -> dict:
+        self._progress("stripe_elements_session")
+        amount = init_ctx.get("expected_amount")
+        if amount is None:
+            amount = "0"
+        currency = str(init_ctx.get("currency") or "idr").lower()
+        locale = str(init_ctx.get("locale") or "en")
+        params = {
+            "client_betas[0]": "custom_checkout_server_updates_1",
+            "client_betas[1]": "custom_checkout_manual_approval_1",
+            "deferred_intent[mode]": "subscription",
+            "deferred_intent[amount]": str(int(_parse_amount(amount) or 0)),
+            "deferred_intent[currency]": currency,
+            "deferred_intent[setup_future_usage]": "off_session",
+            "deferred_intent[payment_method_types][0]": "gopay",
+            "currency": currency,
+            "key": stripe_pk,
+            "_stripe_version": STRIPE_VERSION_FULL,
+            "elements_init_source": "custom_checkout",
+            "referrer_host": "chatgpt.com",
+            "stripe_js_id": init_ctx["stripe_js_id"],
+            "locale": locale,
+            "type": "deferred_intent",
+            "checkout_session_id": checkout_session_id,
+        }
+        resp = self._request("get", f"{STRIPE_API}/v1/elements/sessions", params=params, stage="stripe_elements_session")
+        if resp.status_code != 200:
+            logger.info(
+                "[gopay_executor] Stripe elements/sessions skipped: HTTP %s %s",
+                resp.status_code,
+                _compact_log_text(resp.text or "", limit=160),
+            )
+            return {}
+        payload = _response_json(resp, "stripe_elements_session")
+        real_session_id = str(payload.get("session_id") or payload.get("id") or "")
+        if real_session_id:
+            init_ctx["elements_session_id"] = real_session_id
+        if payload.get("config_id"):
+            init_ctx["config_id"] = str(payload.get("config_id") or "")
+        if payload.get("payment_method_checkout_config_id"):
+            init_ctx["payment_method_checkout_config_id"] = str(payload.get("payment_method_checkout_config_id") or "")
+        if payload.get("elements_session_config_id"):
+            init_ctx["elements_session_config_id"] = str(payload.get("elements_session_config_id") or "")
+        logger.info(
+            "[gopay_executor] Stripe elements/sessions ready: session_id_present=%s config_id_present=%s",
+            bool(real_session_id),
+            bool(init_ctx.get("config_id")),
+        )
+        return payload
+
+    def _stripe_confirm(self, checkout_session_id: str, payment_method_id: str, stripe_pk: str, init_ctx: dict | None = None) -> dict:
         self._progress("stripe_confirm")
-        init_ctx = self._stripe_init(checkout_session_id, stripe_pk)
+        init_ctx = init_ctx or self._stripe_init(checkout_session_id, stripe_pk)
         self.expected_due_amount = _parse_amount(init_ctx.get("expected_amount"))
         self.expected_due_currency = "stripe"
         runtime = _stripe_runtime_from_env()
@@ -1283,6 +1540,41 @@ class GoPayHttpCharger:
                 return str((candidate.get("redirect_to_url") or {}).get("url") or "")
         return ""
 
+    @staticmethod
+    def _confirm_requires_checkout_approval(payload: dict) -> bool:
+        candidates = []
+        for key in ("submission_attempt", "session"):
+            obj = payload.get(key)
+            if isinstance(obj, dict):
+                candidates.append(obj)
+                nested = obj.get("submission_attempt")
+                if isinstance(nested, dict):
+                    candidates.append(nested)
+        payment_page = payload.get("payment_page")
+        if isinstance(payment_page, dict):
+            session = payment_page.get("session")
+            if isinstance(session, dict):
+                candidates.append(session)
+                nested = session.get("submission_attempt")
+                if isinstance(nested, dict):
+                    candidates.append(nested)
+        return any(str(candidate.get("state") or "") == "requires_approval" for candidate in candidates)
+
+    @staticmethod
+    def _confirm_state_summary(payload: dict) -> str:
+        setup_intent = payload.get("setup_intent") if isinstance(payload.get("setup_intent"), dict) else {}
+        payment_intent = payload.get("payment_intent") if isinstance(payload.get("payment_intent"), dict) else {}
+        session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+        submission_attempt = payload.get("submission_attempt") if isinstance(payload.get("submission_attempt"), dict) else {}
+        if not submission_attempt and isinstance(session.get("submission_attempt"), dict):
+            submission_attempt = session["submission_attempt"]
+        return (
+            f"submission_attempt={submission_attempt.get('state')!r} "
+            f"setup_intent={setup_intent.get('status')!r} "
+            f"payment_intent={payment_intent.get('status')!r} "
+            f"payment_status={payload.get('payment_status')!r} status={payload.get('status')!r}"
+        )
+
     def _resolve_snap_token(self, checkout_session_id: str, stripe_pk: str) -> str:
         self._progress("resolve_midtrans_redirect")
         params = {
@@ -1368,28 +1660,38 @@ class GoPayHttpCharger:
             amount = 0
         return amount, currency
 
-    def _guard_final_charge(self, transaction: dict):
+    def _guard_stripe_expected_due(self):
+        if _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
+            return False
+        if self.expected_due_amount is None:
+            return False
+        if self.expected_due_amount <= 0:
+            if not self._stripe_expected_due_checked:
+                self._progress("stripe_zero_due_confirmed")
+            self._stripe_expected_due_checked = True
+            return True
+        self._stripe_expected_due_checked = True
+        self._progress("stripe_nonzero_amount_blocked", expected_amount=str(self.expected_due_amount))
+        raise GoPayChargeBlocked(
+            (
+                f"Stripe expected_amount={self.expected_due_amount} 非 0，已在 ChatGPT approve / GoPay 绑定前停止；"
+                "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
+            ),
+            stage="stripe_charge_guard",
+        )
+
+    def _guard_before_gopay_binding(self, transaction: dict):
+        if self._guard_stripe_expected_due():
+            return
         if _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
             return
-        if self.expected_due_amount is not None:
-            if self.expected_due_amount <= 0:
-                self._progress("stripe_zero_due_confirmed")
-                return
-            self._progress("stripe_nonzero_amount_blocked", expected_amount=str(self.expected_due_amount))
-            raise GoPayChargeBlocked(
-                (
-                    f"Stripe expected_amount={self.expected_due_amount} 非 0，已在最终扣款前停止；"
-                    "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
-                ),
-                stage="stripe_charge_guard",
-            )
         amount, currency = self._midtrans_gross_amount(transaction)
         if amount <= 0:
             return
         self._progress("midtrans_nonzero_amount_blocked", gross_amount=str(amount), currency=currency)
         raise GoPayChargeBlocked(
             (
-                f"Midtrans gross_amount={amount} {currency or 'IDR'} 非 0，已在最终扣款前停止；"
+                f"Midtrans gross_amount={amount} {currency or 'IDR'} 非 0，已在 GoPay 绑定前停止；"
                 "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
             ),
             stage="midtrans_charge_guard",
@@ -1410,6 +1712,13 @@ class GoPayHttpCharger:
         }
         last_error = ""
         for attempt in range(1, GOPAY_LINK_RETRY_LIMIT + 2):
+            logger.info(
+                "[gopay_executor] Midtrans linking attempt: snap_token=%s attempt=%s/%s phone=%s",
+                _mask_log_value(snap_token),
+                attempt,
+                GOPAY_LINK_RETRY_LIMIT + 1,
+                _safe_phone_summary(self.phone_number, self.country_code),
+            )
             resp = self._request(
                 "post",
                 f"https://app.midtrans.com/snap/v3/accounts/{snap_token}/linking",
@@ -1423,6 +1732,11 @@ class GoPayHttpCharger:
                 matched = re.search(r"reference=([a-f0-9-]{36})", self.activation_link_url)
                 if not matched:
                     raise GoPayFlowError(f"Midtrans linking 缺少 reference: {payload}", stage="midtrans_linking")
+                logger.info(
+                    "[gopay_executor] Midtrans linking succeeded: reference=%s activation=%s",
+                    _mask_log_value(matched.group(1)),
+                    _safe_url_summary(self.activation_link_url),
+                )
                 return matched.group(1)
             if resp.status_code == 406:
                 payload = _response_json(resp, "midtrans_linking")
@@ -1449,7 +1763,7 @@ class GoPayHttpCharger:
                     )
                     logger.info(
                         "[gopay_executor] Midtrans linking already linked (%s), wait %ss before retry %s/%s",
-                        last_error,
+                        _safe_error_summary(last_error),
                         GOPAY_LINK_RETRY_SLEEP_S,
                         attempt,
                         GOPAY_LINK_RETRY_LIMIT,
@@ -1458,7 +1772,7 @@ class GoPayHttpCharger:
                     continue
                 logger.info(
                     "[gopay_executor] Midtrans linking 406 (%s), retry %s/%s",
-                    last_error,
+                    _safe_error_summary(last_error),
                     attempt,
                     GOPAY_LINK_RETRY_LIMIT,
                 )
@@ -1481,9 +1795,11 @@ class GoPayHttpCharger:
         payload = _response_json(resp, "gopay_validate_reference")
         if _looks_like_gopay_rate_limit_payload(payload):
             self._progress("gopay_rate_limited")
+            logger.info("[gopay_executor] GoPay validate-reference returned rate-limit payload: %s", _safe_error_summary(payload))
             raise GoPayRateLimited(_gopay_rate_limited_message(), stage="gopay_rate_limited")
         if not payload.get("success"):
             raise GoPayFlowError(f"GoPay validate-reference 失败: {payload}", stage="gopay_validate_reference")
+        logger.info("[gopay_executor] GoPay validate-reference succeeded: reference=%s", _mask_log_value(reference_id))
 
     def _gopay_user_consent(self, reference_id: str):
         self._progress("gopay_user_consent")
@@ -1502,9 +1818,51 @@ class GoPayHttpCharger:
         payload = _response_json(resp, "gopay_user_consent")
         if _looks_like_gopay_rate_limit_payload(payload):
             self._progress("gopay_rate_limited")
+            logger.info("[gopay_executor] GoPay user-consent returned rate-limit payload: %s", _safe_error_summary(payload))
             raise GoPayRateLimited(_gopay_rate_limited_message(), stage="gopay_rate_limited")
         if not payload.get("success"):
             raise GoPayFlowError(f"GoPay user-consent 失败: {payload}", stage="gopay_user_consent")
+        logger.info("[gopay_executor] GoPay user-consent succeeded: reference=%s", _mask_log_value(reference_id))
+
+    def _gopay_resend_otp(self, reference_id: str):
+        self._progress("trigger_sms_otp")
+        resp = self._request(
+            "post",
+            "https://gwa.gopayapi.com/v1/linking/resend-otp",
+            json={"reference_id": reference_id},
+            headers={
+                "Origin": "https://merchants-gws-app.gopayapi.com",
+                "Referer": "https://merchants-gws-app.gopayapi.com/",
+                "x-user-locale": "en-US",
+            },
+            stage="trigger_sms_otp",
+        )
+        _ensure_ok(resp, "trigger_sms_otp")
+        payload = _response_json(resp, "trigger_sms_otp")
+        if _looks_like_gopay_rate_limit_payload(payload):
+            self._progress("gopay_rate_limited")
+            logger.info("[gopay_executor] GoPay resend-otp returned rate-limit payload: %s", _safe_error_summary(payload))
+            raise GoPayRateLimited(_gopay_rate_limited_message(), stage="gopay_rate_limited")
+        if not payload.get("success"):
+            raise GoPayFlowError(f"GoPay resend-otp 失败: {payload}", stage="trigger_sms_otp")
+        self._progress("sms_otp_triggered")
+        logger.info("[gopay_executor] GoPay SMS OTP triggered via protocol resend: reference=%s", _mask_log_value(reference_id))
+
+    def _trigger_linking_otp_channel(self, reference_id: str):
+        if self.otp_channel == "sms":
+            wait_seconds = max(0.0, float(self.sms_resend_wait_seconds or 0))
+            self._progress("wait_sms_otp_window", wait_seconds=int(wait_seconds))
+            logger.info(
+                "[gopay_executor] waiting before protocol SMS OTP resend: reference=%s wait_seconds=%s",
+                _mask_log_value(reference_id),
+                int(wait_seconds),
+            )
+            self._sleep_with_cancel(wait_seconds)
+            self._gopay_resend_otp(reference_id)
+            return
+
+        if callable(self.sms_otp_trigger_callback):
+            self.sms_otp_trigger_callback(reference_id, self.activation_link_url)
 
     def _gopay_validate_otp(self, reference_id: str, otp: str) -> tuple[str, str]:
         self._progress("gopay_validate_otp")
@@ -1519,6 +1877,7 @@ class GoPayHttpCharger:
         payload = _response_json(resp, "gopay_validate_otp")
         if _looks_like_gopay_rate_limit_payload(payload):
             self._progress("gopay_rate_limited")
+            logger.info("[gopay_executor] GoPay validate-otp returned rate-limit payload: %s", _safe_error_summary(payload))
             raise GoPayRateLimited(_gopay_rate_limited_message(), stage="gopay_rate_limited")
         if not payload.get("success"):
             raise GoPayFlowError(f"GoPay OTP 校验失败: {payload}", stage="gopay_validate_otp")
@@ -1527,6 +1886,12 @@ class GoPayHttpCharger:
         client_id = str(challenge.get("client_id") or "")
         if not challenge_id or not client_id:
             raise GoPayFlowError(f"GoPay OTP 返回缺少 PIN challenge: {payload}", stage="gopay_validate_otp")
+        logger.info(
+            "[gopay_executor] GoPay validate-otp succeeded: reference=%s challenge_present=%s client_id_present=%s",
+            _mask_log_value(reference_id),
+            bool(challenge_id),
+            bool(client_id),
+        )
         return challenge_id, client_id
 
     def _tokenize_pin(self, challenge_id: str, client_id: str) -> str:
@@ -1655,10 +2020,35 @@ class GoPayHttpCharger:
         return {"state": "succeeded"}
 
     def run(self, *, checkout_session_id: str, stripe_pk: str) -> dict:
-        payment_method_id = self._stripe_create_payment_method(checkout_session_id, stripe_pk)
-        self._stripe_confirm(checkout_session_id, payment_method_id, stripe_pk)
-        self._approve_checkout(checkout_session_id)
-        snap_token = self._resolve_snap_token(checkout_session_id, stripe_pk)
+        init_ctx = self._stripe_init(checkout_session_id, stripe_pk)
+        self.expected_due_amount = _parse_amount(init_ctx.get("expected_amount"))
+        self.expected_due_currency = "stripe"
+        self._guard_stripe_expected_due()
+        self._stripe_elements_session(checkout_session_id, stripe_pk, init_ctx)
+        payment_method_id = self._stripe_create_payment_method(checkout_session_id, stripe_pk, init_ctx=init_ctx)
+        confirm_payload = self._stripe_confirm(checkout_session_id, payment_method_id, stripe_pk, init_ctx=init_ctx)
+        self._guard_stripe_expected_due()
+        confirm_redirect_url = self._extract_redirect_url(confirm_payload)
+        if confirm_redirect_url:
+            self._progress("resolve_midtrans_redirect", source="stripe_confirm")
+            logger.info(
+                "[gopay_executor] Stripe confirm returned redirect, skip ChatGPT approve: %s",
+                _safe_url_summary(confirm_redirect_url),
+            )
+            snap_token = self._fetch_pm_redirect_snap_token(confirm_redirect_url)
+        else:
+            if self._confirm_requires_checkout_approval(confirm_payload):
+                logger.info(
+                    "[gopay_executor] Stripe confirm requires ChatGPT approve: %s",
+                    self._confirm_state_summary(confirm_payload),
+                )
+                self._approve_checkout(checkout_session_id)
+            else:
+                logger.info(
+                    "[gopay_executor] Stripe confirm did not explicitly require ChatGPT approve, resolving redirect: %s",
+                    self._confirm_state_summary(confirm_payload),
+                )
+            snap_token = self._resolve_snap_token(checkout_session_id, stripe_pk)
         result = self.run_from_snap_token(snap_token=snap_token, checkout_session_id=checkout_session_id)
         result["session_id"] = checkout_session_id
         result["checkout_session_id"] = checkout_session_id
@@ -1670,11 +2060,11 @@ class GoPayHttpCharger:
 
     def run_from_snap_token(self, *, snap_token: str, checkout_session_id: str = "") -> dict:
         transaction = self._midtrans_load_transaction(snap_token)
+        self._guard_before_gopay_binding(transaction)
         reference_id = self._midtrans_init_linking(snap_token)
         self._gopay_validate_reference(reference_id)
         self._gopay_user_consent(reference_id)
-        if callable(self.sms_otp_trigger_callback):
-            self.sms_otp_trigger_callback(reference_id, self.activation_link_url)
+        self._trigger_linking_otp_channel(reference_id)
         self._progress("wait_otp")
         otp = self.otp_provider()
         if not otp:
@@ -1683,7 +2073,6 @@ class GoPayHttpCharger:
         pin_token = self._tokenize_pin(challenge_id, client_id)
         self._gopay_validate_pin(reference_id, pin_token)
 
-        self._guard_final_charge(transaction)
         charge_ref = self._midtrans_create_charge(snap_token)
         self._gopay_payment_validate(charge_ref)
         charge_challenge_id, charge_client_id = self._gopay_payment_confirm(charge_ref)
@@ -2226,7 +2615,7 @@ def _find_billing_form_frames(api: ChatGPTTeamAPI, timeout_seconds: int = 5):
                 logger.info(
                     "[gopay_executor] 已锁定账单表单 frame，score=%s url=%s",
                     best_score,
-                    frame_url,
+                    _safe_url_summary(frame_url),
                 )
                 return best_frames
         time.sleep(0.3)
@@ -2237,7 +2626,7 @@ def _find_billing_form_frames(api: ChatGPTTeamAPI, timeout_seconds: int = 5):
         logger.info(
             "[gopay_executor] 使用最高分账单 frame，score=%s url=%s",
             best_score,
-            frame_url,
+            _safe_url_summary(frame_url),
         )
         return best_frames
     logger.info("[gopay_executor] 未能锁定账单 frame，回退到全页面 frame 搜索")
@@ -2720,7 +3109,7 @@ def _sync_latest_page(api: ChatGPTTeamAPI):
             url = str(getattr(page, "url", "") or "")
             if "/checkout/" in url and "chatgpt.com" in url:
                 api.page = page
-                logger.info("[gopay_executor] 切回 checkout 页面: %s", url)
+                logger.info("[gopay_executor] 切回 checkout 页面: %s", _safe_url_summary(url))
                 return
         api.page = pages[-1]
     except Exception:
@@ -3088,13 +3477,27 @@ def _run_gopay_bind_task_once(
 
     The default path mirrors the reference project: a single ChatGPT HTTP
     session creates checkout, approves it, then verifies after GoPay settles.
-    Browser login is only a fallback when the saved auth session lacks tokens.
+    Saved auth_session tokens are required; this path does not launch Playwright.
     """
 
     api = ChatGPTTeamAPI()
     session_id = uuid.uuid4().hex[:12]
     screenshot_paths: list[str] = []
     final_checkout_url = str(checkout_url or "").strip()
+    try:
+        proxy_url = normalize_proxy_url(proxy_url)
+    except ValueError as exc:
+        logger.info("[gopay_executor] GoPay task proxy config invalid: %s", exc)
+        return _build_result("failed", failure_stage="proxy_config", message=str(exc), checkout_url=final_checkout_url)
+    logger.info(
+        "[gopay_executor] GoPay task starting: email=%s checkout=%s phone=%s proxy=%s bypass=%s timeout=%s",
+        _safe_email_summary(email),
+        _safe_url_summary(final_checkout_url) if final_checkout_url else "<auto-generate>",
+        _safe_phone_summary(phone_number, country_code),
+        _safe_proxy_summary(proxy_url),
+        str(proxy_bypass or "").strip() or "<none>",
+        timeout_seconds,
+    )
     auth_session = load_auth_session(email)
     session_token = str(auth_session.get("sessionToken") or auth_session.get("session_token") or "").strip()
     access_token = str(auth_session.get("accessToken") or auth_session.get("access_token") or "").strip()
@@ -3129,23 +3532,27 @@ def _run_gopay_bind_task_once(
             or auth_session.get("oaiDeviceId")
             or ""
         ).strip() or str(uuid.uuid4())
+        openai_sentinel_token = str(
+            auth_session.get("openai_sentinel_token")
+            or auth_session.get("openaiSentinelToken")
+            or auth_session.get("sentinel_token")
+            or ""
+        ).strip()
+        oai_client_version = str(auth_session.get("oai_client_version") or auth_session.get("oaiClientVersion") or "").strip()
+        oai_client_build_number = str(
+            auth_session.get("oai_client_build_number") or auth_session.get("oaiClientBuildNumber") or ""
+        ).strip()
         token_source = "auth_session"
 
-        if not access_token or not session_token:
-            progress("open_chatgpt", email=email)
-            api._launch_browser(proxy_url=proxy_url, proxy_bypass=proxy_bypass)
-            api.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
-            api._wait_for_cloudflare()
-            if session_token and account_id:
-                api.account_id = account_id
-                logger.info("[gopay_executor] 使用 session 注入模式启动浏览器，不执行 workspace 自动检测")
-                api._inject_session(session_token)
-            token_source = api._fetch_access_token(allow_bearer_file=False)
-            if not access_token:
-                access_token = str(getattr(api, "access_token", "") or "").strip()
-            if not device_id:
-                device_id = str(getattr(api, "oai_device_id", "") or "").strip() or str(uuid.uuid4())
-            _capture_screenshot(api, session_id, "gopay-home", screenshot_paths)
+        logger.info(
+            "[gopay_executor] auth_session ready: email=%s access_token_present=%s session_cookie_present=%s account_id_present=%s device_id=%s sentinel_token_present=%s",
+            _safe_email_summary(email),
+            bool(access_token),
+            bool(session_token or str(auth_session.get("cookie_header") or "").strip()),
+            bool(account_id),
+            _mask_log_value(device_id),
+            bool(openai_sentinel_token),
+        )
 
         if cancelled():
             return _build_result("failed", failure_stage="generate_checkout", message="任务已取消", screenshot_paths=screenshot_paths, billing_info=public_billing_info)
@@ -3153,7 +3560,7 @@ def _run_gopay_bind_task_once(
             return _build_result(
                 "failed",
                 failure_stage="generate_checkout",
-                message=f"对应 auth_session 缺少 accessToken，且浏览器会话未能刷新 accessToken (source={token_source})",
+                message=f"对应 auth_session 缺少 accessToken；GoPay 协议模式不会启动 Playwright，请先刷新该账号 auth_session (source={token_source})",
                 screenshot_paths=screenshot_paths,
                 billing_info=public_billing_info,
             )
@@ -3179,13 +3586,23 @@ def _run_gopay_bind_task_once(
             account_id=account_id,
             device_id=device_id,
             user_agent=str(auth_session.get("user_agent") or auth_session.get("userAgent") or "").strip(),
+            openai_sentinel_token=openai_sentinel_token,
+            oai_client_version=oai_client_version,
+            oai_client_build_number=oai_client_build_number,
             proxy_url=proxy_url,
         )
         progress("chatgpt_http_session_ready")
+        logger.info(
+            "[gopay_executor] ChatGPT HTTP session ready: email=%s proxy=%s transport=%s",
+            _safe_email_summary(email),
+            _safe_proxy_summary(proxy_url),
+            _http_transport_name(chatgpt_http),
+        )
 
         direct_redirect_mode = _looks_like_pm_redirect_url(final_checkout_url)
         if direct_redirect_mode:
             progress("checkout_ready", checkout_url=final_checkout_url, mode="redirect")
+            logger.info("[gopay_executor] using direct redirect checkout: %s", _safe_url_summary(final_checkout_url))
             raw_checkout = {}
         elif not final_checkout_url:
             progress("generate_checkout")
@@ -3198,16 +3615,20 @@ def _run_gopay_bind_task_once(
                     account_id=account_id,
                     device_id=device_id,
                     user_agent=str(auth_session.get("user_agent") or auth_session.get("userAgent") or "").strip(),
+                    openai_sentinel_token=openai_sentinel_token,
+                    oai_client_version=oai_client_version,
+                    oai_client_build_number=oai_client_build_number,
                 )
                 cookie_header = str(getattr(chatgpt_http, "_chatgpt_cookie_header", "") or cookie_header)
             except Exception as exc:
                 raise GoPayFlowError(f"生成印尼区支付链接失败: {exc}", stage="generate_checkout") from exc
             final_checkout_url = str(generated_checkout_meta.get("url") or "").strip()
             progress("checkout_ready", checkout_url=final_checkout_url)
-            logger.info("[gopay_executor] 已生成 GoPay checkout session: %s", final_checkout_url)
+            logger.info("[gopay_executor] generated GoPay checkout session: %s", _safe_url_summary(final_checkout_url))
             raw_checkout = generated_checkout_meta.get("raw") if isinstance(generated_checkout_meta.get("raw"), dict) else {}
         else:
             progress("checkout_ready", checkout_url=final_checkout_url)
+            logger.info("[gopay_executor] using provided checkout URL: %s", _safe_url_summary(final_checkout_url))
             raw_checkout = {}
 
         checkout_session_id = _extract_checkout_session_id(final_checkout_url, raw_checkout)
@@ -3227,17 +3648,63 @@ def _run_gopay_bind_task_once(
             or DEFAULT_STRIPE_PK
         )
         midtrans_client_id = os.environ.get("GOPAY_MIDTRANS_CLIENT_ID", "")
+        logger.info(
+            "[gopay_executor] checkout identifiers ready: checkout_session_id=%s direct_redirect=%s processor_entity=%s midtrans_client_id_present=%s",
+            _mask_log_value(checkout_session_id),
+            direct_redirect_mode,
+            processor_entity or "<default>",
+            bool(midtrans_client_id),
+        )
 
         def approve_callback(cs_id: str) -> dict:
-            return _approve_checkout_http(
-                chatgpt_http,
-                access_token=access_token,
-                checkout_session_id=cs_id,
-                processor_entity=processor_entity,
-                cookie_header=cookie_header,
-                account_id=account_id,
-                device_id=device_id,
-            )
+            nonlocal cookie_header, openai_sentinel_token
+            try:
+                return _approve_checkout_http(
+                    chatgpt_http,
+                    access_token=access_token,
+                    checkout_session_id=cs_id,
+                    processor_entity=processor_entity,
+                    cookie_header=cookie_header,
+                    account_id=account_id,
+                    device_id=device_id,
+                    openai_sentinel_token=openai_sentinel_token,
+                )
+            except GoPayFlowError as exc:
+                if exc.stage != "chatgpt_approve" or not _env_enabled("GOPAY_APPROVE_BROWSER_FALLBACK", True):
+                    raise
+                progress("chatgpt_approve_browser_fallback", checkout_session_id=cs_id)
+                logger.info(
+                    "[gopay_executor] ChatGPT approve HTTP failed, trying browser fallback: checkout_session_id=%s error=%s",
+                    _mask_log_value(cs_id),
+                    _safe_error_summary(exc),
+                )
+                result = _approve_checkout_with_browser_context(
+                    api,
+                    access_token=access_token,
+                    session_token=session_token,
+                    cookie_header=cookie_header,
+                    checkout_session_id=cs_id,
+                    processor_entity=processor_entity,
+                    account_id=account_id,
+                    device_id=device_id,
+                    proxy_url=proxy_url,
+                    proxy_bypass=proxy_bypass,
+                )
+                cookie_header = _merge_cookie_headers(cookie_header, str(result.get("_browser_cookie_header") or ""))
+                openai_sentinel_token = str(result.get("_browser_openai_sentinel_token") or openai_sentinel_token)
+                _configure_chatgpt_http_session(
+                    chatgpt_http,
+                    access_token=access_token,
+                    session_token=session_token,
+                    cookie_header=cookie_header,
+                    account_id=account_id,
+                    device_id=device_id,
+                    openai_sentinel_token=openai_sentinel_token,
+                    user_agent=str(auth_session.get("user_agent") or auth_session.get("userAgent") or "").strip(),
+                )
+                logger.info("[gopay_executor] ChatGPT approve browser fallback succeeded")
+                progress("chatgpt_approve_browser_fallback_succeeded", checkout_session_id=cs_id)
+                return result
 
         def verify_callback(cs_id: str) -> dict:
             return _verify_checkout_http(
@@ -3248,6 +3715,7 @@ def _run_gopay_bind_task_once(
                 cookie_header=cookie_header,
                 account_id=account_id,
                 device_id=device_id,
+                openai_sentinel_token=openai_sentinel_token,
             )
 
         otp_provider = _poll_otp_from_sms_url(
@@ -3257,16 +3725,6 @@ def _run_gopay_bind_task_once(
             is_cancelled=is_cancelled,
             progress=progress,
         )
-
-        def trigger_sms_otp(reference_id: str, activation_link_url: str):
-            _trigger_sms_otp_in_page(
-                api,
-                activation_link_url=activation_link_url,
-                proxy_url=proxy_url,
-                proxy_bypass=proxy_bypass,
-                is_cancelled=is_cancelled,
-                progress=progress,
-            )
 
         charger = GoPayHttpCharger(
             http=_new_http_session(proxy_url),
@@ -3279,12 +3737,17 @@ def _run_gopay_bind_task_once(
             midtrans_client_id=midtrans_client_id,
             approve_callback=approve_callback,
             verify_callback=verify_callback,
-            sms_otp_trigger_callback=trigger_sms_otp,
+            otp_channel=str(os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower(),
             is_cancelled=is_cancelled,
             progress_callback=progress_callback,
         )
 
         progress("gopay_http_flow", checkout_session_id=checkout_session_id)
+        logger.info(
+            "[gopay_executor] GoPay HTTP flow started: checkout_session_id=%s direct_redirect=%s",
+            _mask_log_value(checkout_session_id),
+            direct_redirect_mode,
+        )
         if direct_redirect_mode:
             flow_result = charger.run_from_redirect(
                 redirect_url=final_checkout_url,
@@ -3292,6 +3755,13 @@ def _run_gopay_bind_task_once(
             )
         else:
             flow_result = charger.run(checkout_session_id=checkout_session_id, stripe_pk=stripe_pk)
+        logger.info(
+            "[gopay_executor] GoPay HTTP flow finished: state=%s reference=%s charge_ref=%s snap_token=%s",
+            flow_result.get("state", ""),
+            _mask_log_value(flow_result.get("reference_id", "")),
+            _mask_log_value(flow_result.get("charge_ref", "")),
+            _mask_log_value(flow_result.get("snap_token", "")),
+        )
 
         if flow_result.get("state") == "succeeded":
             progress("completed")
@@ -3421,11 +3891,24 @@ def run_gopay_bind_task(
         and not _env_truthy("GOPAY_DISABLE_APPROVE_ROTATION")
         and len(dict.fromkeys(explicit_candidates)) > 1
     )
+    logger.info(
+        "[gopay_executor] account rotation mode: enabled=%s requested_email=%s checkout=%s candidates=%s",
+        rotation_enabled,
+        _safe_email_summary(requested_email),
+        _safe_url_summary(final_checkout_url) if final_checkout_url else "<auto-generate>",
+        [_safe_email_summary(candidate) for candidate in dict.fromkeys(explicit_candidates)],
+    )
 
     if not rotation_enabled:
         result = run_once(requested_email)
         result["email_used"] = requested_email
         result["requested_email"] = requested_email
+        logger.info(
+            "[gopay_executor] single GoPay attempt finished: email=%s status=%s failure_stage=%s",
+            _safe_email_summary(requested_email),
+            result.get("status") or "",
+            result.get("failure_stage") or "",
+        )
         return result
 
     candidates = _gopay_auth_rotation_candidates(requested_email, explicit_candidates)
@@ -3452,10 +3935,21 @@ def run_gopay_bind_task(
         remaining = _approve_blocked_remaining(candidate)
         if remaining > 0:
             skipped_cooldown.append(candidate)
+            logger.info(
+                "[gopay_executor] skip GoPay candidate because chatgpt_approve cooldown is active: email=%s remaining_seconds=%s",
+                _safe_email_summary(candidate),
+                remaining,
+            )
             emit("gopay_account_skipped_cooldown", email=candidate, remaining_seconds=remaining)
             continue
 
         attempted.append(candidate)
+        logger.info(
+            "[gopay_executor] trying GoPay candidate: email=%s attempt=%s/%s",
+            _safe_email_summary(candidate),
+            index,
+            len(candidates),
+        )
         if candidate != requested_email:
             emit("gopay_rotate_account", email=candidate, attempt=index, total=len(candidates))
         else:
@@ -3470,6 +3964,12 @@ def run_gopay_bind_task(
             cooldown = int(_mark_approve_blocked(candidate))
             blocked.append(candidate)
             last_blocked_result = result
+            logger.info(
+                "[gopay_executor] GoPay candidate blocked at chatgpt_approve, rotating: email=%s cooldown_seconds=%s message=%s",
+                _safe_email_summary(candidate),
+                cooldown,
+                _compact_log_text(result.get("message") or "", limit=180),
+            )
             emit(
                 "chatgpt_approve_blocked_rotate",
                 email=candidate,
@@ -3482,6 +3982,12 @@ def run_gopay_bind_task(
         if blocked:
             result["blocked_emails"] = blocked[:]
             result["rotated_from"] = requested_email
+        logger.info(
+            "[gopay_executor] GoPay candidate finished without approve-block rotation: email=%s status=%s failure_stage=%s",
+            _safe_email_summary(candidate),
+            result.get("status") or "",
+            result.get("failure_stage") or "",
+        )
         return result
 
     if last_blocked_result:
@@ -3499,8 +4005,18 @@ def run_gopay_bind_task(
         last_blocked_result["email_used"] = attempted[-1] if attempted else requested_email
         last_blocked_result["requested_email"] = requested_email
         emit("gopay_all_accounts_blocked", attempted=len(attempted), skipped_cooldown=len(skipped_cooldown))
+        logger.info(
+            "[gopay_executor] all GoPay candidates blocked or cooling down: attempted=%s blocked=%s skipped_cooldown=%s",
+            len(attempted),
+            [_safe_email_summary(candidate) for candidate in blocked],
+            [_safe_email_summary(candidate) for candidate in skipped_cooldown],
+        )
         return last_blocked_result
 
+    logger.info(
+        "[gopay_executor] no GoPay candidates available because all are cooling down: skipped_cooldown=%s",
+        [_safe_email_summary(candidate) for candidate in skipped_cooldown],
+    )
     return _build_result(
         "failed",
         failure_stage="chatgpt_approve",
