@@ -375,6 +375,7 @@ const cards = computed(() => {
     { label: '待命', value: s.standby, color: 'text-yellow-400' },
     { label: '额度用完', value: s.exhausted, color: 'text-red-400' },
     { label: '免费号', value: s.personal || 0, color: 'text-fuchsia-400' },
+    { label: 'Plus', value: s.plus || 0, color: 'text-sky-400' },
     { label: '总计', value: s.total, color: 'text-white' },
   ]
 })
@@ -386,6 +387,7 @@ function statusClass(s) {
     standby: 'bg-yellow-500/10 text-yellow-400',
     pending: 'bg-gray-500/10 text-gray-400',
     personal: 'bg-fuchsia-500/10 text-fuchsia-400',
+    plus: 'bg-sky-500/10 text-sky-400',
     auth_invalid: 'bg-orange-500/10 text-orange-400',
     orphan: 'bg-amber-500/10 text-amber-300',
   }[s] || 'bg-gray-500/10 text-gray-400'
@@ -398,6 +400,7 @@ function dotClass(s) {
     standby: 'bg-yellow-400',
     pending: 'bg-gray-400',
     personal: 'bg-fuchsia-400',
+    plus: 'bg-sky-400',
     auth_invalid: 'bg-orange-400',
     orphan: 'bg-amber-300',
   }[s] || 'bg-gray-400'
@@ -410,6 +413,7 @@ function statusLabel(s) {
     standby: 'Standby',
     pending: 'Pending',
     personal: 'Personal',
+    plus: 'Plus',
     auth_invalid: '认证失效',
     orphan: '孤立',
   }[s] || s

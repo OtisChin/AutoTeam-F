@@ -16,6 +16,7 @@ STATUS_EXHAUSTED = "exhausted"  # 在 team 中，额度用完
 STATUS_STANDBY = "standby"  # 已移出 team，等待额度恢复
 STATUS_PENDING = "pending"  # 已邀请，等待注册完成
 STATUS_PERSONAL = "personal"  # 已主动退出 team，走个人号 Codex OAuth，不再参与 Team 轮转
+STATUS_PLUS = "plus"  # 已通过 GoPay/支付流程升级为 Plus，不再参与号池选择
 STATUS_AUTH_INVALID = "auth_invalid"  # auth_file token 已不可用(401/403),待 reconcile 清理或重登
 STATUS_ORPHAN = "orphan"  # 在 workspace 里占着席位,但本地没 auth_file(残废,待人工介入或兜底 kick)
 

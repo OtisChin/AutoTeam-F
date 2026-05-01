@@ -49,6 +49,14 @@ CHECKOUT_ERROR_PATTERNS = (
     re.compile(r"unable to process", re.IGNORECASE),
 )
 
+CHECKOUT_PAYMENT_NOT_APPROVED_PATTERNS = (
+    re.compile(r"付款.*未获批准"),
+    re.compile(r"未获批准"),
+    re.compile(r"payment\s+(?:was\s+)?not\s+approved", re.IGNORECASE),
+    re.compile(r"payment\s+(?:was\s+)?declined", re.IGNORECASE),
+    re.compile(r"not\s+approved", re.IGNORECASE),
+)
+
 try:
     from curl_cffi.requests import Session as _CurlCffiSession  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -350,6 +358,22 @@ def _is_chatgpt_approve_blocked_result(result: dict | None) -> bool:
     return "blocked" in str(result.get("message") or "").lower()
 
 
+def _is_checkout_payment_not_approved_error(text: str) -> bool:
+    clean = str(text or "").strip()
+    return bool(clean and any(pattern.search(clean) for pattern in CHECKOUT_PAYMENT_NOT_APPROVED_PATTERNS))
+
+
+def _is_checkout_payment_not_approved_result(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "success":
+        return False
+    stage = str(result.get("failure_stage") or "")
+    if stage not in {"checkout_not_approved", "browser_checkout", "submit_checkout"}:
+        return False
+    return _is_checkout_payment_not_approved_error(str(result.get("message") or ""))
+
+
 def _gopay_rate_limited_message() -> str:
     return "GoPay 授权页提示尝试过多，请稍后重试，或更换 GoPay 手机号/钱包"
 
@@ -445,6 +469,15 @@ def _extract_checkout_session_id(checkout_url: str = "", raw: dict | None = None
         if value.startswith("cs_"):
             return value
     matched = re.search(r"(cs_[A-Za-z0-9_]+)", str(checkout_url or ""))
+    return matched.group(1) if matched else ""
+
+
+def _extract_snap_token(url: Any) -> str:
+    matched = re.search(
+        r"app\.midtrans\.com/snap/v[14]/redirection/([a-f0-9-]{36})",
+        str(url or ""),
+        re.IGNORECASE,
+    )
     return matched.group(1) if matched else ""
 
 
@@ -933,12 +966,6 @@ def _inject_chatgpt_browser_cookies(
 
     cookies = []
     seen = set()
-    token = str(session_token or "").strip()
-    if token:
-        for cookie in api._build_session_cookies(token, "chatgpt.com"):
-            seen.add(str(cookie.get("name") or ""))
-            cookies.append(cookie)
-
     for raw in str(cookie_header or "").split(";"):
         if "=" not in raw:
             continue
@@ -952,20 +979,48 @@ def _inject_chatgpt_browser_cookies(
             {
                 "name": name,
                 "value": value,
-                "domain": "chatgpt.com",
-                "path": "/",
+                "url": "https://chatgpt.com",
                 "secure": True,
                 "sameSite": "Lax",
             }
         )
+
+    token = str(session_token or "").strip()
+    has_session_cookie = any(
+        name in seen
+        for name in (
+            "__Secure-next-auth.session-token",
+            "__Secure-next-auth.session-token.0",
+            "__Secure-next-auth.session-token.1",
+        )
+    )
+    if token and not has_session_cookie:
+        if len(token) > 4000:
+            token_cookies = [
+                ("__Secure-next-auth.session-token.0", token[:4000]),
+                ("__Secure-next-auth.session-token.1", token[4000:]),
+            ]
+        else:
+            token_cookies = [("__Secure-next-auth.session-token", token)]
+        for name, value in token_cookies:
+            seen.add(name)
+            cookies.append(
+                {
+                    "name": name,
+                    "value": value,
+                    "url": "https://chatgpt.com",
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            )
 
     if account_id and "_account" not in seen:
         cookies.append(
             {
                 "name": "_account",
                 "value": account_id,
-                "domain": "chatgpt.com",
-                "path": "/",
+                "url": "https://chatgpt.com",
                 "secure": True,
                 "sameSite": "Lax",
             }
@@ -975,14 +1030,19 @@ def _inject_chatgpt_browser_cookies(
             {
                 "name": "oai-did",
                 "value": device_id,
-                "domain": "chatgpt.com",
-                "path": "/",
+                "url": "https://chatgpt.com",
                 "secure": True,
                 "sameSite": "Lax",
             }
         )
     if cookies:
         api.context.add_cookies(cookies)
+        logger.info(
+            "[gopay_executor] injected ChatGPT browser cookies: count=%s session_split=%s full_session=%s",
+            len(cookies),
+            any(cookie.get("name") == "__Secure-next-auth.session-token.0" for cookie in cookies),
+            any(cookie.get("name") == "__Secure-next-auth.session-token" for cookie in cookies),
+        )
 
 
 def _load_checkout_context_in_page(
@@ -1099,7 +1159,7 @@ def _approve_checkout_with_browser_context(
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
 ) -> dict:
-    if not _env_enabled("GOPAY_APPROVE_BROWSER_FALLBACK", True):
+    if not _env_enabled("GOPAY_APPROVE_BROWSER_FALLBACK", False):
         raise GoPayFlowError("ChatGPT approve 浏览器 fallback 已禁用", stage="chatgpt_approve")
     if not getattr(api, "browser", None):
         api.account_id = account_id or getattr(api, "account_id", "")
@@ -1132,6 +1192,182 @@ def _approve_checkout_with_browser_context(
     if context.get("openai_sentinel_token"):
         result["_browser_openai_sentinel_token"] = context["openai_sentinel_token"]
     return result
+
+
+def _remember_gopay_redirect_url(url: Any, captured: dict):
+    raw = str(url or "").strip()
+    if not raw:
+        return
+    if _looks_like_pm_redirect_url(raw):
+        captured["redirect_url"] = raw
+    snap_token = _extract_snap_token(raw)
+    if snap_token:
+        captured["snap_token"] = snap_token
+
+
+def _browser_checkout_to_gopay_redirect(
+    api: ChatGPTTeamAPI,
+    *,
+    access_token: str,
+    session_token: str = "",
+    cookie_header: str = "",
+    checkout_url: str = "",
+    raw_checkout: dict | None = None,
+    email: str = "",
+    account_id: str = "",
+    device_id: str = "",
+    billing: dict,
+    session_id: str,
+    screenshot_paths: list[str],
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
+    progress: Callable[..., None] | None = None,
+) -> dict:
+    if callable(progress):
+        progress("chatgpt_checkout_browser_handoff")
+    if not getattr(api, "browser", None):
+        api.account_id = account_id or getattr(api, "account_id", "")
+        api.oai_device_id = device_id or getattr(api, "oai_device_id", "") or str(uuid.uuid4())
+        api._launch_browser(proxy_url=proxy_url, proxy_bypass=proxy_bypass)
+        _inject_chatgpt_browser_cookies(
+            api,
+            session_token=session_token,
+            cookie_header=cookie_header,
+            account_id=account_id,
+            device_id=device_id,
+        )
+
+    captured: dict[str, str] = {"redirect_url": "", "snap_token": ""}
+
+    def remember_from_obj(obj):
+        try:
+            _remember_gopay_redirect_url(getattr(obj, "url", ""), captured)
+        except Exception:
+            pass
+
+    def on_popup(page):
+        try:
+            page.on("request", remember_from_obj)
+            page.on("response", remember_from_obj)
+            page.on("framenavigated", remember_from_obj)
+        except Exception:
+            pass
+
+    try:
+        api.context.on("page", on_popup)
+        api.page.on("request", remember_from_obj)
+        api.page.on("response", remember_from_obj)
+        api.page.on("framenavigated", remember_from_obj)
+    except Exception:
+        pass
+
+    home_ready = _goto_with_retry(api.page, "https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000, attempts=3)
+    if home_ready:
+        try:
+            api.page.wait_for_timeout(2500)
+        except Exception:
+            time.sleep(2.5)
+        _log_browser_auth_session_diag(api, label="home")
+        _select_chatgpt_account_if_needed(api, email=email)
+    else:
+        logger.info(
+            "[gopay_executor] home warmup failed, continuing with checkout URL directly: current=%s body=%s",
+            _safe_url_summary(getattr(api.page, "url", "")),
+            _compact_log_text(_body_excerpt(api, 300), limit=180),
+        )
+    checkout_url = str(checkout_url or "").strip()
+    raw_checkout = raw_checkout if isinstance(raw_checkout, dict) else {}
+    if not checkout_url:
+        if not home_ready:
+            raise GoPayFlowError("浏览器首页预热失败，且没有可直接打开的 checkout URL", stage="browser_checkout")
+        checkout_meta = _generate_id_checkout_in_page(api, access_token)
+        checkout_url = str(checkout_meta.get("url") or "").strip()
+        raw_checkout = checkout_meta.get("raw") if isinstance(checkout_meta.get("raw"), dict) else {}
+    checkout_session_id = _extract_checkout_session_id(checkout_url, raw_checkout)
+    processor_entity = _extract_processor_entity(raw_checkout)
+    if not checkout_url or not checkout_session_id:
+        raise GoPayFlowError(f"浏览器生成 checkout 失败: {checkout_meta}", stage="generate_checkout")
+    if callable(progress):
+        progress("checkout_ready", checkout_url=checkout_url, mode="browser")
+    logger.info("[gopay_executor] browser checkout fallback generated checkout: %s", _safe_url_summary(checkout_url))
+
+    if not _open_checkout_in_page(api, checkout_url, email=email):
+        _capture_screenshot(api, session_id, "gopay-browser-checkout-open-failed", screenshot_paths)
+        raise GoPayFlowError("浏览器打开 checkout 页面失败", stage="browser_checkout")
+
+    selected, select_error = _select_gopay_option(api)
+    if not selected:
+        logger.info("[gopay_executor] browser checkout fallback did not explicitly select GoPay: %s", select_error)
+    _fill_billing_form_on_page(api, billing, session_id, screenshot_paths)
+    nonzero_hint = _browser_checkout_nonzero_amount_hint(api)
+    if nonzero_hint and not _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
+        _capture_screenshot(api, session_id, "gopay-browser-nonzero-amount-blocked", screenshot_paths)
+        raise GoPayChargeBlocked(
+            (
+                f"浏览器 checkout 页面疑似非 0 金额 {nonzero_hint}，已在提交前停止；"
+                "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
+            ),
+            stage="browser_charge_guard",
+        )
+
+    ok, click_error = _click(
+        api,
+        [
+            'button:has-text("Subscribe")',
+            'button:has-text("Pay")',
+            'button:has-text("订阅")',
+            'button[type="submit"]',
+        ],
+        "提交订阅按钮",
+        timeout_ms=12000,
+    )
+    if not ok:
+        _capture_screenshot(api, session_id, "gopay-browser-submit-click-failed", screenshot_paths)
+        raise GoPayFlowError(f"浏览器提交 checkout 失败: {click_error}", stage="browser_checkout")
+    if callable(progress):
+        progress("submit_clicked", mode="browser")
+
+    deadline = time.time() + 90
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            for page in list(getattr(api.context, "pages", []) or []):
+                _remember_gopay_redirect_url(getattr(page, "url", ""), captured)
+        except Exception:
+            pass
+        if captured.get("redirect_url") or captured.get("snap_token"):
+            logger.info(
+                "[gopay_executor] browser checkout fallback captured redirect: redirect=%s snap_token=%s",
+                _safe_url_summary(captured.get("redirect_url")),
+                _mask_log_value(captured.get("snap_token")),
+            )
+            return {
+                "checkout_url": checkout_url,
+                "checkout_session_id": checkout_session_id,
+                "processor_entity": processor_entity,
+                "redirect_url": captured.get("redirect_url", ""),
+                "snap_token": captured.get("snap_token", ""),
+            }
+        error = _extract_checkout_error(api)
+        if error:
+            last_error = error
+            logger.info("[gopay_executor] browser checkout fallback checkout error: %s", error)
+            if _is_checkout_payment_not_approved_error(error):
+                _capture_screenshot(api, session_id, "gopay-browser-payment-not-approved", screenshot_paths)
+                raise GoPayFlowError(
+                    f"付款未获批准，当前账号将从号池删除并停止本次账号尝试: {error}",
+                    stage="checkout_not_approved",
+                )
+        try:
+            api.page.wait_for_timeout(500)
+        except Exception:
+            time.sleep(0.5)
+
+    _capture_screenshot(api, session_id, "gopay-browser-redirect-timeout", screenshot_paths)
+    raise GoPayFlowError(
+        f"浏览器 checkout 未捕获到 Stripe/Midtrans 跳转: {last_error or _body_excerpt(api, 500)}",
+        stage="browser_checkout",
+    )
 
 
 def _verify_checkout_in_page(
@@ -3033,23 +3269,169 @@ def _is_checkout_page(api: ChatGPTTeamAPI) -> bool:
 
 
 
-def _open_checkout_in_page(api: ChatGPTTeamAPI, checkout_url: str):
+def _open_checkout_in_page(api: ChatGPTTeamAPI, checkout_url: str, email: str = ""):
+    last_error = ""
     try:
+        if not _goto_with_retry(api.page, checkout_url, wait_until="domcontentloaded", timeout=60000, attempts=3):
+            raise GoPayFlowError("checkout goto failed", stage="browser_checkout")
+    except Exception as exc:
+        last_error = str(exc)
         checkout_page = api.context.new_page()
-        checkout_page.goto(checkout_url, wait_until="domcontentloaded", timeout=60000)
         api.page = checkout_page
-    except Exception:
-        try:
-            api.page.goto(checkout_url, wait_until="domcontentloaded", timeout=60000)
-        except Exception:
+        if not _goto_with_retry(checkout_page, checkout_url, wait_until="domcontentloaded", timeout=60000, attempts=3):
+            logger.info(
+                "[gopay_executor] checkout page goto failed: first=%s target=%s current=%s",
+                _safe_error_summary(last_error),
+                _safe_url_summary(checkout_url),
+                _safe_url_summary(getattr(getattr(api, "page", None), "url", "")),
+            )
             return False
 
-    deadline = time.time() + 20
+    if _select_chatgpt_account_if_needed(api, email=email):
+        if not _goto_with_retry(api.page, checkout_url, wait_until="domcontentloaded", timeout=60000, attempts=2):
+            logger.info(
+                "[gopay_executor] checkout page retry after account selection failed: target=%s current=%s",
+                _safe_url_summary(checkout_url),
+                _safe_url_summary(getattr(api.page, "url", "")),
+            )
+    _log_browser_auth_session_diag(api, label="checkout")
+    deadline = time.time() + 35
+    checkout_id = _extract_checkout_session_id(checkout_url)
     while time.time() < deadline:
         current_url = str(getattr(api.page, "url", "") or "")
-        if checkout_url in current_url or _is_checkout_page(api):
+        if checkout_url in current_url or (checkout_id and checkout_id in current_url) or _is_checkout_page(api):
+            logger.info("[gopay_executor] checkout page opened: %s", _safe_url_summary(current_url))
             return True
-        time.sleep(1)
+        if _select_chatgpt_account_if_needed(api, email=email):
+            if not _goto_with_retry(api.page, checkout_url, wait_until="domcontentloaded", timeout=60000, attempts=2):
+                logger.info(
+                    "[gopay_executor] checkout page retry in wait loop failed: target=%s current=%s",
+                    _safe_url_summary(checkout_url),
+                    _safe_url_summary(getattr(api.page, "url", "")),
+                )
+        try:
+            api.page.wait_for_timeout(500)
+        except Exception:
+            time.sleep(0.5)
+    logger.info(
+        "[gopay_executor] checkout page open timeout: target=%s current=%s body=%s",
+        _safe_url_summary(checkout_url),
+        _safe_url_summary(getattr(api.page, "url", "")),
+        _compact_log_text(_body_excerpt(api, 500), limit=300),
+    )
+    return False
+
+
+def _select_chatgpt_account_if_needed(api: ChatGPTTeamAPI, email: str = "") -> bool:
+    target_email = str(email or "").strip().lower()
+    try:
+        body = _body_excerpt(api, 1200).lower()
+    except Exception:
+        body = ""
+    if "选择一个帐户" not in body and "choose an account" not in body and (not target_email or target_email not in body):
+        return False
+    script = """(targetEmail) => {
+      const lower = (value) => String(value || "").toLowerCase();
+      const target = lower(targetEmail);
+      const nodes = Array.from(document.querySelectorAll("button, a, [role='button'], div, span"));
+      const scored = [];
+      for (const node of nodes) {
+        const text = lower(node.innerText || node.textContent || "");
+        if (!text) continue;
+        const hasTarget = target && text.includes(target);
+        const hasAccountHint = /choose an account|选择一个帐户|continue|继续|登录|log in/.test(text);
+        if (!hasTarget && !hasAccountHint) continue;
+        let clickable = node;
+        for (let i = 0; i < 5 && clickable && !/^(BUTTON|A)$/.test(clickable.tagName || "") && clickable.getAttribute("role") !== "button"; i++) {
+          clickable = clickable.parentElement;
+        }
+        if (!clickable) clickable = node;
+        scored.push({ node: clickable, score: (hasTarget ? 100 : 0) + (hasAccountHint ? 10 : 0), text });
+      }
+      scored.sort((a, b) => b.score - a.score);
+      if (!scored.length) return { clicked: false, reason: "no-candidate" };
+      scored[0].node.click();
+      return { clicked: true, text: scored[0].text.slice(0, 160) };
+    }"""
+    try:
+        result = api.page.evaluate(script, target_email)
+    except Exception as exc:
+        logger.info("[gopay_executor] ChatGPT account chooser click failed: %s", _safe_error_summary(exc))
+        return False
+    if result and result.get("clicked"):
+        logger.info("[gopay_executor] selected ChatGPT account in browser: %s", _compact_log_text(result.get("text"), limit=120))
+        try:
+            api.page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            pass
+        try:
+            api.page.wait_for_timeout(2500)
+        except Exception:
+            time.sleep(2.5)
+        return True
+    logger.info("[gopay_executor] ChatGPT account chooser not clicked: %s", result)
+    return False
+
+
+def _log_browser_auth_session_diag(api: ChatGPTTeamAPI, *, label: str):
+    try:
+        result = api.page.evaluate(
+            """async () => {
+              try {
+                const resp = await fetch("/api/auth/session", {
+                  method: "GET",
+                  credentials: "include",
+                  headers: { Accept: "application/json" }
+                });
+                const text = await resp.text();
+                let data = {};
+                try { data = text ? JSON.parse(text) : {}; } catch (_) {}
+                return {
+                  ok: resp.ok,
+                  status: resp.status,
+                  accessTokenPresent: Boolean(data && data.accessToken),
+                  userPresent: Boolean(data && data.user),
+                  accountIdPresent: Boolean(data && (data.accountId || data.account_id)),
+                  rawPrefix: text.slice(0, 80)
+                };
+              } catch (e) {
+                return { ok: false, status: 0, error: String(e && e.message ? e.message : e) };
+              }
+            }"""
+        )
+    except Exception as exc:
+        logger.info("[gopay_executor] browser auth session diag failed: label=%s error=%s", label, _safe_error_summary(exc))
+        return
+    logger.info(
+        "[gopay_executor] browser auth session diag: label=%s status=%s ok=%s access_token_present=%s user_present=%s account_id_present=%s error=%s raw=%s",
+        label,
+        result.get("status"),
+        result.get("ok"),
+        result.get("accessTokenPresent"),
+        result.get("userPresent"),
+        result.get("accountIdPresent"),
+        _safe_error_summary(result.get("error") or ""),
+        _compact_log_text(result.get("rawPrefix") or "", limit=80),
+    )
+
+
+def _goto_with_retry(page, url: str, *, wait_until: str = "domcontentloaded", timeout: int = 60000, attempts: int = 3) -> bool:
+    last_error = ""
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            page.goto(url, wait_until=wait_until, timeout=timeout)
+            return True
+        except Exception as exc:
+            last_error = _safe_error_summary(exc)
+            logger.info(
+                "[gopay_executor] browser goto failed, retrying: attempt=%s/%s url=%s error=%s",
+                attempt,
+                attempts,
+                _safe_url_summary(url),
+                last_error,
+            )
+            time.sleep(min(2.0 * attempt, 5.0))
+    logger.info("[gopay_executor] browser goto exhausted: url=%s error=%s", _safe_url_summary(url), last_error)
     return False
 
 
@@ -3279,11 +3661,45 @@ def _submit_checkout_with_retries(
         last_error = checkout_error or "点击订阅后未跳转到手机号页面"
         logger.info("[gopay_executor] 第 %s/%s 次订阅提交失败: %s", attempt, max_attempts, last_error)
         _capture_screenshot(api, session_id, f"gopay-submit-attempt-{attempt}-failed", screenshot_paths)
+        if _is_checkout_payment_not_approved_error(last_error):
+            return False, f"付款未获批准，当前账号将从号池删除并停止本次账号尝试: {last_error}"
         if attempt < max_attempts:
             progress("submit_retry", attempt=attempt + 1, max_attempts=max_attempts, reason=last_error)
             time.sleep(1.5)
 
     return False, f"点击订阅重试 {max_attempts} 次后仍失败: {last_error or '未进入手机号页面'}"
+
+
+def _browser_checkout_nonzero_amount_hint(api: ChatGPTTeamAPI) -> str:
+    text = _body_excerpt(api, 3500)
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    if not compact:
+        return ""
+    zero_markers = (
+        "$0",
+        "us$0",
+        "idr 0",
+        "rp0",
+        "rp 0",
+        "free trial",
+        "free today",
+        "gratis",
+        "免费",
+        "0.00",
+    )
+    lower = compact.lower()
+    if any(marker in lower for marker in zero_markers):
+        return ""
+    amount_patterns = (
+        r"(?:us\$|\$)\s*(?:[1-9]\d*)(?:[.,]\d{2})?",
+        r"(?:idr|rp)\s*[1-9]\d{2,}(?:[.,]\d{3})*",
+        r"[1-9]\d{2,}(?:[.,]\d{3})*\s*(?:idr|rp)",
+    )
+    for pattern in amount_patterns:
+        matched = re.search(pattern, compact, flags=re.IGNORECASE)
+        if matched:
+            return matched.group(0)
+    return ""
 
 
 def _generate_id_checkout_in_page(api: ChatGPTTeamAPI, access_token: str):
@@ -3600,10 +4016,46 @@ def _run_gopay_bind_task_once(
         )
 
         direct_redirect_mode = _looks_like_pm_redirect_url(final_checkout_url)
+        browser_checkout_ui_mode = not direct_redirect_mode and _env_enabled("GOPAY_BROWSER_CHECKOUT_UI", True)
         if direct_redirect_mode:
             progress("checkout_ready", checkout_url=final_checkout_url, mode="redirect")
             logger.info("[gopay_executor] using direct redirect checkout: %s", _safe_url_summary(final_checkout_url))
             raw_checkout = {}
+        elif browser_checkout_ui_mode:
+            if not final_checkout_url:
+                progress("generate_checkout")
+                try:
+                    generated_checkout_meta = _generate_id_checkout_http(
+                        chatgpt_http,
+                        access_token=access_token,
+                        session_token=session_token,
+                        cookie_header=cookie_header,
+                        account_id=account_id,
+                        device_id=device_id,
+                        user_agent=str(auth_session.get("user_agent") or auth_session.get("userAgent") or "").strip(),
+                        openai_sentinel_token=openai_sentinel_token,
+                        oai_client_version=oai_client_version,
+                        oai_client_build_number=oai_client_build_number,
+                    )
+                    cookie_header = str(getattr(chatgpt_http, "_chatgpt_cookie_header", "") or cookie_header)
+                except Exception as exc:
+                    logger.info(
+                        "[gopay_executor] HTTP checkout generation failed in browser UI mode, will generate inside browser: %s",
+                        _safe_error_summary(exc),
+                    )
+                    final_checkout_url = ""
+                    raw_checkout = {}
+                else:
+                    final_checkout_url = str(generated_checkout_meta.get("url") or "").strip()
+                    raw_checkout = generated_checkout_meta.get("raw") if isinstance(generated_checkout_meta.get("raw"), dict) else {}
+                    logger.info("[gopay_executor] generated GoPay checkout session for browser UI: %s", _safe_url_summary(final_checkout_url))
+            else:
+                raw_checkout = {}
+            progress("checkout_ready", checkout_url=final_checkout_url, mode="browser_ui")
+            logger.info(
+                "[gopay_executor] using full browser checkout UI flow; ChatGPT approve API will not be called: checkout=%s",
+                _safe_url_summary(final_checkout_url) if final_checkout_url else "<browser-generate>",
+            )
         elif not final_checkout_url:
             progress("generate_checkout")
             try:
@@ -3632,7 +4084,7 @@ def _run_gopay_bind_task_once(
             raw_checkout = {}
 
         checkout_session_id = _extract_checkout_session_id(final_checkout_url, raw_checkout)
-        if not checkout_session_id and not direct_redirect_mode:
+        if not checkout_session_id and not direct_redirect_mode and not browser_checkout_ui_mode:
             return _build_result(
                 "failed",
                 failure_stage="generate_checkout",
@@ -3649,9 +4101,10 @@ def _run_gopay_bind_task_once(
         )
         midtrans_client_id = os.environ.get("GOPAY_MIDTRANS_CLIENT_ID", "")
         logger.info(
-            "[gopay_executor] checkout identifiers ready: checkout_session_id=%s direct_redirect=%s processor_entity=%s midtrans_client_id_present=%s",
+            "[gopay_executor] checkout identifiers ready: checkout_session_id=%s direct_redirect=%s browser_ui=%s processor_entity=%s midtrans_client_id_present=%s",
             _mask_log_value(checkout_session_id),
             direct_redirect_mode,
+            browser_checkout_ui_mode,
             processor_entity or "<default>",
             bool(midtrans_client_id),
         )
@@ -3670,7 +4123,7 @@ def _run_gopay_bind_task_once(
                     openai_sentinel_token=openai_sentinel_token,
                 )
             except GoPayFlowError as exc:
-                if exc.stage != "chatgpt_approve" or not _env_enabled("GOPAY_APPROVE_BROWSER_FALLBACK", True):
+                if exc.stage != "chatgpt_approve" or not _env_enabled("GOPAY_APPROVE_BROWSER_FALLBACK", False):
                     raise
                 progress("chatgpt_approve_browser_fallback", checkout_session_id=cs_id)
                 logger.info(
@@ -3707,16 +4160,41 @@ def _run_gopay_bind_task_once(
                 return result
 
         def verify_callback(cs_id: str) -> dict:
-            return _verify_checkout_http(
-                chatgpt_http,
-                access_token=access_token,
-                checkout_session_id=cs_id,
-                processor_entity=processor_entity,
-                cookie_header=cookie_header,
-                account_id=account_id,
-                device_id=device_id,
-                openai_sentinel_token=openai_sentinel_token,
-            )
+            try:
+                return _verify_checkout_http(
+                    chatgpt_http,
+                    access_token=access_token,
+                    checkout_session_id=cs_id,
+                    processor_entity=processor_entity,
+                    cookie_header=cookie_header,
+                    account_id=account_id,
+                    device_id=device_id,
+                    openai_sentinel_token=openai_sentinel_token,
+                )
+            except Exception as exc:
+                logger.info(
+                    "[gopay_executor] ChatGPT verify HTTP failed, trying browser context: checkout_session_id=%s error=%s",
+                    _mask_log_value(cs_id),
+                    _safe_error_summary(exc),
+                )
+                if getattr(api, "page", None):
+                    try:
+                        return _verify_checkout_in_page(
+                            api,
+                            access_token=access_token,
+                            checkout_session_id=cs_id,
+                            processor_entity=processor_entity,
+                        )
+                    except Exception as browser_exc:
+                        logger.info(
+                            "[gopay_executor] ChatGPT verify browser context failed: checkout_session_id=%s error=%s",
+                            _mask_log_value(cs_id),
+                            _safe_error_summary(browser_exc),
+                        )
+                return {
+                    "state": "verify_timeout",
+                    "verify": {"error": _safe_error_summary(exc)},
+                }
 
         otp_provider = _poll_otp_from_sms_url(
             sms_url,
@@ -3744,17 +4222,94 @@ def _run_gopay_bind_task_once(
 
         progress("gopay_http_flow", checkout_session_id=checkout_session_id)
         logger.info(
-            "[gopay_executor] GoPay HTTP flow started: checkout_session_id=%s direct_redirect=%s",
+            "[gopay_executor] GoPay flow started: checkout_session_id=%s direct_redirect=%s browser_ui=%s",
             _mask_log_value(checkout_session_id),
             direct_redirect_mode,
+            browser_checkout_ui_mode,
         )
         if direct_redirect_mode:
             flow_result = charger.run_from_redirect(
                 redirect_url=final_checkout_url,
                 checkout_session_id=checkout_session_id,
             )
+        elif browser_checkout_ui_mode:
+            browser_handoff = _browser_checkout_to_gopay_redirect(
+                api,
+                access_token=access_token,
+                session_token=session_token,
+                cookie_header=cookie_header,
+                checkout_url=final_checkout_url,
+                raw_checkout=raw_checkout,
+                email=email,
+                account_id=account_id,
+                device_id=device_id,
+                billing=billing,
+                session_id=session_id,
+                screenshot_paths=screenshot_paths,
+                proxy_url=proxy_url,
+                proxy_bypass=proxy_bypass,
+                progress=progress,
+            )
+            final_checkout_url = str(browser_handoff.get("checkout_url") or final_checkout_url)
+            checkout_session_id = str(browser_handoff.get("checkout_session_id") or checkout_session_id)
+            processor_entity = str(browser_handoff.get("processor_entity") or processor_entity)
+            redirect_url = str(browser_handoff.get("redirect_url") or "")
+            snap_token = str(browser_handoff.get("snap_token") or "")
+            if redirect_url:
+                flow_result = charger.run_from_redirect(
+                    redirect_url=redirect_url,
+                    checkout_session_id=checkout_session_id,
+                )
+            elif snap_token:
+                flow_result = charger.run_from_snap_token(
+                    snap_token=snap_token,
+                    checkout_session_id=checkout_session_id,
+                )
+            else:
+                raise GoPayFlowError("浏览器 checkout UI 未返回 Midtrans 跳转", stage="browser_checkout")
         else:
-            flow_result = charger.run(checkout_session_id=checkout_session_id, stripe_pk=stripe_pk)
+            try:
+                flow_result = charger.run(checkout_session_id=checkout_session_id, stripe_pk=stripe_pk)
+            except GoPayFlowError as exc:
+                if exc.stage != "chatgpt_approve" or not _env_enabled("GOPAY_BROWSER_CHECKOUT_FALLBACK", True):
+                    raise
+                logger.info(
+                    "[gopay_executor] protocol checkout approve blocked, switching to full browser checkout handoff: checkout_session_id=%s error=%s",
+                    _mask_log_value(checkout_session_id),
+                    _safe_error_summary(exc),
+                )
+                browser_handoff = _browser_checkout_to_gopay_redirect(
+                    api,
+                    access_token=access_token,
+                    session_token=session_token,
+                    cookie_header=cookie_header,
+                    email=email,
+                    account_id=account_id,
+                    device_id=device_id,
+                    billing=billing,
+                    session_id=session_id,
+                    screenshot_paths=screenshot_paths,
+                    proxy_url=proxy_url,
+                    proxy_bypass=proxy_bypass,
+                    progress=progress,
+                )
+                final_checkout_url = str(browser_handoff.get("checkout_url") or final_checkout_url)
+                checkout_session_id = str(browser_handoff.get("checkout_session_id") or checkout_session_id)
+                processor_entity = str(browser_handoff.get("processor_entity") or processor_entity)
+                redirect_url = str(browser_handoff.get("redirect_url") or "")
+                snap_token = str(browser_handoff.get("snap_token") or "")
+                if redirect_url:
+                    flow_result = charger.run_from_redirect(
+                        redirect_url=redirect_url,
+                        checkout_session_id=checkout_session_id,
+                    )
+                elif snap_token:
+                    flow_result = charger.run_from_snap_token(
+                        snap_token=snap_token,
+                        checkout_session_id=checkout_session_id,
+                    )
+                else:
+                    raise GoPayFlowError("浏览器 checkout fallback 未返回 Midtrans 跳转", stage="chatgpt_approve")
         logger.info(
             "[gopay_executor] GoPay HTTP flow finished: state=%s reference=%s charge_ref=%s snap_token=%s",
             flow_result.get("state", ""),
@@ -3922,6 +4477,8 @@ def run_gopay_bind_task(
     attempted: list[str] = []
     blocked: list[str] = []
     last_blocked_result: dict | None = None
+    rejected: list[str] = []
+    last_rejected_result: dict | None = None
     skipped_cooldown: list[str] = []
 
     for index, candidate in enumerate(candidates, 1):
@@ -3979,8 +4536,32 @@ def run_gopay_bind_task(
             )
             continue
 
+        if _is_checkout_payment_not_approved_result(result):
+            rejected.append(candidate)
+            last_rejected_result = result
+            not_approved_message = (
+                f"付款未获批准，当前账号将从号池删除并停止本次账号尝试: "
+                f"{_compact_log_text(result.get('message') or '付款未获批准', limit=180)}"
+            )
+            logger.info(
+                "[gopay_executor] GoPay candidate checkout payment not approved, rotating and marking for pool deletion: email=%s message=%s",
+                _safe_email_summary(candidate),
+                _compact_log_text(result.get("message") or "", limit=180),
+            )
+            emit(
+                "checkout_not_approved_rotate",
+                email=candidate,
+                message=not_approved_message,
+                attempted=len(attempted),
+                remaining_candidates=max(0, len(candidates) - index),
+            )
+            continue
+
         if blocked:
             result["blocked_emails"] = blocked[:]
+        if rejected:
+            result["rejected_emails"] = rejected[:]
+        if blocked or rejected:
             result["rotated_from"] = requested_email
         logger.info(
             "[gopay_executor] GoPay candidate finished without approve-block rotation: email=%s status=%s failure_stage=%s",
@@ -3989,6 +4570,20 @@ def run_gopay_bind_task(
             result.get("failure_stage") or "",
         )
         return result
+
+    if last_rejected_result and not last_blocked_result:
+        last_rejected_result = dict(last_rejected_result)
+        last_rejected_result["rejected_emails"] = rejected[:]
+        last_rejected_result["attempted_emails"] = attempted[:]
+        last_rejected_result["email_used"] = attempted[-1] if attempted else requested_email
+        last_rejected_result["requested_email"] = requested_email
+        emit("gopay_all_accounts_rejected", attempted=len(attempted), rejected=len(rejected))
+        logger.info(
+            "[gopay_executor] all GoPay candidates rejected by checkout payment approval: attempted=%s rejected=%s",
+            len(attempted),
+            [_safe_email_summary(candidate) for candidate in rejected],
+        )
+        return last_rejected_result
 
     if last_blocked_result:
         message = (
@@ -4000,6 +4595,7 @@ def run_gopay_bind_task(
         last_blocked_result = dict(last_blocked_result)
         last_blocked_result["message"] = message
         last_blocked_result["blocked_emails"] = blocked[:]
+        last_blocked_result["rejected_emails"] = rejected[:]
         last_blocked_result["skipped_cooldown_emails"] = skipped_cooldown[:]
         last_blocked_result["attempted_emails"] = attempted[:]
         last_blocked_result["email_used"] = attempted[-1] if attempted else requested_email

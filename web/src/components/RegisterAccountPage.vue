@@ -53,7 +53,7 @@
         {{ message }}
       </div>
 
-      <div class="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-4">
+      <div class="grid grid-cols-1 xl:grid-cols-[380px_minmax(0,1fr)] gap-4">
         <div class="space-y-3">
           <div>
             <label class="block text-sm text-gray-400 mb-1">注册模式</label>
@@ -91,18 +91,58 @@
                 @{{ domain }}
               </option>
             </select>
-            <select
-              v-else
-              v-model="registerForm.selectedDomains"
-              multiple
-              size="5"
-              :disabled="registeringBusy || !registerDomainOptions.length"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-            >
-              <option v-for="domain in registerDomainOptions" :key="`batch-domain-${domain}`" :value="domain">
-                @{{ domain }}
-              </option>
-            </select>
+            <div v-else class="relative">
+              <button
+                type="button"
+                @click="toggleRegisterDomainDropdown"
+                :disabled="registeringBusy || !registerDomainOptions.length"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 flex items-center justify-between gap-3 text-left"
+              >
+                <span class="truncate">{{ selectedRegisterDomainsLabel }}</span>
+                <span class="text-gray-500 text-xs">{{ registerDomainDropdownOpen ? '收起' : '展开' }}</span>
+              </button>
+              <div
+                v-if="registerDomainDropdownOpen"
+                class="absolute z-30 mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 shadow-2xl"
+              >
+                <div class="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-800">
+                  <div class="text-xs text-gray-400">
+                    已选择 {{ selectedRegisterDomains.length }} / {{ registerDomainOptions.length }}
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      @click="selectAllRegisterDomains"
+                      :disabled="registerAllDomainsSelected"
+                      class="px-2 py-1 rounded-md text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                      全选
+                    </button>
+                    <button
+                      type="button"
+                      @click="clearRegisterDomains"
+                      :disabled="!selectedRegisterDomains.length"
+                      class="px-2 py-1 rounded-md text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                      清空
+                    </button>
+                  </div>
+                </div>
+                <div class="max-h-52 overflow-y-auto px-2 py-2 space-y-1">
+                  <label
+                    v-for="domain in registerDomainOptions"
+                    :key="`batch-domain-${domain}`"
+                    class="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-gray-200 hover:bg-gray-800 cursor-pointer"
+                  >
+                    <input
+                      v-model="registerForm.selectedDomains"
+                      type="checkbox"
+                      :value="domain"
+                      class="accent-blue-500"
+                    />
+                    <span class="font-mono text-xs">@{{ domain }}</span>
+                  </label>
+                </div>
+              </div>
+            </div>
             <div class="mt-1 text-xs text-gray-500">
               <span v-if="registerForm.mode === 'batch'">
                 已选择 {{ selectedRegisterDomains.length }} / {{ registerDomainOptions.length }} 个域名，批量注册时每个账号随机使用一个。
@@ -242,7 +282,7 @@
                 {{ logsLoading ? '加载中...' : '刷新日志' }}
               </button>
             </div>
-            <div ref="logsContainer" class="h-[520px] overflow-y-auto px-4 py-3 space-y-2">
+            <div ref="logsContainer" class="h-[620px] overflow-y-auto px-4 py-3 space-y-2">
               <div v-if="!registerLogs.length" class="text-sm text-gray-500">暂无注册日志</div>
               <div
                 v-for="(log, idx) in registerLogs"
@@ -283,6 +323,7 @@ const messageClass = ref('')
 const registerConfigLoading = ref(false)
 const registeringAccount = ref(false)
 const registerDomainOptions = ref([])
+const registerDomainDropdownOpen = ref(false)
 const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
@@ -345,6 +386,11 @@ const selectedRegisterDomainsLabel = computed(() => {
   if (domains.length <= 3) return domains.map(domain => `@${domain}`).join(' / ')
   return `${domains.slice(0, 3).map(domain => `@${domain}`).join(' / ')} 等 ${domains.length} 个`
 })
+const registerAllDomainsSelected = computed(() => {
+  if (!registerDomainOptions.value.length) return false
+  const selected = new Set(selectedRegisterDomains.value)
+  return registerDomainOptions.value.every(domain => selected.has(domain))
+})
 const registerDomainSuffixLabel = computed(() => {
   if (registerForm.value.mode === 'batch') {
     return selectedRegisterDomains.value.length
@@ -392,6 +438,19 @@ function setMessage(text, ok = true) {
   setMessage._timer = window.setTimeout(() => {
     message.value = ''
   }, 8000)
+}
+
+function toggleRegisterDomainDropdown() {
+  if (registeringBusy.value || !registerDomainOptions.value.length) return
+  registerDomainDropdownOpen.value = !registerDomainDropdownOpen.value
+}
+
+function selectAllRegisterDomains() {
+  registerForm.value.selectedDomains = [...registerDomainOptions.value]
+}
+
+function clearRegisterDomains() {
+  registerForm.value.selectedDomains = []
 }
 
 function loadSavedRegisterForm() {
@@ -582,6 +641,7 @@ watch(
 watch(
   () => registerForm.value.mode,
   mode => {
+    registerDomainDropdownOpen.value = false
     if (mode === 'batch' && !selectedRegisterDomains.value.length && registerForm.value.domain) {
       registerForm.value.selectedDomains = [registerForm.value.domain]
     }

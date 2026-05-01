@@ -750,6 +750,57 @@ def _is_bind_card_reusable_result(result: dict) -> bool:
     return (result.get("status") == "failed") and (result.get("failure_stage") in {"open_checkout", "fill_card"})
 
 
+def _is_gopay_checkout_not_approved_result(result: dict) -> bool:
+    if not isinstance(result, dict):
+        return False
+    stage = str(result.get("failure_stage") or "")
+    if stage not in {"checkout_not_approved", "browser_checkout", "submit_checkout"}:
+        return False
+    message = str(result.get("message") or "")
+    return bool(
+        re.search(r"付款.*未获批准|未获批准", message)
+        or re.search(r"payment\s+(?:was\s+)?not\s+approved|payment\s+(?:was\s+)?declined|not\s+approved", message, re.I)
+    )
+
+
+def _gopay_rejected_pool_emails(result: dict, actual_email: str) -> list[str]:
+    seen = set()
+    emails = []
+    for raw_email in result.get("rejected_emails") or []:
+        email = _normalized_email(raw_email)
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+    if _is_gopay_checkout_not_approved_result(result):
+        email = _normalized_email(actual_email)
+        if email and email not in seen:
+            emails.append(email)
+    return emails
+
+
+def _remove_gopay_rejected_accounts_from_pool(emails: list[str]) -> list[str]:
+    if not emails:
+        return []
+    from autoteam.accounts import delete_account as delete_local_account
+    from autoteam.auth_session_store import delete_auth_session
+
+    removed = []
+    for email in emails:
+        if not email or _is_main_account_email(email):
+            continue
+        record_deleted = delete_local_account(email)
+        session_deleted = delete_auth_session(email)
+        if record_deleted or session_deleted:
+            removed.append(email)
+        logger.info(
+            "[gopay-bind] checkout not approved account removed from local pool: email=%s record_deleted=%s auth_session_deleted=%s",
+            email,
+            record_deleted,
+            session_deleted,
+        )
+    return removed
+
+
 def _session_only_account_stub(email: str) -> dict:
     return {
         "email": email,
@@ -1761,6 +1812,7 @@ def get_status():
         STATUS_ORPHAN,
         STATUS_PENDING,
         STATUS_PERSONAL,
+        STATUS_PLUS,
         STATUS_STANDBY,
         load_accounts,
     )
@@ -1799,6 +1851,7 @@ def get_status():
         "exhausted": sum(1 for a in sanitized_accounts if a["status"] == STATUS_EXHAUSTED),
         "pending": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PENDING),
         "personal": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PERSONAL),
+        "plus": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PLUS),
         "auth_invalid": sum(1 for a in sanitized_accounts if a["status"] == STATUS_AUTH_INVALID),
         "orphan": sum(1 for a in sanitized_accounts if a["status"] == STATUS_ORPHAN),
         "total": len(sanitized_accounts),
@@ -2693,9 +2746,10 @@ def post_bind_card_task(params: BindCardTaskParams):
 @app.post("/api/tasks/gopay-bind", status_code=202)
 def post_gopay_bind_task(params: GoPayBindTaskParams):
     from autoteam import cancel_signal
-    from autoteam.accounts import find_account, load_accounts, save_accounts, update_account
+    from autoteam.accounts import STATUS_PLUS, find_account, load_accounts, save_accounts, update_account
     from autoteam.auth_session_store import get_auth_session_file
     from autoteam.bind_audit import record_bind_audit
+    from autoteam.config import normalize_proxy_url
     from autoteam.gopay_executor import (
         _compact_log_text,
         _safe_email_summary,
@@ -2725,6 +2779,15 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     billing_address1 = str(params.billing_address1 or "").strip()
     billing_address2 = str(params.billing_address2 or "").strip()
     checkout_url = str(params.checkout_url or "").strip()
+    proxy_url = str(params.proxy_url or "").strip()
+    try:
+        normalized_proxy_url = normalize_proxy_url(proxy_url) if proxy_url else ""
+        proxy_config_state = "enabled" if normalized_proxy_url else "disabled"
+        proxy_config_error = ""
+    except Exception as exc:
+        normalized_proxy_url = ""
+        proxy_config_state = "invalid"
+        proxy_config_error = _compact_log_text(exc, limit=160)
 
     if not email:
         raise HTTPException(status_code=400, detail="email 不能为空")
@@ -2739,13 +2802,15 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     if not gopay_pin:
         raise HTTPException(status_code=400, detail="gopay_pin 不能为空")
     logger.info(
-        "[gopay-bind] task submitted: email=%s account_count=%s checkout=%s phone=%s proxy_label=%s proxy=%s timeout=%s",
+        "[gopay-bind] task submitted: email=%s account_count=%s checkout=%s phone=%s proxy_label=%s proxy_state=%s proxy=%s proxy_error=%s timeout=%s",
         _safe_email_summary(email),
         len(account_emails) if account_emails else 1,
         _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
         _safe_phone_summary(phone_number, country_code),
         params.proxy_label or "<none>",
-        _safe_proxy_summary(params.proxy_url),
+        proxy_config_state,
+        _safe_proxy_summary(normalized_proxy_url or proxy_url),
+        proxy_config_error or "<none>",
         max(120, int(params.timeout_seconds or 900)),
     )
 
@@ -2783,12 +2848,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
 
         try:
             logger.info(
-                "[gopay-bind] runner started: task_id=%s email=%s account_count=%s checkout=%s proxy_label=%s",
+                "[gopay-bind] runner started: task_id=%s email=%s account_count=%s checkout=%s proxy_label=%s proxy_state=%s proxy=%s",
                 task_id[:8] or "<unknown>",
                 _safe_email_summary(email),
                 len(account_emails) if account_emails else 1,
                 _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
                 params.proxy_label or "<none>",
+                proxy_config_state,
+                _safe_proxy_summary(normalized_proxy_url or proxy_url),
             )
             _update_current_task_progress(
                 {
@@ -2816,7 +2883,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     "address1": billing_address1,
                     "address2": billing_address2,
                 },
-                proxy_url=params.proxy_url,
+                proxy_url=proxy_url,
                 proxy_bypass=params.proxy_bypass,
                 timeout_seconds=max(120, int(params.timeout_seconds or 900)),
                 account_emails=account_emails,
@@ -2843,6 +2910,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         result["phone_number"] = phone_number
         result["country_code"] = country_code
         result["proxy_label"] = params.proxy_label
+        result["proxy_state"] = proxy_config_state
         result["checkout_url"] = checkout_url or result.get("checkout_url") or ""
         result["account_emails"] = account_emails
 
@@ -2863,16 +2931,31 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             _safe_url_summary(result.get("checkout_url") or ""),
         )
 
-        update_account(
-            actual_email,
-            last_bind_status="cancelled" if task_status == "cancelled" else result.get("status") or "failed",
-            last_bind_at=time.time(),
-            last_checkout_url=checkout_url or result.get("checkout_url") or "",
-            last_proxy_label=params.proxy_label,
-            last_bind_task_id=task_id,
-            last_bind_message=result.get("message") or "",
-            last_bind_failure_stage=result.get("failure_stage") or "",
+        finished_at = time.time()
+        account_update = {
+            "last_bind_status": "cancelled" if task_status == "cancelled" else result.get("status") or "failed",
+            "last_bind_at": finished_at,
+            "last_checkout_url": checkout_url or result.get("checkout_url") or "",
+            "last_proxy_label": params.proxy_label,
+            "last_bind_task_id": task_id,
+            "last_bind_message": result.get("message") or "",
+            "last_bind_failure_stage": result.get("failure_stage") or "",
+        }
+        if result.get("status") == "success":
+            account_update["status"] = STATUS_PLUS
+            account_update["plus_bound_at"] = finished_at
+        update_account(actual_email, **account_update)
+
+        removed_pool_emails = _remove_gopay_rejected_accounts_from_pool(
+            _gopay_rejected_pool_emails(result, actual_email)
         )
+        if removed_pool_emails:
+            result["removed_pool_emails"] = removed_pool_emails
+            logger.info(
+                "[gopay-bind] removed checkout-not-approved accounts from pool: task_id=%s emails=%s",
+                task_id[:8] or "<unknown>",
+                removed_pool_emails,
+            )
 
         record_bind_audit(
             {
@@ -2883,20 +2966,21 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 "card_item_id": "",
                 "checkout_url": checkout_url or result.get("checkout_url") or "",
                 "proxy_label": params.proxy_label,
-                "proxy_url": params.proxy_url or "",
+                "proxy_url": proxy_url,
                 "manual_confirm": False,
                 "status": result.get("status") or "failed",
                 "task_status": task_status,
                 "failure_stage": result.get("failure_stage") or "",
                 "message": result.get("message") or "",
                 "started_at": started_at,
-                "finished_at": time.time(),
+                "finished_at": finished_at,
                 "screenshot_paths": result.get("screenshot_paths") or [],
                 "card_status": "",
                 "flow": "gopay",
                 "phone_number": phone_number,
                 "country_code": country_code,
                 "billing_info": result.get("billing_info") or {},
+                "removed_pool_emails": result.get("removed_pool_emails") or [],
             }
         )
 

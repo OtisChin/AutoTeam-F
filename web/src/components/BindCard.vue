@@ -600,35 +600,53 @@
                 批量绑定
               </label>
             </div>
-            <input
-              v-model.trim="gopayAccountSearchKeyword"
-              type="text"
-              :disabled="gopaySubmitting || gopayTaskRunning || loadingAccounts"
-              placeholder="搜索邮箱，例如 openaibus.com"
-              class="w-full mb-2 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-            />
-            <select
-              v-model="gopayForm.email"
-              :disabled="gopaySubmitting || gopayTaskRunning || loadingAccounts"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-            >
-              <option value="">{{ loadingAccounts ? '加载账号中...' : filteredGoPayAccountOptions.length ? `共 ${filteredGoPayAccountOptions.length} 个匹配账号` : '没有匹配账号' }}</option>
-              <option v-for="account in filteredGoPayAccountOptions" :key="account.email" :value="account.email">
-                {{ account.email }}
-              </option>
-            </select>
-            <select
-              v-if="gopayForm.batchMode && !gopayForm.checkoutUrl"
-              v-model="gopayForm.accountEmails"
-              multiple
-              size="6"
-              :disabled="gopaySubmitting || gopayTaskRunning || loadingAccounts"
-              class="mt-2 w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-            >
-              <option v-for="account in filteredGoPayAccountOptions" :key="`batch-${account.email}`" :value="account.email">
-                {{ account.email }}
-              </option>
-            </select>
+            <template v-if="!gopayForm.batchMode || gopayForm.checkoutUrl">
+              <input
+                v-model.trim="gopayAccountSearchKeyword"
+                type="text"
+                :disabled="gopaySubmitting || gopayTaskRunning || loadingAccounts"
+                placeholder="搜索邮箱，例如 openaibus.com"
+                class="w-full mb-2 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+              <select
+                v-model="gopayForm.email"
+                :disabled="gopaySubmitting || gopayTaskRunning || loadingAccounts"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value="">{{ loadingAccounts ? '加载账号中...' : filteredGoPayAccountOptions.length ? `共 ${filteredGoPayAccountOptions.length} 个匹配账号` : '没有匹配账号' }}</option>
+                <option v-for="account in filteredGoPayAccountOptions" :key="account.email" :value="account.email">
+                  {{ account.email }}
+                </option>
+              </select>
+            </template>
+            <div v-else class="rounded-lg border border-gray-700 bg-gray-800/60 p-3">
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-xs text-gray-500">当前选择</div>
+                  <div class="mt-1 text-sm text-gray-200 font-mono truncate">
+                    {{ gopayAccountSelectionLabel }}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  @click="openGoPayAccountPicker"
+                  :disabled="gopaySubmitting || gopayTaskRunning || loadingAccounts"
+                  class="shrink-0 px-4 py-2 rounded-lg text-sm border bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/30 transition disabled:opacity-50">
+                  {{ loadingAccounts ? '加载中...' : '选择账号' }}
+                </button>
+              </div>
+              <div v-if="gopayBatchActive" class="mt-2 flex flex-wrap gap-2">
+                <span
+                  v-for="email in gopayBatchPreviewEmails"
+                  :key="`selected-${email}`"
+                  class="max-w-full truncate rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-300 font-mono">
+                  {{ email }}
+                </span>
+                <span v-if="gopaySelectedBatchEmails.length > gopayBatchPreviewEmails.length" class="rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-500">
+                  +{{ gopaySelectedBatchEmails.length - gopayBatchPreviewEmails.length }}
+                </span>
+              </div>
+            </div>
             <div v-if="gopayForm.batchMode && !gopayForm.checkoutUrl" class="mt-1 text-xs text-gray-500">
               已选择 {{ gopaySelectedBatchEmails.length }} 个账号；仅在 ChatGPT approve 返回 blocked 时切换下一个。
             </div>
@@ -796,6 +814,93 @@
         </div>
       </div>
     </div>
+
+    <div
+      v-if="gopayAccountPickerOpen"
+      class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      @click.self="closeGoPayAccountPicker"
+    >
+      <div class="w-full max-w-3xl max-h-[82vh] rounded-xl border border-gray-800 bg-gray-900 shadow-2xl flex flex-col">
+        <div class="flex items-center justify-between gap-4 px-5 py-4 border-b border-gray-800">
+          <div>
+            <h4 class="text-lg font-semibold text-white">选择 GoPay 批量账号</h4>
+            <div class="text-xs text-gray-500 mt-1">已选择 {{ gopaySelectedBatchEmails.length }} / {{ accountOptions.length }} 个账号</div>
+          </div>
+          <button
+            type="button"
+            @click="closeGoPayAccountPicker"
+            class="px-3 py-1.5 rounded-lg text-sm border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition">
+            关闭
+          </button>
+        </div>
+
+        <div class="px-5 py-4 border-b border-gray-800 space-y-3">
+          <input
+            v-model.trim="gopayAccountSearchKeyword"
+            type="text"
+            :disabled="loadingAccounts"
+            placeholder="搜索邮箱，例如 openaibus.com"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="text-xs text-gray-400">
+              {{ loadingAccounts ? '加载账号中...' : filteredGoPayAccountOptions.length ? `当前筛选 ${filteredGoPayAccountOptions.length} 个账号` : '没有匹配账号' }}
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                @click="selectAllGoPayAccounts"
+                :disabled="loadingAccounts || !accountOptions.length || gopayAllAccountsSelected"
+                class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                全选全部
+              </button>
+              <button
+                type="button"
+                @click="selectVisibleGoPayAccounts"
+                :disabled="loadingAccounts || !filteredGoPayAccountOptions.length || gopayVisibleAllSelected"
+                class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                全选筛选
+              </button>
+              <button
+                type="button"
+                @click="clearGoPayBatchAccounts"
+                :disabled="!gopaySelectedBatchEmails.length"
+                class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                清空
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-1">
+          <label
+            v-for="account in filteredGoPayAccountOptions"
+            :key="`picker-${account.email}`"
+            class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-gray-200 hover:bg-gray-800 cursor-pointer"
+          >
+            <input
+              v-model="gopayForm.accountEmails"
+              type="checkbox"
+              :value="account.email"
+              class="accent-blue-500"
+            />
+            <span class="font-mono text-xs break-all">{{ account.email }}</span>
+          </label>
+          <div v-if="!filteredGoPayAccountOptions.length" class="px-3 py-10 text-sm text-gray-500">
+            暂无匹配账号。
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <button
+            type="button"
+            @click="closeGoPayAccountPicker"
+            class="px-5 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition">
+            完成
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -846,6 +951,7 @@ const gopayForm = ref({
   proxyUrl: '',
 })
 const gopayAccountSearchKeyword = ref('')
+const gopayAccountPickerOpen = ref(false)
 const gopaySubmitting = ref(false)
 const gopayCancelling = ref(false)
 const gopayTask = ref(null)
@@ -926,6 +1032,25 @@ const gopaySelectedBatchEmails = computed(() => {
       seen.add(email)
       return true
     })
+})
+
+const gopayVisibleAllSelected = computed(() => {
+  if (!filteredGoPayAccountOptions.value.length) return false
+  const selected = new Set(gopaySelectedBatchEmails.value)
+  return filteredGoPayAccountOptions.value.every(account => selected.has(String(account.email || '').toLowerCase()))
+})
+
+const gopayAllAccountsSelected = computed(() => {
+  if (!accountOptions.value.length) return false
+  const selected = new Set(gopaySelectedBatchEmails.value)
+  return accountOptions.value.every(account => selected.has(String(account.email || '').toLowerCase()))
+})
+
+const gopayBatchPreviewEmails = computed(() => gopaySelectedBatchEmails.value.slice(0, 4))
+
+const gopayAccountSelectionLabel = computed(() => {
+  if (gopayBatchActive.value) return `${gopaySelectedBatchEmails.value.length} 个账号`
+  return String(gopayForm.value.email || '').trim().toLowerCase() || '未选择'
 })
 
 const gopayBatchActive = computed(() => {
@@ -1102,6 +1227,8 @@ const gopayStageLabelMap = {
   chatgpt_approve_blocked_rotate: 'ChatGPT approve 被拦截，切换账号',
   chatgpt_approve_blocked_cooldown: 'ChatGPT approve 被拦截，账号进入冷却',
   gopay_all_accounts_blocked: '所有账号 approve 均被拦截',
+  checkout_not_approved_rotate: '付款未获批准，删除账号并切换',
+  gopay_all_accounts_rejected: '所有账号付款均未获批准',
   resolve_midtrans_redirect: '解析 Midtrans 跳转',
   pm_redirect: '跟随 Stripe 跳转',
   midtrans_load_transaction: '读取 Midtrans 交易',
@@ -1189,6 +1316,33 @@ function normalizeEmailList(value) {
     })
 }
 
+function mergeGoPayBatchEmails(emails) {
+  gopayForm.value.accountEmails = normalizeEmailList([
+    ...gopaySelectedBatchEmails.value,
+    ...emails,
+  ])
+}
+
+function selectAllGoPayAccounts() {
+  mergeGoPayBatchEmails(accountOptions.value.map(account => account.email))
+}
+
+function selectVisibleGoPayAccounts() {
+  mergeGoPayBatchEmails(filteredGoPayAccountOptions.value.map(account => account.email))
+}
+
+function clearGoPayBatchAccounts() {
+  gopayForm.value.accountEmails = []
+}
+
+function openGoPayAccountPicker() {
+  gopayAccountPickerOpen.value = true
+}
+
+function closeGoPayAccountPicker() {
+  gopayAccountPickerOpen.value = false
+}
+
 function getRememberedGoPayForm() {
   return {
     email: String(gopayForm.value.email || '').trim().toLowerCase(),
@@ -1237,8 +1391,17 @@ async function loadAccounts() {
   try {
     const accounts = await api.getAccounts()
     accountOptions.value = (accounts || [])
-      .filter(account => account?.email && account?.auth_session_file)
+      .filter(account => account?.email && account?.auth_session_file && account?.status !== 'plus')
       .sort((a, b) => Number(b?.created_at || 0) - Number(a?.created_at || 0))
+    const selectableEmails = new Set(accountOptions.value.map(account => String(account.email || '').toLowerCase()))
+    if (selectedAccountEmail.value && !selectableEmails.has(selectedAccountEmail.value.toLowerCase())) {
+      selectedAccountEmail.value = ''
+    }
+    if (gopayForm.value.email && !selectableEmails.has(gopayForm.value.email.toLowerCase())) {
+      gopayForm.value.email = ''
+    }
+    gopayForm.value.accountEmails = normalizeEmailList(gopayForm.value.accountEmails)
+      .filter(email => selectableEmails.has(email))
   } catch (e) {
     setMessage(`加载号池账号失败: ${e.message}`, false)
   } finally {
@@ -1465,6 +1628,11 @@ async function pollGoPayTask(taskId) {
     if (nextStage && previousStage !== nextStage) {
       pushGoPayLog(`执行阶段：${gopayStageLabelMap[nextStage] || nextStage}`, 'info')
     }
+    const previousProgressMessage = previous?.progress?.message || ''
+    const nextProgressMessage = task?.progress?.message || ''
+    if (nextProgressMessage && nextProgressMessage !== previousProgressMessage) {
+      pushGoPayLog(nextProgressMessage, nextStage === 'checkout_not_approved_rotate' ? 'warn' : 'info')
+    }
     if (['pending', 'running'].includes(task.status)) {
       gopayTaskPollTimer = window.setTimeout(() => {
         pollGoPayTask(taskId)
@@ -1472,9 +1640,14 @@ async function pollGoPayTask(taskId) {
       return
     }
     gopayCancelling.value = false
+    const removedPoolEmails = task.result?.removed_pool_emails || []
+    if (removedPoolEmails.length) {
+      pushGoPayLog(`付款未获批准，当前账号将从号池删除并停止本次账号尝试: ${removedPoolEmails.join(', ')}`, 'warn')
+    }
     if (task.result?.message) {
       pushGoPayLog(task.result.message, task.result?.status === 'success' ? 'success' : task.status === 'cancelled' ? 'warn' : 'error')
     }
+    await loadAccounts()
   } catch (e) {
     pushGoPayLog(`查询 GoPay 任务失败: ${e.message}`, 'error')
     setMessage(`查询 GoPay 任务失败: ${e.message}`, false)

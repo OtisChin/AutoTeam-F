@@ -92,6 +92,21 @@ def test_get_playwright_launch_options_normalizes_colon_proxy_with_spaces():
     )
 
 
+def test_get_playwright_launch_options_normalizes_schemed_colon_proxy_with_spaces():
+    raw = "socks5://us.1024proxy.io:3000:user-region-US-st-Delaware-city-Dewey Beach-sid-abc:secret"
+
+    options = config.get_playwright_launch_options(proxy_url=raw)
+
+    assert options["proxy"] == {
+        "server": "socks5://us.1024proxy.io:3000",
+        "username": "user-region-US-st-Delaware-city-Dewey Beach-sid-abc",
+        "password": "secret",
+    }
+    assert config.normalize_proxy_url(raw) == (
+        "socks5://user-region-US-st-Delaware-city-Dewey%20Beach-sid-abc:secret@us.1024proxy.io:3000"
+    )
+
+
 def test_get_playwright_launch_options_preserves_socks5_scheme():
     options = config.get_playwright_launch_options(
         proxy_url="socks5://user name:pass@socks.example:1080",
@@ -1283,10 +1298,10 @@ def test_gopay_bind_task_direct_midtrans_link_skips_checkout_and_approve(monkeyp
     assert "sms_otp_trigger_callback" not in created or created["sms_otp_trigger_callback"] is None
 
 
-def test_gopay_bind_task_uses_browser_fallback_when_http_approve_blocked(monkeypatch):
+def test_gopay_bind_task_uses_full_browser_checkout_ui_without_protocol_approve(monkeypatch):
     progress_events = []
     checkout_url = "https://chatgpt.com/checkout/openai_llc/cs_test"
-    fallback_calls = []
+    handoff_calls = []
 
     monkeypatch.setattr(
         gopay_executor,
@@ -1302,38 +1317,33 @@ def test_gopay_bind_task_uses_browser_fallback_when_http_approve_blocked(monkeyp
     monkeypatch.setattr(gopay_executor, "_build_chatgpt_http_session", lambda **kwargs: object())
     monkeypatch.setattr(gopay_executor, "_new_http_session", lambda *args, **kwargs: object())
 
-    def fake_approve_http(*args, **kwargs):
-        raise gopay_executor.GoPayFlowError(
-            gopay_executor._chatgpt_approve_blocked_message({"result": "blocked"}),
-            stage="chatgpt_approve",
-        )
-
-    def fake_browser_fallback(api, **kwargs):
-        fallback_calls.append(kwargs)
+    def fake_browser_handoff(api, **kwargs):
+        handoff_calls.append(kwargs)
         return {
-            "result": "approved",
-            "_browser_cookie_header": "fresh=1",
-            "_browser_openai_sentinel_token": "sentinel",
+            "checkout_url": "https://chatgpt.com/checkout/openai_llc/cs_browser",
+            "checkout_session_id": "cs_browser",
+            "processor_entity": "openai_llc",
+            "redirect_url": "https://pm-redirects.stripe.com/authorize/test",
         }
 
-    monkeypatch.setattr(gopay_executor, "_approve_checkout_http", fake_approve_http)
-    monkeypatch.setattr(gopay_executor, "_approve_checkout_with_browser_context", fake_browser_fallback)
+    monkeypatch.setattr(gopay_executor, "_browser_checkout_to_gopay_redirect", fake_browser_handoff)
 
     class FakeGoPayCharger:
         def __init__(self, **kwargs):
-            self.approve_callback = kwargs["approve_callback"]
+            pass
 
         def run(self, *, checkout_session_id, stripe_pk):
-            assert self.approve_callback(checkout_session_id)["result"] == "approved"
+            raise AssertionError("browser UI mode must not run protocol Stripe/approve checkout")
+
+        def run_from_redirect(self, *, redirect_url, checkout_session_id=""):
+            assert redirect_url == "https://pm-redirects.stripe.com/authorize/test"
+            assert checkout_session_id == "cs_browser"
             return {
                 "state": "succeeded",
                 "snap_token": "11111111-1111-4111-8111-111111111111",
                 "charge_ref": "CHARGE123",
                 "reference_id": "REF123",
             }
-
-        def run_from_redirect(self, **kwargs):
-            raise AssertionError("not a direct redirect flow")
 
     monkeypatch.setattr(gopay_executor, "GoPayHttpCharger", FakeGoPayCharger)
 
@@ -1347,11 +1357,11 @@ def test_gopay_bind_task_uses_browser_fallback_when_http_approve_blocked(monkeyp
     )
 
     assert result["status"] == "success"
-    assert fallback_calls
-    assert fallback_calls[0]["checkout_session_id"] == "cs_test"
-    assert fallback_calls[0]["session_token"] == "session"
-    assert any(event["stage"] == "chatgpt_approve_browser_fallback" for event in progress_events)
-    assert any(event["stage"] == "chatgpt_approve_browser_fallback_succeeded" for event in progress_events)
+    assert result["session_id"] == "cs_browser"
+    assert result["checkout_url"] == "https://chatgpt.com/checkout/openai_llc/cs_browser"
+    assert handoff_calls
+    assert handoff_calls[0]["session_token"] == "session"
+    assert handoff_calls[0]["checkout_url"] == checkout_url
 
 
 def test_gopay_bind_task_missing_access_token_does_not_launch_playwright(monkeypatch):
@@ -1416,7 +1426,7 @@ def test_extract_checkout_error_detects_payment_not_approved():
     assert _extract_checkout_error(FakeApi()) == "付款未获批准"
 
 
-def test_submit_checkout_retries_payment_approval_errors(monkeypatch):
+def test_submit_checkout_stops_on_payment_not_approved(monkeypatch):
     attempts = []
     progress_events = []
 
@@ -1442,10 +1452,48 @@ def test_submit_checkout_retries_payment_approval_errors(monkeypatch):
     )
 
     assert ok is False
-    assert len(attempts) == 3
-    assert "重试 3 次" in error
+    assert len(attempts) == 1
+    assert "当前账号将从号池删除" in error
     assert "付款未获批准" in error
-    assert any(stage == "submit_retry" for stage, _ in progress_events)
+    assert not any(stage == "submit_retry" for stage, _ in progress_events)
+
+
+def test_gopay_bind_task_rotates_on_checkout_payment_not_approved(monkeypatch):
+    monkeypatch.setattr(
+        gopay_executor,
+        "list_auth_session_emails",
+        lambda: ["primary@example.com", "backup@example.com"],
+    )
+    calls = []
+
+    def fake_run_once(**kwargs):
+        calls.append(kwargs["email"])
+        if kwargs["email"] == "primary@example.com":
+            return {
+                "status": "failed",
+                "failure_stage": "checkout_not_approved",
+                "message": "付款未获批准，当前账号将从号池删除并停止本次账号尝试: 付款未获批准",
+            }
+        return {"status": "success", "message": "ok"}
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    progress_events = []
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="primary@example.com",
+        account_emails=["primary@example.com", "backup@example.com"],
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://sms.example.test",
+        gopay_pin="558023",
+        progress_callback=progress_events.append,
+    )
+
+    assert calls == ["primary@example.com", "backup@example.com"]
+    assert result["status"] == "success"
+    assert result["email_used"] == "backup@example.com"
+    assert result["rejected_emails"] == ["primary@example.com"]
+    assert any(event["stage"] == "checkout_not_approved_rotate" for event in progress_events)
 
 
 def test_resolve_page_billing_locator_searches_child_frames():

@@ -28,6 +28,14 @@ def get_auth_session_file(email: str) -> str:
     return str(path) if path.exists() else ""
 
 
+def delete_auth_session(email: str) -> bool:
+    path = _target_path(email)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 def load_auth_session(email: str) -> dict:
     path = _target_path(email)
     if not path.exists():

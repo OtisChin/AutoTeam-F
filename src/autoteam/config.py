@@ -131,6 +131,12 @@ def normalize_proxy_url(proxy_url: str | None) -> str:
             raw = f"http://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
         else:
             raw = f"http://{raw}"
+    else:
+        scheme, rest = raw.split("://", 1)
+        parts = rest.split(":")
+        if "@" not in rest and len(parts) == 4 and parts[1].isdigit():
+            host, port, username, password = parts
+            raw = f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
 
     parsed = urlsplit(raw)
     if parsed.scheme not in {"http", "https", "socks4", "socks5"} or not parsed.hostname:
@@ -181,7 +187,12 @@ def get_playwright_launch_options(
 ):
     """统一的 Playwright Chromium 启动参数。"""
     resolved_headless = False if headless is None else bool(headless)
-    args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-quic",
+        "--disable-features=UseDnsHttpsSvcb,UseDnsHttpsSvcbAlpn",
+        "--no-sandbox",
+    ]
     if PLAYWRIGHT_BACKGROUND and not resolved_headless:
         args.extend(
             [
