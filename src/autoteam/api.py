@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -271,6 +272,14 @@ class _PlaywrightExecutor:
 _pw_executor = _PlaywrightExecutor()
 
 
+class TaskResultError(RuntimeError):
+    """允许任务以失败/取消状态结束，同时保留结构化结果。"""
+
+    def __init__(self, message: str, *, task_result: dict | None = None):
+        super().__init__(message)
+        self.task_result = task_result
+
+
 def _current_busy_detail(default_message: str):
     if _admin_login_api:
         return {
@@ -350,6 +359,8 @@ def _run_task(task_id: str, func, *args, **kwargs):
         task["result"] = result
     except Exception as e:
         task["status"] = "cancelled" if cancel_signal.is_cancelled() else "failed"
+        if getattr(e, "task_result", None) is not None:
+            task["result"] = e.task_result
         task["error"] = str(e)
         logger.error("[API] 任务 %s %s: %s", task_id[:8], task["status"], e)
     finally:
@@ -443,10 +454,45 @@ class RegisterDomainsParams(BaseModel):
 class BindLinkParams(BaseModel):
     access_token: str
     plan_name: str
-    promo_campaign: dict
+    promo_campaign: dict | None = None
     billing_details: dict
     checkout_ui_mode: str = "hosted"
     team_plan_data: dict | None = None
+    entry_point: str | None = None
+    promo_code: str | None = None
+    cancel_url: str | None = None
+
+
+class BindCardTaskParams(BaseModel):
+    email: str
+    card_item_id: str
+    checkout_url: str
+    proxy_url: str | None = None
+    proxy_label: str = ""
+    proxy_bypass: str | None = None
+    manual_confirm: bool = True
+    timeout_seconds: int = 900
+
+
+class GoPayBindTaskParams(BaseModel):
+    email: str
+    account_emails: list[str] = []
+    phone_number: str
+    country_code: str = ""
+    sms_url: str
+    gopay_pin: str
+    billing_name: str = ""
+    billing_country: str = "US"
+    billing_state: str = ""
+    billing_city: str = ""
+    billing_zip: str = ""
+    billing_address1: str = ""
+    billing_address2: str = ""
+    checkout_url: str = ""
+    proxy_url: str | None = None
+    proxy_label: str = ""
+    proxy_bypass: str | None = None
+    timeout_seconds: int = 900
 
 
 class CardPoolImportParams(BaseModel):
@@ -688,6 +734,23 @@ def _set_pending_manual_account_flow(flow, result):
     global _manual_account_flow
     _manual_account_flow = flow
     return {**result, "manual_account": _manual_account_status()}
+
+
+def _is_bind_card_reusable_result(result: dict) -> bool:
+    return (result.get("status") == "failed") and (result.get("failure_stage") in {"open_checkout", "fill_card"})
+
+
+def _session_only_account_stub(email: str) -> dict:
+    return {
+        "email": email,
+        "password": "",
+        "cloudmail_account_id": None,
+        "status": "personal",
+        "seat_type": "codex",
+        "auth_file": "",
+        "created_at": 0,
+        "last_active_at": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1328,7 +1391,7 @@ def post_manual_account_cancel():
 @app.get("/api/accounts")
 def get_accounts():
     """获取所有账号列表"""
-    from autoteam.accounts import find_account, load_accounts
+    from autoteam.accounts import load_accounts
     from autoteam.auth_session_store import list_auth_session_emails
 
     accounts = load_accounts()
@@ -1336,18 +1399,7 @@ def get_accounts():
     for email in list_auth_session_emails():
         if email in existing_emails:
             continue
-        accounts.append(
-            {
-                "email": email,
-                "password": "",
-                "cloudmail_account_id": None,
-                "status": "personal",
-                "seat_type": "codex",
-                "auth_file": "",
-                "created_at": 0,
-                "last_active_at": None,
-            }
-        )
+        accounts.append(_session_only_account_stub(email))
     return [_sanitize_account(a) for a in accounts]
 
 
@@ -2012,7 +2064,24 @@ def post_team_members_remove(params: TeamMemberRemoveParams):
 @app.post("/api/bind/link")
 def post_bind_link(params: BindLinkParams):
     """生成 ChatGPT 绑卡链接"""
-    if not params.access_token:
+    def _normalize_access_token(raw_value: str) -> str:
+        raw = str(raw_value or "").strip()
+        if not raw:
+            return ""
+        if raw.startswith("{") and "accessToken" in raw:
+            try:
+                parsed = json.loads(raw)
+                token = parsed.get("accessToken")
+                if token:
+                    raw = str(token).strip()
+            except Exception:
+                pass
+        raw = re.sub(r"^Bearer\s+", "", raw, flags=re.IGNORECASE).strip()
+        raw = re.sub(r"^[\"']+|[\"',;\\s]+$", "", raw).strip()
+        return raw
+
+    access_token = _normalize_access_token(params.access_token)
+    if not access_token:
         raise HTTPException(status_code=400, detail="请提供 access_token")
 
     def _do_generate_link():
@@ -2030,10 +2099,17 @@ def post_bind_link(params: BindLinkParams):
 
         payload = {
             "plan_name": params.plan_name,
-            "promo_campaign": params.promo_campaign,
             "billing_details": params.billing_details,
             "checkout_ui_mode": params.checkout_ui_mode,
         }
+        if params.entry_point:
+            payload["entry_point"] = params.entry_point
+        if params.promo_campaign:
+            payload["promo_campaign"] = params.promo_campaign
+        if params.promo_code:
+            payload["promo_code"] = params.promo_code
+        if params.cancel_url:
+            payload["cancel_url"] = params.cancel_url
         if params.team_plan_data:
             payload["team_plan_data"] = params.team_plan_data
 
@@ -2062,7 +2138,7 @@ def post_bind_link(params: BindLinkParams):
 
             time.sleep(5)
             api._wait_for_cloudflare()
-            api.access_token = params.access_token.strip()
+            api.access_token = access_token
 
             result = api.page.evaluate(
                 """async (payload) => {
@@ -2107,7 +2183,7 @@ def post_bind_link(params: BindLinkParams):
                         };
                     }
                 }""",
-                {"access_token": params.access_token.strip(), "body": payload},
+                {"access_token": access_token, "body": payload},
             )
 
             if result.get("fetch_error"):
@@ -2437,6 +2513,364 @@ def get_cpa_files():
 
 class CheckParams(BaseModel):
     include_standby: bool = False  # True 时额外探测 standby 池(限速+24h 去重)
+
+
+@app.post("/api/tasks/bind-card", status_code=202)
+def post_bind_card_task(params: BindCardTaskParams):
+    from autoteam import cancel_signal
+    from autoteam.accounts import find_account, load_accounts, save_accounts, update_account
+    from autoteam.auth_session_store import get_auth_session_file
+    from autoteam.bind_audit import record_bind_audit
+    from autoteam.bind_executor import run_bind_task
+    from autoteam.card_pool import finalize_card_binding, find_item, reserve_card_item
+
+    email = _normalized_email(params.email)
+    checkout_url = str(params.checkout_url or "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="email 不能为空")
+    if not params.card_item_id:
+        raise HTTPException(status_code=400, detail="card_item_id 不能为空")
+    if not checkout_url:
+        raise HTTPException(status_code=400, detail="checkout_url 不能为空")
+
+    accounts = load_accounts()
+    account = find_account(accounts, email)
+    if not account:
+        auth_session_file = get_auth_session_file(email)
+        if auth_session_file and Path(auth_session_file).exists():
+            account = _session_only_account_stub(email)
+            accounts.append(account)
+            save_accounts(accounts)
+        else:
+            raise HTTPException(status_code=404, detail="账号不存在")
+    if not _resolve_status_auth_file(account):
+        raise HTTPException(status_code=400, detail="该账号缺少可用 auth_session/auth_file")
+
+    card_item = find_item("card", params.card_item_id)
+    if not card_item:
+        raise HTTPException(status_code=404, detail="卡记录不存在")
+    if card_item.get("status") != "unused":
+        raise HTTPException(status_code=400, detail=f"卡当前状态为 {card_item.get('status')}，不可用于绑卡")
+
+    def _run():
+        task_id = _current_task_id or ""
+        started_at = time.time()
+        reserved = False
+        result = None
+        final_card_item = None
+
+        try:
+            reserved_item = reserve_card_item(
+                params.card_item_id,
+                account_email=email,
+                proxy_label=params.proxy_label,
+                checkout_url=checkout_url,
+                task_id=task_id,
+            )
+            if not reserved_item:
+                raise RuntimeError("预占绑卡卡片失败：记录不存在")
+            reserved = True
+
+            _update_current_task_progress(
+                {
+                    "stage": "binding",
+                    "email": email,
+                    "card_item_id": params.card_item_id,
+                    "proxy_label": params.proxy_label,
+                }
+            )
+
+            result = run_bind_task(
+                checkout_url=checkout_url,
+                card_item=reserved_item,
+                proxy_url=params.proxy_url,
+                proxy_bypass=params.proxy_bypass,
+                manual_confirm=params.manual_confirm,
+                timeout_seconds=max(60, int(params.timeout_seconds or 900)),
+                is_cancelled=cancel_signal.is_cancelled,
+            )
+        except Exception as exc:
+            logger.exception("[bind-card] unexpected error")
+            result = {
+                "status": "failed",
+                "failure_stage": "post_submit",
+                "message": f"绑卡任务执行异常: {exc}",
+                "screenshot_paths": [],
+            }
+
+        result = dict(result or {})
+        result.setdefault("status", "failed")
+        result.setdefault("failure_stage", "")
+        result.setdefault("message", "")
+        result.setdefault("screenshot_paths", [])
+        result["email"] = email
+        result["card_item_id"] = params.card_item_id
+        result["checkout_url"] = checkout_url
+        result["proxy_label"] = params.proxy_label
+        result["manual_confirm"] = params.manual_confirm
+
+        if cancel_signal.is_cancelled() and result.get("status") != "success":
+            task_status = "cancelled"
+        elif result.get("status") == "success":
+            task_status = "completed"
+        else:
+            task_status = "failed"
+        result["task_status"] = task_status
+
+        if reserved:
+            final_card_item = finalize_card_binding(
+                params.card_item_id,
+                result_status="cancelled" if task_status == "cancelled" else result.get("status") or "failed",
+                failure_stage=result.get("failure_stage") or "",
+                message=result.get("message") or "",
+                account_email=email,
+                proxy_label=params.proxy_label,
+                checkout_url=checkout_url,
+                task_id=task_id,
+                reusable=_is_bind_card_reusable_result(result),
+            )
+            result["card_status"] = (final_card_item or {}).get("status", "")
+
+        update_account(
+            email,
+            last_bind_status="cancelled" if task_status == "cancelled" else result.get("status") or "failed",
+            last_bind_at=time.time(),
+            last_checkout_url=checkout_url,
+            last_card_id=params.card_item_id,
+            last_proxy_label=params.proxy_label,
+            last_bind_task_id=task_id,
+            last_bind_message=result.get("message") or "",
+            last_bind_failure_stage=result.get("failure_stage") or "",
+        )
+
+        record_bind_audit(
+            {
+                "task_id": task_id,
+                "email": email,
+                "card_item_id": params.card_item_id,
+                "checkout_url": checkout_url,
+                "proxy_label": params.proxy_label,
+                "proxy_url": params.proxy_url or "",
+                "manual_confirm": params.manual_confirm,
+                "status": result.get("status") or "failed",
+                "task_status": task_status,
+                "failure_stage": result.get("failure_stage") or "",
+                "message": result.get("message") or "",
+                "started_at": started_at,
+                "finished_at": time.time(),
+                "screenshot_paths": result.get("screenshot_paths") or [],
+                "card_status": result.get("card_status") or "",
+            }
+        )
+
+        _update_current_task_progress(
+            {
+                "stage": "completed",
+                "bind_status": result.get("status") or "failed",
+                "task_status": task_status,
+                "card_status": result.get("card_status") or "",
+            }
+        )
+
+        if result.get("status") != "success":
+            raise TaskResultError(result.get("message") or "绑卡失败", task_result=result)
+        return result
+
+    task = _start_task("bind-card", _run, params.model_dump())
+    return task
+
+
+@app.post("/api/tasks/gopay-bind", status_code=202)
+def post_gopay_bind_task(params: GoPayBindTaskParams):
+    from autoteam import cancel_signal
+    from autoteam.accounts import find_account, load_accounts, save_accounts, update_account
+    from autoteam.auth_session_store import get_auth_session_file
+    from autoteam.bind_audit import record_bind_audit
+    from autoteam.gopay_executor import run_gopay_bind_task
+
+    email = _normalized_email(params.email)
+    account_emails = []
+    seen_account_emails = set()
+    for raw_email in params.account_emails or []:
+        normalized = _normalized_email(raw_email)
+        if normalized and normalized not in seen_account_emails:
+            seen_account_emails.add(normalized)
+            account_emails.append(normalized)
+    phone_number = str(params.phone_number or "").strip()
+    country_code = str(params.country_code or "").strip()
+    sms_url = str(params.sms_url or "").strip()
+    gopay_pin = str(params.gopay_pin or "").strip()
+    billing_name = str(params.billing_name or "").strip()
+    billing_country = str(params.billing_country or "").strip()
+    billing_state = str(params.billing_state or "").strip()
+    billing_city = str(params.billing_city or "").strip()
+    billing_zip = str(params.billing_zip or "").strip()
+    billing_address1 = str(params.billing_address1 or "").strip()
+    billing_address2 = str(params.billing_address2 or "").strip()
+    checkout_url = str(params.checkout_url or "").strip()
+
+    if not email:
+        raise HTTPException(status_code=400, detail="email 不能为空")
+    if checkout_url:
+        account_emails = []
+    elif account_emails and email not in account_emails:
+        account_emails.insert(0, email)
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="phone_number 不能为空")
+    if not sms_url:
+        raise HTTPException(status_code=400, detail="sms_url 不能为空")
+    if not gopay_pin:
+        raise HTTPException(status_code=400, detail="gopay_pin 不能为空")
+
+    accounts = load_accounts()
+    account = find_account(accounts, email)
+    if not account:
+        auth_session_file = get_auth_session_file(email)
+        if auth_session_file and Path(auth_session_file).exists():
+            account = _session_only_account_stub(email)
+            accounts.append(account)
+            save_accounts(accounts)
+        else:
+            raise HTTPException(status_code=404, detail="账号不存在")
+    if not _resolve_status_auth_file(account):
+        raise HTTPException(status_code=400, detail="该账号缺少可用 auth_session/auth_file")
+    for candidate_email in account_emails:
+        if candidate_email == email:
+            continue
+        candidate = find_account(accounts, candidate_email)
+        if not candidate:
+            auth_session_file = get_auth_session_file(candidate_email)
+            if auth_session_file and Path(auth_session_file).exists():
+                candidate = _session_only_account_stub(candidate_email)
+                accounts.append(candidate)
+                save_accounts(accounts)
+            else:
+                raise HTTPException(status_code=404, detail=f"批量账号不存在: {candidate_email}")
+        if not _resolve_status_auth_file(candidate):
+            raise HTTPException(status_code=400, detail=f"批量账号缺少可用 auth_session/auth_file: {candidate_email}")
+
+    def _run():
+        task_id = _current_task_id or ""
+        started_at = time.time()
+        result = None
+
+        try:
+            _update_current_task_progress(
+                {
+                    "stage": "gopay_binding",
+                    "email": email,
+                    "phone_number": phone_number,
+                    "country_code": country_code,
+                    "proxy_label": params.proxy_label,
+                    "account_count": len(account_emails) if account_emails else 1,
+                }
+            )
+            result = run_gopay_bind_task(
+                email=email,
+                checkout_url=checkout_url,
+                phone_number=phone_number,
+                country_code=country_code,
+                sms_url=sms_url,
+                gopay_pin=gopay_pin,
+                billing_info={
+                    "name": billing_name,
+                    "country": billing_country,
+                    "state": billing_state,
+                    "city": billing_city,
+                    "zip": billing_zip,
+                    "address1": billing_address1,
+                    "address2": billing_address2,
+                },
+                proxy_url=params.proxy_url,
+                proxy_bypass=params.proxy_bypass,
+                timeout_seconds=max(120, int(params.timeout_seconds or 900)),
+                account_emails=account_emails,
+                is_cancelled=cancel_signal.is_cancelled,
+                progress_callback=_update_current_task_progress,
+            )
+        except Exception as exc:
+            logger.exception("[gopay-bind] unexpected error")
+            result = {
+                "status": "failed",
+                "failure_stage": "post_submit",
+                "message": f"GoPay 任务执行异常: {exc}",
+                "screenshot_paths": [],
+            }
+
+        result = dict(result or {})
+        result.setdefault("status", "failed")
+        result.setdefault("failure_stage", "")
+        result.setdefault("message", "")
+        result.setdefault("screenshot_paths", [])
+        actual_email = str(result.get("email_used") or email).strip().lower() or email
+        result["email"] = actual_email
+        result["requested_email"] = email
+        result["phone_number"] = phone_number
+        result["country_code"] = country_code
+        result["proxy_label"] = params.proxy_label
+        result["checkout_url"] = checkout_url or result.get("checkout_url") or ""
+        result["account_emails"] = account_emails
+
+        if cancel_signal.is_cancelled() and result.get("status") != "success":
+            task_status = "cancelled"
+        elif result.get("status") == "success":
+            task_status = "completed"
+        else:
+            task_status = "failed"
+        result["task_status"] = task_status
+
+        update_account(
+            actual_email,
+            last_bind_status="cancelled" if task_status == "cancelled" else result.get("status") or "failed",
+            last_bind_at=time.time(),
+            last_checkout_url=checkout_url or result.get("checkout_url") or "",
+            last_proxy_label=params.proxy_label,
+            last_bind_task_id=task_id,
+            last_bind_message=result.get("message") or "",
+            last_bind_failure_stage=result.get("failure_stage") or "",
+        )
+
+        record_bind_audit(
+            {
+                "task_id": task_id,
+                "email": actual_email,
+                "requested_email": email,
+                "account_emails": account_emails,
+                "card_item_id": "",
+                "checkout_url": checkout_url or result.get("checkout_url") or "",
+                "proxy_label": params.proxy_label,
+                "proxy_url": params.proxy_url or "",
+                "manual_confirm": False,
+                "status": result.get("status") or "failed",
+                "task_status": task_status,
+                "failure_stage": result.get("failure_stage") or "",
+                "message": result.get("message") or "",
+                "started_at": started_at,
+                "finished_at": time.time(),
+                "screenshot_paths": result.get("screenshot_paths") or [],
+                "card_status": "",
+                "flow": "gopay",
+                "phone_number": phone_number,
+                "country_code": country_code,
+                "billing_info": result.get("billing_info") or {},
+            }
+        )
+
+        _update_current_task_progress(
+            {
+                "stage": "completed" if result.get("status") == "success" else "failed",
+                "status": result.get("status") or "failed",
+                "failure_stage": result.get("failure_stage") or "",
+                "message": result.get("message") or "",
+            }
+        )
+
+        if result.get("status") != "success":
+            raise TaskResultError(result.get("message") or "GoPay 任务失败", task_result=result)
+        return result
+
+    task = _start_task("gopay-bind", _run, params.model_dump())
+    return task
 
 
 @app.post("/api/tasks/check", status_code=202)

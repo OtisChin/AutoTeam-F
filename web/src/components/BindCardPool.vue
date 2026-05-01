@@ -24,7 +24,7 @@
       {{ message }}
     </div>
 
-    <div :class="poolType === 'redeem' ? 'grid grid-cols-1 md:grid-cols-3 gap-4' : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4'">
+    <div :class="poolType === 'redeem' ? 'grid grid-cols-1 md:grid-cols-3 gap-4' : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4'">
       <div class="rounded-2xl border border-gray-800 bg-gray-900 p-5">
         <div class="text-4xl font-bold text-white">{{ stats.total }}</div>
         <div class="mt-3 text-sm text-gray-400">{{ poolType === 'redeem' ? '兑换码总数' : '虚拟卡总数' }}</div>
@@ -36,6 +36,14 @@
       <div class="rounded-2xl border border-sky-500/30 bg-gray-900 p-5">
         <div class="text-4xl font-bold text-sky-400">{{ stats.used }}</div>
         <div class="mt-3 text-sm text-gray-400">已使用</div>
+      </div>
+      <div v-if="poolType === 'card'" class="rounded-2xl border border-amber-500/30 bg-gray-900 p-5">
+        <div class="text-4xl font-bold text-amber-300">{{ stats.binding }}</div>
+        <div class="mt-3 text-sm text-gray-400">绑定中</div>
+      </div>
+      <div v-if="poolType === 'card'" class="rounded-2xl border border-orange-500/30 bg-gray-900 p-5">
+        <div class="text-4xl font-bold text-orange-300">{{ stats.failed }}</div>
+        <div class="mt-3 text-sm text-gray-400">失败待核对</div>
       </div>
       <div v-if="poolType === 'card'" class="rounded-2xl border border-rose-500/30 bg-gray-900 p-5">
         <div class="text-4xl font-bold text-rose-400">{{ stats.expired }}</div>
@@ -576,7 +584,9 @@ const poolTabs = [
 const statuses = [
   { value: 'all', label: '全部' },
   { value: 'unused', label: '未使用' },
+  { value: 'binding', label: '绑定中' },
   { value: 'used', label: '已使用' },
+  { value: 'failed', label: '失败待核对' },
   { value: 'expired', label: '已过期' },
 ]
 
@@ -594,7 +604,7 @@ const importing = ref(false)
 const importText = ref('')
 const importProvider = ref('')
 const items = ref([])
-const stats = ref({ total: 0, unused: 0, used: 0, expired: 0 })
+const stats = ref({ total: 0, unused: 0, binding: 0, used: 0, failed: 0, expired: 0 })
 const message = ref('')
 const messageClass = ref('')
 const detailItem = ref(null)
@@ -612,7 +622,9 @@ const deleteConfirm = ref({
 })
 
 const activeStatuses = computed(() => {
-  return poolType.value === 'redeem' ? statuses.filter(status => status.value !== 'expired') : statuses
+  return poolType.value === 'redeem'
+    ? statuses.filter(status => !['binding', 'failed', 'expired'].includes(status.value))
+    : statuses
 })
 
 const providerOptions = computed(() => {
@@ -676,7 +688,7 @@ const importPlaceholder = computed(() => {
 const filteredItems = computed(() => {
   const query = keyword.value.toLowerCase()
   const filtered = items.value.filter(item => {
-    if (selectedStatus.value !== 'all' && item.status !== selectedStatus.value) return false
+    if (selectedStatus.value !== 'all' && effectiveStatus(item) !== selectedStatus.value) return false
     if (selectedProvider.value && item.provider !== selectedProvider.value) return false
     if (!query) return true
     return [
@@ -700,6 +712,10 @@ const isExpired = (item) => {
   if (poolType.value !== 'card') return false
   const time = toTime(item.expires_at)
   return time > 0 && time <= Date.now()
+}
+
+const effectiveStatus = (item) => {
+  return isExpired(item) ? 'expired' : item.status
 }
 
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / pageSize.value)))
@@ -753,7 +769,7 @@ async function loadPool() {
   try {
     const result = await api.getCardPool(poolType.value)
     items.value = result.items || []
-    stats.value = result.stats || { total: 0, unused: 0, used: 0, expired: 0 }
+    stats.value = result.stats || { total: 0, unused: 0, binding: 0, used: 0, failed: 0, expired: 0 }
   } catch (e) {
     setMessage(`加载卡池失败: ${e.message}`, false)
   } finally {
@@ -968,12 +984,16 @@ async function redeemSelected() {
 }
 
 function statusLabel(status) {
+  if (status === 'binding') return '绑定中'
+  if (status === 'failed') return '失败待核对'
   if (status === 'expired') return '已过期'
   if (status === 'used') return '已使用'
   return '未使用'
 }
 
 function statusClass(status) {
+  if (status === 'binding') return 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+  if (status === 'failed') return 'bg-orange-500/10 text-orange-300 border-orange-500/20'
   if (status === 'used') return 'bg-sky-500/10 text-sky-300 border-sky-500/20'
   if (status === 'expired') return 'bg-rose-500/10 text-rose-300 border-rose-500/20'
   return 'bg-violet-500/10 text-violet-300 border-violet-500/20'

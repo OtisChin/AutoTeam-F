@@ -19,6 +19,7 @@ Authorization: Bearer <API_KEY>
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| POST | `/api/bind/link` | 生成支付链接 |
 | GET | `/api/auth/check` | 验证 API Key |
 | GET | `/api/setup/status` | 检查配置是否完整 |
 | POST | `/api/setup/save` | 保存初始配置 |
@@ -55,6 +56,47 @@ Authorization: Bearer <API_KEY>
 - `type = member`：从 Team 中移出
 - `type = invite`：取消邀请
 
+### 生成支付链接
+
+`POST /api/bind/link`
+
+请求体示例：
+
+```json
+{
+  "access_token": "eyJ...",
+  "entry_point": "team_workspace_purchase_modal",
+  "plan_name": "chatgptteamplan",
+  "team_plan_data": {
+    "workspace_name": "我的团队",
+    "price_interval": "month",
+    "seat_quantity": 2
+  },
+  "billing_details": {
+    "country": "US",
+    "currency": "USD"
+  },
+  "cancel_url": "https://chatgpt.com/?promoCode=STRIPEPERKSGPT4BIZ",
+  "promo_code": "STRIPEPERKSGPT4BIZ",
+  "checkout_ui_mode": "hosted"
+}
+```
+
+说明：
+
+- `access_token`：目标账号的 ChatGPT access token
+- `entry_point`：Team 长链接传 `team_workspace_purchase_modal`
+- `plan_name`：如 `chatgptteamplan` / `chatgptplusplan`
+- `team_plan_data`：团队订阅时传入工作区名称、计费周期和席位数
+- `billing_details`：国家和货币
+- `cancel_url`：可选，取消支付后的回跳地址
+- `promo_code`：可选，Team 优惠码
+- `checkout_ui_mode`：`hosted` 时优先返回长链接 `url`
+
+Plus 兼容旧参数：
+
+- `promo_campaign`：Plus 仍可传 `{ "promo_campaign_id": "...", "is_coupon_from_query_param": false }`
+
 ## 后台任务接口
 
 这些接口返回 `202 Accepted + task_id`。
@@ -66,10 +108,89 @@ Authorization: Bearer <API_KEY>
 | POST | `/api/tasks/add` | 自动注册并添加新账号 |
 | POST | `/api/tasks/fill` | 补满成员 `{"target": 5}` |
 | POST | `/api/tasks/cleanup` | 清理成员 `{"max_seats": null}` |
+| POST | `/api/tasks/bind-card` | 启动绑卡任务 |
+| POST | `/api/tasks/gopay-bind` | 启动 GoPay 自助绑卡任务 |
 | GET | `/api/tasks` | 任务列表 |
 | GET | `/api/tasks/{task_id}` | 任务详情 |
 
 > 同一时间只允许一个 Playwright 操作；如果有任务执行中，新请求可能返回 `409 Conflict`。
+
+### 绑卡任务
+
+`POST /api/tasks/bind-card`
+
+请求体：
+
+```json
+{
+  "email": "user@example.com",
+  "card_item_id": "card-001",
+  "checkout_url": "https://chatgpt.com/checkout/...",
+  "proxy_url": "socks5://user:pass@host:port",
+  "proxy_label": "res-us-01",
+  "manual_confirm": true,
+  "timeout_seconds": 900
+}
+```
+
+说明：
+
+- `email`：号池账号邮箱，要求本地存在可用 `auth_session` 或 `auth_file`
+- `card_item_id`：卡池中状态为 `unused` 的卡记录 ID
+- `checkout_url`：由 `/api/bind/link` 生成，或手动提供的 checkout 链接
+- `proxy_url`：可选。传值时覆盖全局 Playwright 代理；不传时回退到 `.env` 里的全局代理配置
+- `proxy_label`：可选。只用于审计和结果回写
+- `manual_confirm`：`true` 时保留浏览器窗口等待人工确认最终支付结果；远程服务器或 Docker 部署通常无法直接操作该浏览器，不建议开启
+
+### GoPay 绑卡任务
+
+`POST /api/tasks/gopay-bind`
+
+请求体：
+
+```json
+{
+  "email": "user@example.com",
+  "checkout_url": "",
+  "phone_number": "+6287761973970",
+  "sms_url": "https://it.tgflare.com/api/record?token=...",
+  "gopay_pin": "558023",
+  "proxy_url": "socks5://user:pass@host:port",
+  "proxy_label": "res-id-01",
+  "timeout_seconds": 900
+}
+```
+
+说明：
+
+- `email`：号池账号邮箱
+- `checkout_url`：可选，留空时后台会自动生成印尼区 Plus checkout 链接
+- `phone_number`：GoPay 手机号
+- `sms_url`：短信验证码接口 URL
+- `gopay_pin`：用户提供的 GoPay PIN
+- `proxy_url` / `proxy_label`：可选，任务级代理覆盖
+- `timeout_seconds`：等待最终结果的超时时间，默认 900 秒
+
+任务完成后，通过 `GET /api/tasks/{task_id}` 读取结构化结果：
+
+```json
+{
+  "status": "failed",
+  "result": {
+    "status": "needs_review",
+    "failure_stage": "post_submit",
+    "message": "等待支付结果超时，需要人工确认最终状态",
+    "email": "user@example.com",
+    "card_item_id": "card-001",
+    "proxy_label": "res-us-01",
+    "task_status": "completed",
+    "card_status": "failed",
+    "screenshot_paths": [
+      "data/bind_screenshots/abcd1234-timeout.png"
+    ]
+  }
+}
+```
 
 ## 管理员运维
 

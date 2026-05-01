@@ -49,8 +49,9 @@ def save_accounts(accounts):
 
 def find_account(accounts, email):
     """按邮箱查找账号"""
+    target = _normalized_email(email)
     for acc in accounts:
-        if acc["email"] == email:
+        if _normalized_email(acc.get("email")) == target:
             return acc
     return None
 
@@ -77,6 +78,14 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
             "last_quota_check_at": None,  # 最近一次 wham/usage 探测时间戳,用于 standby 探测去重
             "created_at": time.time(),
             "last_active_at": None,
+            "last_bind_status": "",
+            "last_bind_at": None,
+            "last_checkout_url": "",
+            "last_card_id": "",
+            "last_proxy_label": "",
+            "last_bind_task_id": "",
+            "last_bind_message": "",
+            "last_bind_failure_stage": "",
         }
     )
     save_accounts(accounts)

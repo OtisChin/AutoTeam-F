@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 CARD_POOL_FILE = PROJECT_ROOT / "data" / "card_pool.json"
 
 POOL_TYPES = {"redeem", "card"}
-STATUSES = {"unused", "used", "expired"}
+STATUSES = {"unused", "binding", "used", "failed", "expired"}
 
 
 def _default_pool():
@@ -56,8 +56,49 @@ def _normalize_pool_type(pool_type: str) -> str:
     return pool_type
 
 
-def make_item(pool_type: str, value: str, provider: str = "", status: str = "unused", expires_at: str = ""):
+def _default_bind_meta():
     return {
+        "last_bind_result": "",
+        "last_bind_at": None,
+        "last_proxy_label": "",
+        "last_account_email": "",
+        "last_checkout_url": "",
+        "last_bind_task_id": "",
+        "last_failure_stage": "",
+        "last_bind_message": "",
+        "bind_attempts": 0,
+    }
+
+
+def _ensure_bind_meta(meta):
+    if not isinstance(meta, dict):
+        meta = {}
+    for key, value in _default_bind_meta().items():
+        meta.setdefault(key, value)
+    return meta
+
+
+def _ensure_item_defaults(item):
+    item.setdefault("provider", "")
+    item.setdefault("status", "unused")
+    item.setdefault("created_at", time.time())
+    item.setdefault("expires_at", "")
+    item.setdefault("used_by", "")
+    item.setdefault("used_at", None)
+    item["meta"] = _ensure_bind_meta(item.get("meta"))
+    return item
+
+
+def _find_pool_item(data, pool_type: str, item_id: str):
+    for item in data.get(pool_type, []):
+        if item.get("id") == item_id:
+            return _ensure_item_defaults(item)
+    return None
+
+
+def make_item(pool_type: str, value: str, provider: str = "", status: str = "unused", expires_at: str = ""):
+    return _ensure_item_defaults(
+        {
         "id": uuid.uuid4().hex,
         "type": _normalize_pool_type(pool_type),
         "value": value.strip(),
@@ -68,7 +109,8 @@ def make_item(pool_type: str, value: str, provider: str = "", status: str = "unu
         "used_by": "",
         "used_at": None,
         "meta": {},
-    }
+        }
+    )
 
 
 def _to_timestamp(value) -> float:
@@ -95,6 +137,7 @@ def _refresh_expired_items(data):
     now = time.time()
     changed = False
     for item in data.get("card", []):
+        _ensure_item_defaults(item)
         expires_at = _to_timestamp(item.get("expires_at"))
         if expires_at and expires_at <= now and item.get("status") != "expired":
             item["status"] = "expired"
@@ -142,7 +185,7 @@ def _parse_card_blocks(text: str):
 
 def list_items(pool_type: str):
     data = _refresh_expired_items(load_card_pool())
-    return data[_normalize_pool_type(pool_type)]
+    return [_ensure_item_defaults(item) for item in data[_normalize_pool_type(pool_type)]]
 
 
 def import_text_lines(pool_type: str, text: str, provider: str = ""):
@@ -187,9 +230,8 @@ def delete_items(pool_type: str, ids: list[str]):
 def update_item(pool_type: str, item_id: str, **updates):
     pool_type = _normalize_pool_type(pool_type)
     data = load_card_pool()
-    for item in data[pool_type]:
-        if item.get("id") != item_id:
-            continue
+    item = _find_pool_item(data, pool_type, item_id)
+    if item:
         if "provider" in updates:
             item["provider"] = str(updates["provider"] or "").strip()
         if "status" in updates:
@@ -204,7 +246,7 @@ def update_item(pool_type: str, item_id: str, **updates):
         if "expires_at" in updates:
             item["expires_at"] = str(updates["expires_at"] or "").strip()
         if "meta" in updates and isinstance(updates["meta"], dict):
-            item["meta"] = updates["meta"]
+            item["meta"] = _ensure_bind_meta(updates["meta"])
         save_card_pool(data)
         return item
     return None
@@ -222,10 +264,78 @@ def add_card_item(value: str, provider: str = "", status: str = "unused", expire
 def find_item(pool_type: str, item_id: str):
     pool_type = _normalize_pool_type(pool_type)
     data = _refresh_expired_items(load_card_pool())
-    for item in data[pool_type]:
-        if item.get("id") == item_id:
-            return item
-    return None
+    return _find_pool_item(data, pool_type, item_id)
+
+
+def reserve_card_item(item_id: str, account_email: str = "", proxy_label: str = "", checkout_url: str = "", task_id: str = ""):
+    data = _refresh_expired_items(load_card_pool())
+    item = _find_pool_item(data, "card", item_id)
+    if not item:
+        return None
+    if item.get("status") != "unused":
+        raise ValueError(f"卡当前状态为 {item.get('status')}，不可用于绑卡")
+
+    meta = _ensure_bind_meta(item.get("meta"))
+    meta["bind_attempts"] = int(meta.get("bind_attempts") or 0) + 1
+    meta["last_bind_at"] = time.time()
+    meta["last_bind_result"] = "binding"
+    meta["last_proxy_label"] = str(proxy_label or "").strip()
+    meta["last_account_email"] = str(account_email or "").strip()
+    meta["last_checkout_url"] = str(checkout_url or "").strip()
+    meta["last_bind_task_id"] = str(task_id or "").strip()
+    meta["last_failure_stage"] = ""
+    meta["last_bind_message"] = ""
+    item["meta"] = meta
+    item["status"] = "binding"
+    item["used_by"] = ""
+    item["used_at"] = None
+    save_card_pool(data)
+    return item
+
+
+def finalize_card_binding(
+    item_id: str,
+    *,
+    result_status: str,
+    failure_stage: str = "",
+    message: str = "",
+    account_email: str = "",
+    proxy_label: str = "",
+    checkout_url: str = "",
+    task_id: str = "",
+    reusable: bool = False,
+):
+    data = _refresh_expired_items(load_card_pool())
+    item = _find_pool_item(data, "card", item_id)
+    if not item:
+        return None
+
+    meta = _ensure_bind_meta(item.get("meta"))
+    meta["last_bind_at"] = time.time()
+    meta["last_bind_result"] = str(result_status or "").strip()
+    meta["last_proxy_label"] = str(proxy_label or "").strip()
+    meta["last_account_email"] = str(account_email or "").strip()
+    meta["last_checkout_url"] = str(checkout_url or "").strip()
+    meta["last_bind_task_id"] = str(task_id or "").strip()
+    meta["last_failure_stage"] = str(failure_stage or "").strip()
+    meta["last_bind_message"] = str(message or "").strip()
+    item["meta"] = meta
+
+    if result_status == "success":
+        item["status"] = "used"
+        item["used_by"] = str(account_email or "").strip()
+        item["used_at"] = time.time()
+    elif reusable:
+        item["status"] = "unused"
+        item["used_by"] = ""
+        item["used_at"] = None
+    else:
+        item["status"] = "failed"
+        item["used_by"] = ""
+        item["used_at"] = None
+
+    save_card_pool(data)
+    return item
 
 
 def stats_for(pool_type: str):
@@ -233,6 +343,8 @@ def stats_for(pool_type: str):
     return {
         "total": len(items),
         "unused": sum(1 for item in items if item.get("status") == "unused"),
+        "binding": sum(1 for item in items if item.get("status") == "binding"),
         "used": sum(1 for item in items if item.get("status") == "used"),
+        "failed": sum(1 for item in items if item.get("status") == "failed"),
         "expired": sum(1 for item in items if item.get("status") == "expired"),
     }

@@ -113,10 +113,12 @@ class ChatGPTTeamAPI:
 
         return None
 
-    def _launch_browser(self):
+    def _launch_browser(self, proxy_url: str | None = None, proxy_bypass: str | None = None):
         SCREENSHOT_DIR.mkdir(exist_ok=True)
         self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(**get_playwright_launch_options())
+        self.browser = self.playwright.chromium.launch(
+            **get_playwright_launch_options(proxy_url=proxy_url, proxy_bypass=proxy_bypass)
+        )
         self.context = self.browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",

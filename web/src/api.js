@@ -90,6 +90,8 @@ export const api = {
   startFill: (target = 5) => request('POST', '/tasks/fill', { target, leave_workspace: false }),
   startFillPersonal: (count = 1) => request('POST', '/tasks/fill', { target: count, leave_workspace: true }),
   startCleanup: (maxSeats = null) => request('POST', '/tasks/cleanup', { max_seats: maxSeats }),
+  startBindCard: (payload) => request('POST', '/tasks/bind-card', payload),
+  startGoPayBind: (payload) => request('POST', '/tasks/gopay-bind', payload),
 
   getTasks: () => request('GET', '/tasks'),
   getTask: (id) => request('GET', `/tasks/${id}`),

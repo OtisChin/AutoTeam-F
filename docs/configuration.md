@@ -122,6 +122,25 @@ PLAYWRIGHT_PROXY_URL=socks5://username:password@host.docker.internal:1080
 - `PLAYWRIGHT_PROXY_URL` 会被解析为 Playwright 所需的 `server` / `username` / `password` 字段
 - `PLAYWRIGHT_PROXY_BYPASS` 建议至少包含 `localhost,127.0.0.1`，避免本地回调或容器内本地服务误走代理
 
+### 任务级代理覆盖
+
+默认情况下，所有 Playwright 浏览器流程都会读取全局 `.env` 中的 `PLAYWRIGHT_PROXY_URL`。
+
+从 `POST /api/tasks/bind-card` 开始，绑卡任务支持在请求体里传入自己的 `proxy_url`：
+
+```json
+{
+  "proxy_url": "socks5://user:pass@host:port",
+  "proxy_label": "res-us-01"
+}
+```
+
+规则：
+
+- 传入 `proxy_url`：本次绑卡任务使用该代理，不改写全局 `.env`
+- 不传 `proxy_url`：回退到全局 `PLAYWRIGHT_PROXY_URL`
+- `proxy_label` 只用于任务结果和审计记录，不参与 Playwright 启动
+
 ### 内联注释
 
 `.env` 支持尾部内联注释，例如：

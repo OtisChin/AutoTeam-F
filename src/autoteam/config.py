@@ -136,7 +136,7 @@ def _parse_proxy_url(proxy_url: str):
     return proxy
 
 
-def get_playwright_launch_options():
+def get_playwright_launch_options(proxy_url: str | None = None, proxy_bypass: str | None = None):
     """统一的 Playwright Chromium 启动参数。"""
     options = {
         "headless": False,
@@ -144,7 +144,13 @@ def get_playwright_launch_options():
     }
 
     proxy = None
-    if PLAYWRIGHT_PROXY_URL:
+    resolved_bypass = PLAYWRIGHT_PROXY_BYPASS if proxy_bypass is None else str(proxy_bypass or "").strip()
+
+    if proxy_url is not None:
+        resolved_proxy_url = str(proxy_url or "").strip()
+        if resolved_proxy_url:
+            proxy = _parse_proxy_url(resolved_proxy_url)
+    elif PLAYWRIGHT_PROXY_URL:
         proxy = _parse_proxy_url(PLAYWRIGHT_PROXY_URL)
     elif PLAYWRIGHT_PROXY_SERVER:
         proxy = {"server": PLAYWRIGHT_PROXY_SERVER}
@@ -154,8 +160,8 @@ def get_playwright_launch_options():
             proxy["password"] = PLAYWRIGHT_PROXY_PASSWORD
 
     if proxy:
-        if PLAYWRIGHT_PROXY_BYPASS:
-            proxy["bypass"] = PLAYWRIGHT_PROXY_BYPASS
+        if resolved_bypass:
+            proxy["bypass"] = resolved_bypass
         options["proxy"] = proxy
 
     return options
