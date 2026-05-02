@@ -73,6 +73,7 @@ STRIPE_VERSION_FULL = "2025-03-31.basil; checkout_server_update_beta=v1; checkou
 GOPAY_LINK_RETRY_LIMIT = 3
 GOPAY_LINK_RETRY_SLEEP_S = 30.0
 GOPAY_SMS_OTP_DELAY_S = 60.0
+GOPAY_SMS_OTP_RESEND_AFTER_S = 120.0
 GOPAY_APPROVE_BLOCKED_COOLDOWN_S = 1800.0
 HTTP_TIMEOUT_SECONDS = 60
 TRANSIENT_HTTP_RETRY_ATTEMPTS = 2
@@ -107,6 +108,10 @@ class GoPayFlowError(RuntimeError):
 
 
 class GoPayOTPCancelled(GoPayFlowError):
+    pass
+
+
+class GoPayOTPInvalid(GoPayFlowError):
     pass
 
 
@@ -247,6 +252,16 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except Exception:
+        return default
+
+
 def _mask_log_value(value: Any, *, left: int = 6, right: int = 4) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -342,6 +357,160 @@ def _safe_phone_summary(phone_number: Any, country_code: str = "") -> str:
     return f"country_code={prefix or '<auto>'} phone=***{digits[-4:]}(len={len(digits)})"
 
 
+def _safe_otp_summary(otp: Any) -> str:
+    digits = re.sub(r"\D+", "", str(otp or ""))
+    if not digits:
+        return "<empty>"
+    if len(digits) <= 4:
+        return f"{digits[:1]}***len={len(digits)}"
+    return f"{digits[:2]}***{digits[-2:]}(len={len(digits)})"
+
+
+def _gopay_progress_level(stage: str) -> str:
+    if stage in {
+        "checkout_not_approved",
+        "checkout_not_approved_rotate",
+        "chatgpt_approve_blocked_rotate",
+        "chatgpt_approve_blocked_cooldown",
+        "gopay_account_skipped_cooldown",
+        "submit_retry",
+        "stripe_nonzero_amount_blocked",
+        "midtrans_nonzero_amount_blocked",
+        "gopay_nonzero_amount_blocked_rotate",
+        "midtrans_already_linked",
+        "midtrans_already_linked_failed",
+        "gopay_rate_limited",
+        "sms_otp_resend_due",
+        "sms_otp_resend_failed",
+        "otp_invalid",
+        "gopay_payment_process_failed_rotate",
+    }:
+        return "warn"
+    if stage in {"completed", "payment_completed", "billing_info_filled", "gopay_selected", "otp_received"}:
+        return "success"
+    if stage in {
+        "failed",
+        "gopay_all_accounts_blocked",
+        "gopay_all_accounts_rejected",
+        "gopay_all_payment_process_failed",
+        "gopay_all_nonzero_amount_blocked",
+    }:
+        return "error"
+    return "info"
+
+
+def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
+    if payload.get("message"):
+        return str(payload.get("message") or "")
+    email = _safe_email_summary(payload.get("email") or "")
+    attempt = payload.get("attempt")
+    total = payload.get("total")
+    attempt_suffix = f"（第 {attempt}/{total} 个）" if attempt and total else ""
+    field = str(payload.get("field") or "").strip()
+    wait_seconds = payload.get("wait_seconds")
+    stage_messages = {
+        "billing_address_generated": "已自动生成账单地址",
+        "chatgpt_http_session_ready": "ChatGPT HTTP 会话已准备好",
+        "generate_checkout": "正在生成 ChatGPT 支付链接",
+        "chatgpt_checkout_browser_handoff": "进入浏览器 checkout UI，等待真实页面跳转",
+        "open_checkout": "正在打开支付页",
+        "checkout_opened": "支付页已打开",
+        "select_gopay": "正在选择 GoPay 支付方式",
+        "gopay_selected": "已选择 GoPay 支付方式",
+        "fill_billing_info": "正在填写账单信息",
+        "billing_info_filled": "账单信息填写完成",
+        "submit_checkout": "正在提交订阅",
+        "submit_clicked": "已点击订阅，等待 Stripe/Midtrans 跳转",
+        "gopay_http_flow": "已进入 GoPay/Midtrans 接管流程",
+        "stripe_zero_due_confirmed": "已确认 Stripe 应付金额为 0",
+        "midtrans_load_transaction": "正在读取 Midtrans 交易",
+        "midtrans_linking": "正在发起 GoPay 账户绑定",
+        "gopay_validate_reference": "正在校验 GoPay 绑定引用",
+        "gopay_user_consent": "正在确认 GoPay 授权",
+        "trigger_sms_otp": "正在触发 GoPay SMS OTP",
+        "sms_otp_triggered": "已触发 GoPay SMS OTP",
+        "sms_otp_resend_due": "2 分钟未收到 GoPay OTP，正在重新发送短信验证码",
+        "wait_otp": "正在等待 GoPay SMS OTP",
+        "fetch_otp": "正在从接码接口拉取 GoPay OTP",
+        "otp_invalid": "GoPay OTP 错误，继续等待新验证码",
+        "gopay_validate_otp": "正在校验 GoPay OTP",
+        "gopay_tokenize_pin": "正在生成 GoPay PIN token",
+        "gopay_validate_pin": "正在校验 GoPay 绑定 PIN",
+        "midtrans_create_charge": "正在创建 Midtrans GoPay 扣款",
+        "gopay_payment_validate": "正在校验 GoPay 扣款引用",
+        "gopay_payment_confirm": "正在确认 GoPay 扣款",
+        "gopay_payment_process": "正在提交 GoPay 扣款 PIN",
+        "gopay_payment_process_failed_rotate": "GoPay 钱包扣款授权失败，切换下一个账号",
+        "gopay_nonzero_amount_blocked_rotate": "账单金额非 0，切换下一个账号",
+        "payment_completed": "GoPay 支付已提交，正在回查 ChatGPT 状态",
+        "chatgpt_verify": "正在回查 ChatGPT 支付结果",
+        "completed": "GoPay 支付完成，绑定完成",
+        "failed": "GoPay 流程失败",
+        "chatgpt_approve": "正在确认 ChatGPT checkout",
+        "chatgpt_approve_browser_fallback": "approve HTTP 被拦截，切换到浏览器上下文重试",
+        "chatgpt_approve_browser_fallback_succeeded": "浏览器上下文 approve 已通过",
+        "chatgpt_approve_blocked_rotate": "ChatGPT approve 被拦截，切换下一个账号",
+        "gopay_all_accounts_blocked": "所有候选账号的 approve 都被拦截",
+        "gopay_all_accounts_rejected": "所有候选账号的付款均未获批准",
+    }
+    if stage == "billing_info_ready":
+        billing = payload.get("billing_info") if isinstance(payload.get("billing_info"), dict) else {}
+        city = str(billing.get("city") or "").strip()
+        state = str(billing.get("state") or "").strip()
+        zip_code = str(billing.get("zip") or "").strip()
+        location = " ".join(part for part in (city, state, zip_code) if part)
+        return f"当前账单地址已准备：{location}" if location else "当前账单地址已准备"
+    if stage == "checkout_ready":
+        url_summary = _safe_url_summary(payload.get("checkout_url") or "")
+        return f"支付链接已生成：{url_summary}" if url_summary else "支付链接已生成"
+    if stage == "gopay_try_account":
+        return f"正在处理账号 {email or '<empty>'}{attempt_suffix}"
+    if stage == "gopay_rotate_account":
+        return f"切换到下一个账号 {email or '<empty>'}{attempt_suffix}"
+    if stage == "gopay_account_skipped_cooldown":
+        remaining = payload.get("remaining_seconds")
+        return f"跳过冷却中的账号 {email or '<empty>'}，剩余 {remaining}s"
+    if stage == "billing_fill_field" and field:
+        return f"正填入 {field}"
+    if stage == "billing_select_field" and field:
+        return f"正选择 {field}"
+    if stage == "billing_field_verified" and field:
+        return f"提交前校验通过：{field}"
+    if stage == "wait_sms_otp_window" and wait_seconds is not None:
+        return f"等待 {wait_seconds}s 后触发/拉取 GoPay SMS OTP"
+    if stage == "sms_otp_resend_failed":
+        reason = str(payload.get("reason") or "").strip()
+        return f"GoPay SMS OTP 重新发送失败，继续等待接码接口：{_compact_log_text(reason, limit=120)}" if reason else "GoPay SMS OTP 重新发送失败，继续等待接码接口"
+    if stage == "otp_received":
+        return f"收到 SMS OTP：{payload.get('otp') or '<redacted>'}"
+    if stage == "otp_invalid":
+        attempt = payload.get("attempt")
+        max_attempts = payload.get("max_attempts")
+        suffix = f"（第 {attempt}/{max_attempts} 次）" if attempt and max_attempts else ""
+        return f"GoPay OTP 错误，已忽略该验证码并继续等待新短信{suffix}"
+    if stage == "submit_retry":
+        reason = str(payload.get("reason") or "").strip()
+        return f"订阅提交失败，准备重试：{_compact_log_text(reason, limit=120)}" if reason else "订阅提交失败，准备重试"
+    return stage_messages.get(stage, "")
+
+
+def _build_gopay_progress_payload(stage: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {"stage": stage}
+    payload.update(dict(extra or {}))
+    if not payload.get("message"):
+        message = _gopay_progress_message(stage, payload)
+        if message:
+            payload["message"] = message
+    if not payload.get("level"):
+        payload["level"] = _gopay_progress_level(stage)
+    return payload
+
+
+def _emit_gopay_progress(progress_callback: Any, stage: str, **extra):
+    if callable(progress_callback):
+        progress_callback(_build_gopay_progress_payload(stage, extra))
+
+
 def _safe_error_summary(error: Any, *, limit: int = 240) -> str:
     text = _compact_log_text(error, limit=limit)
     text = re.sub(r"://[^@\s]+@", "://<auth>@", text)
@@ -372,6 +541,36 @@ def _is_checkout_payment_not_approved_result(result: dict | None) -> bool:
     if stage not in {"checkout_not_approved", "browser_checkout", "submit_checkout"}:
         return False
     return _is_checkout_payment_not_approved_error(str(result.get("message") or ""))
+
+
+def _is_gopay_payment_process_rotatable_result(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "success":
+        return False
+    if str(result.get("failure_stage") or "") != "gopay_payment_process":
+        return False
+    message = str(result.get("message") or "").lower()
+    return (
+        "gopay_wallet" in message
+        or "payment-switch" in message
+        or "createauth" in message
+        or "errorcode=201" in message
+        or '"code":"201"' in message
+        or "'code': '201'" in message
+    )
+
+
+def _is_gopay_nonzero_amount_blocked_result(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "success":
+        return False
+    return str(result.get("failure_stage") or "") in {
+        "browser_charge_guard",
+        "stripe_charge_guard",
+        "midtrans_charge_guard",
+    }
 
 
 def _gopay_rate_limited_message() -> str:
@@ -427,6 +626,24 @@ def _looks_like_gopay_rate_limit_payload(payload: Any) -> bool:
     except Exception:
         text = str(payload or "")
     return _looks_like_gopay_rate_limit_text(text)
+
+
+def _looks_like_gopay_invalid_otp_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    errors = payload.get("errors")
+    if not isinstance(errors, list):
+        errors = []
+    for error in errors:
+        if not isinstance(error, dict):
+            continue
+        code = str(error.get("code") or "").strip().lower()
+        message = str(error.get("message_title") or error.get("message") or "").strip().lower()
+        if code == "gopay-1604":
+            return True
+        if "kode otp" in message and ("salah" in message or "wrong" in message):
+            return True
+    return False
 
 
 def _approve_blocked_cooldown_seconds() -> float:
@@ -698,6 +915,7 @@ def _poll_otp_from_sms_url(
     *,
     timeout_seconds: int,
     initial_delay_seconds: float | None = None,
+    resend_after_seconds: float | None = None,
     is_cancelled=None,
     progress: Callable[..., None] | None = None,
 ) -> Callable[[], str]:
@@ -708,6 +926,11 @@ def _poll_otp_from_sms_url(
             _env_float("GOPAY_SMS_OTP_DELAY_SECONDS", GOPAY_SMS_OTP_DELAY_S)
             if initial_delay_seconds is None
             else float(initial_delay_seconds or 0)
+        )
+        resend_interval = (
+            _env_float("GOPAY_SMS_OTP_RESEND_AFTER_SECONDS", GOPAY_SMS_OTP_RESEND_AFTER_S)
+            if resend_after_seconds is None
+            else float(resend_after_seconds or 0)
         )
         if delay_seconds > 0:
             waited = 0.0
@@ -720,6 +943,7 @@ def _poll_otp_from_sms_url(
                 time.sleep(step)
                 waited += step
         deadline = time.time() + max(60, int(timeout_seconds or 300))
+        next_resend_at = time.time() + max(0.0, resend_interval) if resend_interval > 0 else 0.0
         while time.time() < deadline:
             if callable(is_cancelled) and is_cancelled():
                 raise GoPayOTPCancelled("任务已取消", stage="fetch_otp")
@@ -728,9 +952,26 @@ def _poll_otp_from_sms_url(
             try:
                 code = _fetch_sms_code(sms_url)
                 if code:
-                    return code
+                    ignored_otps = getattr(provider, "_gopay_ignored_otps", set())
+                    ignored = {str(item or "").strip() for item in ignored_otps if str(item or "").strip()}
+                    if str(code).strip() in ignored:
+                        logger.info("[gopay_executor] 忽略已验证失败的 GoPay OTP: %s", _safe_otp_summary(code))
+                    else:
+                        return code
             except Exception as exc:
                 logger.info("[gopay_executor] 等待 GoPay OTP: %s", exc)
+            if next_resend_at and time.time() >= next_resend_at:
+                resend_callback = getattr(provider, "_gopay_resend_callback", None)
+                if callable(resend_callback):
+                    if callable(progress):
+                        progress("sms_otp_resend_due", wait_seconds=int(resend_interval))
+                    try:
+                        resend_callback()
+                    except Exception as exc:
+                        logger.info("[gopay_executor] GoPay OTP resend while polling failed: %s", _safe_error_summary(exc))
+                        if callable(progress):
+                            progress("sms_otp_resend_failed", reason=_safe_error_summary(exc))
+                next_resend_at = time.time() + max(0.0, resend_interval)
             time.sleep(5)
         raise GoPayOTPCancelled("等待 GoPay OTP 超时", stage="fetch_otp")
 
@@ -1291,14 +1532,23 @@ def _browser_checkout_to_gopay_redirect(
         progress("checkout_ready", checkout_url=checkout_url, mode="browser")
     logger.info("[gopay_executor] browser checkout fallback generated checkout: %s", _safe_url_summary(checkout_url))
 
+    if callable(progress):
+        progress("open_checkout", checkout_url=checkout_url)
     if not _open_checkout_in_page(api, checkout_url, email=email):
         _capture_screenshot(api, session_id, "gopay-browser-checkout-open-failed", screenshot_paths)
         raise GoPayFlowError("浏览器打开 checkout 页面失败", stage="browser_checkout")
+    if callable(progress):
+        progress("checkout_opened", checkout_url=checkout_url)
 
+    if callable(progress):
+        progress("select_gopay")
     selected, select_error = _select_gopay_option(api)
     if not selected:
         logger.info("[gopay_executor] browser checkout fallback did not explicitly select GoPay: %s", select_error)
-    _fill_billing_form_on_page(api, billing, session_id, screenshot_paths)
+    else:
+        if callable(progress):
+            progress("gopay_selected")
+    _fill_billing_form_on_page(api, billing, session_id, screenshot_paths, progress=progress)
     nonzero_hint = _browser_checkout_nonzero_amount_hint(api)
     if nonzero_hint and not _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
         _capture_screenshot(api, session_id, "gopay-browser-nonzero-amount-blocked", screenshot_paths)
@@ -1464,10 +1714,7 @@ class GoPayHttpCharger:
         self.activation_link_url = ""
 
     def _progress(self, stage: str, **extra):
-        if callable(self.progress_callback):
-            payload = {"stage": stage}
-            payload.update(extra)
-            self.progress_callback(payload)
+        _emit_gopay_progress(self.progress_callback, stage, **extra)
 
     def _check_cancelled(self):
         if callable(self.is_cancelled) and self.is_cancelled():
@@ -1897,8 +2144,6 @@ class GoPayHttpCharger:
         return amount, currency
 
     def _guard_stripe_expected_due(self):
-        if _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
-            return False
         if self.expected_due_amount is None:
             return False
         if self.expected_due_amount <= 0:
@@ -1906,6 +2151,8 @@ class GoPayHttpCharger:
                 self._progress("stripe_zero_due_confirmed")
             self._stripe_expected_due_checked = True
             return True
+        if _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
+            return False
         self._stripe_expected_due_checked = True
         self._progress("stripe_nonzero_amount_blocked", expected_amount=str(self.expected_due_amount))
         raise GoPayChargeBlocked(
@@ -2109,12 +2356,28 @@ class GoPayHttpCharger:
             headers={"Origin": "https://merchants-gws-app.gopayapi.com", "Referer": "https://merchants-gws-app.gopayapi.com/"},
             stage="gopay_validate_otp",
         )
+        status_code = int(getattr(resp, "status_code", 0) or 0)
+        if status_code >= 400:
+            try:
+                payload = _response_json(resp, "gopay_validate_otp")
+            except GoPayFlowError:
+                payload = {}
+            if _looks_like_gopay_invalid_otp_payload(payload):
+                logger.info(
+                    "[gopay_executor] GoPay validate-otp rejected invalid OTP: reference=%s otp=%s payload=%s",
+                    _mask_log_value(reference_id),
+                    _safe_otp_summary(otp),
+                    _safe_error_summary(payload),
+                )
+                raise GoPayOTPInvalid(f"GoPay OTP 错误: {payload}", stage="gopay_validate_otp")
         _ensure_ok(resp, "gopay_validate_otp")
         payload = _response_json(resp, "gopay_validate_otp")
         if _looks_like_gopay_rate_limit_payload(payload):
             self._progress("gopay_rate_limited")
             logger.info("[gopay_executor] GoPay validate-otp returned rate-limit payload: %s", _safe_error_summary(payload))
             raise GoPayRateLimited(_gopay_rate_limited_message(), stage="gopay_rate_limited")
+        if _looks_like_gopay_invalid_otp_payload(payload):
+            raise GoPayOTPInvalid(f"GoPay OTP 错误: {payload}", stage="gopay_validate_otp")
         if not payload.get("success"):
             raise GoPayFlowError(f"GoPay OTP 校验失败: {payload}", stage="gopay_validate_otp")
         challenge = payload.get("data", {}).get("challenge", {}).get("action", {}).get("value", {})
@@ -2302,10 +2565,51 @@ class GoPayHttpCharger:
         self._gopay_user_consent(reference_id)
         self._trigger_linking_otp_channel(reference_id)
         self._progress("wait_otp")
-        otp = self.otp_provider()
-        if not otp:
-            raise GoPayOTPCancelled("未获取到 GoPay OTP", stage="fetch_otp")
-        challenge_id, client_id = self._gopay_validate_otp(reference_id, otp)
+        try:
+            setattr(self.otp_provider, "_gopay_resend_callback", lambda: self._gopay_resend_otp(reference_id))
+        except Exception:
+            pass
+        max_otp_attempts = max(1, _env_int("GOPAY_OTP_VALIDATE_ATTEMPTS", 3))
+        invalid_otps: set[str] = set()
+        challenge_id = ""
+        client_id = ""
+        last_invalid_exc: GoPayOTPInvalid | None = None
+        for attempt in range(1, max_otp_attempts + 1):
+            try:
+                setattr(self.otp_provider, "_gopay_ignored_otps", set(invalid_otps))
+            except Exception:
+                pass
+            otp = self.otp_provider()
+            if not otp:
+                raise GoPayOTPCancelled("未获取到 GoPay OTP", stage="fetch_otp")
+            self._progress("otp_received", otp=_safe_otp_summary(otp), attempt=attempt, max_attempts=max_otp_attempts)
+            try:
+                challenge_id, client_id = self._gopay_validate_otp(reference_id, otp)
+                break
+            except GoPayOTPInvalid as exc:
+                last_invalid_exc = exc
+                invalid_otps.add(str(otp).strip())
+                self._progress(
+                    "otp_invalid",
+                    otp=_safe_otp_summary(otp),
+                    attempt=attempt,
+                    max_attempts=max_otp_attempts,
+                )
+                if attempt >= max_otp_attempts:
+                    raise GoPayOTPInvalid(
+                        f"GoPay OTP 连续 {max_otp_attempts} 次错误，已停止重试",
+                        stage="gopay_validate_otp",
+                    ) from exc
+                logger.info(
+                    "[gopay_executor] GoPay OTP invalid, ignoring code and waiting for next one: reference=%s otp=%s attempt=%s/%s",
+                    _mask_log_value(reference_id),
+                    _safe_otp_summary(otp),
+                    attempt,
+                    max_otp_attempts,
+                )
+                continue
+        if not challenge_id or not client_id:
+            raise last_invalid_exc or GoPayOTPCancelled("未获取到可用 GoPay OTP", stage="fetch_otp")
         pin_token = self._tokenize_pin(challenge_id, client_id)
         self._gopay_validate_pin(reference_id, pin_token)
 
@@ -2314,6 +2618,7 @@ class GoPayHttpCharger:
         charge_challenge_id, charge_client_id = self._gopay_payment_confirm(charge_ref)
         charge_pin_token = self._tokenize_pin(charge_challenge_id, charge_client_id)
         self._gopay_payment_process(charge_ref, charge_pin_token)
+        self._progress("payment_completed")
 
         verify = self._verify_checkout(checkout_session_id) if checkout_session_id else {"state": "succeeded"}
         state = "succeeded" if verify.get("state") == "succeeded" else "verify_timeout"
@@ -2896,7 +3201,15 @@ def _scroll_to_billing_section(api: ChatGPTTeamAPI):
     except Exception:
         return False
 
-def _fill_billing_form_on_page(api: ChatGPTTeamAPI, billing: dict, session_id: str, screenshot_paths: list[str]):
+def _fill_billing_form_on_page(
+    api: ChatGPTTeamAPI,
+    billing: dict,
+    session_id: str,
+    screenshot_paths: list[str],
+    progress: Callable[..., None] | None = None,
+):
+    if callable(progress):
+        progress("fill_billing_info")
     _scroll_to_billing_section(api)
     _suppress_address_autocomplete_ui(api)
     billing_frames = _find_billing_form_frames(api, timeout_seconds=4)
@@ -2947,6 +3260,8 @@ def _fill_billing_form_on_page(api: ChatGPTTeamAPI, billing: dict, session_id: s
             logger.info("[gopay_executor] 页面 %s 已有目标值，跳过填写", label)
             return True, "", locator
         logger.info("[gopay_executor] 页面准备填写 %s，当前值=%r，新值=%r", label, current, value)
+        if callable(progress):
+            progress("billing_fill_field", field=label)
         try:
             locator.fill(str(value or ""), timeout=4000)
             actual = _read_locator_value(locator)
@@ -2990,6 +3305,8 @@ def _fill_billing_form_on_page(api: ChatGPTTeamAPI, billing: dict, session_id: s
             return False, f"未找到 {label}", None
         _scroll_locator_into_view(locator, label)
         logger.info("[gopay_executor] 页面准备选择 %s，新值=%r", label, value)
+        if callable(progress):
+            progress("billing_select_field", field=label)
         try:
             locator.select_option(value=str(value or ""), timeout=4000)
             actual = _read_locator_value(locator)
@@ -3023,6 +3340,8 @@ def _fill_billing_form_on_page(api: ChatGPTTeamAPI, billing: dict, session_id: s
         actual = _read_locator_value(locator)
         if _value_matches(expected, actual):
             logger.info("[gopay_executor] 提交前校验通过 %s=%r", label, actual)
+            if callable(progress):
+                progress("billing_field_verified", field=label)
             return True, ""
         logger.info("[gopay_executor] 提交前发现 %s 被改写，实际=%r，重写为=%r", label, actual, expected)
         try:
@@ -3152,6 +3471,8 @@ def _fill_billing_form_on_page(api: ChatGPTTeamAPI, billing: dict, session_id: s
     ok, error = _verify_billing_stable_before_submit()
     if not ok:
         return False, error
+    if callable(progress):
+        progress("billing_info_filled")
     return True, ""
 
 
@@ -3920,10 +4241,7 @@ def _run_gopay_bind_task_once(
     generated_checkout_meta: dict = {}
 
     def progress(stage: str, **extra):
-        if callable(progress_callback):
-            payload = {"stage": stage}
-            payload.update(extra)
-            progress_callback(payload)
+        _emit_gopay_progress(progress_callback, stage, **extra)
 
     def cancelled():
         return callable(is_cancelled) and is_cancelled()
@@ -4403,6 +4721,8 @@ def run_gopay_bind_task(
     timeout_seconds: int = 900,
     account_emails: list[str] | None = None,
     is_cancelled=None,
+    skip_current=None,
+    clear_skip_current=None,
     progress_callback=None,
 ):
     """Run GoPay payment.
@@ -4415,10 +4735,20 @@ def run_gopay_bind_task(
     final_checkout_url = str(checkout_url or "").strip()
 
     def emit(stage: str, **extra):
-        if callable(progress_callback):
-            payload = {"stage": stage}
-            payload.update(extra)
-            progress_callback(payload)
+        _emit_gopay_progress(progress_callback, stage, **extra)
+
+    def cancel_requested() -> bool:
+        return callable(is_cancelled) and is_cancelled()
+
+    def skip_requested() -> bool:
+        return callable(skip_current) and skip_current()
+
+    def clear_skip_request():
+        if callable(clear_skip_current):
+            clear_skip_current()
+
+    def current_attempt_interrupted() -> bool:
+        return cancel_requested() or skip_requested()
 
     def run_once(candidate_email: str) -> dict:
         return _run_gopay_bind_task_once(
@@ -4432,7 +4762,7 @@ def run_gopay_bind_task(
             proxy_url=proxy_url,
             proxy_bypass=proxy_bypass,
             timeout_seconds=timeout_seconds,
-            is_cancelled=is_cancelled,
+            is_cancelled=current_attempt_interrupted,
             progress_callback=progress_callback,
         )
 
@@ -4455,6 +4785,7 @@ def run_gopay_bind_task(
     )
 
     if not rotation_enabled:
+        emit("gopay_try_account", email=requested_email, attempt=1, total=1)
         result = run_once(requested_email)
         result["email_used"] = requested_email
         result["requested_email"] = requested_email
@@ -4477,17 +4808,41 @@ def run_gopay_bind_task(
     attempted: list[str] = []
     blocked: list[str] = []
     last_blocked_result: dict | None = None
+    last_blocked_email = ""
     rejected: list[str] = []
     last_rejected_result: dict | None = None
+    last_rejected_email = ""
+    payment_failed: list[str] = []
+    last_payment_failed_result: dict | None = None
+    last_payment_failed_email = ""
+    nonzero_blocked: list[str] = []
+    last_nonzero_blocked_result: dict | None = None
+    last_nonzero_blocked_email = ""
     skipped_cooldown: list[str] = []
+    skipped_by_user: list[str] = []
 
     for index, candidate in enumerate(candidates, 1):
-        if callable(is_cancelled) and is_cancelled():
+        if cancel_requested():
             return _build_result(
                 "failed",
                 failure_stage="generate_checkout",
                 message="任务已取消",
             )
+        if skip_requested():
+            skipped_by_user.append(candidate)
+            clear_skip_request()
+            logger.info(
+                "[gopay_executor] user skipped GoPay candidate before start: email=%s",
+                _safe_email_summary(candidate),
+            )
+            emit(
+                "gopay_account_skipped_by_user",
+                email=candidate,
+                attempted=len(attempted),
+                remaining_candidates=max(0, len(candidates) - index),
+                message=f"已跳过当前账号: {candidate}",
+            )
+            continue
 
         remaining = _approve_blocked_remaining(candidate)
         if remaining > 0:
@@ -4517,10 +4872,29 @@ def run_gopay_bind_task(
         result["requested_email"] = requested_email
         result["attempted_emails"] = attempted[:]
 
+        if skip_requested() and not cancel_requested() and result.get("status") != "success":
+            skipped_by_user.append(candidate)
+            clear_skip_request()
+            logger.info(
+                "[gopay_executor] user skipped GoPay candidate during attempt: email=%s status=%s failure_stage=%s",
+                _safe_email_summary(candidate),
+                result.get("status") or "",
+                result.get("failure_stage") or "",
+            )
+            emit(
+                "gopay_account_skipped_by_user",
+                email=candidate,
+                attempted=len(attempted),
+                remaining_candidates=max(0, len(candidates) - index),
+                message=f"已跳过当前账号: {candidate}",
+            )
+            continue
+
         if _is_chatgpt_approve_blocked_result(result):
             cooldown = int(_mark_approve_blocked(candidate))
             blocked.append(candidate)
             last_blocked_result = result
+            last_blocked_email = candidate
             logger.info(
                 "[gopay_executor] GoPay candidate blocked at chatgpt_approve, rotating: email=%s cooldown_seconds=%s message=%s",
                 _safe_email_summary(candidate),
@@ -4539,6 +4913,7 @@ def run_gopay_bind_task(
         if _is_checkout_payment_not_approved_result(result):
             rejected.append(candidate)
             last_rejected_result = result
+            last_rejected_email = candidate
             not_approved_message = (
                 f"付款未获批准，当前账号将从号池删除并停止本次账号尝试: "
                 f"{_compact_log_text(result.get('message') or '付款未获批准', limit=180)}"
@@ -4557,11 +4932,60 @@ def run_gopay_bind_task(
             )
             continue
 
+        if _is_gopay_payment_process_rotatable_result(result):
+            payment_failed.append(candidate)
+            last_payment_failed_result = result
+            last_payment_failed_email = candidate
+            logger.info(
+                "[gopay_executor] GoPay candidate payment/process failed with wallet auth error, rotating: email=%s message=%s",
+                _safe_email_summary(candidate),
+                _compact_log_text(result.get("message") or "", limit=180),
+            )
+            emit(
+                "gopay_payment_process_failed_rotate",
+                email=candidate,
+                attempted=len(attempted),
+                remaining_candidates=max(0, len(candidates) - index),
+                message=(
+                    "GoPay 钱包扣款授权失败，切换下一个账号: "
+                    f"{_compact_log_text(result.get('message') or 'gopay_payment_process failed', limit=180)}"
+                ),
+            )
+            continue
+
+        if _is_gopay_nonzero_amount_blocked_result(result):
+            nonzero_blocked.append(candidate)
+            last_nonzero_blocked_result = result
+            last_nonzero_blocked_email = candidate
+            logger.info(
+                "[gopay_executor] GoPay candidate blocked by non-zero amount guard, rotating: email=%s stage=%s message=%s",
+                _safe_email_summary(candidate),
+                result.get("failure_stage") or "",
+                _compact_log_text(result.get("message") or "", limit=180),
+            )
+            emit(
+                "gopay_nonzero_amount_blocked_rotate",
+                email=candidate,
+                attempted=len(attempted),
+                remaining_candidates=max(0, len(candidates) - index),
+                message=(
+                    "账单金额非 0，当前账号停止并切换下一个账号: "
+                    f"{_compact_log_text(result.get('message') or '', limit=180)}"
+                ),
+            )
+            continue
+
         if blocked:
             result["blocked_emails"] = blocked[:]
         if rejected:
             result["rejected_emails"] = rejected[:]
-        if blocked or rejected:
+        if payment_failed:
+            result["payment_failed_emails"] = payment_failed[:]
+        if nonzero_blocked:
+            result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        if skipped_by_user:
+            result["skipped_emails"] = skipped_by_user[:]
+        if blocked or rejected or payment_failed or nonzero_blocked:
             result["rotated_from"] = requested_email
         logger.info(
             "[gopay_executor] GoPay candidate finished without approve-block rotation: email=%s status=%s failure_stage=%s",
@@ -4571,11 +4995,14 @@ def run_gopay_bind_task(
         )
         return result
 
-    if last_rejected_result and not last_blocked_result:
+    if last_rejected_result and not last_blocked_result and not last_payment_failed_result and not last_nonzero_blocked_result:
         last_rejected_result = dict(last_rejected_result)
         last_rejected_result["rejected_emails"] = rejected[:]
+        last_rejected_result["payment_failed_emails"] = payment_failed[:]
+        last_rejected_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_rejected_result["skipped_emails"] = skipped_by_user[:]
         last_rejected_result["attempted_emails"] = attempted[:]
-        last_rejected_result["email_used"] = attempted[-1] if attempted else requested_email
+        last_rejected_result["email_used"] = last_rejected_email or (attempted[-1] if attempted else requested_email)
         last_rejected_result["requested_email"] = requested_email
         emit("gopay_all_accounts_rejected", attempted=len(attempted), rejected=len(rejected))
         logger.info(
@@ -4584,6 +5011,40 @@ def run_gopay_bind_task(
             [_safe_email_summary(candidate) for candidate in rejected],
         )
         return last_rejected_result
+
+    if last_payment_failed_result and not last_blocked_result and not last_nonzero_blocked_result:
+        last_payment_failed_result = dict(last_payment_failed_result)
+        last_payment_failed_result["payment_failed_emails"] = payment_failed[:]
+        last_payment_failed_result["rejected_emails"] = rejected[:]
+        last_payment_failed_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_payment_failed_result["skipped_emails"] = skipped_by_user[:]
+        last_payment_failed_result["attempted_emails"] = attempted[:]
+        last_payment_failed_result["email_used"] = last_payment_failed_email or (attempted[-1] if attempted else requested_email)
+        last_payment_failed_result["requested_email"] = requested_email
+        emit("gopay_all_payment_process_failed", attempted=len(attempted), payment_failed=len(payment_failed))
+        logger.info(
+            "[gopay_executor] all GoPay candidates failed at payment/process wallet auth: attempted=%s payment_failed=%s",
+            len(attempted),
+            [_safe_email_summary(candidate) for candidate in payment_failed],
+        )
+        return last_payment_failed_result
+
+    if last_nonzero_blocked_result and not last_blocked_result:
+        last_nonzero_blocked_result = dict(last_nonzero_blocked_result)
+        last_nonzero_blocked_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_nonzero_blocked_result["payment_failed_emails"] = payment_failed[:]
+        last_nonzero_blocked_result["rejected_emails"] = rejected[:]
+        last_nonzero_blocked_result["skipped_emails"] = skipped_by_user[:]
+        last_nonzero_blocked_result["attempted_emails"] = attempted[:]
+        last_nonzero_blocked_result["email_used"] = last_nonzero_blocked_email or (attempted[-1] if attempted else requested_email)
+        last_nonzero_blocked_result["requested_email"] = requested_email
+        emit("gopay_all_nonzero_amount_blocked", attempted=len(attempted), nonzero_blocked=len(nonzero_blocked))
+        logger.info(
+            "[gopay_executor] all GoPay candidates blocked by non-zero amount guard: attempted=%s nonzero_blocked=%s",
+            len(attempted),
+            [_safe_email_summary(candidate) for candidate in nonzero_blocked],
+        )
+        return last_nonzero_blocked_result
 
     if last_blocked_result:
         message = (
@@ -4596,9 +5057,12 @@ def run_gopay_bind_task(
         last_blocked_result["message"] = message
         last_blocked_result["blocked_emails"] = blocked[:]
         last_blocked_result["rejected_emails"] = rejected[:]
+        last_blocked_result["payment_failed_emails"] = payment_failed[:]
+        last_blocked_result["nonzero_blocked_emails"] = nonzero_blocked[:]
         last_blocked_result["skipped_cooldown_emails"] = skipped_cooldown[:]
+        last_blocked_result["skipped_emails"] = skipped_by_user[:]
         last_blocked_result["attempted_emails"] = attempted[:]
-        last_blocked_result["email_used"] = attempted[-1] if attempted else requested_email
+        last_blocked_result["email_used"] = last_blocked_email or (attempted[-1] if attempted else requested_email)
         last_blocked_result["requested_email"] = requested_email
         emit("gopay_all_accounts_blocked", attempted=len(attempted), skipped_cooldown=len(skipped_cooldown))
         logger.info(
@@ -4608,6 +5072,22 @@ def run_gopay_bind_task(
             [_safe_email_summary(candidate) for candidate in skipped_cooldown],
         )
         return last_blocked_result
+
+    if skipped_by_user:
+        logger.info(
+            "[gopay_executor] all remaining GoPay candidates skipped by user: skipped=%s",
+            [_safe_email_summary(candidate) for candidate in skipped_by_user],
+        )
+        emit("gopay_all_accounts_skipped", skipped=len(skipped_by_user), attempted=len(attempted))
+        result = _build_result(
+            "failed",
+            failure_stage="skipped",
+            message="已跳过所有候选账号，任务结束",
+            billing_info=_public_billing_info(billing_info or {}),
+        )
+        result["skipped_emails"] = skipped_by_user[:]
+        result["attempted_emails"] = attempted[:]
+        return result
 
     logger.info(
         "[gopay_executor] no GoPay candidates available because all are cooling down: skipped_cooldown=%s",

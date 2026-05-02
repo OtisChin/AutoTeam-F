@@ -207,6 +207,7 @@ def post_setup_save(config: SetupConfig):
 _tasks: dict[str, dict] = {}
 _playwright_lock = threading.Lock()
 _current_task_id: str | None = None
+_task_skip_signals: dict[str, threading.Event] = {}
 _admin_login_api = None
 _admin_login_step: str | None = None
 _main_codex_flow = None
@@ -338,11 +339,20 @@ def _update_current_task_progress(progress: dict):
     task = _tasks.get(_current_task_id)
     if not task:
         return
+    now = time.time()
+    event = {
+        **dict(progress or {}),
+        "event_id": uuid.uuid4().hex[:12],
+        "updated_at": now,
+    }
     task["progress"] = {
         **(task.get("progress") or {}),
-        **progress,
-        "updated_at": time.time(),
+        **event,
     }
+    progress_events = task.setdefault("progress_events", [])
+    progress_events.append(event)
+    if len(progress_events) > 300:
+        del progress_events[: len(progress_events) - 300]
 
 
 def _run_task(task_id: str, func, *args, **kwargs):
@@ -375,6 +385,7 @@ def _run_task(task_id: str, func, *args, **kwargs):
     finally:
         task["finished_at"] = time.time()
         _current_task_id = None
+        _task_skip_signals.pop(task_id, None)
         _playwright_lock.release()
 
 
@@ -395,6 +406,8 @@ def _start_task(command: str, func, params: dict, *args, **kwargs) -> dict:
         "finished_at": None,
         "result": None,
         "error": None,
+        "progress": None,
+        "progress_events": [],
     }
     _tasks[task_id] = task
     _prune_tasks()
@@ -502,6 +515,7 @@ class GoPayBindTaskParams(BaseModel):
     proxy_label: str = ""
     proxy_bypass: str | None = None
     timeout_seconds: int = 900
+    delete_rejected_accounts: bool = False
 
 
 class CardPoolImportParams(BaseModel):
@@ -552,6 +566,15 @@ class ManualRegisterParams(BaseModel):
 class DeleteBatchParams(BaseModel):
     emails: list[str]
     continue_on_error: bool = True  # 部分失败时继续剩余账号,False 则遇错即停
+
+
+class AccountTypeUpdateParams(BaseModel):
+    account_type: str
+
+
+class AccountCredentialExportParams(BaseModel):
+    emails: list[str] = []
+    line_format: str = "{email}-----{password}"
 
 
 def _normalized_email(value: str | None) -> str:
@@ -605,6 +628,8 @@ def _resolve_status_auth_file(acc: dict) -> str:
 
 def _display_account_status(acc: dict, quota_snapshot: dict | None = None) -> str:
     status = acc.get("status", "")
+    if status in ("personal", "plus"):
+        status = "active"
     if not _is_main_account_email(acc.get("email")):
         return status
 
@@ -615,11 +640,26 @@ def _display_account_status(acc: dict, quota_snapshot: dict | None = None) -> st
     return "active" if _resolve_status_auth_file(acc) else status
 
 
+def _display_account_type(acc: dict) -> str:
+    account_type = (acc.get("account_type") or "").strip().lower()
+    if account_type in {"free", "team", "plus", "pro"}:
+        return account_type
+    status = (acc.get("status") or "").strip().lower()
+    if status == "plus":
+        return "plus"
+    if status == "personal":
+        return "free"
+    if status in {"active", "exhausted", "standby"}:
+        return "team"
+    return "free"
+
+
 def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     """脱敏账号信息（去掉 password 等敏感字段）"""
     sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
     sanitized["is_main_account"] = _is_main_account_email(acc.get("email"))
     sanitized["status"] = _display_account_status(acc, quota_snapshot)
+    sanitized["account_type"] = _display_account_type(acc)
     try:
         from autoteam.auth_session_store import get_auth_session_file
 
@@ -778,25 +818,57 @@ def _gopay_rejected_pool_emails(result: dict, actual_email: str) -> list[str]:
     return emails
 
 
+def _gopay_nonzero_blocked_pool_emails(result: dict, actual_email: str) -> list[str]:
+    seen = set()
+    emails = []
+    for raw_email in result.get("nonzero_blocked_emails") or []:
+        email = _normalized_email(raw_email)
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+    if str(result.get("failure_stage") or "") in {"browser_charge_guard", "stripe_charge_guard", "midtrans_charge_guard"}:
+        email = _normalized_email(actual_email)
+        if email and email not in seen:
+            emails.append(email)
+    return emails
+
+
 def _remove_gopay_rejected_accounts_from_pool(emails: list[str]) -> list[str]:
     if not emails:
         return []
-    from autoteam.accounts import delete_account as delete_local_account
+    from autoteam.accounts import delete_account as delete_local_account, find_account, load_accounts
     from autoteam.auth_session_store import delete_auth_session
+    from autoteam.mail import TemporaryEmailClient
 
     removed = []
+    accounts = load_accounts()
+    mail_client = None
     for email in emails:
         if not email or _is_main_account_email(email):
             continue
+        account = find_account(accounts, email)
+        mail_target = (account or {}).get("cloudmail_account_id") or email
+        mail_deleted = False
+        if mail_target:
+            try:
+                if mail_client is None:
+                    mail_client = TemporaryEmailClient()
+                    mail_client.login()
+                resp = mail_client.delete_account(mail_target)
+                mail_deleted = bool(isinstance(resp, dict) and resp.get("code") == 200)
+            except Exception as exc:
+                logger.warning("[gopay-bind] failed to delete rejected account from email service: email=%s error=%s", email, exc)
         record_deleted = delete_local_account(email)
         session_deleted = delete_auth_session(email)
-        if record_deleted or session_deleted:
+        if record_deleted or session_deleted or mail_deleted:
             removed.append(email)
         logger.info(
-            "[gopay-bind] checkout not approved account removed from local pool: email=%s record_deleted=%s auth_session_deleted=%s",
+            "[gopay-bind] rejected/nonzero account removed: email=%s record_deleted=%s auth_session_deleted=%s mail_deleted=%s mail_target=%s",
             email,
             record_deleted,
             session_deleted,
+            mail_deleted,
+            mail_target,
         )
     return removed
 
@@ -806,7 +878,8 @@ def _session_only_account_stub(email: str) -> dict:
         "email": email,
         "password": "",
         "cloudmail_account_id": None,
-        "status": "personal",
+        "status": "active",
+        "account_type": "free",
         "seat_type": "codex",
         "auth_file": "",
         "created_at": 0,
@@ -1577,6 +1650,97 @@ def delete_account(email: str):
         _playwright_lock.release()
 
 
+@app.post("/api/accounts/{email}/type")
+def update_account_type(email: str, params: AccountTypeUpdateParams):
+    """手动更新账号类型。只改本地 accounts.json，不做 Team/CPA 侧操作。"""
+    from autoteam.accounts import (
+        ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+        ACCOUNT_TYPE_TEAM,
+        find_account,
+        load_accounts,
+        update_account,
+    )
+
+    normalized_email = email.strip().lower()
+    next_type = (params.account_type or "").strip().lower()
+    allowed_types = {
+        ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_TEAM,
+        ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+    }
+    if next_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"不支持的账号类型: {params.account_type}")
+    if _is_main_account_email(normalized_email):
+        raise HTTPException(status_code=400, detail="主号账号类型不允许手动修改")
+
+    account = find_account(load_accounts(), normalized_email)
+    if not account:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    updated = update_account(normalized_email, account_type=next_type)
+    return {
+        "message": f"已将 {normalized_email} 账号类型更新为 {next_type}",
+        "account": _sanitize_account(updated),
+    }
+
+
+@app.post("/api/accounts/export-credentials")
+def export_account_credentials(params: AccountCredentialExportParams):
+    """按自定义行格式导出本地账号池账密。"""
+    from autoteam.accounts import load_accounts
+
+    line_format = (params.line_format or "{email}-----{password}").strip()
+    if not line_format:
+        raise HTTPException(status_code=400, detail="导出格式不能为空")
+    if len(line_format) > 500:
+        raise HTTPException(status_code=400, detail="导出格式过长")
+
+    requested = []
+    seen = set()
+    for email in params.emails or []:
+        normalized = _normalized_email(email)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            requested.append(normalized)
+    requested_set = set(requested)
+
+    accounts = load_accounts()
+    rows = []
+    missing = []
+    by_email = {_normalized_email(acc.get("email")): acc for acc in accounts if _normalized_email(acc.get("email"))}
+    if requested:
+        for email in requested:
+            account = by_email.get(email)
+            if account:
+                rows.append(account)
+            else:
+                missing.append(email)
+    else:
+        rows = accounts
+
+    def render_line(account: dict) -> str:
+        values = {
+            "email": str(account.get("email") or ""),
+            "password": str(account.get("password") or ""),
+        }
+        line = line_format
+        for key, value in values.items():
+            line = line.replace("{" + key + "}", value)
+        return line
+
+    content = "\n".join(render_line(account) for account in rows)
+    return {
+        "content": content,
+        "count": len(rows),
+        "missing": missing,
+        "filename": "accounts-credentials.txt",
+        "format": line_format,
+    }
+
+
 @app.post("/api/accounts/delete-batch")
 def delete_accounts_batch(params: DeleteBatchParams):
     """
@@ -1740,7 +1904,7 @@ def post_account_login(params: LoginAccountParams):
         raise HTTPException(status_code=404, detail="账号不存在")
 
     def _run():
-        from autoteam.accounts import STATUS_ACTIVE, STATUS_PERSONAL, update_account
+        from autoteam.accounts import ACCOUNT_TYPE_FREE, ACCOUNT_TYPE_TEAM, STATUS_ACTIVE, STATUS_PERSONAL, update_account
         from autoteam.mail import TemporaryEmailClient
         from autoteam.codex_auth import (
             check_codex_quota,
@@ -1750,8 +1914,8 @@ def post_account_login(params: LoginAccountParams):
             save_auth_file,
         )
 
-        # 账号状态决定登录模式：PERSONAL 走 use_personal=True 补个人号 OAuth；其他走 Team 模式
-        use_personal = acc.get("status") == STATUS_PERSONAL
+        # 账号类型决定登录模式：Free 走个人号 OAuth；Team 走 Team workspace OAuth。
+        use_personal = acc.get("status") == STATUS_PERSONAL or (acc.get("account_type") or "").lower() == ACCOUNT_TYPE_FREE
 
         mail_client = TemporaryEmailClient()
         mail_client.login()
@@ -1767,10 +1931,9 @@ def post_account_login(params: LoginAccountParams):
             plan_type = (bundle.get("plan_type") or "").lower()
 
             if use_personal:
-                # personal 补登录：不改状态（保持 PERSONAL），只刷新 auth_file
-                update_account(email, status=STATUS_PERSONAL)
+                update_account(email, status=STATUS_ACTIVE, account_type=ACCOUNT_TYPE_FREE)
             elif plan_type == "team":
-                update_account(email, status=STATUS_ACTIVE)
+                update_account(email, status=STATUS_ACTIVE, account_type=ACCOUNT_TYPE_TEAM)
                 token = bundle.get("access_token")
                 if token:
                     st, info = check_codex_quota(token)
@@ -1812,7 +1975,6 @@ def get_status():
         STATUS_ORPHAN,
         STATUS_PENDING,
         STATUS_PERSONAL,
-        STATUS_PLUS,
         STATUS_STANDBY,
         load_accounts,
     )
@@ -1850,10 +2012,12 @@ def get_status():
         "standby": sum(1 for a in sanitized_accounts if a["status"] == STATUS_STANDBY),
         "exhausted": sum(1 for a in sanitized_accounts if a["status"] == STATUS_EXHAUSTED),
         "pending": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PENDING),
-        "personal": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PERSONAL),
-        "plus": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PLUS),
         "auth_invalid": sum(1 for a in sanitized_accounts if a["status"] == STATUS_AUTH_INVALID),
         "orphan": sum(1 for a in sanitized_accounts if a["status"] == STATUS_ORPHAN),
+        "free": sum(1 for a in sanitized_accounts if a.get("account_type") == "free"),
+        "team": sum(1 for a in sanitized_accounts if a.get("account_type") == "team"),
+        "plus": sum(1 for a in sanitized_accounts if a.get("account_type") == "plus"),
+        "pro": sum(1 for a in sanitized_accounts if a.get("account_type") == "pro"),
         "total": len(sanitized_accounts),
     }
 
@@ -2746,7 +2910,7 @@ def post_bind_card_task(params: BindCardTaskParams):
 @app.post("/api/tasks/gopay-bind", status_code=202)
 def post_gopay_bind_task(params: GoPayBindTaskParams):
     from autoteam import cancel_signal
-    from autoteam.accounts import STATUS_PLUS, find_account, load_accounts, save_accounts, update_account
+    from autoteam.accounts import ACCOUNT_TYPE_PLUS, STATUS_ACTIVE, find_account, load_accounts, save_accounts, update_account
     from autoteam.auth_session_store import get_auth_session_file
     from autoteam.bind_audit import record_bind_audit
     from autoteam.config import normalize_proxy_url
@@ -2841,6 +3005,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         if not _resolve_status_auth_file(candidate):
             raise HTTPException(status_code=400, detail=f"批量账号缺少可用 auth_session/auth_file: {candidate_email}")
 
+    skip_current_signal = threading.Event()
+
     def _run():
         task_id = _current_task_id or ""
         started_at = time.time()
@@ -2888,6 +3054,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 timeout_seconds=max(120, int(params.timeout_seconds or 900)),
                 account_emails=account_emails,
                 is_cancelled=cancel_signal.is_cancelled,
+                skip_current=skip_current_signal.is_set,
+                clear_skip_current=skip_current_signal.clear,
                 progress_callback=_update_current_task_progress,
             )
         except Exception as exc:
@@ -2942,17 +3110,33 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             "last_bind_failure_stage": result.get("failure_stage") or "",
         }
         if result.get("status") == "success":
-            account_update["status"] = STATUS_PLUS
+            account_update["status"] = STATUS_ACTIVE
+            account_update["account_type"] = ACCOUNT_TYPE_PLUS
             account_update["plus_bound_at"] = finished_at
         update_account(actual_email, **account_update)
 
-        removed_pool_emails = _remove_gopay_rejected_accounts_from_pool(
-            _gopay_rejected_pool_emails(result, actual_email)
-        )
+        removed_pool_emails = []
+        rejected_pool_emails = _gopay_rejected_pool_emails(result, actual_email)
+        nonzero_blocked_pool_emails = _gopay_nonzero_blocked_pool_emails(result, actual_email)
+        cleanup_pool_emails = []
+        for cleanup_email in [*rejected_pool_emails, *nonzero_blocked_pool_emails]:
+            if cleanup_email and cleanup_email not in cleanup_pool_emails:
+                cleanup_pool_emails.append(cleanup_email)
+        if params.delete_rejected_accounts:
+            removed_pool_emails = _remove_gopay_rejected_accounts_from_pool(cleanup_pool_emails)
+        elif cleanup_pool_emails:
+            result["rejected_pool_emails"] = rejected_pool_emails
+            result["nonzero_blocked_pool_emails"] = nonzero_blocked_pool_emails
+            logger.info(
+                "[gopay-bind] rejected/nonzero accounts kept in pool: task_id=%s rejected=%s nonzero=%s",
+                task_id[:8] or "<unknown>",
+                rejected_pool_emails,
+                nonzero_blocked_pool_emails,
+            )
         if removed_pool_emails:
             result["removed_pool_emails"] = removed_pool_emails
             logger.info(
-                "[gopay-bind] removed checkout-not-approved accounts from pool: task_id=%s emails=%s",
+                "[gopay-bind] removed rejected/nonzero accounts from pool and email service: task_id=%s emails=%s",
                 task_id[:8] or "<unknown>",
                 removed_pool_emails,
             )
@@ -2998,6 +3182,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         return result
 
     task = _start_task("gopay-bind", _run, params.model_dump())
+    _task_skip_signals[task["task_id"]] = skip_current_signal
     return task
 
 
@@ -3219,6 +3404,41 @@ def post_task_cancel():
     task["cancel_requested"] = True
     return {
         "message": "已请求中止,等待当前步骤安全退出",
+        "task_id": _current_task_id,
+        "command": task.get("command"),
+    }
+
+
+@app.post("/api/tasks/skip-current", status_code=202)
+def post_task_skip_current():
+    """请求 GoPay 批量任务跳过当前账号，并在安全点切换到下一个账号。"""
+    if not _current_task_id:
+        raise HTTPException(status_code=404, detail="当前没有正在运行的任务")
+    task = _tasks.get(_current_task_id) or {}
+    if task.get("status") not in ("running", "pending"):
+        raise HTTPException(status_code=400, detail=f"任务当前状态 {task.get('status')} 无法跳过")
+    if task.get("command") != "gopay-bind":
+        raise HTTPException(status_code=400, detail="当前任务不支持跳过账号")
+
+    params = task.get("params") if isinstance(task.get("params"), dict) else {}
+    account_emails = params.get("account_emails") if isinstance(params.get("account_emails"), list) else []
+    if len(account_emails) <= 1:
+        raise HTTPException(status_code=400, detail="当前 GoPay 任务没有下一个账号可切换")
+
+    skip_signal = _task_skip_signals.get(_current_task_id)
+    if skip_signal is None:
+        raise HTTPException(status_code=400, detail="当前 GoPay 任务不支持跳过账号")
+    skip_signal.set()
+    task["skip_current_requested"] = True
+    _update_current_task_progress(
+        {
+            "stage": "gopay_skip_current_requested",
+            "message": "已请求跳过当前账号，等待当前步骤在安全点退出后切换下一个账号",
+        }
+    )
+    logger.info("[API] requested GoPay current-account skip: task=%s", _current_task_id[:8])
+    return {
+        "message": "已请求跳过当前账号，等待切换下一个账号",
         "task_id": _current_task_id,
         "command": task.get("command"),
     }

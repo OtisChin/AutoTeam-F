@@ -20,6 +20,12 @@ STATUS_PLUS = "plus"  # 已通过 GoPay/支付流程升级为 Plus，不再参�
 STATUS_AUTH_INVALID = "auth_invalid"  # auth_file token 已不可用(401/403),待 reconcile 清理或重登
 STATUS_ORPHAN = "orphan"  # 在 workspace 里占着席位,但本地没 auth_file(残废,待人工介入或兜底 kick)
 
+# 账号类型:和运行状态分离。新注册账号默认 Free；Team/Plus/Pro 用于前端选择和业务过滤。
+ACCOUNT_TYPE_FREE = "free"
+ACCOUNT_TYPE_TEAM = "team"
+ACCOUNT_TYPE_PLUS = "plus"
+ACCOUNT_TYPE_PRO = "pro"
+
 # 席位类型:标记该账号在 ChatGPT Team 里被授予的席位种类,用于下游 fill / check 区分对待
 SEAT_CHATGPT = "chatgpt"  # 完整 ChatGPT 席位(PATCH invite seat_type=default 成功)
 SEAT_CODEX = "codex"  # 仅 Codex 席位(usage_based,PATCH 改 default 失败时保留的兜底)
@@ -72,6 +78,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
             "password": password,
             "cloudmail_account_id": cloudmail_account_id,
             "status": STATUS_PENDING,
+            "account_type": ACCOUNT_TYPE_FREE,
             "seat_type": seat_type or SEAT_UNKNOWN,
             "auth_file": None,  # CPA 认证文件路径
             "quota_exhausted_at": None,  # 额度用完的时间

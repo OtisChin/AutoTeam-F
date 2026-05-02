@@ -15,6 +15,7 @@ def test_add_and_update_account_persists_data(tmp_path, monkeypatch):
     assert created[0]["email"] == "user@example.com"
     assert created[0]["cloudmail_account_id"] == 123
     assert created[0]["status"] == accounts.STATUS_PENDING
+    assert created[0]["account_type"] == accounts.ACCOUNT_TYPE_FREE
 
     updated = accounts.update_account("user@example.com", status=accounts.STATUS_ACTIVE, auth_file="auth.json")
 

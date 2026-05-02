@@ -59,6 +59,8 @@ export const api = {
   getStandbyAccounts: () => request('GET', '/accounts/standby'),
   deleteAccount: (email) => request('DELETE', `/accounts/${encodeURIComponent(email)}`),
   deleteAccountsBatch: (emails, continueOnError = true) => request('POST', '/accounts/delete-batch', { emails, continue_on_error: continueOnError }),
+  updateAccountType: (email, accountType) => request('POST', `/accounts/${encodeURIComponent(email)}/type`, { account_type: accountType }),
+  exportAccountCredentials: (emails, lineFormat) => request('POST', '/accounts/export-credentials', { emails, line_format: lineFormat }),
   loginAccount: (email) => request('POST', '/accounts/login', { email }),
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),
   kickAccount: (email) => request('POST', `/accounts/${encodeURIComponent(email)}/kick`),
@@ -96,6 +98,7 @@ export const api = {
   getTasks: () => request('GET', '/tasks'),
   getTask: (id) => request('GET', `/tasks/${id}`),
   cancelTask: () => request('POST', '/tasks/cancel'),
+  skipCurrentTask: () => request('POST', '/tasks/skip-current'),
 
   getAutoCheckConfig: () => request('GET', '/config/auto-check'),
   setAutoCheckConfig: (cfg) => request('PUT', '/config/auto-check', cfg),

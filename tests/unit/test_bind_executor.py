@@ -266,6 +266,33 @@ def test_poll_otp_waits_sms_window_before_fetch(monkeypatch):
     assert progress_events[1] == {"stage": "fetch_otp"}
 
 
+def test_poll_otp_resends_after_two_minutes_without_code(monkeypatch):
+    now = [0.0]
+    resend_calls = []
+    progress_events = []
+
+    monkeypatch.setattr(gopay_executor.time, "time", lambda: now[0])
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+
+    def fake_fetch(_url):
+        return "123456" if now[0] >= 125 else ""
+
+    monkeypatch.setattr(gopay_executor, "_fetch_sms_code", fake_fetch)
+
+    provider = _poll_otp_from_sms_url(
+        "https://sms.example.test",
+        timeout_seconds=180,
+        initial_delay_seconds=0,
+        resend_after_seconds=120,
+        progress=lambda stage, **extra: progress_events.append({"stage": stage, **extra}),
+    )
+    setattr(provider, "_gopay_resend_callback", lambda: resend_calls.append(now[0]))
+
+    assert provider() == "123456"
+    assert resend_calls == [120.0]
+    assert {"stage": "sms_otp_resend_due", "wait_seconds": 120} in progress_events
+
+
 def test_extract_checkout_session_id_from_response_or_url():
     assert _extract_checkout_session_id(raw={"checkout_session_id": "cs_test_123"}) == "cs_test_123"
     assert _extract_checkout_session_id("https://chatgpt.com/checkout/openai_llc/cs_live_abc") == "cs_live_abc"
@@ -588,12 +615,17 @@ def test_gopay_http_charger_triggers_sms_otp_via_protocol(monkeypatch):
         ]
     )
     progress_events = []
+    otp_callback_present = []
+
+    def otp_provider():
+        otp_callback_present.append(callable(getattr(otp_provider, "_gopay_resend_callback", None)))
+        return "123456"
 
     charger = GoPayHttpCharger(
         http=http,
         phone_number="+6287761973970",
         gopay_pin="558023",
-        otp_provider=lambda: "123456",
+        otp_provider=otp_provider,
         otp_channel="sms",
         sms_resend_wait_seconds=0,
         progress_callback=progress_events.append,
@@ -606,6 +638,113 @@ def test_gopay_http_charger_triggers_sms_otp_via_protocol(monkeypatch):
     assert resend_request["kwargs"]["json"] == {"reference_id": reference_id}
     assert [event["stage"] for event in progress_events].count("trigger_sms_otp") == 1
     assert any(event["stage"] == "sms_otp_triggered" for event in progress_events)
+    assert otp_callback_present == [True]
+    assert http.responses == []
+
+
+def test_gopay_http_charger_retries_when_linking_otp_is_invalid(monkeypatch):
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda *args, **kwargs: None)
+
+    snap_token = "11111111-1111-4111-8111-111111111111"
+    reference_id = "22222222-2222-4222-8222-222222222222"
+    http = FakeHttp(
+        [
+            ("GET", f"/snap/v1/transactions/{snap_token}", FakeResponse(json_data={"enabled_payments": ["gopay"]})),
+            (
+                "POST",
+                f"/snap/v3/accounts/{snap_token}/linking",
+                FakeResponse(status_code=201, json_data={"activation_link_url": f"https://gopay.local/link?reference={reference_id}"}),
+            ),
+            ("POST", "/v1/linking/validate-reference", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/user-consent", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/resend-otp", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                "/v1/linking/validate-otp",
+                FakeResponse(
+                    status_code=400,
+                    json_data={
+                        "success": False,
+                        "errors": [
+                            {
+                                "code": "GoPay-1604",
+                                "message_title": "Kode OTP-nya salah. Mohon cek ulang dan coba lagi.",
+                                "is_retryable": True,
+                            }
+                        ],
+                    },
+                    text='{"success":false,"errors":[{"code":"GoPay-1604"}]}',
+                ),
+            ),
+            (
+                "POST",
+                "/v1/linking/validate-otp",
+                FakeResponse(
+                    json_data={
+                        "success": True,
+                        "data": {
+                            "challenge": {
+                                "action": {
+                                    "value": {"challenge_id": "challenge_link", "client_id": "client_link"}
+                                }
+                            }
+                        },
+                    }
+                ),
+            ),
+            ("POST", "/api/v1/users/pin/tokens/nb", FakeResponse(json_data={"token": "pin_link"})),
+            ("POST", "/v1/linking/validate-pin", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                f"/snap/v2/transactions/{snap_token}/charge",
+                FakeResponse(json_data={"gopay_verification_link_url": "https://gopay.local/pay?reference=CHARGE123"}),
+            ),
+            ("GET", "/v1/payment/validate", FakeResponse(json_data={"success": True})),
+            (
+                "POST",
+                "/v1/payment/confirm",
+                FakeResponse(
+                    json_data={
+                        "success": True,
+                        "data": {
+                            "challenge": {
+                                "action": {
+                                    "value": {"challenge_id": "challenge_pay", "client_id": "client_pay"}
+                                }
+                            }
+                        },
+                    }
+                ),
+            ),
+            ("POST", "/api/v1/users/pin/tokens/nb", FakeResponse(json_data={"token": "pin_pay"})),
+            ("POST", "/v1/payment/process", FakeResponse(json_data={"success": True, "data": {"next_action": "payment-success"}})),
+        ]
+    )
+    otp_calls = []
+    progress_events = []
+
+    def otp_provider():
+        ignored = set(getattr(otp_provider, "_gopay_ignored_otps", set()))
+        otp_calls.append(ignored)
+        return "222222" if "111111" in ignored else "111111"
+
+    charger = GoPayHttpCharger(
+        http=http,
+        phone_number="+6287761973970",
+        gopay_pin="558023",
+        otp_provider=otp_provider,
+        otp_channel="sms",
+        sms_resend_wait_seconds=0,
+        progress_callback=progress_events.append,
+    )
+
+    result = charger.run_from_snap_token(snap_token=snap_token, checkout_session_id="cs_test")
+
+    assert result["state"] == "succeeded"
+    validate_requests = [request for request in http.requests if request["url"].endswith("/validate-otp")]
+    assert [request["kwargs"]["json"]["otp"] for request in validate_requests] == ["111111", "222222"]
+    assert otp_calls == [set(), {"111111"}]
+    assert any(event["stage"] == "otp_invalid" for event in progress_events)
     assert http.responses == []
 
 

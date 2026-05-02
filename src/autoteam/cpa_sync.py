@@ -12,7 +12,7 @@ import requests
 
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
 from autoteam.config import CPA_KEY, CPA_URL
-from autoteam.textio import write_text
+from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
@@ -125,11 +125,17 @@ def _parse_jwt_payload(token):
 
 
 def _bundle_from_auth_data(auth_data, fallback_name=""):
-    id_token = auth_data.get("id_token", "")
+    id_token = auth_data.get("id_token") or auth_data.get("idToken") or ""
+    access_token = auth_data.get("access_token") or auth_data.get("accessToken") or ""
+    refresh_token = auth_data.get("refresh_token") or auth_data.get("refreshToken") or ""
     claims = _parse_jwt_payload(id_token) if id_token else {}
+    access_claims = _parse_jwt_payload(access_token) if access_token else {}
     auth_claims = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+    access_auth_claims = access_claims.get("https://api.openai.com/auth", {}) if isinstance(access_claims, dict) else {}
+    profile_claims = claims.get("https://api.openai.com/profile", {}) if isinstance(claims, dict) else {}
+    access_profile_claims = access_claims.get("https://api.openai.com/profile", {}) if isinstance(access_claims, dict) else {}
 
-    plan_type = auth_claims.get("chatgpt_plan_type", "")
+    plan_type = auth_claims.get("chatgpt_plan_type", "") or access_auth_claims.get("chatgpt_plan_type", "")
     if not plan_type and "-team" in fallback_name:
         plan_type = "team"
     if not plan_type and "-plus" in fallback_name:
@@ -141,14 +147,131 @@ def _bundle_from_auth_data(auth_data, fallback_name=""):
 
     return {
         "id_token": id_token,
-        "access_token": auth_data.get("access_token", ""),
-        "refresh_token": auth_data.get("refresh_token", ""),
-        "account_id": auth_data.get("account_id", ""),
-        "email": auth_data.get("email", ""),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "account_id": (
+            auth_data.get("account_id")
+            or auth_data.get("accountId")
+            or (auth_data.get("account") or {}).get("id")
+            or auth_claims.get("chatgpt_account_id")
+            or access_auth_claims.get("chatgpt_account_id")
+            or ""
+        ),
+        "email": (
+            auth_data.get("email")
+            or profile_claims.get("email")
+            or access_profile_claims.get("email")
+            or claims.get("email")
+            or access_claims.get("email")
+            or ""
+        ),
         "plan_type": plan_type,
-        "expired": _parse_expired_timestamp(auth_data.get("expired")),
+        "expired": _parse_expired_timestamp(auth_data.get("expired") or auth_data.get("expires") or access_claims.get("exp")),
         "last_refresh_ts": _parse_optional_timestamp(auth_data.get("last_refresh")),
     }
+
+
+def _is_cpa_compatible_auth_data(auth_data: dict) -> bool:
+    return (
+        isinstance(auth_data, dict)
+        and auth_data.get("type") == "codex"
+        and bool(str(auth_data.get("access_token") or "").strip())
+        and bool(str(auth_data.get("id_token") or "").strip())
+        and bool(str(auth_data.get("refresh_token") or "").strip())
+    )
+
+
+def ensure_cpa_compatible_auth_file(filepath, *, fallback_email: str = "", fallback_plan_type: str = "") -> str:
+    """Return a CPA-compatible codex auth file path, normalizing if possible."""
+    path = Path(filepath or "")
+    if not path.exists():
+        return ""
+    try:
+        auth_data = json.loads(read_text(path))
+    except Exception:
+        logger.warning("[CPA] 认证文件不是有效 JSON，跳过: %s", path)
+        return ""
+
+    if _is_cpa_compatible_auth_data(auth_data):
+        return str(path.resolve())
+
+    bundle = _bundle_from_auth_data(auth_data, fallback_name=path.name)
+    if fallback_email and not bundle.get("email"):
+        bundle["email"] = fallback_email
+    if fallback_plan_type and (not bundle.get("plan_type") or bundle.get("plan_type") == "unknown"):
+        bundle["plan_type"] = fallback_plan_type
+
+    missing = [
+        key
+        for key in ("access_token", "id_token", "refresh_token", "email", "account_id")
+        if not str(bundle.get(key) or "").strip()
+    ]
+    if missing:
+        logger.info(
+            "[CPA] 跳过非 CPA codex 格式认证文件: %s missing=%s",
+            path,
+            ",".join(missing),
+        )
+        return ""
+
+    normalized = Path(_save_normalized_auth_file(bundle))
+    logger.info("[CPA] 已规范化认证文件为 CPA codex 格式: %s -> %s", path.name, normalized.name)
+    return str(normalized.resolve())
+
+
+def find_cpa_compatible_auth_file(email: str, preferred_path: str = "", *, fallback_plan_type: str = "") -> str:
+    """Find a CPA-compatible codex auth file for an email.
+
+    auth_session files are never uploaded directly. They are only accepted if
+    they can be normalized into a complete codex auth file under AUTH_DIR.
+    """
+    target_email = str(email or "").strip().lower()
+    candidates: list[Path] = []
+    if preferred_path:
+        candidates.append(Path(preferred_path))
+    if AUTH_DIR.exists():
+        candidates.extend(path for path in AUTH_DIR.glob("codex-*.json") if path.is_file())
+
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        prepared = ensure_cpa_compatible_auth_file(
+            candidate,
+            fallback_email=target_email,
+            fallback_plan_type=fallback_plan_type,
+        )
+        if not prepared:
+            continue
+        try:
+            auth_data = json.loads(read_text(Path(prepared)))
+        except Exception:
+            continue
+        bundle = _bundle_from_auth_data(auth_data, fallback_name=Path(prepared).name)
+        if target_email and str(bundle.get("email") or "").strip().lower() != target_email:
+            continue
+        return prepared
+    return ""
+
+
+def upload_account_auth_to_cpa(email: str, preferred_path: str = "", *, fallback_plan_type: str = "plus") -> dict:
+    """Upload one account's CPA-compatible codex auth file."""
+    auth_file = find_cpa_compatible_auth_file(email, preferred_path, fallback_plan_type=fallback_plan_type)
+    if not auth_file:
+        return {
+            "status": "skipped",
+            "reason": "缺少 CPA 兼容 Codex auth 文件，请先补登录生成 auths/codex-*.json",
+        }
+    path = Path(auth_file)
+    if upload_to_cpa(path):
+        return {"status": "success", "uploaded": path.name, "auth_file": str(path.resolve())}
+    return {"status": "failed", "message": f"上传 CPA 失败: {path.name}", "auth_file": str(path.resolve())}
 
 
 def _normalized_auth_path(bundle, main=False):
@@ -182,6 +305,7 @@ def _write_auth_file(filepath, bundle):
     ensure_auth_dir()
     auth_data = {
         "type": "codex",
+        "disabled": False,
         "id_token": bundle.get("id_token", ""),
         "access_token": bundle.get("access_token", ""),
         "refresh_token": bundle.get("refresh_token", ""),
@@ -517,12 +641,12 @@ def sync_from_cpa():
 
 def sync_to_cpa():
     """
-    同步本地认证文件到 CPA。同步范围：STATUS_ACTIVE（Team 席位）+ STATUS_PERSONAL（免费号）。
-    - active / personal 有 auth_file → 上传（覆盖）
+    同步本地认证文件到 CPA。同步范围：STATUS_ACTIVE（Team 席位）+ STATUS_PERSONAL（免费号）+ STATUS_PLUS（GoPay Plus）。
+    - active / personal / plus 有 auth_file → 上传（覆盖）
     - CPA 有但本地账号状态已不在上述两种（standby / exhausted / pending 等）→ 从 CPA 删除
     - 仅清理本地 accounts.json 管理过的邮箱，主号和 CPA 手动上传文件不会被删
     """
-    from autoteam.accounts import STATUS_ACTIVE, STATUS_PERSONAL, load_accounts, save_accounts
+    from autoteam.accounts import STATUS_ACTIVE, STATUS_PERSONAL, STATUS_PLUS, load_accounts, save_accounts
 
     accounts = load_accounts()
     local_emails = {a["email"].lower() for a in accounts}
@@ -542,36 +666,48 @@ def sync_to_cpa():
     if changed:
         save_accounts(accounts)
 
-    # 需要同步到 CPA 的账号：active（Team 席位）和 personal（免费号）都要覆盖
-    # 两种状态在 CPA 端共存但相互隔离：文件名不同、email 域可能不同，Team/Personal 互不干扰
+    # 需要同步到 CPA 的账号：active（Team 席位）、personal（免费号）和 plus（GoPay Plus）都要覆盖
+    # 只上传 CPA 兼容的 codex auth 文件，不能直接上传 data/auth_session/*.json。
     files_to_sync = {}
     synced_active = 0
     synced_personal = 0
+    synced_plus = 0
     for acc in accounts:
         status = acc.get("status")
-        if status not in (STATUS_ACTIVE, STATUS_PERSONAL):
+        if status not in (STATUS_ACTIVE, STATUS_PERSONAL, STATUS_PLUS):
             continue
         auth_path = acc.get("auth_file")
         if not auth_path:
             continue
-        path = Path(auth_path)
-        if not path.exists():
+        prepared = find_cpa_compatible_auth_file(
+            str(acc.get("email") or ""),
+            auth_path,
+            fallback_plan_type=STATUS_PLUS if status == STATUS_PLUS else str(status or ""),
+        )
+        if not prepared:
             continue
+        path = Path(prepared)
+        if str(path.resolve()) != str(acc.get("auth_file") or ""):
+            acc["auth_file"] = str(path.resolve())
+            changed = True
         files_to_sync[path.name] = path
         if status == STATUS_ACTIVE:
             synced_active += 1
-        else:
+        elif status == STATUS_PERSONAL:
             synced_personal += 1
+        else:
+            synced_plus += 1
 
     # CPA 认证文件
     cpa_files = list_cpa_files()
     cpa_names = {f["name"]: f for f in cpa_files}
 
     logger.info(
-        "[CPA] 待同步认证文件: %d (Team=%d, Personal=%d), CPA 现有: %d",
+        "[CPA] 待同步认证文件: %d (Team=%d, Personal=%d, Plus=%d), CPA 现有: %d",
         len(files_to_sync),
         synced_active,
         synced_personal,
+        synced_plus,
         len(cpa_files),
     )
 
@@ -598,10 +734,19 @@ def sync_to_cpa():
     final_cpa = list_cpa_files()
     final_local_managed = [f for f in final_cpa if f.get("email", "").lower() in local_emails]
     logger.info(
-        "[CPA] CPA 中本地管理: %d, 本地待同步 (Team+Personal): %d",
+        "[CPA] CPA 中本地管理: %d, 本地待同步 (Team+Personal+Plus): %d",
         len(final_local_managed),
         len(files_to_sync),
     )
+    return {
+        "uploaded": uploaded,
+        "deleted": deleted,
+        "local_duplicates_deleted": local_duplicates_deleted,
+        "synced_active": synced_active,
+        "synced_personal": synced_personal,
+        "synced_plus": synced_plus,
+        "total": len(files_to_sync),
+    }
 
 
 def sync_main_codex_to_cpa(filepath):

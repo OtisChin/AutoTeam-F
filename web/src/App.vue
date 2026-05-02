@@ -28,7 +28,7 @@
   <div v-else class="flex min-h-screen">
     <!-- 侧边栏 -->
     <Sidebar :active="currentPage" :loading="loading" :auth-required="authRequired"
-      @navigate="currentPage = $event" @refresh="refresh" @logout="doLogout" />
+      @navigate="navigateTo" @refresh="refresh" @logout="doLogout" />
 
     <!-- 主内容区 -->
     <div class="flex-1 p-4 md:p-6 overflow-y-auto pb-20 md:pb-6">
@@ -99,7 +99,8 @@ const authRequired = ref(false)
 const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
-const currentPage = ref('dashboard')
+const CURRENT_PAGE_KEY = 'autoteam_current_page'
+const currentPage = ref(localStorage.getItem(CURRENT_PAGE_KEY) || 'dashboard')
 
 const status = ref(null)
 const adminStatus = ref(null)
@@ -164,6 +165,13 @@ function doLogout() {
   clearApiKey()
   authenticated.value = false
   stopPolling()
+}
+
+function navigateTo(page) {
+  currentPage.value = page || 'dashboard'
+  try {
+    localStorage.setItem(CURRENT_PAGE_KEY, currentPage.value)
+  } catch {}
 }
 
 async function refresh() {

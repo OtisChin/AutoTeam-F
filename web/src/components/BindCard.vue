@@ -653,6 +653,15 @@
             <div v-if="gopayForm.checkoutUrl" class="mt-1 text-xs text-gray-500">
               已输入 checkout 链接，任务会固定使用当前账号。
             </div>
+            <label class="mt-2 flex items-center gap-2 text-xs text-gray-300">
+              <input
+                v-model="gopayForm.deleteRejectedAccounts"
+                type="checkbox"
+                :disabled="gopaySubmitting || gopayTaskRunning"
+                class="accent-blue-500"
+              />
+              付款未获批准 / 金额非 0 时删除账号
+            </label>
           </div>
 
           <div>
@@ -755,6 +764,13 @@
           </button>
           <button
             v-if="gopayTaskRunning"
+            @click="skipGoPayCurrentAccount"
+            :disabled="gopaySkipping || !gopaySkipAvailable"
+            class="w-full px-4 py-2 rounded-lg text-sm border bg-amber-600/15 hover:bg-amber-600/25 text-amber-200 border-amber-500/30 transition disabled:opacity-50">
+            {{ gopaySkipping ? '跳过中...' : '跳过当前账号' }}
+          </button>
+          <button
+            v-if="gopayTaskRunning"
             @click="cancelGoPayTask"
             :disabled="gopayCancelling"
             class="w-full px-4 py-2 rounded-lg text-sm border bg-red-600/15 hover:bg-red-600/25 text-red-300 border-red-500/30 transition disabled:opacity-50">
@@ -823,7 +839,7 @@
       <div class="w-full max-w-3xl max-h-[82vh] rounded-xl border border-gray-800 bg-gray-900 shadow-2xl flex flex-col">
         <div class="flex items-center justify-between gap-4 px-5 py-4 border-b border-gray-800">
           <div>
-            <h4 class="text-lg font-semibold text-white">选择 GoPay 批量账号</h4>
+            <h4 class="text-lg font-semibold text-white">批量选择账号</h4>
             <div class="text-xs text-gray-500 mt-1">已选择 {{ gopaySelectedBatchEmails.length }} / {{ accountOptions.length }} 个账号</div>
           </div>
           <button
@@ -852,14 +868,7 @@
                 @click="selectAllGoPayAccounts"
                 :disabled="loadingAccounts || !accountOptions.length || gopayAllAccountsSelected"
                 class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
-                全选全部
-              </button>
-              <button
-                type="button"
-                @click="selectVisibleGoPayAccounts"
-                :disabled="loadingAccounts || !filteredGoPayAccountOptions.length || gopayVisibleAllSelected"
-                class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
-                全选筛选
+                全选
               </button>
               <button
                 type="button"
@@ -949,14 +958,17 @@ const gopayForm = ref({
   billingAddress2: '',
   proxyLabel: '',
   proxyUrl: '',
+  deleteRejectedAccounts: false,
 })
 const gopayAccountSearchKeyword = ref('')
 const gopayAccountPickerOpen = ref(false)
 const gopaySubmitting = ref(false)
 const gopayCancelling = ref(false)
+const gopaySkipping = ref(false)
 const gopayTask = ref(null)
 const gopayLogEntries = ref([])
 const gopayLogScrollRef = ref(null)
+const gopayLoggedProgressEventIds = ref(new Set())
 let bindTaskPollTimer = 0
 let gopayTaskPollTimer = 0
 
@@ -1032,12 +1044,6 @@ const gopaySelectedBatchEmails = computed(() => {
       seen.add(email)
       return true
     })
-})
-
-const gopayVisibleAllSelected = computed(() => {
-  if (!filteredGoPayAccountOptions.value.length) return false
-  const selected = new Set(gopaySelectedBatchEmails.value)
-  return filteredGoPayAccountOptions.value.every(account => selected.has(String(account.email || '').toLowerCase()))
 })
 
 const gopayAllAccountsSelected = computed(() => {
@@ -1197,6 +1203,17 @@ const gopayTaskRunning = computed(() => {
   return ['pending', 'running'].includes(gopayTask.value?.status)
 })
 
+const gopayRunningAccountCount = computed(() => {
+  const params = gopayTask.value?.params || {}
+  const taskAccounts = Array.isArray(params.account_emails) ? params.account_emails : []
+  if (taskAccounts.length) return taskAccounts.length
+  return gopayBatchActive.value ? gopaySelectedBatchEmails.value.length : 1
+})
+
+const gopaySkipAvailable = computed(() => {
+  return gopayTaskRunning.value && gopayRunningAccountCount.value > 1
+})
+
 const bindTaskStatusLabel = computed(() => {
   const status = bindTask.value?.status || ''
   if (status === 'pending') return '排队中'
@@ -1211,14 +1228,21 @@ const gopayStageLabelMap = {
   open_chatgpt: '打开 ChatGPT',
   billing_info_ready: '账单信息已准备',
   billing_address_generated: '已自动生成账单地址',
+  billing_fill_field: '填写账单字段',
+  billing_select_field: '选择账单字段',
+  billing_field_verified: '校验账单字段',
   gopay_try_account: '尝试当前 auth_session',
   gopay_rotate_account: '切换 auth_session 重试',
   gopay_account_skipped_cooldown: '跳过冷却中的 auth_session',
+  gopay_skip_current_requested: '已请求跳过当前账号',
+  gopay_account_skipped_by_user: '已跳过当前账号',
+  gopay_all_accounts_skipped: '所有账号都已跳过',
   generate_checkout: '生成支付链接',
   checkout_ready: '支付链接已生成',
   open_checkout: '打开支付页',
   checkout_opened: '已进入支付页',
   checkout_context_warmup: '预热 ChatGPT checkout 上下文',
+  chatgpt_http_session_ready: 'ChatGPT HTTP 会话已准备',
   gopay_http_flow: '进入 GoPay HTTP 支付流程',
   stripe_create_payment_method: '创建 Stripe GoPay 支付方式',
   stripe_init: '初始化 Stripe 支付页',
@@ -1227,7 +1251,7 @@ const gopayStageLabelMap = {
   chatgpt_approve_blocked_rotate: 'ChatGPT approve 被拦截，切换账号',
   chatgpt_approve_blocked_cooldown: 'ChatGPT approve 被拦截，账号进入冷却',
   gopay_all_accounts_blocked: '所有账号 approve 均被拦截',
-  checkout_not_approved_rotate: '付款未获批准，删除账号并切换',
+  checkout_not_approved_rotate: '付款未获批准，切换账号',
   gopay_all_accounts_rejected: '所有账号付款均未获批准',
   resolve_midtrans_redirect: '解析 Midtrans 跳转',
   pm_redirect: '跟随 Stripe 跳转',
@@ -1235,6 +1259,8 @@ const gopayStageLabelMap = {
   stripe_zero_due_confirmed: '确认 Stripe 应付金额为 0',
   stripe_nonzero_amount_blocked: 'Stripe 金额非 0，已停止',
   midtrans_nonzero_amount_blocked: 'Midtrans 金额非 0，已停止',
+  gopay_nonzero_amount_blocked_rotate: '账单金额非 0，切换账号',
+  gopay_all_nonzero_amount_blocked: '所有账号账单金额均非 0',
   midtrans_linking: '发起 GoPay 账户绑定',
   midtrans_already_linked: '手机号已绑定其他账号，等待解绑后重试',
   midtrans_already_linked_failed: '手机号仍绑定其他账号，已停止',
@@ -1244,9 +1270,13 @@ const gopayStageLabelMap = {
   wait_sms_otp_window: '等待 GoPay SMS 可重发',
   trigger_sms_otp: '协议触发 GoPay SMS OTP',
   sms_otp_triggered: '已触发 GoPay SMS OTP',
+  sms_otp_resend_due: '2 分钟未收到 OTP，重新发送',
+  sms_otp_resend_failed: '重新发送 OTP 失败',
   sms_otp_trigger_failed: '触发 GoPay SMS OTP 失败',
   wait_otp: '等待 GoPay OTP',
   fetch_otp: '拉取 GoPay OTP',
+  otp_received: '收到 SMS OTP',
+  otp_invalid: 'OTP 错误，继续等待新验证码',
   gopay_validate_otp: '校验 GoPay OTP',
   gopay_tokenize_pin: '生成 GoPay PIN token',
   gopay_validate_pin: '校验 GoPay 绑定 PIN',
@@ -1254,6 +1284,9 @@ const gopayStageLabelMap = {
   gopay_payment_validate: '校验 GoPay 扣款引用',
   gopay_payment_confirm: '确认 GoPay 扣款',
   gopay_payment_process: '提交 GoPay 扣款 PIN',
+  gopay_payment_process_failed_rotate: 'GoPay 钱包扣款授权失败，切换账号',
+  gopay_all_payment_process_failed: '所有账号 GoPay 扣款授权均失败',
+  payment_completed: '支付完成，回查状态',
   chatgpt_verify: '回查 ChatGPT 支付结果',
   select_gopay: '选择 GoPay 支付方式',
   gopay_selected: '已选择 GoPay',
@@ -1327,10 +1360,6 @@ function selectAllGoPayAccounts() {
   mergeGoPayBatchEmails(accountOptions.value.map(account => account.email))
 }
 
-function selectVisibleGoPayAccounts() {
-  mergeGoPayBatchEmails(filteredGoPayAccountOptions.value.map(account => account.email))
-}
-
 function clearGoPayBatchAccounts() {
   gopayForm.value.accountEmails = []
 }
@@ -1353,6 +1382,7 @@ function getRememberedGoPayForm() {
     smsUrl: String(gopayForm.value.smsUrl || '').trim(),
     proxyLabel: String(gopayForm.value.proxyLabel || '').trim(),
     proxyUrl: String(gopayForm.value.proxyUrl || '').trim(),
+    deleteRejectedAccounts: Boolean(gopayForm.value.deleteRejectedAccounts),
   }
 }
 
@@ -1372,6 +1402,7 @@ function loadGoPayFormState() {
       smsUrl: String(saved.smsUrl || '').trim(),
       proxyLabel: String(saved.proxyLabel || '').trim(),
       proxyUrl: String(saved.proxyUrl || '').trim(),
+      deleteRejectedAccounts: Boolean(saved.deleteRejectedAccounts),
     }
   } catch (e) {
     console.error('loadGoPayFormState', e)
@@ -1391,7 +1422,7 @@ async function loadAccounts() {
   try {
     const accounts = await api.getAccounts()
     accountOptions.value = (accounts || [])
-      .filter(account => account?.email && account?.auth_session_file && account?.status !== 'plus')
+      .filter(account => account?.email && account?.auth_session_file && !['plus', 'pro'].includes(account?.account_type))
       .sort((a, b) => Number(b?.created_at || 0) - Number(a?.created_at || 0))
     const selectableEmails = new Set(accountOptions.value.map(account => String(account.email || '').toLowerCase()))
     if (selectedAccountEmail.value && !selectableEmails.has(selectedAccountEmail.value.toLowerCase())) {
@@ -1486,6 +1517,34 @@ function pushGoPayLog(message, level = 'info') {
     gopayLogEntries.value.splice(0, gopayLogEntries.value.length - 200)
   }
   scrollGoPayLogToBottom()
+}
+
+function goPayProgressLogLevel(event) {
+  const level = String(event?.level || '').trim()
+  if (['info', 'success', 'warn', 'error'].includes(level)) return level
+  const stage = String(event?.stage || '')
+  if (stage === 'completed' || stage === 'payment_completed' || stage === 'otp_received') return 'success'
+  if (stage.includes('not_approved') || stage.includes('blocked') || stage.includes('cooldown') || stage.includes('retry')) return 'warn'
+  if (stage === 'failed' || stage.includes('all_accounts')) return 'error'
+  return 'info'
+}
+
+function processGoPayProgressEvents(task) {
+  const events = Array.isArray(task?.progress_events) ? task.progress_events : []
+  let printed = 0
+  for (const event of events) {
+    const eventId = String(event?.event_id || `${event?.updated_at || ''}-${event?.stage || ''}-${event?.message || ''}`)
+    if (!eventId || gopayLoggedProgressEventIds.value.has(eventId)) continue
+    gopayLoggedProgressEventIds.value.add(eventId)
+    if (event?.stage === 'gopay_account_skipped_by_user') {
+      gopaySkipping.value = false
+    }
+    const message = String(event?.message || '').trim()
+    if (!message) continue
+    pushGoPayLog(message, goPayProgressLogLevel(event))
+    printed += 1
+  }
+  return printed
 }
 
 function formatCardOption(card) {
@@ -1628,29 +1687,80 @@ async function pollGoPayTask(taskId) {
     if (nextStage && previousStage !== nextStage) {
       pushGoPayLog(`执行阶段：${gopayStageLabelMap[nextStage] || nextStage}`, 'info')
     }
-    const previousProgressMessage = previous?.progress?.message || ''
-    const nextProgressMessage = task?.progress?.message || ''
-    if (nextProgressMessage && nextProgressMessage !== previousProgressMessage) {
-      pushGoPayLog(nextProgressMessage, nextStage === 'checkout_not_approved_rotate' ? 'warn' : 'info')
-    }
+    const printedProgressEvents = processGoPayProgressEvents(task)
     if (['pending', 'running'].includes(task.status)) {
+      const previousProgressMessage = previous?.progress?.message || ''
+      const nextProgressMessage = task?.progress?.message || ''
+      if (!printedProgressEvents && nextProgressMessage && nextProgressMessage !== previousProgressMessage) {
+        pushGoPayLog(nextProgressMessage, nextStage === 'checkout_not_approved_rotate' ? 'warn' : 'info')
+      }
       gopayTaskPollTimer = window.setTimeout(() => {
         pollGoPayTask(taskId)
       }, 3000)
       return
     }
     gopayCancelling.value = false
+    gopaySkipping.value = false
     const removedPoolEmails = task.result?.removed_pool_emails || []
+    const resultMessage = String(task.result?.message || '')
+    const paymentNotApproved = /付款.*未获批准|未获批准|payment\s+(?:was\s+)?not\s+approved|payment\s+(?:was\s+)?declined|not\s+approved/i.test(resultMessage)
     if (removedPoolEmails.length) {
-      pushGoPayLog(`付款未获批准，当前账号将从号池删除并停止本次账号尝试: ${removedPoolEmails.join(', ')}`, 'warn')
+      const reason = paymentNotApproved ? '付款未获批准' : (resultMessage || '账号不可用')
+      pushGoPayLog(`${reason}，已从号池删除账号: ${removedPoolEmails.join(', ')}`, 'warn')
     }
-    if (task.result?.message) {
-      pushGoPayLog(task.result.message, task.result?.status === 'success' ? 'success' : task.status === 'cancelled' ? 'warn' : 'error')
+    if (resultMessage && !(removedPoolEmails.length && paymentNotApproved)) {
+      pushGoPayLog(resultMessage, task.result?.status === 'success' ? 'success' : task.status === 'cancelled' ? 'warn' : 'error')
     }
     await loadAccounts()
   } catch (e) {
     pushGoPayLog(`查询 GoPay 任务失败: ${e.message}`, 'error')
     setMessage(`查询 GoPay 任务失败: ${e.message}`, false)
+  }
+}
+
+function isTaskActive(task) {
+  return ['pending', 'running'].includes(task?.status)
+}
+
+function bindStatusText(task) {
+  if (task?.status === 'pending') return '排队中'
+  if (task?.status === 'running') return '运行中'
+  if (task?.status === 'completed') return '已完成'
+  if (task?.status === 'failed') return '失败'
+  if (task?.status === 'cancelled') return '已取消'
+  return task?.status || '-'
+}
+
+async function restoreActiveBindTasks() {
+  try {
+    const tasks = await api.getTasks()
+    const running = (tasks || []).find(task => isTaskActive(task) && ['bind-card', 'gopay-bind'].includes(task.command))
+    if (!running) return
+
+    if (running.command === 'gopay-bind') {
+      activeTab.value = 'gopay'
+      gopayTask.value = running
+      pushGoPayLog(`已恢复 GoPay 任务轮询：${running.task_id}`, 'info')
+      const printed = processGoPayProgressEvents(running)
+      if (!printed && running.progress?.message) {
+        pushGoPayLog(running.progress.message, 'info')
+      }
+      await pollGoPayTask(running.task_id)
+      return
+    }
+
+    activeTab.value = 'bind'
+    bindTask.value = running
+    pushBindLog(`已恢复绑卡任务轮询：${running.task_id}`, 'info')
+    if (running.progress?.stage) {
+      pushBindLog(`执行阶段：${running.progress.stage}`, 'info')
+    }
+    if (running.progress?.message) {
+      pushBindLog(running.progress.message, 'info')
+    }
+    await pollBindTask(running.task_id)
+  } catch (e) {
+    console.error('restoreActiveBindTasks', e)
   }
 }
 
@@ -1866,6 +1976,7 @@ async function startGoPayBind() {
 
   gopaySubmitting.value = true
   gopayLogEntries.value = []
+  gopayLoggedProgressEventIds.value = new Set()
   pushGoPayLog(gopayBatchActive.value ? `准备提交批量 GoPay 任务，共 ${gopaySelectedBatchEmails.value.length} 个账号` : '准备提交 GoPay 任务', 'info')
   try {
     const task = await api.startGoPayBind({
@@ -1878,6 +1989,7 @@ async function startGoPayBind() {
       gopay_pin: gopayForm.value.gopayPin,
       proxy_url: gopayForm.value.proxyUrl || null,
       proxy_label: gopayForm.value.proxyLabel,
+      delete_rejected_accounts: Boolean(gopayForm.value.deleteRejectedAccounts),
     })
     gopayTask.value = task
     pushGoPayLog(`GoPay 任务已提交，任务 ID: ${task.task_id}`, 'success')
@@ -1906,6 +2018,23 @@ async function cancelGoPayTask() {
     setMessage(`取消 GoPay 任务失败: ${e.message}`, false)
   } finally {
     gopayCancelling.value = false
+  }
+}
+
+async function skipGoPayCurrentAccount() {
+  if (!gopayTaskRunning.value || gopaySkipping.value || !gopaySkipAvailable.value) return
+  gopaySkipping.value = true
+  pushGoPayLog('已请求跳过当前账号，等待当前步骤退出后切换下一个账号', 'warn')
+  try {
+    const result = await api.skipCurrentTask()
+    if (result?.message) {
+      pushGoPayLog(result.message, 'warn')
+    }
+    setMessage(result?.message || '已请求跳过当前账号')
+  } catch (e) {
+    pushGoPayLog(`跳过当前账号失败: ${e.message}`, 'error')
+    setMessage(`跳过当前账号失败: ${e.message}`, false)
+    gopaySkipping.value = false
   }
 }
 
@@ -1942,6 +2071,7 @@ onMounted(() => {
   loadGoPayFormState()
   loadAccounts()
   loadCards()
+  restoreActiveBindTasks()
 })
 
 onUnmounted(() => {
