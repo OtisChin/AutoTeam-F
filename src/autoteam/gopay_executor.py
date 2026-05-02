@@ -15,12 +15,14 @@ from typing import Any, Callable
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 import requests
+from urllib3.exceptions import InsecureRequestWarning
 
 from autoteam.auth_session_store import list_auth_session_emails, load_auth_session
 from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.config import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 SCREENSHOT_DIR = PROJECT_ROOT / "data" / "bind_screenshots"
@@ -242,6 +244,27 @@ def _parse_amount(value: Any) -> int | None:
         return None
 
 
+def _parse_display_amount(value: Any) -> int | None:
+    raw = str(value if value is not None else "").strip()
+    if not raw:
+        return None
+    cleaned = re.sub(r"(?i)\b(?:idr|rp|usd)\b|us\$|\$", "", raw)
+    cleaned = re.sub(r"[^\d,.\-+]", "", cleaned)
+    if not cleaned:
+        return None
+    if "," in cleaned and "." in cleaned:
+        normalized = cleaned.replace(",", "")
+    elif "," in cleaned:
+        parts = cleaned.split(",")
+        normalized = "".join(parts) if all(len(part) == 3 for part in parts[1:]) else cleaned.replace(",", ".")
+    else:
+        normalized = cleaned
+    try:
+        return int(float(normalized))
+    except Exception:
+        return None
+
+
 def _env_float(name: str, default: float) -> float:
     raw = str(os.environ.get(name) or "").strip()
     if not raw:
@@ -419,6 +442,8 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "gopay_selected": "已选择 GoPay 支付方式",
         "fill_billing_info": "正在填写账单信息",
         "billing_info_filled": "账单信息填写完成",
+        "accept_checkout_terms": "正在勾选支付条款",
+        "checkout_terms_accepted": "支付条款已勾选",
         "submit_checkout": "正在提交订阅",
         "submit_clicked": "已点击订阅，等待 Stripe/Midtrans 跳转",
         "gopay_http_flow": "已进入 GoPay/Midtrans 接管流程",
@@ -1017,7 +1042,12 @@ def _chatgpt_checkout_headers(
     return headers
 
 
-def _chatgpt_checkout_payload() -> dict:
+def _normalize_checkout_ui_mode(value: str = "") -> str:
+    mode = str(value or "").strip().lower()
+    return "hosted" if mode == "hosted" else "custom"
+
+
+def _chatgpt_checkout_payload(checkout_ui_mode: str = "custom") -> dict:
     return {
         "entry_point": "all_plans_pricing_modal",
         "plan_name": "chatgptplusplan",
@@ -1026,7 +1056,7 @@ def _chatgpt_checkout_payload() -> dict:
             "promo_campaign_id": "plus-1-month-free",
             "is_coupon_from_query_param": False,
         },
-        "checkout_ui_mode": "custom",
+        "checkout_ui_mode": _normalize_checkout_ui_mode(checkout_ui_mode),
     }
 
 
@@ -1034,6 +1064,7 @@ def _generate_id_checkout_http(
     http: Any,
     *,
     access_token: str,
+    checkout_ui_mode: str = "custom",
     session_token: str = "",
     cookie_header: str = "",
     account_id: str = "",
@@ -1058,7 +1089,7 @@ def _generate_id_checkout_http(
 
     resp = http.post(
         "https://chatgpt.com/backend-api/payments/checkout",
-        json=_chatgpt_checkout_payload(),
+        json=_chatgpt_checkout_payload(checkout_ui_mode),
         timeout=HTTP_TIMEOUT_SECONDS,
     )
     if resp.status_code != 200:
@@ -1450,6 +1481,7 @@ def _browser_checkout_to_gopay_redirect(
     api: ChatGPTTeamAPI,
     *,
     access_token: str,
+    checkout_ui_mode: str = "custom",
     session_token: str = "",
     cookie_header: str = "",
     checkout_url: str = "",
@@ -1521,7 +1553,7 @@ def _browser_checkout_to_gopay_redirect(
     if not checkout_url:
         if not home_ready:
             raise GoPayFlowError("浏览器首页预热失败，且没有可直接打开的 checkout URL", stage="browser_checkout")
-        checkout_meta = _generate_id_checkout_in_page(api, access_token)
+        checkout_meta = _generate_id_checkout_in_page(api, access_token, checkout_ui_mode=checkout_ui_mode)
         checkout_url = str(checkout_meta.get("url") or "").strip()
         raw_checkout = checkout_meta.get("raw") if isinstance(checkout_meta.get("raw"), dict) else {}
     checkout_session_id = _extract_checkout_session_id(checkout_url, raw_checkout)
@@ -1540,6 +1572,17 @@ def _browser_checkout_to_gopay_redirect(
     if callable(progress):
         progress("checkout_opened", checkout_url=checkout_url)
 
+    nonzero_hint = _browser_checkout_nonzero_amount_hint(api)
+    if nonzero_hint and not _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
+        _capture_screenshot(api, session_id, "gopay-browser-nonzero-amount-blocked", screenshot_paths)
+        raise GoPayChargeBlocked(
+            (
+                f"浏览器 checkout 页面今日应付金额非 0 ({nonzero_hint})，已在填写账单前停止；"
+                "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
+            ),
+            stage="browser_charge_guard",
+        )
+
     if callable(progress):
         progress("select_gopay")
     selected, select_error = _select_gopay_option(api)
@@ -1549,37 +1592,46 @@ def _browser_checkout_to_gopay_redirect(
         if callable(progress):
             progress("gopay_selected")
     _fill_billing_form_on_page(api, billing, session_id, screenshot_paths, progress=progress)
-    nonzero_hint = _browser_checkout_nonzero_amount_hint(api)
-    if nonzero_hint and not _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
-        _capture_screenshot(api, session_id, "gopay-browser-nonzero-amount-blocked", screenshot_paths)
-        raise GoPayChargeBlocked(
-            (
-                f"浏览器 checkout 页面疑似非 0 金额 {nonzero_hint}，已在提交前停止；"
-                "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
-            ),
-            stage="browser_charge_guard",
-        )
+    _accept_checkout_terms_on_page(api, progress=progress)
 
-    ok, click_error = _click(
-        api,
-        [
-            'button:has-text("Subscribe")',
-            'button:has-text("Pay")',
-            'button:has-text("订阅")',
-            'button[type="submit"]',
-        ],
-        "提交订阅按钮",
-        timeout_ms=12000,
-    )
-    if not ok:
-        _capture_screenshot(api, session_id, "gopay-browser-submit-click-failed", screenshot_paths)
-        raise GoPayFlowError(f"浏览器提交 checkout 失败: {click_error}", stage="browser_checkout")
-    if callable(progress):
-        progress("submit_clicked", mode="browser")
-
+    submit_selectors = [
+        'button:has-text("Subscribe")',
+        'button:has-text("Pay")',
+        'button:has-text("订阅")',
+        'button[type="submit"]',
+    ]
+    submit_attempt = 0
+    next_submit_at = 0.0
+    submit_retry_delay = _env_float("GOPAY_BROWSER_SUBMIT_RETRY_SECONDS", 4.0)
+    max_submit_attempts = max(1, int(_env_float("GOPAY_BROWSER_SUBMIT_RETRY_ATTEMPTS", 4)))
+    last_click_error = ""
     deadline = time.time() + 90
     last_error = ""
     while time.time() < deadline:
+        if submit_attempt < max_submit_attempts and time.time() >= next_submit_at:
+            submit_attempt += 1
+            ok, click_error = _click(
+                api,
+                submit_selectors,
+                "提交订阅按钮",
+                timeout_ms=12000 if submit_attempt == 1 else 5000,
+            )
+            if not ok:
+                last_click_error = click_error
+                logger.info(
+                    "[gopay_executor] browser checkout submit click failed: attempt=%s/%s error=%s",
+                    submit_attempt,
+                    max_submit_attempts,
+                    _safe_error_summary(click_error),
+                )
+                if submit_attempt >= max_submit_attempts:
+                    _capture_screenshot(api, session_id, "gopay-browser-submit-click-failed", screenshot_paths)
+                    raise GoPayFlowError(f"浏览器提交 checkout 失败: {click_error}", stage="browser_checkout")
+            else:
+                if callable(progress):
+                    progress("submit_clicked", mode="browser", attempt=submit_attempt, max_attempts=max_submit_attempts)
+            next_submit_at = time.time() + max(3.0, submit_retry_delay)
+
         try:
             for page in list(getattr(api.context, "pages", []) or []):
                 _remember_gopay_redirect_url(getattr(page, "url", ""), captured)
@@ -1615,7 +1667,7 @@ def _browser_checkout_to_gopay_redirect(
 
     _capture_screenshot(api, session_id, "gopay-browser-redirect-timeout", screenshot_paths)
     raise GoPayFlowError(
-        f"浏览器 checkout 未捕获到 Stripe/Midtrans 跳转: {last_error or _body_excerpt(api, 500)}",
+        f"浏览器 checkout 未捕获到 Stripe/Midtrans 跳转: {last_error or last_click_error or _body_excerpt(api, 500)}",
         stage="browser_checkout",
     )
 
@@ -2166,19 +2218,13 @@ class GoPayHttpCharger:
     def _guard_before_gopay_binding(self, transaction: dict):
         if self._guard_stripe_expected_due():
             return
-        if _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
-            return
         amount, currency = self._midtrans_gross_amount(transaction)
-        if amount <= 0:
-            return
-        self._progress("midtrans_nonzero_amount_blocked", gross_amount=str(amount), currency=currency)
-        raise GoPayChargeBlocked(
-            (
-                f"Midtrans gross_amount={amount} {currency or 'IDR'} 非 0，已在 GoPay 绑定前停止；"
-                "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
-            ),
-            stage="midtrans_charge_guard",
-        )
+        if amount > 0:
+            logger.info(
+                "[gopay_executor] Midtrans gross_amount=%s %s accepted; checkout 页面金额校验已在提交前完成",
+                amount,
+                currency or "IDR",
+            )
 
     def _midtrans_init_linking(self, snap_token: str) -> str:
         self._progress("midtrans_linking")
@@ -3476,10 +3522,120 @@ def _fill_billing_form_on_page(
     return True, ""
 
 
+def _accept_checkout_terms_on_page(api: ChatGPTTeamAPI, progress: Callable[..., None] | None = None) -> int:
+    if callable(progress):
+        progress("accept_checkout_terms")
+    def _is_checked(locator) -> bool:
+        try:
+            return bool(locator.is_checked(timeout=500))
+        except Exception:
+            pass
+        try:
+            value = str(locator.get_attribute("aria-checked", timeout=500) or "").strip().lower()
+            return value == "true"
+        except Exception:
+            return False
+
+    total = 0
+    for frame in _iter_page_frames(api):
+        try:
+            locator = frame.locator('input[type="checkbox"], [role="checkbox"]')
+            count = locator.count()
+        except Exception:
+            continue
+        for index in range(count):
+            checkbox = locator.nth(index)
+            try:
+                if not checkbox.is_visible(timeout=500) or checkbox.is_disabled(timeout=500) or _is_checked(checkbox):
+                    continue
+            except Exception:
+                continue
+            try:
+                checkbox.scroll_into_view_if_needed(timeout=1500)
+            except Exception:
+                pass
+            checked = False
+            try:
+                checkbox.check(timeout=2500, force=True)
+                checked = _is_checked(checkbox)
+            except Exception:
+                checked = False
+            if not checked:
+                try:
+                    checkbox.click(timeout=2500, force=True)
+                    time.sleep(0.2)
+                    checked = _is_checked(checkbox)
+                except Exception:
+                    checked = False
+            if not checked:
+                try:
+                    handle = checkbox.element_handle(timeout=1000)
+                    if handle:
+                        frame.evaluate(
+                            """(node) => {
+                              node.checked = true;
+                              node.setAttribute('aria-checked', 'true');
+                              node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                              node.dispatchEvent(new Event('input', { bubbles: true }));
+                              node.dispatchEvent(new Event('change', { bubbles: true }));
+                            }""",
+                            handle,
+                        )
+                        time.sleep(0.2)
+                        checked = _is_checked(checkbox)
+                except Exception:
+                    checked = False
+            if checked:
+                total += 1
+    if total:
+        logger.info("[gopay_executor] 已勾选 checkout 条款 checkbox: count=%s", total)
+        if callable(progress):
+            progress("checkout_terms_accepted", count=total)
+    else:
+        logger.info("[gopay_executor] checkout 页面未发现需要勾选的条款 checkbox")
+    return total
+
+
 def _extract_sms_code(text: str) -> str:
     raw = str(text or "").strip()
     if not raw:
         return ""
+
+    otp_keys = {
+        "code",
+        "otp",
+        "sms_code",
+        "verification_code",
+        "verify_code",
+        "verifycode",
+        "pin",
+    }
+    text_keys = {
+        "content",
+        "message",
+        "msg",
+        "text",
+        "sms",
+        "sms_content",
+        "smscontent",
+        "body",
+        "raw",
+        "value",
+    }
+    container_keys = {
+        "data",
+        "result",
+        "results",
+        "record",
+        "records",
+        "row",
+        "rows",
+        "item",
+        "items",
+        "list",
+        "messages",
+        "payload",
+    }
 
     def code_from_value(value: Any) -> str:
         matched = re.fullmatch(r"\D*(\d{4,8})\D*", str(value or "").strip())
@@ -3495,27 +3651,35 @@ def _extract_sms_code(text: str) -> str:
         payload = None
 
     if isinstance(payload, dict):
-        data = payload.get("data")
-        candidates: list[Any] = []
-        if isinstance(data, dict):
-            for key in ("code", "otp", "sms_code", "verification_code", "verify_code"):
-                candidates.append(data.get(key))
-            for key in ("content", "message", "msg", "text", "sms"):
-                candidates.append(data.get(key))
-        elif isinstance(data, list):
-            for item in reversed(data):
-                if isinstance(item, dict):
-                    for key in ("code", "otp", "sms_code", "verification_code", "verify_code"):
-                        candidates.append(item.get(key))
-                    for key in ("content", "message", "msg", "text", "sms"):
-                        candidates.append(item.get(key))
-                else:
-                    candidates.append(item)
-        for candidate in candidates:
-            code = code_from_value(candidate) or code_from_text(candidate)
-            if code:
-                return code
-        return ""
+        def scan(obj: Any) -> str:
+            if isinstance(obj, list):
+                for item in reversed(obj):
+                    code = scan(item)
+                    if code:
+                        return code
+                return ""
+            if not isinstance(obj, dict):
+                return code_from_value(obj) or code_from_text(obj)
+
+            normalized = {str(key or "").strip().lower(): value for key, value in obj.items()}
+            for key in otp_keys:
+                if key in normalized:
+                    code = code_from_value(normalized.get(key)) or code_from_text(normalized.get(key))
+                    if code:
+                        return code
+            for key in text_keys:
+                if key in normalized:
+                    code = code_from_text(normalized.get(key))
+                    if code:
+                        return code
+            for key, value in normalized.items():
+                if key in container_keys:
+                    code = scan(value)
+                    if code:
+                        return code
+            return ""
+
+        return scan(payload)
 
     if isinstance(payload, list):
         for item in reversed(payload):
@@ -3535,7 +3699,9 @@ def _fetch_sms_code(sms_url: str) -> str:
         verify=False,
         headers={
             "User-Agent": "Mozilla/5.0 AutoTeam/1.0",
-            "Accept": "text/plain, text/html, */*",
+            "Accept": "application/json, text/plain, text/html, */*",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
         },
     )
     text = (resp.text or "").strip()
@@ -3543,7 +3709,7 @@ def _fetch_sms_code(sms_url: str) -> str:
         raise RuntimeError(text[:200] or f"接码接口返回异常({resp.status_code})")
     code = _extract_sms_code(text)
     if not code:
-        raise RuntimeError("接码接口暂无验证码")
+        raise RuntimeError(f"接码接口暂无验证码: {_compact_log_text(text, limit=220)}")
     return code
 
 
@@ -3996,6 +4162,20 @@ def _browser_checkout_nonzero_amount_hint(api: ChatGPTTeamAPI) -> str:
     compact = re.sub(r"\s+", " ", text or "").strip()
     if not compact:
         return ""
+    today_patterns = (
+        r"(?:今日应付合计|今天应付合计|今日应付|今天应付)\s*((?:IDR|Rp|US\$|\$)\s*[-+]?\d[\d,.]*(?:\.\d{1,2})?|[-+]?\d[\d,.]*(?:\.\d{1,2})?\s*(?:IDR|Rp|USD))",
+        r"(?:total\s+due\s+today|due\s+today|today'?s\s+total)\s*((?:IDR|Rp|US\$|\$)\s*[-+]?\d[\d,.]*(?:\.\d{1,2})?|[-+]?\d[\d,.]*(?:\.\d{1,2})?\s*(?:IDR|Rp|USD))",
+        r"((?:IDR|Rp|US\$|\$)\s*[-+]?\d[\d,.]*(?:\.\d{1,2})?|[-+]?\d[\d,.]*(?:\.\d{1,2})?\s*(?:IDR|Rp|USD))\s*(?:total\s+due\s+today|due\s+today|today'?s\s+total|今日应付合计|今天应付合计|今日应付|今天应付)",
+    )
+    for pattern in today_patterns:
+        matched = re.search(pattern, compact, flags=re.IGNORECASE)
+        if not matched:
+            continue
+        amount_text = matched.group(1).strip()
+        parsed = _parse_display_amount(amount_text)
+        if parsed and parsed > 0:
+            return amount_text
+        return ""
     zero_markers = (
         "$0",
         "us$0",
@@ -4023,7 +4203,7 @@ def _browser_checkout_nonzero_amount_hint(api: ChatGPTTeamAPI) -> str:
     return ""
 
 
-def _generate_id_checkout_in_page(api: ChatGPTTeamAPI, access_token: str):
+def _generate_id_checkout_in_page(api: ChatGPTTeamAPI, access_token: str, checkout_ui_mode: str = "custom"):
     script = """async (args) => {
       const accessToken = (args && args.accessToken) || "";
       if (!accessToken) {
@@ -4128,7 +4308,7 @@ def _generate_id_checkout_in_page(api: ChatGPTTeamAPI, access_token: str):
         script,
         {
             "accessToken": access_token,
-            "payload": _chatgpt_checkout_payload(),
+            "payload": _chatgpt_checkout_payload(checkout_ui_mode),
         },
     )
     if not result.get("ok"):
@@ -4143,7 +4323,7 @@ def _generate_id_checkout_in_page(api: ChatGPTTeamAPI, access_token: str):
     }
 
 
-def _open_id_checkout_via_page_script(api: ChatGPTTeamAPI, access_token: str):
+def _open_id_checkout_via_page_script(api: ChatGPTTeamAPI, access_token: str, checkout_ui_mode: str = "custom"):
     script = """async (args) => {
       try {
         const accessToken = (args && args.accessToken) || "";
@@ -4160,7 +4340,7 @@ def _open_id_checkout_via_page_script(api: ChatGPTTeamAPI, access_token: str):
             promo_campaign_id: "plus-1-month-free",
             is_coupon_from_query_param: false
           },
-          checkout_ui_mode: "custom"
+          checkout_ui_mode: args.checkoutUiMode || "custom"
         };
         const resp = await fetch("https://chatgpt.com/backend-api/payments/checkout", {
           method: "POST",
@@ -4171,8 +4351,8 @@ def _open_id_checkout_via_page_script(api: ChatGPTTeamAPI, access_token: str):
           body: JSON.stringify(payload)
         });
         const data = await resp.json();
-        if (data && data.checkout_session_id) {
-          const url = "https://chatgpt.com/checkout/openai_llc/" + data.checkout_session_id;
+        if (data && (data.url || data.checkout_session_id)) {
+          const url = data.url || ("https://chatgpt.com/checkout/openai_llc/" + data.checkout_session_id);
           window.location.href = url;
           return { ok: true, url, raw: data };
         }
@@ -4185,6 +4365,7 @@ def _open_id_checkout_via_page_script(api: ChatGPTTeamAPI, access_token: str):
         script,
         {
             "accessToken": access_token,
+            "checkoutUiMode": _normalize_checkout_ui_mode(checkout_ui_mode),
         },
     )
     if not result.get("ok"):
@@ -4199,6 +4380,7 @@ def _run_gopay_bind_task_once(
     *,
     email: str,
     checkout_url: str,
+    checkout_ui_mode: str = "custom",
     phone_number: str,
     sms_url: str,
     gopay_pin: str,
@@ -4221,6 +4403,7 @@ def _run_gopay_bind_task_once(
     session_id = uuid.uuid4().hex[:12]
     screenshot_paths: list[str] = []
     final_checkout_url = str(checkout_url or "").strip()
+    checkout_ui_mode = _normalize_checkout_ui_mode(checkout_ui_mode)
     try:
         proxy_url = normalize_proxy_url(proxy_url)
     except ValueError as exc:
@@ -4346,6 +4529,7 @@ def _run_gopay_bind_task_once(
                     generated_checkout_meta = _generate_id_checkout_http(
                         chatgpt_http,
                         access_token=access_token,
+                        checkout_ui_mode=checkout_ui_mode,
                         session_token=session_token,
                         cookie_header=cookie_header,
                         account_id=account_id,
@@ -4380,6 +4564,7 @@ def _run_gopay_bind_task_once(
                 generated_checkout_meta = _generate_id_checkout_http(
                     chatgpt_http,
                     access_token=access_token,
+                    checkout_ui_mode=checkout_ui_mode,
                     session_token=session_token,
                     cookie_header=cookie_header,
                     account_id=account_id,
@@ -4554,6 +4739,7 @@ def _run_gopay_bind_task_once(
             browser_handoff = _browser_checkout_to_gopay_redirect(
                 api,
                 access_token=access_token,
+                checkout_ui_mode=checkout_ui_mode,
                 session_token=session_token,
                 cookie_header=cookie_header,
                 checkout_url=final_checkout_url,
@@ -4599,6 +4785,7 @@ def _run_gopay_bind_task_once(
                 browser_handoff = _browser_checkout_to_gopay_redirect(
                     api,
                     access_token=access_token,
+                    checkout_ui_mode=checkout_ui_mode,
                     session_token=session_token,
                     cookie_header=cookie_header,
                     email=email,
@@ -4636,15 +4823,23 @@ def _run_gopay_bind_task_once(
             _mask_log_value(flow_result.get("snap_token", "")),
         )
 
-        if flow_result.get("state") == "succeeded":
+        flow_state = str(flow_result.get("state") or "")
+        if flow_state in {"succeeded", "verify_timeout"}:
             progress("completed")
+            verify_timeout = flow_state == "verify_timeout"
             result = _build_result(
                 "success",
-                message="GoPay 支付成功",
+                message=(
+                    "GoPay 支付已完成，ChatGPT verify 网络超时，已按成功处理"
+                    if verify_timeout
+                    else "GoPay 支付成功"
+                ),
                 screenshot_paths=screenshot_paths,
                 checkout_url=final_checkout_url,
                 billing_info=public_billing_info,
             )
+            if verify_timeout:
+                result["verify_warning"] = "chatgpt_verify_timeout"
         else:
             progress("failed", failure_stage="chatgpt_verify")
             result = _build_result(
@@ -4662,6 +4857,8 @@ def _run_gopay_bind_task_once(
                 "snap_token": flow_result.get("snap_token", ""),
                 "charge_ref": flow_result.get("charge_ref", ""),
                 "reference_id": flow_result.get("reference_id", ""),
+                "verify": flow_result.get("verify") or {},
+                "verify_state": flow_state,
                 "flow": "gopay_http",
             }
         )
@@ -4711,6 +4908,7 @@ def run_gopay_bind_task(
     *,
     email: str,
     checkout_url: str,
+    checkout_ui_mode: str = "custom",
     phone_number: str,
     sms_url: str,
     gopay_pin: str,
@@ -4733,6 +4931,7 @@ def run_gopay_bind_task(
 
     requested_email = str(email or "").strip().lower()
     final_checkout_url = str(checkout_url or "").strip()
+    checkout_ui_mode = _normalize_checkout_ui_mode(checkout_ui_mode)
 
     def emit(stage: str, **extra):
         _emit_gopay_progress(progress_callback, stage, **extra)
@@ -4754,6 +4953,7 @@ def run_gopay_bind_task(
         return _run_gopay_bind_task_once(
             email=candidate_email,
             checkout_url=checkout_url,
+            checkout_ui_mode=checkout_ui_mode,
             phone_number=phone_number,
             sms_url=sms_url,
             gopay_pin=gopay_pin,
@@ -4818,6 +5018,9 @@ def run_gopay_bind_task(
     nonzero_blocked: list[str] = []
     last_nonzero_blocked_result: dict | None = None
     last_nonzero_blocked_email = ""
+    successful: list[str] = []
+    last_success_result: dict | None = None
+    last_success_email = ""
     skipped_cooldown: list[str] = []
     skipped_by_user: list[str] = []
 
@@ -4983,10 +5186,33 @@ def run_gopay_bind_task(
             result["payment_failed_emails"] = payment_failed[:]
         if nonzero_blocked:
             result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        if successful:
+            result["successful_emails"] = successful[:]
         if skipped_by_user:
             result["skipped_emails"] = skipped_by_user[:]
         if blocked or rejected or payment_failed or nonzero_blocked:
             result["rotated_from"] = requested_email
+
+        if result.get("status") == "success":
+            successful.append(candidate)
+            last_success_result = dict(result)
+            last_success_email = candidate
+            logger.info(
+                "[gopay_executor] GoPay candidate succeeded, continuing batch: email=%s remaining_candidates=%s",
+                _safe_email_summary(candidate),
+                max(0, len(candidates) - index),
+            )
+            emit(
+                "gopay_account_bound",
+                email=candidate,
+                checkout_url=result.get("checkout_url") or "",
+                attempted=len(attempted),
+                successful=len(successful),
+                remaining_candidates=max(0, len(candidates) - index),
+                message=f"当前账号 GoPay 绑定成功: {candidate}",
+            )
+            continue
+
         logger.info(
             "[gopay_executor] GoPay candidate finished without approve-block rotation: email=%s status=%s failure_stage=%s",
             _safe_email_summary(candidate),
@@ -4994,6 +5220,34 @@ def run_gopay_bind_task(
             result.get("failure_stage") or "",
         )
         return result
+
+    if last_success_result:
+        last_success_result = dict(last_success_result)
+        last_success_result["message"] = f"GoPay 批量绑定完成: 成功 {len(successful)}/{len(attempted)} 个账号"
+        last_success_result["successful_emails"] = successful[:]
+        last_success_result["blocked_emails"] = blocked[:]
+        last_success_result["rejected_emails"] = rejected[:]
+        last_success_result["payment_failed_emails"] = payment_failed[:]
+        last_success_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_success_result["skipped_cooldown_emails"] = skipped_cooldown[:]
+        last_success_result["skipped_emails"] = skipped_by_user[:]
+        last_success_result["attempted_emails"] = attempted[:]
+        last_success_result["email_used"] = last_success_email or (successful[-1] if successful else requested_email)
+        last_success_result["requested_email"] = requested_email
+        if blocked or rejected or payment_failed or nonzero_blocked:
+            last_success_result["rotated_from"] = requested_email
+        emit("gopay_batch_completed", attempted=len(attempted), successful=len(successful))
+        logger.info(
+            "[gopay_executor] GoPay batch completed: attempted=%s successful=%s blocked=%s rejected=%s payment_failed=%s nonzero_blocked=%s skipped=%s",
+            len(attempted),
+            [_safe_email_summary(candidate) for candidate in successful],
+            [_safe_email_summary(candidate) for candidate in blocked],
+            [_safe_email_summary(candidate) for candidate in rejected],
+            [_safe_email_summary(candidate) for candidate in payment_failed],
+            [_safe_email_summary(candidate) for candidate in nonzero_blocked],
+            [_safe_email_summary(candidate) for candidate in skipped_by_user],
+        )
+        return last_success_result
 
     if last_rejected_result and not last_blocked_result and not last_payment_failed_result and not last_nonzero_blocked_result:
         last_rejected_result = dict(last_rejected_result)

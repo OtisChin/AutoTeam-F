@@ -5,39 +5,53 @@
       支持生成官方优惠链接，visa卡池管理，以及一键绑卡服务。
     </p>
 
-    <div class="flex flex-wrap gap-2 mb-6">
-      <button
-        @click="activeTab = 'bind'"
-        class="px-4 py-2 rounded-lg text-sm border transition"
-        :class="activeTab === 'bind'
-          ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-          : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-        自动绑卡
-      </button>
-      <button
-        @click="activeTab = 'generate'"
-        class="px-4 py-2 rounded-lg text-sm border transition"
-        :class="activeTab === 'generate'
-          ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-          : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-        生成支付链接
-      </button>
-      <button
-        @click="activeTab = 'pool'"
-        class="px-4 py-2 rounded-lg text-sm border transition"
-        :class="activeTab === 'pool'
-          ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-          : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-        卡池
-      </button>
-      <button
-        @click="activeTab = 'gopay'"
-        class="px-4 py-2 rounded-lg text-sm border transition"
-        :class="activeTab === 'gopay'
-          ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-          : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-        GoPay
-      </button>
+    <div class="relative mb-6">
+      <div class="flex flex-wrap gap-2">
+        <button
+          @click="activeTab = 'bind'"
+          class="px-4 py-2 rounded-lg text-sm border transition"
+          :class="activeTab === 'bind'
+            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+          自动绑卡
+        </button>
+        <button
+          @click="activeTab = 'generate'"
+          class="px-4 py-2 rounded-lg text-sm border transition"
+          :class="activeTab === 'generate'
+            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+          生成支付链接
+        </button>
+        <button
+          @click="activeTab = 'pool'"
+          class="px-4 py-2 rounded-lg text-sm border transition"
+          :class="activeTab === 'pool'
+            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+          卡池
+        </button>
+        <button
+          @click="activeTab = 'gopay'"
+          class="px-4 py-2 rounded-lg text-sm border transition"
+          :class="activeTab === 'gopay'
+            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+          GoPay
+        </button>
+      </div>
+      <div
+        v-if="activeTab === 'gopay'"
+        class="mt-4 grid grid-cols-2 gap-3 xl:absolute xl:right-0 xl:-top-14 xl:mt-0 xl:w-[960px] xl:grid-cols-4">
+        <div
+          v-for="card in gopayTopCards"
+          :key="card.label"
+          class="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 min-w-0">
+          <div class="text-xs text-gray-400">{{ card.label }}</div>
+          <div class="mt-2 text-xl font-bold truncate" :class="card.color">{{ card.value }}</div>
+          <div v-if="card.meta" class="mt-1 text-[11px] text-gray-500 truncate">{{ card.meta }}</div>
+        </div>
+      </div>
     </div>
 
     <div v-if="activeTab === 'generate'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
@@ -147,6 +161,7 @@
               <option value="AU">澳大利亚 (AU)</option>
               <option value="JP">日本 (JP)</option>
               <option value="SG">新加坡 (SG)</option>
+              <option value="ID">印度尼西亚 (ID)</option>
               <option value="HK">香港 (HK)</option>
             </select>
           </div>
@@ -201,14 +216,14 @@
           </template>
 
           <div>
-            <label class="block text-sm text-gray-400 mb-1">支付模式</label>
+            <label class="block text-sm text-gray-400 mb-1">链接类型</label>
             <select
               v-model="bindForm.checkoutMode"
               :disabled="generating"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             >
-              <option v-if="bindForm.planType !== 'team'" value="custom">代付短链接（站内支付，推荐）</option>
-              <option value="hosted">托管模式（Stripe 外部页面）</option>
+              <option v-if="bindForm.planType !== 'team'" value="custom">短链（chatgpt.com/checkout）</option>
+              <option value="hosted">长链（pay.openai.com/c/pay）</option>
             </select>
           </div>
 
@@ -216,7 +231,7 @@
             <div>套餐：<span class="text-gray-200">{{ bindForm.planType === 'plus' ? 'ChatGPT Plus' : 'ChatGPT Team' }}</span></div>
             <div>优惠：<span class="text-gray-200">{{ selectedPromoName }}</span></div>
             <div>国家：<span class="text-gray-200">{{ bindForm.country }}</span> / 货币：<span class="text-gray-200">{{ bindForm.currency }}</span></div>
-            <div>支付模式：<span class="text-gray-200">{{ bindForm.checkoutMode === 'custom' ? '代付短链接（站内支付，推荐）' : '托管模式（Stripe 外部页面）' }}</span></div>
+            <div>链接类型：<span class="text-gray-200">{{ bindForm.checkoutMode === 'custom' ? '短链（chatgpt.com/checkout）' : '长链（pay.openai.com/c/pay）' }}</span></div>
             <template v-if="bindForm.planType === 'team'">
               <div>工作区：<span class="text-gray-200">{{ bindForm.teamWorkspaceName || '-' }}</span></div>
               <div>席位 / 周期：<span class="text-gray-200">{{ bindForm.teamSeatQuantity || 2 }} / {{ bindForm.teamPriceInterval }}</span></div>
@@ -416,6 +431,7 @@
                 <option value="AU">澳大利亚 (AU)</option>
                 <option value="JP">日本 (JP)</option>
                 <option value="SG">新加坡 (SG)</option>
+                <option value="ID">印度尼西亚 (ID)</option>
                 <option value="HK">香港 (HK)</option>
               </select>
             </div>
@@ -470,14 +486,14 @@
             </template>
 
             <div>
-              <label class="block text-sm text-gray-400 mb-1">支付模式</label>
+              <label class="block text-sm text-gray-400 mb-1">链接类型</label>
               <select
                 v-model="bindForm.checkoutMode"
                 :disabled="bindSubmitting || bindTaskRunning"
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
               >
-                <option v-if="bindForm.planType !== 'team'" value="custom">代付短链接（站内支付，推荐）</option>
-                <option value="hosted">托管模式（Stripe 外部页面）</option>
+                <option v-if="bindForm.planType !== 'team'" value="custom">短链（chatgpt.com/checkout）</option>
+                <option value="hosted">长链（pay.openai.com/c/pay）</option>
               </select>
             </div>
           </div>
@@ -579,10 +595,12 @@
 
     <div v-else-if="activeTab === 'gopay'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
       <div class="mb-4">
-        <h3 class="text-lg font-semibold text-white">GoPay</h3>
-        <p class="text-sm text-gray-400 mt-1">
-          走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。
-        </p>
+        <div>
+          <h3 class="text-lg font-semibold text-white">GoPay</h3>
+          <p class="text-sm text-gray-400 mt-1">
+            走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。
+          </p>
+        </div>
       </div>
 
       <div class="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-4">
@@ -670,9 +688,24 @@
               v-model.trim="gopayForm.checkoutUrl"
               type="text"
               :disabled="gopaySubmitting || gopayTaskRunning"
-              placeholder="可留空；也可粘贴 ChatGPT checkout、pm-redirects 或 Midtrans snap 链接"
+              placeholder="可留空；也可粘贴 ChatGPT checkout、pay.openai.com/c/pay、pm-redirects 或 Midtrans snap 链接"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
+          </div>
+
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">自动生成链接类型</label>
+            <select
+              v-model="gopayForm.checkoutUiMode"
+              :disabled="gopaySubmitting || gopayTaskRunning || Boolean(gopayForm.checkoutUrl)"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            >
+              <option value="custom">短链（chatgpt.com/checkout）</option>
+              <option value="hosted">长链（pay.openai.com/c/pay）</option>
+            </select>
+            <div class="mt-1 text-xs text-gray-500">
+              手动粘贴 checkout 链接时不使用此设置。
+            </div>
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)] gap-3">
@@ -743,17 +776,6 @@
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
-          </div>
-
-          <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
-            <div>账号：<span class="text-gray-200">{{ gopayEffectiveEmail || '-' }}</span></div>
-            <div>批量：<span class="text-gray-200">{{ gopayBatchActive ? `${gopaySelectedBatchEmails.length} 个账号` : '关闭' }}</span></div>
-            <div>国家区号：<span class="text-gray-200">{{ gopayForm.countryCode || '62' }}</span></div>
-            <div>手机号：<span class="text-gray-200">{{ gopayForm.phoneNumber || '-' }}</span></div>
-            <div>OTP 接口：<span class="text-gray-200 break-all">{{ gopayForm.smsUrl || '-' }}</span></div>
-            <div>链接：<span class="text-gray-200 break-all">{{ gopayForm.checkoutUrl || '留空自动生成' }}</span></div>
-            <div>代理：<span class="text-gray-200">{{ gopayForm.proxyLabel || '-' }}</span></div>
-            <div>账单地址：<span class="text-gray-200">运行任务时自动生成并填写</span></div>
           </div>
 
           <button
@@ -945,6 +967,7 @@ const gopayForm = ref({
   batchMode: false,
   accountEmails: [],
   checkoutUrl: '',
+  checkoutUiMode: 'hosted',
   countryCode: '62',
   phoneNumber: '81997420107',
   smsUrl: '',
@@ -1004,6 +1027,7 @@ const countryCurrencyMap = {
   AU: 'AUD',
   JP: 'JPY',
   SG: 'SGD',
+  ID: 'IDR',
   HK: 'HKD',
 }
 
@@ -1233,6 +1257,8 @@ const gopayStageLabelMap = {
   billing_field_verified: '校验账单字段',
   gopay_try_account: '尝试当前 auth_session',
   gopay_rotate_account: '切换 auth_session 重试',
+  gopay_account_bound: '当前账号绑定成功',
+  gopay_batch_completed: '批量绑定完成',
   gopay_account_skipped_cooldown: '跳过冷却中的 auth_session',
   gopay_skip_current_requested: '已请求跳过当前账号',
   gopay_account_skipped_by_user: '已跳过当前账号',
@@ -1315,6 +1341,136 @@ const gopayStageLabelMap = {
   failed: '流程失败',
 }
 
+const gopayBoardTaskId = computed(() => {
+  const id = String(gopayTask.value?.task_id || '')
+  return id ? id.slice(0, 12) : ''
+})
+
+const gopayBoardTitle = computed(() => {
+  if (!gopayTask.value) return '暂无任务'
+  const params = gopayTask.value.params || {}
+  const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
+  const count = accounts.length || 1
+  return count > 1 ? `批量 GoPay · ${count} 个账号` : '单账号 GoPay'
+})
+
+const gopayBoardStatusLabel = computed(() => {
+  if (gopayTask.value?.status === 'running') return '绑定中'
+  return bindStatusText(gopayTask.value)
+})
+
+const gopayTopCards = computed(() => [
+  {
+    label: '当前账号',
+    value: gopayBoardEmail.value,
+    color: 'text-cyan-300 font-mono text-base',
+    meta: '',
+  },
+  {
+    label: '任务进度',
+    value: gopayBoardProgress.value,
+    color: 'text-blue-400',
+    meta: '',
+  },
+  {
+    label: '成功账号数',
+    value: String(gopayBoardProgressStats.value.successful || 0),
+    color: 'text-emerald-400',
+    meta: '',
+  },
+  {
+    label: '失败账号数',
+    value: String(gopayBoardFailureCount.value),
+    color: 'text-red-400',
+    meta: '',
+  },
+])
+
+const gopayBoardFailureCount = computed(() => {
+  const result = gopayTask.value?.result || {}
+  const rejected = Array.isArray(result.rejected_emails) ? result.rejected_emails.length : 0
+  const paymentFailed = Array.isArray(result.payment_failed_emails) ? result.payment_failed_emails.length : 0
+  const nonzero = Array.isArray(result.nonzero_blocked_emails) ? result.nonzero_blocked_emails.length : 0
+  const blocked = Array.isArray(result.blocked_emails) ? result.blocked_emails.length : 0
+  const skipped = Array.isArray(result.skipped_emails) ? result.skipped_emails.length : 0
+  return rejected + paymentFailed + nonzero + blocked + skipped
+})
+
+const gopayBoardEmail = computed(() => {
+  const progress = gopayTask.value?.progress || {}
+  const result = gopayTask.value?.result || {}
+  const params = gopayTask.value?.params || {}
+  return progress.email || result.email || result.email_used || params.email || gopayForm.value.email || '-'
+})
+
+const gopayBoardStage = computed(() => {
+  const stage = gopayTask.value?.progress?.stage || ''
+  if (stage) return gopayStageLabelMap[stage] || stage
+  if (gopayTask.value?.status === 'completed') return '任务已完成'
+  if (gopayTask.value?.status === 'failed') return '任务失败'
+  if (gopayTask.value?.status === 'cancelled') return '任务已取消'
+  return '待提交'
+})
+
+const gopayBoardProgressStats = computed(() => {
+  const task = gopayTask.value || {}
+  const progress = task.progress || {}
+  const result = task.result || {}
+  const params = task.params || {}
+  const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
+  const attempted = Array.isArray(result.attempted_emails)
+    ? result.attempted_emails.length
+    : Number(progress.attempted || progress.attempt || 0)
+  const successful = Array.isArray(result.successful_emails)
+    ? result.successful_emails.length
+    : Number(progress.successful || 0)
+  const total = Number(progress.total || accounts.length || (task.task_id ? 1 : 0))
+  const remaining = Number.isFinite(Number(progress.remaining_candidates))
+    ? Number(progress.remaining_candidates)
+    : Math.max(0, total - Math.max(attempted, successful))
+  return {
+    total,
+    attempted: Math.max(attempted, successful),
+    successful,
+    remaining,
+  }
+})
+
+const gopayBoardProgress = computed(() => {
+  const stats = gopayBoardProgressStats.value
+  if (!stats.total) return '0/0'
+  const done = Math.max(stats.attempted, stats.successful)
+  return `${done}/${stats.total}`
+})
+
+const gopayBoardProgressPercent = computed(() => {
+  const stats = gopayBoardProgressStats.value
+  if (!stats.total) return 0
+  const done = Math.max(stats.attempted, stats.successful)
+  if (gopayTask.value?.status === 'completed') return 100
+  return Math.min(100, Math.max(8, Math.round((done / stats.total) * 100)))
+})
+
+function taskStatusBadgeClass(status) {
+  return {
+    pending: 'bg-gray-500/10 text-gray-300',
+    running: 'bg-blue-500/10 text-blue-300',
+    completed: 'bg-emerald-500/10 text-emerald-300',
+    failed: 'bg-red-500/10 text-red-300',
+    cancelled: 'bg-amber-500/10 text-amber-300',
+  }[status] || 'bg-gray-500/10 text-gray-400'
+}
+
+function taskStatusDotClass(status) {
+  return {
+    pending: 'bg-gray-400',
+    running: 'bg-blue-400 animate-pulse',
+    completed: 'bg-emerald-400',
+    failed: 'bg-red-400',
+    cancelled: 'bg-amber-400',
+  }[status] || 'bg-gray-500'
+}
+
 function setMessage(text, ok = true) {
   message.value = text
   messageClass.value = ok
@@ -1382,6 +1538,7 @@ function getRememberedGoPayForm() {
     smsUrl: String(gopayForm.value.smsUrl || '').trim(),
     proxyLabel: String(gopayForm.value.proxyLabel || '').trim(),
     proxyUrl: String(gopayForm.value.proxyUrl || '').trim(),
+    checkoutUiMode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
     deleteRejectedAccounts: Boolean(gopayForm.value.deleteRejectedAccounts),
   }
 }
@@ -1402,6 +1559,7 @@ function loadGoPayFormState() {
       smsUrl: String(saved.smsUrl || '').trim(),
       proxyLabel: String(saved.proxyLabel || '').trim(),
       proxyUrl: String(saved.proxyUrl || '').trim(),
+      checkoutUiMode: saved.checkoutUiMode === 'custom' ? 'custom' : 'hosted',
       deleteRejectedAccounts: Boolean(saved.deleteRejectedAccounts),
     }
   } catch (e) {
@@ -1983,6 +2141,7 @@ async function startGoPayBind() {
       email: gopayEffectiveEmail.value,
       account_emails: gopayBatchActive.value ? gopaySelectedBatchEmails.value : [],
       checkout_url: gopayForm.value.checkoutUrl || '',
+      checkout_ui_mode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
       country_code: gopayForm.value.countryCode || '',
       phone_number: gopayForm.value.phoneNumber,
       sms_url: gopayForm.value.smsUrl,

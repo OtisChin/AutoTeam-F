@@ -79,8 +79,16 @@
               {{ option.label }} ({{ option.count }})
             </option>
           </select>
+          <select
+            v-model="credentialExportFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部导出状态</option>
+            <option v-for="option in credentialExportOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -112,6 +120,7 @@
               <th class="px-4 py-3 font-medium">邮箱</th>
               <th class="px-4 py-3 font-medium">账号类型</th>
               <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium">账密导出</th>
               <th class="px-4 py-3 font-medium text-right">5h 剩余</th>
               <th class="px-4 py-3 font-medium text-right">周 剩余</th>
               <th class="px-4 py-3 font-medium">5h 重置</th>
@@ -121,7 +130,7 @@
           </thead>
           <tbody>
             <tr v-if="!filteredAccounts.length">
-              <td class="px-4 py-8 text-center text-gray-500" colspan="10">没有匹配的账号</td>
+              <td class="px-4 py-8 text-center text-gray-500" colspan="11">没有匹配的账号</td>
             </tr>
             <tr v-for="(acc, i) in filteredAccounts" :key="acc.email"
               class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
@@ -147,6 +156,12 @@
                   :class="statusClass(acc.status)">
                   <span class="w-1.5 h-1.5 rounded-full" :class="dotClass(acc.status)"></span>
                   {{ statusLabel(acc.status) }}
+                </span>
+              </td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="credentialExportClass(acc)">
+                  {{ credentialExportLabel(acc) }}
                 </span>
               </td>
               <td class="px-4 py-3 text-right font-mono" :class="pctColor(quota(acc, 'primary'))">
@@ -422,6 +437,7 @@ const messageClass = ref('')
 const emailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
+const credentialExportFilter = ref('')
 const accountTypeEditAccount = ref(null)
 const accountTypeEditValue = ref('')
 const accountTypeSaving = ref(false)
@@ -503,13 +519,16 @@ const filteredAccounts = computed(() => {
   const emailNeedle = emailFilter.value.trim().toLowerCase()
   const statusNeedle = statusFilter.value
   const typeNeedle = accountTypeFilter.value
+  const exportNeedle = credentialExportFilter.value
   return allAccounts.value.filter(acc => {
     const email = String(acc?.email || '').toLowerCase()
     const status = String(acc?.status || '')
     const accountType = String(acc?.account_type || 'free')
+    const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
     if (emailNeedle && !email.includes(emailNeedle)) return false
     if (statusNeedle && status !== statusNeedle) return false
     if (typeNeedle && accountType !== typeNeedle) return false
+    if (exportNeedle && exportStatus !== exportNeedle) return false
     return true
   })
 })
@@ -533,6 +552,18 @@ const accountTypeOptions = computed(() => {
   return Array.from(counts.entries())
     .sort((a, b) => accountTypeLabel(a[0]).localeCompare(accountTypeLabel(b[0]), 'zh-Hans-CN'))
     .map(([value, count]) => ({ value, label: accountTypeLabel(value), count }))
+})
+const credentialExportOptions = computed(() => {
+  let exported = 0
+  let unexported = 0
+  for (const acc of allAccounts.value) {
+    if (acc?.credentials_exported) exported += 1
+    else unexported += 1
+  }
+  return [
+    { value: 'unexported', label: '未导出', count: unexported },
+    { value: 'exported', label: '已导出', count: exported },
+  ]
 })
 const selectableEmails = computed(() =>
   filteredAccounts.value.filter(a => !a.is_main_account).map(a => a.email)
@@ -586,6 +617,7 @@ function clearFilters() {
   emailFilter.value = ''
   statusFilter.value = ''
   accountTypeFilter.value = ''
+  credentialExportFilter.value = ''
 }
 
 function openAccountTypeEditor(acc) {
@@ -687,6 +719,16 @@ function accountTypeLabel(type) {
   }[type] || type || 'Free'
 }
 
+function credentialExportLabel(acc) {
+  return acc?.credentials_exported ? '已导出' : '未导出'
+}
+
+function credentialExportClass(acc) {
+  return acc?.credentials_exported
+    ? 'bg-emerald-500/10 text-emerald-400'
+    : 'bg-gray-500/10 text-gray-400'
+}
+
 function quota(acc, type) {
   const qi = props.status?.quota_cache?.[acc.email] || acc.last_quota
   if (!qi) return null
@@ -769,6 +811,7 @@ function exportAccounts() {
       email: emailFilter.value || '',
       status: statusFilter.value || '',
       account_type: accountTypeFilter.value || '',
+      credentials_exported: credentialExportFilter.value || '',
       selected_only: selectedEmails.value.length > 0,
     },
     accounts: rows.map(acc => ({
@@ -787,6 +830,8 @@ function exportAccounts() {
       last_bind_task_id: acc.last_bind_task_id || '',
       last_bind_message: acc.last_bind_message || '',
       last_bind_failure_stage: acc.last_bind_failure_stage || '',
+      credentials_exported: !!acc.credentials_exported,
+      credentials_exported_at: acc.credentials_exported_at || null,
       is_main_account: !!acc.is_main_account,
     })),
   }
@@ -822,6 +867,7 @@ async function downloadCredentials() {
     const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无账密记录账号` : ''
     message.value = `已导出 ${result.count || 0} 条账密${missing}`
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    emit('refresh')
   } catch (e) {
     message.value = e.message
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'

@@ -511,6 +511,7 @@ class GoPayBindTaskParams(BaseModel):
     billing_address1: str = ""
     billing_address2: str = ""
     checkout_url: str = ""
+    checkout_ui_mode: str = "custom"
     proxy_url: str | None = None
     proxy_label: str = ""
     proxy_bypass: str | None = None
@@ -660,6 +661,8 @@ def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     sanitized["is_main_account"] = _is_main_account_email(acc.get("email"))
     sanitized["status"] = _display_account_status(acc, quota_snapshot)
     sanitized["account_type"] = _display_account_type(acc)
+    sanitized["credentials_exported"] = bool(acc.get("credentials_exported"))
+    sanitized["credentials_exported_at"] = acc.get("credentials_exported_at")
     try:
         from autoteam.auth_session_store import get_auth_session_file
 
@@ -1690,7 +1693,7 @@ def update_account_type(email: str, params: AccountTypeUpdateParams):
 @app.post("/api/accounts/export-credentials")
 def export_account_credentials(params: AccountCredentialExportParams):
     """按自定义行格式导出本地账号池账密。"""
-    from autoteam.accounts import load_accounts
+    from autoteam.accounts import load_accounts, update_account
 
     line_format = (params.line_format or "{email}-----{password}").strip()
     if not line_format:
@@ -1732,10 +1735,24 @@ def export_account_credentials(params: AccountCredentialExportParams):
         return line
 
     content = "\n".join(render_line(account) for account in rows)
+    exported_at = time.time()
+    exported_emails = []
+    for account in rows:
+        exported_email = _normalized_email(account.get("email"))
+        if not exported_email:
+            continue
+        update_account(
+            exported_email,
+            credentials_exported=True,
+            credentials_exported_at=exported_at,
+        )
+        exported_emails.append(exported_email)
     return {
         "content": content,
         "count": len(rows),
         "missing": missing,
+        "exported_emails": exported_emails,
+        "exported_at": exported_at,
         "filename": "accounts-credentials.txt",
         "format": line_format,
     }
@@ -2943,6 +2960,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     billing_address1 = str(params.billing_address1 or "").strip()
     billing_address2 = str(params.billing_address2 or "").strip()
     checkout_url = str(params.checkout_url or "").strip()
+    checkout_ui_mode = "hosted" if str(params.checkout_ui_mode or "").strip().lower() == "hosted" else "custom"
     proxy_url = str(params.proxy_url or "").strip()
     try:
         normalized_proxy_url = normalize_proxy_url(proxy_url) if proxy_url else ""
@@ -2966,10 +2984,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     if not gopay_pin:
         raise HTTPException(status_code=400, detail="gopay_pin 不能为空")
     logger.info(
-        "[gopay-bind] task submitted: email=%s account_count=%s checkout=%s phone=%s proxy_label=%s proxy_state=%s proxy=%s proxy_error=%s timeout=%s",
+        "[gopay-bind] task submitted: email=%s account_count=%s checkout=%s checkout_mode=%s phone=%s proxy_label=%s proxy_state=%s proxy=%s proxy_error=%s timeout=%s",
         _safe_email_summary(email),
         len(account_emails) if account_emails else 1,
         _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
+        checkout_ui_mode,
         _safe_phone_summary(phone_number, country_code),
         params.proxy_label or "<none>",
         proxy_config_state,
@@ -3011,14 +3030,51 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         task_id = _current_task_id or ""
         started_at = time.time()
         result = None
+        realtime_successful_emails: set[str] = set()
+
+        def _mark_gopay_success_account(email_value: str, *, message: str = "", success_checkout_url: str = ""):
+            success_email = _normalized_email(email_value)
+            if not success_email or success_email in realtime_successful_emails:
+                return
+            realtime_successful_emails.add(success_email)
+            marked_at = time.time()
+            update_account(
+                success_email,
+                last_bind_status="success",
+                last_bind_at=marked_at,
+                last_checkout_url=success_checkout_url or checkout_url,
+                last_proxy_label=params.proxy_label,
+                last_bind_task_id=task_id,
+                last_bind_message=message or "GoPay 绑定成功",
+                last_bind_failure_stage="",
+                status=STATUS_ACTIVE,
+                account_type=ACCOUNT_TYPE_PLUS,
+                plus_bound_at=marked_at,
+            )
+            logger.info(
+                "[gopay-bind] marked account Plus immediately after GoPay success: task_id=%s email=%s",
+                task_id[:8] or "<unknown>",
+                _safe_email_summary(success_email),
+            )
+
+        def _gopay_progress(progress: dict):
+            _update_current_task_progress(progress)
+            if not isinstance(progress, dict) or progress.get("stage") != "gopay_account_bound":
+                return
+            _mark_gopay_success_account(
+                str(progress.get("email") or ""),
+                message=str(progress.get("message") or "GoPay 绑定成功"),
+                success_checkout_url=str(progress.get("checkout_url") or ""),
+            )
 
         try:
             logger.info(
-                "[gopay-bind] runner started: task_id=%s email=%s account_count=%s checkout=%s proxy_label=%s proxy_state=%s proxy=%s",
+                "[gopay-bind] runner started: task_id=%s email=%s account_count=%s checkout=%s checkout_mode=%s proxy_label=%s proxy_state=%s proxy=%s",
                 task_id[:8] or "<unknown>",
                 _safe_email_summary(email),
                 len(account_emails) if account_emails else 1,
                 _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
+                checkout_ui_mode,
                 params.proxy_label or "<none>",
                 proxy_config_state,
                 _safe_proxy_summary(normalized_proxy_url or proxy_url),
@@ -3029,6 +3085,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     "email": email,
                     "phone_number": phone_number,
                     "country_code": country_code,
+                    "checkout_ui_mode": checkout_ui_mode,
                     "proxy_label": params.proxy_label,
                     "account_count": len(account_emails) if account_emails else 1,
                 }
@@ -3036,6 +3093,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             result = run_gopay_bind_task(
                 email=email,
                 checkout_url=checkout_url,
+                checkout_ui_mode=checkout_ui_mode,
                 phone_number=phone_number,
                 country_code=country_code,
                 sms_url=sms_url,
@@ -3056,7 +3114,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 is_cancelled=cancel_signal.is_cancelled,
                 skip_current=skip_current_signal.is_set,
                 clear_skip_current=skip_current_signal.clear,
-                progress_callback=_update_current_task_progress,
+                progress_callback=_gopay_progress,
             )
         except Exception as exc:
             logger.exception("[gopay-bind] unexpected error")
@@ -3109,11 +3167,29 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             "last_bind_message": result.get("message") or "",
             "last_bind_failure_stage": result.get("failure_stage") or "",
         }
+        successful_emails = []
+        for raw_email in result.get("successful_emails") or []:
+            success_email = _normalized_email(raw_email)
+            if success_email and success_email not in successful_emails:
+                successful_emails.append(success_email)
         if result.get("status") == "success":
-            account_update["status"] = STATUS_ACTIVE
-            account_update["account_type"] = ACCOUNT_TYPE_PLUS
-            account_update["plus_bound_at"] = finished_at
-        update_account(actual_email, **account_update)
+            success_email = _normalized_email(actual_email)
+            if success_email and success_email not in successful_emails:
+                successful_emails.append(success_email)
+
+        pending_successful_emails = [success_email for success_email in successful_emails if success_email not in realtime_successful_emails]
+        if pending_successful_emails:
+            success_update = dict(account_update)
+            success_update["last_bind_status"] = "success"
+            success_update["status"] = STATUS_ACTIVE
+            success_update["account_type"] = ACCOUNT_TYPE_PLUS
+            success_update["plus_bound_at"] = finished_at
+            for success_email in pending_successful_emails:
+                update_account(success_email, **success_update)
+            if result.get("status") != "success" and actual_email not in successful_emails:
+                update_account(actual_email, **account_update)
+        elif not successful_emails:
+            update_account(actual_email, **account_update)
 
         removed_pool_emails = []
         rejected_pool_emails = _gopay_rejected_pool_emails(result, actual_email)

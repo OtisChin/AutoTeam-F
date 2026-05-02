@@ -94,6 +94,8 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
             "last_bind_task_id": "",
             "last_bind_message": "",
             "last_bind_failure_stage": "",
+            "credentials_exported": False,
+            "credentials_exported_at": None,
         }
     )
     save_accounts(accounts)

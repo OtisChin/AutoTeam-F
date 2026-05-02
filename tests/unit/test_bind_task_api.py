@@ -103,6 +103,7 @@ def test_post_gopay_bind_task_starts_background_task(monkeypatch):
             country_code="62",
             sms_url="https://it.tgflare.com/api/record?token=demo",
             gopay_pin="558023",
+            checkout_ui_mode="hosted",
             billing_name="John Smith",
             billing_country="US",
             billing_state="MI",
@@ -117,6 +118,7 @@ def test_post_gopay_bind_task_starts_background_task(monkeypatch):
     assert captured["params"]["email"] == "user@example.com"
     assert captured["params"]["country_code"] == "62"
     assert captured["params"]["phone_number"] == "+6287761973970"
+    assert captured["params"]["checkout_ui_mode"] == "hosted"
 
 
 def test_post_gopay_bind_task_accepts_batch_accounts(monkeypatch):
@@ -387,6 +389,127 @@ def test_gopay_task_runner_marks_success_account_plus(monkeypatch):
     assert captured["audit"]["task_status"] == "completed"
 
 
+def test_gopay_task_runner_marks_all_batch_success_accounts_plus(monkeypatch):
+    captured = {"updates": [], "progress": []}
+    accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "autoteam.accounts.find_account",
+        lambda loaded, email: next((account for account in loaded if account["email"] == email), None),
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
+    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
+
+    def fake_run_gopay_bind_task(**kwargs):
+        captured["run_kwargs"] = kwargs
+        return {
+            "status": "success",
+            "message": "GoPay 批量绑定完成: 成功 2/2 个账号",
+            "email_used": "second@example.com",
+            "successful_emails": ["first@example.com", "second@example.com"],
+        }
+
+    monkeypatch.setattr("autoteam.gopay_executor.run_gopay_bind_task", fake_run_gopay_bind_task)
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        captured["func"] = func
+        return {"task_id": "task-790", "command": command, "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    api.post_gopay_bind_task(
+        api.GoPayBindTaskParams(
+            email="first@example.com",
+            account_emails=["first@example.com", "second@example.com"],
+            phone_number="+6287761973970",
+            country_code="62",
+            sms_url="https://it.tgflare.com/api/record?token=demo",
+            gopay_pin="558023",
+        )
+    )
+
+    result = captured["func"]()
+
+    assert result["task_status"] == "completed"
+    assert [email for email, _update in captured["updates"]] == ["first@example.com", "second@example.com"]
+    for _email, update in captured["updates"]:
+        assert update["last_bind_status"] == "success"
+        assert update["status"] == accounts_module.STATUS_ACTIVE
+        assert update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
+        assert update["plus_bound_at"] == update["last_bind_at"]
+
+
+def test_gopay_task_runner_marks_batch_success_account_plus_immediately(monkeypatch):
+    captured = {"updates": [], "progress": []}
+    accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "autoteam.accounts.find_account",
+        lambda loaded, email: next((account for account in loaded if account["email"] == email), None),
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
+    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
+
+    def fake_run_gopay_bind_task(**kwargs):
+        kwargs["progress_callback"](
+            {
+                "stage": "gopay_account_bound",
+                "email": "first@example.com",
+                "checkout_url": "https://pay.openai.com/c/pay/cs_first",
+                "message": "当前账号 GoPay 绑定成功: first@example.com",
+            }
+        )
+        captured["updates_after_first_success"] = list(captured["updates"])
+        kwargs["progress_callback"](
+            {
+                "stage": "gopay_account_bound",
+                "email": "second@example.com",
+                "checkout_url": "https://pay.openai.com/c/pay/cs_second",
+                "message": "当前账号 GoPay 绑定成功: second@example.com",
+            }
+        )
+        return {
+            "status": "success",
+            "message": "GoPay 批量绑定完成: 成功 2/2 个账号",
+            "email_used": "second@example.com",
+            "successful_emails": ["first@example.com", "second@example.com"],
+        }
+
+    monkeypatch.setattr("autoteam.gopay_executor.run_gopay_bind_task", fake_run_gopay_bind_task)
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        captured["func"] = func
+        return {"task_id": "task-793", "command": command, "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    api.post_gopay_bind_task(
+        api.GoPayBindTaskParams(
+            email="first@example.com",
+            account_emails=["first@example.com", "second@example.com"],
+            phone_number="+6287761973970",
+            country_code="62",
+            sms_url="https://it.tgflare.com/api/record?token=demo",
+            gopay_pin="558023",
+        )
+    )
+
+    result = captured["func"]()
+
+    assert result["task_status"] == "completed"
+    assert [email for email, _update in captured["updates_after_first_success"]] == ["first@example.com"]
+    assert [email for email, _update in captured["updates"]] == ["first@example.com", "second@example.com"]
+    assert captured["updates"][0][1]["last_checkout_url"] == "https://pay.openai.com/c/pay/cs_first"
+    assert captured["updates"][1][1]["last_checkout_url"] == "https://pay.openai.com/c/pay/cs_second"
+    assert all(update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS for _email, update in captured["updates"])
+
+
 def test_update_account_type_updates_local_account(monkeypatch):
     captured = {}
     account = {"email": "user@example.com", "status": "pending", "account_type": "free"}
@@ -421,6 +544,7 @@ def test_update_account_type_rejects_main_account(monkeypatch):
 
 
 def test_export_account_credentials_uses_custom_format(monkeypatch):
+    captured = {"updates": []}
     monkeypatch.setattr(
         "autoteam.accounts.load_accounts",
         lambda: [
@@ -428,6 +552,8 @@ def test_export_account_credentials_uses_custom_format(monkeypatch):
             {"email": "second@example.com", "password": "pw2", "status": "plus", "seat_type": "unknown"},
         ],
     )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
+    monkeypatch.setattr(api.time, "time", lambda: 1777777777.0)
 
     result = api.export_account_credentials(
         api.AccountCredentialExportParams(
@@ -440,6 +566,14 @@ def test_export_account_credentials_uses_custom_format(monkeypatch):
     assert result["content"] == "second@example.com-----pw2"
     assert result["missing"] == ["missing@example.com"]
     assert result["filename"].endswith(".txt")
+    assert result["exported_emails"] == ["second@example.com"]
+    assert result["exported_at"] == 1777777777.0
+    assert captured["updates"] == [
+        (
+            "second@example.com",
+            {"credentials_exported": True, "credentials_exported_at": 1777777777.0},
+        )
+    ]
 
 
 def test_export_account_credentials_rejects_empty_format():
