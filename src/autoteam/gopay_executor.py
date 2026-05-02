@@ -49,6 +49,9 @@ CHECKOUT_ERROR_PATTERNS = (
     re.compile(r"try again", re.IGNORECASE),
     re.compile(r"something went wrong", re.IGNORECASE),
     re.compile(r"unable to process", re.IGNORECASE),
+    re.compile(r"customer'?s location.*(?:not|isn'?t).*recognized", re.IGNORECASE),
+    re.compile(r"valid customer address", re.IGNORECASE),
+    re.compile(r"automatically calculate tax", re.IGNORECASE),
 )
 
 CHECKOUT_PAYMENT_NOT_APPROVED_PATTERNS = (
@@ -433,6 +436,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
     wait_seconds = payload.get("wait_seconds")
     stage_messages = {
         "billing_address_generated": "已自动生成账单地址",
+        "billing_address_retry": "账单地址无法识别，已更换地址重试",
         "chatgpt_http_session_ready": "ChatGPT HTTP 会话已准备好",
         "generate_checkout": "正在生成 ChatGPT 支付链接",
         "chatgpt_checkout_browser_handoff": "进入浏览器 checkout UI，等待真实页面跳转",
@@ -555,6 +559,17 @@ def _is_chatgpt_approve_blocked_result(result: dict | None) -> bool:
 def _is_checkout_payment_not_approved_error(text: str) -> bool:
     clean = str(text or "").strip()
     return bool(clean and any(pattern.search(clean) for pattern in CHECKOUT_PAYMENT_NOT_APPROVED_PATTERNS))
+
+
+def _is_checkout_customer_location_error(text: str) -> bool:
+    clean = str(text or "").strip()
+    if not clean:
+        return False
+    return bool(
+        re.search(r"customer'?s location.*(?:not|isn'?t).*recognized", clean, re.IGNORECASE)
+        or re.search(r"valid customer address", clean, re.IGNORECASE)
+        or re.search(r"automatically calculate tax", clean, re.IGNORECASE)
+    )
 
 
 def _is_checkout_payment_not_approved_result(result: dict | None) -> bool:
@@ -1591,7 +1606,9 @@ def _browser_checkout_to_gopay_redirect(
     else:
         if callable(progress):
             progress("gopay_selected")
-    _fill_billing_form_on_page(api, billing, session_id, screenshot_paths, progress=progress)
+    ok, fill_error = _fill_billing_form_on_page(api, billing, session_id, screenshot_paths, progress=progress)
+    if not ok:
+        raise GoPayFlowError(f"浏览器填写 checkout 账单地址失败: {fill_error}", stage="browser_checkout")
     _accept_checkout_terms_on_page(api, progress=progress)
 
     submit_selectors = [
@@ -1604,6 +1621,8 @@ def _browser_checkout_to_gopay_redirect(
     next_submit_at = 0.0
     submit_retry_delay = _env_float("GOPAY_BROWSER_SUBMIT_RETRY_SECONDS", 4.0)
     max_submit_attempts = max(1, int(_env_float("GOPAY_BROWSER_SUBMIT_RETRY_ATTEMPTS", 4)))
+    max_address_retry_attempts = max(0, int(_env_float("GOPAY_BROWSER_ADDRESS_RETRY_ATTEMPTS", 2)))
+    address_retry_attempts = 0
     last_click_error = ""
     deadline = time.time() + 90
     last_error = ""
@@ -1660,6 +1679,45 @@ def _browser_checkout_to_gopay_redirect(
                     f"付款未获批准，当前账号将从号池删除并停止本次账号尝试: {error}",
                     stage="checkout_not_approved",
                 )
+            if _is_checkout_customer_location_error(error):
+                if address_retry_attempts >= max_address_retry_attempts:
+                    _capture_screenshot(api, session_id, "gopay-browser-tax-address-retry-exhausted", screenshot_paths)
+                    raise GoPayFlowError(
+                        f"账单地址无法用于自动计算税费，已重试 {address_retry_attempts} 次仍失败: {error}",
+                        stage="browser_checkout",
+                    )
+                address_retry_attempts += 1
+                next_billing = _billing_address_for_tax_retry(address_retry_attempts)
+                billing.clear()
+                billing.update(next_billing)
+                public_billing = _public_billing_info(billing)
+                logger.info(
+                    "[gopay_executor] checkout tax address rejected, retrying with replacement billing address: attempt=%s/%s billing=%s error=%s",
+                    address_retry_attempts,
+                    max_address_retry_attempts,
+                    public_billing,
+                    _compact_log_text(error, limit=180),
+                )
+                if callable(progress):
+                    progress(
+                        "billing_address_retry",
+                        attempt=address_retry_attempts,
+                        max_attempts=max_address_retry_attempts,
+                        billing_info=public_billing,
+                        reason=error,
+                    )
+                ok, fill_error = _fill_billing_form_on_page(api, billing, session_id, screenshot_paths, progress=progress)
+                if not ok:
+                    _capture_screenshot(api, session_id, "gopay-browser-tax-address-refill-failed", screenshot_paths)
+                    raise GoPayFlowError(
+                        f"税费地址重试时填写新账单地址失败: {fill_error}",
+                        stage="browser_checkout",
+                    )
+                _accept_checkout_terms_on_page(api, progress=progress)
+                submit_attempt = 0
+                next_submit_at = 0.0
+                last_error = ""
+                continue
         try:
             api.page.wait_for_timeout(500)
         except Exception:
@@ -2798,6 +2856,20 @@ DEFAULT_BILLING_ADDRESS = {
     "phone_number": "213-555-0182",
 }
 
+TAX_RETRY_BILLING_ADDRESSES = (
+    DEFAULT_BILLING_ADDRESS,
+    {
+        "name": "John Doe",
+        "country": "US",
+        "state": "NY",
+        "city": "New York",
+        "zip": "10118",
+        "address1": "350 5th Avenue",
+        "address2": "",
+        "phone_number": "212-555-0182",
+    },
+)
+
 
 def _looks_like_phone_number(value: str) -> bool:
     raw = re.sub(r"\s+", "", str(value or "").strip())
@@ -2859,6 +2931,11 @@ def _fetch_random_billing_address() -> dict:
         "phone_number": str(address.get("Telephone") or "").strip(),
         "raw": address,
     }
+
+
+def _billing_address_for_tax_retry(attempt: int) -> dict:
+    index = max(0, min(attempt - 1, len(TAX_RETRY_BILLING_ADDRESSES) - 1))
+    return dict(TAX_RETRY_BILLING_ADDRESSES[index])
 
 
 def _public_billing_info(billing: dict | None) -> dict:
@@ -4032,6 +4109,9 @@ def _compact_checkout_error(text: str) -> str:
         if phrase in clean:
             return phrase
     english_patterns = (
+        r"the customer'?s location isn'?t recognized[^.。]*\.?",
+        r"set a valid customer address[^.。]*\.?",
+        r"automatically calculate tax[^.。]*\.?",
         r"payment\s+(?:was\s+)?not\s+approved",
         r"payment\s+(?:was\s+)?declined",
         r"something went wrong",
@@ -4755,6 +4835,7 @@ def _run_gopay_bind_task_once(
                 progress=progress,
             )
             final_checkout_url = str(browser_handoff.get("checkout_url") or final_checkout_url)
+            public_billing_info = _public_billing_info(billing)
             checkout_session_id = str(browser_handoff.get("checkout_session_id") or checkout_session_id)
             processor_entity = str(browser_handoff.get("processor_entity") or processor_entity)
             redirect_url = str(browser_handoff.get("redirect_url") or "")
@@ -4799,6 +4880,7 @@ def _run_gopay_bind_task_once(
                     progress=progress,
                 )
                 final_checkout_url = str(browser_handoff.get("checkout_url") or final_checkout_url)
+                public_billing_info = _public_billing_info(billing)
                 checkout_session_id = str(browser_handoff.get("checkout_session_id") or checkout_session_id)
                 processor_entity = str(browser_handoff.get("processor_entity") or processor_entity)
                 redirect_url = str(browser_handoff.get("redirect_url") or "")

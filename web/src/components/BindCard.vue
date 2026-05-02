@@ -1252,6 +1252,7 @@ const gopayStageLabelMap = {
   open_chatgpt: '打开 ChatGPT',
   billing_info_ready: '账单信息已准备',
   billing_address_generated: '已自动生成账单地址',
+  billing_address_retry: '账单地址无法识别，已更换地址重试',
   billing_fill_field: '填写账单字段',
   billing_select_field: '选择账单字段',
   billing_field_verified: '校验账单字段',

@@ -12,6 +12,7 @@ from autoteam.gopay_executor import (
     _extract_sms_code,
     _fetch_random_billing_address,
     _generate_id_checkout_http,
+    _is_checkout_customer_location_error,
     _poll_otp_from_sms_url,
     _looks_like_phone_number,
     _safe_error_summary,
@@ -1669,6 +1670,23 @@ def test_extract_checkout_error_detects_payment_not_approved():
         page = FakePage()
 
     assert _extract_checkout_error(FakeApi()) == "付款未获批准"
+
+
+def test_extract_checkout_error_detects_customer_location_tax_error():
+    class FakePage:
+        def evaluate(self, script):
+            return [
+                "The customer's location isn't recognized. Set a valid customer address in order to automatically calculate tax.",
+                "Subscribe",
+            ]
+
+    class FakeApi:
+        page = FakePage()
+
+    error = _extract_checkout_error(FakeApi())
+
+    assert "customer's location isn't recognized" in error.lower()
+    assert _is_checkout_customer_location_error(error) is True
 
 
 def test_submit_checkout_stops_on_payment_not_approved(monkeypatch):
