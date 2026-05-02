@@ -1,13 +1,18 @@
 """Codex 认证管理 - OAuth 登录、token 管理、保存 CPA 兼容认证文件"""
 
+import asyncio
 import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
+import subprocess
+import threading
 import time
 import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -27,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 SCREENSHOT_DIR = PROJECT_ROOT / "screenshots"
+OAUTH_HELPER_EXTENSION_DIR = Path(__file__).parent / "oauth_helper_extension"
 
 # Codex OAuth 配置
 CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -34,6 +40,30 @@ CODEX_AUTH_URL = "https://auth.openai.com/oauth/authorize"
 CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_CALLBACK_PORT = 1455
 CODEX_REDIRECT_URI = f"http://localhost:{CODEX_CALLBACK_PORT}/auth/callback"
+DEFAULT_CHROME_CDP_URL = "http://127.0.0.1:9222"
+
+
+class CodexOAuthPhoneRequired(RuntimeError):
+    """Codex OAuth was blocked by OpenAI's phone verification gate."""
+
+    def __init__(self, url: str = ""):
+        self.url = url or ""
+        message = "Codex OAuth 需要手机号验证"
+        if self.url:
+            message = f"{message}: {self.url}"
+        super().__init__(message)
+
+
+class ChromeCDPUnavailable(RuntimeError):
+    """Local Chrome remote debugging endpoint is not available."""
+
+
+class ChromeCDPFlowError(RuntimeError):
+    """Local Chrome CDP OAuth flow failed before returning an auth code."""
+
+
+class WindowsUIFlowError(RuntimeError):
+    """Windows desktop browser automation failed."""
 
 
 def _generate_pkce():
@@ -62,7 +92,7 @@ def _screenshot(page, name):
     page.screenshot(path=str(SCREENSHOT_DIR / name), full_page=True)
 
 
-def _build_auth_url(code_challenge, state):
+def _build_auth_url(code_challenge, state, *, native_oauth=False):
     params = {
         "client_id": CODEX_CLIENT_ID,
         "response_type": "code",
@@ -71,9 +101,104 @@ def _build_auth_url(code_challenge, state):
         "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "prompt": "consent",
+        "prompt": "login" if native_oauth else "consent",
     }
+    if native_oauth:
+        params["id_token_add_organizations"] = "true"
+        params["codex_cli_simplified_flow"] = "true"
     return f"{CODEX_AUTH_URL}?{urllib.parse.urlencode(params)}"
+
+
+def _normalize_chrome_cdp_url(cdp_url: str | None = None) -> str:
+    return (cdp_url or os.environ.get("OAUTH_CHROME_CDP_URL") or DEFAULT_CHROME_CDP_URL).rstrip("/")
+
+
+def _extract_auth_code_from_url(url: str) -> str:
+    if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" not in str(url or ""):
+        return ""
+    parsed = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(parsed.query)
+    return str(qs.get("code", [""])[0] or "")
+
+
+def is_chrome_cdp_available(cdp_url: str | None = None, *, timeout=1.5) -> bool:
+    """Return True when a local Chrome remote debugging endpoint can be reached."""
+    import requests
+
+    base_url = _normalize_chrome_cdp_url(cdp_url)
+    try:
+        resp = requests.get(f"{base_url}/json/version", timeout=timeout)
+        return resp.status_code == 200 and bool(resp.json().get("webSocketDebuggerUrl"))
+    except Exception:
+        return False
+
+
+def _open_chrome_cdp_tab(url: str, cdp_url: str | None = None) -> str:
+    """Open a new local Chrome CDP tab and return its page websocket URL."""
+    import requests
+
+    base_url = _normalize_chrome_cdp_url(cdp_url)
+    encoded_url = urllib.parse.quote(url, safe="")
+    last_error = ""
+    for method in ("put", "get"):
+        try:
+            resp = getattr(requests, method)(f"{base_url}/json/new?{encoded_url}", timeout=5)
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+        if resp.status_code in (200, 201):
+            payload = resp.json()
+            ws_url = str(payload.get("webSocketDebuggerUrl") or "")
+            if ws_url:
+                return ws_url
+            last_error = "Chrome CDP /json/new 未返回 webSocketDebuggerUrl"
+            continue
+        last_error = f"HTTP {resp.status_code} {resp.text[:200]}"
+    raise ChromeCDPUnavailable(
+        f"无法连接本机 Chrome CDP: {_normalize_chrome_cdp_url(cdp_url)} ({last_error})"
+    )
+
+
+def _extract_session_token_from_cookie_header(cookie_header: str) -> str:
+    """Extract ChatGPT session token from a Cookie header string."""
+    parts: dict[str, str] = {}
+    token = ""
+    for raw_part in str(cookie_header or "").split(";"):
+        if "=" not in raw_part:
+            continue
+        name, value = raw_part.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if name == "__Secure-next-auth.session-token":
+            token = value
+        elif name.startswith("__Secure-next-auth.session-token."):
+            suffix = name.rsplit(".", 1)[-1]
+            if suffix.isdigit():
+                parts[suffix] = value
+    if token:
+        return token
+    if parts:
+        return "".join(parts[key] for key in sorted(parts, key=lambda item: int(item)))
+    return ""
+
+
+def _extract_account_id_from_auth_session(data: dict) -> str:
+    if not isinstance(data, dict):
+        return ""
+    account_id = str(
+        data.get("accountId")
+        or data.get("account_id")
+        or (data.get("account") or {}).get("id")
+        or (data.get("user") or {}).get("account_id")
+        or ""
+    ).strip()
+    if account_id:
+        return account_id
+
+    token = str(data.get("accessToken") or data.get("access_token") or "").strip()
+    claims = _parse_jwt_payload(token)
+    auth_claims = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+    return str(auth_claims.get("chatgpt_account_id") or "").strip() if isinstance(auth_claims, dict) else ""
 
 
 def _exchange_auth_code(auth_code, code_verifier, fallback_email=None):
@@ -249,26 +374,38 @@ def _wait_for_otp_submit_result(page, timeout=12):
     return "pending", None
 
 
-def login_codex_via_browser(email, password, mail_client=None, *, use_personal=False, headless=False):
+def login_codex_via_browser(
+    email,
+    password,
+    mail_client=None,
+    *,
+    use_personal=False,
+    native_oauth=False,
+    headless=False,
+):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
     mail_client: 临时邮箱客户端实例，用于自动读取登录验证码。
     use_personal: 若为 True，则走"个人账号"流程 —— 不注入 Team _account cookie，
                   workspace 选择时跳过 Team 直接用 Personal。用于已退出 Team 的子账号生成 free plan 的 rt/at。
+    native_oauth: 若为 True，则走 CLIProxyAPI 风格原生 Codex OAuth，不预登录 ChatGPT、
+                  不注入 Team _account cookie，适用于 Plus/Pro/Free 个人账号补登录。
     返回 auth bundle: {access_token, refresh_token, id_token, account_id, email, plan_type}
     """
     code_verifier, code_challenge = _generate_pkce()
     state = secrets.token_urlsafe(16)
     _used_email_ids: set[int] = set()  # 记录已尝试过的邮件，避免重复提交同一封验证码邮件
 
-    # personal 模式下不引导到 Team workspace
-    chatgpt_account_id = "" if use_personal else get_chatgpt_account_id()
+    team_mode = not use_personal and not native_oauth
+    # personal/native 模式下不引导到 Team workspace
+    chatgpt_account_id = get_chatgpt_account_id() if team_mode else ""
 
-    auth_url = _build_auth_url(code_challenge, state)
+    auth_url = _build_auth_url(code_challenge, state, native_oauth=(use_personal or native_oauth))
 
     logger.info("[Codex] 开始 OAuth 登录: %s", email)
 
     auth_code = None
+    phone_required_url = ""
 
     with sync_playwright() as p:
         browser = p.chromium.launch(**get_playwright_launch_options(headless=headless))
@@ -296,6 +433,8 @@ def login_codex_via_browser(email, password, mail_client=None, *, use_personal=F
 
         if use_personal:
             logger.info("[Codex] personal 模式: 跳过 step-0 ChatGPT 预登录,直接走 auth_url")
+        elif native_oauth:
+            logger.info("[Codex] native 模式: 跳过 step-0 ChatGPT 预登录,不注入 Team _account,直接走 auth_url")
         else:
             if chatgpt_account_id:
                 context.add_cookies(
@@ -620,22 +759,23 @@ def login_codex_via_browser(email, password, mail_client=None, *, use_personal=F
                 if "auth.openai.com/add-phone" in current_url:
                     _screenshot(page, "codex_04_add_phone_blocked.png")
                     logger.error("[Codex] OAuth 被 add-phone 阻断，当前 URL: %s", current_url)
+                    phone_required_url = current_url
                     break
             except Exception:
                 pass
 
             _screenshot(page, f"codex_04_step{step + 1}_before.png")
 
-            # 在任何页面中，如果有 workspace/组织选择，先选 Team（personal 模式下选个人）
+            # 在任何页面中，如果有 workspace/组织选择，Team 模式选 Team；personal/native 模式优先 Personal。
             try:
                 page_text = page.inner_text("body")[:1000]
 
-                # personal 模式：检测到工作空间选择页时，直接选 Personal
-                if use_personal and (
+                prefer_personal_workspace = use_personal or native_oauth
+                if prefer_personal_workspace and (
                     "选择一个工作空间" in page_text or "Select a workspace" in page_text or "选择工作空间" in page_text
                 ):
                     _screenshot(page, f"codex_04_personal_ws_{step + 1}_before.png")
-                    logger.info("[Codex] 检测到工作空间选择页 (step %d, personal 模式)", step + 1)
+                    logger.info("[Codex] 检测到工作空间选择页 (step %d, 非 Team 模式)", step + 1)
                     personal_selected = False
                     try:
                         personal_btn = page.locator("text=/个人|Personal/").first
@@ -658,7 +798,7 @@ def login_codex_via_browser(email, password, mail_client=None, *, use_personal=F
                         continue
 
                 # 选择 Team workspace（用配置的名称精确匹配）
-                workspace_name = "" if use_personal else get_chatgpt_workspace_name()
+                workspace_name = get_chatgpt_workspace_name() if team_mode else ""
                 # 检测"选择一个工作空间"页面，点击 Team workspace
                 if workspace_name and (
                     "选择一个工作空间" in page_text or "Select a workspace" in page_text or "选择工作空间" in page_text
@@ -892,32 +1032,37 @@ def login_codex_via_browser(email, password, mail_client=None, *, use_personal=F
             except Exception:
                 break
 
-        # 等待 redirect callback 获取 auth code
-        for _ in range(30):
-            if auth_code:
-                break
-            # 也从当前 URL 尝试提取（CPA 可能接收了回调）
-            try:
-                cur = page.url
-                if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in cur:
-                    parsed = urllib.parse.urlparse(cur)
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    auth_code = qs.get("code", [None])[0]
-                    if auth_code:
-                        logger.info("[Codex] 从 URL 捕获到 auth code!")
-                        break
-            except Exception:
-                pass
-            time.sleep(1)
+        # 等待 redirect callback 获取 auth code。add-phone 已经是确定失败，不继续空等。
+        if not phone_required_url:
+            for _ in range(30):
+                if auth_code:
+                    break
+                # 也从当前 URL 尝试提取（CPA 可能接收了回调）
+                try:
+                    cur = page.url
+                    if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in cur:
+                        parsed = urllib.parse.urlparse(cur)
+                        qs = urllib.parse.parse_qs(parsed.query)
+                        auth_code = qs.get("code", [None])[0]
+                        if auth_code:
+                            logger.info("[Codex] 从 URL 捕获到 auth code!")
+                            break
+                except Exception:
+                    pass
+                time.sleep(1)
 
         if not auth_code:
             _screenshot(page, "codex_05_no_callback.png")
             if "auth.openai.com/add-phone" in (page.url or ""):
                 logger.error("[Codex] OAuth 被 add-phone 阻断，未获取到 auth code，当前 URL: %s", page.url)
+                phone_required_url = page.url or phone_required_url
             else:
                 logger.warning("[Codex] 未获取到 auth code，当前 URL: %s", page.url)
 
         browser.close()
+
+    if phone_required_url:
+        raise CodexOAuthPhoneRequired(phone_required_url)
 
     if not auth_code:
         logger.error("[Codex] OAuth 登录失败: 未获取到 authorization code")
@@ -1126,11 +1271,17 @@ def login_codex_via_session():
 class SessionCodexAuthFlow:
     EMAIL_SELECTORS = [
         'input[name="email"]',
+        'input[name="username"]',
         'input[id="email-input"]',
         'input[id="email"]',
+        'input[id*="email" i]',
         'input[type="email"]',
         'input[placeholder*="email" i]',
         'input[placeholder*="邮箱"]',
+        'input[placeholder*="电子邮件"]',
+        'input[aria-label*="email" i]',
+        'input[aria-label*="邮箱"]',
+        'input[aria-label*="电子邮件"]',
         'input[autocomplete="email"]',
         'input[autocomplete="username"]',
     ]
@@ -1168,6 +1319,8 @@ class SessionCodexAuthFlow:
         account_id,
         workspace_name="",
         password="",
+        device_id="",
+        native_oauth=False,
         password_callback=None,
         auth_file_callback=None,
     ):
@@ -1176,11 +1329,13 @@ class SessionCodexAuthFlow:
         self.workspace_name = workspace_name or ""
         self.account_id = account_id or ""
         self.session_token = session_token or ""
+        self.device_id = device_id or ""
+        self.native_oauth = bool(native_oauth)
         self.password_callback = password_callback
         self.auth_file_callback = auth_file_callback or save_auth_file
         self.code_verifier, code_challenge = _generate_pkce()
         self.state = secrets.token_urlsafe(16)
-        self.auth_url = _build_auth_url(code_challenge, self.state)
+        self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=self.native_oauth)
         self.auth_code = None
         self.chatgpt = None
         self.page = None
@@ -1215,6 +1370,16 @@ class SessionCodexAuthFlow:
             self.auth_code = qs.get("code", [None])[0]
             if self.auth_code:
                 return "completed", None
+
+        lower_url = cur.lower()
+        if "auth.openai.com/add-phone" in lower_url or "/add-phone" in lower_url:
+            return "phone_required", cur
+        try:
+            body = self.page.locator("body").inner_text(timeout=500).lower()
+        except Exception:
+            body = ""
+        if "add phone" in body or "phone verification" in body or "手机号" in body or "手机号码" in body:
+            return "phone_required", cur
 
         if self._visible_locator(self.CODE_SELECTORS, timeout_ms=800):
             return "code_required", None
@@ -1337,7 +1502,24 @@ class SessionCodexAuthFlow:
         if not email_input or not self.email:
             return False
 
-        email_input.fill(self.email)
+        try:
+            current_value = (email_input.input_value(timeout=1000) or "").strip().lower()
+        except Exception:
+            current_value = ""
+        try:
+            enabled = email_input.is_enabled(timeout=1000)
+        except Exception:
+            enabled = True
+
+        if enabled:
+            try:
+                email_input.fill(self.email)
+            except Exception:
+                if current_value != self.email.strip().lower():
+                    raise
+        elif current_value != self.email.strip().lower():
+            return False
+
         time.sleep(0.5)
         _click_primary_auth_button(self.page, email_input, ["Continue", "继续", "Log in"])
         time.sleep(3)
@@ -1376,6 +1558,8 @@ class SessionCodexAuthFlow:
             step, detail = self._detect_step()
             if step == "completed":
                 return {"step": "completed", "detail": detail}
+            if step == "phone_required":
+                return {"step": "phone_required", "detail": detail}
             if step == "code_required":
                 return {"step": "code_required", "detail": detail}
             if step == "password_required":
@@ -1408,6 +1592,8 @@ class SessionCodexAuthFlow:
         from autoteam.chatgpt_api import ChatGPTTeamAPI
 
         self.chatgpt = ChatGPTTeamAPI()
+        if self.device_id:
+            self.chatgpt.oai_device_id = self.device_id
         self.chatgpt.start_with_session(self.session_token, self.account_id, self.workspace_name)
         self.page = self.chatgpt.context.new_page()
         self._attach_callback_listeners()
@@ -1487,6 +1673,761 @@ class MainCodexSyncFlow(SessionCodexAuthFlow):
             "auth_file": info.get("auth_file"),
             "plan_type": info.get("plan_type"),
         }
+
+
+class ChromeCDPCodexAuthFlow:
+    """Drive OAuth in the user's real Chrome through DevTools Protocol."""
+
+    def __init__(
+        self,
+        *,
+        email,
+        password="",
+        mail_client=None,
+        native_oauth=True,
+        otp_timeout=120,
+        cdp_url=None,
+        auth_file_callback=None,
+    ):
+        self.email = email or ""
+        self.password = password or ""
+        self.mail_client = mail_client
+        self.native_oauth = bool(native_oauth)
+        self.otp_timeout = int(otp_timeout or 120)
+        self.cdp_url = _normalize_chrome_cdp_url(cdp_url)
+        self.auth_file_callback = auth_file_callback or save_auth_file
+        self.code_verifier, code_challenge = _generate_pkce()
+        self.state = secrets.token_urlsafe(16)
+        self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=self.native_oauth)
+        self.auth_code = ""
+        self._ws = None
+        self._command_id = 0
+        self._latest_email_id = 0
+        self._submitted_codes: set[str] = set()
+
+    async def _send(self, method, params=None, *, timeout=12):
+        self._command_id += 1
+        command_id = self._command_id
+        await self._ws.send(json.dumps({"id": command_id, "method": method, "params": params or {}}))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                raw = await asyncio.wait_for(self._ws.recv(), timeout=max(0.2, deadline - time.time()))
+            except asyncio.TimeoutError as exc:
+                raise ChromeCDPFlowError(f"Chrome CDP {method} timed out") from exc
+            payload = json.loads(raw)
+            if payload.get("id") != command_id:
+                continue
+            if payload.get("error"):
+                raise ChromeCDPFlowError(f"Chrome CDP {method} failed: {payload['error']}")
+            return payload.get("result") or {}
+        raise ChromeCDPFlowError(f"Chrome CDP {method} timed out")
+
+    async def _eval(self, expression, *, timeout=12):
+        result = await self._send(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": False,
+            },
+            timeout=timeout,
+        )
+        value = (result.get("result") or {}).get("value")
+        return value
+
+    async def _page_state(self):
+        selectors = {
+            "email": SessionCodexAuthFlow.EMAIL_SELECTORS,
+            "password": SessionCodexAuthFlow.PASSWORD_SELECTORS,
+            "code": SessionCodexAuthFlow.CODE_SELECTORS,
+        }
+        js = f"""
+(() => {{
+  const selectors = {json.dumps(selectors)};
+  const visible = (el) => {{
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+  }};
+  const hasVisible = (items) => items.some((selector) => Array.from(document.querySelectorAll(selector)).some(visible));
+  const body = (document.body && document.body.innerText || '').slice(0, 3000);
+  return {{
+    url: location.href,
+    title: document.title || '',
+    body,
+    hasEmail: hasVisible(selectors.email),
+    hasPassword: hasVisible(selectors.password),
+    hasCode: hasVisible(selectors.code),
+  }};
+}})()
+"""
+        state = await self._eval(js)
+        return state if isinstance(state, dict) else {}
+
+    def _detect_step_from_state(self, state):
+        url = str(state.get("url") or "")
+        auth_code = _extract_auth_code_from_url(url)
+        if auth_code:
+            self.auth_code = auth_code
+            return "completed", None
+
+        lower_url = url.lower()
+        body = str(state.get("body") or "").lower()
+        if "auth.openai.com/add-phone" in lower_url or "/add-phone" in lower_url:
+            return "phone_required", url
+        if "add phone" in body or "phone verification" in body or "手机号" in body or "手机号码" in body:
+            return "phone_required", url
+        if state.get("hasCode"):
+            return "code_required", None
+        if state.get("hasPassword"):
+            return "password_required", None
+        if state.get("hasEmail"):
+            return "email_required", None
+        return "unknown", url
+
+    async def _click_by_text(self, labels):
+        js = f"""
+(() => {{
+  const labels = {json.dumps(labels)};
+  const visible = (el) => {{
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+  }};
+  const norm = (text) => String(text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const targets = Array.from(document.querySelectorAll('button, input[type="submit"], a, [role="button"]'));
+  for (const el of targets) {{
+    if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+    const text = norm(el.innerText || el.value || el.getAttribute('aria-label') || '');
+    if (!text) continue;
+    if (labels.some((label) => text === norm(label) || text.includes(norm(label)))) {{
+      el.click();
+      return text;
+    }}
+  }}
+  return '';
+}})()
+"""
+        return await self._eval(js)
+
+    async def _fill_input(self, selectors, value, *, allow_disabled_match=False):
+        js = f"""
+(() => {{
+  const selectors = {json.dumps(selectors)};
+  const value = {json.dumps(value or "")};
+  const allowDisabledMatch = {json.dumps(bool(allow_disabled_match))};
+  const visible = (el) => {{
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+  }};
+  const setValue = (el, newValue) => {{
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    el.focus();
+    if (descriptor && descriptor.set) descriptor.set.call(el, newValue);
+    else el.value = newValue;
+    el.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: newValue }}));
+    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+  for (const selector of selectors) {{
+    for (const el of Array.from(document.querySelectorAll(selector))) {{
+      if (!visible(el)) continue;
+      const current = String(el.value || '').trim().toLowerCase();
+      if (el.disabled || el.readOnly) {{
+        if (allowDisabledMatch && current === String(value).trim().toLowerCase()) return 'disabled_match';
+        continue;
+      }}
+      setValue(el, value);
+      return 'filled';
+    }}
+  }}
+  return '';
+}})()
+"""
+        return await self._eval(js)
+
+    async def _fill_otp_code(self, code):
+        js = f"""
+(() => {{
+  const code = {json.dumps(code or "")};
+  const selectors = {json.dumps(SessionCodexAuthFlow.CODE_SELECTORS)};
+  const visible = (el) => {{
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+  }};
+  const setValue = (el, newValue) => {{
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    el.focus();
+    if (descriptor && descriptor.set) descriptor.set.call(el, newValue);
+    else el.value = newValue;
+    el.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: newValue }}));
+    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+  const inputs = [];
+  for (const selector of selectors) {{
+    for (const el of Array.from(document.querySelectorAll(selector))) {{
+      if (visible(el) && !el.disabled && !el.readOnly && !inputs.includes(el)) inputs.push(el);
+    }}
+  }}
+  if (!inputs.length) return false;
+  const oneCharInputs = inputs.filter((el) => Number(el.maxLength || 0) === 1 || el.getAttribute('aria-label'));
+  if (oneCharInputs.length >= code.length && code.length > 1) {{
+    for (let i = 0; i < code.length; i++) setValue(oneCharInputs[i], code[i]);
+  }} else {{
+    setValue(inputs[0], code);
+  }}
+  return true;
+}})()
+"""
+        return bool(await self._eval(js))
+
+    def _prime_latest_email_id(self):
+        if not self.mail_client:
+            return
+        try:
+            emails = self.mail_client.search_emails_by_recipient(self.email, size=1)
+            if emails:
+                self._latest_email_id = int(emails[0].get("emailId") or 0)
+        except Exception:
+            self._latest_email_id = 0
+
+    def _poll_email_otp_once(self):
+        if not self.mail_client:
+            return "", 0
+        try:
+            emails = self.mail_client.search_emails_by_recipient(self.email, size=5)
+        except Exception as exc:
+            logger.warning("[Codex] Chrome CDP OAuth 查询验证码失败: %s", exc)
+            return "", 0
+        for item in emails:
+            email_id = int(item.get("emailId") or 0)
+            if email_id <= self._latest_email_id:
+                continue
+            subject = str(item.get("subject") or "").lower()
+            if "invited" in subject or "invitation" in subject:
+                continue
+            code = self.mail_client.extract_verification_code(item)
+            if code and code not in self._submitted_codes:
+                return str(code), email_id
+        return "", 0
+
+    async def _handle_email_step(self):
+        result = await self._fill_input(SessionCodexAuthFlow.EMAIL_SELECTORS, self.email, allow_disabled_match=True)
+        if result:
+            logger.info("[Codex] Chrome CDP OAuth 已处理邮箱步骤: %s", self.email)
+            await asyncio.sleep(0.4)
+            await self._click_by_text(["Continue", "继续", "Log in", "登录"])
+            await asyncio.sleep(2)
+            return True
+        return False
+
+    async def _handle_password_step(self):
+        if self.password:
+            result = await self._fill_input(SessionCodexAuthFlow.PASSWORD_SELECTORS, self.password)
+            if result:
+                logger.info("[Codex] Chrome CDP OAuth 已填写密码")
+                await asyncio.sleep(0.4)
+                await self._click_by_text(["Continue", "继续", "Log in", "登录"])
+                await asyncio.sleep(3)
+                return True
+        clicked = await self._click_by_text(
+            ["一次性验证码", "邮箱验证码", "Email login", "Email code", "one-time", "One-time"]
+        )
+        if clicked:
+            logger.info("[Codex] Chrome CDP OAuth 已切换邮箱验证码登录")
+            await asyncio.sleep(2)
+            return True
+        return False
+
+    async def _handle_code_step(self):
+        if not self.mail_client:
+            logger.info("[Codex] Chrome CDP OAuth 等待用户在本机浏览器手动输入邮箱验证码")
+            await asyncio.sleep(3)
+            return True
+
+        start = time.time()
+        while time.time() - start < self.otp_timeout:
+            code, email_id = self._poll_email_otp_once()
+            if not code:
+                await asyncio.sleep(3)
+                state = await self._page_state()
+                step, _ = self._detect_step_from_state(state)
+                if step != "code_required":
+                    return True
+                continue
+            self._submitted_codes.add(code)
+            self._latest_email_id = max(self._latest_email_id, email_id)
+            logger.info("[Codex] Chrome CDP OAuth 收到邮箱验证码: %s", code)
+            if not await self._fill_otp_code(code):
+                return False
+            await asyncio.sleep(0.4)
+            await self._click_by_text(["Continue", "继续", "Verify", "验证"])
+            await asyncio.sleep(4)
+            return True
+
+        logger.warning("[Codex] Chrome CDP OAuth 未收到邮箱验证码")
+        return False
+
+    async def _run_browser(self):
+        import websockets
+
+        ws_url = _open_chrome_cdp_tab(self.auth_url, self.cdp_url)
+        logger.info("[Codex] 已在本机 Chrome 打开 OAuth: cdp=%s email=%s", self.cdp_url, self.email)
+        self._prime_latest_email_id()
+        async with websockets.connect(ws_url, max_size=16 * 1024 * 1024) as ws:
+            self._ws = ws
+            await self._send("Page.enable")
+            await self._send("Runtime.enable")
+            deadline = time.time() + int(os.environ.get("OAUTH_CHROME_CDP_TIMEOUT", "240"))
+            last_unknown_log = 0
+            while time.time() < deadline:
+                state = await self._page_state()
+                step, detail = self._detect_step_from_state(state)
+                if step == "completed":
+                    return
+                if step == "phone_required":
+                    raise CodexOAuthPhoneRequired(str(detail or ""))
+                if step == "email_required":
+                    if await self._handle_email_step():
+                        continue
+                elif step == "password_required":
+                    if await self._handle_password_step():
+                        continue
+                elif step == "code_required":
+                    if await self._handle_code_step():
+                        continue
+                    return
+                else:
+                    clicked = await self._click_by_text(
+                        ["Continue", "继续", "Allow", "Authorize", "授权", "Confirm", "确认"]
+                    )
+                    if clicked:
+                        logger.info("[Codex] Chrome CDP OAuth 点击继续/授权: %s", clicked)
+                        await asyncio.sleep(3)
+                        continue
+                    if time.time() - last_unknown_log > 10:
+                        logger.info("[Codex] Chrome CDP OAuth 等待页面推进: %s", detail or "")
+                        last_unknown_log = time.time()
+                await asyncio.sleep(1)
+
+        raise ChromeCDPFlowError("Chrome CDP OAuth 超时，未获取到 authorization code")
+
+    def run(self):
+        if not self.email:
+            raise RuntimeError("缺少登录邮箱")
+        asyncio.run(self._run_browser())
+        if not self.auth_code:
+            raise ChromeCDPFlowError("Chrome CDP OAuth 未获取到 authorization code")
+        bundle = _exchange_auth_code(self.auth_code, self.code_verifier, fallback_email=self.email)
+        if not bundle:
+            raise RuntimeError("Codex token 交换失败")
+        returned_email = str(bundle.get("email") or "").strip().lower()
+        if returned_email and returned_email != self.email.strip().lower():
+            raise RuntimeError(f"Chrome CDP OAuth 返回了非目标账号: {returned_email}")
+        filepath = self.auth_file_callback(bundle)
+        return {
+            "email": bundle.get("email"),
+            "auth_file": filepath,
+            "plan_type": bundle.get("plan_type"),
+            "bundle": bundle,
+        }
+
+
+def login_codex_via_chrome_cdp(
+    email,
+    mail_client=None,
+    *,
+    password="",
+    native_oauth=True,
+    otp_timeout=120,
+    cdp_url=None,
+):
+    """Complete Codex OAuth in the user's real Chrome through local CDP."""
+    flow = ChromeCDPCodexAuthFlow(
+        email=email,
+        password=password,
+        mail_client=mail_client,
+        native_oauth=native_oauth,
+        otp_timeout=otp_timeout,
+        cdp_url=cdp_url,
+    )
+    return flow.run()
+
+
+def _open_real_chrome_url(url: str):
+    chrome_path = os.environ.get("OAUTH_WINDOWS_CHROME_PATH") or r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    profile_dir = os.environ.get("OAUTH_REAL_CHROME_PROFILE") or "Default"
+    user_data_dir = os.environ.get("OAUTH_REAL_CHROME_USER_DATA_DIR") or str(
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
+    )
+    args = [
+        chrome_path,
+        f"--user-data-dir={user_data_dir}",
+        f"--profile-directory={profile_dir}",
+        f"--load-extension={OAUTH_HELPER_EXTENSION_DIR}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        url,
+    ]
+    if Path(chrome_path).exists():
+        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(["cmd", "/c", "start", "", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class _OAuthHelperServer:
+    def __init__(self, *, email, password, token):
+        self.email = email or ""
+        self.password = password or ""
+        self.token = token
+        self.otp = ""
+        self.events: list[dict] = []
+        self.auth_code = ""
+        self.phone_required_url = ""
+        self.httpd: ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+        self.port = 0
+
+    def start(self):
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _send_json(self, status, payload):
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _valid_token(self):
+                parsed = urllib.parse.urlparse(self.path)
+                qs = urllib.parse.parse_qs(parsed.query)
+                return qs.get("token", [""])[0] == owner.token
+
+            def do_OPTIONS(self):
+                self._send_json(200, {"ok": True})
+
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path != "/state" or not self._valid_token():
+                    self._send_json(404, {"ok": False})
+                    return
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "email": owner.email,
+                        "password": owner.password,
+                        "otp": owner.otp,
+                    },
+                )
+
+            def do_POST(self):
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path != "/event" or not self._valid_token():
+                    self._send_json(404, {"ok": False})
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                owner.events.append(payload)
+                url = str(payload.get("url") or "")
+                if payload.get("type") == "callback":
+                    owner.auth_code = _extract_auth_code_from_url(url)
+                if payload.get("type") == "phone_required":
+                    owner.phone_required_url = url
+                self._send_json(200, {"ok": True})
+
+            def log_message(self, *_args):
+                return
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = int(self.httpd.server_address[1])
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        return self
+
+    def stop(self):
+        if self.httpd:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        self.httpd = None
+
+
+class WindowsUICodexAuthFlow:
+    """Drive OAuth in the user's normal desktop Chrome through a locked helper extension."""
+
+    def __init__(
+        self,
+        *,
+        email,
+        password="",
+        mail_client=None,
+        native_oauth=True,
+        otp_timeout=120,
+        auth_file_callback=None,
+    ):
+        self.email = email or ""
+        self.password = password or ""
+        self.mail_client = mail_client
+        self.native_oauth = bool(native_oauth)
+        self.otp_timeout = int(otp_timeout or 120)
+        self.auth_file_callback = auth_file_callback or save_auth_file
+        self.code_verifier, code_challenge = _generate_pkce()
+        self.state = secrets.token_urlsafe(16)
+        self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=self.native_oauth)
+        self._latest_email_id = 0
+        self._submitted_codes: set[str] = set()
+        self._server: _OAuthHelperServer | None = None
+
+    def _prime_latest_email_id(self):
+        if not self.mail_client:
+            return
+        try:
+            emails = self.mail_client.search_emails_by_recipient(self.email, size=1)
+            if emails:
+                self._latest_email_id = int(emails[0].get("emailId") or 0)
+        except Exception:
+            self._latest_email_id = 0
+
+    def _poll_email_otp_once(self):
+        if not self.mail_client:
+            return "", 0
+        try:
+            emails = self.mail_client.search_emails_by_recipient(self.email, size=5)
+        except Exception as exc:
+            logger.warning("[Codex] Windows UI OAuth 查询验证码失败: %s", exc)
+            return "", 0
+        for item in emails:
+            email_id = int(item.get("emailId") or 0)
+            if email_id <= self._latest_email_id:
+                continue
+            subject = str(item.get("subject") or "").lower()
+            if "invited" in subject or "invitation" in subject:
+                continue
+            code = self.mail_client.extract_verification_code(item)
+            if code and code not in self._submitted_codes:
+                return str(code), email_id
+        return "", 0
+
+    def _helper_auth_url(self):
+        if not self._server:
+            raise WindowsUIFlowError("OAuth helper server not started")
+        fragment = urllib.parse.urlencode(
+            {
+                "autoteam_token": self._server.token,
+                "autoteam_port": str(self._server.port),
+                "autoteam_auth": self.auth_url,
+            }
+        )
+        return f"https://auth.openai.com/#{fragment}"
+
+    def _wait_for_helper(self, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._server and self._server.auth_code:
+                return "completed", self._server.auth_code, ""
+            if self._server and self._server.phone_required_url:
+                return "phone_required", "", self._server.phone_required_url
+            time.sleep(1)
+        return "timeout", "", ""
+
+    def _submit_email(self):
+        logger.info("[Codex] Windows UI OAuth 打开真实 Chrome Profile 并锁定 OpenAI 登录页: %s", self.email)
+        _open_real_chrome_url(self._helper_auth_url())
+
+    def _submit_code(self):
+        if not self.mail_client:
+            logger.info("[Codex] Windows UI OAuth 等待用户手动输入邮箱验证码")
+            return
+        start = time.time()
+        while time.time() - start < self.otp_timeout:
+            if self._server and self._server.auth_code:
+                return
+            if self._server and self._server.phone_required_url:
+                return
+            code, email_id = self._poll_email_otp_once()
+            if not code:
+                time.sleep(3)
+                continue
+            self._submitted_codes.add(code)
+            self._latest_email_id = max(self._latest_email_id, email_id)
+            logger.info("[Codex] Windows UI OAuth 收到邮箱验证码: %s", code)
+            if self._server:
+                self._server.otp = code
+            return
+        raise WindowsUIFlowError("Windows UI OAuth 未收到邮箱验证码")
+
+    def run(self):
+        if os.name != "nt":
+            raise WindowsUIFlowError("Windows UI OAuth 仅支持 Windows 桌面")
+        if not self.email:
+            raise RuntimeError("缺少登录邮箱")
+
+        self._prime_latest_email_id()
+        self._server = _OAuthHelperServer(email=self.email, password=self.password, token=secrets.token_urlsafe(18)).start()
+        try:
+            self._submit_email()
+            start = time.time()
+            callback_timeout = int(os.environ.get("OAUTH_WINDOWS_UI_CALLBACK_TIMEOUT", "240"))
+            otp_started = False
+            while time.time() - start < callback_timeout:
+                if self._server.auth_code:
+                    break
+                if self._server.phone_required_url:
+                    raise CodexOAuthPhoneRequired(self._server.phone_required_url)
+                if not otp_started and any(event.get("type") == "email_filled" for event in self._server.events):
+                    otp_started = True
+                    self._submit_code()
+                time.sleep(1)
+            auth_code = self._server.auth_code
+            if not auth_code:
+                last_event = self._server.events[-1] if self._server.events else {}
+                raise WindowsUIFlowError(f"Windows UI OAuth 未获取到 authorization code，last_event={last_event}")
+        finally:
+            if self._server:
+                self._server.stop()
+
+        bundle = _exchange_auth_code(auth_code, self.code_verifier, fallback_email=self.email)
+        if not bundle:
+            raise RuntimeError("Codex token 交换失败")
+        returned_email = str(bundle.get("email") or "").strip().lower()
+        if returned_email and returned_email != self.email.strip().lower():
+            raise RuntimeError(f"Windows UI OAuth 返回了非目标账号: {returned_email}")
+        filepath = self.auth_file_callback(bundle)
+        return {
+            "email": bundle.get("email"),
+            "auth_file": filepath,
+            "plan_type": bundle.get("plan_type"),
+            "bundle": bundle,
+        }
+
+
+def login_codex_via_windows_ui(
+    email,
+    mail_client=None,
+    *,
+    password="",
+    native_oauth=True,
+    otp_timeout=120,
+):
+    """Complete Codex OAuth in the user's normal desktop Chrome via Windows UI."""
+    flow = WindowsUICodexAuthFlow(
+        email=email,
+        password=password,
+        mail_client=mail_client,
+        native_oauth=native_oauth,
+        otp_timeout=otp_timeout,
+    )
+    return flow.run()
+
+
+def login_codex_via_auth_session(
+    email,
+    session_data,
+    mail_client=None,
+    *,
+    password="",
+    native_oauth=True,
+    otp_timeout=120,
+):
+    """Complete Codex OAuth by reusing a freshly registered ChatGPT auth session."""
+    if not isinstance(session_data, dict):
+        logger.warning("[Codex] auth_session 复用 OAuth 失败: session_data 格式无效")
+        return None
+
+    session_token = _extract_session_token_from_cookie_header(str(session_data.get("cookie_header") or ""))
+    account_id = _extract_account_id_from_auth_session(session_data)
+    device_id = str(session_data.get("oai_device_id") or session_data.get("device_id") or "").strip()
+    if not session_token:
+        logger.warning("[Codex] auth_session 复用 OAuth 失败: 缺少 session cookie")
+        return None
+    if not account_id:
+        logger.warning("[Codex] auth_session 复用 OAuth 失败: 缺少 account_id")
+        return None
+
+    latest_email_id = 0
+    if mail_client:
+        try:
+            emails = mail_client.search_emails_by_recipient(email, size=1)
+            if emails:
+                latest_email_id = int(emails[0].get("emailId") or 0)
+        except Exception:
+            latest_email_id = 0
+
+    flow = SessionCodexAuthFlow(
+        email=email,
+        session_token=session_token,
+        account_id=account_id,
+        workspace_name="",
+        password=password,
+        device_id=device_id,
+        native_oauth=native_oauth,
+    )
+    try:
+        state = flow.start()
+        for _ in range(4):
+            step = state.get("step")
+            if step == "completed":
+                return flow.complete()
+            if step == "phone_required":
+                raise CodexOAuthPhoneRequired(str(state.get("detail") or ""))
+            if step != "code_required":
+                logger.warning("[Codex] auth_session 复用 OAuth 未完成: %s", state)
+                return None
+            if not mail_client:
+                logger.warning("[Codex] auth_session 复用 OAuth 需要邮箱验证码，但缺少 mail_client")
+                return None
+
+            otp = None
+            otp_email_id = 0
+            start = time.time()
+            while time.time() - start < otp_timeout:
+                try:
+                    emails = mail_client.search_emails_by_recipient(email, size=5)
+                except Exception as exc:
+                    logger.warning("[Codex] auth_session 复用 OAuth 查询验证码失败: %s", exc)
+                    emails = []
+                for item in emails:
+                    email_id = int(item.get("emailId") or 0)
+                    if email_id <= latest_email_id:
+                        continue
+                    subject = str(item.get("subject") or "").lower()
+                    if "invited" in subject or "invitation" in subject:
+                        continue
+                    code = mail_client.extract_verification_code(item)
+                    if code:
+                        otp = code
+                        otp_email_id = email_id
+                        break
+                if otp:
+                    break
+                time.sleep(3)
+
+            if not otp:
+                logger.warning("[Codex] auth_session 复用 OAuth 未收到邮箱验证码")
+                return None
+            latest_email_id = max(latest_email_id, otp_email_id)
+            logger.info("[Codex] auth_session 复用 OAuth 收到验证码: %s", otp)
+            state = flow.submit_code(otp)
+        logger.warning("[Codex] auth_session 复用 OAuth 超出验证码重试次数")
+        return None
+    finally:
+        flow.stop()
 
 
 def login_main_codex():

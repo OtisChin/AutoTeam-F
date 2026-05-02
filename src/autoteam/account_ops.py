@@ -5,13 +5,11 @@ from pathlib import Path
 
 from autoteam.accounts import find_account, load_accounts, save_accounts
 from autoteam.admin_state import get_chatgpt_account_id
+from autoteam.auth_storage import AUTH_DIR
 from autoteam.mail import TemporaryEmailClient
 from autoteam.cpa_sync import delete_from_cpa, list_cpa_files, sync_to_cpa
 
 logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-AUTH_DIR = PROJECT_ROOT / "auths"
 
 
 def fetch_team_state(chatgpt_api):
@@ -42,7 +40,7 @@ def delete_managed_account(
     *,
     remove_remote=True,
     remove_cloudmail=True,
-    sync_cpa_after=True,
+    sync_cpa_after=False,
     chatgpt_api=None,
     mail_client=None,
     remote_state=None,

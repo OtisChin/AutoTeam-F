@@ -3,14 +3,14 @@
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-AUTH_DIR = PROJECT_ROOT / "auths"
+AUTH_DIR = PROJECT_ROOT / "data" / "auths"
 
 # Docker bind mount 下文件常由容器用户写入；给宿主机用户保留可读写权限。
 AUTH_FILE_MODE = 0o666
 
 
 def ensure_auth_dir() -> Path:
-    AUTH_DIR.mkdir(exist_ok=True)
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
     return AUTH_DIR
 
 

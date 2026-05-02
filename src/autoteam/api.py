@@ -1762,13 +1762,12 @@ def export_account_credentials(params: AccountCredentialExportParams):
 def delete_accounts_batch(params: DeleteBatchParams):
     """
     批量删除本地管理账号。整批共享一个 chatgpt_api + mail_client,
-    Team 成员/邀请状态只拉一次,CPA 在整批结束后同步一次,避免重复开销。
+    Team 成员/邀请状态只拉一次；CPA 自动同步已禁用，需要时手动同步。
     """
     from autoteam.account_ops import delete_managed_account, fetch_team_state
     from autoteam.accounts import load_accounts
     from autoteam.chatgpt_api import ChatGPTTeamAPI
     from autoteam.mail import TemporaryEmailClient
-    from autoteam.cpa_sync import sync_to_cpa
     from autoteam.admin_state import get_admin_session_token, get_chatgpt_account_id
 
     raw_emails = [(e or "").strip() for e in (params.emails or [])]
@@ -1824,7 +1823,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
                         chatgpt_api=chatgpt_api,
                         mail_client=mail_client,
                         remote_state=remote_state,
-                        sync_cpa_after=False,  # 整批结束后统一同步
+                        sync_cpa_after=False,
                     )
                     results.append({"email": email, "ok": True, "cleanup": cleanup})
                 except Exception as exc:
@@ -1838,10 +1837,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
                     chatgpt_api.stop()
                 except Exception as exc:
                     logger.debug("[批量删除] 关闭 chatgpt_api 异常: %s", exc)
-            try:
-                sync_to_cpa()
-            except Exception as exc:
-                logger.warning("[批量删除] 结尾 sync_to_cpa 失败: %s", exc)
+            logger.info("[批量删除] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”")
 
         ok_count = sum(1 for r in results if r["ok"])
         return {
@@ -1921,7 +1917,15 @@ def post_account_login(params: LoginAccountParams):
         raise HTTPException(status_code=404, detail="账号不存在")
 
     def _run():
-        from autoteam.accounts import ACCOUNT_TYPE_FREE, ACCOUNT_TYPE_TEAM, STATUS_ACTIVE, STATUS_PERSONAL, update_account
+        from autoteam.accounts import (
+            ACCOUNT_TYPE_FREE,
+            ACCOUNT_TYPE_PLUS,
+            ACCOUNT_TYPE_PRO,
+            ACCOUNT_TYPE_TEAM,
+            STATUS_ACTIVE,
+            STATUS_PERSONAL,
+            update_account,
+        )
         from autoteam.mail import TemporaryEmailClient
         from autoteam.codex_auth import (
             check_codex_quota,
@@ -1931,8 +1935,16 @@ def post_account_login(params: LoginAccountParams):
             save_auth_file,
         )
 
-        # 账号类型决定登录模式：Free 走个人号 OAuth；Team 走 Team workspace OAuth。
-        use_personal = acc.get("status") == STATUS_PERSONAL or (acc.get("account_type") or "").lower() == ACCOUNT_TYPE_FREE
+        # 账号类型决定登录模式：
+        # - Team 走旧 Team workspace OAuth；
+        # - Free/Plus/Pro 走原生 Codex OAuth，避免被强行注入 Team _account。
+        account_type = (acc.get("account_type") or ACCOUNT_TYPE_FREE).lower()
+        use_personal = acc.get("status") == STATUS_PERSONAL or account_type == ACCOUNT_TYPE_FREE
+        native_oauth = acc.get("status") == STATUS_PERSONAL or account_type in {
+            ACCOUNT_TYPE_FREE,
+            ACCOUNT_TYPE_PLUS,
+            ACCOUNT_TYPE_PRO,
+        }
 
         mail_client = TemporaryEmailClient()
         mail_client.login()
@@ -1941,40 +1953,48 @@ def post_account_login(params: LoginAccountParams):
             acc.get("password", ""),
             mail_client=mail_client,
             use_personal=use_personal,
+            native_oauth=native_oauth,
         )
         if bundle:
             auth_file = save_auth_file(bundle)
-            update_account(email, auth_file=auth_file, last_active_at=time.time())
             plan_type = (bundle.get("plan_type") or "").lower()
+            next_account_type = {
+                "free": ACCOUNT_TYPE_FREE,
+                "team": ACCOUNT_TYPE_TEAM,
+                "plus": ACCOUNT_TYPE_PLUS,
+                "pro": ACCOUNT_TYPE_PRO,
+            }.get(plan_type, account_type)
 
-            if use_personal:
-                update_account(email, status=STATUS_ACTIVE, account_type=ACCOUNT_TYPE_FREE)
-            elif plan_type == "team":
-                update_account(email, status=STATUS_ACTIVE, account_type=ACCOUNT_TYPE_TEAM)
-                token = bundle.get("access_token")
-                if token:
-                    st, info = check_codex_quota(token)
-                    if st == "ok" and isinstance(info, dict):
-                        update_account(email, last_quota=info)
-                    elif st == "exhausted":
-                        quota_info = quota_result_quota_info(info)
-                        if quota_info:
-                            update_account(email, last_quota=quota_info)
-                        update_account(
-                            email,
-                            status="exhausted",
-                            quota_exhausted_at=time.time(),
-                            quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
-                        )
-            # 同步到 CPA
-            from autoteam.cpa_sync import sync_to_cpa
+            update_account(
+                email,
+                status=STATUS_ACTIVE,
+                account_type=next_account_type,
+                auth_file=auth_file,
+                last_active_at=time.time(),
+            )
 
-            sync_to_cpa()
+            token = bundle.get("access_token")
+            account_id = bundle.get("account_id")
+            if token and account_id:
+                st, info = check_codex_quota(token, account_id=account_id)
+                if st == "ok" and isinstance(info, dict):
+                    update_account(email, last_quota=info)
+                elif st == "exhausted":
+                    quota_info = quota_result_quota_info(info)
+                    if quota_info:
+                        update_account(email, last_quota=quota_info)
+                    update_account(
+                        email,
+                        status="exhausted",
+                        quota_exhausted_at=time.time(),
+                        quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
+                    )
+            logger.info("[账号登录] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”")
             return {
                 "email": email,
                 "plan": bundle.get("plan_type"),
                 "auth_file": auth_file,
-                "mode": "personal" if use_personal else "team",
+                "mode": "native" if native_oauth else "team",
             }
         raise RuntimeError(f"Codex 登录失败: {email}")
 
@@ -2748,6 +2768,192 @@ def get_cpa_files():
     from autoteam.cpa_sync import list_cpa_files
 
     return list_cpa_files()
+
+
+class CpaToSub2ApiSource(BaseModel):
+    filename: str
+    content: str
+
+
+class CpaToSub2ApiProxyParams(BaseModel):
+    enabled: bool = False
+    name: str = "批量导入代理"
+    protocol: str = "http"
+    host: str = ""
+    port: int = 7890
+    username: str = ""
+    password: str = ""
+    status: str = "active"
+
+
+class CpaToSub2ApiSettingsParams(BaseModel):
+    output_dir: str = ""
+    output_filename: str = ""
+    concurrency: int = 10
+    priority: int = 1
+    rate_multiplier: float = 1.0
+    auto_pause_on_expired: bool = True
+    proxy: CpaToSub2ApiProxyParams = CpaToSub2ApiProxyParams()
+
+
+class CpaToSub2ApiInspectParams(BaseModel):
+    files: list[CpaToSub2ApiSource]
+
+
+class CpaToSub2ApiConvertParams(BaseModel):
+    files: list[CpaToSub2ApiSource]
+    selected_filenames: list[str] | None = None
+    settings: CpaToSub2ApiSettingsParams = CpaToSub2ApiSettingsParams()
+
+
+class CpaToSub2ApiOpenDirParams(BaseModel):
+    output_dir: str
+
+
+class CpaToSub2ApiSelectDirParams(BaseModel):
+    current_dir: str = ""
+
+
+def _default_cpa_to_sub2api_output_dir() -> Path:
+    desktop = Path.home() / "Desktop"
+    return desktop if desktop.exists() and desktop.is_dir() else Path.home()
+
+
+def _sub2api_record_to_dict(record):
+    return {
+        "file_name": record.file_name,
+        "selected": record.selected,
+        "is_valid": record.is_valid,
+        "variant": record.variant,
+        "email": record.email,
+        "target_name": record.target_name,
+        "plan_type": record.plan_type,
+        "status_text": record.status_text,
+        "error_message": record.error_message,
+    }
+
+
+def _sub2api_settings_from_params(params: CpaToSub2ApiSettingsParams):
+    from autoteam.sub2api_converter import ExportSettings, ProxyConfig, generate_default_filename
+
+    proxy = ProxyConfig(**params.proxy.model_dump())
+    return ExportSettings(
+        output_filename=params.output_filename.strip() or generate_default_filename(),
+        concurrency=params.concurrency,
+        priority=params.priority,
+        rate_multiplier=params.rate_multiplier,
+        auto_pause_on_expired=params.auto_pause_on_expired,
+        proxy=proxy,
+    )
+
+
+def _write_cpa_to_sub2api_output(output_dir: str, filename: str, content: str) -> str:
+    directory_text = output_dir.strip()
+    directory = Path(directory_text).expanduser() if directory_text else _default_cpa_to_sub2api_output_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        if not directory.is_dir():
+            raise OSError("输出路径不是目录")
+        output_path = directory / filename
+        output_path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"无法写入输出文件：{exc}") from exc
+    return str(output_path.resolve())
+
+
+@app.post("/api/cpa-to-sub2api/inspect")
+def inspect_cpa_to_sub2api(params: CpaToSub2ApiInspectParams):
+    """检查 CPA JSON 文件是否可转换为 Sub2API 导入格式。"""
+    from autoteam.sub2api_converter import inspect_sources
+
+    records = inspect_sources([(item.filename, item.content) for item in params.files])
+    return {
+        "records": [_sub2api_record_to_dict(record) for record in records],
+        "total": len(records),
+        "valid": sum(1 for record in records if record.is_valid),
+        "invalid": sum(1 for record in records if not record.is_valid),
+    }
+
+
+@app.post("/api/cpa-to-sub2api/convert")
+def convert_cpa_to_sub2api(params: CpaToSub2ApiConvertParams):
+    """将 CPA JSON 批量转换为 Sub2API 账号导入 JSON。"""
+    from autoteam.sub2api_converter import ConversionError, export_records, inspect_sources, validate_output_filename
+
+    try:
+        records = inspect_sources([(item.filename, item.content) for item in params.files])
+        settings = _sub2api_settings_from_params(params.settings)
+        selected = set(params.selected_filenames or []) if params.selected_filenames is not None else None
+        payload = export_records(records, settings, selected_file_names=selected)
+        filename = validate_output_filename(settings.output_filename)
+    except ConversionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    output_path = _write_cpa_to_sub2api_output(params.settings.output_dir, filename, content)
+    return {
+        "filename": filename,
+        "content": content,
+        "output_path": output_path,
+        "payload": payload,
+        "records": [_sub2api_record_to_dict(record) for record in records],
+        "total": len(records),
+        "converted": len(payload.get("accounts") or []),
+        "invalid": sum(1 for record in records if not record.is_valid),
+    }
+
+
+@app.post("/api/cpa-to-sub2api/open-output-dir")
+def open_cpa_to_sub2api_output_dir(params: CpaToSub2ApiOpenDirParams):
+    """打开 Sub2API 转换输出目录。"""
+    directory_text = params.output_dir.strip()
+    if not directory_text:
+        raise HTTPException(status_code=400, detail="输出目录不能为空")
+    directory = Path(directory_text).expanduser()
+    if not directory.exists() or not directory.is_dir():
+        raise HTTPException(status_code=404, detail="输出目录不存在")
+    try:
+        if os.name == "nt":
+            os.startfile(str(directory.resolve()))  # type: ignore[attr-defined]
+        else:
+            import subprocess
+
+            subprocess.Popen(["xdg-open", str(directory.resolve())])
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"打开输出目录失败：{exc}") from exc
+    return {"message": "已打开输出目录"}
+
+
+@app.get("/api/cpa-to-sub2api/default-output-dir")
+def get_cpa_to_sub2api_default_output_dir():
+    """获取默认 Sub2API 转换输出目录。"""
+    return {"output_dir": str(_default_cpa_to_sub2api_output_dir())}
+
+
+@app.post("/api/cpa-to-sub2api/select-output-dir")
+def select_cpa_to_sub2api_output_dir(params: CpaToSub2ApiSelectDirParams):
+    """弹出本机目录选择框并返回完整输出目录。"""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        initial_dir = Path(params.current_dir.strip()).expanduser()
+        if not initial_dir.exists() or not initial_dir.is_dir():
+            initial_dir = Path.cwd()
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(
+            title="选择输出目录",
+            initialdir=str(initial_dir),
+            mustexist=False,
+            parent=root,
+        )
+        root.destroy()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"选择输出目录失败：{exc}") from exc
+    return {"output_dir": selected or ""}
 
 
 # ---------------------------------------------------------------------------

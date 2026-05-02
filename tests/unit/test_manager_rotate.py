@@ -58,6 +58,5 @@ def test_cmd_rotate_skips_google_accounts_during_auto_reuse(monkeypatch):
         ("sync_account_states", None),
         ("cmd_check", None),
         ("reinvite", "old-2@example.com"),
-        ("sync_to_cpa", None),
     ]
     assert chatgpt.stopped == 1

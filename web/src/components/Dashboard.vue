@@ -173,9 +173,9 @@
               <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'primary') }}</td>
               <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'weekly') }}</td>
               <td class="px-4 py-3 text-right space-x-2">
-                <!-- 缺认证标识：Free 账号没有 auth_file → 在补登录按钮旁提示 -->
+                <!-- 缺认证标识：账号没有 auth_file → 在补登录按钮旁提示 -->
                 <span
-                  v-if="acc.account_type === 'free' && !acc.auth_file"
+                  v-if="!acc.is_main_account && !acc.auth_file"
                   class="inline-block px-2 py-0.5 mr-1 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30"
                   title="未拿到 Codex auth_file，请点击补登录">
                   缺认证
@@ -919,9 +919,9 @@ async function saveAccountType() {
 }
 
 function canLogin(acc) {
-  // active 账号已经有可用认证，不需要再登录。
   if (acc.is_main_account) return false
-  if (acc.status === 'active') return false
+  // active 账号只有在已经有 auth_file 时才不需要补登录。
+  if (acc.status === 'active' && acc.auth_file) return false
   return true
 }
 

@@ -62,6 +62,8 @@
         :running-task="busyTask" :admin-status="adminStatus"
         @task-started="onTaskStarted" @refresh="refresh" />
 
+      <CpaToSub2ApiPage v-else-if="currentPage === 'cpa2sub'" />
+
       <OAuthPage v-else-if="currentPage === 'oauth'"
         :manual-account-status="manualAccountStatus" @refresh="refresh" @progress="onAdminProgress" />
 
@@ -88,6 +90,7 @@ import BindCard from './components/BindCard.vue'
 import TeamMembers from './components/TeamMembers.vue'
 import PoolPage from './components/PoolPage.vue'
 import SyncPage from './components/SyncPage.vue'
+import CpaToSub2ApiPage from './components/CpaToSub2ApiPage.vue'
 import TaskHistoryPage from './components/TaskHistoryPage.vue'
 import LogViewer from './components/LogViewer.vue'
 import OAuthPage from './components/OAuthPage.vue'

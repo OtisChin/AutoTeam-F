@@ -8,6 +8,10 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from autoteam.accounts import (
+    ACCOUNT_TYPE_FREE,
+    ACCOUNT_TYPE_PLUS,
+    ACCOUNT_TYPE_PRO,
+    ACCOUNT_TYPE_TEAM,
     STATUS_ACTIVE,
     STATUS_EXHAUSTED,
     STATUS_STANDBY,
@@ -26,7 +30,6 @@ from autoteam.codex_auth import (
     quota_result_resets_at,
     save_auth_file,
 )
-from autoteam.cpa_sync import sync_to_cpa
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +144,7 @@ class ManualAccountFlow:
     def __init__(self):
         self.code_verifier, code_challenge = _generate_pkce()
         self.state = secrets.token_urlsafe(16)
-        self.auth_url = _build_auth_url(code_challenge, self.state)
+        self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=True)
         self.started_at = time.time()
         self._lock = threading.Lock()
         self._server = None
@@ -231,10 +234,17 @@ class ManualAccountFlow:
 
         auth_file = save_auth_file(bundle)
         plan_type = bundle.get("plan_type") or "unknown"
-        account_status = STATUS_ACTIVE if plan_type == "team" else STATUS_STANDBY
+        normalized_plan = str(plan_type or "unknown").strip().lower()
+        account_status = STATUS_ACTIVE if normalized_plan in {"free", "team", "plus", "pro"} else STATUS_STANDBY
         # plan_type=team → 拿到 Team bundle,同时 PATCH 成功意味着完整 ChatGPT 席位;
         # 其它 plan_type(free/plus/unknown)按 codex 处理,下游 fill 会据此做差异化判断。
-        seat_label = "chatgpt" if plan_type == "team" else "codex"
+        seat_label = "chatgpt" if normalized_plan == "team" else "codex"
+        account_type = {
+            "free": ACCOUNT_TYPE_FREE,
+            "team": ACCOUNT_TYPE_TEAM,
+            "plus": ACCOUNT_TYPE_PLUS,
+            "pro": ACCOUNT_TYPE_PRO,
+        }.get(normalized_plan, ACCOUNT_TYPE_FREE)
 
         accounts = load_accounts()
         account = find_account(accounts, email)
@@ -243,6 +253,7 @@ class ManualAccountFlow:
 
         update_fields = {
             "status": account_status,
+            "account_type": account_type,
             "seat_type": seat_label,
             "auth_file": auth_file,
             "quota_exhausted_at": None,
@@ -265,7 +276,7 @@ class ManualAccountFlow:
                 update_fields["quota_resets_at"] = quota_result_resets_at(quota_info) or int(time.time() + 18000)
 
         update_account(email, **update_fields)
-        sync_to_cpa()
+        logger.info("[手动添加] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”")
 
         return {
             "status": "completed",

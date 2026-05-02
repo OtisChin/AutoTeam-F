@@ -59,6 +59,7 @@ const items = [
   { key: 'team', icon: '👥', label: 'Team 成员', mobileLabel: '成员' },
   { key: 'pool', icon: '🔁', label: '账号池操作', mobileLabel: '账号池' },
   { key: 'sync', icon: '🔄', label: '同步中心', mobileLabel: '同步' },
+  { key: 'cpa2sub', icon: '🧩', label: 'CPA_2_Sub', mobileLabel: 'CPA2Sub' },
   { key: 'oauth', icon: '🔐', label: 'OAuth 登录', mobileLabel: 'OAuth' },
   { key: 'tasks', icon: '📜', label: '任务历史', mobileLabel: '任务' },
   { key: 'logs', icon: '📋', label: '日志', mobileLabel: '日志' },

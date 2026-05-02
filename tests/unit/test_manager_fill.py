@@ -56,7 +56,6 @@ def test_cmd_fill_tries_other_reusable_accounts_before_creating_new(monkeypatch)
     assert events == [
         ("reinvite", "old-1@example.com"),
         ("reinvite", "old-2@example.com"),
-        ("sync", None),
         ("status", None),
     ]
     assert chatgpt.stopped == 1
@@ -96,7 +95,6 @@ def test_cmd_fill_skips_google_accounts_during_auto_reuse(monkeypatch):
 
     assert events == [
         ("reinvite", "old-2@example.com"),
-        ("sync", None),
         ("status", None),
     ]
     assert chatgpt.stopped == 1

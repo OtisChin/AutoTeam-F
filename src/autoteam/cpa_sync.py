@@ -437,7 +437,7 @@ def sync_from_cpa():
     """
     from autoteam.accounts import STATUS_STANDBY, find_account, load_accounts, save_accounts
 
-    AUTH_DIR.mkdir(exist_ok=True)
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
 
     accounts = load_accounts()
     changed_accounts = False

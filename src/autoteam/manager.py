@@ -31,6 +31,12 @@ from pathlib import Path
 
 from autoteam.account_ops import delete_managed_account, fetch_team_state
 from autoteam.accounts import (
+    ACCOUNT_TYPE_FREE,
+    ACCOUNT_TYPE_PLUS,
+    ACCOUNT_TYPE_PRO,
+    ACCOUNT_TYPE_TEAM,
+    SEAT_CHATGPT,
+    SEAT_CODEX,
     STATUS_ACTIVE,
     STATUS_AUTH_INVALID,
     STATUS_EXHAUSTED,
@@ -48,15 +54,19 @@ from autoteam.accounts import (
 )
 from autoteam.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
 from autoteam.chatgpt_api import ChatGPTTeamAPI
-from autoteam.mail import TemporaryEmailClient
 from autoteam.codex_auth import (
+    CodexOAuthPhoneRequired,
     MainCodexSyncFlow,
     _click_primary_auth_button,
     _is_google_redirect,
     check_codex_quota,
     get_quota_exhausted_info,
     get_saved_main_auth_file,
+    is_chrome_cdp_available,
+    login_codex_via_auth_session,
     login_codex_via_browser,
+    login_codex_via_chrome_cdp,
+    login_codex_via_windows_ui,
     quota_result_quota_info,
     quota_result_resets_at,
     refresh_access_token,
@@ -66,12 +76,19 @@ from autoteam.codex_auth import (
 from autoteam.config import get_playwright_launch_options
 from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
 from autoteam.identity import random_age, random_birthday, random_full_name, random_password
+from autoteam.mail import TemporaryEmailClient
 from autoteam.register_failures import record_failure
 from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
 MAIL_TIMEOUT = int(os.environ.get("MAIL_TIMEOUT", "180"))
+POST_REGISTER_OAUTH_ENABLED = os.environ.get("POST_REGISTER_OAUTH_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _normalized_email(value: str | None) -> str:
@@ -80,6 +97,10 @@ def _normalized_email(value: str | None) -> str:
 
 def _is_main_account_email(email: str | None) -> bool:
     return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
+
+
+def _log_auto_cpa_sync_disabled(context: str):
+    logger.info("[%s] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”", context)
 
 
 _GOOGLE_AUTO_REUSE_DOMAINS = {"gmail.com", "googlemail.com"}
@@ -895,7 +916,7 @@ def cmd_check(include_standby: bool = False):
 
         if deleted_pending:
             logger.info("[检查] 已删除 %d 个失败 pending 账号", deleted_pending)
-            sync_to_cpa()
+            _log_auto_cpa_sync_disabled("检查")
 
         accounts = load_accounts()
 
@@ -1314,7 +1335,39 @@ def remove_from_team(chatgpt_api, email, *, return_status=False, lookup_retries=
         return "failed" if return_status else False
 
 
-def _run_post_register_oauth(email, password, mail_client, leave_workspace=False, out_outcome=None):
+def _discard_registered_account_after_oauth_failure(email, mail_client=None, *, reason=""):
+    """Remove an unusable newly registered account from both local pool and temp-mail service."""
+    cloudmail_account_id = None
+    try:
+        acc = find_account(load_accounts(), email)
+        if acc:
+            cloudmail_account_id = acc.get("cloudmail_account_id")
+    except Exception as exc:
+        logger.warning("[注册] 查询 %s 的临时邮箱 ID 失败: %s", email, exc)
+
+    if mail_client and cloudmail_account_id:
+        try:
+            mail_client.delete_account(cloudmail_account_id)
+            logger.info("[注册] 已删除不可用账号的临时邮箱: %s id=%s", email, cloudmail_account_id)
+        except Exception as exc:
+            logger.warning("[注册] 删除 %s 的临时邮箱失败: %s", email, exc)
+
+    removed = delete_account(email)
+    logger.info(
+        "[注册] 已从账号池删除不可用账号: %s removed=%s reason=%s",
+        email,
+        removed,
+        reason or "oauth_failed",
+    )
+
+
+def _run_post_register_oauth(
+    email,
+    password,
+    mail_client,
+    leave_workspace=False,
+    out_outcome=None,
+):
     """
     注册（加入 Team）成功后统一的收尾流程：
     - leave_workspace=False: 直接跑 Team 模式 Codex OAuth，状态置为 ACTIVE
@@ -1328,6 +1381,19 @@ def _run_post_register_oauth(email, password, mail_client, leave_workspace=False
         if out_outcome is not None:
             out_outcome.clear()
             out_outcome.update(status=status, email=email, **extra)
+
+    def _handle_oauth_phone_required(exc, stage):
+        logger.error("[注册] %s Codex OAuth 需要手机号验证，账号不可用，将从账号池删除: %s", email, exc)
+        _discard_registered_account_after_oauth_failure(email, mail_client, reason="oauth_phone_required")
+        record_failure(
+            email,
+            "phone_blocked",
+            "Codex OAuth 需要手机号验证",
+            stage=stage,
+            url=getattr(exc, "url", ""),
+        )
+        _record_outcome("phone_blocked", reason="Codex OAuth 需要手机号验证", stage=stage)
+        return None
 
     if leave_workspace:
         # 退出 Team 必须用主号权限，临时起一个 ChatGPTTeamAPI 实例完成 DELETE
@@ -1359,7 +1425,10 @@ def _run_post_register_oauth(email, password, mail_client, leave_workspace=False
             logger.info("[注册] kick 成功,等 8s 让 OpenAI workspace default 同步后再 OAuth...")
             time.sleep(8)
 
-        bundle = login_codex_via_browser(email, password, mail_client=mail_client, use_personal=True)
+        try:
+            bundle = login_codex_via_browser(email, password, mail_client=mail_client, use_personal=True)
+        except CodexOAuthPhoneRequired as exc:
+            return _handle_oauth_phone_required(exc, "post_leave_workspace")
         if bundle:
             auth_file = save_auth_file(bundle)
             # personal 分支:已主动退出 Team,bundle 是个人 free/plus plan,算 codex 席位
@@ -1391,7 +1460,10 @@ def _run_post_register_oauth(email, password, mail_client, leave_workspace=False
         return None
 
     # 原有 Team 流程
-    bundle = login_codex_via_browser(email, password, mail_client=mail_client)
+    try:
+        bundle = login_codex_via_browser(email, password, mail_client=mail_client)
+    except CodexOAuthPhoneRequired as exc:
+        return _handle_oauth_phone_required(exc, "post_register_team_oauth")
     if bundle:
         auth_file = save_auth_file(bundle)
         # 注册后 Team bundle 成功拿到,说明 workspace 已同步:seat_type=chatgpt
@@ -1655,13 +1727,6 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         )
         return None
 
-    account_id = str(
-        data.get("accountId")
-        or data.get("account_id")
-        or data.get("account", {}).get("id")
-        or data.get("user", {}).get("account_id")
-        or ""
-    ).strip()
     auth_file = save_auth_session(email, data)
     add_account(email, password, cloudmail_account_id=cloudmail_account_id, seat_type=SEAT_CODEX)
     logger.info("[注册] auth_session 已保存: %s", auth_file)
@@ -1679,6 +1744,168 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         "status": "success",
         "plan_type": "free",
         "auth_file": auth_file,
+    }
+
+
+def _run_post_register_session_oauth(
+    email,
+    password,
+    mail_client,
+    auth_session_data: dict,
+    *,
+    cloudmail_account_id=None,
+    out_outcome=None,
+):
+    """Use the just-created ChatGPT session to finish Codex OAuth, codex-console style."""
+
+    def _record_outcome(status, **extra):
+        if out_outcome is not None:
+            out_outcome.clear()
+            out_outcome.update(status=status, email=email, **extra)
+
+    oauth_result = None
+    oauth_source = "session_oauth"
+    browser_mode = str(os.environ.get("OAUTH_BROWSER_MODE") or "auto").strip().lower()
+    ui_requested = browser_mode in {"windows_ui", "real_chrome", "local_ui"}
+    cdp_requested = browser_mode in {"auto", "chrome", "chrome_cdp", "local_chrome"}
+    cdp_required = browser_mode in {"chrome", "chrome_cdp", "local_chrome"}
+
+    if ui_requested:
+        try:
+            logger.info("[注册] 开始使用 Windows UI 真实浏览器执行 Codex OAuth: %s", email)
+            oauth_result = login_codex_via_windows_ui(
+                email,
+                mail_client=mail_client,
+                password=password,
+                native_oauth=True,
+            )
+            oauth_source = "windows_ui_oauth"
+        except CodexOAuthPhoneRequired as exc:
+            logger.error("[注册] %s Windows UI OAuth 需要手机号验证，账号不可用，将删除: %s", email, exc)
+            _discard_registered_account_after_oauth_failure(email, mail_client, reason="oauth_phone_required")
+            record_failure(
+                email,
+                "phone_blocked",
+                "Codex OAuth 需要手机号验证",
+                stage="post_register_windows_ui_oauth",
+                url=getattr(exc, "url", ""),
+            )
+            _record_outcome(
+                "phone_blocked",
+                reason="Codex OAuth 需要手机号验证",
+                stage="post_register_windows_ui_oauth",
+            )
+            return None
+        except Exception as exc:
+            logger.warning("[注册] Windows UI OAuth 失败: %s", exc)
+            _record_outcome("windows_ui_oauth_failed", reason=f"Windows UI OAuth 失败: {exc}")
+            return None
+
+    if cdp_requested:
+        cdp_url = os.environ.get("OAUTH_CHROME_CDP_URL") or ""
+        if is_chrome_cdp_available(cdp_url or None):
+            try:
+                logger.info("[注册] 开始使用本机 Chrome CDP 执行 Codex OAuth: %s", email)
+                oauth_result = login_codex_via_chrome_cdp(
+                    email,
+                    mail_client=mail_client,
+                    password=password,
+                    native_oauth=True,
+                )
+                oauth_source = "chrome_cdp_oauth"
+            except CodexOAuthPhoneRequired as exc:
+                logger.error("[注册] %s 本机 Chrome CDP OAuth 需要手机号验证，账号不可用，将删除: %s", email, exc)
+                _discard_registered_account_after_oauth_failure(email, mail_client, reason="oauth_phone_required")
+                record_failure(
+                    email,
+                    "phone_blocked",
+                    "Codex OAuth 需要手机号验证",
+                    stage="post_register_chrome_cdp_oauth",
+                    url=getattr(exc, "url", ""),
+                )
+                _record_outcome(
+                    "phone_blocked",
+                    reason="Codex OAuth 需要手机号验证",
+                    stage="post_register_chrome_cdp_oauth",
+                )
+                return None
+            except Exception as exc:
+                logger.warning("[注册] 本机 Chrome CDP OAuth 失败: %s", exc)
+                if cdp_required:
+                    _record_outcome("chrome_cdp_oauth_failed", reason=f"本机 Chrome CDP OAuth 失败: {exc}")
+                    return None
+        elif cdp_required:
+            logger.warning(
+                "[注册] 已指定 OAUTH_BROWSER_MODE=chrome_cdp，但未检测到 Chrome CDP。"
+                "请先启动 Chrome: chrome.exe --remote-debugging-port=9222"
+            )
+            _record_outcome("chrome_cdp_unavailable", reason="未检测到本机 Chrome CDP")
+            return None
+
+    if oauth_result:
+        logger.info("[注册] 浏览器 Codex OAuth 成功: %s source=%s", email, oauth_source)
+    else:
+        oauth_source = "session_oauth"
+        try:
+            logger.info("[注册] 开始复用注册会话执行 Codex OAuth: %s", email)
+            oauth_result = login_codex_via_auth_session(
+                email,
+                auth_session_data,
+                mail_client=mail_client,
+                password=password,
+                native_oauth=True,
+            )
+        except CodexOAuthPhoneRequired as exc:
+            logger.error("[注册] %s 复用注册会话 OAuth 仍需要手机号验证，账号不可用，将删除: %s", email, exc)
+            _discard_registered_account_after_oauth_failure(email, mail_client, reason="oauth_phone_required")
+            record_failure(
+                email,
+                "phone_blocked",
+                "Codex OAuth 需要手机号验证",
+                stage="post_register_session_oauth",
+                url=getattr(exc, "url", ""),
+            )
+            _record_outcome("phone_blocked", reason="Codex OAuth 需要手机号验证", stage="post_register_session_oauth")
+            return None
+        except Exception as exc:
+            logger.warning("[注册] 复用注册会话 OAuth 失败，保留 auth_session 供手动补登录: %s", exc)
+            _record_outcome("session_oauth_failed", reason=f"复用注册会话 OAuth 失败: {exc}")
+            return None
+
+    if not oauth_result or not oauth_result.get("bundle"):
+        logger.warning("[注册] Codex OAuth 未返回 bundle，保留 auth_session 供手动补登录: %s", email)
+        _record_outcome(f"{oauth_source}_failed", reason="Codex OAuth 未返回 bundle")
+        return None
+
+    bundle = oauth_result["bundle"]
+    plan_type = (bundle.get("plan_type") or "free").strip().lower()
+    account_type = {
+        "free": ACCOUNT_TYPE_FREE,
+        "team": ACCOUNT_TYPE_TEAM,
+        "plus": ACCOUNT_TYPE_PLUS,
+        "pro": ACCOUNT_TYPE_PRO,
+    }.get(plan_type, ACCOUNT_TYPE_FREE)
+    seat_type = SEAT_CHATGPT if plan_type == "team" else SEAT_CODEX
+    status = STATUS_ACTIVE if plan_type in {"free", "team", "plus", "pro"} else STATUS_PERSONAL
+    auth_file = oauth_result.get("auth_file") or save_auth_file(bundle)
+
+    add_account(email, password, cloudmail_account_id=cloudmail_account_id, seat_type=seat_type)
+    update_account(
+        email,
+        status=status,
+        account_type=account_type,
+        seat_type=seat_type,
+        auth_file=auth_file,
+        last_active_at=time.time(),
+    )
+    logger.info("[注册] Codex OAuth 成功: %s plan=%s auth_file=%s source=%s", email, plan_type, auth_file, oauth_source)
+    _record_outcome("success", plan=plan_type, auth_file=auth_file, source=oauth_source)
+    return {
+        "email": email,
+        "status": "success",
+        "plan_type": plan_type,
+        "auth_file": auth_file,
+        "source": oauth_source,
     }
 
 
@@ -2403,7 +2630,6 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
                     page.url,
                     _page_excerpt(page),
                 )
-                last_failure_reason = f"邮箱步骤未推进 | URL: {page.url} | body={_page_excerpt(page)}"
         except Exception as exc:
             logger.warning("[直接注册] 邮箱步骤异常: %s | URL: %s", exc, page.url)
 
@@ -2415,7 +2641,6 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             return _finish(False)
         if current_step == "email":
             logger.warning("[直接注册] 邮箱步骤未推进 | URL: %s | body=%s", page.url, _page_excerpt(page))
-            last_failure_reason = f"邮箱步骤未推进 | URL: {page.url} | body={_page_excerpt(page)}"
             return _finish(False)
 
         try:
@@ -2588,7 +2813,8 @@ def create_account_direct(
 ):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
-    流程：创建邮箱 → 注册 ChatGPT → （可选）自动加入 workspace → Codex 登录
+    流程：创建邮箱 → 注册 ChatGPT → （可选）保存 auth_session → 复用注册会话尝试 Codex OAuth。
+    复用会话 OAuth 失败时保留 auth_session；遇到 add-phone 则按不可用账号处理。
     leave_workspace: 加入 workspace 后是否立即退出，转为 personal 模式跑 OAuth。
     out_outcome:     可选 dict，函数会把最终结局（success/phone_blocked/duplicate_exhausted/register_failed/...）
                      + 统计信息（register_attempts / duplicate_swaps / last_email / reason）写入，供上游汇总。
@@ -2726,6 +2952,23 @@ def create_account_direct(
                         out_outcome=out_outcome,
                     )
                     if session_auth:
+                        if not POST_REGISTER_OAUTH_ENABLED:
+                            logger.info("[注册] auth_session 已保存，注册后 Codex OAuth 已禁用: %s", email)
+                            return session_auth
+                        oauth_auth = _run_post_register_session_oauth(
+                            email,
+                            password,
+                            mail_client,
+                            session_data.get("data") or {},
+                            cloudmail_account_id=account_id,
+                            out_outcome=out_outcome,
+                        )
+                        if oauth_auth:
+                            logger.info("[注册] auth_session 已保存且 Codex OAuth 已完成: %s", email)
+                            return oauth_auth
+                        if out_outcome is not None and out_outcome.get("status") == "phone_blocked":
+                            return None
+                        logger.info("[注册] auth_session 已保存，复用会话 OAuth 未完成，等待手动补登录: %s", email)
                         return session_auth
                     logger.warning("[注册] /api/auth/session 未生成 auth_session 文件，继续按注册成功收尾: %s", email)
                 except Exception as exc:
@@ -2767,11 +3010,11 @@ def create_account_direct(
         return None
 
     add_account(email, password, cloudmail_account_id=account_id)
-    if skip_post_register:
+    if skip_post_register or not check_team_membership:
         if check_team_membership:
             logger.info("[直接注册] 注册完成，按要求跳过后续 OAuth/入池流程: %s", email)
         else:
-            logger.info("[直接注册] 注册完成，未生成 auth_session，按当前流程结束: %s", email)
+            logger.info("[直接注册] 注册完成，独立注册不自动执行 Codex OAuth: %s", email)
         _record_outcome("success", email=email, password=password, skipped_post_register=True)
         return {
             "email": email,
@@ -3144,10 +3387,7 @@ def cmd_replace_one(email, reason=""):
     finally:
         if chatgpt.browser:
             chatgpt.stop()
-        try:
-            sync_to_cpa()
-        except Exception as exc:
-            logger.warning("[替换] sync_to_cpa 抛异常(忽略): %s", exc)
+        _log_auto_cpa_sync_disabled("替换")
 
 
 def cmd_replace_batch(emails, trigger=""):
@@ -3176,10 +3416,7 @@ def cmd_replace_batch(emails, trigger=""):
     finally:
         if chatgpt.browser:
             chatgpt.stop()
-        try:
-            sync_to_cpa()
-        except Exception as exc:
-            logger.warning("[替换] sync_to_cpa 抛异常(忽略): %s", exc)
+        _log_auto_cpa_sync_disabled("替换")
 
     ok = sum(1 for o in outcomes if o.get("filled_by"))
     logger.info("[替换] 批量完成 %d/%d 个补位成功(trigger=%s)", ok, len(outcomes), trigger or "-")
@@ -3463,9 +3700,7 @@ def cmd_rotate(target_seats=5):
     finally:
         if chatgpt and chatgpt.browser:
             chatgpt.stop()
-        # 所有操作完成后统一同步 CPA，避免中途同步导致 CPA 不可用
-        logger.info("[轮转] 轮转完成，同步 CPA...")
-        sync_to_cpa()
+        _log_auto_cpa_sync_disabled("轮转")
         logger.info("[轮转] 完成，使用 status 命令查看最新状态")
 
 
@@ -3485,7 +3720,7 @@ def cmd_add(*, email_prefix=None, password=None, domain=None):
         )
         if result:
             logger.info("[添加] 新账号添加成功: %s", result)
-            sync_to_cpa()
+            _log_auto_cpa_sync_disabled("添加")
         else:
             logger.error("[添加] 添加失败")
     finally:
@@ -3506,7 +3741,7 @@ def cmd_register_accounts(
     domains=None,
     progress_callback=None,
 ):
-    """执行独立注册，并在成功后继续执行 personal OAuth / 落 auth_file。
+    """执行独立注册；成功后保存 auth_session，并复用注册会话尝试生成 Codex OAuth 文件。
 
     batch 模式支持受控并发；interval_seconds 作用于每个 worker 启动下一个账号前的冷却，
     降低瞬时并发注册带来的风控概率。
@@ -3619,7 +3854,7 @@ def cmd_register_accounts(
                 job_domain or "",
             )
             try:
-                result = create_account_direct(
+                raw_result = create_account_direct(
                     mail_client,
                     out_outcome=outcome,
                     email_prefix=email_prefix,
@@ -3628,13 +3863,19 @@ def cmd_register_accounts(
                     skip_post_register=True,
                     check_team_membership=False,
                 )
+                if isinstance(raw_result, str):
+                    result = {"status": outcome.get("status") or "success", "email": raw_result, **outcome}
+                elif isinstance(raw_result, dict):
+                    result = {**outcome, **raw_result}
+                else:
+                    result = None
                 results[job_index] = result or {"status": outcome.get("status") or "failed", **outcome}
             except Exception as exc:
                 logger.error("[注册账号] worker-%d 第 %d 个异常: %s", worker_id, job_index + 1, exc)
                 results[job_index] = {"status": "exception", "reason": str(exc)}
             finally:
                 item = results[job_index] or {}
-                is_ok = item.get("status") in ("registered", "success") or bool(item.get("email"))
+                is_ok = isinstance(item, dict) and item.get("status") in ("registered", "success")
                 with progress_lock:
                     progress["running"] = max(0, progress["running"] - 1)
                     progress["completed"] += 1
@@ -3661,7 +3902,7 @@ def cmd_register_accounts(
         t.join()
 
     normalized_results = [item or {"status": "failed", "reason": "unknown"} for item in results]
-    ok = [item for item in normalized_results if item.get("status") in ("registered", "success") or item.get("email")]
+    ok = [item for item in normalized_results if isinstance(item, dict) and item.get("status") in ("registered", "success")]
     logger.info(
         "[注册账号] 完成: 成功 %d / %d (并发=%d, 固定间隔=%.1fs, 抖动=%.1f-%.1fs)",
         len(ok),
@@ -3992,7 +4233,7 @@ def cmd_fill(target=5, leave_workspace=False):
                 logger.info("[填充] 当前成员数: %d/%d", new_count, target)
 
         logger.info("[填充] 填充完成")
-        sync_to_cpa()
+        _log_auto_cpa_sync_disabled("填充")
         cmd_status()
 
     finally:
@@ -4439,10 +4680,7 @@ def _cmd_fill_personal(count):
                     o.get("status"),
                     o.get("reason"),
                 )
-        try:
-            sync_to_cpa()
-        except Exception as exc:
-            logger.error("[免费号] sync_to_cpa 异常（已生产账号本地已入池，可稍后手动同步）: %s", exc)
+        _log_auto_cpa_sync_disabled("免费号")
         try:
             cmd_status()
         except Exception as exc:
@@ -4554,7 +4792,7 @@ def cmd_cleanup(max_seats=None):
                         logger.info("[清理] 已取消邀请 %s", inv_email)
 
         logger.info("[清理] 清理完成")
-        sync_to_cpa()
+        _log_auto_cpa_sync_disabled("清理")
 
     finally:
         chatgpt.stop()

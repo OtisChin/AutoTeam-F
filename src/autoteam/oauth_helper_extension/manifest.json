@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "AutoTeam OAuth Helper",
+  "version": "1.0.0",
+  "description": "Locks AutoTeam OAuth automation to OpenAI auth pages.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://auth.openai.com/*",
+    "http://localhost:1455/*",
+    "http://127.0.0.1:1455/*",
+    "http://127.0.0.1:*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://auth.openai.com/*",
+        "http://localhost:1455/auth/callback*",
+        "http://127.0.0.1:1455/auth/callback*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

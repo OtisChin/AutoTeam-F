@@ -17,6 +17,7 @@ def test_reinvite_account_uses_unified_oauth_login_and_marks_active(monkeypatch)
         },
     )
     monkeypatch.setattr(manager, "save_auth_file", lambda bundle: f"/tmp/{bundle['email']}.json")
+    monkeypatch.setattr(manager, "check_codex_quota", lambda token, account_id=None: ("ok", {}))
     monkeypatch.setattr(
         manager,
         "update_account",
@@ -36,16 +37,15 @@ def test_reinvite_account_uses_unified_oauth_login_and_marks_active(monkeypatch)
     )
 
     assert result is True
-    assert updates == [
-        (
-            "tmp-user@example.com",
-            {
-                "status": accounts.STATUS_ACTIVE,
-                "last_active_at": 1234567890,
-                "auth_file": "/tmp/tmp-user@example.com.json",
-            },
-        )
-    ]
+    assert ("tmp-user@example.com", {"last_quota": {}}) in updates
+    assert (
+        "tmp-user@example.com",
+        {
+            "status": accounts.STATUS_ACTIVE,
+            "last_active_at": 1234567890,
+            "auth_file": "/tmp/tmp-user@example.com.json",
+        },
+    ) in updates
 
 
 def test_reinvite_account_marks_standby_when_oauth_login_returns_non_team(monkeypatch):

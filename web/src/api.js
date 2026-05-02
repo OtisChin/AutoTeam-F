@@ -65,6 +65,11 @@ export const api = {
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),
   kickAccount: (email) => request('POST', `/accounts/${encodeURIComponent(email)}/kick`),
   getCpaFiles: () => request('GET', '/cpa/files'),
+  inspectCpaToSub2Api: (files) => request('POST', '/cpa-to-sub2api/inspect', { files }),
+  convertCpaToSub2Api: (payload) => request('POST', '/cpa-to-sub2api/convert', payload),
+  openCpaToSub2ApiOutputDir: (outputDir) => request('POST', '/cpa-to-sub2api/open-output-dir', { output_dir: outputDir }),
+  selectCpaToSub2ApiOutputDir: (currentDir) => request('POST', '/cpa-to-sub2api/select-output-dir', { current_dir: currentDir }),
+  getCpaToSub2ApiDefaultOutputDir: () => request('GET', '/cpa-to-sub2api/default-output-dir'),
 
   startAdminLogin: (email) => request('POST', '/admin/login/start', { email }),
   submitAdminSession: (email, sessionToken) => request('POST', '/admin/login/session', { email, session_token: sessionToken }),
