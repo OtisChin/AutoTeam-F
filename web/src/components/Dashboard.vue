@@ -33,6 +33,24 @@
             {{ selectedEmails.length ? `导出账密 (${selectedEmails.length})` : `导出账密 (${filteredAccounts.length})` }}
           </button>
           <button
+            @click="exportCpaAuths"
+            :disabled="!cpaExportableAccounts.length || cpaExporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="!cpaExportableAccounts.length || cpaExporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-sky-600/10 text-sky-400 border-sky-500/30 hover:bg-sky-600/20'">
+            {{ cpaExporting ? '导出中...' : `导出CPA认证 (${cpaExportableAccounts.length})` }}
+          </button>
+          <button
+            @click="batchLoginAccounts"
+            :disabled="loginDisabled || batchLoggingIn || !batchLoginableAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="loginDisabled || batchLoggingIn || !batchLoginableAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
+            {{ batchLoggingIn ? '提交中...' : `批量补登录 (${batchLoginableAccounts.length})` }}
+          </button>
+          <button
             v-if="selectedEmails.length"
             @click="batchDelete"
             :disabled="deleteDisabled || batchDeleting"
@@ -87,8 +105,16 @@
               {{ option.label }} ({{ option.count }})
             </option>
           </select>
+          <select
+            v-model="authCredentialFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部凭证</option>
+            <option v-for="option in authCredentialOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || authCredentialFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -173,11 +199,11 @@
               <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'primary') }}</td>
               <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'weekly') }}</td>
               <td class="px-4 py-3 text-right space-x-2">
-                <!-- 缺认证标识：账号没有 auth_file → 在补登录按钮旁提示 -->
+                <!-- 缺认证标识：账号没有 data/auths 下的 Codex auth_file → 在补登录按钮旁提示 -->
                 <span
-                  v-if="!acc.is_main_account && !acc.auth_file"
+                  v-if="needsCodexLogin(acc)"
                   class="inline-block px-2 py-0.5 mr-1 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30"
-                  title="未拿到 Codex auth_file，请点击补登录">
+                  title="未拿到 data/auths 下的 Codex auth 文件，请点击补登录">
                   缺认证
                 </span>
                 <button
@@ -363,6 +389,7 @@
               <div class="text-xs text-gray-500 mt-0.5">
                 {{ selectedEmails.length ? `将导出 ${selectedEmails.length} 个选中账号` : `将导出 ${filteredAccounts.length} 个筛选账号` }}
               </div>
+              <div class="text-xs text-gray-600 mt-1">已导出的账号也会按当前选择重复导出。</div>
             </div>
             <button @click="closeCredentialExport" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
@@ -425,7 +452,7 @@ const props = defineProps({
     default: null,
   },
 })
-const emit = defineEmits(['refresh'])
+const emit = defineEmits(['refresh', 'task-started'])
 
 const actionEmail = ref('')
 const actionType = ref('')
@@ -438,11 +465,14 @@ const emailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
 const credentialExportFilter = ref('')
+const authCredentialFilter = ref('')
 const accountTypeEditAccount = ref(null)
 const accountTypeEditValue = ref('')
 const accountTypeSaving = ref(false)
 const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
+const cpaExporting = ref(false)
+const batchLoggingIn = ref(false)
 const credentialLineFormat = ref('{email}-----{password}')
 
 // 批量删除选中态:按邮箱(小写)保存,便于跨刷新复用
@@ -520,15 +550,18 @@ const filteredAccounts = computed(() => {
   const statusNeedle = statusFilter.value
   const typeNeedle = accountTypeFilter.value
   const exportNeedle = credentialExportFilter.value
+  const authNeedle = authCredentialFilter.value
   return allAccounts.value.filter(acc => {
     const email = String(acc?.email || '').toLowerCase()
     const status = String(acc?.status || '')
     const accountType = String(acc?.account_type || 'free')
     const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
+    const authStatus = hasCodexAuthFile(acc) ? 'has_auth' : 'missing_auth'
     if (emailNeedle && !email.includes(emailNeedle)) return false
     if (statusNeedle && status !== statusNeedle) return false
     if (typeNeedle && accountType !== typeNeedle) return false
     if (exportNeedle && exportStatus !== exportNeedle) return false
+    if (authNeedle && authStatus !== authNeedle) return false
     return true
   })
 })
@@ -565,6 +598,19 @@ const credentialExportOptions = computed(() => {
     { value: 'exported', label: '已导出', count: exported },
   ]
 })
+const authCredentialOptions = computed(() => {
+  let hasAuth = 0
+  let missingAuth = 0
+  for (const acc of allAccounts.value) {
+    if (acc?.is_main_account) continue
+    if (hasCodexAuthFile(acc)) hasAuth += 1
+    else missingAuth += 1
+  }
+  return [
+    { value: 'missing_auth', label: '无凭证', count: missingAuth },
+    { value: 'has_auth', label: '有凭证', count: hasAuth },
+  ]
+})
 const selectableEmails = computed(() =>
   filteredAccounts.value.filter(a => !a.is_main_account).map(a => a.email)
 )
@@ -577,6 +623,20 @@ const exportableAccounts = computed(() => {
     return filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
   }
   return filteredAccounts.value
+})
+const batchLoginableAccounts = computed(() => {
+  const selected = new Set(selectedEmails.value.map(email => email.toLowerCase()))
+  const rows = selected.size
+    ? filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
+    : filteredAccounts.value
+  return rows.filter(acc => !acc.is_main_account && needsCodexLogin(acc))
+})
+const cpaExportableAccounts = computed(() => {
+  const selected = new Set(selectedEmails.value.map(email => email.toLowerCase()))
+  const rows = selected.size
+    ? filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
+    : filteredAccounts.value
+  return rows.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
 })
 const credentialPreview = computed(() => {
   const sample = exportableAccounts.value[0] || { email: 'xxx@email.com', status: 'active', seat_type: 'unknown' }
@@ -618,6 +678,7 @@ function clearFilters() {
   statusFilter.value = ''
   accountTypeFilter.value = ''
   credentialExportFilter.value = ''
+  authCredentialFilter.value = ''
 }
 
 function openAccountTypeEditor(acc) {
@@ -812,6 +873,7 @@ function exportAccounts() {
       status: statusFilter.value || '',
       account_type: accountTypeFilter.value || '',
       credentials_exported: credentialExportFilter.value || '',
+      auth_credential: authCredentialFilter.value || '',
       selected_only: selectedEmails.value.length > 0,
     },
     accounts: rows.map(acc => ({
@@ -877,6 +939,64 @@ async function downloadCredentials() {
   }
 }
 
+function downloadBase64File(contentBase64, filename, contentType) {
+  const binary = atob(contentBase64 || '')
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  const blob = new Blob([bytes], { type: contentType || 'application/octet-stream' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename || 'cpa-auths.zip'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function exportCpaAuths() {
+  const emails = cpaExportableAccounts.value.map(acc => acc.email).filter(Boolean)
+  if (!emails.length) return
+
+  cpaExporting.value = true
+  message.value = ''
+  try {
+    const result = await api.exportAccountCpaAuths(emails)
+    downloadBase64File(result.content_base64, result.filename, result.content_type)
+    const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无认证文件账号` : ''
+    message.value = `已导出 ${result.count || 0} 个 CPA 认证文件${missing}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    cpaExporting.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function batchLoginAccounts() {
+  if (loginDisabled.value || batchLoggingIn.value) return
+  const emails = batchLoginableAccounts.value.map(acc => acc.email).filter(Boolean)
+  if (!emails.length) return
+
+  batchLoggingIn.value = true
+  message.value = ''
+  try {
+    const result = await api.loginAccountsBatch(emails)
+    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个`
+    messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+    emit('task-started')
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    batchLoggingIn.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
 async function syncAccounts() {
   if (syncDisabled.value) return
   syncing.value = true
@@ -920,14 +1040,29 @@ async function saveAccountType() {
 
 function canLogin(acc) {
   if (acc.is_main_account) return false
-  // active 账号只有在已经有 auth_file 时才不需要补登录。
-  if (acc.status === 'active' && acc.auth_file) return false
+  if (acc.needs_codex_login !== undefined) return !!acc.needs_codex_login
+  // 兼容旧后端：只有 data/auths 下的 Codex auth 文件才算已补登录。
+  if (hasCodexAuthFile(acc)) return false
+  if (acc.auth_session_file) return true
+  if (!acc.auth_file) return true
   return true
 }
 
 function loginLabel(acc) {
-  if (acc.status === 'auth_invalid' || acc.status === 'orphan') return '补登录'
+  if (needsCodexLogin(acc) || acc.status === 'auth_invalid' || acc.status === 'orphan') return '补登录'
   return '登录'
+}
+
+function hasCodexAuthFile(acc) {
+  if (acc.has_codex_auth_file !== undefined) return !!acc.has_codex_auth_file
+  const file = String(acc.codex_auth_file || acc.auth_file || '').replace(/\\/g, '/').toLowerCase()
+  return file.includes('/data/auths/') || file.includes('/auths/codex-') || file.includes('data/auths/')
+}
+
+function needsCodexLogin(acc) {
+  if (acc.is_main_account) return false
+  if (acc.needs_codex_login !== undefined) return !!acc.needs_codex_login
+  return !hasCodexAuthFile(acc)
 }
 
 async function loginAccount(email) {
@@ -940,6 +1075,7 @@ async function loginAccount(email) {
     const result = await api.loginAccount(email)
     message.value = `已提交 ${email} 的登录任务: ${result.task_id}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+    emit('task-started')
     emit('refresh')
   } catch (e) {
     message.value = e.message

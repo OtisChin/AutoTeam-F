@@ -1,5 +1,14 @@
 <template>
   <div>
+    <div
+      v-if="gopaySuccessNoticeVisible"
+      class="fixed top-6 left-1/2 z-[60] w-[min(92vw,520px)] -translate-x-1/2 rounded-xl border border-emerald-500/40 bg-gray-950 px-5 py-4 shadow-2xl">
+      <div class="text-sm font-semibold text-emerald-300">GoPay 绑定成功</div>
+      <div class="mt-1 text-sm text-gray-200">
+        请在手机上解绑 OPENAI<span v-if="gopaySuccessNoticeEmail">：{{ gopaySuccessNoticeEmail }}</span>
+      </div>
+    </div>
+
     <h2 class="text-xl font-bold text-white mb-2">自助绑卡服务</h2>
     <p class="text-sm text-gray-400 mb-6">
       支持生成官方优惠链接，visa卡池管理，以及一键绑卡服务。
@@ -678,7 +687,16 @@
                 :disabled="gopaySubmitting || gopayTaskRunning"
                 class="accent-blue-500"
               />
-              付款未获批准 / 金额非 0 时删除账号
+              付款未获批准 / 金额非 0 / GoPay 授权失败时删除账号
+            </label>
+            <label class="mt-2 flex items-center gap-2 text-xs text-gray-300">
+              <input
+                v-model="gopayForm.autoOauthAfterSuccess"
+                type="checkbox"
+                :disabled="gopaySubmitting || gopayTaskRunning"
+                class="accent-blue-500"
+              />
+              绑定成功后自动 OAuth 补登录
             </label>
           </div>
 
@@ -982,6 +1000,7 @@ const gopayForm = ref({
   proxyLabel: '',
   proxyUrl: '',
   deleteRejectedAccounts: false,
+  autoOauthAfterSuccess: false,
 })
 const gopayAccountSearchKeyword = ref('')
 const gopayAccountPickerOpen = ref(false)
@@ -992,8 +1011,11 @@ const gopayTask = ref(null)
 const gopayLogEntries = ref([])
 const gopayLogScrollRef = ref(null)
 const gopayLoggedProgressEventIds = ref(new Set())
+const gopaySuccessNoticeVisible = ref(false)
+const gopaySuccessNoticeEmail = ref('')
 let bindTaskPollTimer = 0
 let gopayTaskPollTimer = 0
+let gopaySuccessNoticeTimer = 0
 
 const bindForm = ref({
   accessToken: '',
@@ -1259,6 +1281,10 @@ const gopayStageLabelMap = {
   gopay_try_account: '尝试当前 auth_session',
   gopay_rotate_account: '切换 auth_session 重试',
   gopay_account_bound: '当前账号绑定成功',
+  gopay_oauth_login_started: '开始 OAuth 补登录',
+  gopay_oauth_login_done: 'OAuth 补登录成功',
+  gopay_oauth_login_failed: 'OAuth 补登录失败',
+  gopay_oauth_phone_required_removed: 'OAuth 需要手机验证，已删除账号',
   gopay_batch_completed: '批量绑定完成',
   gopay_account_skipped_cooldown: '跳过冷却中的 auth_session',
   gopay_skip_current_requested: '已请求跳过当前账号',
@@ -1388,13 +1414,38 @@ const gopayTopCards = computed(() => [
 ])
 
 const gopayBoardFailureCount = computed(() => {
+  const failedEmails = new Set()
   const result = gopayTask.value?.result || {}
-  const rejected = Array.isArray(result.rejected_emails) ? result.rejected_emails.length : 0
-  const paymentFailed = Array.isArray(result.payment_failed_emails) ? result.payment_failed_emails.length : 0
-  const nonzero = Array.isArray(result.nonzero_blocked_emails) ? result.nonzero_blocked_emails.length : 0
-  const blocked = Array.isArray(result.blocked_emails) ? result.blocked_emails.length : 0
-  const skipped = Array.isArray(result.skipped_emails) ? result.skipped_emails.length : 0
-  return rejected + paymentFailed + nonzero + blocked + skipped
+  const lists = [
+    result.rejected_emails,
+    result.payment_failed_emails,
+    result.nonzero_blocked_emails,
+    result.blocked_emails,
+    result.skipped_emails,
+  ]
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue
+    for (const email of list) {
+      const normalized = String(email || '').trim().toLowerCase()
+      if (normalized) failedEmails.add(normalized)
+    }
+  }
+
+  const failureStages = new Set([
+    'chatgpt_approve_blocked_rotate',
+    'checkout_not_approved_rotate',
+    'gopay_payment_process_failed_rotate',
+    'gopay_nonzero_amount_blocked_rotate',
+    'gopay_account_skipped_by_user',
+  ])
+  const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
+  for (const event of events) {
+    if (!failureStages.has(String(event?.stage || ''))) continue
+    const normalized = String(event?.email || '').trim().toLowerCase()
+    if (normalized) failedEmails.add(normalized)
+  }
+
+  return failedEmails.size
 })
 
 const gopayBoardEmail = computed(() => {
@@ -1483,6 +1534,19 @@ function setMessage(text, ok = true) {
   }, 8000)
 }
 
+function showGoPaySuccessNotice(email = '') {
+  gopaySuccessNoticeEmail.value = String(email || '').trim()
+  gopaySuccessNoticeVisible.value = true
+  if (gopaySuccessNoticeTimer) {
+    window.clearTimeout(gopaySuccessNoticeTimer)
+  }
+  gopaySuccessNoticeTimer = window.setTimeout(() => {
+    gopaySuccessNoticeVisible.value = false
+    gopaySuccessNoticeEmail.value = ''
+    gopaySuccessNoticeTimer = 0
+  }, 5000)
+}
+
 function loadHistory() {
   try {
     const raw = localStorage.getItem(BIND_HISTORY_KEY)
@@ -1541,6 +1605,7 @@ function getRememberedGoPayForm() {
     proxyUrl: String(gopayForm.value.proxyUrl || '').trim(),
     checkoutUiMode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
     deleteRejectedAccounts: Boolean(gopayForm.value.deleteRejectedAccounts),
+    autoOauthAfterSuccess: Boolean(gopayForm.value.autoOauthAfterSuccess),
   }
 }
 
@@ -1562,6 +1627,7 @@ function loadGoPayFormState() {
       proxyUrl: String(saved.proxyUrl || '').trim(),
       checkoutUiMode: saved.checkoutUiMode === 'custom' ? 'custom' : 'hosted',
       deleteRejectedAccounts: Boolean(saved.deleteRejectedAccounts),
+      autoOauthAfterSuccess: Boolean(saved.autoOauthAfterSuccess),
     }
   } catch (e) {
     console.error('loadGoPayFormState', e)
@@ -1682,7 +1748,9 @@ function goPayProgressLogLevel(event) {
   const level = String(event?.level || '').trim()
   if (['info', 'success', 'warn', 'error'].includes(level)) return level
   const stage = String(event?.stage || '')
-  if (stage === 'completed' || stage === 'payment_completed' || stage === 'otp_received') return 'success'
+  if (stage === 'completed' || stage === 'payment_completed' || stage === 'otp_received' || stage === 'gopay_oauth_login_done') return 'success'
+  if (stage === 'gopay_oauth_login_failed') return 'error'
+  if (stage === 'gopay_oauth_phone_required_removed') return 'warn'
   if (stage.includes('not_approved') || stage.includes('blocked') || stage.includes('cooldown') || stage.includes('retry')) return 'warn'
   if (stage === 'failed' || stage.includes('all_accounts')) return 'error'
   return 'info'
@@ -1697,6 +1765,9 @@ function processGoPayProgressEvents(task) {
     gopayLoggedProgressEventIds.value.add(eventId)
     if (event?.stage === 'gopay_account_skipped_by_user') {
       gopaySkipping.value = false
+    }
+    if (event?.stage === 'gopay_account_bound') {
+      showGoPaySuccessNotice(event?.email || '')
     }
     const message = String(event?.message || '').trim()
     if (!message) continue
@@ -1787,6 +1858,13 @@ function stopGoPayTaskPolling() {
   if (gopayTaskPollTimer) {
     window.clearTimeout(gopayTaskPollTimer)
     gopayTaskPollTimer = 0
+  }
+}
+
+function stopGoPaySuccessNoticeTimer() {
+  if (gopaySuccessNoticeTimer) {
+    window.clearTimeout(gopaySuccessNoticeTimer)
+    gopaySuccessNoticeTimer = 0
   }
 }
 
@@ -2150,6 +2228,7 @@ async function startGoPayBind() {
       proxy_url: gopayForm.value.proxyUrl || null,
       proxy_label: gopayForm.value.proxyLabel,
       delete_rejected_accounts: Boolean(gopayForm.value.deleteRejectedAccounts),
+      auto_oauth_after_success: Boolean(gopayForm.value.autoOauthAfterSuccess),
     })
     gopayTask.value = task
     pushGoPayLog(`GoPay 任务已提交，任务 ID: ${task.task_id}`, 'success')
@@ -2237,6 +2316,7 @@ onMounted(() => {
 onUnmounted(() => {
   stopBindTaskPolling()
   stopGoPayTaskPolling()
+  stopGoPaySuccessNoticeTimer()
 })
 
 watch(activeTab, (tab) => {

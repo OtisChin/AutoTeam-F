@@ -56,6 +56,7 @@ from autoteam.admin_state import get_admin_email, get_admin_state_summary, get_c
 from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.codex_auth import (
     CodexOAuthPhoneRequired,
+    CodexProtocolOAuthError,
     MainCodexSyncFlow,
     _click_primary_auth_button,
     _is_google_redirect,
@@ -64,6 +65,7 @@ from autoteam.codex_auth import (
     get_saved_main_auth_file,
     is_chrome_cdp_available,
     login_codex_via_auth_session,
+    login_codex_via_auth_session_protocol,
     login_codex_via_browser,
     login_codex_via_chrome_cdp,
     login_codex_via_windows_ui,
@@ -1764,13 +1766,51 @@ def _run_post_register_session_oauth(
             out_outcome.update(status=status, email=email, **extra)
 
     oauth_result = None
-    oauth_source = "session_oauth"
-    browser_mode = str(os.environ.get("OAUTH_BROWSER_MODE") or "auto").strip().lower()
+    oauth_source = "protocol_oauth"
+    browser_mode = str(os.environ.get("OAUTH_BROWSER_MODE") or "protocol").strip().lower()
+    protocol_requested = browser_mode in {"", "auto", "protocol", "http", "session", "session_protocol"}
     ui_requested = browser_mode in {"windows_ui", "real_chrome", "local_ui"}
-    cdp_requested = browser_mode in {"auto", "chrome", "chrome_cdp", "local_chrome"}
+    cdp_requested = browser_mode in {"chrome", "chrome_cdp", "local_chrome"}
     cdp_required = browser_mode in {"chrome", "chrome_cdp", "local_chrome"}
+    session_browser_requested = browser_mode in {"playwright", "browser", "session_browser"}
 
-    if ui_requested:
+    if protocol_requested:
+        try:
+            logger.info("[注册] 开始复用注册会话执行协议 Codex OAuth: %s", email)
+            oauth_result = login_codex_via_auth_session_protocol(
+                email,
+                auth_session_data,
+                native_oauth=True,
+            )
+            oauth_source = "protocol_oauth"
+        except CodexOAuthPhoneRequired as exc:
+            logger.error("[注册] %s 协议 OAuth 需要手机号验证，账号不可用，将删除: %s", email, exc)
+            _discard_registered_account_after_oauth_failure(email, mail_client, reason="oauth_phone_required")
+            record_failure(
+                email,
+                "phone_blocked",
+                "Codex OAuth 需要手机号验证",
+                stage="post_register_protocol_oauth",
+                url=getattr(exc, "url", ""),
+            )
+            _record_outcome("phone_blocked", reason="Codex OAuth 需要手机号验证", stage="post_register_protocol_oauth")
+            return None
+        except CodexProtocolOAuthError as exc:
+            logger.warning("[注册] 协议 OAuth 未完成，保留 auth_session 供手动补登录: %s", exc)
+            _record_outcome("protocol_oauth_failed", reason=f"协议 OAuth 失败: {exc}")
+            if browser_mode in {"auto"}:
+                oauth_result = None
+            else:
+                return None
+        except Exception as exc:
+            logger.warning("[注册] 协议 OAuth 异常，保留 auth_session 供手动补登录: %s", exc)
+            _record_outcome("protocol_oauth_failed", reason=f"协议 OAuth 异常: {exc}")
+            if browser_mode in {"auto"}:
+                oauth_result = None
+            else:
+                return None
+
+    if not oauth_result and ui_requested:
         try:
             logger.info("[注册] 开始使用 Windows UI 真实浏览器执行 Codex OAuth: %s", email)
             oauth_result = login_codex_via_windows_ui(
@@ -1801,7 +1841,7 @@ def _run_post_register_session_oauth(
             _record_outcome("windows_ui_oauth_failed", reason=f"Windows UI OAuth 失败: {exc}")
             return None
 
-    if cdp_requested:
+    if not oauth_result and cdp_requested:
         cdp_url = os.environ.get("OAUTH_CHROME_CDP_URL") or ""
         if is_chrome_cdp_available(cdp_url or None):
             try:
@@ -1843,11 +1883,14 @@ def _run_post_register_session_oauth(
             return None
 
     if oauth_result:
-        logger.info("[注册] 浏览器 Codex OAuth 成功: %s source=%s", email, oauth_source)
+        logger.info("[注册] Codex OAuth 成功: %s source=%s", email, oauth_source)
     else:
+        if not session_browser_requested:
+            logger.warning("[注册] Codex OAuth 未完成，已保留 auth_session 供手动补登录: %s", email)
+            return None
         oauth_source = "session_oauth"
         try:
-            logger.info("[注册] 开始复用注册会话执行 Codex OAuth: %s", email)
+            logger.info("[注册] 开始复用注册会话执行 Playwright Codex OAuth: %s", email)
             oauth_result = login_codex_via_auth_session(
                 email,
                 auth_session_data,
@@ -2809,6 +2852,7 @@ def create_account_direct(
     password=None,
     domain=None,
     skip_post_register=False,
+    post_register_oauth=None,
     check_team_membership=True,
 ):
     """
@@ -2831,6 +2875,9 @@ def create_account_direct(
     chosen_password = password or random_password()
     password = chosen_password
     last_failure_reason = ""
+    post_register_oauth_enabled = (
+        POST_REGISTER_OAUTH_ENABLED if post_register_oauth is None else bool(post_register_oauth)
+    )
 
     def _record_outcome(status, **extra):
         if out_outcome is not None:
@@ -2952,7 +2999,7 @@ def create_account_direct(
                         out_outcome=out_outcome,
                     )
                     if session_auth:
-                        if not POST_REGISTER_OAUTH_ENABLED:
+                        if not post_register_oauth_enabled:
                             logger.info("[注册] auth_session 已保存，注册后 Codex OAuth 已禁用: %s", email)
                             return session_auth
                         oauth_auth = _run_post_register_session_oauth(
@@ -3739,6 +3786,7 @@ def cmd_register_accounts(
     password=None,
     domain=None,
     domains=None,
+    post_register_oauth=False,
     progress_callback=None,
 ):
     """执行独立注册；成功后保存 auth_session，并复用注册会话尝试生成 Codex OAuth 文件。
@@ -3771,6 +3819,7 @@ def cmd_register_accounts(
         "failed": 0,
         "running": 0,
     }
+    post_register_oauth = bool(post_register_oauth)
 
     def _emit_progress():
         if not progress_callback:
@@ -3860,7 +3909,8 @@ def cmd_register_accounts(
                     email_prefix=email_prefix,
                     password=password,
                     domain=job_domain,
-                    skip_post_register=True,
+                    skip_post_register=not post_register_oauth,
+                    post_register_oauth=post_register_oauth,
                     check_team_membership=False,
                 )
                 if isinstance(raw_result, str):

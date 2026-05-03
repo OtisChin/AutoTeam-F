@@ -73,6 +73,44 @@ def test_sanitize_account_keeps_exportable_main_account_active_without_live_quot
     assert sanitized["status"] == "active"
 
 
+def test_sanitize_account_marks_auth_session_only_account_needs_codex_login(tmp_path, monkeypatch):
+    session_file = tmp_path / "auth_session" / "user@example_com.json"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr("autoteam.auth_storage.AUTH_DIR", tmp_path / "auths")
+    monkeypatch.setattr("autoteam.auth_session_store.get_auth_session_file", lambda _email: str(session_file))
+
+    sanitized = api._sanitize_account(
+        {"email": "user@example.com", "status": "active", "auth_file": str(session_file)}
+    )
+
+    assert sanitized["auth_session_file"] == str(session_file)
+    assert sanitized["codex_auth_file"] == ""
+    assert sanitized["has_codex_auth_file"] is False
+    assert sanitized["needs_codex_login"] is True
+
+
+def test_sanitize_account_marks_codex_auth_file_as_logged_in(tmp_path, monkeypatch):
+    auth_dir = tmp_path / "data" / "auths"
+    auth_file = auth_dir / "codex-user@example.com-free-deadbeef.json"
+    auth_dir.mkdir(parents=True)
+    auth_file.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr("autoteam.auth_storage.AUTH_DIR", auth_dir)
+    monkeypatch.setattr("autoteam.auth_session_store.get_auth_session_file", lambda _email: "")
+
+    sanitized = api._sanitize_account(
+        {"email": "user@example.com", "status": "active", "auth_file": str(auth_file)}
+    )
+
+    assert sanitized["codex_auth_file"] == str(auth_file)
+    assert sanitized["has_codex_auth_file"] is True
+    assert sanitized["needs_codex_login"] is False
+
+
 def test_post_setup_save_keeps_cpa_url_required_and_generates_api_key(monkeypatch):
     written = {}
 
@@ -176,10 +214,12 @@ def test_post_add_uses_selected_domain_and_random_password(monkeypatch):
     assert captured["params"]["domains"] == ["altbus.com"]
     assert captured["params"]["prefix"] == "demo"
     assert captured["params"]["password_mode"] == "random"
+    assert captured["params"]["post_register_oauth"] is False
     assert captured["kwargs"]["email_prefix"] == "demo"
     assert captured["kwargs"]["password"] == "RandomPass123!"
     assert captured["kwargs"]["domain"] == "altbus.com"
     assert captured["kwargs"]["domains"] == ["altbus.com"]
+    assert captured["kwargs"]["post_register_oauth"] is False
 
 
 def test_post_add_batch_accepts_multiple_domains(monkeypatch):
@@ -204,6 +244,7 @@ def test_post_add_batch_accepts_multiple_domains(monkeypatch):
             concurrency=2,
             domains=["mail-b.com", "@mail-c.com", "mail-b.com"],
             prefix="demo",
+            post_register_oauth=True,
         )
     )
 
@@ -213,5 +254,6 @@ def test_post_add_batch_accepts_multiple_domains(monkeypatch):
     assert captured["params"]["domains"] == ["mail-b.com", "mail-c.com"]
     assert captured["kwargs"]["domain"] == "mail-b.com"
     assert captured["kwargs"]["domains"] == ["mail-b.com", "mail-c.com"]
+    assert captured["kwargs"]["post_register_oauth"] is True
     assert captured["kwargs"]["count"] == 5
     assert captured["kwargs"]["concurrency"] == 2

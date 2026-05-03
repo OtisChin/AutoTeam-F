@@ -30,3 +30,4 @@ auths.bak-*/
 .vscode/
 .ruff_cache/
 .pre-commit-config.yaml.local
+.bind_audit.json

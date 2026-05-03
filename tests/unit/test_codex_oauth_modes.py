@@ -1,3 +1,5 @@
+import base64
+import json
 import urllib.parse
 
 import requests
@@ -7,13 +9,53 @@ from autoteam.codex_auth import (
     _build_auth_url,
     _extract_auth_code_from_url,
     _extract_session_token_from_cookie_header,
+    _follow_codex_oauth_redirects_protocol,
+    _is_personal_codex_plan,
     is_chrome_cdp_available,
+    login_codex_via_auth_session_protocol,
 )
 from autoteam.manual_account import ManualAccountFlow
 
 
 def _query(url):
     return urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+
+
+def _jwt(payload):
+    def enc(data):
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f"{enc({'alg': 'none'})}.{enc(payload)}."
+
+
+class FakeOAuthResponse:
+    def __init__(self, status_code=200, text="", headers=None, payload=None):
+        self.status_code = status_code
+        self.text = text
+        self.headers = headers or {}
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+class FakeOAuthSession:
+    def __init__(self, gets, post_payload=None):
+        self.gets = list(gets)
+        self.post_payload = post_payload or {}
+        self.cookies = requests.cookies.RequestsCookieJar()
+        self.post_calls = []
+        self.get_calls = []
+
+    def get(self, url, **kwargs):
+        self.get_calls.append((url, kwargs))
+        response = self.gets.pop(0)
+        return response
+
+    def post(self, url, **kwargs):
+        self.post_calls.append((url, kwargs))
+        return FakeOAuthResponse(payload=self.post_payload)
 
 
 def test_native_codex_auth_url_matches_cli_style():
@@ -56,6 +98,84 @@ def test_extract_auth_code_from_callback_url():
 
     assert _extract_auth_code_from_url(url) == "abc123"
     assert _extract_auth_code_from_url("https://auth.openai.com/oauth/authorize") == ""
+
+
+def test_protocol_oauth_redirect_follow_extracts_callback_code():
+    session = FakeOAuthSession(
+        [
+            FakeOAuthResponse(
+                status_code=302,
+                headers={"Location": "http://localhost:1455/auth/callback?code=abc&state=state-1"},
+            )
+        ]
+    )
+
+    callback = _follow_codex_oauth_redirects_protocol(
+        session,
+        "https://auth.openai.com/oauth/authorize?x=1",
+        expected_state="state-1",
+    )
+
+    assert callback["code"] == "abc"
+    assert callback["state"] == "state-1"
+
+
+def test_protocol_oauth_login_saves_cpa_bundle(monkeypatch):
+    token_payload = {
+        "email": "new@example.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-1",
+            "chatgpt_plan_type": "plus",
+        },
+    }
+    fake_session = FakeOAuthSession(
+        [
+            FakeOAuthResponse(
+                status_code=302,
+                headers={"Location": "http://localhost:1455/auth/callback?code=abc&state=state"},
+            )
+        ],
+        post_payload={
+            "access_token": _jwt(token_payload),
+            "refresh_token": "refresh",
+            "id_token": _jwt(token_payload),
+            "expires_in": 3600,
+        },
+    )
+    saved = {}
+
+    monkeypatch.setattr("autoteam.codex_auth._make_protocol_oauth_session", lambda: fake_session)
+    monkeypatch.setattr("autoteam.codex_auth.secrets.token_urlsafe", lambda *_args, **_kwargs: "state")
+
+    def fake_save(bundle):
+        saved["bundle"] = bundle
+        return "data/auths/codex-new.json"
+
+    result = login_codex_via_auth_session_protocol(
+        "new@example.com",
+        {
+            "data": {"accountId": "acct-1"},
+            "auth_context": {
+                "cookie_header": "__Secure-next-auth.session-token=session; oai-did=device",
+                "device_id": "device",
+            },
+        },
+        auth_file_callback=fake_save,
+    )
+
+    assert result["auth_file"] == "data/auths/codex-new.json"
+    assert saved["bundle"]["email"] == "new@example.com"
+    assert saved["bundle"]["account_id"] == "acct-1"
+    assert saved["bundle"]["plan_type"] == "plus"
+    assert fake_session.post_calls[0][1]["data"]["code"] == "abc"
+
+
+def test_personal_codex_plan_accepts_plus_and_rejects_team():
+    assert _is_personal_codex_plan("free") is True
+    assert _is_personal_codex_plan("plus") is True
+    assert _is_personal_codex_plan("pro") is True
+    assert _is_personal_codex_plan("team") is False
+    assert _is_personal_codex_plan("unknown") is False
 
 
 def test_chrome_cdp_availability_false_on_request_error(monkeypatch):
@@ -200,6 +320,39 @@ def test_register_accounts_skips_post_register_oauth(monkeypatch):
 
     assert captured["mail_login"] is True
     assert captured["kwargs"]["skip_post_register"] is True
+    assert captured["kwargs"]["post_register_oauth"] is False
+    assert captured["kwargs"]["check_team_membership"] is False
+    assert result["ok"] == 1
+    assert result["failed"] == 0
+
+
+def test_register_accounts_can_enable_post_register_oauth(monkeypatch):
+    captured = {}
+
+    class FakeMailClient:
+        def login(self):
+            captured["mail_login"] = True
+
+    def fake_create_account_direct(mail_client, **kwargs):
+        captured["kwargs"] = kwargs
+        kwargs["out_outcome"].update(status="success", email="oauth@example.com")
+        return {"status": "success", "email": "oauth@example.com", "auth_file": "data/auths/codex-oauth.json"}
+
+    monkeypatch.setattr(manager, "TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(manager, "create_account_direct", fake_create_account_direct)
+
+    result = manager.cmd_register_accounts(
+        count=1,
+        concurrency=1,
+        interval_seconds=0,
+        jitter_min_seconds=0,
+        jitter_max_seconds=0,
+        post_register_oauth=True,
+    )
+
+    assert captured["mail_login"] is True
+    assert captured["kwargs"]["skip_post_register"] is False
+    assert captured["kwargs"]["post_register_oauth"] is True
     assert captured["kwargs"]["check_team_membership"] is False
     assert result["ok"] == 1
     assert result["failed"] == 0

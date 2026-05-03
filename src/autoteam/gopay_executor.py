@@ -458,7 +458,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "gopay_user_consent": "正在确认 GoPay 授权",
         "trigger_sms_otp": "正在触发 GoPay SMS OTP",
         "sms_otp_triggered": "已触发 GoPay SMS OTP",
-        "sms_otp_resend_due": "2 分钟未收到 GoPay OTP，正在重新发送短信验证码",
+        "sms_otp_resend_due": "1 分钟未收到 GoPay OTP，正在重新发送短信验证码",
         "wait_otp": "正在等待 GoPay SMS OTP",
         "fetch_otp": "正在从接码接口拉取 GoPay OTP",
         "otp_invalid": "GoPay OTP 错误，继续等待新验证码",

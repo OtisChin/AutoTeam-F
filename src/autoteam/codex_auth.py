@@ -66,6 +66,18 @@ class WindowsUIFlowError(RuntimeError):
     """Windows desktop browser automation failed."""
 
 
+class CodexProtocolOAuthError(RuntimeError):
+    """Protocol-only Codex OAuth flow failed."""
+
+    def __init__(self, message: str, *, final_url: str = "", body: str = ""):
+        self.final_url = final_url or ""
+        self.body = body or ""
+        detail = message
+        if self.final_url:
+            detail = f"{detail}: {self.final_url}"
+        super().__init__(detail)
+
+
 def _generate_pkce():
     """生成 PKCE code_verifier 和 code_challenge"""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
@@ -85,6 +97,55 @@ def _parse_jwt_payload(token):
         return json.loads(base64.urlsafe_b64decode(payload))
     except Exception:
         return {}
+
+
+def _extract_plan_from_token_claims(claims: dict) -> str:
+    auth_claims = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+    if not isinstance(auth_claims, dict):
+        return "unknown"
+    return str(auth_claims.get("chatgpt_plan_type") or "unknown").strip().lower() or "unknown"
+
+
+def _is_personal_codex_plan(plan: str | None) -> bool:
+    return (plan or "").strip().lower() in {"free", "plus", "pro"}
+
+
+def _build_bundle_from_token_response(token_data: dict, fallback_email=None):
+    id_token = str(token_data.get("id_token") or "")
+    access_token = str(token_data.get("access_token") or "")
+    claims = _parse_jwt_payload(id_token)
+    access_claims = _parse_jwt_payload(access_token)
+
+    auth_claims = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+    if not isinstance(auth_claims, dict):
+        auth_claims = {}
+    access_auth_claims = (
+        access_claims.get("https://api.openai.com/auth", {}) if isinstance(access_claims, dict) else {}
+    )
+    if not isinstance(access_auth_claims, dict):
+        access_auth_claims = {}
+
+    expires_in = token_data.get("expires_in", 3600)
+    try:
+        expires_in = int(expires_in)
+    except (TypeError, ValueError):
+        expires_in = 3600
+
+    return {
+        "access_token": access_token,
+        "refresh_token": str(token_data.get("refresh_token") or ""),
+        "id_token": id_token,
+        "account_id": str(
+            auth_claims.get("chatgpt_account_id")
+            or access_auth_claims.get("chatgpt_account_id")
+            or ""
+        ),
+        "email": str(claims.get("email") or fallback_email or ""),
+        "plan_type": _extract_plan_from_token_claims(claims)
+        if id_token
+        else _extract_plan_from_token_claims(access_claims),
+        "expired": time.time() + expires_in,
+    }
 
 
 def _screenshot(page, name):
@@ -201,6 +262,184 @@ def _extract_account_id_from_auth_session(data: dict) -> str:
     return str(auth_claims.get("chatgpt_account_id") or "").strip() if isinstance(auth_claims, dict) else ""
 
 
+def _make_protocol_oauth_session():
+    """Create a browser-like HTTP session for protocol OAuth."""
+    try:
+        from curl_cffi.requests import Session as CurlCffiSession  # type: ignore
+
+        session = CurlCffiSession(impersonate="chrome")
+        session._autoteam_transport = "curl_cffi"  # type: ignore[attr-defined]
+        return session
+    except Exception:
+        import requests
+
+        session = requests.Session()
+        session._autoteam_transport = "requests"  # type: ignore[attr-defined]
+        return session
+
+
+def _set_protocol_cookie(session, name: str, value: str, domain: str):
+    value = str(value or "").strip()
+    if not value:
+        return
+    try:
+        session.cookies.set(name, value, domain=domain, path="/")
+    except Exception:
+        session.cookies.set(name, value)
+
+
+def _seed_protocol_auth_cookies(session, *, session_token: str, account_id: str = "", device_id: str = ""):
+    domains = ("auth.openai.com", ".auth.openai.com")
+    for domain in domains:
+        if len(session_token) > 3800:
+            _set_protocol_cookie(session, "__Secure-next-auth.session-token.0", session_token[:3800], domain)
+            _set_protocol_cookie(session, "__Secure-next-auth.session-token.1", session_token[3800:], domain)
+        else:
+            _set_protocol_cookie(session, "__Secure-next-auth.session-token", session_token, domain)
+        _set_protocol_cookie(session, "_account", account_id, domain)
+        _set_protocol_cookie(session, "oai-did", device_id, domain)
+
+
+def _protocol_oauth_headers(referer: str = "") -> dict:
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+        ),
+    }
+    if referer:
+        headers["Referer"] = referer
+    return headers
+
+
+def _is_codex_oauth_callback_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(str(url or ""))
+    if "/auth/callback" not in (parsed.path or "").lower():
+        return False
+    query = urllib.parse.parse_qs(parsed.query or "", keep_blank_values=True)
+    fragment = urllib.parse.parse_qs(parsed.fragment or "", keep_blank_values=True)
+    return bool(query.get("code") or query.get("error") or fragment.get("code") or fragment.get("error"))
+
+
+def _parse_codex_oauth_callback_url(url: str) -> dict:
+    parsed = urllib.parse.urlparse(str(url or ""))
+    query = urllib.parse.parse_qs(parsed.query or "", keep_blank_values=True)
+    fragment = urllib.parse.parse_qs(parsed.fragment or "", keep_blank_values=True)
+
+    def get_value(name: str) -> str:
+        return str((query.get(name) or fragment.get(name) or [""])[0] or "").strip()
+
+    return {
+        "code": get_value("code"),
+        "state": get_value("state"),
+        "error": get_value("error") or get_value("error_description"),
+        "raw_url": url,
+    }
+
+
+def _extract_meta_refresh_url(html: str, base_url: str) -> str:
+    text = str(html or "")
+    match = re.search(
+        r"<meta[^>]+http-equiv=[\"']?refresh[\"']?[^>]+content=[\"'][^\"']*url=([^\"'>\s]+)",
+        text,
+        flags=re.I,
+    )
+    if not match:
+        return ""
+    return urllib.parse.urljoin(base_url, match.group(1).replace("&amp;", "&"))
+
+
+def _exchange_auth_code_protocol(session, auth_code: str, code_verifier: str, fallback_email=None):
+    logger.info("[Codex] 协议 OAuth 获取到 auth code，交换 token...")
+    resp = session.post(
+        CODEX_TOKEN_URL,
+        data={
+            "grant_type": "authorization_code",
+            "client_id": CODEX_CLIENT_ID,
+            "code": auth_code,
+            "redirect_uri": CODEX_REDIRECT_URI,
+            "code_verifier": code_verifier,
+        },
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": _protocol_oauth_headers()["User-Agent"],
+        },
+        timeout=30,
+    )
+    if getattr(resp, "status_code", 0) != 200:
+        raise CodexProtocolOAuthError(
+            f"Codex token 交换失败 HTTP {getattr(resp, 'status_code', '?')} {(getattr(resp, 'text', '') or '')[:200]}"
+        )
+    bundle = _build_bundle_from_token_response(resp.json(), fallback_email=fallback_email)
+    if not bundle.get("access_token") or not bundle.get("refresh_token"):
+        raise CodexProtocolOAuthError("Codex token 响应缺少 access_token 或 refresh_token")
+    logger.info("[Codex] 协议 OAuth 登录成功: %s (plan: %s)", bundle["email"], bundle["plan_type"])
+    return bundle
+
+
+def _follow_codex_oauth_redirects_protocol(session, auth_url: str, *, expected_state: str, max_redirects: int = 18):
+    current_url = auth_url
+    referer = ""
+    final_body = ""
+
+    for index in range(max(1, int(max_redirects or 1))):
+        if _is_codex_oauth_callback_url(current_url):
+            parsed = _parse_codex_oauth_callback_url(current_url)
+            if parsed.get("state") and parsed["state"] != expected_state:
+                raise CodexProtocolOAuthError("Codex OAuth state 不匹配", final_url=current_url)
+            return parsed
+
+        logger.info("[Codex] 协议 OAuth 跟随重定向 %s/%s: %s", index + 1, max_redirects, current_url[:120])
+        resp = session.get(
+            current_url,
+            headers=_protocol_oauth_headers(referer),
+            allow_redirects=False,
+            timeout=30,
+        )
+        final_body = str(getattr(resp, "text", "") or "")
+        status = int(getattr(resp, "status_code", 0) or 0)
+        location = str(getattr(resp, "headers", {}).get("Location") or "")
+
+        if status in {301, 302, 303, 307, 308} and location:
+            next_url = urllib.parse.urljoin(current_url, location)
+            if _is_codex_oauth_callback_url(next_url):
+                parsed = _parse_codex_oauth_callback_url(next_url)
+                if parsed.get("state") and parsed["state"] != expected_state:
+                    raise CodexProtocolOAuthError("Codex OAuth state 不匹配", final_url=next_url)
+                return parsed
+            referer = current_url
+            current_url = next_url
+            continue
+
+        meta_url = _extract_meta_refresh_url(final_body, current_url)
+        if meta_url:
+            referer = current_url
+            current_url = meta_url
+            continue
+
+        lower_url = current_url.lower()
+        lower_body = final_body[:3000].lower()
+        if "auth.openai.com/add-phone" in lower_url or "/add-phone" in lower_url:
+            raise CodexOAuthPhoneRequired(current_url)
+        if "add phone" in lower_body or "phone verification" in lower_body or "手机号" in lower_body:
+            raise CodexOAuthPhoneRequired(current_url)
+        if "log-in" in lower_url or "login" in lower_url or "电子邮件地址" in final_body or "email address" in lower_body:
+            raise CodexProtocolOAuthError("Codex OAuth 协议流落到登录页", final_url=current_url, body=final_body[:500])
+
+        raise CodexProtocolOAuthError(
+            f"Codex OAuth 协议流未返回回调，HTTP {status}",
+            final_url=current_url,
+            body=final_body[:500],
+        )
+
+    raise CodexProtocolOAuthError("Codex OAuth 协议流重定向次数超限", final_url=current_url, body=final_body[:500])
+
+
 def _exchange_auth_code(auth_code, code_verifier, fallback_email=None):
     logger.info("[Codex] 获取到 auth code，交换 token...")
 
@@ -223,19 +462,7 @@ def _exchange_auth_code(auth_code, code_verifier, fallback_email=None):
         return None
 
     token_data = resp.json()
-    id_token = token_data.get("id_token", "")
-    claims = _parse_jwt_payload(id_token)
-    auth_claims = claims.get("https://api.openai.com/auth", {})
-
-    bundle = {
-        "access_token": token_data.get("access_token"),
-        "refresh_token": token_data.get("refresh_token"),
-        "id_token": id_token,
-        "account_id": auth_claims.get("chatgpt_account_id", ""),
-        "email": claims.get("email", fallback_email or ""),
-        "plan_type": auth_claims.get("chatgpt_plan_type", "unknown"),
-        "expired": time.time() + token_data.get("expires_in", 3600),
-    }
+    bundle = _build_bundle_from_token_response(token_data, fallback_email=fallback_email)
 
     logger.info("[Codex] 登录成功: %s (plan: %s)", bundle["email"], bundle["plan_type"])
     return bundle
@@ -1074,13 +1301,13 @@ def login_codex_via_browser(
 
     # Personal 模式强校验 plan_type:当子号还挂在 Team workspace(OpenAI 后端 kick 同步延迟 /
     # default workspace 为 Team)时,auth.openai.com 会默认选 Team 颁发 token,拿到 plan_type=team
-    # 的 bundle —— 这个 token 绑在 Team account_id 上,一旦子号离开 Team 就作废(refresh 401),
-    # 本地却标成 PERSONAL,用户看到的是"可用免费号"但 Codex 跑不动。必须在这里拒收。
+    # 的 bundle —— 这个 token 绑在 Team account_id 上,一旦子号离开 Team 就作废(refresh 401)。
+    # 但 GoPay 绑定成功后的个人账号会返回 plus/pro,这些仍是个人 Codex token,必须接受。
     if use_personal:
         plan = (bundle.get("plan_type") or "").lower()
-        if plan != "free":
+        if not _is_personal_codex_plan(plan):
             logger.error(
-                "[Codex] personal 模式拿到 plan_type=%s(期望 free),account_id=%s。"
+                "[Codex] personal 模式拿到 plan_type=%s(期望 free/plus/pro),account_id=%s。"
                 "说明账号仍在 Team workspace,OAuth 默认选了 Team → token 绑 Team 后会随踢出作废。"
                 "拒收本次 bundle,触发上游 oauth_failed 分类。",
                 plan or "unknown",
@@ -2334,6 +2561,65 @@ def login_codex_via_windows_ui(
         otp_timeout=otp_timeout,
     )
     return flow.run()
+
+
+def login_codex_via_auth_session_protocol(
+    email,
+    session_data,
+    *,
+    native_oauth=True,
+    auth_file_callback=None,
+):
+    """Finish Codex OAuth by following auth redirects with the saved ChatGPT session cookies.
+
+    This is the codex-console style path: no Playwright, no local browser UI. It only succeeds
+    when the existing ChatGPT session can be accepted by auth.openai.com and redirected to the
+    local OAuth callback URL directly.
+    """
+    if not isinstance(session_data, dict):
+        logger.warning("[Codex] 协议 OAuth 失败: session_data 格式无效")
+        return None
+
+    raw_data = session_data.get("data") if isinstance(session_data.get("data"), dict) else session_data
+    context = session_data.get("auth_context") if isinstance(session_data.get("auth_context"), dict) else {}
+    merged = {}
+    if isinstance(raw_data, dict):
+        merged.update(raw_data)
+    merged.update({key: value for key, value in context.items() if value})
+
+    session_token = _extract_session_token_from_cookie_header(str(merged.get("cookie_header") or ""))
+    account_id = _extract_account_id_from_auth_session(merged)
+    device_id = str(merged.get("oai_device_id") or merged.get("device_id") or "").strip()
+    if not session_token:
+        logger.warning("[Codex] 协议 OAuth 失败: 缺少 session cookie")
+        return None
+
+    code_verifier, code_challenge = _generate_pkce()
+    state = secrets.token_urlsafe(16)
+    auth_url = _build_auth_url(code_challenge, state, native_oauth=native_oauth)
+    http = _make_protocol_oauth_session()
+    _seed_protocol_auth_cookies(
+        http,
+        session_token=session_token,
+        account_id=account_id,
+        device_id=device_id,
+    )
+
+    callback = _follow_codex_oauth_redirects_protocol(http, auth_url, expected_state=state)
+    if callback.get("error"):
+        raise CodexProtocolOAuthError(f"Codex OAuth 返回错误: {callback['error']}", final_url=callback.get("raw_url", ""))
+    auth_code = str(callback.get("code") or "").strip()
+    if not auth_code:
+        raise CodexProtocolOAuthError("Codex OAuth 回调缺少 code", final_url=callback.get("raw_url", ""))
+
+    bundle = _exchange_auth_code_protocol(http, auth_code, code_verifier, fallback_email=email)
+    filepath = (auth_file_callback or save_auth_file)(bundle)
+    return {
+        "email": bundle.get("email"),
+        "auth_file": filepath,
+        "plan_type": bundle.get("plan_type"),
+        "bundle": bundle,
+    }
 
 
 def login_codex_via_auth_session(

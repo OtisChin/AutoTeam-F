@@ -247,7 +247,7 @@
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
             <div>预览邮箱：<span class="font-mono text-gray-200">{{ registerPreviewEmail }}</span></div>
             <div>密码：<span class="text-gray-200">{{ registerForm.password || '自动随机生成' }}</span></div>
-            <div>行为：<span class="text-gray-200">只注册免费账号</span></div>
+            <div>行为：<span class="text-gray-200">{{ registerBehaviorLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch'">域名轮换：<span class="text-gray-200">{{ selectedRegisterDomainsLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch'">批量策略：<span class="text-gray-200">并发 {{ validConcurrency }}，固定间隔 {{ validIntervalSeconds }}s，随机抖动 {{ validJitterMinSeconds }}-{{ validJitterMaxSeconds }}s</span></div>
           </div>
@@ -406,6 +406,7 @@ const registerPreviewEmail = computed(() => {
     : (registerForm.value.domain || 'domain.com')
   return `${prefix}@${domain}`
 })
+const registerBehaviorLabel = computed(() => '只注册免费账号并保存 auth_session')
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
   return registerForm.value.mode === 'batch'
@@ -527,7 +528,7 @@ async function loadRegisterLogs() {
     const result = await api.getLogs(200)
     registerLogs.value = (result.logs || []).filter(entry => {
       const msg = String(entry.message || '')
-      return msg.includes('[注册账号]') || msg.includes('[直接注册]')
+      return msg.includes('[注册账号]') || msg.includes('[直接注册]') || msg.includes('[注册]') || msg.includes('[Codex]')
     })
     await nextTick()
     if (logsContainer.value) {

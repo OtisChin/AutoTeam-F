@@ -1,5 +1,7 @@
 """AutoTeam HTTP API - 将 CLI 功能暴露为 HTTP 接口"""
 
+import base64
+import io
 import json
 import logging
 import os
@@ -7,6 +9,8 @@ import re
 import threading
 import time
 import uuid
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -332,11 +336,11 @@ def _prune_tasks():
             del _tasks[tid]
 
 
-def _update_current_task_progress(progress: dict):
-    """更新当前运行任务的实时进度。"""
-    if not _current_task_id:
+def _append_task_progress(task_id: str | None, progress: dict):
+    """Append a progress event to a specific task, even from detached worker threads."""
+    if not task_id:
         return
-    task = _tasks.get(_current_task_id)
+    task = _tasks.get(task_id)
     if not task:
         return
     now = time.time()
@@ -353,6 +357,11 @@ def _update_current_task_progress(progress: dict):
     progress_events.append(event)
     if len(progress_events) > 300:
         del progress_events[: len(progress_events) - 300]
+
+
+def _update_current_task_progress(progress: dict):
+    """更新当前运行任务的实时进度。"""
+    _append_task_progress(_current_task_id, progress)
 
 
 def _run_task(task_id: str, func, *args, **kwargs):
@@ -517,6 +526,7 @@ class GoPayBindTaskParams(BaseModel):
     proxy_bypass: str | None = None
     timeout_seconds: int = 900
     delete_rejected_accounts: bool = False
+    auto_oauth_after_success: bool = False
 
 
 class CardPoolImportParams(BaseModel):
@@ -562,11 +572,16 @@ class ManualRegisterParams(BaseModel):
     domains: list[str] = []
     prefix: str | None = None
     password: str | None = None
+    post_register_oauth: bool = False
 
 
 class DeleteBatchParams(BaseModel):
     emails: list[str]
     continue_on_error: bool = True  # 部分失败时继续剩余账号,False 则遇错即停
+
+
+class AccountEmailBatchParams(BaseModel):
+    emails: list[str]
 
 
 class AccountTypeUpdateParams(BaseModel):
@@ -627,6 +642,25 @@ def _resolve_status_auth_file(acc: dict) -> str:
     return ""
 
 
+def _resolve_codex_auth_file(acc: dict) -> str:
+    auth_file = (acc.get("auth_file") or "").strip()
+    if not auth_file:
+        return ""
+
+    path = Path(auth_file)
+    if not path.exists() or not path.is_file():
+        return ""
+
+    try:
+        from autoteam.auth_storage import AUTH_DIR
+
+        path.resolve().relative_to(AUTH_DIR.resolve())
+    except Exception:
+        return ""
+
+    return str(path)
+
+
 def _display_account_status(acc: dict, quota_snapshot: dict | None = None) -> str:
     status = acc.get("status", "")
     if status in ("personal", "plus"):
@@ -663,6 +697,10 @@ def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     sanitized["account_type"] = _display_account_type(acc)
     sanitized["credentials_exported"] = bool(acc.get("credentials_exported"))
     sanitized["credentials_exported_at"] = acc.get("credentials_exported_at")
+    codex_auth_file = _resolve_codex_auth_file(acc)
+    sanitized["codex_auth_file"] = codex_auth_file
+    sanitized["has_codex_auth_file"] = bool(codex_auth_file)
+    sanitized["needs_codex_login"] = not sanitized["is_main_account"] and not bool(codex_auth_file)
     try:
         from autoteam.auth_session_store import get_auth_session_file
 
@@ -836,7 +874,22 @@ def _gopay_nonzero_blocked_pool_emails(result: dict, actual_email: str) -> list[
     return emails
 
 
-def _remove_gopay_rejected_accounts_from_pool(emails: list[str]) -> list[str]:
+def _gopay_payment_failed_pool_emails(result: dict, actual_email: str) -> list[str]:
+    seen = set()
+    emails = []
+    for raw_email in result.get("payment_failed_emails") or []:
+        email = _normalized_email(raw_email)
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+    if str(result.get("failure_stage") or "") == "gopay_payment_process":
+        email = _normalized_email(actual_email)
+        if email and email not in seen:
+            emails.append(email)
+    return emails
+
+
+def _remove_pool_accounts_from_local_and_mail(emails: list[str], *, log_context: str = "account-cleanup") -> list[str]:
     if not emails:
         return []
     from autoteam.accounts import delete_account as delete_local_account, find_account, load_accounts
@@ -860,13 +913,19 @@ def _remove_gopay_rejected_accounts_from_pool(emails: list[str]) -> list[str]:
                 resp = mail_client.delete_account(mail_target)
                 mail_deleted = bool(isinstance(resp, dict) and resp.get("code") == 200)
             except Exception as exc:
-                logger.warning("[gopay-bind] failed to delete rejected account from email service: email=%s error=%s", email, exc)
+                logger.warning(
+                    "[%s] failed to delete account from email service: email=%s error=%s",
+                    log_context,
+                    email,
+                    exc,
+                )
         record_deleted = delete_local_account(email)
         session_deleted = delete_auth_session(email)
         if record_deleted or session_deleted or mail_deleted:
             removed.append(email)
         logger.info(
-            "[gopay-bind] rejected/nonzero account removed: email=%s record_deleted=%s auth_session_deleted=%s mail_deleted=%s mail_target=%s",
+            "[%s] account removed: email=%s record_deleted=%s auth_session_deleted=%s mail_deleted=%s mail_target=%s",
+            log_context,
             email,
             record_deleted,
             session_deleted,
@@ -874,6 +933,14 @@ def _remove_gopay_rejected_accounts_from_pool(emails: list[str]) -> list[str]:
             mail_target,
         )
     return removed
+
+
+def _remove_gopay_rejected_accounts_from_pool(emails: list[str]) -> list[str]:
+    return _remove_pool_accounts_from_local_and_mail(emails, log_context="gopay-bind")
+
+
+def _remove_oauth_phone_required_accounts_from_pool(emails: list[str]) -> list[str]:
+    return _remove_pool_accounts_from_local_and_mail(emails, log_context="oauth-phone-required")
 
 
 def _session_only_account_stub(email: str) -> dict:
@@ -1758,6 +1825,77 @@ def export_account_credentials(params: AccountCredentialExportParams):
     }
 
 
+@app.post("/api/accounts/export-cpa-auths")
+def export_account_cpa_auths(params: AccountEmailBatchParams):
+    """导出 data/auths 下的 CPA 兼容认证 JSON。单个返回 JSON，多个返回 zip。"""
+    from autoteam.accounts import find_account, load_accounts
+
+    requested = []
+    seen = set()
+    for email in params.emails or []:
+        normalized = _normalized_email(email)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            requested.append(normalized)
+    if not requested:
+        raise HTTPException(status_code=400, detail="emails 不能为空")
+
+    accounts = load_accounts()
+    files = []
+    missing = []
+    for email in requested:
+        account = find_account(accounts, email)
+        if not account:
+            missing.append(email)
+            continue
+        auth_file = _resolve_codex_auth_file(account)
+        if not auth_file:
+            missing.append(email)
+            continue
+        path = Path(auth_file)
+        try:
+            content = read_text(path)
+            json.loads(content)
+        except Exception as exc:
+            logger.warning("[API] CPA auth 导出跳过无效文件: email=%s path=%s error=%s", email, path, exc)
+            missing.append(email)
+            continue
+        files.append({"email": email, "filename": path.name, "content": content})
+
+    if not files:
+        raise HTTPException(status_code=404, detail="选中的账号没有可导出的 data/auths 认证文件")
+
+    if len(files) == 1:
+        file = files[0]
+        raw = file["content"].encode("utf-8")
+        filename = file["filename"]
+        content_type = "application/json"
+    else:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            used_names = set()
+            for file in files:
+                name = file["filename"]
+                if name in used_names:
+                    stem = Path(name).stem
+                    suffix = Path(name).suffix or ".json"
+                    name = f"{stem}-{file['email']}{suffix}"
+                used_names.add(name)
+                archive.writestr(name, file["content"])
+        raw = buffer.getvalue()
+        filename = f"cpa-auths-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+        content_type = "application/zip"
+
+    return {
+        "filename": filename,
+        "content_type": content_type,
+        "content_base64": base64.b64encode(raw).decode("ascii"),
+        "count": len(files),
+        "missing": missing,
+        "files": [{"email": file["email"], "filename": file["filename"]} for file in files],
+    }
+
+
 @app.post("/api/accounts/delete-batch")
 def delete_accounts_batch(params: DeleteBatchParams):
     """
@@ -1903,6 +2041,104 @@ class LoginAccountParams(BaseModel):
     email: str
 
 
+def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = False) -> dict:
+    from autoteam.accounts import (
+        ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+        ACCOUNT_TYPE_TEAM,
+        STATUS_ACTIVE,
+        STATUS_PERSONAL,
+        update_account,
+    )
+    from autoteam.mail import TemporaryEmailClient
+    from autoteam.codex_auth import (
+        check_codex_quota,
+        login_codex_via_browser,
+        quota_result_quota_info,
+        quota_result_resets_at,
+        save_auth_file,
+    )
+
+    # 账号类型决定登录模式：
+    # - Team 走旧 Team workspace OAuth；
+    # - Free/Plus/Pro 走原生 Codex OAuth，避免被强行注入 Team _account。
+    account_type = (acc.get("account_type") or ACCOUNT_TYPE_FREE).lower()
+    use_personal = acc.get("status") == STATUS_PERSONAL or account_type == ACCOUNT_TYPE_FREE
+    native_oauth = acc.get("status") == STATUS_PERSONAL or account_type in {
+        ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+    }
+
+    mail_client = TemporaryEmailClient()
+    mail_client.login()
+    bundle = login_codex_via_browser(
+        email,
+        acc.get("password", ""),
+        mail_client=mail_client,
+        use_personal=use_personal,
+        native_oauth=native_oauth,
+        headless=headless,
+    )
+    if not bundle:
+        raise RuntimeError(f"Codex 登录失败: {email}")
+
+    auth_file = save_auth_file(bundle)
+    plan_type = (bundle.get("plan_type") or "").lower()
+    next_account_type = {
+        "free": ACCOUNT_TYPE_FREE,
+        "team": ACCOUNT_TYPE_TEAM,
+        "plus": ACCOUNT_TYPE_PLUS,
+        "pro": ACCOUNT_TYPE_PRO,
+    }.get(plan_type, account_type)
+
+    update_account(
+        email,
+        status=STATUS_ACTIVE,
+        account_type=next_account_type,
+        auth_file=auth_file,
+        last_active_at=time.time(),
+    )
+
+    token = bundle.get("access_token")
+    account_id = bundle.get("account_id")
+    if token and account_id:
+        st, info = check_codex_quota(token, account_id=account_id)
+        if st == "ok" and isinstance(info, dict):
+            update_account(email, last_quota=info)
+        elif st == "exhausted":
+            quota_info = quota_result_quota_info(info)
+            if quota_info:
+                update_account(email, last_quota=quota_info)
+            update_account(
+                email,
+                status="exhausted",
+                quota_exhausted_at=time.time(),
+                quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
+            )
+
+    logger.info("[账号登录] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”")
+    return {
+        "email": email,
+        "plan": bundle.get("plan_type"),
+        "auth_file": auth_file,
+        "mode": "native" if native_oauth else "team",
+    }
+
+
+def _oauth_phone_required_result(email: str, exc: Exception) -> dict:
+    removed = _remove_oauth_phone_required_accounts_from_pool([email])
+    return {
+        "email": email,
+        "status": "failed",
+        "failure_stage": "oauth_phone_required",
+        "message": f"OAuth 需要手机验证，已从号池删除账号: {email}",
+        "error": str(exc),
+        "removed_pool_emails": removed,
+    }
+
+
 @app.post("/api/accounts/login", status_code=202)
 def post_account_login(params: LoginAccountParams):
     """触发单个账号的 Codex 登录（后台执行）"""
@@ -1917,88 +2153,171 @@ def post_account_login(params: LoginAccountParams):
         raise HTTPException(status_code=404, detail="账号不存在")
 
     def _run():
-        from autoteam.accounts import (
-            ACCOUNT_TYPE_FREE,
-            ACCOUNT_TYPE_PLUS,
-            ACCOUNT_TYPE_PRO,
-            ACCOUNT_TYPE_TEAM,
-            STATUS_ACTIVE,
-            STATUS_PERSONAL,
-            update_account,
-        )
-        from autoteam.mail import TemporaryEmailClient
-        from autoteam.codex_auth import (
-            check_codex_quota,
-            login_codex_via_browser,
-            quota_result_quota_info,
-            quota_result_resets_at,
-            save_auth_file,
-        )
+        from autoteam.codex_auth import CodexOAuthPhoneRequired
 
-        # 账号类型决定登录模式：
-        # - Team 走旧 Team workspace OAuth；
-        # - Free/Plus/Pro 走原生 Codex OAuth，避免被强行注入 Team _account。
-        account_type = (acc.get("account_type") or ACCOUNT_TYPE_FREE).lower()
-        use_personal = acc.get("status") == STATUS_PERSONAL or account_type == ACCOUNT_TYPE_FREE
-        native_oauth = acc.get("status") == STATUS_PERSONAL or account_type in {
-            ACCOUNT_TYPE_FREE,
-            ACCOUNT_TYPE_PLUS,
-            ACCOUNT_TYPE_PRO,
-        }
-
-        mail_client = TemporaryEmailClient()
-        mail_client.login()
-        bundle = login_codex_via_browser(
-            email,
-            acc.get("password", ""),
-            mail_client=mail_client,
-            use_personal=use_personal,
-            native_oauth=native_oauth,
-        )
-        if bundle:
-            auth_file = save_auth_file(bundle)
-            plan_type = (bundle.get("plan_type") or "").lower()
-            next_account_type = {
-                "free": ACCOUNT_TYPE_FREE,
-                "team": ACCOUNT_TYPE_TEAM,
-                "plus": ACCOUNT_TYPE_PLUS,
-                "pro": ACCOUNT_TYPE_PRO,
-            }.get(plan_type, account_type)
-
-            update_account(
-                email,
-                status=STATUS_ACTIVE,
-                account_type=next_account_type,
-                auth_file=auth_file,
-                last_active_at=time.time(),
+        try:
+            return _run_account_codex_login_once(email, acc, headless=True)
+        except CodexOAuthPhoneRequired as exc:
+            result = _oauth_phone_required_result(email, exc)
+            _update_current_task_progress(
+                {
+                    "stage": "account_login_phone_required_removed",
+                    "email": email,
+                    "removed_pool_emails": result["removed_pool_emails"],
+                    "message": result["message"],
+                    "level": "warn",
+                }
             )
-
-            token = bundle.get("access_token")
-            account_id = bundle.get("account_id")
-            if token and account_id:
-                st, info = check_codex_quota(token, account_id=account_id)
-                if st == "ok" and isinstance(info, dict):
-                    update_account(email, last_quota=info)
-                elif st == "exhausted":
-                    quota_info = quota_result_quota_info(info)
-                    if quota_info:
-                        update_account(email, last_quota=quota_info)
-                    update_account(
-                        email,
-                        status="exhausted",
-                        quota_exhausted_at=time.time(),
-                        quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
-                    )
-            logger.info("[账号登录] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”")
-            return {
-                "email": email,
-                "plan": bundle.get("plan_type"),
-                "auth_file": auth_file,
-                "mode": "native" if native_oauth else "team",
-            }
-        raise RuntimeError(f"Codex 登录失败: {email}")
+            raise TaskResultError(result["message"], task_result=result) from exc
 
     task = _start_task(f"login:{email}", _run, {"email": email})
+    return task
+
+
+@app.post("/api/accounts/login-batch", status_code=202)
+def post_accounts_login_batch(params: AccountEmailBatchParams):
+    """批量触发账号 Codex 补登录（后台并发执行）。"""
+    from autoteam.accounts import find_account, load_accounts
+
+    emails = []
+    seen = set()
+    for item in params.emails or []:
+        email = _normalized_email(item)
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+    if not emails:
+        raise HTTPException(status_code=400, detail="emails 不能为空")
+    if any(_is_main_account_email(email) for email in emails):
+        raise HTTPException(status_code=400, detail="主号不属于账号池登录对象")
+
+    account_list = load_accounts()
+    accounts_by_email = {}
+    missing = []
+    for email in emails:
+        acc = find_account(account_list, email)
+        if not acc:
+            missing.append(email)
+            continue
+        accounts_by_email[email] = acc
+    if not accounts_by_email:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    def _run():
+        from autoteam.codex_auth import CodexOAuthPhoneRequired
+
+        task_id = _current_task_id or ""
+        ok = []
+        failed = []
+        phone_required = []
+        total = len(accounts_by_email)
+        result_lock = threading.Lock()
+
+        def _run_one(index: int, email: str, acc: dict) -> dict:
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "account_login",
+                    "email": email,
+                    "current": index,
+                    "total": total,
+                    "ok": len(ok),
+                    "failed": len(failed),
+                    "message": f"正在补登录 {email} ({index}/{total})",
+                }
+            )
+            try:
+                login_result = _run_account_codex_login_once(email, acc, headless=True)
+                return {"kind": "ok", "email": email, "index": index, "result": login_result}
+            except CodexOAuthPhoneRequired as exc:
+                result = _oauth_phone_required_result(email, exc)
+                return {"kind": "phone_required", "email": email, "index": index, "result": result}
+            except Exception as exc:
+                return {"kind": "failed", "email": email, "index": index, "error": str(exc), "exception": exc}
+
+        try:
+            configured_workers = int(os.environ.get("CODEX_OAUTH_BATCH_CONCURRENCY", "2") or "2")
+        except (TypeError, ValueError):
+            configured_workers = 2
+        max_workers = max(1, min(total, configured_workers))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="codex-oauth") as executor:
+            future_map = {
+                executor.submit(_run_one, index, email, acc): (index, email)
+                for index, (email, acc) in enumerate(accounts_by_email.items(), start=1)
+            }
+            for future in as_completed(future_map):
+                item = future.result()
+                item_email = item["email"]
+                with result_lock:
+                    if item["kind"] == "ok":
+                        ok.append(item["result"])
+                    elif item["kind"] == "phone_required":
+                        phone_required.append(item["result"])
+                        failed.append(item["result"])
+                    else:
+                        failed.append({"email": item_email, "error": item["error"]})
+
+                    ok_count = len(ok)
+                    failed_count = len(failed)
+
+                if item["kind"] == "ok":
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_done",
+                            "email": item_email,
+                            "current": item["index"],
+                            "total": total,
+                            "ok": ok_count,
+                            "failed": failed_count,
+                            "message": f"补登录成功: {item_email}",
+                        },
+                    )
+                elif item["kind"] == "phone_required":
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_phone_required_removed",
+                            "email": item_email,
+                            "current": item["index"],
+                            "total": total,
+                            "ok": ok_count,
+                            "failed": failed_count,
+                            "removed_pool_emails": item["result"].get("removed_pool_emails") or [],
+                            "message": item["result"].get("message") or f"OAuth 需要手机验证，已从号池删除账号: {item_email}",
+                            "level": "warn",
+                        },
+                    )
+                else:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_failed",
+                            "email": item_email,
+                            "current": item["index"],
+                            "total": total,
+                            "ok": ok_count,
+                            "failed": failed_count,
+                            "message": f"补登录失败: {item_email}: {item['error']}",
+                        },
+                    )
+                    exc = item.get("exception")
+                    logger.error(
+                        "[账号登录] 批量补登录失败: email=%s",
+                        item_email,
+                        exc_info=(type(exc), exc, getattr(exc, "__traceback__", None)) if exc else None,
+                    )
+
+        return {
+            "ok": ok,
+            "failed": failed,
+            "phone_required": phone_required,
+            "missing": missing,
+            "total": total,
+            "concurrency": max_workers,
+        }
+
+    task = _start_task("login-batch", _run, {"emails": emails, "missing": missing})
     return task
 
 
@@ -3237,6 +3556,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         started_at = time.time()
         result = None
         realtime_successful_emails: set[str] = set()
+        oauth_scheduled_emails: set[str] = set()
+        oauth_successful_emails: list[str] = []
+        oauth_failed_emails: list[dict] = []
 
         def _mark_gopay_success_account(email_value: str, *, message: str = "", success_checkout_url: str = ""):
             success_email = _normalized_email(email_value)
@@ -3262,6 +3584,85 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 task_id[:8] or "<unknown>",
                 _safe_email_summary(success_email),
             )
+            if not params.auto_oauth_after_success:
+                return
+
+            if success_email in oauth_scheduled_emails:
+                return
+            oauth_scheduled_emails.add(success_email)
+
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_oauth_login_started",
+                    "email": success_email,
+                    "message": f"GoPay 绑定成功，已在后台开始 OAuth 补登录: {success_email}",
+                }
+            )
+
+            def _oauth_worker():
+                from autoteam.codex_auth import CodexOAuthPhoneRequired
+
+                try:
+                    latest_account = find_account(load_accounts(), success_email) or {"email": success_email}
+                    oauth_result = _run_account_codex_login_once(success_email, latest_account, headless=True)
+                    oauth_successful_emails.append(success_email)
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_oauth_login_done",
+                            "email": success_email,
+                            "auth_file": oauth_result.get("auth_file") or "",
+                            "message": f"OAuth 补登录成功: {success_email}",
+                        },
+                    )
+                    logger.info(
+                        "[gopay-bind] OAuth login after GoPay success completed: task_id=%s email=%s auth_file=%s",
+                        task_id[:8] or "<unknown>",
+                        _safe_email_summary(success_email),
+                        oauth_result.get("auth_file") or "",
+                    )
+                except CodexOAuthPhoneRequired as exc:
+                    result_payload = _oauth_phone_required_result(success_email, exc)
+                    oauth_failed_emails.append(
+                        {
+                            "email": success_email,
+                            "error": str(exc),
+                            "failure_stage": "oauth_phone_required",
+                            "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
+                        }
+                    )
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_oauth_phone_required_removed",
+                            "email": success_email,
+                            "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
+                            "message": result_payload["message"],
+                            "level": "warn",
+                        },
+                    )
+                except Exception as exc:
+                    oauth_failed_emails.append({"email": success_email, "error": str(exc)})
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_oauth_login_failed",
+                            "email": success_email,
+                            "message": f"OAuth 补登录失败: {success_email}: {exc}",
+                        },
+                    )
+                    logger.exception(
+                        "[gopay-bind] OAuth login after GoPay success failed: task_id=%s email=%s",
+                        task_id[:8] or "<unknown>",
+                        _safe_email_summary(success_email),
+                    )
+
+            threading.Thread(
+                target=_oauth_worker,
+                name=f"gopay-oauth-{success_email[:24]}",
+                daemon=True,
+            ).start()
 
         def _gopay_progress(progress: dict):
             _update_current_task_progress(progress)
@@ -3345,6 +3746,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         result["proxy_state"] = proxy_config_state
         result["checkout_url"] = checkout_url or result.get("checkout_url") or ""
         result["account_emails"] = account_emails
+        if oauth_scheduled_emails:
+            result["oauth_scheduled_emails"] = sorted(oauth_scheduled_emails)
+        if oauth_successful_emails:
+            result["oauth_successful_emails"] = oauth_successful_emails[:]
+        if oauth_failed_emails:
+            result["oauth_failed_emails"] = oauth_failed_emails[:]
 
         if cancel_signal.is_cancelled() and result.get("status") != "success":
             task_status = "cancelled"
@@ -3385,23 +3792,30 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
 
         pending_successful_emails = [success_email for success_email in successful_emails if success_email not in realtime_successful_emails]
         if pending_successful_emails:
-            success_update = dict(account_update)
-            success_update["last_bind_status"] = "success"
-            success_update["status"] = STATUS_ACTIVE
-            success_update["account_type"] = ACCOUNT_TYPE_PLUS
-            success_update["plus_bound_at"] = finished_at
             for success_email in pending_successful_emails:
-                update_account(success_email, **success_update)
+                _mark_gopay_success_account(
+                    success_email,
+                    message=result.get("message") or "GoPay 绑定成功",
+                    success_checkout_url=result.get("checkout_url") or checkout_url or "",
+                )
             if result.get("status") != "success" and actual_email not in successful_emails:
                 update_account(actual_email, **account_update)
         elif not successful_emails:
             update_account(actual_email, **account_update)
 
+        if oauth_scheduled_emails:
+            result["oauth_scheduled_emails"] = sorted(oauth_scheduled_emails)
+        if oauth_successful_emails:
+            result["oauth_successful_emails"] = oauth_successful_emails[:]
+        if oauth_failed_emails:
+            result["oauth_failed_emails"] = oauth_failed_emails[:]
+
         removed_pool_emails = []
         rejected_pool_emails = _gopay_rejected_pool_emails(result, actual_email)
         nonzero_blocked_pool_emails = _gopay_nonzero_blocked_pool_emails(result, actual_email)
+        payment_failed_pool_emails = _gopay_payment_failed_pool_emails(result, actual_email)
         cleanup_pool_emails = []
-        for cleanup_email in [*rejected_pool_emails, *nonzero_blocked_pool_emails]:
+        for cleanup_email in [*rejected_pool_emails, *nonzero_blocked_pool_emails, *payment_failed_pool_emails]:
             if cleanup_email and cleanup_email not in cleanup_pool_emails:
                 cleanup_pool_emails.append(cleanup_email)
         if params.delete_rejected_accounts:
@@ -3409,11 +3823,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         elif cleanup_pool_emails:
             result["rejected_pool_emails"] = rejected_pool_emails
             result["nonzero_blocked_pool_emails"] = nonzero_blocked_pool_emails
+            result["payment_failed_pool_emails"] = payment_failed_pool_emails
             logger.info(
-                "[gopay-bind] rejected/nonzero accounts kept in pool: task_id=%s rejected=%s nonzero=%s",
+                "[gopay-bind] rejected/nonzero/payment-failed accounts kept in pool: task_id=%s rejected=%s nonzero=%s payment_failed=%s",
                 task_id[:8] or "<unknown>",
                 rejected_pool_emails,
                 nonzero_blocked_pool_emails,
+                payment_failed_pool_emails,
             )
         if removed_pool_emails:
             result["removed_pool_emails"] = removed_pool_emails
@@ -3594,6 +4010,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             "domains": selected_domains,
             "prefix": prefix or "",
             "password_mode": "provided" if password else "random",
+            "post_register_oauth": bool(params.post_register_oauth),
         },
         count=count,
         concurrency=concurrency,
@@ -3604,6 +4021,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         password=resolved_password,
         domain=selected_domain,
         domains=selected_domains,
+        post_register_oauth=bool(params.post_register_oauth),
         progress_callback=_update_current_task_progress,
     )
     return task

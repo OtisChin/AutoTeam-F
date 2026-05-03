@@ -150,7 +150,7 @@ def test_post_register_session_oauth_updates_account_with_codex_auth(monkeypatch
             },
         }
 
-    monkeypatch.setattr(manager, "login_codex_via_auth_session", fake_login)
+    monkeypatch.setattr(manager, "login_codex_via_auth_session_protocol", fake_login)
     monkeypatch.setattr(manager, "is_chrome_cdp_available", lambda *args, **kwargs: False)
     monkeypatch.setattr(manager, "add_account", lambda *args, **kwargs: captured.setdefault("add_account", (args, kwargs)))
     monkeypatch.setattr(manager, "update_account", lambda email, **kwargs: updates.append((email, kwargs)))
@@ -165,7 +165,7 @@ def test_post_register_session_oauth_updates_account_with_codex_auth(monkeypatch
 
     assert captured["login"]["email"] == "new@example.com"
     assert captured["login"]["native_oauth"] is True
-    assert result["source"] == "session_oauth"
+    assert result["source"] == "protocol_oauth"
     assert result["auth_file"] == "data/auths/codex-new@example.com-free.json"
     assert updates == [
         (
@@ -203,7 +203,7 @@ def test_post_register_oauth_prefers_chrome_cdp_when_available(monkeypatch):
             },
         }
 
-    monkeypatch.setenv("OAUTH_BROWSER_MODE", "auto")
+    monkeypatch.setenv("OAUTH_BROWSER_MODE", "chrome_cdp")
     monkeypatch.setattr(manager, "is_chrome_cdp_available", lambda *args, **kwargs: True)
     monkeypatch.setattr(manager, "login_codex_via_chrome_cdp", fake_chrome_login)
     monkeypatch.setattr(

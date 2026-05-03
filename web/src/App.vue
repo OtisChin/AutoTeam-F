@@ -44,7 +44,8 @@
 
       <!-- 页面内容 -->
       <Dashboard v-if="currentPage === 'dashboard'"
-        :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus" @refresh="refresh" />
+        :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus"
+        @task-started="onTaskStarted" @refresh="refresh" />
 
 <RegisterAccountPage v-else-if="currentPage === 'register'"
         :running-task="busyTask" :admin-status="adminStatus"
