@@ -17,7 +17,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from autoteam.config import API_KEY
 from autoteam.textio import read_text
@@ -538,8 +538,10 @@ class BindCardTaskParams(BaseModel):
 
 
 class GoPayBindTaskParams(BaseModel):
-    email: str
+    email: str = ""
     account_emails: list[str] = []
+    auto_register: bool = Field(False, validation_alias=AliasChoices("auto_register", "autoRegister"))
+    auto_register_count: int = Field(1, validation_alias=AliasChoices("auto_register_count", "autoRegisterCount"))
     phone_number: str
     country_code: str = ""
     sms_url: str
@@ -3591,6 +3593,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     )
 
     email = _normalized_email(params.email)
+    auto_register = bool(params.auto_register)
+    try:
+        auto_register_count = max(1, min(100, int(params.auto_register_count or 1)))
+    except Exception:
+        auto_register_count = 1
+    if not auto_register:
+        auto_register_count = 1
     account_emails = []
     seen_account_emails = set()
     for raw_email in params.account_emails or []:
@@ -3621,9 +3630,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         proxy_config_state = "invalid"
         proxy_config_error = _compact_log_text(exc, limit=160)
 
-    if not email:
+    if auto_register and checkout_url:
+        raise HTTPException(status_code=400, detail="自动注册模式不支持手动 checkout 链接")
+    if not auto_register and not email:
         raise HTTPException(status_code=400, detail="email 不能为空")
-    if checkout_url:
+    if auto_register:
+        account_emails = []
+    elif checkout_url:
         account_emails = []
     elif account_emails and email not in account_emails:
         account_emails.insert(0, email)
@@ -3634,8 +3647,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     if not gopay_pin:
         raise HTTPException(status_code=400, detail="gopay_pin 不能为空")
     logger.info(
-        "[gopay-bind] task submitted: email=%s account_count=%s checkout=%s checkout_mode=%s phone=%s proxy_label=%s proxy_state=%s proxy=%s proxy_error=%s timeout=%s",
-        _safe_email_summary(email),
+        "[gopay-bind] task submitted: email=%s auto_register=%s auto_register_count=%s account_count=%s checkout=%s checkout_mode=%s phone=%s proxy_label=%s proxy_state=%s proxy=%s proxy_error=%s timeout=%s",
+        _safe_email_summary(email) if email else "<auto-register>",
+        auto_register,
+        auto_register_count,
         len(account_emails) if account_emails else 1,
         _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
         checkout_ui_mode,
@@ -3647,36 +3662,38 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         max(120, int(params.timeout_seconds or 900)),
     )
 
-    accounts = load_accounts()
-    account = find_account(accounts, email)
-    if not account:
-        auth_session_file = get_auth_session_file(email)
-        if auth_session_file and Path(auth_session_file).exists():
-            account = _session_only_account_stub(email)
-            accounts.append(account)
-            save_accounts(accounts)
-        else:
-            raise HTTPException(status_code=404, detail="账号不存在")
-    if not _resolve_status_auth_file(account):
-        raise HTTPException(status_code=400, detail="该账号缺少可用 auth_session/auth_file")
-    for candidate_email in account_emails:
-        if candidate_email == email:
-            continue
-        candidate = find_account(accounts, candidate_email)
-        if not candidate:
-            auth_session_file = get_auth_session_file(candidate_email)
+    if not auto_register:
+        accounts = load_accounts()
+        account = find_account(accounts, email)
+        if not account:
+            auth_session_file = get_auth_session_file(email)
             if auth_session_file and Path(auth_session_file).exists():
-                candidate = _session_only_account_stub(candidate_email)
-                accounts.append(candidate)
+                account = _session_only_account_stub(email)
+                accounts.append(account)
                 save_accounts(accounts)
             else:
-                raise HTTPException(status_code=404, detail=f"批量账号不存在: {candidate_email}")
-        if not _resolve_status_auth_file(candidate):
-            raise HTTPException(status_code=400, detail=f"批量账号缺少可用 auth_session/auth_file: {candidate_email}")
+                raise HTTPException(status_code=404, detail="账号不存在")
+        if not _resolve_status_auth_file(account):
+            raise HTTPException(status_code=400, detail="该账号缺少可用 auth_session/auth_file")
+        for candidate_email in account_emails:
+            if candidate_email == email:
+                continue
+            candidate = find_account(accounts, candidate_email)
+            if not candidate:
+                auth_session_file = get_auth_session_file(candidate_email)
+                if auth_session_file and Path(auth_session_file).exists():
+                    candidate = _session_only_account_stub(candidate_email)
+                    accounts.append(candidate)
+                    save_accounts(accounts)
+                else:
+                    raise HTTPException(status_code=404, detail=f"批量账号不存在: {candidate_email}")
+            if not _resolve_status_auth_file(candidate):
+                raise HTTPException(status_code=400, detail=f"批量账号缺少可用 auth_session/auth_file: {candidate_email}")
 
     skip_current_signal = threading.Event()
 
     def _run():
+        nonlocal email, account_emails
         task_id = _current_task_id or ""
         started_at = time.time()
         result = None
@@ -3799,31 +3816,73 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 success_checkout_url=str(progress.get("checkout_url") or ""),
             )
 
-        try:
-            logger.info(
-                "[gopay-bind] runner started: task_id=%s email=%s account_count=%s checkout=%s checkout_mode=%s proxy_label=%s proxy_state=%s proxy=%s",
-                task_id[:8] or "<unknown>",
-                _safe_email_summary(email),
-                len(account_emails) if account_emails else 1,
-                _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
-                checkout_ui_mode,
-                params.proxy_label or "<none>",
-                proxy_config_state,
-                _safe_proxy_summary(normalized_proxy_url or proxy_url),
-            )
-            _update_current_task_progress(
+        def _append_unique(target: list, value: str):
+            normalized = _normalized_email(value)
+            if normalized and normalized not in target:
+                target.append(normalized)
+
+        def _merge_email_list(result_payload: dict, key: str, target: list[str]):
+            for raw_email in result_payload.get(key) or []:
+                _append_unique(target, raw_email)
+
+        def _register_one_for_gopay(*, index: int = 1, total: int = 1) -> str:
+            from autoteam.mail import TemporaryEmailClient
+            from autoteam.manager import create_account_direct
+            from autoteam.runtime_config import get_register_domain
+
+            register_domain = str(get_register_domain() or "").strip().lstrip("@")
+            if not register_domain:
+                raise RuntimeError("未配置可用注册域名")
+
+            _append_task_progress(
+                task_id,
                 {
-                    "stage": "gopay_binding",
-                    "email": email,
-                    "phone_number": phone_number,
-                    "country_code": country_code,
-                    "checkout_ui_mode": checkout_ui_mode,
-                    "proxy_label": params.proxy_label,
-                    "account_count": len(account_emails) if account_emails else 1,
-                }
+                    "stage": "gopay_auto_register_started",
+                    "current": index,
+                    "total": total,
+                    "message": f"自动注册已开始 ({index}/{total}): domain=@{register_domain}",
+                },
             )
-            result = run_gopay_bind_task(
-                email=email,
+            mail_client = TemporaryEmailClient()
+            mail_client.login()
+            outcome = {}
+            register_result = create_account_direct(
+                mail_client,
+                out_outcome=outcome,
+                domain=register_domain,
+                skip_post_register=True,
+                post_register_oauth=False,
+                check_team_membership=False,
+            )
+            registered_email = _normalized_email(
+                (register_result or {}).get("email") if isinstance(register_result, dict) else register_result
+            )
+            if not registered_email:
+                registered_email = _normalized_email(outcome.get("email") or outcome.get("last_email"))
+            if not registered_email:
+                raise RuntimeError(outcome.get("reason") or "自动注册未返回邮箱")
+
+            registered_account = find_account(load_accounts(), registered_email)
+            if not registered_account or not _resolve_status_auth_file(registered_account):
+                auth_session_file = get_auth_session_file(registered_email)
+                if not auth_session_file or not Path(auth_session_file).exists():
+                    raise RuntimeError(f"自动注册账号缺少可用 auth_session/auth_file: {registered_email}")
+
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_auto_register_done",
+                    "email": registered_email,
+                    "current": index,
+                    "total": total,
+                    "message": f"自动注册完成 ({index}/{total})，开始 GoPay 绑定: {registered_email}",
+                },
+            )
+            return registered_email
+
+        def _run_one_gopay_bind(bind_email: str, bind_account_emails: list[str]) -> dict:
+            return run_gopay_bind_task(
+                email=bind_email,
                 checkout_url=checkout_url,
                 checkout_ui_mode=checkout_ui_mode,
                 phone_number=phone_number,
@@ -3842,17 +3901,168 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 proxy_url=proxy_url,
                 proxy_bypass=params.proxy_bypass,
                 timeout_seconds=max(120, int(params.timeout_seconds or 900)),
-                account_emails=account_emails,
+                account_emails=bind_account_emails,
                 is_cancelled=cancel_signal.is_cancelled,
                 skip_current=skip_current_signal.is_set,
                 clear_skip_current=skip_current_signal.clear,
                 progress_callback=_gopay_progress,
             )
+
+        def _run_auto_register_gopay_batch() -> dict:
+            nonlocal email, account_emails
+            aggregate_results: list[dict] = []
+            successful_emails: list[str] = []
+            failed_emails: list[dict] = []
+            rejected_emails: list[str] = []
+            payment_failed_emails: list[str] = []
+            nonzero_blocked_emails: list[str] = []
+            blocked_emails: list[str] = []
+            last_result: dict = {}
+            last_success_email = ""
+
+            for index in range(1, auto_register_count + 1):
+                if cancel_signal.is_cancelled():
+                    break
+                current_email = ""
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_auto_register_next",
+                        "current": index,
+                        "total": auto_register_count,
+                        "message": f"自动注册 GoPay 进度: {index}/{auto_register_count}",
+                    },
+                )
+                try:
+                    current_email = _register_one_for_gopay(index=index, total=auto_register_count)
+                    email = current_email
+                    account_emails = []
+                    single_result = dict(_run_one_gopay_bind(current_email, []) or {})
+                except Exception as exc:
+                    logger.exception("[gopay-bind] auto-register GoPay attempt failed: index=%s/%s", index, auto_register_count)
+                    single_result = {
+                        "status": "failed",
+                        "failure_stage": "gopay_auto_register" if not current_email else "post_submit",
+                        "message": f"自动注册 GoPay 尝试失败: {exc}",
+                        "screenshot_paths": [],
+                    }
+                single_result.setdefault("status", "failed")
+                single_result.setdefault("failure_stage", "")
+                single_result.setdefault("message", "")
+                single_result.setdefault("screenshot_paths", [])
+                single_email = _normalized_email(single_result.get("email_used") or single_result.get("email") or current_email)
+                if single_email:
+                    single_result["email_used"] = single_email
+                single_result["auto_register_index"] = index
+                single_result["auto_register_total"] = auto_register_count
+                aggregate_results.append(single_result)
+                last_result = single_result
+
+                _merge_email_list(single_result, "successful_emails", successful_emails)
+                _merge_email_list(single_result, "rejected_emails", rejected_emails)
+                _merge_email_list(single_result, "payment_failed_emails", payment_failed_emails)
+                _merge_email_list(single_result, "nonzero_blocked_emails", nonzero_blocked_emails)
+                _merge_email_list(single_result, "blocked_emails", blocked_emails)
+                single_failure_stage = str(single_result.get("failure_stage") or "")
+                if single_email and _is_gopay_checkout_not_approved_result(single_result):
+                    _append_unique(rejected_emails, single_email)
+                if single_email and single_failure_stage in {"browser_charge_guard", "stripe_charge_guard", "midtrans_charge_guard"}:
+                    _append_unique(nonzero_blocked_emails, single_email)
+                if single_email and single_failure_stage == "gopay_payment_process":
+                    _append_unique(payment_failed_emails, single_email)
+                if single_result.get("status") == "success":
+                    _append_unique(successful_emails, single_email)
+                    last_success_email = single_email or last_success_email
+                else:
+                    failed_emails.append(
+                        {
+                            "email": single_email,
+                            "failure_stage": single_result.get("failure_stage") or "",
+                            "message": single_result.get("message") or "",
+                        }
+                    )
+
+            if not aggregate_results:
+                return {
+                    "status": "cancelled" if cancel_signal.is_cancelled() else "failed",
+                    "failure_stage": "cancelled" if cancel_signal.is_cancelled() else "gopay_auto_register",
+                    "message": "自动注册 GoPay 任务已取消" if cancel_signal.is_cancelled() else "自动注册 GoPay 未执行",
+                    "screenshot_paths": [],
+                    "auto_register_results": [],
+                    "successful_emails": [],
+                    "failed_emails": [],
+                }
+
+            success_count = len(successful_emails)
+            attempted_count = len(aggregate_results)
+            aggregate_status = "success" if success_count else ("cancelled" if cancel_signal.is_cancelled() else "failed")
+            failure_stage = ""
+            if success_count and failed_emails:
+                failure_stage = "partial_failed"
+            elif not success_count:
+                failure_stage = last_result.get("failure_stage") or "gopay_auto_register"
+            message = f"自动注册 GoPay 绑定完成: 成功 {success_count}/{auto_register_count} 个账号"
+            if failed_emails:
+                message += f"，失败 {len(failed_emails)} 个"
+            if cancel_signal.is_cancelled() and attempted_count < auto_register_count:
+                message += "，任务已取消"
+
+            result_payload = dict(last_result)
+            result_payload.update(
+                {
+                    "status": aggregate_status,
+                    "failure_stage": failure_stage,
+                    "message": message,
+                    "auto_register_results": aggregate_results,
+                    "auto_register_count": auto_register_count,
+                    "auto_register_attempted": attempted_count,
+                    "successful_emails": successful_emails,
+                    "failed_emails": failed_emails,
+                    "rejected_emails": rejected_emails,
+                    "payment_failed_emails": payment_failed_emails,
+                    "nonzero_blocked_emails": nonzero_blocked_emails,
+                    "blocked_emails": blocked_emails,
+                    "email_used": last_success_email or _normalized_email(last_result.get("email_used") or email),
+                }
+            )
+            return result_payload
+
+        try:
+            logger.info(
+                "[gopay-bind] runner started: task_id=%s email=%s auto_register=%s auto_register_count=%s account_count=%s checkout=%s checkout_mode=%s proxy_label=%s proxy_state=%s proxy=%s",
+                task_id[:8] or "<unknown>",
+                _safe_email_summary(email) if email else "<auto-register>",
+                auto_register,
+                auto_register_count,
+                len(account_emails) if account_emails else 1,
+                _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
+                checkout_ui_mode,
+                params.proxy_label or "<none>",
+                proxy_config_state,
+                _safe_proxy_summary(normalized_proxy_url or proxy_url),
+            )
+            _update_current_task_progress(
+                {
+                    "stage": "gopay_binding",
+                    "email": email,
+                    "auto_register": auto_register,
+                    "auto_register_count": auto_register_count,
+                    "phone_number": phone_number,
+                    "country_code": country_code,
+                    "checkout_ui_mode": checkout_ui_mode,
+                    "proxy_label": params.proxy_label,
+                    "account_count": auto_register_count if auto_register else len(account_emails) if account_emails else 1,
+                }
+            )
+            if auto_register:
+                result = _run_auto_register_gopay_batch()
+            else:
+                result = _run_one_gopay_bind(email, account_emails)
         except Exception as exc:
             logger.exception("[gopay-bind] unexpected error")
             result = {
                 "status": "failed",
-                "failure_stage": "post_submit",
+                "failure_stage": "gopay_auto_register" if auto_register and not email else "post_submit",
                 "message": f"GoPay 任务执行异常: {exc}",
                 "screenshot_paths": [],
             }
@@ -3925,7 +4135,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 )
             if result.get("status") != "success" and actual_email not in successful_emails:
                 update_account(actual_email, **account_update)
-        elif not successful_emails:
+        elif not successful_emails and actual_email:
             update_account(actual_email, **account_update)
 
         if oauth_scheduled_emails:
@@ -4004,7 +4214,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             raise TaskResultError(result.get("message") or "GoPay 任务失败", task_result=result)
         return result
 
-    task = _start_task("gopay-bind", _run, params.model_dump())
+    task_params = params.model_dump()
+    task_params["auto_register_count"] = auto_register_count
+    task = _start_task("gopay-bind", _run, task_params)
     _task_skip_signals[task["task_id"]] = skip_current_signal
     return task
 

@@ -617,17 +617,44 @@
           <div>
             <div class="flex items-center justify-between gap-3 mb-1">
               <label class="block text-sm text-gray-400">号池账号</label>
-              <label class="inline-flex items-center gap-2 text-xs text-gray-300">
-                <input
-                  v-model="gopayForm.batchMode"
-                  type="checkbox"
-                  :disabled="gopaySubmitting || gopayTaskRunning || Boolean(gopayForm.checkoutUrl)"
-                  class="accent-blue-500"
-                />
-                批量绑定
-              </label>
+              <div class="flex items-center gap-3">
+                <label class="inline-flex items-center gap-2 text-xs text-gray-300">
+                  <input
+                    v-model="gopayForm.autoRegister"
+                    type="checkbox"
+                    :disabled="gopaySubmitting || gopayTaskRunning || Boolean(gopayForm.checkoutUrl)"
+                    class="accent-blue-500"
+                  />
+                  自动注册
+                </label>
+                <label class="inline-flex items-center gap-2 text-xs text-gray-300">
+                  <input
+                    v-model="gopayForm.batchMode"
+                    type="checkbox"
+                    :disabled="gopaySubmitting || gopayTaskRunning || Boolean(gopayForm.checkoutUrl) || gopayForm.autoRegister"
+                    class="accent-blue-500"
+                  />
+                  批量绑定
+                </label>
+              </div>
             </div>
-            <template v-if="!gopayForm.batchMode || gopayForm.checkoutUrl">
+            <div v-if="gopayForm.autoRegister && !gopayForm.checkoutUrl" class="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-3">
+              <div class="text-sm text-blue-200">运行时自动注册 {{ normalizedGoPayAutoRegisterCount }} 个 Free 账号，保存 auth_session 后逐个执行 GoPay 绑定。</div>
+              <div class="mt-1 text-xs text-gray-400">该模式会使用当前“注册域名设置”的默认域名，不需要先从号池选择账号。</div>
+              <div class="mt-3">
+                <label class="block text-xs text-gray-400 mb-1">自动注册数量</label>
+                <input
+                  v-model.number="gopayForm.autoRegisterCount"
+                  type="number"
+                  min="1"
+                  max="100"
+                  step="1"
+                  :disabled="gopaySubmitting || gopayTaskRunning"
+                  class="w-36 px-3 py-2 bg-gray-900 border border-blue-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+            <template v-else-if="!gopayForm.batchMode || gopayForm.checkoutUrl">
               <input
                 v-model.trim="gopayAccountSearchKeyword"
                 type="text"
@@ -677,6 +704,9 @@
             <div v-if="gopayForm.batchMode && !gopayForm.checkoutUrl" class="mt-1 text-xs text-gray-500">
               已选择 {{ gopaySelectedBatchEmails.length }} 个账号；仅在 ChatGPT approve 返回 blocked 时切换下一个。
             </div>
+            <div v-if="gopayForm.autoRegister && !gopayForm.checkoutUrl" class="mt-1 text-xs text-gray-500">
+              自动注册模式会按数量循环执行：注册一个账号，立即绑定一个账号。
+            </div>
             <div v-if="gopayForm.checkoutUrl" class="mt-1 text-xs text-gray-500">
               已输入 checkout 链接，任务会固定使用当前账号。
             </div>
@@ -705,7 +735,7 @@
             <input
               v-model.trim="gopayForm.checkoutUrl"
               type="text"
-              :disabled="gopaySubmitting || gopayTaskRunning"
+              :disabled="gopaySubmitting || gopayTaskRunning || gopayForm.autoRegister"
               placeholder="可留空；也可粘贴 ChatGPT checkout、pay.openai.com/c/pay、pm-redirects 或 Midtrans snap 链接"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
@@ -800,7 +830,7 @@
             @click="startGoPayBind"
             :disabled="gopaySubmitting || gopayTaskRunning || !gopayCanSubmit"
             class="w-full px-4 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50">
-            {{ gopaySubmitting ? '提交中...' : gopayTaskRunning ? '任务运行中...' : (gopayBatchActive ? '开始批量 GoPay 绑卡' : '开始 GoPay 绑卡') }}
+            {{ gopaySubmitting ? '提交中...' : gopayTaskRunning ? '任务运行中...' : (gopayForm.autoRegister ? '自动注册并 GoPay 绑卡' : gopayBatchActive ? '开始批量 GoPay 绑卡' : '开始 GoPay 绑卡') }}
           </button>
           <button
             v-if="gopayTaskRunning"
@@ -982,6 +1012,8 @@ const bindTask = ref(null)
 const bindLogEntries = ref([])
 const gopayForm = ref({
   email: '',
+  autoRegister: false,
+  autoRegisterCount: 1,
   batchMode: false,
   accountEmails: [],
   checkoutUrl: '',
@@ -1092,6 +1124,10 @@ const gopaySelectedBatchEmails = computed(() => {
     })
 })
 
+const normalizedGoPayAutoRegisterCount = computed(() => {
+  return normalizeGoPayAutoRegisterCount(gopayForm.value.autoRegisterCount)
+})
+
 const gopayAllAccountsSelected = computed(() => {
   if (!accountOptions.value.length) return false
   const selected = new Set(gopaySelectedBatchEmails.value)
@@ -1106,10 +1142,11 @@ const gopayAccountSelectionLabel = computed(() => {
 })
 
 const gopayBatchActive = computed(() => {
-  return Boolean(gopayForm.value.batchMode && !gopayForm.value.checkoutUrl && gopaySelectedBatchEmails.value.length > 0)
+  return Boolean(!gopayForm.value.autoRegister && gopayForm.value.batchMode && !gopayForm.value.checkoutUrl && gopaySelectedBatchEmails.value.length > 0)
 })
 
 const gopayEffectiveEmail = computed(() => {
+  if (gopayForm.value.autoRegister) return ''
   if (gopayBatchActive.value) {
     return gopaySelectedBatchEmails.value[0] || ''
   }
@@ -1118,7 +1155,7 @@ const gopayEffectiveEmail = computed(() => {
 
 const gopayCanSubmit = computed(() => {
   return Boolean(
-    gopayEffectiveEmail.value
+    (gopayForm.value.autoRegister || gopayEffectiveEmail.value)
     && gopayForm.value.phoneNumber
     && gopayForm.value.smsUrl
     && gopayForm.value.gopayPin
@@ -1129,6 +1166,12 @@ let normalizingGoPayPhone = false
 
 function digitsOnly(value) {
   return String(value || '').replace(/\D/g, '')
+}
+
+function normalizeGoPayAutoRegisterCount(value) {
+  const count = Number(value || 1)
+  if (!Number.isFinite(count)) return 1
+  return Math.max(1, Math.min(100, Math.floor(count)))
 }
 
 function splitGoPayPhoneInput(phoneValue, countryCodeValue, { forceLocal = false } = {}) {
@@ -1218,6 +1261,27 @@ watch(
 )
 
 watch(
+  () => gopayForm.value.autoRegister,
+  enabled => {
+    if (!enabled) return
+    gopayForm.value.batchMode = false
+    gopayForm.value.accountEmails = []
+    gopayForm.value.email = ''
+    gopayForm.value.checkoutUrl = ''
+  }
+)
+
+watch(
+  () => gopayForm.value.autoRegisterCount,
+  count => {
+    const normalized = normalizeGoPayAutoRegisterCount(count)
+    if (normalized !== count) {
+      gopayForm.value.autoRegisterCount = normalized
+    }
+  }
+)
+
+watch(
   () => getRememberedGoPayForm(),
   () => saveGoPayFormState(),
   { deep: true }
@@ -1251,6 +1315,9 @@ const gopayTaskRunning = computed(() => {
 
 const gopayRunningAccountCount = computed(() => {
   const params = gopayTask.value?.params || {}
+  if (params.auto_register) {
+    return normalizeGoPayAutoRegisterCount(params.auto_register_count)
+  }
   const taskAccounts = Array.isArray(params.account_emails) ? params.account_emails : []
   if (taskAccounts.length) return taskAccounts.length
   return gopayBatchActive.value ? gopaySelectedBatchEmails.value.length : 1
@@ -1281,6 +1348,9 @@ const gopayStageLabelMap = {
   gopay_try_account: '尝试当前 auth_session',
   gopay_rotate_account: '切换 auth_session 重试',
   gopay_account_bound: '当前账号绑定成功',
+  gopay_auto_register_next: '自动注册绑定进度',
+  gopay_auto_register_started: '自动注册账号',
+  gopay_auto_register_done: '自动注册完成',
   gopay_oauth_login_started: '开始 OAuth 补登录',
   gopay_oauth_login_done: 'OAuth 补登录成功',
   gopay_oauth_login_failed: 'OAuth 补登录失败',
@@ -1376,6 +1446,10 @@ const gopayBoardTaskId = computed(() => {
 const gopayBoardTitle = computed(() => {
   if (!gopayTask.value) return '暂无任务'
   const params = gopayTask.value.params || {}
+  if (params.auto_register) {
+    const normalizedCount = normalizeGoPayAutoRegisterCount(params.auto_register_count)
+    return normalizedCount > 1 ? `自动注册 GoPay · ${normalizedCount} 个账号` : '自动注册 GoPay'
+  }
   const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
   const count = accounts.length || 1
   return count > 1 ? `批量 GoPay · ${count} 个账号` : '单账号 GoPay'
@@ -1470,13 +1544,16 @@ const gopayBoardProgressStats = computed(() => {
   const result = task.result || {}
   const params = task.params || {}
   const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
+  const autoRegisterCount = params.auto_register
+    ? normalizeGoPayAutoRegisterCount(params.auto_register_count || result.auto_register_count || progress.auto_register_count || 1)
+    : 0
   const attempted = Array.isArray(result.attempted_emails)
     ? result.attempted_emails.length
-    : Number(progress.attempted || progress.attempt || 0)
+    : Number(result.auto_register_attempted || progress.attempted || progress.attempt || 0)
   const successful = Array.isArray(result.successful_emails)
     ? result.successful_emails.length
     : Number(progress.successful || 0)
-  const total = Number(progress.total || accounts.length || (task.task_id ? 1 : 0))
+  const total = Number(progress.total || autoRegisterCount || accounts.length || (task.task_id ? 1 : 0))
   const remaining = Number.isFinite(Number(progress.remaining_candidates))
     ? Number(progress.remaining_candidates)
     : Math.max(0, total - Math.max(attempted, successful))
@@ -1596,6 +1673,8 @@ function closeGoPayAccountPicker() {
 function getRememberedGoPayForm() {
   return {
     email: String(gopayForm.value.email || '').trim().toLowerCase(),
+    autoRegister: Boolean(gopayForm.value.autoRegister),
+    autoRegisterCount: normalizedGoPayAutoRegisterCount.value,
     batchMode: Boolean(gopayForm.value.batchMode),
     accountEmails: normalizeEmailList(gopayForm.value.accountEmails),
     countryCode: digitsOnly(gopayForm.value.countryCode) || '62',
@@ -1618,6 +1697,8 @@ function loadGoPayFormState() {
     gopayForm.value = {
       ...gopayForm.value,
       email: String(saved.email || '').trim().toLowerCase(),
+      autoRegister: Boolean(saved.autoRegister),
+      autoRegisterCount: normalizeGoPayAutoRegisterCount(saved.autoRegisterCount),
       batchMode: Boolean(saved.batchMode),
       accountEmails: normalizeEmailList(saved.accountEmails),
       countryCode: digitsOnly(saved.countryCode) || '62',
@@ -2214,11 +2295,20 @@ async function startGoPayBind() {
   gopaySubmitting.value = true
   gopayLogEntries.value = []
   gopayLoggedProgressEventIds.value = new Set()
-  pushGoPayLog(gopayBatchActive.value ? `准备提交批量 GoPay 任务，共 ${gopaySelectedBatchEmails.value.length} 个账号` : '准备提交 GoPay 任务', 'info')
+  pushGoPayLog(
+    gopayForm.value.autoRegister
+      ? `准备提交自动注册并 GoPay 绑定任务，共 ${normalizedGoPayAutoRegisterCount.value} 个账号`
+      : gopayBatchActive.value
+        ? `准备提交批量 GoPay 任务，共 ${gopaySelectedBatchEmails.value.length} 个账号`
+        : '准备提交 GoPay 任务',
+    'info'
+  )
   try {
     const task = await api.startGoPayBind({
       email: gopayEffectiveEmail.value,
       account_emails: gopayBatchActive.value ? gopaySelectedBatchEmails.value : [],
+      auto_register: Boolean(gopayForm.value.autoRegister),
+      auto_register_count: normalizedGoPayAutoRegisterCount.value,
       checkout_url: gopayForm.value.checkoutUrl || '',
       checkout_ui_mode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
       country_code: gopayForm.value.countryCode || '',
