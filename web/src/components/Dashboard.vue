@@ -532,11 +532,10 @@ watch(() => props.runningTask, (cur, prev) => {
   if (prev && !cur) loadFailures()
 })
 const adminReady = computed(() => !!props.adminStatus?.configured)
-const actionDisabled = computed(() => !!props.runningTask)
-const syncDisabled = computed(() => !!props.runningTask)
-const loginDisabled = computed(() => !!props.runningTask)
-const kickDisabled = computed(() => !!props.runningTask || !adminReady.value)
-const deleteDisabled = computed(() => !!props.runningTask)
+const syncDisabled = computed(() => false)
+const loginDisabled = computed(() => false)
+const kickDisabled = computed(() => !adminReady.value)
+const deleteDisabled = computed(() => false)
 const editableAccountTypeOptions = [
   { value: 'free', label: 'Free' },
   { value: 'team', label: 'Team' },

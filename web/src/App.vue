@@ -112,6 +112,7 @@ const codexStatus = ref(null)
 const manualAccountStatus = ref(null)
 const tasks = ref([])
 const loading = ref(false)
+const statusRefreshing = ref(false)
 const runningTask = ref(null)
 const busyTask = computed(() => {
   if (adminStatus.value?.login_in_progress) {
@@ -124,6 +125,85 @@ const busyTask = computed(() => {
 })
 
 let pollTimer = null
+
+function withTimeout(promise, ms, label) {
+  let timer = null
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label || 'request'} timeout`)
+      err.timeout = true
+      reject(err)
+    }, ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
+function buildDashboardStatusFromAccounts(accounts) {
+  const rows = Array.isArray(accounts) ? accounts : []
+  const summary = {
+    active: 0,
+    standby: 0,
+    exhausted: 0,
+    pending: 0,
+    auth_invalid: 0,
+    orphan: 0,
+    free: 0,
+    team: 0,
+    plus: 0,
+    pro: 0,
+    total: rows.length,
+  }
+  for (const acc of rows) {
+    const statusKey = String(acc?.status || 'pending').toLowerCase()
+    if (Object.prototype.hasOwnProperty.call(summary, statusKey)) {
+      summary[statusKey] += 1
+    }
+    const typeKey = String(acc?.account_type || acc?.seat_type || 'free').toLowerCase()
+    if (['free', 'team', 'plus', 'pro'].includes(typeKey)) {
+      summary[typeKey] += 1
+    }
+  }
+  return {
+    accounts: rows,
+    summary,
+    quota_cache: {},
+    fallback: true,
+  }
+}
+
+async function loadDashboardStatus() {
+  const accounts = await withTimeout(api.getAccounts(), 5000, 'accounts')
+  return buildDashboardStatusFromAccounts(accounts)
+}
+
+async function refreshFullStatusInBackground() {
+  if (statusRefreshing.value) return
+  statusRefreshing.value = true
+  try {
+    const fullStatus = await withTimeout(api.getStatus(), 30000, 'status')
+    status.value = fullStatus
+  } catch (e) {
+    if (e.status === 401) {
+      authenticated.value = false
+      return
+    }
+    console.warn('完整状态刷新失败，保留账号列表数据:', e)
+  } finally {
+    statusRefreshing.value = false
+  }
+}
+
+async function loadOrFallback(promise, fallbackValue, label) {
+  try {
+    return await withTimeout(promise, 10000, label)
+  } catch (e) {
+    if (e.status === 401) throw e
+    console.warn(`${label} 刷新失败，保留旧值:`, e)
+    return fallbackValue
+  }
+}
 
 async function checkAuth() {
   try {
@@ -182,18 +262,19 @@ async function refresh() {
   loading.value = true
   try {
     const [s, t, admin, codex, manualAccount] = await Promise.all([
-      api.getStatus(),
-      api.getTasks(),
-      api.getAdminStatus(),
-      api.getMainCodexStatus(),
-      api.getManualAccountStatus(),
+      loadDashboardStatus(),
+      loadOrFallback(api.getTasks(), tasks.value || [], 'tasks'),
+      loadOrFallback(api.getAdminStatus(), adminStatus.value || null, 'admin-status'),
+      loadOrFallback(api.getMainCodexStatus(), codexStatus.value || null, 'main-codex-status'),
+      loadOrFallback(api.getManualAccountStatus(), manualAccountStatus.value || null, 'manual-account-status'),
     ])
     status.value = s
     tasks.value = t
     adminStatus.value = admin
     codexStatus.value = codex
     manualAccountStatus.value = manualAccount
-    runningTask.value = t.find(t => t.status === 'running' || t.status === 'pending') || null
+    runningTask.value = t.find(t => (t.status === 'running' || t.status === 'pending') && t.exclusive !== false) || null
+    refreshFullStatusInBackground()
   } catch (e) {
     if (e.status === 401) {
       authenticated.value = false

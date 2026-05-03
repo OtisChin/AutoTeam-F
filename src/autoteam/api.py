@@ -364,7 +364,7 @@ def _update_current_task_progress(progress: dict):
     _append_task_progress(_current_task_id, progress)
 
 
-def _run_task(task_id: str, func, *args, **kwargs):
+def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
     """在后台线程中执行任务"""
     from autoteam import cancel_signal
 
@@ -381,7 +381,7 @@ def _run_task(task_id: str, func, *args, **kwargs):
     task["started_at"] = time.time()
 
     try:
-        result = func(*args, **kwargs)
+        result = func(task_id, *args, **kwargs) if pass_task_id else func(*args, **kwargs)
         # 任务完成但中途确实收到取消 → 标 cancelled
         task["status"] = "cancelled" if cancel_signal.is_cancelled() else "completed"
         task["result"] = result
@@ -398,17 +398,48 @@ def _run_task(task_id: str, func, *args, **kwargs):
         _playwright_lock.release()
 
 
-def _start_task(command: str, func, params: dict, *args, **kwargs) -> dict:
+def _run_task_nonexclusive(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
+    """Run a task without occupying the global Playwright task lock."""
+    task = _tasks[task_id]
+    task["status"] = "running"
+    task["started_at"] = time.time()
+
+    try:
+        result = func(task_id, *args, **kwargs) if pass_task_id else func(*args, **kwargs)
+        task["status"] = "completed"
+        task["result"] = result
+    except Exception as e:
+        task["status"] = "failed"
+        if getattr(e, "task_result", None) is not None:
+            task["result"] = e.task_result
+        task["error"] = str(e)
+        logger.error("[API] 非独占任务 %s failed: %s", task_id[:8], e)
+    finally:
+        task["finished_at"] = time.time()
+        _task_skip_signals.pop(task_id, None)
+
+
+def _start_task(
+    command: str,
+    func,
+    params: dict,
+    *args,
+    exclusive: bool = True,
+    pass_task_id: bool = False,
+    **kwargs,
+) -> dict:
     """创建并启动后台任务，返回任务信息"""
-    if not _playwright_lock.acquire(blocking=False):
+    if exclusive and not _playwright_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再试"))
-    _playwright_lock.release()
+    if exclusive:
+        _playwright_lock.release()
 
     task_id = uuid.uuid4().hex[:12]
     task = {
         "task_id": task_id,
         "command": command,
         "params": params,
+        "exclusive": exclusive,
         "status": "pending",
         "created_at": time.time(),
         "started_at": None,
@@ -421,7 +452,8 @@ def _start_task(command: str, func, params: dict, *args, **kwargs) -> dict:
     _tasks[task_id] = task
     _prune_tasks()
 
-    thread = threading.Thread(target=_run_task, args=(task_id, func, *args), kwargs=kwargs, daemon=True)
+    target = _run_task if exclusive else _run_task_nonexclusive
+    thread = threading.Thread(target=target, args=(task_id, func, pass_task_id, *args), kwargs=kwargs, daemon=True)
     thread.start()
 
     return task
@@ -1682,20 +1714,7 @@ def get_standby():
 @app.delete("/api/accounts/{email}")
 def delete_account(email: str):
     """删除本地管理账号及其关联资源。"""
-    if not _playwright_lock.acquire(blocking=False):
-        running = _tasks.get(_current_task_id, {})
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "有任务正在执行，请等待完成后再删除账号",
-                "running_task": {
-                    "task_id": _current_task_id,
-                    "command": running.get("command", "unknown"),
-                    "started_at": running.get("started_at"),
-                },
-            },
-        )
-
+    lock_acquired = _playwright_lock.acquire(blocking=False)
     try:
         from autoteam.account_ops import delete_managed_account
         from autoteam.accounts import load_accounts
@@ -1708,16 +1727,21 @@ def delete_account(email: str):
         if not any(a["email"].lower() == email.lower() for a in accounts):
             raise HTTPException(status_code=404, detail="账号不存在")
 
-        remote_cleanup = bool(get_admin_session_token() and get_chatgpt_account_id())
-        cleanup = _pw_executor.run(delete_managed_account, email, remove_remote=remote_cleanup)
+        remote_cleanup = bool(lock_acquired and get_admin_session_token() and get_chatgpt_account_id())
+        if lock_acquired:
+            cleanup = _pw_executor.run(delete_managed_account, email, remove_remote=remote_cleanup)
+        else:
+            cleanup = delete_managed_account(email, remove_remote=False)
         return {
             "message": "账号删除完成",
             "deleted_email": email,
             "cleanup": cleanup,
             "remote_cleanup": remote_cleanup,
+            "remote_cleanup_skipped": not lock_acquired,
         }
     finally:
-        _playwright_lock.release()
+        if lock_acquired:
+            _playwright_lock.release()
 
 
 @app.post("/api/accounts/{email}/type")
@@ -1928,13 +1952,12 @@ def delete_accounts_batch(params: DeleteBatchParams):
     if main_emails:
         raise HTTPException(status_code=400, detail=f"主号不允许删除: {main_emails}")
 
-    if not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再批量删除"))
+    lock_acquired = _playwright_lock.acquire(blocking=False)
 
     def _run():
         accounts = load_accounts()
         existing = {(a.get("email") or "").lower(): a for a in accounts}
-        remote_cleanup = bool(get_admin_session_token() and get_chatgpt_account_id())
+        remote_cleanup = bool(lock_acquired and get_admin_session_token() and get_chatgpt_account_id())
 
         chatgpt_api = None
         mail_client = None
@@ -1990,12 +2013,15 @@ def delete_accounts_batch(params: DeleteBatchParams):
         }
 
     try:
+        if not lock_acquired:
+            return _run()
         # 每个账号平均 30s (拉取 team 状态 + kick + delete cloudmail),再给 120s 兜底余量。
         # 若仍超时会抛 TimeoutError,worker 线程会在后台继续跑完,但锁会释放 → 用户可以再提。
         timeout = max(300, 30 * len(emails) + 120)
         return _pw_executor.run_with_timeout(timeout, _run)
     finally:
-        _playwright_lock.release()
+        if lock_acquired:
+            _playwright_lock.release()
 
 
 @app.post("/api/accounts/{email}/kick")
@@ -2053,12 +2079,18 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
     )
     from autoteam.mail import TemporaryEmailClient
     from autoteam.codex_auth import (
+        CodexOAuthAccountDeactivated,
+        CodexOAuthLoginRequired,
+        CodexOAuthPhoneRequired,
+        CodexProtocolOAuthError,
         check_codex_quota,
+        login_codex_via_auth_session_protocol,
         login_codex_via_browser,
         quota_result_quota_info,
         quota_result_resets_at,
         save_auth_file,
     )
+    from autoteam.auth_session_store import load_auth_session
 
     # 账号类型决定登录模式：
     # - Team 走旧 Team workspace OAuth；
@@ -2073,14 +2105,46 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
 
     mail_client = TemporaryEmailClient()
     mail_client.login()
-    bundle = login_codex_via_browser(
-        email,
-        acc.get("password", ""),
-        mail_client=mail_client,
-        use_personal=use_personal,
-        native_oauth=native_oauth,
-        headless=headless,
-    )
+    bundle = None
+    auth_session_data = load_auth_session(email)
+    if auth_session_data:
+        try:
+            logger.info("[账号登录] 优先复用 auth_session 协议 OAuth: %s", email)
+            oauth_result = login_codex_via_auth_session_protocol(
+                email,
+                auth_session_data,
+                native_oauth=True,
+                auth_file_callback=lambda raw_bundle: "",
+            )
+            bundle = (oauth_result or {}).get("bundle")
+            protocol_plan = (bundle or {}).get("plan_type", "")
+            if bundle and use_personal and str(protocol_plan).lower() not in {"free", "plus", "pro"}:
+                logger.warning(
+                    "[账号登录] auth_session 协议 OAuth 返回非个人 plan=%s，回退浏览器 OAuth: %s",
+                    protocol_plan or "unknown",
+                    email,
+                )
+                bundle = None
+        except CodexOAuthPhoneRequired:
+            raise
+        except CodexOAuthAccountDeactivated:
+            raise
+        except CodexProtocolOAuthError as exc:
+            logger.warning("[账号登录] auth_session 协议 OAuth 未完成，回退浏览器 OAuth: %s", exc)
+            if "登录页" in str(exc) or "log-in" in str(getattr(exc, "final_url", "")).lower():
+                logger.info("[账号登录] 协议 OAuth 落到登录页，将尝试浏览器兜底: %s", email)
+        except Exception as exc:
+            logger.warning("[账号登录] auth_session 协议 OAuth 异常，回退浏览器 OAuth: %s", exc)
+
+    if not bundle:
+        bundle = login_codex_via_browser(
+            email,
+            acc.get("password", ""),
+            mail_client=mail_client,
+            use_personal=use_personal,
+            native_oauth=native_oauth,
+            headless=headless,
+        )
     if not bundle:
         raise RuntimeError(f"Codex 登录失败: {email}")
 
@@ -2139,6 +2203,29 @@ def _oauth_phone_required_result(email: str, exc: Exception) -> dict:
     }
 
 
+def _oauth_login_required_result(email: str, exc: Exception) -> dict:
+    return {
+        "email": email,
+        "status": "failed",
+        "failure_stage": "oauth_login_required",
+        "message": f"OAuth 停在登录页，未获取 authorization code，账号已保留: {email}",
+        "error": str(exc),
+        "removed_pool_emails": [],
+    }
+
+
+def _oauth_account_deactivated_result(email: str, exc: Exception) -> dict:
+    removed = _remove_oauth_phone_required_accounts_from_pool([email])
+    return {
+        "email": email,
+        "status": "failed",
+        "failure_stage": "oauth_account_deactivated",
+        "message": f"OAuth 检测到 account_deactivated，已从号池删除账号: {email}",
+        "error": str(exc),
+        "removed_pool_emails": removed,
+    }
+
+
 @app.post("/api/accounts/login", status_code=202)
 def post_account_login(params: LoginAccountParams):
     """触发单个账号的 Codex 登录（后台执行）"""
@@ -2152,14 +2239,23 @@ def post_account_login(params: LoginAccountParams):
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
 
-    def _run():
-        from autoteam.codex_auth import CodexOAuthPhoneRequired
+    def _run(task_id: str = ""):
+        from autoteam.codex_auth import CodexOAuthAccountDeactivated, CodexOAuthLoginRequired, CodexOAuthPhoneRequired
 
         try:
-            return _run_account_codex_login_once(email, acc, headless=True)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "account_login",
+                    "email": email,
+                    "message": f"正在补登录 {email}",
+                },
+            )
+            return _run_account_codex_login_once(email, acc, headless=False)
         except CodexOAuthPhoneRequired as exc:
             result = _oauth_phone_required_result(email, exc)
-            _update_current_task_progress(
+            _append_task_progress(
+                task_id,
                 {
                     "stage": "account_login_phone_required_removed",
                     "email": email,
@@ -2169,8 +2265,33 @@ def post_account_login(params: LoginAccountParams):
                 }
             )
             raise TaskResultError(result["message"], task_result=result) from exc
+        except CodexOAuthLoginRequired as exc:
+            result = _oauth_login_required_result(email, exc)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "account_login_required",
+                    "email": email,
+                    "message": result["message"],
+                    "level": "warn",
+                },
+            )
+            raise TaskResultError(result["message"], task_result=result) from exc
+        except CodexOAuthAccountDeactivated as exc:
+            result = _oauth_account_deactivated_result(email, exc)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "account_login_deactivated_removed",
+                    "email": email,
+                    "removed_pool_emails": result["removed_pool_emails"],
+                    "message": result["message"],
+                    "level": "warn",
+                },
+            )
+            raise TaskResultError(result["message"], task_result=result) from exc
 
-    task = _start_task(f"login:{email}", _run, {"email": email})
+    task = _start_task(f"login:{email}", _run, {"email": email}, exclusive=False, pass_task_id=True)
     return task
 
 
@@ -2203,10 +2324,9 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
     if not accounts_by_email:
         raise HTTPException(status_code=404, detail="账号不存在")
 
-    def _run():
-        from autoteam.codex_auth import CodexOAuthPhoneRequired
+    def _run(task_id: str = ""):
+        from autoteam.codex_auth import CodexOAuthAccountDeactivated, CodexOAuthLoginRequired, CodexOAuthPhoneRequired
 
-        task_id = _current_task_id or ""
         ok = []
         failed = []
         phone_required = []
@@ -2227,11 +2347,17 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                 }
             )
             try:
-                login_result = _run_account_codex_login_once(email, acc, headless=True)
+                login_result = _run_account_codex_login_once(email, acc, headless=False)
                 return {"kind": "ok", "email": email, "index": index, "result": login_result}
             except CodexOAuthPhoneRequired as exc:
                 result = _oauth_phone_required_result(email, exc)
                 return {"kind": "phone_required", "email": email, "index": index, "result": result}
+            except CodexOAuthLoginRequired as exc:
+                result = _oauth_login_required_result(email, exc)
+                return {"kind": "login_required", "email": email, "index": index, "result": result}
+            except CodexOAuthAccountDeactivated as exc:
+                result = _oauth_account_deactivated_result(email, exc)
+                return {"kind": "account_deactivated", "email": email, "index": index, "result": result}
             except Exception as exc:
                 return {"kind": "failed", "email": email, "index": index, "error": str(exc), "exception": exc}
 
@@ -2251,7 +2377,7 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                 with result_lock:
                     if item["kind"] == "ok":
                         ok.append(item["result"])
-                    elif item["kind"] == "phone_required":
+                    elif item["kind"] in {"phone_required", "login_required", "account_deactivated"}:
                         phone_required.append(item["result"])
                         failed.append(item["result"])
                     else:
@@ -2273,11 +2399,15 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                             "message": f"补登录成功: {item_email}",
                         },
                     )
-                elif item["kind"] == "phone_required":
+                elif item["kind"] in {"phone_required", "login_required", "account_deactivated"}:
+                    stage = {
+                        "account_deactivated": "account_login_deactivated_removed",
+                        "login_required": "account_login_required",
+                    }.get(item["kind"], "account_login_phone_required_removed")
                     _append_task_progress(
                         task_id,
                         {
-                            "stage": "account_login_phone_required_removed",
+                            "stage": stage,
                             "email": item_email,
                             "current": item["index"],
                             "total": total,
@@ -2317,7 +2447,7 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
             "concurrency": max_workers,
         }
 
-    task = _start_task("login-batch", _run, {"emails": emails, "missing": missing})
+    task = _start_task("login-batch", _run, {"emails": emails, "missing": missing}, exclusive=False, pass_task_id=True)
     return task
 
 

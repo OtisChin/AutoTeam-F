@@ -54,6 +54,28 @@ class CodexOAuthPhoneRequired(RuntimeError):
         super().__init__(message)
 
 
+class CodexOAuthLoginRequired(RuntimeError):
+    """Codex OAuth stopped on the OpenAI login page instead of reaching the callback."""
+
+    def __init__(self, url: str = ""):
+        self.url = url or ""
+        message = "Codex OAuth 停在登录页，未获取 authorization code"
+        if self.url:
+            message = f"{message}: {self.url}"
+        super().__init__(message)
+
+
+class CodexOAuthAccountDeactivated(RuntimeError):
+    """Codex OAuth reported account_deactivated during verification."""
+
+    def __init__(self, detail: str = ""):
+        self.detail = detail or ""
+        message = "Codex OAuth 账号已停用(account_deactivated)"
+        if self.detail:
+            message = f"{message}: {self.detail}"
+        super().__init__(message)
+
+
 class ChromeCDPUnavailable(RuntimeError):
     """Local Chrome remote debugging endpoint is not available."""
 
@@ -545,8 +567,18 @@ def _is_google_redirect(page):
 
 _OTP_INPUT_SELECTORS = (
     'input[name="code"], input[inputmode="numeric"], input[autocomplete="one-time-code"], '
-    'input[placeholder*="验证码"], input[placeholder*="code" i]'
+    'input[placeholder*="验证码"], input[placeholder*="code" i], '
+    'input[aria-label*="验证码"], input[aria-label*="verification" i], '
+    'input[name*="verification" i], input[id*="verification" i]'
 )
+_EMAIL_INPUT_SELECTORS = (
+    'input[name="email"], input[name="username"], input[id="email-input"], input[id="email"], '
+    'input[id*="email" i], input[type="email"], input[placeholder*="email" i], '
+    'input[placeholder*="邮箱"], input[placeholder*="电子邮件"], input[aria-label*="email" i], '
+    'input[aria-label*="邮箱"], input[aria-label*="电子邮件"], input[autocomplete="email"], '
+    'input[autocomplete="username"]'
+)
+_PASSWORD_INPUT_SELECTORS = 'input[name="password"], input[type="password"]'
 _OTP_INVALID_HINTS = (
     "invalid code",
     "incorrect code",
@@ -559,9 +591,176 @@ _OTP_INVALID_HINTS = (
 )
 
 
+def _is_email_verification_page(page) -> bool:
+    try:
+        url = (page.url or "").lower()
+        if "auth.openai.com/email-verification" in url or "/email-verification" in url:
+            return True
+    except Exception:
+        pass
+    try:
+        text = page.locator("body").inner_text(timeout=500).lower()
+        return ("检查您的收件箱" in text or "check your inbox" in text) and (
+            "验证码" in text or "verification code" in text
+        )
+    except Exception:
+        return False
+
+
+def _otp_input_locator(page):
+    try:
+        specific = page.locator(_OTP_INPUT_SELECTORS).first
+        if specific.is_visible(timeout=300):
+            return specific
+    except Exception:
+        pass
+
+    if not _is_email_verification_page(page):
+        return None
+
+    try:
+        generic = page.locator(
+            'input:not([type="hidden"]):not([type="email"]):not([type="password"]):not([name="email"]):not([autocomplete="email"])'
+        ).first
+        if generic.is_visible(timeout=300):
+            return generic
+    except Exception:
+        pass
+    return None
+
+
 def _is_otp_input_visible(page, timeout=500):
     try:
-        return page.locator(_OTP_INPUT_SELECTORS).first.is_visible(timeout=timeout)
+        locator = _otp_input_locator(page)
+        return bool(locator and locator.is_visible(timeout=timeout))
+    except Exception:
+        return False
+
+
+def _is_auth_login_url(url: str) -> bool:
+    lower = (url or "").lower()
+    return "auth.openai.com/log-in" in lower or "auth.openai.com/login" in lower
+
+
+def _email_input_locator(page):
+    try:
+        specific = page.locator(_EMAIL_INPUT_SELECTORS).first
+        if specific.is_visible(timeout=300):
+            return specific
+    except Exception:
+        pass
+
+    if not _is_auth_login_url(page.url or ""):
+        return None
+
+    try:
+        generic = page.locator(
+            'input:not([type="hidden"]):not([type="password"]):not([type="checkbox"]):not([name="code"]):not([autocomplete="one-time-code"])'
+        ).first
+        if generic.is_visible(timeout=300):
+            return generic
+    except Exception:
+        pass
+    return None
+
+
+def _is_auth_login_page(page):
+    if _is_auth_login_url(page.url or ""):
+        return True
+    try:
+        return bool(_email_input_locator(page))
+    except Exception:
+        return False
+
+
+def _looks_like_account_deactivated_text(text: str) -> bool:
+    lower = (text or "").lower()
+    return (
+        "account_deactivated" in lower
+        or "account deactivated" in lower
+        or "account is deactivated" in lower
+        or "验证过程中出错" in lower
+    )
+
+
+def _detect_account_deactivated(page):
+    try:
+        text = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return ""
+    if _looks_like_account_deactivated_text(text):
+        return text[:500]
+    return ""
+
+
+def _looks_like_operation_timed_out_text(text: str) -> bool:
+    lower = (text or "").lower()
+    return "operation timed out" in lower or "操作超时" in lower or "糟糕，出错了" in lower
+
+
+def _click_auth_retry_if_timed_out(page):
+    try:
+        text = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return False
+    if not _looks_like_operation_timed_out_text(text):
+        return False
+    for selector in (
+        'button:has-text("重试")',
+        'button:has-text("Retry")',
+        'button:has-text("Try again")',
+        '[role="button"]:has-text("重试")',
+        '[role="button"]:has-text("Retry")',
+    ):
+        try:
+            btn = page.locator(selector).first
+            if btn.is_visible(timeout=1000):
+                btn.click()
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _fill_auth_email_if_present(page, email, *, timeout=800):
+    try:
+        deadline = time.time() + max(timeout, 0) / 1000
+        email_input = None
+        while time.time() <= deadline:
+            email_input = _email_input_locator(page)
+            if email_input:
+                break
+            time.sleep(0.1)
+        if not email_input:
+            return False
+        email_input.fill(email)
+        time.sleep(0.5)
+        _click_primary_auth_button(page, email_input, ["Continue", "继续"])
+        return True
+    except Exception:
+        return False
+
+
+def _fill_auth_password_if_present(page, password, *, timeout=5000):
+    try:
+        pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
+        if not pwd_input.is_visible(timeout=timeout):
+            return False
+        if password:
+            pwd_input.fill(password)
+            time.sleep(0.5)
+            _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"])
+        else:
+            otp_btn = page.locator(
+                'button:has-text("一次性验证码"), button:has-text("邮箱验证码"), '
+                'button:has-text("one-time"), button:has-text("email login"), '
+                'button:has-text("Email login"), a:has-text("one-time"), a:has-text("Email login")'
+            ).first
+            if otp_btn.is_visible(timeout=3000):
+                otp_btn.click()
+            else:
+                _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"])
+        return True
     except Exception:
         return False
 
@@ -633,6 +832,7 @@ def login_codex_via_browser(
 
     auth_code = None
     phone_required_url = ""
+    final_oauth_url = ""
 
     with sync_playwright() as p:
         browser = p.chromium.launch(**get_playwright_launch_options(headless=headless))
@@ -706,7 +906,7 @@ def login_codex_via_browser(
 
             # 输入邮箱（避免误点 Google/Microsoft 第三方登录按钮）
             try:
-                ei = _page.locator('input[name="email"], input[id="email-input"], input[id="email"]').first
+                ei = _page.locator(_EMAIL_INPUT_SELECTORS).first
                 if ei.is_visible(timeout=5000):
                     ei.fill(email)
                     time.sleep(0.5)
@@ -717,7 +917,7 @@ def login_codex_via_browser(
 
             # 输入密码 / 点击一次性验证码登录
             try:
-                pi = _page.locator('input[type="password"]').first
+                pi = _page.locator(_PASSWORD_INPUT_SELECTORS).first
                 if pi.is_visible(timeout=5000):
                     if password:
                         pi.fill(password)
@@ -840,14 +1040,9 @@ def login_codex_via_browser(
         # 输入邮箱（注意避免点到 Google/Microsoft/Apple 第三方登录按钮）
         try:
             for attempt in range(2):
-                email_input = page.locator('input[name="email"], input[id="email-input"], input[id="email"]').first
-                if not email_input.is_visible(timeout=5000):
+                if not _fill_auth_email_if_present(page, email, timeout=800):
                     break
-
-                email_input.fill(email)
-                time.sleep(0.5)
-                _click_primary_auth_button(page, email_input, ["Continue", "继续"])
-                time.sleep(3)
+                time.sleep(2)
 
                 if not _is_google_redirect(page):
                     break
@@ -863,7 +1058,7 @@ def login_codex_via_browser(
         # 输入密码
         try:
             for attempt in range(2):
-                pwd_input = page.locator('input[name="password"], input[type="password"]').first
+                pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
                 if not pwd_input.is_visible(timeout=5000):
                     break
 
@@ -988,10 +1183,31 @@ def login_codex_via_browser(
                     logger.error("[Codex] OAuth 被 add-phone 阻断，当前 URL: %s", current_url)
                     phone_required_url = current_url
                     break
+                deactivated_detail = _detect_account_deactivated(page)
+                if deactivated_detail:
+                    _screenshot(page, "codex_04_account_deactivated.png")
+                    logger.error("[Codex] OAuth 检测到 account_deactivated: %s", deactivated_detail)
+                    raise CodexOAuthAccountDeactivated(deactivated_detail)
+            except CodexOAuthAccountDeactivated:
+                raise
             except Exception:
                 pass
 
             _screenshot(page, f"codex_04_step{step + 1}_before.png")
+
+            if _click_auth_retry_if_timed_out(page):
+                logger.warning("[Codex] OAuth 遇到 Operation timed out，已点击重试 (step %d)", step + 1)
+                time.sleep(5)
+                continue
+
+            if _is_auth_login_page(page):
+                logger.info("[Codex] OAuth 仍在登录页，尝试继续登录 (step %d): %s", step + 1, page.url)
+                if _fill_auth_email_if_present(page, email, timeout=500):
+                    time.sleep(2)
+                    continue
+                if _fill_auth_password_if_present(page, password, timeout=2000):
+                    time.sleep(5)
+                    continue
 
             # 在任何页面中，如果有 workspace/组织选择，Team 模式选 Team；personal/native 模式优先 Personal。
             try:
@@ -1132,7 +1348,7 @@ def login_codex_via_browser(
 
             # 处理密码页面（可能在 consent 流程中出现）
             try:
-                pwd_field = page.locator('input[name="password"], input[type="password"]').first
+                pwd_field = page.locator(_PASSWORD_INPUT_SELECTORS).first
                 if pwd_field.is_visible(timeout=2000):
                     if password:
                         logger.info("[Codex] 需要重新输入密码 (step %d)...", step + 1)
@@ -1157,8 +1373,8 @@ def login_codex_via_browser(
 
             # 处理邮箱验证码页面（可能在 consent 流程中出现）
             try:
-                otp_input = page.locator(_OTP_INPUT_SELECTORS).first
-                if otp_input.is_visible(timeout=2000) and mail_client:
+                otp_input = _otp_input_locator(page)
+                if otp_input and otp_input.is_visible(timeout=500) and mail_client:
                     logger.info(
                         "[Codex] 需要邮箱验证码 (step %d)，等待 emailId > %d 的新邮件...",
                         step + 1,
@@ -1194,8 +1410,8 @@ def login_codex_via_browser(
                     if otp:
                         submit_ok = False
                         for submit_attempt in range(1, 3):
-                            otp_input = page.locator(_OTP_INPUT_SELECTORS).first
-                            if not otp_input.is_visible(timeout=2000):
+                            otp_input = _otp_input_locator(page)
+                            if not otp_input or not otp_input.is_visible(timeout=500):
                                 submit_ok = True
                                 break
 
@@ -1276,13 +1492,25 @@ def login_codex_via_browser(
                             break
                 except Exception:
                     pass
+                try:
+                    if _click_auth_retry_if_timed_out(page):
+                        logger.warning("[Codex] OAuth 等待回调时遇到 Operation timed out，已点击重试")
+                        time.sleep(5)
+                        continue
+                except Exception:
+                    pass
                 time.sleep(1)
 
         if not auth_code:
             _screenshot(page, "codex_05_no_callback.png")
+            final_oauth_url = page.url or ""
             if "auth.openai.com/add-phone" in (page.url or ""):
                 logger.error("[Codex] OAuth 被 add-phone 阻断，未获取到 auth code，当前 URL: %s", page.url)
                 phone_required_url = page.url or phone_required_url
+            elif _detect_account_deactivated(page):
+                raise CodexOAuthAccountDeactivated(_detect_account_deactivated(page))
+            elif _is_auth_login_page(page):
+                logger.warning("[Codex] OAuth 停在登录页，未获取到 auth code，当前 URL: %s", page.url)
             else:
                 logger.warning("[Codex] 未获取到 auth code，当前 URL: %s", page.url)
 
@@ -1292,6 +1520,9 @@ def login_codex_via_browser(
         raise CodexOAuthPhoneRequired(phone_required_url)
 
     if not auth_code:
+        lower_final_url = final_oauth_url.lower()
+        if "auth.openai.com/log-in" in lower_final_url or "auth.openai.com/login" in lower_final_url:
+            raise CodexOAuthLoginRequired(final_oauth_url)
         logger.error("[Codex] OAuth 登录失败: 未获取到 authorization code")
         return None
 
@@ -1601,12 +1832,24 @@ class SessionCodexAuthFlow:
         lower_url = cur.lower()
         if "auth.openai.com/add-phone" in lower_url or "/add-phone" in lower_url:
             return "phone_required", cur
+        if "auth.openai.com/email-verification" in lower_url or "/email-verification" in lower_url:
+            return "code_required", cur
+        if _is_auth_login_url(cur):
+            return "email_required", cur
         try:
             body = self.page.locator("body").inner_text(timeout=500).lower()
         except Exception:
             body = ""
+        if _looks_like_account_deactivated_text(body):
+            return "account_deactivated", body[:500]
+        if _looks_like_operation_timed_out_text(body):
+            return "retryable_error", body[:500]
         if "add phone" in body or "phone verification" in body or "手机号" in body or "手机号码" in body:
             return "phone_required", cur
+        if ("检查您的收件箱" in body or "check your inbox" in body) and (
+            "验证码" in body or "verification code" in body
+        ):
+            return "code_required", cur
 
         if self._visible_locator(self.CODE_SELECTORS, timeout_ms=800):
             return "code_required", None
@@ -1725,6 +1968,10 @@ class SessionCodexAuthFlow:
         return acted
 
     def _auto_fill_email(self):
+        if _fill_auth_email_if_present(self.page, self.email, timeout=500):
+            time.sleep(2)
+            return True
+
         email_input = self._visible_locator(self.EMAIL_SELECTORS, timeout_ms=1000)
         if not email_input or not self.email:
             return False
@@ -1787,6 +2034,14 @@ class SessionCodexAuthFlow:
                 return {"step": "completed", "detail": detail}
             if step == "phone_required":
                 return {"step": "phone_required", "detail": detail}
+            if step == "account_deactivated":
+                return {"step": "account_deactivated", "detail": detail}
+            if step == "retryable_error":
+                if _click_auth_retry_if_timed_out(self.page):
+                    logger.warning("[Codex] OAuth 遇到 Operation timed out，已点击重试")
+                    time.sleep(5)
+                    continue
+                return {"step": "retryable_error", "detail": detail}
             if step == "code_required":
                 return {"step": "code_required", "detail": detail}
             if step == "password_required":
@@ -1979,14 +2234,16 @@ class ChromeCDPCodexAuthFlow:
     return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
   }};
   const hasVisible = (items) => items.some((selector) => Array.from(document.querySelectorAll(selector)).some(visible));
+  const isEmailVerification = location.href.toLowerCase().includes('/email-verification');
+  const isAuthLogin = /auth\\.openai\\.com\\/(log-in|login)/.test(location.href.toLowerCase());
   const body = (document.body && document.body.innerText || '').slice(0, 3000);
   return {{
     url: location.href,
     title: document.title || '',
     body,
-    hasEmail: hasVisible(selectors.email),
+    hasEmail: isAuthLogin || hasVisible(selectors.email),
     hasPassword: hasVisible(selectors.password),
-    hasCode: hasVisible(selectors.code),
+    hasCode: isEmailVerification || hasVisible(selectors.code),
   }};
 }})()
 """
@@ -2004,8 +2261,20 @@ class ChromeCDPCodexAuthFlow:
         body = str(state.get("body") or "").lower()
         if "auth.openai.com/add-phone" in lower_url or "/add-phone" in lower_url:
             return "phone_required", url
+        if "auth.openai.com/email-verification" in lower_url or "/email-verification" in lower_url:
+            return "code_required", url
+        if _is_auth_login_url(url):
+            return "email_required", url
+        if _looks_like_account_deactivated_text(body):
+            return "account_deactivated", body[:500]
+        if _looks_like_operation_timed_out_text(body):
+            return "retryable_error", body[:500]
         if "add phone" in body or "phone verification" in body or "手机号" in body or "手机号码" in body:
             return "phone_required", url
+        if ("检查您的收件箱" in body or "check your inbox" in body) and (
+            "验证码" in body or "verification code" in body
+        ):
+            return "code_required", url
         if state.get("hasCode"):
             return "code_required", None
         if state.get("hasPassword"):
@@ -2046,6 +2315,7 @@ class ChromeCDPCodexAuthFlow:
   const selectors = {json.dumps(selectors)};
   const value = {json.dumps(value or "")};
   const allowDisabledMatch = {json.dumps(bool(allow_disabled_match))};
+  const isEmailFill = selectors.some((selector) => String(selector).toLowerCase().includes('email') || String(selector).toLowerCase().includes('username'));
   const visible = (el) => {{
     if (!el) return false;
     const style = window.getComputedStyle(el);
@@ -2071,6 +2341,18 @@ class ChromeCDPCodexAuthFlow:
       }}
       setValue(el, value);
       return 'filled';
+    }}
+  }}
+  if (isEmailFill && /auth\\.openai\\.com\\/(log-in|login)/.test(location.href.toLowerCase())) {{
+    for (const el of Array.from(document.querySelectorAll('input'))) {{
+      const type = String(el.getAttribute('type') || '').toLowerCase();
+      const name = String(el.getAttribute('name') || '').toLowerCase();
+      const autocomplete = String(el.getAttribute('autocomplete') || '').toLowerCase();
+      if (!visible(el) || el.disabled || el.readOnly) continue;
+      if (type === 'hidden' || type === 'password' || type === 'checkbox') continue;
+      if (name === 'code' || autocomplete === 'one-time-code') continue;
+      setValue(el, value);
+      return 'filled_generic_email';
     }}
   }}
   return '';
@@ -2102,6 +2384,18 @@ class ChromeCDPCodexAuthFlow:
   for (const selector of selectors) {{
     for (const el of Array.from(document.querySelectorAll(selector))) {{
       if (visible(el) && !el.disabled && !el.readOnly && !inputs.includes(el)) inputs.push(el);
+    }}
+  }}
+  if (!inputs.length && location.href.toLowerCase().includes('/email-verification')) {{
+    for (const el of Array.from(document.querySelectorAll('input'))) {{
+      const type = String(el.getAttribute('type') || '').toLowerCase();
+      const name = String(el.getAttribute('name') || '').toLowerCase();
+      const autocomplete = String(el.getAttribute('autocomplete') || '').toLowerCase();
+      if (!visible(el) || el.disabled || el.readOnly) continue;
+      if (type === 'hidden' || type === 'email' || type === 'password') continue;
+      if (name === 'email' || autocomplete === 'email' || autocomplete === 'username') continue;
+      inputs.push(el);
+      break;
     }}
   }}
   if (!inputs.length) return false;
@@ -2222,6 +2516,14 @@ class ChromeCDPCodexAuthFlow:
                     return
                 if step == "phone_required":
                     raise CodexOAuthPhoneRequired(str(detail or ""))
+                if step == "account_deactivated":
+                    raise CodexOAuthAccountDeactivated(str(detail or ""))
+                if step == "retryable_error":
+                    clicked = await self._click_by_text(["重试", "Retry", "Try again"])
+                    if clicked:
+                        logger.warning("[Codex] Chrome CDP OAuth 遇到 Operation timed out，已点击重试: %s", clicked)
+                        await asyncio.sleep(5)
+                        continue
                 if step == "email_required":
                     if await self._handle_email_step():
                         continue
@@ -2672,6 +2974,8 @@ def login_codex_via_auth_session(
                 return flow.complete()
             if step == "phone_required":
                 raise CodexOAuthPhoneRequired(str(state.get("detail") or ""))
+            if step == "account_deactivated":
+                raise CodexOAuthAccountDeactivated(str(state.get("detail") or ""))
             if step != "code_required":
                 logger.warning("[Codex] auth_session 复用 OAuth 未完成: %s", state)
                 return None

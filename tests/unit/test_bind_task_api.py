@@ -728,7 +728,9 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
     def fake_start_task(command, func, params, *args, **kwargs):
         captured["command"] = command
         captured["params"] = params
-        captured["result"] = func()
+        captured["exclusive"] = kwargs.get("exclusive")
+        captured["pass_task_id"] = kwargs.get("pass_task_id")
+        captured["result"] = func("task-login-batch")
         return {"task_id": "task-login-batch", "command": command, "params": params}
 
     monkeypatch.setattr(api, "_start_task", fake_start_task)
@@ -739,6 +741,8 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
 
     assert result["task_id"] == "task-login-batch"
     assert captured["command"] == "login-batch"
+    assert captured["exclusive"] is False
+    assert captured["pass_task_id"] is True
     assert captured["params"]["emails"] == ["first@example.com", "second@example.com"]
     assert captured["result"]["total"] == 2
     assert sorted(item["email"] for item in captured["result"]["ok"]) == ["first@example.com", "second@example.com"]
@@ -748,7 +752,7 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
 def test_post_account_login_removes_account_when_oauth_requires_phone(monkeypatch):
     from autoteam.codex_auth import CodexOAuthPhoneRequired
 
-    captured = {}
+    captured = {"progress": []}
     account = {"email": "phone@example.com", "password": "pw", "account_type": "free", "status": "active"}
 
     monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [account])
@@ -756,12 +760,14 @@ def test_post_account_login_removes_account_when_oauth_requires_phone(monkeypatc
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
     monkeypatch.setattr(api, "_run_account_codex_login_once", lambda *_args, **_kwargs: (_ for _ in ()).throw(CodexOAuthPhoneRequired("https://auth.openai.com/add-phone")))
     monkeypatch.setattr(api, "_remove_oauth_phone_required_accounts_from_pool", lambda emails: captured.setdefault("removed", list(emails)))
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured.setdefault("progress", progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
 
     def fake_start_task(command, func, params, *args, **kwargs):
         captured["command"] = command
+        captured["exclusive"] = kwargs.get("exclusive")
+        captured["pass_task_id"] = kwargs.get("pass_task_id")
         try:
-            func()
+            func("task-login-phone")
         except api.TaskResultError as exc:
             captured["error"] = exc
         return {"task_id": "task-login-phone", "command": command, "params": params}
@@ -771,8 +777,39 @@ def test_post_account_login_removes_account_when_oauth_requires_phone(monkeypatc
     api.post_account_login(api.LoginAccountParams(email="phone@example.com"))
 
     assert captured["removed"] == ["phone@example.com"]
+    assert captured["exclusive"] is False
+    assert captured["pass_task_id"] is True
     assert captured["error"].task_result["failure_stage"] == "oauth_phone_required"
-    assert captured["progress"]["stage"] == "account_login_phone_required_removed"
+    assert captured["progress"][-1]["stage"] == "account_login_phone_required_removed"
+
+
+def test_post_account_login_removes_account_when_oauth_account_deactivated(monkeypatch):
+    from autoteam.codex_auth import CodexOAuthAccountDeactivated
+
+    captured = {"progress": []}
+    account = {"email": "dead@example.com", "password": "pw", "account_type": "free", "status": "active"}
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autoteam.accounts.find_account", lambda items, email: account if email == account["email"] else None)
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(api, "_run_account_codex_login_once", lambda *_args, **_kwargs: (_ for _ in ()).throw(CodexOAuthAccountDeactivated("account_deactivated")))
+    monkeypatch.setattr(api, "_remove_oauth_phone_required_accounts_from_pool", lambda emails: captured.setdefault("removed", list(emails)))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        try:
+            func("task-login-dead")
+        except api.TaskResultError as exc:
+            captured["error"] = exc
+        return {"task_id": "task-login-dead", "command": command, "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    api.post_account_login(api.LoginAccountParams(email="dead@example.com"))
+
+    assert captured["removed"] == ["dead@example.com"]
+    assert captured["error"].task_result["failure_stage"] == "oauth_account_deactivated"
+    assert captured["progress"][-1]["stage"] == "account_login_deactivated_removed"
 
 
 def test_post_accounts_login_batch_continues_after_phone_required(monkeypatch):
@@ -801,7 +838,9 @@ def test_post_accounts_login_batch_continues_after_phone_required(monkeypatch):
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
 
     def fake_start_task(command, func, params, *args, **kwargs):
-        captured["result"] = func()
+        captured["exclusive"] = kwargs.get("exclusive")
+        captured["pass_task_id"] = kwargs.get("pass_task_id")
+        captured["result"] = func("task-login-batch")
         return {"task_id": "task-login-batch", "command": command, "params": params}
 
     monkeypatch.setattr(api, "_start_task", fake_start_task)
@@ -811,6 +850,8 @@ def test_post_accounts_login_batch_continues_after_phone_required(monkeypatch):
     )
 
     assert [item["email"] for item in captured["result"]["ok"]] == ["ok@example.com"]
+    assert captured["exclusive"] is False
+    assert captured["pass_task_id"] is True
     assert captured["result"]["phone_required"][0]["email"] == "phone@example.com"
     assert any(progress["stage"] == "account_login_phone_required_removed" for progress in captured["progress"])
 

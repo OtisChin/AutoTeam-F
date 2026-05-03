@@ -21,6 +21,7 @@ data
 # 运行时配置 / 失败记录 / 备份(含真实邮箱与 session,严禁入库)
 runtime_config.json
 register_failures.json
+bind_audit.json
 *.bak-*
 auths.bak-*/
 .backup_docker/
@@ -30,4 +31,3 @@ auths.bak-*/
 .vscode/
 .ruff_cache/
 .pre-commit-config.yaml.local
-.bind_audit.json
