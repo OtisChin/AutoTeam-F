@@ -1544,6 +1544,7 @@ const gopayBoardProgressStats = computed(() => {
   const result = task.result || {}
   const params = task.params || {}
   const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
+  const isAutoRegister = Boolean(params.auto_register)
   const autoRegisterCount = params.auto_register
     ? normalizeGoPayAutoRegisterCount(params.auto_register_count || result.auto_register_count || progress.auto_register_count || 1)
     : 0
@@ -1553,7 +1554,9 @@ const gopayBoardProgressStats = computed(() => {
   const successful = Array.isArray(result.successful_emails)
     ? result.successful_emails.length
     : Number(progress.successful || 0)
-  const total = Number(progress.total || autoRegisterCount || accounts.length || (task.task_id ? 1 : 0))
+  const total = isAutoRegister
+    ? autoRegisterCount
+    : Number(progress.total || accounts.length || (task.task_id ? 1 : 0))
   const remaining = Number.isFinite(Number(progress.remaining_candidates))
     ? Number(progress.remaining_candidates)
     : Math.max(0, total - Math.max(attempted, successful))
