@@ -897,16 +897,12 @@ def cmd_check(include_standby: bool = False):
                     continue
 
                 logger.warning("[检查] pending 账号为失败孤儿，删除: %s", email)
-                if mail_client is None:
-                    mail_client = TemporaryEmailClient()
-                    mail_client.login()
                 delete_managed_account(
                     email,
                     remove_remote=True,
-                    remove_cloudmail=True,
+                    remove_cloudmail=False,
                     sync_cpa_after=False,
                     chatgpt_api=chatgpt,
-                    mail_client=mail_client,
                     remote_state=(members, invites),
                 )
                 deleted_pending += 1
@@ -1338,25 +1334,11 @@ def remove_from_team(chatgpt_api, email, *, return_status=False, lookup_retries=
 
 
 def _discard_registered_account_after_oauth_failure(email, mail_client=None, *, reason=""):
-    """Remove an unusable newly registered account from both local pool and temp-mail service."""
-    cloudmail_account_id = None
-    try:
-        acc = find_account(load_accounts(), email)
-        if acc:
-            cloudmail_account_id = acc.get("cloudmail_account_id")
-    except Exception as exc:
-        logger.warning("[注册] 查询 %s 的临时邮箱 ID 失败: %s", email, exc)
-
-    if mail_client and cloudmail_account_id:
-        try:
-            mail_client.delete_account(cloudmail_account_id)
-            logger.info("[注册] 已删除不可用账号的临时邮箱: %s id=%s", email, cloudmail_account_id)
-        except Exception as exc:
-            logger.warning("[注册] 删除 %s 的临时邮箱失败: %s", email, exc)
+    """Remove an unusable newly registered account from the local pool only."""
 
     removed = delete_account(email)
     logger.info(
-        "[注册] 已从账号池删除不可用账号: %s removed=%s reason=%s",
+        "[注册] 已从账号池删除不可用账号，邮箱服务账号保留: %s removed=%s reason=%s",
         email,
         removed,
         reason or "oauth_failed",
@@ -2891,10 +2873,7 @@ def create_account_direct(
             )
 
     def _discard_email(reason):
-        try:
-            mail_client.delete_account(account_id)
-        except Exception as exc:
-            logger.warning("[直接注册] 删除 %s 的临时邮箱失败（%s）: %s", reason, email, exc)
+        logger.info("[直接注册] %s，保留临时邮箱服务账号: %s id=%s", reason, email, account_id)
 
     # 注册失败（非 duplicate）最多重试 3 次；duplicate 额外独立上限，防止临时邮箱服务异常导致无限换邮箱
     success = False
@@ -2964,7 +2943,7 @@ def create_account_direct(
             last_failure_reason = str(blocked)
             success = False
         except Exception as exc:
-            # Playwright 崩溃 / 网络异常等:不清理邮箱会让临时邮箱服务积压,必须补一刀 discard 再抛。
+            # Playwright 崩溃 / 网络异常等:只丢弃当前本地记录并保留邮箱服务账号,再抛给上层重试。
             logger.error(
                 "[直接注册] %s 注册时发生未分类异常,discard 邮箱后向上抛: %s",
                 email,

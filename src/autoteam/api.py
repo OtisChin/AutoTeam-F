@@ -922,47 +922,30 @@ def _gopay_payment_failed_pool_emails(result: dict, actual_email: str) -> list[s
 
 
 def _remove_pool_accounts_from_local_and_mail(emails: list[str], *, log_context: str = "account-cleanup") -> list[str]:
+    """Remove unusable accounts from the local pool without deleting mail-service accounts."""
     if not emails:
         return []
     from autoteam.accounts import delete_account as delete_local_account, find_account, load_accounts
     from autoteam.auth_session_store import delete_auth_session
-    from autoteam.mail import TemporaryEmailClient
 
     removed = []
     accounts = load_accounts()
-    mail_client = None
     for email in emails:
         if not email or _is_main_account_email(email):
             continue
         account = find_account(accounts, email)
-        mail_target = (account or {}).get("cloudmail_account_id") or email
-        mail_deleted = False
-        if mail_target:
-            try:
-                if mail_client is None:
-                    mail_client = TemporaryEmailClient()
-                    mail_client.login()
-                resp = mail_client.delete_account(mail_target)
-                mail_deleted = bool(isinstance(resp, dict) and resp.get("code") == 200)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] failed to delete account from email service: email=%s error=%s",
-                    log_context,
-                    email,
-                    exc,
-                )
         record_deleted = delete_local_account(email)
         session_deleted = delete_auth_session(email)
-        if record_deleted or session_deleted or mail_deleted:
+        if record_deleted or session_deleted:
             removed.append(email)
         logger.info(
-            "[%s] account removed: email=%s record_deleted=%s auth_session_deleted=%s mail_deleted=%s mail_target=%s",
+            "[%s] account removed locally: email=%s record_deleted=%s auth_session_deleted=%s mail_service_deleted=%s cloudmail_account_id=%s",
             log_context,
             email,
             record_deleted,
             session_deleted,
-            mail_deleted,
-            mail_target,
+            False,
+            (account or {}).get("cloudmail_account_id"),
         )
     return removed
 
@@ -1729,9 +1712,9 @@ def delete_account(email: str):
 
         remote_cleanup = bool(lock_acquired and get_admin_session_token() and get_chatgpt_account_id())
         if lock_acquired:
-            cleanup = _pw_executor.run(delete_managed_account, email, remove_remote=remote_cleanup)
+            cleanup = _pw_executor.run(delete_managed_account, email, remove_remote=remote_cleanup, remove_cloudmail=False)
         else:
-            cleanup = delete_managed_account(email, remove_remote=False)
+            cleanup = delete_managed_account(email, remove_remote=False, remove_cloudmail=False)
         return {
             "message": "账号删除完成",
             "deleted_email": email,
@@ -1852,7 +1835,7 @@ def export_account_credentials(params: AccountCredentialExportParams):
 @app.post("/api/accounts/export-cpa-auths")
 def export_account_cpa_auths(params: AccountEmailBatchParams):
     """导出 data/auths 下的 CPA 兼容认证 JSON。单个返回 JSON，多个返回 zip。"""
-    from autoteam.accounts import find_account, load_accounts
+    from autoteam.accounts import find_account, load_accounts, update_account
 
     requested = []
     seen = set()
@@ -1889,6 +1872,19 @@ def export_account_cpa_auths(params: AccountEmailBatchParams):
     if not files:
         raise HTTPException(status_code=404, detail="选中的账号没有可导出的 data/auths 认证文件")
 
+    exported_at = time.time()
+    exported_emails = []
+    for file in files:
+        email = _normalized_email(file.get("email"))
+        if not email:
+            continue
+        update_account(
+            email,
+            credentials_exported=True,
+            credentials_exported_at=exported_at,
+        )
+        exported_emails.append(email)
+
     if len(files) == 1:
         file = files[0]
         raw = file["content"].encode("utf-8")
@@ -1916,6 +1912,8 @@ def export_account_cpa_auths(params: AccountEmailBatchParams):
         "content_base64": base64.b64encode(raw).decode("ascii"),
         "count": len(files),
         "missing": missing,
+        "exported_emails": exported_emails,
+        "exported_at": exported_at,
         "files": [{"email": file["email"], "filename": file["filename"]} for file in files],
     }
 
@@ -1923,13 +1921,13 @@ def export_account_cpa_auths(params: AccountEmailBatchParams):
 @app.post("/api/accounts/delete-batch")
 def delete_accounts_batch(params: DeleteBatchParams):
     """
-    批量删除本地管理账号。整批共享一个 chatgpt_api + mail_client,
+    批量删除本地管理账号。整批共享一个 chatgpt_api,
     Team 成员/邀请状态只拉一次；CPA 自动同步已禁用，需要时手动同步。
+    不删除临时邮箱服务中的邮箱账号。
     """
     from autoteam.account_ops import delete_managed_account, fetch_team_state
     from autoteam.accounts import load_accounts
     from autoteam.chatgpt_api import ChatGPTTeamAPI
-    from autoteam.mail import TemporaryEmailClient
     from autoteam.admin_state import get_admin_session_token, get_chatgpt_account_id
 
     raw_emails = [(e or "").strip() for e in (params.emails or [])]
@@ -1960,14 +1958,11 @@ def delete_accounts_batch(params: DeleteBatchParams):
         remote_cleanup = bool(lock_acquired and get_admin_session_token() and get_chatgpt_account_id())
 
         chatgpt_api = None
-        mail_client = None
         results = []
         try:
             if remote_cleanup:
                 chatgpt_api = ChatGPTTeamAPI()
                 chatgpt_api.start()
-            mail_client = TemporaryEmailClient()
-            mail_client.login()
             # 整批共享一次 Team 状态快照,避免每个删除都重查一次
             remote_state = fetch_team_state(chatgpt_api) if remote_cleanup else None
 
@@ -1981,8 +1976,8 @@ def delete_accounts_batch(params: DeleteBatchParams):
                     cleanup = delete_managed_account(
                         email,
                         remove_remote=remote_cleanup,
+                        remove_cloudmail=False,
                         chatgpt_api=chatgpt_api,
-                        mail_client=mail_client,
                         remote_state=remote_state,
                         sync_cpa_after=False,
                     )
@@ -2015,7 +2010,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
     try:
         if not lock_acquired:
             return _run()
-        # 每个账号平均 30s (拉取 team 状态 + kick + delete cloudmail),再给 120s 兜底余量。
+        # 每个账号平均 30s (拉取 team 状态 + kick + 清理本地文件),再给 120s 兜底余量。
         # 若仍超时会抛 TimeoutError,worker 线程会在后台继续跑完,但锁会释放 → 用户可以再提。
         timeout = max(300, 30 * len(emails) + 120)
         return _pw_executor.run_with_timeout(timeout, _run)
@@ -3964,7 +3959,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         if removed_pool_emails:
             result["removed_pool_emails"] = removed_pool_emails
             logger.info(
-                "[gopay-bind] removed rejected/nonzero accounts from pool and email service: task_id=%s emails=%s",
+                "[gopay-bind] removed rejected/nonzero accounts from local pool only: task_id=%s emails=%s",
                 task_id[:8] or "<unknown>",
                 removed_pool_emails,
             )

@@ -688,12 +688,15 @@ def test_export_account_cpa_auths_returns_existing_data_auths_file(tmp_path, mon
     auth_dir.mkdir(parents=True)
     payload = {"email": "user@example.com", "access_token": "token", "refresh_token": "refresh"}
     auth_file.write_text(json.dumps(payload), encoding="utf-8")
+    captured = {"updates": []}
 
     monkeypatch.setattr("autoteam.auth_storage.AUTH_DIR", auth_dir)
     monkeypatch.setattr(
         "autoteam.accounts.load_accounts",
         lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}],
     )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
+    monkeypatch.setattr(api.time, "time", lambda: 1778888888.0)
 
     result = api.export_account_cpa_auths(api.AccountEmailBatchParams(emails=["USER@example.com"]))
 
@@ -701,6 +704,14 @@ def test_export_account_cpa_auths_returns_existing_data_auths_file(tmp_path, mon
     assert result["content_type"] == "application/json"
     assert result["count"] == 1
     assert result["missing"] == []
+    assert result["exported_emails"] == ["user@example.com"]
+    assert result["exported_at"] == 1778888888.0
+    assert captured["updates"] == [
+        (
+            "user@example.com",
+            {"credentials_exported": True, "credentials_exported_at": 1778888888.0},
+        )
+    ]
     decoded = json.loads(base64.b64decode(result["content_base64"]).decode("utf-8"))
     assert decoded == payload
 
@@ -920,7 +931,7 @@ def test_gopay_task_runner_removes_rejected_batch_accounts(monkeypatch):
     assert result["removed_pool_emails"] == ["primary@example.com"]
     assert captured["deleted_accounts"] == ["primary@example.com"]
     assert captured["deleted_sessions"] == ["primary@example.com"]
-    assert captured["mail_deleted"] == [123]
+    assert captured["mail_deleted"] == []
     assert captured["updates"][-1][0] == "backup@example.com"
     assert captured["updates"][-1][1]["status"] == accounts_module.STATUS_ACTIVE
     assert captured["updates"][-1][1]["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
@@ -991,7 +1002,7 @@ def test_gopay_task_runner_removes_nonzero_blocked_accounts(monkeypatch):
     assert result["removed_pool_emails"] == ["primary@example.com"]
     assert captured["deleted_accounts"] == ["primary@example.com"]
     assert captured["deleted_sessions"] == ["primary@example.com"]
-    assert captured["mail_deleted"] == ["primary@example.com"]
+    assert captured["mail_deleted"] == []
     assert captured["updates"][-1][0] == "backup@example.com"
 
 
@@ -1059,7 +1070,7 @@ def test_gopay_task_runner_removes_payment_process_failed_accounts(monkeypatch):
     assert result["removed_pool_emails"] == ["primary@example.com"]
     assert captured["deleted_accounts"] == ["primary@example.com"]
     assert captured["deleted_sessions"] == ["primary@example.com"]
-    assert captured["mail_deleted"] == ["mail-123"]
+    assert captured["mail_deleted"] == []
     assert captured["updates"][-1][0] == "backup@example.com"
     assert captured["audit"]["removed_pool_emails"] == ["primary@example.com"]
 

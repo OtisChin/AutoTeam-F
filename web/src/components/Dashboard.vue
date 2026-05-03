@@ -113,8 +113,37 @@
               {{ option.label }} ({{ option.count }})
             </option>
           </select>
+          <select
+            v-model="bindDateFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部绑定日期</option>
+            <option v-for="option in bindDateOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="bindStartTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">开始时间</option>
+            <option v-for="option in bindTimeOptions" :key="`start-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="bindEndTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">结束时间</option>
+            <option v-for="option in bindTimeOptions" :key="`end-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <input
+            v-model.trim="bindTaskFilter"
+            type="search"
+            placeholder="GoPay 任务ID"
+            class="w-full sm:w-40 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || authCredentialFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter || bindTaskFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -466,6 +495,10 @@ const statusFilter = ref('')
 const accountTypeFilter = ref('')
 const credentialExportFilter = ref('')
 const authCredentialFilter = ref('')
+const bindDateFilter = ref(dateKey(new Date()))
+const bindStartTimeFilter = ref('')
+const bindEndTimeFilter = ref('')
+const bindTaskFilter = ref('')
 const accountTypeEditAccount = ref(null)
 const accountTypeEditValue = ref('')
 const accountTypeSaving = ref(false)
@@ -544,25 +577,121 @@ const editableAccountTypeOptions = [
 ]
 
 const allAccounts = computed(() => props.status?.accounts || [])
+
+function accountBindTs(acc) {
+  return Number(acc?.plus_bound_at || acc?.last_bind_at || 0) || 0
+}
+
+function isPlusAccount(acc) {
+  return String(acc?.account_type || '').toLowerCase() === 'plus'
+}
+
+function dateKey(date) {
+  const d = date instanceof Date ? date : new Date(date)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+function dateLabel(value) {
+  if (!value) return ''
+  const d = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return value
+  const today = dateKey(new Date())
+  const yesterdayDate = new Date()
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+  const yesterday = dateKey(yesterdayDate)
+  const pad = n => String(n).padStart(2, '0')
+  const label = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  if (value === today) return `今天 ${label}`
+  if (value === yesterday) return `昨天 ${label}`
+  return label
+}
+
+const bindDateOptions = computed(() => {
+  const values = new Set([dateKey(new Date())])
+  for (const acc of allAccounts.value) {
+    const ts = accountBindTs(acc)
+    if (!ts) continue
+    values.add(dateKey(ts * 1000))
+  }
+  return Array.from(values)
+    .filter(Boolean)
+    .sort((a, b) => b.localeCompare(a))
+    .map(value => ({ value, label: dateLabel(value) }))
+})
+
+const bindTimeOptions = computed(() => {
+  const items = []
+  for (let hour = 0; hour < 24; hour += 1) {
+    const value = `${String(hour).padStart(2, '0')}:00`
+    items.push({ value, label: value })
+  }
+  return items
+})
+
+function dateTimeFilterTimestamp(dateValue, timeValue, fallbackTime, seconds = 0) {
+  if (!dateValue) return 0
+  const timePart = timeValue || fallbackTime
+  const secondPart = String(seconds).padStart(2, '0')
+  const ts = new Date(`${dateValue}T${timePart}:${secondPart}`).getTime()
+  return Number.isFinite(ts) ? Math.floor(ts / 1000) : 0
+}
+
+const bindTimeRange = computed(() => {
+  if (!bindDateFilter.value) return { start: 0, end: 0 }
+  const start = dateTimeFilterTimestamp(bindDateFilter.value, bindStartTimeFilter.value, '00:00')
+  const end = bindEndTimeFilter.value
+    ? dateTimeFilterTimestamp(bindDateFilter.value, bindEndTimeFilter.value, '23:59') + 3599
+    : dateTimeFilterTimestamp(bindDateFilter.value, '', '23:59', 59)
+  return {
+    start,
+    end,
+  }
+})
+
 const filteredAccounts = computed(() => {
   const emailNeedle = emailFilter.value.trim().toLowerCase()
   const statusNeedle = statusFilter.value
   const typeNeedle = accountTypeFilter.value
   const exportNeedle = credentialExportFilter.value
   const authNeedle = authCredentialFilter.value
-  return allAccounts.value.filter(acc => {
+  const bindRange = bindTimeRange.value
+  const bindTaskNeedle = bindTaskFilter.value.trim().toLowerCase()
+  return allAccounts.value
+    .map((acc, index) => ({ acc, index }))
+    .filter(({ acc }) => {
     const email = String(acc?.email || '').toLowerCase()
     const status = String(acc?.status || '')
     const accountType = String(acc?.account_type || 'free')
     const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
     const authStatus = hasCodexAuthFile(acc) ? 'has_auth' : 'missing_auth'
+    const bindTaskId = String(acc?.last_bind_task_id || '').toLowerCase()
     if (emailNeedle && !email.includes(emailNeedle)) return false
     if (statusNeedle && status !== statusNeedle) return false
     if (typeNeedle && accountType !== typeNeedle) return false
     if (exportNeedle && exportStatus !== exportNeedle) return false
     if (authNeedle && authStatus !== authNeedle) return false
+    if (bindRange.start || bindRange.end) {
+      const bindTs = accountBindTs(acc)
+      if (!bindTs) return false
+      if (bindRange.start && bindTs < bindRange.start) return false
+      if (bindRange.end && bindTs > bindRange.end) return false
+    }
+    if (bindTaskNeedle && !bindTaskId.includes(bindTaskNeedle)) return false
     return true
   })
+    .sort((a, b) => {
+      const aPlus = isPlusAccount(a.acc)
+      const bPlus = isPlusAccount(b.acc)
+      if (aPlus && bPlus) {
+        const diff = accountBindTs(b.acc) - accountBindTs(a.acc)
+        if (diff) return diff
+      }
+      if (aPlus !== bPlus) return aPlus ? -1 : 1
+      return a.index - b.index
+    })
+    .map(({ acc }) => acc)
 })
 const accountStatusOptions = computed(() => {
   const counts = new Map()
@@ -678,6 +807,10 @@ function clearFilters() {
   accountTypeFilter.value = ''
   credentialExportFilter.value = ''
   authCredentialFilter.value = ''
+  bindDateFilter.value = dateKey(new Date())
+  bindStartTimeFilter.value = ''
+  bindEndTimeFilter.value = ''
+  bindTaskFilter.value = ''
 }
 
 function openAccountTypeEditor(acc) {
@@ -873,6 +1006,12 @@ function exportAccounts() {
       account_type: accountTypeFilter.value || '',
       credentials_exported: credentialExportFilter.value || '',
       auth_credential: authCredentialFilter.value || '',
+      bind_date: bindDateFilter.value || '',
+      bind_start_time: bindStartTimeFilter.value || '',
+      bind_end_time: bindEndTimeFilter.value || '',
+      bind_time_start: bindTimeRange.value.start || null,
+      bind_time_end: bindTimeRange.value.end || null,
+      gopay_task_id: bindTaskFilter.value || '',
       selected_only: selectedEmails.value.length > 0,
     },
     accounts: rows.map(acc => ({
@@ -965,6 +1104,7 @@ async function exportCpaAuths() {
     const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无认证文件账号` : ''
     message.value = `已导出 ${result.count || 0} 个 CPA 认证文件${missing}`
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    emit('refresh')
   } catch (e) {
     message.value = e.message
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
@@ -1118,7 +1258,7 @@ async function kickAccount(email) {
 async function removeAccount(email) {
   if (deleteDisabled.value) return
 
-  const ok = window.confirm(`确认删除账号 ${email}？\n这会同时清理本地记录、CPA、Team/Invite 和临时邮箱服务。`)
+  const ok = window.confirm(`确认删除账号 ${email}？\n这会清理本地记录、本地/CPA认证文件，并尽量移出 Team/Invite；不会删除邮箱服务中的邮箱账号。`)
   if (!ok) return
 
   actionEmail.value = email
@@ -1148,7 +1288,7 @@ async function batchDelete() {
   const preview = emails.slice(0, 8).join('\n')
   const more = emails.length > 8 ? `\n...还有 ${emails.length - 8} 个` : ''
   const ok = window.confirm(
-    `确认批量删除以下 ${emails.length} 个账号？这会清理本地记录、CPA、Team/Invite 和临时邮箱服务。\n\n${preview}${more}`
+    `确认批量删除以下 ${emails.length} 个账号？这会清理本地记录、本地/CPA认证文件，并尽量移出 Team/Invite；不会删除邮箱服务中的邮箱账号。\n\n${preview}${more}`
   )
   if (!ok) return
 

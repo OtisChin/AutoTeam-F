@@ -6,7 +6,6 @@ from pathlib import Path
 from autoteam.accounts import find_account, load_accounts, save_accounts
 from autoteam.admin_state import get_chatgpt_account_id
 from autoteam.auth_storage import AUTH_DIR
-from autoteam.mail import TemporaryEmailClient
 from autoteam.cpa_sync import delete_from_cpa, list_cpa_files, sync_to_cpa
 
 logger = logging.getLogger(__name__)
@@ -39,7 +38,7 @@ def delete_managed_account(
     email,
     *,
     remove_remote=True,
-    remove_cloudmail=True,
+    remove_cloudmail=False,
     sync_cpa_after=False,
     chatgpt_api=None,
     mail_client=None,
@@ -47,6 +46,7 @@ def delete_managed_account(
 ):
     """
     删除本地管理账号及其衍生资源。
+    默认不删除临时邮箱服务中的邮箱账号，避免误删邮箱历史和验证码入口。
     返回 cleanup 摘要，设计为幂等操作。
     """
     email_l = email.lower()
@@ -65,7 +65,6 @@ def delete_managed_account(
     members = []
     invites = []
     own_chatgpt = None
-    own_mail_client = None
 
     try:
         account_id = get_chatgpt_account_id()
@@ -141,6 +140,8 @@ def delete_managed_account(
             if remove_cloudmail and cloudmail_account_id:
                 try:
                     if mail_client is None:
+                        from autoteam.mail import TemporaryEmailClient
+
                         own_mail_client = TemporaryEmailClient()
                         own_mail_client.login()
                         mail_client = own_mail_client
