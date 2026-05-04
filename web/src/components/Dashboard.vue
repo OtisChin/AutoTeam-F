@@ -617,6 +617,15 @@ function isPlusAccount(acc) {
   return String(acc?.account_type || '').toLowerCase() === 'plus'
 }
 
+function isBindableFreeAccount(acc) {
+  if (!acc?.email || acc?.is_main_account) return false
+  if (String(acc?.account_type || '').toLowerCase() !== 'free') return false
+  if (!acc?.auth_session_file) return false
+  const status = String(acc?.status || '').toLowerCase()
+  if (['fail', 'auth_invalid', 'orphan', 'exhausted', 'standby', 'pending'].includes(status)) return false
+  return true
+}
+
 function dateKey(date) {
   const d = date instanceof Date ? date : new Date(date)
   if (Number.isNaN(d.getTime())) return ''
@@ -797,6 +806,9 @@ const cpaExportableAccounts = computed(() => {
     : filteredAccounts.value
   return rows.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
 })
+const bindableFreeAccounts = computed(() =>
+  allAccounts.value.filter(isBindableFreeAccount)
+)
 const refreshableQuotaAccounts = computed(() =>
   allAccounts.value.filter(acc =>
     !acc.is_main_account && String(acc.status || '').toLowerCase() !== 'fail'
@@ -918,7 +930,7 @@ const cards = computed(() => {
     { label: '活跃', value: s.active, color: 'text-green-400' },
     { label: '待命', value: s.standby, color: 'text-yellow-400' },
     { label: '废弃', value: s.fail || 0, color: 'text-orange-400' },
-    { label: 'Free', value: s.free || 0, color: 'text-fuchsia-400' },
+    { label: 'Free', value: bindableFreeAccounts.value.length, color: 'text-fuchsia-400' },
     { label: 'Team', value: s.team || 0, color: 'text-violet-400' },
     { label: 'Plus', value: s.plus || 0, color: 'text-sky-400' },
     { label: 'Pro', value: s.pro || 0, color: 'text-cyan-400' },

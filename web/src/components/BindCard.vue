@@ -1982,7 +1982,7 @@ async function loadAccounts() {
   try {
     const accounts = await api.getAccounts()
     accountOptions.value = (accounts || [])
-      .filter(account => account?.email && account?.auth_session_file && !['plus', 'pro'].includes(account?.account_type))
+      .filter(isBindableFreeAccount)
       .sort((a, b) => Number(b?.created_at || 0) - Number(a?.created_at || 0))
     const selectableEmails = new Set(accountOptions.value.map(account => String(account.email || '').toLowerCase()))
     if (selectedAccountEmail.value && !selectableEmails.has(selectedAccountEmail.value.toLowerCase())) {
@@ -1998,6 +1998,15 @@ async function loadAccounts() {
   } finally {
     loadingAccounts.value = false
   }
+}
+
+function isBindableFreeAccount(account) {
+  if (!account?.email || account?.is_main_account) return false
+  if (String(account?.account_type || '').toLowerCase() !== 'free') return false
+  if (!account?.auth_session_file) return false
+  const status = String(account?.status || '').toLowerCase()
+  if (['fail', 'auth_invalid', 'orphan', 'exhausted', 'standby', 'pending'].includes(status)) return false
+  return true
 }
 
 async function loadCards() {
