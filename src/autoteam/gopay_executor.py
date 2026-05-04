@@ -632,6 +632,16 @@ def _is_gopay_already_linked_result(result: dict | None) -> bool:
     )
 
 
+def _is_midtrans_linking_rate_limited_result(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "success":
+        return False
+    return str(result.get("failure_stage") or "") == "midtrans_linking" and "http 429" in str(
+        result.get("message") or ""
+    ).lower()
+
+
 def _is_chatgpt_token_invalidated_result(result: dict | None) -> bool:
     if not isinstance(result, dict):
         return False
@@ -5026,6 +5036,7 @@ def run_gopay_bind_task(
     phone_number: str,
     sms_url: str,
     gopay_pin: str,
+    phone_accounts: list[dict] | None = None,
     billing_info: dict | None = None,
     country_code: str = "",
     proxy_url: str | None = None,
@@ -5047,6 +5058,42 @@ def run_gopay_bind_task(
     final_checkout_url = str(checkout_url or "").strip()
     checkout_ui_mode = _normalize_checkout_ui_mode(checkout_ui_mode)
 
+    normalized_phone_accounts: list[dict] = []
+    seen_phone_accounts: set[tuple[str, str, str]] = set()
+    for raw_phone_account in phone_accounts or []:
+        if not isinstance(raw_phone_account, dict):
+            continue
+        account_country_code = str(raw_phone_account.get("country_code") or raw_phone_account.get("countryCode") or country_code or "").strip()
+        account_phone_number = str(raw_phone_account.get("phone_number") or raw_phone_account.get("phoneNumber") or "").strip()
+        account_sms_url = str(raw_phone_account.get("sms_url") or raw_phone_account.get("smsUrl") or "").strip()
+        account_gopay_pin = str(raw_phone_account.get("gopay_pin") or raw_phone_account.get("gopayPin") or "").strip()
+        if not account_phone_number or not account_sms_url or not account_gopay_pin:
+            continue
+        phone_key = (account_country_code, account_phone_number, account_sms_url)
+        if phone_key in seen_phone_accounts:
+            continue
+        seen_phone_accounts.add(phone_key)
+        normalized_phone_accounts.append(
+            {
+                "country_code": account_country_code,
+                "phone_number": account_phone_number,
+                "sms_url": account_sms_url,
+                "gopay_pin": account_gopay_pin,
+            }
+        )
+    if not normalized_phone_accounts:
+        normalized_phone_accounts.append(
+            {
+                "country_code": str(country_code or "").strip(),
+                "phone_number": str(phone_number or "").strip(),
+                "sms_url": str(sms_url or "").strip(),
+                "gopay_pin": str(gopay_pin or "").strip(),
+            }
+        )
+
+    def phone_for_attempt(attempt: int) -> dict:
+        return normalized_phone_accounts[(max(1, int(attempt or 1)) - 1) % len(normalized_phone_accounts)]
+
     def emit(stage: str, **extra):
         _emit_gopay_progress(progress_callback, stage, **extra)
 
@@ -5063,16 +5110,17 @@ def run_gopay_bind_task(
     def current_attempt_interrupted() -> bool:
         return cancel_requested() or skip_requested()
 
-    def run_once(candidate_email: str) -> dict:
+    def run_once(candidate_email: str, attempt: int = 1) -> dict:
+        active_phone = phone_for_attempt(attempt)
         return _run_gopay_bind_task_once(
             email=candidate_email,
             checkout_url=checkout_url,
             checkout_ui_mode=checkout_ui_mode,
-            phone_number=phone_number,
-            sms_url=sms_url,
-            gopay_pin=gopay_pin,
+            phone_number=str(active_phone.get("phone_number") or ""),
+            sms_url=str(active_phone.get("sms_url") or ""),
+            gopay_pin=str(active_phone.get("gopay_pin") or ""),
             billing_info=billing_info,
-            country_code=country_code,
+            country_code=str(active_phone.get("country_code") or ""),
             proxy_url=proxy_url,
             proxy_bypass=proxy_bypass,
             timeout_seconds=timeout_seconds,
@@ -5100,7 +5148,7 @@ def run_gopay_bind_task(
 
     if not rotation_enabled:
         emit("gopay_try_account", email=requested_email, attempt=1, total=1)
-        result = run_once(requested_email)
+        result = run_once(requested_email, 1)
         result["email_used"] = requested_email
         result["requested_email"] = requested_email
         logger.info(
@@ -5188,7 +5236,7 @@ def run_gopay_bind_task(
         else:
             emit("gopay_try_account", email=candidate, attempt=index, total=len(candidates))
 
-        result = run_once(candidate)
+        result = run_once(candidate, index)
         result["email_used"] = candidate
         result["requested_email"] = requested_email
         result["attempted_emails"] = attempted[:]
@@ -5405,7 +5453,10 @@ def run_gopay_bind_task(
 
     if last_failed_result:
         last_failed_result = dict(last_failed_result)
-        last_failed_result["message"] = f"GoPay 批量绑定失败: 尝试 {len(attempted)} 个账号均未成功"
+        if _is_midtrans_linking_rate_limited_result(last_failed_result):
+            last_failed_result["message"] = "GoPay/Midtrans 限流，请稍后重试"
+        else:
+            last_failed_result["message"] = f"GoPay 批量绑定失败: 尝试 {len(attempted)} 个账号均未成功"
         last_failed_result["failed_emails"] = failed[:]
         last_failed_result["token_invalidated_emails"] = token_invalidated[:]
         last_failed_result["blocked_emails"] = blocked[:]

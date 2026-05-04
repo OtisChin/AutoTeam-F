@@ -295,7 +295,7 @@ def test_gopay_task_runner_auto_registers_then_binds(monkeypatch):
 
 
 def test_gopay_task_runner_auto_register_count_registers_and_binds_sequentially(monkeypatch):
-    captured = {"mail_login": 0, "register_kwargs": [], "run_emails": []}
+    captured = {"mail_login": 0, "register_kwargs": [], "run_emails": [], "run_phone_numbers": []}
     registered_emails = ["new1@example.com", "new2@example.com"]
 
     def fake_load_accounts():
@@ -330,6 +330,7 @@ def test_gopay_task_runner_auto_register_count_registers_and_binds_sequentially(
     def fake_run_gopay_bind_task(**kwargs):
         email = kwargs["email"]
         captured["run_emails"].append(email)
+        captured["run_phone_numbers"].append(kwargs["phone_number"])
         return {
             "status": "success",
             "message": f"GoPay 绑定完成: {email}",
@@ -350,10 +351,20 @@ def test_gopay_task_runner_auto_register_count_registers_and_binds_sequentially(
             email="",
             auto_register=True,
             auto_register_count=2,
-            phone_number="+6287761973970",
-            country_code="62",
-            sms_url="https://it.tgflare.com/api/record?token=demo",
-            gopay_pin="558023",
+            phone_accounts=[
+                {
+                    "country_code": "62",
+                    "phone_number": "+628111111111",
+                    "sms_url": "https://it.tgflare.com/api/record?token=one",
+                    "gopay_pin": "111111",
+                },
+                {
+                    "country_code": "62",
+                    "phone_number": "+628222222222",
+                    "sms_url": "https://it.tgflare.com/api/record?token=two",
+                    "gopay_pin": "222222",
+                },
+            ],
         )
     )
 
@@ -366,6 +377,7 @@ def test_gopay_task_runner_auto_register_count_registers_and_binds_sequentially(
     assert len(captured["register_kwargs"]) == 2
     assert all(kwargs["domain"] == "openaibus.com" for kwargs in captured["register_kwargs"])
     assert captured["run_emails"] == registered_emails
+    assert captured["run_phone_numbers"] == ["+628111111111", "+628222222222"]
     assert task_result["status"] == "success"
     assert task_result["successful_emails"] == registered_emails
     assert task_result["auto_register_count"] == 2
@@ -441,6 +453,7 @@ def test_gopay_task_runner_auto_register_splits_register_success_from_bind_failu
     assert result["failed_emails"][0]["bind_status"] == "failed"
     assert result["auto_register_results"][0]["message"].startswith("注册已成功，GoPay 绑定失败")
     assert any(progress["stage"] == "gopay_auto_register_bind_wait" for progress in captured["progress"])
+    assert any(progress["stage"] == "gopay_auto_register_bind_failed" for progress in captured["progress"])
     assert 12.5 in captured["slept"]
 
 
@@ -526,6 +539,49 @@ def test_run_gopay_bind_task_skips_current_account_and_continues(monkeypatch):
     assert result["status"] == "success"
     assert result["email_used"] == "second@example.com"
     assert result["skipped_emails"] == ["first@example.com"]
+
+
+def test_run_gopay_bind_task_rotates_phone_accounts_with_candidates(monkeypatch):
+    calls = []
+
+    def fake_run_once(**kwargs):
+        calls.append((kwargs["email"], kwargs["country_code"], kwargs["phone_number"], kwargs["sms_url"], kwargs["gopay_pin"]))
+        if kwargs["email"] == "first@example.com":
+            return {"status": "failed", "failure_stage": "post_submit", "message": "first failed"}
+        return {"status": "success", "message": "GoPay 绑定完成"}
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="first@example.com",
+        checkout_url="",
+        phone_number="+628111111111",
+        sms_url="https://sms.example/one",
+        gopay_pin="111111",
+        phone_accounts=[
+            {
+                "country_code": "62",
+                "phone_number": "+628111111111",
+                "sms_url": "https://sms.example/one",
+                "gopay_pin": "111111",
+            },
+            {
+                "country_code": "62",
+                "phone_number": "+628222222222",
+                "sms_url": "https://sms.example/two",
+                "gopay_pin": "222222",
+            },
+        ],
+        account_emails=["first@example.com", "second@example.com"],
+        is_cancelled=lambda: False,
+    )
+
+    assert calls == [
+        ("first@example.com", "62", "+628111111111", "https://sms.example/one", "111111"),
+        ("second@example.com", "62", "+628222222222", "https://sms.example/two", "222222"),
+    ]
+    assert result["status"] == "success"
+    assert result["email_used"] == "second@example.com"
 
 
 def test_run_gopay_bind_task_rotates_on_gopay_wallet_payment_process_failure(monkeypatch):
@@ -699,6 +755,36 @@ def test_run_gopay_bind_task_stops_on_already_linked(monkeypatch):
     assert calls == ["first@example.com"]
     assert result["status"] == "failed"
     assert result["failure_stage"] == "midtrans_linking"
+
+
+def test_run_gopay_bind_task_shows_rate_limit_message_for_midtrans_429(monkeypatch):
+    calls = []
+
+    def fake_run_once(**kwargs):
+        calls.append(kwargs["email"])
+        return {
+            "status": "failed",
+            "failure_stage": "midtrans_linking",
+            "message": "Midtrans linking 失败: HTTP 429",
+        }
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="first@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://it.tgflare.com/api/record?token=demo",
+        gopay_pin="558023",
+        account_emails=["first@example.com", "second@example.com"],
+        is_cancelled=lambda: False,
+    )
+
+    assert calls == ["first@example.com", "second@example.com"]
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "midtrans_linking"
+    assert result["message"] == "GoPay/Midtrans 限流，请稍后重试"
+    assert result["failed_emails"] == ["first@example.com", "second@example.com"]
 
 
 def test_gopay_task_runner_raises_on_failed_executor_result(monkeypatch):

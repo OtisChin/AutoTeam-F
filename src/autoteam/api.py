@@ -565,6 +565,13 @@ class BindCardTaskParams(BaseModel):
     timeout_seconds: int = 900
 
 
+class GoPayPhoneAccountParams(BaseModel):
+    country_code: str = Field("", validation_alias=AliasChoices("country_code", "countryCode"))
+    phone_number: str = Field("", validation_alias=AliasChoices("phone_number", "phoneNumber"))
+    sms_url: str = Field("", validation_alias=AliasChoices("sms_url", "smsUrl"))
+    gopay_pin: str = Field("", validation_alias=AliasChoices("gopay_pin", "gopayPin"))
+
+
 class GoPayBindTaskParams(BaseModel):
     email: str = ""
     account_emails: list[str] = []
@@ -577,10 +584,14 @@ class GoPayBindTaskParams(BaseModel):
     )
     auto_register_prefix: str = Field("", validation_alias=AliasChoices("auto_register_prefix", "autoRegisterPrefix"))
     auto_register_password: str = Field("", validation_alias=AliasChoices("auto_register_password", "autoRegisterPassword"))
-    phone_number: str
+    phone_accounts: list[GoPayPhoneAccountParams] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("phone_accounts", "phoneAccounts"),
+    )
+    phone_number: str = ""
     country_code: str = ""
-    sms_url: str
-    gopay_pin: str
+    sms_url: str = ""
+    gopay_pin: str = ""
     billing_name: str = ""
     billing_country: str = "US"
     billing_state: str = ""
@@ -4012,6 +4023,44 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     country_code = str(params.country_code or "").strip()
     sms_url = str(params.sms_url or "").strip()
     gopay_pin = str(params.gopay_pin or "").strip()
+    phone_accounts: list[dict] = []
+    seen_phone_accounts: set[tuple[str, str, str]] = set()
+    for raw_phone_account in params.phone_accounts or []:
+        account_country_code = str(raw_phone_account.country_code or country_code or "").strip()
+        account_phone_number = str(raw_phone_account.phone_number or "").strip()
+        account_sms_url = str(raw_phone_account.sms_url or "").strip()
+        account_gopay_pin = str(raw_phone_account.gopay_pin or "").strip()
+        if not account_phone_number and not account_sms_url and not account_gopay_pin:
+            continue
+        if not account_phone_number or not account_sms_url or not account_gopay_pin:
+            raise HTTPException(status_code=400, detail="phone_accounts 每项都必须填写 phone_number、sms_url、gopay_pin")
+        phone_key = (account_country_code, account_phone_number, account_sms_url)
+        if phone_key in seen_phone_accounts:
+            continue
+        seen_phone_accounts.add(phone_key)
+        phone_accounts.append(
+            {
+                "country_code": account_country_code,
+                "phone_number": account_phone_number,
+                "sms_url": account_sms_url,
+                "gopay_pin": account_gopay_pin,
+            }
+        )
+    if not phone_accounts and (phone_number or sms_url or gopay_pin):
+        phone_accounts.append(
+            {
+                "country_code": country_code,
+                "phone_number": phone_number,
+                "sms_url": sms_url,
+                "gopay_pin": gopay_pin,
+            }
+        )
+    if phone_accounts:
+        primary_phone_account = phone_accounts[0]
+        phone_number = str(primary_phone_account.get("phone_number") or "").strip()
+        country_code = str(primary_phone_account.get("country_code") or "").strip()
+        sms_url = str(primary_phone_account.get("sms_url") or "").strip()
+        gopay_pin = str(primary_phone_account.get("gopay_pin") or "").strip()
     billing_name = str(params.billing_name or "").strip()
     billing_country = str(params.billing_country or "").strip()
     billing_state = str(params.billing_state or "").strip()
@@ -4067,6 +4116,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         account_emails = []
     elif account_emails and email not in account_emails:
         account_emails.insert(0, email)
+    if not phone_accounts:
+        raise HTTPException(status_code=400, detail="phone_number 不能为空")
     if not phone_number:
         raise HTTPException(status_code=400, detail="phone_number 不能为空")
     if not sms_url:
@@ -4081,7 +4132,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         len(account_emails) if account_emails else 1,
         _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
         checkout_ui_mode,
-        _safe_phone_summary(phone_number, country_code),
+        f"{_safe_phone_summary(phone_number, country_code)} (+{max(0, len(phone_accounts) - 1)} backup)"
+        if len(phone_accounts) > 1
+        else _safe_phone_summary(phone_number, country_code),
         params.proxy_label or "<none>",
         proxy_config_state,
         _safe_proxy_summary(normalized_proxy_url or proxy_url),
@@ -4382,15 +4435,29 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             )
             return registered_email
 
-        def _run_one_gopay_bind(bind_email: str, bind_account_emails: list[str]) -> dict:
+        def _phone_accounts_for_attempt(index: int) -> list[dict]:
+            if not phone_accounts:
+                return []
+            selected = phone_accounts[(max(1, int(index or 1)) - 1) % len(phone_accounts)]
+            return [dict(selected)]
+
+        def _run_one_gopay_bind(
+            bind_email: str,
+            bind_account_emails: list[str],
+            *,
+            selected_phone_accounts: list[dict] | None = None,
+        ) -> dict:
+            active_phone_accounts = selected_phone_accounts or phone_accounts
+            active_phone_account = active_phone_accounts[0] if active_phone_accounts else {}
             return run_gopay_bind_task(
                 email=bind_email,
                 checkout_url=checkout_url,
                 checkout_ui_mode=checkout_ui_mode,
-                phone_number=phone_number,
-                country_code=country_code,
-                sms_url=sms_url,
-                gopay_pin=gopay_pin,
+                phone_number=str(active_phone_account.get("phone_number") or phone_number),
+                country_code=str(active_phone_account.get("country_code") or country_code),
+                sms_url=str(active_phone_account.get("sms_url") or sms_url),
+                gopay_pin=str(active_phone_account.get("gopay_pin") or gopay_pin),
+                phone_accounts=active_phone_accounts,
                 billing_info={
                     "name": billing_name,
                     "country": billing_country,
@@ -4468,7 +4535,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                         )
                         time.sleep(delay_seconds)
                     try:
-                        single_result = dict(_run_one_gopay_bind(current_email, []) or {})
+                        single_result = dict(
+                            _run_one_gopay_bind(
+                                current_email,
+                                [],
+                                selected_phone_accounts=_phone_accounts_for_attempt(index),
+                            )
+                            or {}
+                        )
                     except Exception as exc:
                         logger.exception(
                             "[gopay-bind] GoPay bind failed after auto-register success: index=%s/%s email=%s",
@@ -4509,6 +4583,25 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 single_result["auto_register_total"] = auto_register_count
                 aggregate_results.append(single_result)
                 last_result = single_result
+                if single_result.get("status") != "success":
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": (
+                                "gopay_auto_register_bind_failed"
+                                if single_result.get("register_status") == "success"
+                                else "gopay_auto_register_failed"
+                            ),
+                            "email": single_email,
+                            "current": index,
+                            "total": auto_register_count,
+                            "failure_stage": single_result.get("failure_stage") or "",
+                            "register_status": single_result.get("register_status") or "",
+                            "bind_status": single_result.get("bind_status") or "",
+                            "message": single_result.get("message") or "自动注册 GoPay 失败",
+                            "level": "error",
+                        },
+                    )
 
                 _merge_email_list(single_result, "successful_emails", successful_emails)
                 _merge_email_list(single_result, "rejected_emails", rejected_emails)
@@ -4613,6 +4706,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     "auto_register_count": auto_register_count,
                     "phone_number": phone_number,
                     "country_code": country_code,
+                    "phone_account_count": len(phone_accounts),
                     "checkout_ui_mode": checkout_ui_mode,
                     "proxy_label": params.proxy_label,
                     "account_count": auto_register_count if auto_register else len(account_emails) if account_emails else 1,
@@ -4641,6 +4735,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         result["requested_email"] = email
         result["phone_number"] = phone_number
         result["country_code"] = country_code
+        result["phone_account_count"] = len(phone_accounts)
         result["proxy_label"] = params.proxy_label
         result["proxy_state"] = proxy_config_state
         result["checkout_url"] = checkout_url or result.get("checkout_url") or ""
@@ -4770,6 +4865,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 "flow": "gopay",
                 "phone_number": phone_number,
                 "country_code": country_code,
+                "phone_account_count": len(phone_accounts),
                 "billing_info": result.get("billing_info") or {},
                 "removed_pool_emails": result.get("removed_pool_emails") or [],
             }
@@ -4795,6 +4891,17 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     task_params["auto_register_prefix"] = auto_register_prefix
     task_params["auto_register_password_present"] = bool(auto_register_password)
     task_params.pop("auto_register_password", None)
+    task_params["phone_account_count"] = len(phone_accounts)
+    task_params["phone_accounts"] = [
+        {
+            "country_code": item.get("country_code") or "",
+            "phone_number": item.get("phone_number") or "",
+            "sms_url_present": bool(item.get("sms_url")),
+            "gopay_pin_present": bool(item.get("gopay_pin")),
+        }
+        for item in phone_accounts
+    ]
+    task_params.pop("gopay_pin", None)
     task = _start_task("gopay-bind", _run, task_params)
     _task_skip_signals[task["task_id"]] = skip_current_signal
     return task

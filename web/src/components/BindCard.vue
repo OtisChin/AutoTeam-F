@@ -623,6 +623,7 @@
                     v-model="gopayForm.autoRegister"
                     type="checkbox"
                     :disabled="gopaySubmitting || gopayTaskRunning || Boolean(gopayForm.checkoutUrl)"
+                    @change="handleGoPayAutoRegisterToggle"
                     class="accent-blue-500"
                   />
                   自动注册
@@ -814,6 +815,32 @@
             />
           </div>
 
+          <div class="rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-3">
+            <div class="flex items-start justify-between gap-3">
+              <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  v-model="gopayForm.usePhonePool"
+                  type="checkbox"
+                  :disabled="gopaySubmitting || gopayTaskRunning"
+                  @change="handleGoPayPhonePoolToggle"
+                  class="accent-blue-500"
+                />
+                使用手机号池
+              </label>
+              <button
+                v-if="gopayForm.usePhonePool"
+                type="button"
+                @click="openGoPayPhonePoolConfig"
+                :disabled="gopaySubmitting || gopayTaskRunning"
+                class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-blue-600/15 hover:bg-blue-600/25 text-blue-200 border-blue-500/30 transition disabled:opacity-50">
+                配置
+              </button>
+            </div>
+            <div class="mt-2 text-xs" :class="gopayForm.usePhonePool ? 'text-blue-300' : 'text-gray-500'">
+              {{ gopayPhonePoolSummary }}
+            </div>
+          </div>
+
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label class="block text-sm text-gray-400 mb-1">代理标签</label>
@@ -913,7 +940,7 @@
     </div>
 
     <div
-      v-if="gopayAutoRegisterConfigOpen"
+      v-if="activeTab === 'gopay' && gopayAutoRegisterConfigOpen"
       class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
       @click.self="closeGoPayAutoRegisterConfig"
     >
@@ -1022,6 +1049,60 @@
             @click="confirmGoPayAutoRegisterConfig"
             :disabled="!gopaySelectedAutoRegisterDomains.length"
             class="px-5 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50">
+            确认
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="activeTab === 'gopay' && gopayPhonePoolConfigOpen"
+      class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      @click.self="closeGoPayPhonePoolConfig"
+    >
+      <div class="w-full max-w-2xl max-h-[82vh] rounded-xl border border-gray-800 bg-gray-900 shadow-2xl flex flex-col">
+        <div class="flex items-center justify-between gap-4 px-5 py-4 border-b border-gray-800">
+          <div>
+            <h4 class="text-lg font-semibold text-white">手机号池配置</h4>
+            <div class="text-xs text-gray-500 mt-1">每行一个 GoPay 手机号，任务会按顺序轮换使用。</div>
+          </div>
+          <button
+            type="button"
+            @click="closeGoPayPhonePoolConfig"
+            class="px-3 py-1.5 rounded-lg text-sm border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition">
+            关闭
+          </button>
+        </div>
+
+        <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">手机号池</label>
+            <textarea
+              v-model="gopayForm.phonePoolText"
+              rows="9"
+              placeholder="每行：国家区号|手机号|短信接口URL|GoPay PIN&#10;62|81997420107|https://it.tgflare.com/api/record?token=...|558023"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
+            ></textarea>
+          </div>
+
+          <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
+            <div>有效手机号：<span class="text-gray-200">{{ gopayPhoneAccounts.length }}</span></div>
+            <div>轮换方式：<span class="text-gray-200">自动注册按注册序号轮换；批量绑卡按账号候选轮换。</span></div>
+            <div>不勾选“使用手机号池”时，会继续使用上方单手机号配置。</div>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <button
+            type="button"
+            @click="closeGoPayPhonePoolConfig"
+            class="px-4 py-2 rounded-lg text-sm border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition">
+            取消
+          </button>
+          <button
+            type="button"
+            @click="confirmGoPayPhonePoolConfig"
+            class="px-5 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition">
             确认
           </button>
         </div>
@@ -1152,6 +1233,8 @@ const gopayForm = ref({
   checkoutUiMode: 'hosted',
   countryCode: '62',
   phoneNumber: '81997420107',
+  usePhonePool: false,
+  phonePoolText: '',
   smsUrl: '',
   gopayPin: '',
   billingName: '',
@@ -1169,6 +1252,7 @@ const gopayForm = ref({
 const gopayAccountSearchKeyword = ref('')
 const gopayAccountPickerOpen = ref(false)
 const gopayAutoRegisterConfigOpen = ref(false)
+const gopayPhonePoolConfigOpen = ref(false)
 const gopayRegisterDomainOptions = ref([])
 const gopayRegisterDomainLoading = ref(false)
 const gopaySubmitting = ref(false)
@@ -1325,13 +1409,49 @@ const gopayEffectiveEmail = computed(() => {
   return String(gopayForm.value.email || '').trim().toLowerCase()
 })
 
+const gopayPhoneAccounts = computed(() => {
+  const fallbackCountryCode = digitsOnly(gopayForm.value.countryCode) || '62'
+  const seen = new Set()
+  return String(gopayForm.value.phonePoolText || '')
+    .split(/\r?\n/)
+    .map(line => String(line || '').trim())
+    .filter(Boolean)
+    .map(line => {
+      const separator = line.includes('|') ? '|' : ','
+      const parts = line.split(separator).map(part => String(part || '').trim()).filter(Boolean)
+      if (parts.length < 3) return null
+      const countryCode = parts.length >= 4 ? digitsOnly(parts[0]) || fallbackCountryCode : fallbackCountryCode
+      const phoneNumber = parts.length >= 4 ? parts[1] : parts[0]
+      const smsUrl = parts.length >= 4 ? parts.slice(2, -1).join(separator) : parts.slice(1, -1).join(separator)
+      const gopayPin = parts[parts.length - 1]
+      if (!phoneNumber || !smsUrl || !gopayPin) return null
+      const key = `${countryCode}|${phoneNumber}|${smsUrl}`
+      if (seen.has(key)) return null
+      seen.add(key)
+      return { country_code: countryCode, phone_number: phoneNumber, sms_url: smsUrl, gopay_pin: gopayPin }
+    })
+    .filter(Boolean)
+})
+
+const gopayActivePhoneAccounts = computed(() => {
+  return gopayForm.value.usePhonePool ? gopayPhoneAccounts.value : []
+})
+
+const gopayPhonePoolSummary = computed(() => {
+  if (!gopayForm.value.usePhonePool) return '未启用，当前使用上方单手机号。'
+  if (!gopayPhoneAccounts.value.length) return '已启用，但还没有有效手机号，请先配置。'
+  return `已启用 ${gopayPhoneAccounts.value.length} 个手机号，提交任务时按顺序轮换。`
+})
+
+const gopaySinglePhoneComplete = computed(() => {
+  return Boolean(gopayForm.value.phoneNumber && gopayForm.value.smsUrl && gopayForm.value.gopayPin)
+})
+
 const gopayCanSubmit = computed(() => {
   return Boolean(
     (gopayForm.value.autoRegister || gopayEffectiveEmail.value)
     && (!gopayForm.value.autoRegister || gopaySelectedAutoRegisterDomains.value.length)
-    && gopayForm.value.phoneNumber
-    && gopayForm.value.smsUrl
-    && gopayForm.value.gopayPin
+    && (gopayForm.value.usePhonePool ? gopayPhoneAccounts.value.length > 0 : gopaySinglePhoneComplete.value)
   )
 })
 
@@ -1441,7 +1561,6 @@ watch(
     gopayForm.value.accountEmails = []
     gopayForm.value.email = ''
     gopayForm.value.checkoutUrl = ''
-    openGoPayAutoRegisterConfig()
   }
 )
 
@@ -1526,6 +1645,8 @@ const gopayStageLabelMap = {
   gopay_auto_register_started: '自动注册账号',
   gopay_auto_register_done: '自动注册完成',
   gopay_auto_register_bind_wait: '注册后等待绑卡',
+  gopay_auto_register_bind_failed: '注册成功但绑卡失败',
+  gopay_auto_register_failed: '自动注册失败',
   register_email_creating: '创建注册邮箱',
   register_email_created: '注册邮箱已创建',
   register_attempt_started: '开始注册账号',
@@ -1689,9 +1810,14 @@ const gopayBoardFailureCount = computed(() => {
   ]
   for (const list of lists) {
     if (!Array.isArray(list)) continue
-    for (const item of list) {
+    for (const [index, item] of list.entries()) {
       const normalized = String((item && typeof item === 'object') ? item.email : item || '').trim().toLowerCase()
-      if (normalized) failedEmails.add(normalized)
+      if (normalized) {
+        failedEmails.add(normalized)
+      } else if (item && typeof item === 'object') {
+        const current = String(item.auto_register_index || item.current || index + 1)
+        failedEmails.add(`attempt:${current}`)
+      }
     }
   }
 
@@ -1701,12 +1827,19 @@ const gopayBoardFailureCount = computed(() => {
     'gopay_payment_process_failed_rotate',
     'gopay_nonzero_amount_blocked_rotate',
     'gopay_account_skipped_by_user',
+    'gopay_auto_register_bind_failed',
+    'gopay_auto_register_failed',
   ])
   const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
   for (const event of events) {
     if (!failureStages.has(String(event?.stage || ''))) continue
     const normalized = String(event?.email || '').trim().toLowerCase()
-    if (normalized) failedEmails.add(normalized)
+    if (normalized) {
+      failedEmails.add(normalized)
+    } else {
+      const current = String(event?.current || event?.attempt || event?.event_id || '')
+      if (current) failedEmails.add(`attempt:${current}`)
+    }
   }
 
   return failedEmails.size
@@ -1716,7 +1849,20 @@ const gopayBoardRegistrationMeta = computed(() => {
   const result = gopayTask.value?.result || {}
   const params = gopayTask.value?.params || {}
   if (!params.auto_register) return ''
-  const registered = Array.isArray(result.registered_emails) ? result.registered_emails.length : 0
+  const registeredEmails = new Set()
+  if (Array.isArray(result.registered_emails)) {
+    for (const email of result.registered_emails) {
+      const normalized = String(email || '').trim().toLowerCase()
+      if (normalized) registeredEmails.add(normalized)
+    }
+  }
+  const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
+  for (const event of events) {
+    if (String(event?.stage || '') !== 'gopay_auto_register_done') continue
+    const normalized = String(event?.email || '').trim().toLowerCase()
+    if (normalized) registeredEmails.add(normalized)
+  }
+  const registered = registeredEmails.size
   return `注册成功 ${registered}`
 })
 
@@ -1724,7 +1870,15 @@ const gopayBoardEmail = computed(() => {
   const progress = gopayTask.value?.progress || {}
   const result = gopayTask.value?.result || {}
   const params = gopayTask.value?.params || {}
-  return progress.email || result.email || result.email_used || params.email || gopayForm.value.email || '-'
+  const email = progress.email || result.email || result.email_used || params.email || gopayForm.value.email
+  if (email) return email
+  if (params.auto_register) {
+    const current = Number(progress.current || progress.attempt || 0)
+    const total = normalizeGoPayAutoRegisterCount(params.auto_register_count || result.auto_register_count || 1)
+    if (current > 0) return `第 ${current}/${total} 个`
+    return `自动注册 ${total} 个`
+  }
+  return '-'
 })
 
 const gopayBoardStage = computed(() => {
@@ -1743,7 +1897,8 @@ const gopayBoardProgressStats = computed(() => {
   const params = task.params || {}
   const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
   const isAutoRegister = Boolean(params.auto_register)
-  const autoRegisterEventTotal = (Array.isArray(task.progress_events) ? task.progress_events : []).reduce((maxTotal, event) => {
+  const events = Array.isArray(task.progress_events) ? task.progress_events : []
+  const autoRegisterEventTotal = events.reduce((maxTotal, event) => {
     const stage = String(event?.stage || '')
     if (!(stage.startsWith('gopay_auto_register') || stage.startsWith('register_'))) return maxTotal
     const total = Number(event?.total || 0)
@@ -1752,12 +1907,32 @@ const gopayBoardProgressStats = computed(() => {
   const autoRegisterCount = params.auto_register
     ? normalizeGoPayAutoRegisterCount(params.auto_register_count || result.auto_register_count || progress.auto_register_count || autoRegisterEventTotal || 1)
     : 0
-  const attempted = Array.isArray(result.attempted_emails)
-    ? result.attempted_emails.length
-    : Number(result.auto_register_attempted || progress.attempted || progress.attempt || 0)
-  const successful = Array.isArray(result.successful_emails)
-    ? result.successful_emails.length
-    : Number(progress.successful || 0)
+  const autoRegisterEventAttempted = isAutoRegister
+    ? events.reduce((maxCurrent, event) => {
+      const stage = String(event?.stage || '')
+      if (!(stage.startsWith('gopay_auto_register') || stage.startsWith('register_'))) return maxCurrent
+      const current = Number(event?.current || event?.attempt || 0)
+      return Number.isFinite(current) ? Math.max(maxCurrent, current) : maxCurrent
+    }, 0)
+    : 0
+  const attempted = isAutoRegister
+    ? Math.max(Number(result.auto_register_attempted || 0), Number(progress.attempted || progress.attempt || 0), autoRegisterEventAttempted)
+    : Array.isArray(result.attempted_emails)
+      ? result.attempted_emails.length
+      : Number(progress.attempted || progress.attempt || 0)
+  const successfulEmails = new Set()
+  if (Array.isArray(result.successful_emails)) {
+    for (const email of result.successful_emails) {
+      const normalized = String(email || '').trim().toLowerCase()
+      if (normalized) successfulEmails.add(normalized)
+    }
+  }
+  for (const event of events) {
+    if (String(event?.stage || '') !== 'gopay_account_bound') continue
+    const normalized = String(event?.email || '').trim().toLowerCase()
+    if (normalized) successfulEmails.add(normalized)
+  }
+  const successful = successfulEmails.size || Number(progress.successful || 0)
   const done = Math.max(attempted, successful)
   const total = isAutoRegister
     ? autoRegisterCount
@@ -1900,6 +2075,14 @@ async function openGoPayAutoRegisterConfig() {
   gopayAutoRegisterConfigOpen.value = true
 }
 
+function handleGoPayAutoRegisterToggle() {
+  if (gopayForm.value.autoRegister) {
+    openGoPayAutoRegisterConfig()
+  } else {
+    closeGoPayAutoRegisterConfig()
+  }
+}
+
 function closeGoPayAutoRegisterConfig() {
   gopayAutoRegisterConfigOpen.value = false
 }
@@ -1921,6 +2104,30 @@ function clearGoPayAutoRegisterDomains() {
   gopayForm.value.autoRegisterDomains = []
 }
 
+function openGoPayPhonePoolConfig() {
+  gopayPhonePoolConfigOpen.value = true
+}
+
+function handleGoPayPhonePoolToggle() {
+  if (gopayForm.value.usePhonePool) {
+    openGoPayPhonePoolConfig()
+  } else {
+    closeGoPayPhonePoolConfig()
+  }
+}
+
+function closeGoPayPhonePoolConfig() {
+  gopayPhonePoolConfigOpen.value = false
+}
+
+function confirmGoPayPhonePoolConfig() {
+  if (!gopayPhoneAccounts.value.length) {
+    setMessage('请至少配置一个有效手机号', false)
+    return
+  }
+  closeGoPayPhonePoolConfig()
+}
+
 function openGoPayAccountPicker() {
   gopayAccountPickerOpen.value = true
 }
@@ -1940,6 +2147,8 @@ function getRememberedGoPayForm() {
     accountEmails: normalizeEmailList(gopayForm.value.accountEmails),
     countryCode: digitsOnly(gopayForm.value.countryCode) || '62',
     phoneNumber: String(gopayForm.value.phoneNumber || '').trim(),
+    usePhonePool: Boolean(gopayForm.value.usePhonePool),
+    phonePoolText: String(gopayForm.value.phonePoolText || '').trim(),
     smsUrl: String(gopayForm.value.smsUrl || '').trim(),
     proxyLabel: String(gopayForm.value.proxyLabel || '').trim(),
     proxyUrl: String(gopayForm.value.proxyUrl || '').trim(),
@@ -1969,6 +2178,8 @@ function loadGoPayFormState() {
       accountEmails: normalizeEmailList(saved.accountEmails),
       countryCode: digitsOnly(saved.countryCode) || '62',
       phoneNumber: String(saved.phoneNumber || '').trim(),
+      usePhonePool: Boolean(saved.usePhonePool),
+      phonePoolText: String(saved.phonePoolText || '').trim(),
       smsUrl: String(saved.smsUrl || '').trim(),
       proxyLabel: String(saved.proxyLabel || '').trim(),
       proxyUrl: String(saved.proxyUrl || '').trim(),
@@ -2592,6 +2803,7 @@ async function startGoPayBind() {
       checkout_ui_mode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
       country_code: gopayForm.value.countryCode || '',
       phone_number: gopayForm.value.phoneNumber,
+      phone_accounts: gopayActivePhoneAccounts.value,
       sms_url: gopayForm.value.smsUrl,
       gopay_pin: gopayForm.value.gopayPin,
       proxy_url: gopayForm.value.proxyUrl || null,
@@ -2694,6 +2906,10 @@ onUnmounted(() => {
 })
 
 watch(activeTab, (tab) => {
+  if (tab !== 'gopay') {
+    gopayAutoRegisterConfigOpen.value = false
+    gopayPhonePoolConfigOpen.value = false
+  }
   if (tab === 'generate' || tab === 'bind' || tab === 'gopay') {
     loadAccounts()
     loadCards()
