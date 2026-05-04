@@ -828,7 +828,7 @@ def _fill_auth_password_if_present(page, password, *, timeout=5000):
         if password:
             if not _fill_text_field_like_user(page, pwd_input, password):
                 return False
-            if not _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"]):
+            if not _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in", "登录"]):
                 return False
         else:
             otp_btn = page.locator(
@@ -839,7 +839,7 @@ def _fill_auth_password_if_present(page, password, *, timeout=5000):
             if otp_btn.is_visible(timeout=3000):
                 otp_btn.click()
             else:
-                if not _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"]):
+                if not _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in", "登录"]):
                     return False
         return True
     except Exception:
@@ -1079,6 +1079,7 @@ def _login_codex_via_browser_simple(
     native_oauth=False,
     headless=False,
     mail_account_id=None,
+    auth_session_callback=None,
 ):
     """
     极简 OAuth 登录：输入邮箱 -> 邮箱验证码 -> 授权。
@@ -1092,6 +1093,7 @@ def _login_codex_via_browser_simple(
     auth_code = None
     phone_required_url = ""
     final_oauth_url = ""
+    password_required_detail = ""
 
     def search_login_emails(size=10):
         if not mail_client:
@@ -1165,6 +1167,8 @@ def _login_codex_via_browser_simple(
 
         used_email_ids: set[int] = set()
         login_started_at = time.time()
+        password_submitted = False
+        password_submitted_at = 0.0
         for step in range(30):
             if auth_code:
                 break
@@ -1190,6 +1194,41 @@ def _login_codex_via_browser_simple(
                 logger.info("[Codex] 极简 OAuth 已切换邮箱验证码登录: %s", email)
                 time.sleep(2)
                 continue
+
+            try:
+                pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
+                password_visible = pwd_input.is_visible(timeout=500)
+            except Exception:
+                pwd_input = None
+                password_visible = False
+            if password_visible:
+                if password:
+                    if password_submitted:
+                        if time.time() - password_submitted_at < 15:
+                            time.sleep(1)
+                            continue
+                        password_required_detail = f"OAuth 密码提交后仍停留在密码页: {email}"
+                        final_oauth_url = page.url or ""
+                        break
+                    logger.info("[Codex] 极简 OAuth 检测到密码页，按注册流程填写密码: %s", email)
+                    if not _fill_text_field_like_user(page, pwd_input, password):
+                        password_required_detail = f"OAuth 密码输入框填写失败: {email}"
+                        final_oauth_url = page.url or ""
+                        break
+                    time.sleep(0.5)
+                    _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in", "登录"])
+                    password_submitted = True
+                    password_submitted_at = time.time()
+                    time.sleep(3)
+                    _screenshot(page, "codex_simple_02_after_password.png")
+                    continue
+                if _click_email_code_login_if_present(page):
+                    logger.info("[Codex] 极简 OAuth 密码页无密码，已切换邮箱验证码登录: %s", email)
+                    time.sleep(2)
+                    continue
+                password_required_detail = f"OAuth 需要密码但账号没有保存密码，且未找到邮箱验证码入口: {email}"
+                final_oauth_url = page.url or ""
+                break
 
             otp_input = _otp_input_locator(page)
             if otp_input and otp_input.is_visible(timeout=500):
@@ -1241,19 +1280,6 @@ def _login_codex_via_browser_simple(
             except Exception:
                 pass
 
-            # 仅作为兜底：如果 OpenAI 当前页面必须走密码，才填密码；正常补登录走邮箱验证码。
-            try:
-                pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
-                if password and pwd_input.is_visible(timeout=500):
-                    logger.info("[Codex] 极简 OAuth 填写密码兜底: %s", email)
-                    pwd_input.fill(password)
-                    time.sleep(0.5)
-                    _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"])
-                    time.sleep(3)
-                    continue
-            except Exception:
-                pass
-
             time.sleep(1)
 
         if not phone_required_url:
@@ -1276,10 +1302,18 @@ def _login_codex_via_browser_simple(
             _screenshot(page, "codex_simple_05_no_callback.png")
             final_oauth_url = page.url or ""
 
+        if auth_code and callable(auth_session_callback):
+            try:
+                auth_session_callback(page, context)
+            except Exception:
+                logger.warning("[Codex] 极简 OAuth 刷新 auth_session 回调失败: %s", email, exc_info=True)
+
         browser.close()
 
     if phone_required_url:
         raise CodexOAuthPhoneRequired(phone_required_url)
+    if password_required_detail:
+        raise CodexOAuthLoginRequired(password_required_detail)
     if not auth_code:
         raise CodexOAuthLoginRequired(final_oauth_url or auth_url)
 
@@ -1304,6 +1338,7 @@ def login_codex_via_browser(
     native_oauth=False,
     headless=False,
     mail_account_id=None,
+    auth_session_callback=None,
 ):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
@@ -1324,6 +1359,7 @@ def login_codex_via_browser(
             native_oauth=native_oauth,
             headless=headless,
             mail_account_id=mail_account_id,
+            auth_session_callback=auth_session_callback,
         )
 
     code_verifier, code_challenge = _generate_pkce()

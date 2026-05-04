@@ -1323,12 +1323,8 @@ def test_gopay_result_includes_billing_info():
 def test_gopay_bind_task_rotates_on_chatgpt_approve_blocked(monkeypatch):
     monkeypatch.setenv("GOPAY_APPROVE_BLOCKED_COOLDOWN_SECONDS", "123")
     gopay_executor._GOPAY_APPROVE_BLOCKED_UNTIL.clear()
-    monkeypatch.setattr(
-        gopay_executor,
-        "list_auth_session_emails",
-        lambda: ["primary@example.com", "backup@example.com"],
-    )
     calls = []
+    slept = []
 
     def fake_run_once(**kwargs):
         calls.append(kwargs["email"])
@@ -1341,6 +1337,7 @@ def test_gopay_bind_task_rotates_on_chatgpt_approve_blocked(monkeypatch):
         return {"status": "success", "message": "ok"}
 
     monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
     progress_events = []
 
     result = gopay_executor.run_gopay_bind_task(
@@ -1353,11 +1350,13 @@ def test_gopay_bind_task_rotates_on_chatgpt_approve_blocked(monkeypatch):
         progress_callback=progress_events.append,
     )
 
-    assert calls == ["primary@example.com", "backup@example.com"]
+    assert calls == ["primary@example.com", "backup@example.com", "primary@example.com"]
     assert result["status"] == "success"
     assert result["email_used"] == "backup@example.com"
     assert result["requested_email"] == "primary@example.com"
     assert result["blocked_emails"] == ["primary@example.com"]
+    assert result["retried_emails"] == ["primary@example.com"]
+    assert slept == [60.0]
     assert "primary@example.com" in gopay_executor._GOPAY_APPROVE_BLOCKED_UNTIL
     assert any(event["stage"] == "chatgpt_approve_blocked_rotate" for event in progress_events)
     assert any(event["stage"] == "gopay_rotate_account" for event in progress_events)
@@ -1366,11 +1365,6 @@ def test_gopay_bind_task_rotates_on_chatgpt_approve_blocked(monkeypatch):
 def test_gopay_bind_task_single_account_does_not_rotate_on_blocked(monkeypatch):
     monkeypatch.setenv("GOPAY_APPROVE_BLOCKED_COOLDOWN_SECONDS", "123")
     gopay_executor._GOPAY_APPROVE_BLOCKED_UNTIL.clear()
-    monkeypatch.setattr(
-        gopay_executor,
-        "list_auth_session_emails",
-        lambda: ["primary@example.com", "backup@example.com"],
-    )
     calls = []
 
     def fake_run_once(**kwargs):
@@ -1722,12 +1716,8 @@ def test_submit_checkout_stops_on_payment_not_approved(monkeypatch):
 
 
 def test_gopay_bind_task_rotates_on_checkout_payment_not_approved(monkeypatch):
-    monkeypatch.setattr(
-        gopay_executor,
-        "list_auth_session_emails",
-        lambda: ["primary@example.com", "backup@example.com"],
-    )
     calls = []
+    slept = []
 
     def fake_run_once(**kwargs):
         calls.append(kwargs["email"])
@@ -1740,6 +1730,7 @@ def test_gopay_bind_task_rotates_on_checkout_payment_not_approved(monkeypatch):
         return {"status": "success", "message": "ok"}
 
     monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
     progress_events = []
 
     result = gopay_executor.run_gopay_bind_task(
@@ -1752,10 +1743,12 @@ def test_gopay_bind_task_rotates_on_checkout_payment_not_approved(monkeypatch):
         progress_callback=progress_events.append,
     )
 
-    assert calls == ["primary@example.com", "backup@example.com"]
+    assert calls == ["primary@example.com", "backup@example.com", "primary@example.com"]
     assert result["status"] == "success"
     assert result["email_used"] == "backup@example.com"
     assert result["rejected_emails"] == ["primary@example.com"]
+    assert result["retried_emails"] == ["primary@example.com"]
+    assert slept == [60.0]
     assert any(event["stage"] == "checkout_not_approved_rotate" for event in progress_events)
 
 

@@ -607,6 +607,7 @@ class GoPayBindTaskParams(BaseModel):
     timeout_seconds: int = 900
     delete_rejected_accounts: bool = False
     auto_oauth_after_success: bool = False
+    pending_retry_attempts: int = Field(1, validation_alias=AliasChoices("pending_retry_attempts", "pendingRetryAttempts"))
 
 
 class CardPoolImportParams(BaseModel):
@@ -1026,6 +1027,51 @@ def _remove_pool_accounts_from_local_and_mail(emails: list[str], *, log_context:
             (account or {}).get("cloudmail_account_id"),
         )
     return removed
+
+
+def _mark_pool_accounts_fail(
+    emails: list[str],
+    *,
+    reason: str,
+    message: str,
+    failure_stage: str = "token_invalidated",
+    log_context: str = "account-fail",
+) -> list[str]:
+    """Mark unusable accounts as Fail without removing local/mail records."""
+    if not emails:
+        return []
+    from autoteam.accounts import STATUS_FAIL, find_account, load_accounts, update_account
+
+    marked = []
+    accounts = load_accounts()
+    now_ts = time.time()
+    for email in emails:
+        email = _normalized_email(email)
+        if not email or _is_main_account_email(email):
+            continue
+        account = find_account(accounts, email)
+        if not account:
+            logger.info("[%s] account not found while marking Fail: email=%s", log_context, email)
+            continue
+        update_account(
+            email,
+            status=STATUS_FAIL,
+            discarded_at=now_ts,
+            discarded_reason=reason,
+            last_bind_status="failed",
+            last_bind_at=now_ts,
+            last_bind_message=message,
+            last_bind_failure_stage=failure_stage,
+        )
+        marked.append(email)
+        logger.info(
+            "[%s] account marked Fail: email=%s reason=%s cloudmail_account_id=%s",
+            log_context,
+            email,
+            reason,
+            account.get("cloudmail_account_id"),
+        )
+    return marked
 
 
 def _remove_gopay_rejected_accounts_from_pool(emails: list[str]) -> list[str]:
@@ -2146,7 +2192,7 @@ class LoginAccountParams(BaseModel):
     email: str
 
 
-def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = False) -> dict:
+def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = False, refresh_auth_session: bool = False) -> dict:
     from autoteam.accounts import (
         ACCOUNT_TYPE_FREE,
         ACCOUNT_TYPE_PLUS,
@@ -2194,7 +2240,7 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
             update_account(email, cloudmail_account_id=resolved_mail_id)
     bundle = None
     auth_session_data = load_auth_session(email)
-    use_protocol_oauth = str(os.environ.get("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL") or "").strip().lower() in {
+    use_protocol_oauth = (not refresh_auth_session) and str(os.environ.get("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -2231,6 +2277,28 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
     elif auth_session_data:
         logger.info("[账号登录] 跳过 auth_session 协议 OAuth，直接走浏览器邮箱验证码流程: %s", email)
 
+    auth_session_refresh_outcome = {}
+
+    def _capture_refreshed_auth_session(page, context):
+        if not refresh_auth_session:
+            return
+        from autoteam.manager import _fetch_auth_session_from_page, _save_auth_from_session_page
+
+        session_data = _fetch_auth_session_from_page(page, context, max_attempts=4, retry_delay_seconds=3.0)
+        auth_session_result = _save_auth_from_session_page(
+            email,
+            acc.get("password", ""),
+            acc.get("cloudmail_account_id"),
+            session_data,
+            out_outcome=auth_session_refresh_outcome,
+        )
+        auth_session_file = ""
+        if isinstance(auth_session_result, dict):
+            auth_session_file = str(auth_session_result.get("auth_file") or "")
+        auth_session_file = auth_session_file or str(auth_session_refresh_outcome.get("auth_file") or "")
+        if auth_session_file:
+            auth_session_refresh_outcome["auth_session_file"] = auth_session_file
+
     if not bundle:
         bundle = login_codex_via_browser(
             email,
@@ -2240,9 +2308,12 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
             native_oauth=native_oauth,
             headless=headless,
             mail_account_id=acc.get("cloudmail_account_id"),
+            auth_session_callback=_capture_refreshed_auth_session if refresh_auth_session else None,
         )
     if not bundle:
         raise RuntimeError(f"Codex 登录失败: {email}")
+    if refresh_auth_session and auth_session_refresh_outcome.get("status") != "success":
+        raise RuntimeError(auth_session_refresh_outcome.get("reason") or f"刷新 auth_session 失败: {email}")
 
     auth_file = save_auth_file(bundle)
     plan_type = (bundle.get("plan_type") or "").lower()
@@ -2279,12 +2350,15 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
             )
 
     logger.info("[账号登录] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”")
-    return {
+    result_payload = {
         "email": email,
         "plan": bundle.get("plan_type"),
         "auth_file": auth_file,
         "mode": "native" if native_oauth else "team",
     }
+    if refresh_auth_session and auth_session_refresh_outcome.get("auth_session_file"):
+        result_payload["auth_session_file"] = auth_session_refresh_outcome.get("auth_session_file")
+    return result_payload
 
 
 def _oauth_phone_required_result(email: str, exc: Exception) -> dict:
@@ -3985,6 +4059,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         ACCOUNT_TYPE_PLUS,
         SEAT_CODEX,
         STATUS_ACTIVE,
+        STATUS_FAIL,
         STATUS_PERSONAL,
         add_account,
         find_account,
@@ -4012,6 +4087,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         auto_register_count = 1
     if not auto_register:
         auto_register_count = 1
+    try:
+        pending_retry_attempts = max(0, min(3, int(params.pending_retry_attempts if params.pending_retry_attempts is not None else 1)))
+    except Exception:
+        pending_retry_attempts = 1
     account_emails = []
     seen_account_emails = set()
     for raw_email in params.account_emails or []:
@@ -4125,11 +4204,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     if not gopay_pin:
         raise HTTPException(status_code=400, detail="gopay_pin 不能为空")
     logger.info(
-        "[gopay-bind] task submitted: email=%s auto_register=%s auto_register_count=%s account_count=%s checkout=%s checkout_mode=%s phone=%s proxy_label=%s proxy_state=%s proxy=%s proxy_error=%s timeout=%s",
+        "[gopay-bind] task submitted: email=%s auto_register=%s auto_register_count=%s account_count=%s pending_retry_attempts=%s checkout=%s checkout_mode=%s phone=%s proxy_label=%s proxy_state=%s proxy=%s proxy_error=%s timeout=%s",
         _safe_email_summary(email) if email else "<auto-register>",
         auto_register,
         auto_register_count,
         len(account_emails) if account_emails else 1,
+        pending_retry_attempts,
         _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
         checkout_ui_mode,
         f"{_safe_phone_summary(phone_number, country_code)} (+{max(0, len(phone_accounts) - 1)} backup)"
@@ -4181,6 +4261,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         oauth_scheduled_emails: set[str] = set()
         oauth_successful_emails: list[str] = []
         oauth_failed_emails: list[dict] = []
+        auth_session_refresh_attempted: set[str] = set()
 
         def _mark_gopay_success_account(email_value: str, *, message: str = "", success_checkout_url: str = ""):
             success_email = _normalized_email(email_value)
@@ -4322,6 +4403,124 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 name=f"gopay-oauth-{success_email[:24]}",
                 daemon=True,
             ).start()
+
+        def _mark_gopay_token_invalidated_fail(email_value: str, *, reason: str, message: str, failure_stage: str = "token_invalidated"):
+            fail_email = _normalized_email(email_value)
+            if not fail_email or _is_main_account_email(fail_email):
+                return
+            update_account(
+                fail_email,
+                status=STATUS_FAIL,
+                discarded_at=time.time(),
+                discarded_reason=reason,
+                last_bind_status="failed",
+                last_bind_at=time.time(),
+                last_checkout_url=checkout_url,
+                last_proxy_label=params.proxy_label,
+                last_bind_task_id=task_id,
+                last_bind_message=message,
+                last_bind_failure_stage=failure_stage,
+            )
+
+        def _refresh_gopay_auth_session(refresh_email: str, failure_result: dict | None = None) -> dict:
+            from autoteam.codex_auth import (
+                CodexOAuthAccountDeactivated,
+                CodexOAuthLoginRequired,
+                CodexOAuthPhoneRequired,
+            )
+
+            normalized = _normalized_email(refresh_email)
+            if not normalized:
+                return {"status": "failed", "message": "刷新 auth_session 失败: 邮箱为空"}
+            if normalized in auth_session_refresh_attempted:
+                return {"status": "failed", "message": f"auth_session 已刷新过一次，仍然失效: {normalized}"}
+            auth_session_refresh_attempted.add(normalized)
+
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_auth_session_refresh_started",
+                    "email": normalized,
+                    "failure_stage": (failure_result or {}).get("failure_stage") or "token_invalidated",
+                    "message": f"GoPay 遇到 token_invalidated，正在重新登录刷新 auth_session: {normalized}",
+                },
+            )
+            latest_account = find_account(load_accounts(), normalized)
+            if not latest_account:
+                message = f"刷新 auth_session 失败，账号不存在: {normalized}"
+                _append_task_progress(
+                    task_id,
+                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
+                )
+                return {"status": "failed", "message": message}
+
+            try:
+                login_result = _run_account_codex_login_once(normalized, latest_account, headless=False, refresh_auth_session=True)
+            except CodexOAuthPhoneRequired as exc:
+                message = f"刷新 auth_session 需要手机验证，账号已标记 Fail/废弃: {normalized}"
+                _mark_gopay_token_invalidated_fail(
+                    normalized,
+                    reason="gopay_token_invalidated_phone_required",
+                    message=message,
+                    failure_stage="oauth_phone_required",
+                )
+                _append_task_progress(
+                    task_id,
+                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
+                )
+                return {"status": "failed", "message": message, "error": str(exc)}
+            except CodexOAuthAccountDeactivated as exc:
+                message = f"刷新 auth_session 发现账号停用，账号已标记 Fail/废弃: {normalized}"
+                _mark_gopay_token_invalidated_fail(
+                    normalized,
+                    reason="gopay_token_invalidated_account_deactivated",
+                    message=message,
+                    failure_stage="oauth_account_deactivated",
+                )
+                _append_task_progress(
+                    task_id,
+                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
+                )
+                return {"status": "failed", "message": message, "error": str(exc)}
+            except CodexOAuthLoginRequired as exc:
+                message = f"刷新 auth_session 登录未完成，账号已标记 Fail/废弃: {normalized}: {exc}"
+                _mark_gopay_token_invalidated_fail(
+                    normalized,
+                    reason="gopay_token_invalidated_login_required",
+                    message=message,
+                    failure_stage="oauth_login_required",
+                )
+                _append_task_progress(
+                    task_id,
+                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
+                )
+                return {"status": "failed", "message": message, "error": str(exc)}
+            except Exception as exc:
+                message = f"刷新 auth_session 失败，账号已标记 Fail/废弃: {normalized}: {exc}"
+                _mark_gopay_token_invalidated_fail(
+                    normalized,
+                    reason="gopay_token_invalidated_refresh_failed",
+                    message=message,
+                    failure_stage="oauth_refresh_failed",
+                )
+                _append_task_progress(
+                    task_id,
+                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
+                )
+                return {"status": "failed", "message": message, "error": str(exc)}
+
+            auth_session_file = str((login_result or {}).get("auth_session_file") or (login_result or {}).get("auth_file") or "")
+            message = f"auth_session 已刷新，准备重试 GoPay: {normalized}"
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_auth_session_refresh_done",
+                    "email": normalized,
+                    "auth_session_file": auth_session_file,
+                    "message": message,
+                },
+            )
+            return {"status": "success", "auth_session_file": auth_session_file, "message": message}
 
         def _gopay_progress(progress: dict):
             _update_current_task_progress(progress)
@@ -4471,6 +4670,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 proxy_bypass=params.proxy_bypass,
                 timeout_seconds=max(120, int(params.timeout_seconds or 900)),
                 account_emails=bind_account_emails,
+                pending_retry_attempts=pending_retry_attempts,
+                auth_session_refresh_callback=_refresh_gopay_auth_session,
                 is_cancelled=cancel_signal.is_cancelled,
                 skip_current=skip_current_signal.is_set,
                 clear_skip_current=skip_current_signal.clear,
@@ -4686,12 +4887,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
 
         try:
             logger.info(
-                "[gopay-bind] runner started: task_id=%s email=%s auto_register=%s auto_register_count=%s account_count=%s checkout=%s checkout_mode=%s proxy_label=%s proxy_state=%s proxy=%s",
+                "[gopay-bind] runner started: task_id=%s email=%s auto_register=%s auto_register_count=%s account_count=%s pending_retry_attempts=%s checkout=%s checkout_mode=%s proxy_label=%s proxy_state=%s proxy=%s",
                 task_id[:8] or "<unknown>",
                 _safe_email_summary(email) if email else "<auto-register>",
                 auto_register,
                 auto_register_count,
                 len(account_emails) if account_emails else 1,
+                pending_retry_attempts,
                 _safe_url_summary(checkout_url) if checkout_url else "<auto-generate>",
                 checkout_ui_mode,
                 params.proxy_label or "<none>",
@@ -4710,6 +4912,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     "checkout_ui_mode": checkout_ui_mode,
                     "proxy_label": params.proxy_label,
                     "account_count": auto_register_count if auto_register else len(account_emails) if account_emails else 1,
+                    "pending_retry_attempts": pending_retry_attempts,
                 }
             )
             if auto_register:
@@ -4740,6 +4943,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         result["proxy_state"] = proxy_config_state
         result["checkout_url"] = checkout_url or result.get("checkout_url") or ""
         result["account_emails"] = account_emails
+        result["pending_retry_attempts"] = pending_retry_attempts
         if oauth_scheduled_emails:
             result["oauth_scheduled_emails"] = sorted(oauth_scheduled_emails)
         if oauth_successful_emails:
@@ -4816,14 +5020,15 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         if params.delete_rejected_accounts:
             removed_pool_emails = _remove_gopay_rejected_accounts_from_pool(cleanup_pool_emails)
         if token_invalidated_pool_emails:
-            token_invalidated_removed = _remove_pool_accounts_from_local_and_mail(
+            token_invalidated_failed = _mark_pool_accounts_fail(
                 token_invalidated_pool_emails,
+                reason="gopay_token_invalidated",
+                message="GoPay 返回 token_invalidated，重新登录刷新失败或重试后仍失效，账号已标记为 Fail/废弃",
+                failure_stage="token_invalidated",
                 log_context="gopay-token-invalidated",
             )
-            for removed_email in token_invalidated_removed:
-                if removed_email and removed_email not in removed_pool_emails:
-                    removed_pool_emails.append(removed_email)
             result["token_invalidated_pool_emails"] = token_invalidated_pool_emails
+            result["token_invalidated_failed_emails"] = token_invalidated_failed
         if not params.delete_rejected_accounts and cleanup_pool_emails:
             result["rejected_pool_emails"] = rejected_pool_emails
             result["nonzero_blocked_pool_emails"] = nonzero_blocked_pool_emails
@@ -4890,6 +5095,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     task_params["auto_register_domain"] = auto_register_domains[0] if auto_register_domains else ""
     task_params["auto_register_prefix"] = auto_register_prefix
     task_params["auto_register_password_present"] = bool(auto_register_password)
+    task_params["pending_retry_attempts"] = pending_retry_attempts
     task_params.pop("auto_register_password", None)
     task_params["phone_account_count"] = len(phone_accounts)
     task_params["phone_accounts"] = [

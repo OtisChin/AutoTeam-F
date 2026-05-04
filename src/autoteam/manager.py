@@ -3910,13 +3910,9 @@ def cmd_register_accounts(
         "completed": 0,
         "ok": 0,
         "failed": 0,
-        "pending_retry": 0,
-        "retrying": 0,
-        "retried": 0,
         "running": 0,
     }
     post_register_oauth = bool(post_register_oauth)
-    explicit_failure_statuses = {"phone_blocked", "duplicate_exhausted", "register_failed"}
 
     def _emit_progress():
         if not progress_callback:
@@ -3928,15 +3924,6 @@ def cmd_register_accounts(
             }
         )
 
-    def _is_register_ok(item) -> bool:
-        return isinstance(item, dict) and item.get("status") in ("registered", "success")
-
-    def _is_explicit_register_failure(item) -> bool:
-        return isinstance(item, dict) and str(item.get("status") or "") in explicit_failure_statuses
-
-    def _is_retryable_register_skip(item) -> bool:
-        return not _is_register_ok(item) and not _is_explicit_register_failure(item)
-
     # cloud-mail 看起来对同一管理员账号的并发 login/token 刷新不友好：
     # 后一个 worker 登录后，前一个 worker 的 token 会被服务端判成“身份认证失效”。
     # 这里对 mail client 做共享 + 串行化，浏览器注册流程仍可并发，只有邮箱后端 API 被串行化。
@@ -3944,42 +3931,6 @@ def cmd_register_accounts(
     shared_mail_client.login()
     mail_client = wrap_mail_client_with_auth_retry(shared_mail_client, log_prefix="注册账号")
     _emit_progress()
-
-    def _run_register_attempt(worker_id, job_index, job_domain, *, retry_round=0):
-        outcome = {}
-        attempt_label = "重试" if retry_round else "第"
-        logger.info(
-            "[注册账号] worker-%d %s %d/%d 个 domain=@%s",
-            worker_id,
-            attempt_label,
-            job_index + 1,
-            total,
-            job_domain or "",
-        )
-        try:
-            raw_result = create_account_direct(
-                mail_client,
-                out_outcome=outcome,
-                email_prefix=email_prefix,
-                password=password,
-                domain=job_domain,
-                skip_post_register=not post_register_oauth,
-                post_register_oauth=post_register_oauth,
-                check_team_membership=False,
-            )
-            if isinstance(raw_result, str):
-                result = {"status": outcome.get("status") or "success", "email": raw_result, **outcome}
-            elif isinstance(raw_result, dict):
-                result = {**outcome, **raw_result}
-            else:
-                result = None
-            result = result or {"status": outcome.get("status") or "failed", **outcome}
-        except Exception as exc:
-            logger.error("[注册账号] worker-%d 第 %d 个%s异常: %s", worker_id, job_index + 1, "重试" if retry_round else "", exc)
-            result = {"status": "exception", "reason": str(exc)}
-        if retry_round and isinstance(result, dict):
-            result = {**result, "retry_round": retry_round}
-        return result
 
     def _worker(worker_id):
         nonlocal next_index
@@ -3996,19 +3947,45 @@ def cmd_register_accounts(
                 _emit_progress()
 
             job_domain = random.choice(domain_pool) if domain_pool else selected_fallback_domain
+            outcome = {}
+            logger.info(
+                "[注册账号] worker-%d 开始第 %d/%d 个 domain=@%s",
+                worker_id,
+                job_index + 1,
+                total,
+                job_domain or "",
+            )
             try:
-                results[job_index] = _run_register_attempt(worker_id, job_index, job_domain)
+                raw_result = create_account_direct(
+                    mail_client,
+                    out_outcome=outcome,
+                    email_prefix=email_prefix,
+                    password=password,
+                    domain=job_domain,
+                    skip_post_register=not post_register_oauth,
+                    post_register_oauth=post_register_oauth,
+                    check_team_membership=False,
+                )
+                if isinstance(raw_result, str):
+                    result = {"status": outcome.get("status") or "success", "email": raw_result, **outcome}
+                elif isinstance(raw_result, dict):
+                    result = {**outcome, **raw_result}
+                else:
+                    result = None
+                results[job_index] = result or {"status": outcome.get("status") or "failed", **outcome}
+            except Exception as exc:
+                logger.error("[注册账号] worker-%d 第 %d 个异常: %s", worker_id, job_index + 1, exc)
+                results[job_index] = {"status": "exception", "reason": str(exc)}
             finally:
                 item = results[job_index] or {}
+                is_ok = isinstance(item, dict) and item.get("status") in ("registered", "success")
                 with progress_lock:
                     progress["running"] = max(0, progress["running"] - 1)
                     progress["completed"] += 1
-                    if _is_register_ok(item):
+                    if is_ok:
                         progress["ok"] += 1
-                    elif _is_explicit_register_failure(item):
-                        progress["failed"] += 1
                     else:
-                        progress["pending_retry"] += 1
+                        progress["failed"] += 1
                     _emit_progress()
 
             if job_index + 1 < total:
@@ -4027,57 +4004,12 @@ def cmd_register_accounts(
     for t in threads:
         t.join()
 
-    retry_indexes = [
-        index
-        for index, item in enumerate(results)
-        if _is_retryable_register_skip(item)
-    ]
-    if retry_indexes:
-        logger.info("[注册账号] 第一轮结束，待重试 %d 个，开始补跑一次", len(retry_indexes))
-
-    def _retry_worker(worker_id):
-        nonlocal retry_indexes
-        logger.info("[注册账号] retry-worker-%d 已启动", worker_id)
-        while True:
-            with index_lock:
-                if not retry_indexes:
-                    break
-                job_index = retry_indexes.pop(0)
-            first_result = results[job_index] if isinstance(results[job_index], dict) else {}
-            job_domain = random.choice(domain_pool) if domain_pool else selected_fallback_domain
-            with progress_lock:
-                progress["pending_retry"] = max(0, progress["pending_retry"] - 1)
-                progress["running"] += 1
-                progress["retrying"] += 1
-                _emit_progress()
-            retry_result = _run_register_attempt(worker_id, job_index, job_domain, retry_round=1)
-            if isinstance(retry_result, dict):
-                retry_result["first_attempt"] = first_result
-            results[job_index] = retry_result
-            with progress_lock:
-                progress["running"] = max(0, progress["running"] - 1)
-                progress["retrying"] = max(0, progress["retrying"] - 1)
-                progress["retried"] += 1
-                if _is_register_ok(retry_result):
-                    progress["ok"] += 1
-                else:
-                    progress["failed"] += 1
-                _emit_progress()
-
-    retry_threads = [threading.Thread(target=_retry_worker, args=(idx + 1,), daemon=True) for idx in range(min(workers, len(retry_indexes)))]
-    for t in retry_threads:
-        t.start()
-    for t in retry_threads:
-        t.join()
-
     normalized_results = [item or {"status": "failed", "reason": "unknown"} for item in results]
-    ok = [item for item in normalized_results if _is_register_ok(item)]
-    retry_count = sum(1 for item in normalized_results if isinstance(item, dict) and item.get("retry_round"))
+    ok = [item for item in normalized_results if isinstance(item, dict) and item.get("status") in ("registered", "success")]
     logger.info(
-        "[注册账号] 完成: 成功 %d / %d，重试 %d 个 (并发=%d, 固定间隔=%.1fs, 抖动=%.1f-%.1fs)",
+        "[注册账号] 完成: 成功 %d / %d (并发=%d, 固定间隔=%.1fs, 抖动=%.1f-%.1fs)",
         len(ok),
         len(normalized_results),
-        retry_count,
         workers,
         spacing,
         jitter_min,
@@ -4087,8 +4019,6 @@ def cmd_register_accounts(
         "count": len(normalized_results),
         "ok": len(ok),
         "failed": len(normalized_results) - len(ok),
-        "pending_retry": 0,
-        "retried": retry_count,
         "concurrency": workers,
         "interval_seconds": spacing,
         "jitter_min_seconds": jitter_min,

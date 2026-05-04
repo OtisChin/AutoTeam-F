@@ -32,7 +32,7 @@
       <span class="font-mono text-white">{{ currentTaskMeta.startedAt || '-' }}</span>
     </div>
 
-    <div class="grid grid-cols-2 xl:grid-cols-5 gap-4 mb-6">
+    <div class="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
       <div v-for="card in statCards" :key="card.label" class="bg-gray-900 border border-gray-800 rounded-xl p-4">
         <div class="text-sm text-gray-400">{{ card.label }}</div>
         <div class="text-3xl font-bold mt-1" :class="card.color">{{ card.value }}</div>
@@ -328,8 +328,8 @@ const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
 const registerStats = ref({
-  task: { total: 0, ok: 0, failed: 0, pendingRetry: 0, successRate: 0 },
-  today: { total: 0, ok: 0, failed: 0, pendingRetry: 0, successRate: 0 },
+  task: { total: 0, ok: 0, failed: 0, successRate: 0 },
+  today: { total: 0, ok: 0, failed: 0, successRate: 0 },
 })
 const statsMode = ref('task')
 const registerForm = ref({
@@ -422,7 +422,6 @@ const statCards = computed(() => {
     { label: `${prefix}注册`, value: scope.total, color: 'text-blue-400' },
     { label: `${prefix}成功`, value: scope.ok, color: 'text-emerald-400' },
     { label: `${prefix}失败`, value: scope.failed, color: 'text-rose-400' },
-    { label: `${prefix}待重试`, value: scope.pendingRetry || 0, color: 'text-violet-300' },
     { label: `${prefix}成功率`, value: `${scope.successRate.toFixed(1)}%`, color: 'text-amber-300' },
   ]
 })
@@ -552,8 +551,8 @@ async function loadRegisterStats() {
 
     const activeTask = registerTasks.find(task => task.status === 'running' || task.status === 'pending') || null
     const latestTask = activeTask || registerTasks[0] || null
-    const taskScope = { total: 0, ok: 0, failed: 0, pendingRetry: 0 }
-    const today = { total: 0, ok: 0, failed: 0, pendingRetry: 0 }
+    const taskScope = { total: 0, ok: 0, failed: 0 }
+    const today = { total: 0, ok: 0, failed: 0 }
 
     for (const task of registerTasks) {
       const createdAt = Number(task.created_at || 0)
@@ -561,13 +560,11 @@ async function loadRegisterStats() {
       const count = typeof result.count === 'number' ? Number(result.count || 0) : Number(task.params?.count || 1)
       const okCount = typeof result.ok === 'number' ? Number(result.ok || 0) : 0
       const failedCount = typeof result.failed === 'number' ? Number(result.failed || 0) : 0
-      const pendingRetryCount = typeof result.pending_retry === 'number' ? Number(result.pending_retry || 0) : 0
 
       if (createdAt >= todayStartTs) {
         today.total += count
         today.ok += okCount
         today.failed += failedCount
-        today.pendingRetry += pendingRetryCount
       }
       if (latestTask && task.task_id === latestTask.task_id) {
         const progress = task.progress || null
@@ -575,12 +572,10 @@ async function loadRegisterStats() {
           taskScope.total += Number(progress.total || count || 0)
           taskScope.ok += Number(progress.ok || 0)
           taskScope.failed += Number(progress.failed || 0)
-          taskScope.pendingRetry += Number(progress.pending_retry || 0)
         } else {
           taskScope.total += count
           taskScope.ok += okCount
           taskScope.failed += failedCount
-          taskScope.pendingRetry += pendingRetryCount
         }
       }
     }

@@ -156,6 +156,7 @@ def test_post_gopay_bind_task_starts_background_task(monkeypatch):
             sms_url="https://it.tgflare.com/api/record?token=demo",
             gopay_pin="558023",
             checkout_ui_mode="hosted",
+            pending_retry_attempts=5,
             billing_name="John Smith",
             billing_country="US",
             billing_state="MI",
@@ -171,6 +172,7 @@ def test_post_gopay_bind_task_starts_background_task(monkeypatch):
     assert captured["params"]["country_code"] == "62"
     assert captured["params"]["phone_number"] == "+6287761973970"
     assert captured["params"]["checkout_ui_mode"] == "hosted"
+    assert captured["params"]["pending_retry_attempts"] == 3
 
 
 def test_post_gopay_bind_task_accepts_batch_accounts(monkeypatch):
@@ -466,6 +468,7 @@ def test_gopay_params_accept_camel_case_auto_register_payload():
             "autoRegisterDomains": ["openaibus.com", "rexmoxe.space"],
             "autoRegisterPrefix": "gopay",
             "autoRegisterPassword": "Password123!",
+            "pendingRetryAttempts": 2,
             "phone_number": "+6287761973970",
             "country_code": "62",
             "sms_url": "https://it.tgflare.com/api/record?token=demo",
@@ -480,6 +483,7 @@ def test_gopay_params_accept_camel_case_auto_register_payload():
     assert params.auto_register_domains == ["openaibus.com", "rexmoxe.space"]
     assert params.auto_register_prefix == "gopay"
     assert params.auto_register_password == "Password123!"
+    assert params.pending_retry_attempts == 2
 
 
 def test_post_task_skip_current_sets_gopay_skip_signal(monkeypatch):
@@ -587,6 +591,7 @@ def test_run_gopay_bind_task_rotates_phone_accounts_with_candidates(monkeypatch)
 def test_run_gopay_bind_task_rotates_on_gopay_wallet_payment_process_failure(monkeypatch):
     calls = []
     progress_events = []
+    slept = []
 
     def fake_run_once(**kwargs):
         calls.append(kwargs["email"])
@@ -603,6 +608,7 @@ def test_run_gopay_bind_task_rotates_on_gopay_wallet_payment_process_failure(mon
         return {"status": "success", "message": "GoPay 绑定完成"}
 
     monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
 
     result = gopay_executor.run_gopay_bind_task(
         email="first@example.com",
@@ -615,11 +621,132 @@ def test_run_gopay_bind_task_rotates_on_gopay_wallet_payment_process_failure(mon
         progress_callback=progress_events.append,
     )
 
-    assert calls == ["first@example.com", "second@example.com"]
+    assert calls == ["first@example.com", "second@example.com", "first@example.com"]
     assert result["status"] == "success"
     assert result["email_used"] == "second@example.com"
     assert result["payment_failed_emails"] == ["first@example.com"]
+    assert result["retried_emails"] == ["first@example.com"]
+    assert slept == [60.0]
     assert any(event["stage"] == "gopay_payment_process_failed_rotate" for event in progress_events)
+
+
+def test_run_gopay_bind_task_retries_pending_blocked_candidate_once(monkeypatch):
+    calls = []
+    progress_events = []
+    slept = []
+
+    def fake_run_once(**kwargs):
+        calls.append(kwargs["email"])
+        if kwargs["email"] == "first@example.com" and calls.count("first@example.com") == 1:
+            return {
+                "status": "failed",
+                "failure_stage": "chatgpt_approve",
+                "message": "ChatGPT approve blocked",
+            }
+        return {"status": "success", "message": "GoPay 绑定完成"}
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor, "_mark_approve_blocked", lambda _email: 1)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="first@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://it.tgflare.com/api/record?token=demo",
+        gopay_pin="558023",
+        account_emails=["first@example.com", "second@example.com"],
+        is_cancelled=lambda: False,
+        progress_callback=progress_events.append,
+    )
+
+    assert calls == ["first@example.com", "second@example.com", "first@example.com"]
+    assert result["status"] == "success"
+    assert sorted(result["successful_emails"]) == ["first@example.com", "second@example.com"]
+    assert result["pending_retry_emails"] == []
+    assert result["retried_emails"] == ["first@example.com"]
+    assert result.get("blocked_emails", []) == []
+    assert any(event["stage"] == "gopay_pending_retry_queued" for event in progress_events)
+    assert any(event["stage"] == "gopay_pending_retry_wait" for event in progress_events)
+    assert any(event["stage"] == "gopay_pending_retry_account" for event in progress_events)
+    assert slept == [60.0]
+
+
+def test_run_gopay_bind_task_retries_local_cooldown_skip_once(monkeypatch):
+    calls = []
+    slept = []
+
+    def fake_run_once(**kwargs):
+        calls.append(kwargs["email"])
+        return {"status": "success", "message": "GoPay 绑定完成"}
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor, "_approve_blocked_remaining", lambda email: 30 if email == "first@example.com" else 0)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="first@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://it.tgflare.com/api/record?token=demo",
+        gopay_pin="558023",
+        account_emails=["first@example.com", "second@example.com"],
+        is_cancelled=lambda: False,
+    )
+
+    assert calls == ["second@example.com", "first@example.com"]
+    assert result["status"] == "success"
+    assert sorted(result["successful_emails"]) == ["first@example.com", "second@example.com"]
+    assert result["retried_emails"] == ["first@example.com"]
+    assert result.get("skipped_cooldown_emails", []) == []
+    assert slept == [60.0]
+
+
+def test_run_gopay_bind_task_retries_pending_blocked_candidate_by_round(monkeypatch):
+    calls = []
+    slept = []
+    progress_events = []
+
+    def fake_run_once(**kwargs):
+        email = kwargs["email"]
+        calls.append(email)
+        if email == "first@example.com" and calls.count("first@example.com") < 3:
+            return {
+                "status": "failed",
+                "failure_stage": "chatgpt_approve",
+                "message": "ChatGPT approve blocked",
+            }
+        return {"status": "success", "message": "GoPay 绑定完成"}
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor, "_mark_approve_blocked", lambda _email: 1)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="first@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://it.tgflare.com/api/record?token=demo",
+        gopay_pin="558023",
+        account_emails=["first@example.com", "second@example.com"],
+        pending_retry_attempts=2,
+        is_cancelled=lambda: False,
+        progress_callback=progress_events.append,
+    )
+
+    assert calls == ["first@example.com", "second@example.com", "first@example.com", "first@example.com"]
+    assert result["status"] == "success"
+    assert sorted(result["successful_emails"]) == ["first@example.com", "second@example.com"]
+    assert result["pending_retry_emails"] == []
+    assert result["retried_emails"] == ["first@example.com"]
+    assert result.get("blocked_emails", []) == []
+    assert slept == [60.0, 180.0]
+    retry_rounds = [
+        event.get("retry_round")
+        for event in progress_events
+        if event.get("stage") == "gopay_pending_retry_account"
+    ]
+    assert retry_rounds == [1, 2]
 
 
 def test_run_gopay_bind_task_rotates_on_nonzero_amount_guard(monkeypatch):
@@ -695,6 +822,59 @@ def test_run_gopay_bind_task_rotates_on_token_invalidated(monkeypatch):
         event["stage"] == "gopay_account_failed_rotate" and event["token_invalidated"] is True
         for event in progress_events
     )
+    assert not any(event["stage"] == "gopay_pending_retry_queued" for event in progress_events)
+
+
+def test_run_gopay_bind_task_refreshes_auth_session_on_token_invalidated(monkeypatch):
+    calls = []
+    refresh_calls = []
+    progress_events = []
+    slept = []
+
+    def fake_run_once(**kwargs):
+        email = kwargs["email"]
+        calls.append(email)
+        if email == "first@example.com" and calls.count(email) == 1:
+            return {
+                "status": "failed",
+                "failure_stage": "post_submit",
+                "message": (
+                    "执行 GoPay 任务时出现异常: {'message': 'Your authentication token has been "
+                    "invalidated. Please try signing in again.', 'code': 'token_invalidated'}: HTTP 401"
+                ),
+            }
+        return {"status": "success", "message": "GoPay 绑定完成"}
+
+    def fake_refresh(email, result):
+        refresh_calls.append((email, result["failure_stage"]))
+        return {"status": "success", "auth_session_file": f"data/auth_session/{email}.json"}
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="first@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://it.tgflare.com/api/record?token=demo",
+        gopay_pin="558023",
+        account_emails=["first@example.com", "second@example.com"],
+        pending_retry_attempts=1,
+        auth_session_refresh_callback=fake_refresh,
+        is_cancelled=lambda: False,
+        progress_callback=progress_events.append,
+    )
+
+    assert calls == ["first@example.com", "second@example.com", "first@example.com"]
+    assert refresh_calls == [("first@example.com", "post_submit")]
+    assert result["status"] == "success"
+    assert sorted(result["successful_emails"]) == ["first@example.com", "second@example.com"]
+    assert result["auth_session_refreshed_emails"] == ["first@example.com"]
+    assert result["token_invalidated_emails"] == []
+    assert result["retried_emails"] == ["first@example.com"]
+    assert slept == [60.0]
+    assert any(event["stage"] == "gopay_auth_session_refresh_started" for event in progress_events)
+    assert any(event["stage"] == "gopay_auth_session_refresh_done" for event in progress_events)
 
 
 def test_run_gopay_bind_task_rotates_on_generic_account_failure(monkeypatch):
@@ -729,8 +909,10 @@ def test_run_gopay_bind_task_rotates_on_generic_account_failure(monkeypatch):
     assert result["token_invalidated_emails"] == []
 
 
-def test_run_gopay_bind_task_stops_on_already_linked(monkeypatch):
+def test_run_gopay_bind_task_retries_already_linked_once(monkeypatch):
     calls = []
+    progress_events = []
+    slept = []
 
     def fake_run_once(**kwargs):
         calls.append(kwargs["email"])
@@ -741,6 +923,7 @@ def test_run_gopay_bind_task_stops_on_already_linked(monkeypatch):
         }
 
     monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
 
     result = gopay_executor.run_gopay_bind_task(
         email="first@example.com",
@@ -750,15 +933,22 @@ def test_run_gopay_bind_task_stops_on_already_linked(monkeypatch):
         gopay_pin="558023",
         account_emails=["first@example.com", "second@example.com"],
         is_cancelled=lambda: False,
+        progress_callback=progress_events.append,
     )
 
-    assert calls == ["first@example.com"]
+    assert calls == ["first@example.com", "second@example.com", "first@example.com", "second@example.com"]
     assert result["status"] == "failed"
     assert result["failure_stage"] == "midtrans_linking"
+    assert result["failed_emails"] == ["first@example.com", "second@example.com"]
+    assert result["retried_emails"] == ["first@example.com", "second@example.com"]
+    assert result["pending_retry_emails"] == []
+    assert slept == [60.0]
+    assert any(event["stage"] == "gopay_already_linked_retry" for event in progress_events)
 
 
 def test_run_gopay_bind_task_shows_rate_limit_message_for_midtrans_429(monkeypatch):
     calls = []
+    slept = []
 
     def fake_run_once(**kwargs):
         calls.append(kwargs["email"])
@@ -769,6 +959,7 @@ def test_run_gopay_bind_task_shows_rate_limit_message_for_midtrans_429(monkeypat
         }
 
     monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
 
     result = gopay_executor.run_gopay_bind_task(
         email="first@example.com",
@@ -780,11 +971,51 @@ def test_run_gopay_bind_task_shows_rate_limit_message_for_midtrans_429(monkeypat
         is_cancelled=lambda: False,
     )
 
-    assert calls == ["first@example.com", "second@example.com"]
+    assert calls == ["first@example.com", "second@example.com", "first@example.com", "second@example.com"]
     assert result["status"] == "failed"
     assert result["failure_stage"] == "midtrans_linking"
     assert result["message"] == "GoPay/Midtrans 限流，请稍后重试"
     assert result["failed_emails"] == ["first@example.com", "second@example.com"]
+    assert result["retried_emails"] == ["first@example.com", "second@example.com"]
+    assert slept == [60.0]
+
+
+def test_run_gopay_bind_task_retries_gopay_otp_failure_once(monkeypatch):
+    calls = []
+    progress_events = []
+    slept = []
+
+    def fake_run_once(**kwargs):
+        calls.append(kwargs["email"])
+        if kwargs["email"] == "first@example.com":
+            return {
+                "status": "failed",
+                "failure_stage": "fetch_otp",
+                "message": "等待 GoPay OTP 超时",
+            }
+        return {"status": "success", "message": "GoPay 绑定完成"}
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="first@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://it.tgflare.com/api/record?token=demo",
+        gopay_pin="558023",
+        account_emails=["first@example.com", "second@example.com"],
+        is_cancelled=lambda: False,
+        progress_callback=progress_events.append,
+    )
+
+    assert calls == ["first@example.com", "second@example.com", "first@example.com"]
+    assert result["status"] == "success"
+    assert result["email_used"] == "second@example.com"
+    assert result["failed_emails"] == ["first@example.com"]
+    assert result["retried_emails"] == ["first@example.com"]
+    assert slept == [60.0]
+    assert any(event["stage"] == "gopay_otp_retry" for event in progress_events)
 
 
 def test_gopay_task_runner_raises_on_failed_executor_result(monkeypatch):
@@ -1826,7 +2057,7 @@ def test_gopay_task_runner_removes_payment_process_failed_accounts(monkeypatch):
     assert captured["audit"]["removed_pool_emails"] == ["primary@example.com"]
 
 
-def test_gopay_task_runner_removes_token_invalidated_accounts(monkeypatch):
+def test_gopay_task_runner_marks_token_invalidated_accounts_fail(monkeypatch):
     captured = {"updates": [], "deleted_accounts": [], "deleted_sessions": []}
     accounts = [
         {"email": "primary@example.com", "cloudmail_account_id": "mail-123"},
@@ -1880,11 +2111,83 @@ def test_gopay_task_runner_removes_token_invalidated_accounts(monkeypatch):
 
     assert result["task_status"] == "completed"
     assert result["token_invalidated_pool_emails"] == ["primary@example.com"]
-    assert result["removed_pool_emails"] == ["primary@example.com"]
-    assert captured["deleted_accounts"] == ["primary@example.com"]
-    assert captured["deleted_sessions"] == ["primary@example.com"]
-    assert captured["updates"][-1][0] == "backup@example.com"
-    assert captured["audit"]["removed_pool_emails"] == ["primary@example.com"]
+    assert result["token_invalidated_failed_emails"] == ["primary@example.com"]
+    assert result.get("removed_pool_emails", []) == []
+    assert captured["deleted_accounts"] == []
+    assert captured["deleted_sessions"] == []
+    failed_updates = [item for item in captured["updates"] if item[0] == "primary@example.com"]
+    assert failed_updates
+    assert failed_updates[-1][1]["status"] == accounts_module.STATUS_FAIL
+    assert failed_updates[-1][1]["discarded_reason"] == "gopay_token_invalidated"
+    assert captured["audit"]["removed_pool_emails"] == []
+
+
+def test_gopay_task_runner_refreshes_auth_session_before_retry(monkeypatch):
+    captured = {"updates": [], "progress": []}
+    accounts = [
+        {"email": "primary@example.com", "password": "pw", "cloudmail_account_id": "mail-123"},
+        {"email": "backup@example.com"},
+    ]
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "autoteam.accounts.find_account",
+        lambda loaded, email: next((account for account in loaded if account["email"] == email), None),
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
+    monkeypatch.setattr(api, "_update_current_task_progress", lambda _progress: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+    monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
+
+    def fake_login(email, acc, **kwargs):
+        captured["login"] = {"email": email, "acc": acc, "kwargs": kwargs}
+        return {"auth_file": f"data/auth_session/{email}.json", "auth_session_file": f"data/auth_session/{email}.json"}
+
+    monkeypatch.setattr(api, "_run_account_codex_login_once", fake_login)
+
+    def fake_run_gopay_bind_task(**kwargs):
+        captured["run_kwargs"] = kwargs
+        refresh_result = kwargs["auth_session_refresh_callback"](
+            "primary@example.com",
+            {"failure_stage": "post_submit", "message": "token_invalidated"},
+        )
+        captured["refresh_result"] = refresh_result
+        return {
+            "status": "success",
+            "message": "GoPay 批量绑定完成: 成功 1/1 个账号",
+            "email_used": "primary@example.com",
+            "successful_emails": ["primary@example.com"],
+            "auth_session_refreshed_emails": ["primary@example.com"],
+        }
+
+    monkeypatch.setattr("autoteam.gopay_executor.run_gopay_bind_task", fake_run_gopay_bind_task)
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        captured["func"] = func
+        return {"task_id": "task-795", "command": command, "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    api.post_gopay_bind_task(
+        api.GoPayBindTaskParams(
+            email="primary@example.com",
+            account_emails=["primary@example.com"],
+            phone_number="+6287761973970",
+            country_code="62",
+            sms_url="https://it.tgflare.com/api/record?token=demo",
+            gopay_pin="558023",
+        )
+    )
+
+    result = captured["func"]()
+
+    assert result["task_status"] == "completed"
+    assert captured["refresh_result"]["status"] == "success"
+    assert captured["login"]["email"] == "primary@example.com"
+    assert captured["login"]["kwargs"]["refresh_auth_session"] is True
+    assert any(progress["stage"] == "gopay_auth_session_refresh_started" for progress in captured["progress"])
+    assert any(progress["stage"] == "gopay_auth_session_refresh_done" for progress in captured["progress"])
 
 
 def test_post_gopay_bind_task_requires_phone(monkeypatch):

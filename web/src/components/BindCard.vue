@@ -51,7 +51,7 @@
       </div>
       <div
         v-if="activeTab === 'gopay'"
-        class="mt-4 grid grid-cols-2 gap-3 xl:absolute xl:right-0 xl:-top-14 xl:mt-0 xl:w-[960px] xl:grid-cols-4">
+        class="mt-4 grid grid-cols-2 gap-3 xl:absolute xl:right-0 xl:-top-14 xl:mt-0 xl:w-[1180px] xl:grid-cols-5">
         <div
           v-for="card in gopayTopCards"
           :key="card.label"
@@ -740,6 +740,23 @@
               />
               绑定成功后自动 OAuth 补登录
             </label>
+            <div class="mt-3 grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
+              <div>
+                <label class="block text-xs text-gray-400 mb-1">待重试次数</label>
+                <input
+                  v-model.number="gopayForm.pendingRetryAttempts"
+                  type="number"
+                  min="0"
+                  max="3"
+                  step="1"
+                  :disabled="gopaySubmitting || gopayTaskRunning"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div class="text-xs text-gray-500">
+                只重试未明确失败账号；0 表示不重试，最多 3 轮，退避 60s / 180s / 300s。
+              </div>
+            </div>
           </div>
 
           <div>
@@ -1248,6 +1265,7 @@ const gopayForm = ref({
   proxyUrl: '',
   deleteRejectedAccounts: false,
   autoOauthAfterSuccess: false,
+  pendingRetryAttempts: 1,
 })
 const gopayAccountSearchKeyword = ref('')
 const gopayAccountPickerOpen = ref(false)
@@ -1345,6 +1363,10 @@ const gopaySelectedBatchEmails = computed(() => {
 
 const normalizedGoPayAutoRegisterCount = computed(() => {
   return normalizeGoPayAutoRegisterCount(gopayForm.value.autoRegisterCount)
+})
+
+const normalizedGoPayPendingRetryAttempts = computed(() => {
+  return normalizeGoPayPendingRetryAttempts(gopayForm.value.pendingRetryAttempts)
 })
 
 const gopaySelectedAutoRegisterDomains = computed(() => {
@@ -1467,6 +1489,12 @@ function normalizeGoPayAutoRegisterCount(value) {
   return Math.max(1, Math.min(100, Math.floor(count)))
 }
 
+function normalizeGoPayPendingRetryAttempts(value) {
+  const count = Number(value ?? 1)
+  if (!Number.isFinite(count)) return 1
+  return Math.max(0, Math.min(3, Math.floor(count)))
+}
+
 function splitGoPayPhoneInput(phoneValue, countryCodeValue, { forceLocal = false } = {}) {
   const rawPhone = String(phoneValue || '').trim()
   const phoneDigits = digitsOnly(rawPhone)
@@ -1575,6 +1603,16 @@ watch(
 )
 
 watch(
+  () => gopayForm.value.pendingRetryAttempts,
+  count => {
+    const normalized = normalizeGoPayPendingRetryAttempts(count)
+    if (normalized !== count) {
+      gopayForm.value.pendingRetryAttempts = normalized
+    }
+  }
+)
+
+watch(
   () => getRememberedGoPayForm(),
   () => saveGoPayFormState(),
   { deep: true }
@@ -1666,6 +1704,14 @@ const gopayStageLabelMap = {
   gopay_oauth_phone_required_removed: 'OAuth 需要手机验证，已删除账号',
   gopay_batch_completed: '批量绑定完成',
   gopay_account_skipped_cooldown: '跳过冷却中的 auth_session',
+  gopay_pending_retry_queued: '加入待重试',
+  gopay_pending_retry_wait: '待重试退避等待',
+  gopay_pending_retry_started: '开始重试待重试账号',
+  gopay_pending_retry_account: '重试待重试账号',
+  gopay_pending_retry_failed: '待重试账号失败',
+  gopay_auth_session_refresh_started: '刷新 auth_session',
+  gopay_auth_session_refresh_done: 'auth_session 已刷新',
+  gopay_auth_session_refresh_failed: 'auth_session 刷新失败',
   gopay_skip_current_requested: '已请求跳过当前账号',
   gopay_account_skipped_by_user: '已跳过当前账号',
   gopay_all_accounts_skipped: '所有账号都已跳过',
@@ -1684,6 +1730,10 @@ const gopayStageLabelMap = {
   chatgpt_approve_blocked_cooldown: 'ChatGPT approve 被拦截，账号进入冷却',
   gopay_all_accounts_blocked: '所有账号 approve 均被拦截',
   checkout_not_approved_rotate: '付款未获批准，切换账号',
+  gopay_retryable_failure_rotate: '可重试失败，切换账号',
+  gopay_already_linked_retry: 'GoPay 已绑定其他账号，稍后重试',
+  gopay_rate_limited_retry: 'GoPay/Midtrans 限流，稍后重试',
+  gopay_otp_retry: 'GoPay OTP 未完成，稍后重试',
   gopay_all_accounts_rejected: '所有账号付款均未获批准',
   resolve_midtrans_redirect: '解析 Midtrans 跳转',
   pm_redirect: '跟随 Stripe 跳转',
@@ -1789,6 +1839,12 @@ const gopayTopCards = computed(() => [
     meta: gopayBoardRegistrationMeta.value,
   },
   {
+    label: '待重试',
+    value: String(gopayBoardPendingRetryCount.value),
+    color: 'text-violet-300',
+    meta: '',
+  },
+  {
     label: '绑卡失败',
     value: String(gopayBoardFailureCount.value),
     color: 'text-red-400',
@@ -1799,15 +1855,17 @@ const gopayTopCards = computed(() => [
 const gopayBoardFailureCount = computed(() => {
   const failedEmails = new Set()
   const result = gopayTask.value?.result || {}
+  const hasFinalResult = Boolean(gopayTask.value?.result)
   const lists = [
     result.rejected_emails,
     result.payment_failed_emails,
     result.nonzero_blocked_emails,
-    result.blocked_emails,
-    result.skipped_emails,
     result.bind_failed_emails,
     result.failed_emails,
   ]
+  if (hasFinalResult && !(Array.isArray(result.pending_retry_emails) && result.pending_retry_emails.length)) {
+    lists.push(result.blocked_emails)
+  }
   for (const list of lists) {
     if (!Array.isArray(list)) continue
     for (const [index, item] of list.entries()) {
@@ -1821,28 +1879,47 @@ const gopayBoardFailureCount = computed(() => {
     }
   }
 
-  const failureStages = new Set([
-    'chatgpt_approve_blocked_rotate',
-    'checkout_not_approved_rotate',
-    'gopay_payment_process_failed_rotate',
-    'gopay_nonzero_amount_blocked_rotate',
-    'gopay_account_skipped_by_user',
-    'gopay_auto_register_bind_failed',
-    'gopay_auto_register_failed',
-  ])
-  const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
-  for (const event of events) {
-    if (!failureStages.has(String(event?.stage || ''))) continue
-    const normalized = String(event?.email || '').trim().toLowerCase()
-    if (normalized) {
-      failedEmails.add(normalized)
-    } else {
-      const current = String(event?.current || event?.attempt || event?.event_id || '')
-      if (current) failedEmails.add(`attempt:${current}`)
+  if (!hasFinalResult) {
+    const failureStages = new Set([
+      'checkout_not_approved_rotate',
+      'gopay_payment_process_failed_rotate',
+      'gopay_nonzero_amount_blocked_rotate',
+      'gopay_auto_register_bind_failed',
+      'gopay_auto_register_failed',
+    ])
+    const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
+    for (const event of events) {
+      if (!failureStages.has(String(event?.stage || ''))) continue
+      const normalized = String(event?.email || '').trim().toLowerCase()
+      if (normalized) {
+        failedEmails.add(normalized)
+      } else {
+        const current = String(event?.current || event?.attempt || event?.event_id || '')
+        if (current) failedEmails.add(`attempt:${current}`)
+      }
     }
   }
 
   return failedEmails.size
+})
+
+const gopayBoardPendingRetryCount = computed(() => {
+  const result = gopayTask.value?.result || {}
+  if (Array.isArray(result.pending_retry_emails)) return result.pending_retry_emails.length
+  const progress = gopayTask.value?.progress || {}
+  if (Number.isFinite(Number(progress.pending_retry))) return Number(progress.pending_retry || 0)
+  const pending = new Set()
+  const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
+  for (const event of events) {
+    const stage = String(event?.stage || '')
+    const email = String(event?.email || '').trim().toLowerCase()
+    if (!email) continue
+    if (stage === 'gopay_pending_retry_queued') pending.add(email)
+    if (stage === 'gopay_pending_retry_account' || stage === 'gopay_account_bound' || stage === 'gopay_pending_retry_failed') {
+      pending.delete(email)
+    }
+  }
+  return pending.size
 })
 
 const gopayBoardRegistrationMeta = computed(() => {
@@ -1921,16 +1998,19 @@ const gopayBoardProgressStats = computed(() => {
       ? result.attempted_emails.length
       : Number(progress.attempted || progress.attempt || 0)
   const successfulEmails = new Set()
-  if (Array.isArray(result.successful_emails)) {
+  const hasFinalSuccessfulEmails = Array.isArray(result.successful_emails)
+  if (hasFinalSuccessfulEmails) {
     for (const email of result.successful_emails) {
       const normalized = String(email || '').trim().toLowerCase()
       if (normalized) successfulEmails.add(normalized)
     }
   }
-  for (const event of events) {
-    if (String(event?.stage || '') !== 'gopay_account_bound') continue
-    const normalized = String(event?.email || '').trim().toLowerCase()
-    if (normalized) successfulEmails.add(normalized)
+  if (!hasFinalSuccessfulEmails) {
+    for (const event of events) {
+      if (String(event?.stage || '') !== 'gopay_account_bound') continue
+      const normalized = String(event?.email || '').trim().toLowerCase()
+      if (normalized) successfulEmails.add(normalized)
+    }
   }
   const successful = successfulEmails.size || Number(progress.successful || 0)
   const done = Math.max(attempted, successful)
@@ -2155,6 +2235,7 @@ function getRememberedGoPayForm() {
     checkoutUiMode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
     deleteRejectedAccounts: Boolean(gopayForm.value.deleteRejectedAccounts),
     autoOauthAfterSuccess: Boolean(gopayForm.value.autoOauthAfterSuccess),
+    pendingRetryAttempts: normalizedGoPayPendingRetryAttempts.value,
   }
 }
 
@@ -2186,6 +2267,7 @@ function loadGoPayFormState() {
       checkoutUiMode: saved.checkoutUiMode === 'custom' ? 'custom' : 'hosted',
       deleteRejectedAccounts: Boolean(saved.deleteRejectedAccounts),
       autoOauthAfterSuccess: Boolean(saved.autoOauthAfterSuccess),
+      pendingRetryAttempts: normalizeGoPayPendingRetryAttempts(saved.pendingRetryAttempts),
     }
   } catch (e) {
     console.error('loadGoPayFormState', e)
@@ -2810,6 +2892,7 @@ async function startGoPayBind() {
       proxy_label: gopayForm.value.proxyLabel,
       delete_rejected_accounts: Boolean(gopayForm.value.deleteRejectedAccounts),
       auto_oauth_after_success: Boolean(gopayForm.value.autoOauthAfterSuccess),
+      pending_retry_attempts: normalizedGoPayPendingRetryAttempts.value,
     })
     gopayTask.value = task
     pushGoPayLog(`GoPay 任务已提交，任务 ID: ${task.task_id}`, 'success')

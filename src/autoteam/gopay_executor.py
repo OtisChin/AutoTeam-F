@@ -410,9 +410,14 @@ def _gopay_progress_level(stage: str) -> str:
         "otp_invalid",
         "gopay_payment_process_failed_rotate",
         "gopay_account_failed_rotate",
+        "gopay_retryable_failure_rotate",
+        "gopay_already_linked_retry",
+        "gopay_rate_limited_retry",
+        "gopay_otp_retry",
+        "gopay_auth_session_refresh_failed",
     }:
         return "warn"
-    if stage in {"completed", "payment_completed", "billing_info_filled", "gopay_selected", "otp_received"}:
+    if stage in {"completed", "payment_completed", "billing_info_filled", "gopay_selected", "otp_received", "gopay_auth_session_refresh_done"}:
         return "success"
     if stage in {
         "failed",
@@ -471,6 +476,13 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "gopay_payment_confirm": "正在确认 GoPay 扣款",
         "gopay_payment_process": "正在提交 GoPay 扣款 PIN",
         "gopay_payment_process_failed_rotate": "GoPay 钱包扣款授权失败，切换下一个账号",
+        "gopay_retryable_failure_rotate": "当前账号遇到可重试失败，切换下一个账号",
+        "gopay_already_linked_retry": "GoPay 手机号仍绑定其他账号，稍后重试",
+        "gopay_rate_limited_retry": "GoPay/Midtrans 限流，稍后重试",
+        "gopay_otp_retry": "GoPay OTP 未完成，稍后重试",
+        "gopay_auth_session_refresh_started": "auth_session 已失效，正在重新登录刷新",
+        "gopay_auth_session_refresh_done": "auth_session 已刷新，稍后重试 GoPay",
+        "gopay_auth_session_refresh_failed": "auth_session 刷新失败，账号标记废弃",
         "gopay_account_failed_rotate": "当前账号 GoPay 任务失败，切换下一个账号",
         "gopay_nonzero_amount_blocked_rotate": "账单金额非 0，切换下一个账号",
         "payment_completed": "GoPay 支付已提交，正在回查 ChatGPT 状态",
@@ -653,6 +665,55 @@ def _is_chatgpt_token_invalidated_result(result: dict | None) -> bool:
         or "authentication token has been invalidated" in text
         or ("http 401" in text and "invalidated" in text)
     )
+
+
+def _gopay_pending_retry_reason(result: dict | None) -> str:
+    if not isinstance(result, dict) or result.get("status") == "success":
+        return ""
+    if _is_chatgpt_token_invalidated_result(result) or _is_gopay_nonzero_amount_blocked_result(result):
+        return ""
+    if _is_chatgpt_approve_blocked_result(result):
+        return "chatgpt_approve_blocked"
+    if _is_checkout_payment_not_approved_result(result):
+        return "checkout_not_approved"
+    if _is_gopay_payment_process_rotatable_result(result):
+        return "gopay_payment_process"
+    if _is_gopay_already_linked_result(result):
+        return "gopay_already_linked"
+    stage = str(result.get("failure_stage") or "")
+    message = str(result.get("message") or "")
+    if _is_midtrans_linking_rate_limited_result(result) or stage == "gopay_rate_limited" or _looks_like_gopay_rate_limit_text(message):
+        return "rate_limited"
+    if stage in {"fetch_otp", "gopay_validate_otp", "trigger_sms_otp"}:
+        return "gopay_otp"
+    if stage in {
+        "resolve_midtrans_redirect",
+        "pm_redirect",
+        "midtrans_load_transaction",
+        "midtrans_linking",
+        "gopay_validate_reference",
+        "gopay_user_consent",
+        "gopay_payment_validate",
+        "gopay_payment_confirm",
+        "browser_checkout",
+        "generate_checkout",
+    }:
+        return "transient_gopay_flow"
+    return ""
+
+
+def _gopay_pending_retry_source_stage(result: dict | None, reason: str) -> str:
+    if reason == "checkout_not_approved":
+        return "checkout_not_approved_rotate"
+    if reason == "gopay_payment_process":
+        return "gopay_payment_process_failed_rotate"
+    if reason == "gopay_already_linked":
+        return "gopay_already_linked_retry"
+    if reason == "rate_limited":
+        return "gopay_rate_limited_retry"
+    if reason == "gopay_otp":
+        return "gopay_otp_retry"
+    return "gopay_retryable_failure_rotate"
 
 
 def _gopay_rate_limited_message() -> str:
@@ -5043,6 +5104,8 @@ def run_gopay_bind_task(
     proxy_bypass: str | None = None,
     timeout_seconds: int = 900,
     account_emails: list[str] | None = None,
+    pending_retry_attempts: int = 1,
+    auth_session_refresh_callback=None,
     is_cancelled=None,
     skip_current=None,
     clear_skip_current=None,
@@ -5057,6 +5120,11 @@ def run_gopay_bind_task(
     requested_email = str(email or "").strip().lower()
     final_checkout_url = str(checkout_url or "").strip()
     checkout_ui_mode = _normalize_checkout_ui_mode(checkout_ui_mode)
+    try:
+        pending_retry_attempts = max(0, min(3, int(1 if pending_retry_attempts is None else pending_retry_attempts)))
+    except Exception:
+        pending_retry_attempts = 1
+    pending_retry_backoffs = [60.0, 180.0, 300.0]
 
     normalized_phone_accounts: list[dict] = []
     seen_phone_accounts: set[tuple[str, str, str]] = set()
@@ -5189,6 +5257,104 @@ def run_gopay_bind_task(
     last_success_email = ""
     skipped_cooldown: list[str] = []
     skipped_by_user: list[str] = []
+    pending_retry: list[str] = []
+    retried: list[str] = []
+    auth_session_refreshed: list[str] = []
+    auth_session_refresh_failed: list[str] = []
+
+    def append_unique(target: list[str], value: str):
+        value = str(value or "").strip().lower()
+        if value and value not in target:
+            target.append(value)
+
+    def remove_email(target: list[str], value: str):
+        value = str(value or "").strip().lower()
+        if not value:
+            return
+        target[:] = [item for item in target if item != value]
+
+    def queue_pending_retry(candidate: str, *, reason: str, stage: str, retry_round: int = 0):
+        append_unique(pending_retry, candidate)
+        emit(
+            "gopay_pending_retry_queued",
+            email=candidate,
+            pending_retry=len(pending_retry),
+            reason=reason,
+            source_stage=stage,
+            retry_round=retry_round,
+            max_retry_rounds=pending_retry_attempts,
+            message=f"账号暂未明确失败，加入待重试: {candidate}",
+        )
+
+    def refresh_auth_session_for_retry(candidate: str, failure_result: dict, *, retry_round: int = 0) -> bool:
+        if not callable(auth_session_refresh_callback):
+            return False
+        normalized = str(candidate or "").strip().lower()
+        if not normalized or normalized in auth_session_refreshed or normalized in auth_session_refresh_failed:
+            return False
+        emit(
+            "gopay_auth_session_refresh_started",
+            email=normalized,
+            retry_round=retry_round,
+            failure_stage=failure_result.get("failure_stage") or "",
+            message=f"auth_session access token 已失效，正在重新登录刷新: {normalized}",
+        )
+        try:
+            refresh_result = auth_session_refresh_callback(normalized, failure_result)
+        except Exception as exc:
+            append_unique(auth_session_refresh_failed, normalized)
+            emit(
+                "gopay_auth_session_refresh_failed",
+                email=normalized,
+                retry_round=retry_round,
+                error=str(exc),
+                message=f"auth_session 刷新失败，账号标记废弃: {normalized}: {exc}",
+                level="warn",
+            )
+            return False
+        if isinstance(refresh_result, dict):
+            ok = str(refresh_result.get("status") or "").lower() == "success" or bool(refresh_result.get("auth_session_file"))
+            message = str(refresh_result.get("message") or "")
+        else:
+            ok = bool(refresh_result)
+            message = ""
+        if not ok:
+            append_unique(auth_session_refresh_failed, normalized)
+            emit(
+                "gopay_auth_session_refresh_failed",
+                email=normalized,
+                retry_round=retry_round,
+                message=message or f"auth_session 刷新失败，账号标记废弃: {normalized}",
+                level="warn",
+            )
+            return False
+        append_unique(auth_session_refreshed, normalized)
+        emit(
+            "gopay_auth_session_refresh_done",
+            email=normalized,
+            retry_round=retry_round,
+            message=message or f"auth_session 已刷新，稍后重试 GoPay: {normalized}",
+        )
+        return True
+
+    def attach_common_lists(result: dict):
+        result["blocked_emails"] = blocked[:]
+        result["rejected_emails"] = rejected[:]
+        result["payment_failed_emails"] = payment_failed[:]
+        result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        result["failed_emails"] = failed[:]
+        result["token_invalidated_emails"] = token_invalidated[:]
+        result["successful_emails"] = successful[:]
+        result["skipped_emails"] = skipped_by_user[:]
+        result["skipped_cooldown_emails"] = skipped_cooldown[:]
+        result["pending_retry_emails"] = pending_retry[:]
+        result["retried_emails"] = retried[:]
+        result["auth_session_refreshed_emails"] = auth_session_refreshed[:]
+        result["auth_session_refresh_failed_emails"] = auth_session_refresh_failed[:]
+        result["pending_retry_attempts"] = pending_retry_attempts
+        if blocked or rejected or payment_failed or nonzero_blocked or failed:
+            result["rotated_from"] = requested_email
+        return result
 
     for index, candidate in enumerate(candidates, 1):
         if cancel_requested():
@@ -5222,6 +5388,7 @@ def run_gopay_bind_task(
                 remaining,
             )
             emit("gopay_account_skipped_cooldown", email=candidate, remaining_seconds=remaining)
+            queue_pending_retry(candidate, reason="local_cooldown", stage="gopay_account_skipped_cooldown")
             continue
 
         attempted.append(candidate)
@@ -5277,6 +5444,38 @@ def run_gopay_bind_task(
                 attempted=len(attempted),
                 remaining_candidates=max(0, len(candidates) - index),
             )
+            if pending_retry_attempts > 0:
+                queue_pending_retry(candidate, reason="chatgpt_approve_blocked", stage="chatgpt_approve_blocked_rotate")
+            continue
+
+        if _is_chatgpt_token_invalidated_result(result):
+            if pending_retry_attempts > 0 and refresh_auth_session_for_retry(candidate, result):
+                queue_pending_retry(candidate, reason="auth_session_refreshed", stage="gopay_auth_session_refresh_done")
+                continue
+
+        retry_reason = _gopay_pending_retry_reason(result)
+        if retry_reason and pending_retry_attempts > 0:
+            source_stage = _gopay_pending_retry_source_stage(result, retry_reason)
+            logger.info(
+                "[gopay_executor] GoPay candidate returned retryable failure, queue pending retry: email=%s reason=%s stage=%s message=%s",
+                _safe_email_summary(candidate),
+                retry_reason,
+                result.get("failure_stage") or "",
+                _compact_log_text(result.get("message") or "", limit=180),
+            )
+            emit(
+                source_stage,
+                email=candidate,
+                attempted=len(attempted),
+                remaining_candidates=max(0, len(candidates) - index),
+                failure_stage=result.get("failure_stage") or "",
+                reason=retry_reason,
+                message=(
+                    "当前账号遇到可重试失败，先切换下一个账号，稍后重试: "
+                    f"{_compact_log_text(result.get('message') or '', limit=180)}"
+                ),
+            )
+            queue_pending_retry(candidate, reason=retry_reason, stage=source_stage)
             continue
 
         if _is_checkout_payment_not_approved_result(result):
@@ -5373,24 +5572,7 @@ def run_gopay_bind_task(
             )
             continue
 
-        if blocked:
-            result["blocked_emails"] = blocked[:]
-        if rejected:
-            result["rejected_emails"] = rejected[:]
-        if payment_failed:
-            result["payment_failed_emails"] = payment_failed[:]
-        if nonzero_blocked:
-            result["nonzero_blocked_emails"] = nonzero_blocked[:]
-        if failed:
-            result["failed_emails"] = failed[:]
-        if token_invalidated:
-            result["token_invalidated_emails"] = token_invalidated[:]
-        if successful:
-            result["successful_emails"] = successful[:]
-        if skipped_by_user:
-            result["skipped_emails"] = skipped_by_user[:]
-        if blocked or rejected or payment_failed or nonzero_blocked or failed:
-            result["rotated_from"] = requested_email
+        attach_common_lists(result)
 
         if result.get("status") == "success":
             successful.append(candidate)
@@ -5420,23 +5602,242 @@ def run_gopay_bind_task(
         )
         return result
 
+    retry_attempt_index = 0
+    for retry_round in range(1, pending_retry_attempts + 1):
+        retry_candidates = pending_retry[:]
+        if not retry_candidates:
+            break
+        wait_seconds = pending_retry_backoffs[min(retry_round - 1, len(pending_retry_backoffs) - 1)]
+        logger.info(
+            "[gopay_executor] waiting before GoPay pending retry round: round=%s/%s wait=%ss pending=%s",
+            retry_round,
+            pending_retry_attempts,
+            wait_seconds,
+            [_safe_email_summary(candidate) for candidate in retry_candidates],
+        )
+        emit(
+            "gopay_pending_retry_wait",
+            retry_round=retry_round,
+            max_retry_rounds=pending_retry_attempts,
+            delay_seconds=wait_seconds,
+            pending_retry=len(retry_candidates),
+            message=f"待重试第 {retry_round}/{pending_retry_attempts} 轮将在 {wait_seconds:.0f}s 后开始",
+        )
+        if cancel_requested():
+            return _build_result("failed", failure_stage="generate_checkout", message="任务已取消")
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        if cancel_requested():
+            return _build_result("failed", failure_stage="generate_checkout", message="任务已取消")
+
+        logger.info(
+            "[gopay_executor] retrying GoPay pending candidates: round=%s/%s pending=%s",
+            retry_round,
+            pending_retry_attempts,
+            [_safe_email_summary(candidate) for candidate in retry_candidates],
+        )
+        emit(
+            "gopay_pending_retry_started",
+            retry_round=retry_round,
+            max_retry_rounds=pending_retry_attempts,
+            pending_retry=len(retry_candidates),
+            message=f"开始第 {retry_round}/{pending_retry_attempts} 轮待重试，共 {len(retry_candidates)} 个账号",
+        )
+
+        for retry_offset, candidate in enumerate(retry_candidates, 1):
+            if cancel_requested():
+                return _build_result(
+                    "failed",
+                    failure_stage="generate_checkout",
+                    message="任务已取消",
+                )
+            append_unique(retried, candidate)
+            append_unique(attempted, candidate)
+            remove_email(pending_retry, candidate)
+            retry_attempt_index += 1
+            emit(
+                "gopay_pending_retry_account",
+                email=candidate,
+                attempt=retry_offset,
+                total=len(retry_candidates),
+                retry_round=retry_round,
+                max_retry_rounds=pending_retry_attempts,
+                pending_retry=len(pending_retry),
+                message=f"正在执行第 {retry_round}/{pending_retry_attempts} 轮待重试: {candidate}",
+            )
+            logger.info(
+                "[gopay_executor] retrying pending GoPay candidate: email=%s round=%s/%s retry=%s/%s",
+                _safe_email_summary(candidate),
+                retry_round,
+                pending_retry_attempts,
+                retry_offset,
+                len(retry_candidates),
+            )
+            result = run_once(candidate, len(candidates) + retry_attempt_index)
+            result["email_used"] = candidate
+            result["requested_email"] = requested_email
+            result["attempted_emails"] = attempted[:]
+            result["retried_emails"] = retried[:]
+
+            if result.get("status") == "success":
+                append_unique(successful, candidate)
+                remove_email(blocked, candidate)
+                remove_email(skipped_cooldown, candidate)
+                last_success_result = dict(result)
+                last_success_email = candidate
+                logger.info(
+                    "[gopay_executor] pending GoPay retry succeeded: email=%s round=%s/%s",
+                    _safe_email_summary(candidate),
+                    retry_round,
+                    pending_retry_attempts,
+                )
+                emit(
+                    "gopay_account_bound",
+                    email=candidate,
+                    checkout_url=result.get("checkout_url") or "",
+                    attempted=len(attempted),
+                    successful=len(successful),
+                    remaining_candidates=max(0, len(pending_retry)),
+                    retry_round=retry_round,
+                    max_retry_rounds=pending_retry_attempts,
+                    message=f"当前账号 GoPay 绑定成功: {candidate}",
+                )
+                continue
+
+            failure_stage = result.get("failure_stage") or ""
+            failure_message = result.get("message") or ""
+            if _is_chatgpt_approve_blocked_result(result):
+                append_unique(blocked, candidate)
+                last_blocked_result = result
+                last_blocked_email = candidate
+                emit(
+                    "gopay_pending_retry_failed",
+                    email=candidate,
+                    retry_round=retry_round,
+                    max_retry_rounds=pending_retry_attempts,
+                    failure_stage=failure_stage,
+                    message=failure_message,
+                )
+                if retry_round < pending_retry_attempts:
+                    queue_pending_retry(
+                        candidate,
+                        reason="chatgpt_approve_blocked",
+                        stage="gopay_pending_retry_failed",
+                        retry_round=retry_round,
+                    )
+                continue
+            retry_reason = _gopay_pending_retry_reason(result)
+            if retry_reason and retry_round < pending_retry_attempts:
+                emit(
+                    "gopay_pending_retry_failed",
+                    email=candidate,
+                    retry_round=retry_round,
+                    max_retry_rounds=pending_retry_attempts,
+                    failure_stage=failure_stage,
+                    reason=retry_reason,
+                    message=failure_message,
+                )
+                queue_pending_retry(
+                    candidate,
+                    reason=retry_reason,
+                    stage="gopay_pending_retry_failed",
+                    retry_round=retry_round,
+                )
+                continue
+            if _is_chatgpt_token_invalidated_result(result):
+                remove_email(blocked, candidate)
+                remove_email(skipped_cooldown, candidate)
+                if retry_round < pending_retry_attempts and refresh_auth_session_for_retry(candidate, result, retry_round=retry_round):
+                    emit(
+                        "gopay_pending_retry_failed",
+                        email=candidate,
+                        retry_round=retry_round,
+                        max_retry_rounds=pending_retry_attempts,
+                        failure_stage=failure_stage,
+                        reason="auth_session_refreshed",
+                        message="auth_session 已刷新，加入下一轮 GoPay 重试",
+                    )
+                    queue_pending_retry(
+                        candidate,
+                        reason="auth_session_refreshed",
+                        stage="gopay_auth_session_refresh_done",
+                        retry_round=retry_round,
+                    )
+                    continue
+                append_unique(failed, candidate)
+                append_unique(token_invalidated, candidate)
+                last_failed_result = result
+                last_failed_email = candidate
+                emit(
+                    "gopay_pending_retry_failed",
+                    email=candidate,
+                    retry_round=retry_round,
+                    max_retry_rounds=pending_retry_attempts,
+                    failure_stage=failure_stage,
+                    reason="token_invalidated",
+                    message=failure_message,
+                )
+                continue
+            if _is_checkout_payment_not_approved_result(result):
+                remove_email(blocked, candidate)
+                remove_email(skipped_cooldown, candidate)
+                append_unique(rejected, candidate)
+                last_rejected_result = result
+                last_rejected_email = candidate
+                emit("gopay_pending_retry_failed", email=candidate, retry_round=retry_round, max_retry_rounds=pending_retry_attempts, failure_stage=failure_stage, message=failure_message)
+                continue
+            if _is_gopay_payment_process_rotatable_result(result):
+                remove_email(blocked, candidate)
+                remove_email(skipped_cooldown, candidate)
+                append_unique(payment_failed, candidate)
+                last_payment_failed_result = result
+                last_payment_failed_email = candidate
+                emit("gopay_pending_retry_failed", email=candidate, retry_round=retry_round, max_retry_rounds=pending_retry_attempts, failure_stage=failure_stage, message=failure_message)
+                continue
+            if _is_gopay_nonzero_amount_blocked_result(result):
+                remove_email(blocked, candidate)
+                remove_email(skipped_cooldown, candidate)
+                append_unique(nonzero_blocked, candidate)
+                last_nonzero_blocked_result = result
+                last_nonzero_blocked_email = candidate
+                emit("gopay_pending_retry_failed", email=candidate, retry_round=retry_round, max_retry_rounds=pending_retry_attempts, failure_stage=failure_stage, message=failure_message)
+                continue
+            if _is_gopay_already_linked_result(result):
+                remove_email(blocked, candidate)
+                remove_email(skipped_cooldown, candidate)
+                append_unique(failed, candidate)
+                last_failed_result = result
+                last_failed_email = candidate
+                emit("gopay_pending_retry_failed", email=candidate, retry_round=retry_round, max_retry_rounds=pending_retry_attempts, failure_stage=failure_stage, reason="gopay_already_linked", message=failure_message)
+                continue
+            if result.get("status") != "success" and not _is_gopay_already_linked_result(result):
+                if cancel_requested() or str(result.get("failure_stage") or "") == "cancelled":
+                    return result
+                remove_email(blocked, candidate)
+                remove_email(skipped_cooldown, candidate)
+                append_unique(failed, candidate)
+                last_failed_result = result
+                last_failed_email = candidate
+                if _is_chatgpt_token_invalidated_result(result):
+                    append_unique(token_invalidated, candidate)
+                emit("gopay_pending_retry_failed", email=candidate, retry_round=retry_round, max_retry_rounds=pending_retry_attempts, failure_stage=failure_stage, message=failure_message)
+                continue
+
+            logger.info(
+                "[gopay_executor] pending GoPay retry finished with terminal non-success result: email=%s status=%s failure_stage=%s",
+                _safe_email_summary(candidate),
+                result.get("status") or "",
+                result.get("failure_stage") or "",
+            )
+            return attach_common_lists(result)
+
     if last_success_result:
         last_success_result = dict(last_success_result)
-        last_success_result["message"] = f"GoPay 批量绑定完成: 成功 {len(successful)}/{len(attempted)} 个账号"
-        last_success_result["successful_emails"] = successful[:]
-        last_success_result["blocked_emails"] = blocked[:]
-        last_success_result["rejected_emails"] = rejected[:]
-        last_success_result["payment_failed_emails"] = payment_failed[:]
-        last_success_result["nonzero_blocked_emails"] = nonzero_blocked[:]
-        last_success_result["failed_emails"] = failed[:]
-        last_success_result["token_invalidated_emails"] = token_invalidated[:]
-        last_success_result["skipped_cooldown_emails"] = skipped_cooldown[:]
-        last_success_result["skipped_emails"] = skipped_by_user[:]
+        last_success_result["message"] = f"GoPay 批量绑定完成: 成功 {len(successful)}/{len(candidates)} 个账号"
+        attach_common_lists(last_success_result)
         last_success_result["attempted_emails"] = attempted[:]
         last_success_result["email_used"] = last_success_email or (successful[-1] if successful else requested_email)
         last_success_result["requested_email"] = requested_email
-        if blocked or rejected or payment_failed or nonzero_blocked or failed:
-            last_success_result["rotated_from"] = requested_email
         emit("gopay_batch_completed", attempted=len(attempted), successful=len(successful))
         logger.info(
             "[gopay_executor] GoPay batch completed: attempted=%s successful=%s blocked=%s rejected=%s payment_failed=%s nonzero_blocked=%s failed=%s skipped=%s",
@@ -5465,6 +5866,10 @@ def run_gopay_bind_task(
         last_failed_result["nonzero_blocked_emails"] = nonzero_blocked[:]
         last_failed_result["skipped_cooldown_emails"] = skipped_cooldown[:]
         last_failed_result["skipped_emails"] = skipped_by_user[:]
+        last_failed_result["pending_retry_emails"] = pending_retry[:]
+        last_failed_result["retried_emails"] = retried[:]
+        last_failed_result["auth_session_refreshed_emails"] = auth_session_refreshed[:]
+        last_failed_result["auth_session_refresh_failed_emails"] = auth_session_refresh_failed[:]
         last_failed_result["attempted_emails"] = attempted[:]
         last_failed_result["email_used"] = last_failed_email or (attempted[-1] if attempted else requested_email)
         last_failed_result["requested_email"] = requested_email
@@ -5485,6 +5890,10 @@ def run_gopay_bind_task(
         last_rejected_result["failed_emails"] = failed[:]
         last_rejected_result["token_invalidated_emails"] = token_invalidated[:]
         last_rejected_result["skipped_emails"] = skipped_by_user[:]
+        last_rejected_result["pending_retry_emails"] = pending_retry[:]
+        last_rejected_result["retried_emails"] = retried[:]
+        last_rejected_result["auth_session_refreshed_emails"] = auth_session_refreshed[:]
+        last_rejected_result["auth_session_refresh_failed_emails"] = auth_session_refresh_failed[:]
         last_rejected_result["attempted_emails"] = attempted[:]
         last_rejected_result["email_used"] = last_rejected_email or (attempted[-1] if attempted else requested_email)
         last_rejected_result["requested_email"] = requested_email
@@ -5504,6 +5913,10 @@ def run_gopay_bind_task(
         last_payment_failed_result["failed_emails"] = failed[:]
         last_payment_failed_result["token_invalidated_emails"] = token_invalidated[:]
         last_payment_failed_result["skipped_emails"] = skipped_by_user[:]
+        last_payment_failed_result["pending_retry_emails"] = pending_retry[:]
+        last_payment_failed_result["retried_emails"] = retried[:]
+        last_payment_failed_result["auth_session_refreshed_emails"] = auth_session_refreshed[:]
+        last_payment_failed_result["auth_session_refresh_failed_emails"] = auth_session_refresh_failed[:]
         last_payment_failed_result["attempted_emails"] = attempted[:]
         last_payment_failed_result["email_used"] = last_payment_failed_email or (attempted[-1] if attempted else requested_email)
         last_payment_failed_result["requested_email"] = requested_email
@@ -5523,6 +5936,10 @@ def run_gopay_bind_task(
         last_nonzero_blocked_result["failed_emails"] = failed[:]
         last_nonzero_blocked_result["token_invalidated_emails"] = token_invalidated[:]
         last_nonzero_blocked_result["skipped_emails"] = skipped_by_user[:]
+        last_nonzero_blocked_result["pending_retry_emails"] = pending_retry[:]
+        last_nonzero_blocked_result["retried_emails"] = retried[:]
+        last_nonzero_blocked_result["auth_session_refreshed_emails"] = auth_session_refreshed[:]
+        last_nonzero_blocked_result["auth_session_refresh_failed_emails"] = auth_session_refresh_failed[:]
         last_nonzero_blocked_result["attempted_emails"] = attempted[:]
         last_nonzero_blocked_result["email_used"] = last_nonzero_blocked_email or (attempted[-1] if attempted else requested_email)
         last_nonzero_blocked_result["requested_email"] = requested_email
@@ -5551,6 +5968,10 @@ def run_gopay_bind_task(
         last_blocked_result["token_invalidated_emails"] = token_invalidated[:]
         last_blocked_result["skipped_cooldown_emails"] = skipped_cooldown[:]
         last_blocked_result["skipped_emails"] = skipped_by_user[:]
+        last_blocked_result["pending_retry_emails"] = pending_retry[:]
+        last_blocked_result["retried_emails"] = retried[:]
+        last_blocked_result["auth_session_refreshed_emails"] = auth_session_refreshed[:]
+        last_blocked_result["auth_session_refresh_failed_emails"] = auth_session_refresh_failed[:]
         last_blocked_result["attempted_emails"] = attempted[:]
         last_blocked_result["email_used"] = last_blocked_email or (attempted[-1] if attempted else requested_email)
         last_blocked_result["requested_email"] = requested_email
@@ -5577,6 +5998,8 @@ def run_gopay_bind_task(
         )
         result["skipped_emails"] = skipped_by_user[:]
         result["attempted_emails"] = attempted[:]
+        result["pending_retry_emails"] = pending_retry[:]
+        result["retried_emails"] = retried[:]
         return result
 
     logger.info(
