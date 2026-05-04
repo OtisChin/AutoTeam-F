@@ -6,7 +6,7 @@ from pathlib import Path
 from autoteam.accounts import find_account, load_accounts, save_accounts
 from autoteam.admin_state import get_chatgpt_account_id
 from autoteam.auth_storage import AUTH_DIR
-from autoteam.cpa_sync import delete_from_cpa, list_cpa_files, sync_to_cpa
+from autoteam.cpa_sync import sync_to_cpa
 
 logger = logging.getLogger(__name__)
 
@@ -121,14 +121,6 @@ def delete_managed_account(
                 path.unlink()
                 cleanup["local_auth_files"].append(path.name)
                 logger.info("[账号] 已删除本地 auth: %s", path.name)
-
-        cpa_names = set(cleanup["local_auth_files"])
-        for item in list_cpa_files():
-            item_email = (item.get("email") or "").lower()
-            item_name = item.get("name") or ""
-            if item_email == email_l or item_name in cpa_names:
-                if delete_from_cpa(item_name):
-                    cleanup["cpa_files"].append(item_name)
 
         if acc:
             accounts = [item for item in accounts if item["email"].lower() != email_l]

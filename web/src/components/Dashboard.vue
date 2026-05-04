@@ -1,6 +1,13 @@
 <template>
   <div v-if="status">
     <!-- 统计卡片 -->
+    <div class="flex items-center justify-between gap-3 mb-3">
+      <h2 class="text-lg font-semibold text-white">统计面板</h2>
+      <button @click="emit('refresh')"
+        class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
+        刷新
+      </button>
+    </div>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
       <div v-for="card in cards" :key="card.label"
         class="bg-gray-900 border border-gray-800 rounded-xl p-4">
@@ -83,6 +90,10 @@
             @click="clearSelection"
             class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             取消选择
+          </button>
+          <button @click="emit('refresh')"
+            class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
+            刷新
           </button>
           <button @click="syncAccounts" :disabled="syncDisabled || syncing"
             class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition disabled:opacity-50 text-gray-400 hover:text-white">
@@ -1223,7 +1234,7 @@ async function deleteInvalidCredentials() {
   const preview = emails.slice(0, 8).join('\n')
   const more = emails.length > 8 ? `\n...还有 ${emails.length - 8} 个` : ''
   const ok = window.confirm(
-    `确认删除以下 ${emails.length} 个无效凭证账号？这会清理本地记录、本地/CPA认证文件，并尽量移出 Team/Invite；不会删除邮箱服务中的邮箱账号。\n\n${preview}${more}`
+    `确认删除以下 ${emails.length} 个无效凭证账号？这会清理本地记录和本地认证文件，并尽量移出 Team/Invite；不会删除 CPA 或邮箱服务中的账号/文件。\n\n${preview}${more}`
   )
   if (!ok) return
 
@@ -1374,7 +1385,7 @@ async function kickAccount(email) {
 async function removeAccount(email) {
   if (deleteDisabled.value) return
 
-  const ok = window.confirm(`确认删除账号 ${email}？\n这会清理本地记录、本地/CPA认证文件，并尽量移出 Team/Invite；不会删除邮箱服务中的邮箱账号。`)
+  const ok = window.confirm(`确认删除账号 ${email}？\n这会清理本地记录和本地认证文件，并尽量移出 Team/Invite；不会删除 CPA 或邮箱服务中的账号/文件。`)
   if (!ok) return
 
   actionEmail.value = email
@@ -1404,7 +1415,7 @@ async function batchDelete() {
   const preview = emails.slice(0, 8).join('\n')
   const more = emails.length > 8 ? `\n...还有 ${emails.length - 8} 个` : ''
   const ok = window.confirm(
-    `确认批量删除以下 ${emails.length} 个账号？这会清理本地记录、本地/CPA认证文件，并尽量移出 Team/Invite；不会删除邮箱服务中的邮箱账号。\n\n${preview}${more}`
+    `确认批量删除以下 ${emails.length} 个账号？这会清理本地记录和本地认证文件，并尽量移出 Team/Invite；不会删除 CPA 或邮箱服务中的账号/文件。\n\n${preview}${more}`
   )
   if (!ok) return
 
