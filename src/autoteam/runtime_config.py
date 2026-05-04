@@ -11,13 +11,12 @@ import os
 import re
 import threading
 import time
-from pathlib import Path
 
+from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 RUNTIME_CONFIG_FILE = PROJECT_ROOT / "runtime_config.json"
 RUNTIME_CONFIG_MODE = 0o666
 

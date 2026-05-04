@@ -1,7 +1,9 @@
 import base64
 import json
+import time
 import urllib.parse
 
+import pytest
 import requests
 
 from autoteam import accounts, api, manager
@@ -10,8 +12,11 @@ from autoteam.codex_auth import (
     _extract_auth_code_from_url,
     _extract_session_token_from_cookie_header,
     _follow_codex_oauth_redirects_protocol,
+    _login_codex_via_browser_simple,
     _is_personal_codex_plan,
+    _poll_login_otp,
     is_chrome_cdp_available,
+    login_codex_via_browser,
     login_codex_via_auth_session_protocol,
 )
 from autoteam.manual_account import ManualAccountFlow
@@ -75,6 +80,146 @@ def test_team_codex_auth_url_keeps_legacy_consent_prompt():
     assert "codex_cli_simplified_flow" not in params
 
 
+def test_native_browser_oauth_uses_simple_email_code_flow(monkeypatch):
+    captured = {}
+
+    def fake_simple(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return {"email": args[0], "plan_type": "plus"}
+
+    monkeypatch.setattr("autoteam.codex_auth._login_codex_via_browser_simple", fake_simple)
+
+    result = login_codex_via_browser(
+        "user@example.com",
+        "pw",
+        mail_client=object(),
+        native_oauth=True,
+        headless=True,
+        mail_account_id=123,
+    )
+
+    assert result == {"email": "user@example.com", "plan_type": "plus"}
+    assert captured["args"][:2] == ("user@example.com", "pw")
+    assert captured["kwargs"]["native_oauth"] is True
+    assert captured["kwargs"]["headless"] is True
+    assert captured["kwargs"]["mail_account_id"] == 123
+
+
+def test_simple_oauth_mail_lookup_falls_back_from_account_id_to_email(monkeypatch):
+    calls = []
+
+    class FakeMailClient:
+        def search_emails_by_recipient(self, email, size=10, account_id=None):
+            calls.append((email, size, account_id))
+            if account_id == 999:
+                return []
+            return [{"emailId": 8, "accountId": 123, "text": "Your code is 123456"}]
+
+        def extract_verification_code(self, item):
+            return "123456" if item.get("emailId") == 8 else None
+
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+        def __init__(self):
+            self.handlers = {}
+            self.keyboard = type("Keyboard", (), {"type": lambda *_args, **_kwargs: None})()
+
+        def on(self, name, callback):
+            self.handlers[name] = callback
+
+        def goto(self, *_args, **_kwargs):
+            pass
+
+        def locator(self, selector):
+            return FakeLocator(selector, self)
+
+    class FakeLocator:
+        def __init__(self, selector, page):
+            self.selector = selector
+            self.page = page
+            self.value = ""
+            self.first = self
+
+        def is_visible(self, timeout=0):
+            return "input" in self.selector or "button" in self.selector
+
+        def fill(self, value):
+            self.value = value
+
+        def input_value(self, timeout=0):
+            return self.value
+
+        def click(self, *args, **kwargs):
+            if "button" in self.selector and self.page.handlers.get("request"):
+                request = type(
+                    "Request",
+                    (),
+                    {"url": "http://localhost:1455/auth/callback?code=abc&state=state"},
+                )()
+                self.page.handlers["request"](request)
+
+        def press(self, *_args, **_kwargs):
+            pass
+
+        def inner_text(self, timeout=0):
+            return "检查您的收件箱 验证码"
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+    class FakeBrowser:
+        def new_context(self, **_kwargs):
+            return FakeContext()
+
+        def close(self):
+            pass
+
+    class FakeChromium:
+        def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("autoteam.codex_auth.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr("autoteam.codex_auth.LOGIN_OTP_INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr("autoteam.codex_auth._fill_auth_email_if_present", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("autoteam.codex_auth._click_email_code_login_if_present", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "autoteam.codex_auth._exchange_auth_code",
+        lambda code, verifier, fallback_email="": {
+            "email": fallback_email,
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "id_token": "id",
+            "account_id": "acct",
+            "plan_type": "plus",
+        },
+    )
+    monkeypatch.setattr("autoteam.codex_auth._screenshot", lambda *_args, **_kwargs: None)
+
+    result = _login_codex_via_browser_simple(
+        "user@example.com",
+        "",
+        FakeMailClient(),
+        native_oauth=True,
+        mail_account_id=999,
+    )
+
+    assert result["plan_type"] == "plus"
+    assert ("user@example.com", 10, 999) in calls
+    assert ("user@example.com", 10, None) in calls
+
+
 def test_manual_account_flow_uses_native_codex_oauth_url():
     flow = ManualAccountFlow()
     params = _query(flow.auth_url)
@@ -82,6 +227,170 @@ def test_manual_account_flow_uses_native_codex_oauth_url():
     assert params["prompt"] == ["login"]
     assert params["id_token_add_organizations"] == ["true"]
     assert params["codex_cli_simplified_flow"] == ["true"]
+
+
+def test_manual_account_flow_times_out_pending_callback(monkeypatch):
+    monkeypatch.setattr("autoteam.manual_account.MANUAL_ACCOUNT_TIMEOUT_SECONDS", 60)
+    flow = ManualAccountFlow()
+    flow.started_at -= 61
+
+    status = flow.status()
+
+    assert status["in_progress"] is False
+    assert status["status"] == "error"
+    assert "等待超时" in status["error"]
+
+
+def test_manual_account_flow_polls_mail_without_email_filled_event(monkeypatch):
+    class FakeMailClient:
+        def search_emails_by_recipient(self, email, size=5):
+            return [{"emailId": 2, "subject": "OpenAI login code", "sendEmail": "noreply@tm.openai.com"}]
+
+        def extract_verification_code(self, item):
+            return "123456"
+
+    class FakeServer:
+        def __init__(self):
+            self.phone_required_url = ""
+            self.auth_code = ""
+            self.callback_url = ""
+            self.otp = ""
+            self.events = []
+
+    flow = ManualAccountFlow(email="user@example.com")
+    flow._mail_client = FakeMailClient()
+    flow._latest_email_id = 1
+    flow._helper_server = FakeServer()
+
+    import threading
+
+    thread = threading.Thread(target=flow._helper_worker, daemon=True)
+    thread.start()
+    deadline = time.time() + 1
+    while time.time() < deadline and flow._helper_server.otp != "123456":
+        time.sleep(0.05)
+    flow._finalized = True
+    thread.join(timeout=1)
+
+    assert flow._helper_server.otp == "123456"
+    assert flow.status()["otp_status"] == "filled"
+
+
+def test_main_codex_code_rejects_empty_value(monkeypatch):
+    class FakeFlow:
+        def submit_code(self, _code):
+            raise AssertionError("empty code should not reach flow")
+
+    monkeypatch.setattr(api, "_main_codex_flow", FakeFlow())
+    monkeypatch.setattr(api, "_main_codex_step", "code_required")
+
+    with pytest.raises(api.HTTPException) as exc:
+        api.post_main_codex_code(api.AdminCodeParams(code="   "))
+
+    assert exc.value.status_code == 400
+    assert "验证码不能为空" in exc.value.detail
+
+
+def test_poll_login_otp_accepts_fresh_code_at_snapshot_boundary():
+    class FakeMailClient:
+        def extract_verification_code(self, item):
+            return item.get("code")
+
+    now = int(time.time())
+
+    code, email_id = _poll_login_otp(
+        email="user@example.com",
+        mail_client=FakeMailClient(),
+        search_login_emails=lambda size=5: [
+            {
+                "emailId": 10,
+                "createTime": now,
+                "sendEmail": "noreply@tm.openai.com",
+                "subject": "Your OpenAI code is 123456",
+                "code": "123456",
+            }
+        ],
+        latest_email_id=10,
+        used_email_ids=set(),
+        window_started_at=now,
+        timeout=5,
+        require_openai_sender=True,
+    )
+
+    assert (code, email_id) == ("123456", 10)
+
+
+def test_poll_login_otp_does_not_require_openai_sender():
+    class FakeMailClient:
+        def extract_verification_code(self, item):
+            return item.get("code")
+
+    now = int(time.time())
+
+    code, email_id = _poll_login_otp(
+        email="user@example.com",
+        mail_client=FakeMailClient(),
+        search_login_emails=lambda size=5: [
+            {
+                "emailId": 11,
+                "createTime": now,
+                "sendEmail": "relay@example.net",
+                "subject": "Your code is 654321",
+                "code": "654321",
+            }
+        ],
+        latest_email_id=10,
+        used_email_ids=set(),
+        window_started_at=now,
+        timeout=5,
+        require_openai_sender=True,
+    )
+
+    assert (code, email_id) == ("654321", 11)
+
+
+def test_poll_login_otp_matches_registration_without_snapshot_filters():
+    class FakeMailClient:
+        def extract_verification_code(self, item):
+            return item.get("code")
+
+    code, email_id = _poll_login_otp(
+        email="user@example.com",
+        mail_client=FakeMailClient(),
+        search_login_emails=lambda size=10: [
+            {
+                "emailId": 9,
+                "createTime": 1,
+                "sendEmail": "relay@example.net",
+                "subject": "Invitation plus code",
+                "code": "111222",
+            }
+        ],
+        latest_email_id=10,
+        used_email_ids={9},
+        window_started_at=time.time(),
+        timeout=5,
+        require_openai_sender=True,
+    )
+
+    assert (code, email_id) == ("111222", 9)
+
+
+def test_manual_account_flow_polls_mail_like_registration(monkeypatch):
+    class FakeMailClient:
+        def search_emails_by_recipient(self, email, size=10):
+            assert size == 10
+            return [{"emailId": 1, "subject": "Invitation", "sendEmail": "relay@example.net"}]
+
+        def extract_verification_code(self, item):
+            return "345678"
+
+    flow = ManualAccountFlow(email="user@example.com")
+    flow._mail_client = FakeMailClient()
+    flow._latest_email_id = 10
+    flow._submitted_codes.add("345678")
+
+    assert flow._poll_email_otp_once() == ("345678", 1)
 
 
 def test_extract_session_token_from_split_cookie_header():
@@ -195,6 +504,7 @@ def test_plus_account_login_uses_native_oauth_and_updates_plan(monkeypatch):
         "password": "pw",
         "status": accounts.STATUS_ACTIVE,
         "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": 956,
     }
 
     monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [account])
@@ -210,12 +520,22 @@ def test_plus_account_login_uses_native_oauth_and_updates_plan(monkeypatch):
         def login(self):
             captured["mail_login"] = True
 
-    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False):
+    def fake_login(
+        email,
+        password,
+        mail_client=None,
+        *,
+        use_personal=False,
+        native_oauth=False,
+        headless=False,
+        mail_account_id=None,
+    ):
         captured["login"] = {
             "email": email,
             "password": password,
             "use_personal": use_personal,
             "native_oauth": native_oauth,
+            "mail_account_id": mail_account_id,
         }
         return {
             "email": email,
@@ -241,6 +561,7 @@ def test_plus_account_login_uses_native_oauth_and_updates_plan(monkeypatch):
     assert captured["command"] == "login:plus@example.com"
     assert captured["login"]["use_personal"] is False
     assert captured["login"]["native_oauth"] is True
+    assert captured["login"]["mail_account_id"] == 956
     assert task_result["mode"] == "native"
     assert ("plus@example.com", {"last_quota": {"primary_pct": 1}}) in updates
     assert any(
@@ -250,6 +571,57 @@ def test_plus_account_login_uses_native_oauth_and_updates_plan(monkeypatch):
         and update.get("auth_file") == "auths/codex-plus@example.com-plus.json"
         for email, update in updates
     )
+
+
+def test_account_login_skips_protocol_oauth_by_default(monkeypatch):
+    captured = {}
+    account = {
+        "email": "plus@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": 956,
+    }
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fail_protocol(*_args, **_kwargs):
+        raise AssertionError("protocol OAuth should be disabled by default")
+
+    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
+        captured["login"] = {
+            "email": email,
+            "native_oauth": native_oauth,
+            "mail_account_id": mail_account_id,
+        }
+        return {
+            "email": email,
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "id_token": "id",
+            "account_id": "acct-plus",
+            "plan_type": "plus",
+        }
+
+    monkeypatch.delenv("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL", raising=False)
+    monkeypatch.setattr("autoteam.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autoteam.auth_session_store.load_auth_session", lambda _email: {"cookie_header": "session=1"})
+    monkeypatch.setattr("autoteam.codex_auth.login_codex_via_auth_session_protocol", fail_protocol)
+    monkeypatch.setattr("autoteam.codex_auth.login_codex_via_browser", fake_login)
+    monkeypatch.setattr("autoteam.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: None)
+
+    result = api._run_account_codex_login_once(account["email"], account)
+
+    assert result["email"] == "plus@example.com"
+    assert captured["login"] == {
+        "email": "plus@example.com",
+        "native_oauth": True,
+        "mail_account_id": 956,
+    }
 
 
 def test_team_account_login_keeps_team_oauth(monkeypatch):
@@ -269,7 +641,16 @@ def test_team_account_login_keeps_team_oauth(monkeypatch):
         def login(self):
             pass
 
-    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False):
+    def fake_login(
+        email,
+        password,
+        mail_client=None,
+        *,
+        use_personal=False,
+        native_oauth=False,
+        headless=False,
+        mail_account_id=None,
+    ):
         captured["use_personal"] = use_personal
         captured["native_oauth"] = native_oauth
         return {

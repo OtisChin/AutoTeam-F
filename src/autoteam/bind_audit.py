@@ -7,13 +7,12 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path
 
+from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 BIND_AUDIT_FILE = PROJECT_ROOT / "bind_audit.json"
 BIND_AUDIT_FILE_MODE = 0o666
 RECORD_LIMIT = 500

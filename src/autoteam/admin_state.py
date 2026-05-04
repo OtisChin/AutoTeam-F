@@ -17,9 +17,9 @@ import os
 import time
 from pathlib import Path
 
+from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text, write_text
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 STATE_FILE = PROJECT_ROOT / "state.json"
 LEGACY_SESSION_FILE = PROJECT_ROOT / "session"
 STATE_FILE_MODE = 0o666

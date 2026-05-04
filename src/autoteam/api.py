@@ -82,7 +82,7 @@ class SetupConfig(BaseModel):
     CLOUD_MAIL_ADMIN_EMAIL: str = ""
     CLOUD_MAIL_ADMIN_PASSWORD: str = ""
     CLOUD_MAIL_DOMAIN: str = ""
-    CPA_URL: str = "http://127.0.0.1:8317"
+    CPA_URL: str = ""
     CPA_KEY: str = ""
     PLAYWRIGHT_PROXY_URL: str = ""
     PLAYWRIGHT_PROXY_BYPASS: str = ""
@@ -115,18 +115,15 @@ def post_setup_save(config: SetupConfig):
     """保存配置到 .env 并验证连通性"""
     import secrets as _secrets
 
-    from autoteam.setup_wizard import _write_env, get_mail_provider, get_required_configs_for_provider
+    from autoteam.setup_wizard import _write_env, get_mail_provider
 
     data = config.model_dump()
     provider = get_mail_provider(data.get("MAIL_PROVIDER"))
     data["MAIL_PROVIDER"] = provider
-    defaults = {key: default for key, _prompt, default, _optional in get_required_configs_for_provider(provider)}
-    if not data.get("CPA_URL"):
-        data["CPA_URL"] = defaults.get("CPA_URL", "http://127.0.0.1:8317")
     if not data.get("API_KEY"):
         data["API_KEY"] = _secrets.token_urlsafe(24)
 
-    clearable_fields = {"PLAYWRIGHT_PROXY_URL", "PLAYWRIGHT_PROXY_BYPASS"}
+    clearable_fields = {"CPA_URL", "CPA_KEY", "PLAYWRIGHT_PROXY_URL", "PLAYWRIGHT_PROXY_BYPASS"}
     provider_fields = {
         "cloudflare_temp_email": {
             "CLOUDFLARE_TEMP_EMAIL_BASE_URL",
@@ -498,6 +495,17 @@ class ManualAccountCallbackParams(BaseModel):
     redirect_url: str
 
 
+class ManualAccountStartParams(BaseModel):
+    email: str = ""
+
+
+def _clean_required_code(code: str) -> str:
+    cleaned = str(code or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="验证码不能为空，请输入邮件中的验证码后再提交")
+    return cleaned
+
+
 class TeamMemberRemoveParams(BaseModel):
     email: str
     user_id: str
@@ -542,6 +550,13 @@ class GoPayBindTaskParams(BaseModel):
     account_emails: list[str] = []
     auto_register: bool = Field(False, validation_alias=AliasChoices("auto_register", "autoRegister"))
     auto_register_count: int = Field(1, validation_alias=AliasChoices("auto_register_count", "autoRegisterCount"))
+    auto_register_domain: str = Field("", validation_alias=AliasChoices("auto_register_domain", "autoRegisterDomain"))
+    auto_register_domains: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("auto_register_domains", "autoRegisterDomains"),
+    )
+    auto_register_prefix: str = Field("", validation_alias=AliasChoices("auto_register_prefix", "autoRegisterPrefix"))
+    auto_register_password: str = Field("", validation_alias=AliasChoices("auto_register_password", "autoRegisterPassword"))
     phone_number: str
     country_code: str = ""
     sms_url: str
@@ -917,6 +932,26 @@ def _gopay_payment_failed_pool_emails(result: dict, actual_email: str) -> list[s
             seen.add(email)
             emails.append(email)
     if str(result.get("failure_stage") or "") == "gopay_payment_process":
+        email = _normalized_email(actual_email)
+        if email and email not in seen:
+            emails.append(email)
+    return emails
+
+
+def _gopay_token_invalidated_pool_emails(result: dict, actual_email: str) -> list[str]:
+    seen = set()
+    emails = []
+    for raw_email in result.get("token_invalidated_emails") or []:
+        email = _normalized_email(raw_email)
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+    message = str(result.get("message") or "").lower()
+    if result.get("status") != "success" and (
+        "token_invalidated" in message
+        or "authentication token has been invalidated" in message
+        or ("http 401" in message and "invalidated" in message)
+    ):
         email = _normalized_email(actual_email)
         if email and email not in seen:
             emails.append(email)
@@ -1332,8 +1367,9 @@ def post_admin_login_code(params: AdminCodeParams):
         raise HTTPException(status_code=409, detail="当前没有等待验证码的管理员登录流程")
 
     try:
-        logger.info("[API] 提交管理员验证码 | current_step=%s code_len=%d", _admin_login_step, len(params.code.strip()))
-        result = _pw_executor.run(_admin_login_api.submit_admin_code, params.code.strip())
+        code = _clean_required_code(params.code)
+        logger.info("[API] 提交管理员验证码 | current_step=%s code_len=%d", _admin_login_step, len(code))
+        result = _pw_executor.run(_admin_login_api.submit_admin_code, code)
         step = result["step"]
         logger.info("[API] 管理员验证码提交返回: step=%s detail=%s", step, result.get("detail"))
         if step == "completed":
@@ -1514,7 +1550,8 @@ def post_main_codex_code(params: AdminCodeParams):
         raise HTTPException(status_code=409, detail="当前没有等待验证码的主号 Codex 登录流程")
 
     try:
-        result = _pw_executor.run(_main_codex_flow.submit_code, params.code.strip())
+        code = _clean_required_code(params.code)
+        result = _pw_executor.run(_main_codex_flow.submit_code, code)
         step = result["step"]
         if step == "completed":
             return _finish_main_codex_sync()
@@ -1553,7 +1590,7 @@ def post_main_codex_cancel():
 
 
 @app.post("/api/manual-account/start")
-def post_manual_account_start():
+def post_manual_account_start(params: ManualAccountStartParams = ManualAccountStartParams()):
     """开始手动添加账号流程，返回 OAuth 链接。"""
     global _manual_account_flow
 
@@ -1567,7 +1604,7 @@ def post_manual_account_start():
     try:
         from autoteam.manual_account import ManualAccountFlow
 
-        flow = ManualAccountFlow()
+        flow = ManualAccountFlow(email=params.email, auto_open_helper=True)
         result = flow.start()
         return _set_pending_manual_account_flow(flow, result)
     except HTTPException:
@@ -2102,9 +2139,23 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
 
     mail_client = TemporaryEmailClient()
     mail_client.login()
+    if not acc.get("cloudmail_account_id") and hasattr(mail_client, "_resolve_account_id"):
+        try:
+            resolved_mail_id = mail_client._resolve_account_id(email)
+        except Exception:
+            resolved_mail_id = None
+        if resolved_mail_id:
+            acc["cloudmail_account_id"] = resolved_mail_id
+            update_account(email, cloudmail_account_id=resolved_mail_id)
     bundle = None
     auth_session_data = load_auth_session(email)
-    if auth_session_data:
+    use_protocol_oauth = str(os.environ.get("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if auth_session_data and use_protocol_oauth:
         try:
             logger.info("[账号登录] 优先复用 auth_session 协议 OAuth: %s", email)
             oauth_result = login_codex_via_auth_session_protocol(
@@ -2132,6 +2183,8 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
                 logger.info("[账号登录] 协议 OAuth 落到登录页，将尝试浏览器兜底: %s", email)
         except Exception as exc:
             logger.warning("[账号登录] auth_session 协议 OAuth 异常，回退浏览器 OAuth: %s", exc)
+    elif auth_session_data:
+        logger.info("[账号登录] 跳过 auth_session 协议 OAuth，直接走浏览器邮箱验证码流程: %s", email)
 
     if not bundle:
         bundle = login_codex_via_browser(
@@ -2141,6 +2194,7 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
             use_personal=use_personal,
             native_oauth=native_oauth,
             headless=headless,
+            mail_account_id=acc.get("cloudmail_account_id"),
         )
     if not bundle:
         raise RuntimeError(f"Codex 登录失败: {email}")
@@ -2323,6 +2377,7 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
 
     def _run(task_id: str = ""):
         from autoteam.codex_auth import CodexOAuthAccountDeactivated, CodexOAuthLoginRequired, CodexOAuthPhoneRequired
+        from autoteam.accounts import update_account
 
         ok = []
         failed = []
@@ -2330,7 +2385,52 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
         total = len(accounts_by_email)
         result_lock = threading.Lock()
 
+        missing_mail_ids = [
+            email for email, acc in accounts_by_email.items() if not acc.get("cloudmail_account_id")
+        ]
+        if missing_mail_ids:
+            try:
+                from autoteam.mail import TemporaryEmailClient
+
+                mail_client = TemporaryEmailClient()
+                mail_client.login()
+                if hasattr(mail_client, "list_accounts"):
+                    rows = mail_client.list_accounts(size=0)
+                    by_email = {
+                        _normalized_email(row.get("email")): row.get("accountId")
+                        for row in rows
+                        if row.get("email") and row.get("accountId")
+                    }
+                    filled = 0
+                    for email in missing_mail_ids:
+                        account_id = by_email.get(email)
+                        if not account_id:
+                            continue
+                        accounts_by_email[email]["cloudmail_account_id"] = account_id
+                        update_account(email, cloudmail_account_id=account_id)
+                        filled += 1
+                    if filled:
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "account_login_mail_ids_prefilled",
+                                "total": total,
+                                "filled": filled,
+                                "message": f"已预热 {filled} 个邮箱 accountId，后续验证码查询走直查",
+                            },
+                        )
+            except Exception as exc:
+                logger.warning("[账号登录] 批量补登录预热 cloud-mail accountId 失败: %s", exc)
+
         def _run_one(index: int, email: str, acc: dict) -> dict:
+            started_at = time.time()
+            logger.info(
+                "[账号登录] 批量 worker 开始: email=%s index=%s/%s thread=%s",
+                email,
+                index,
+                total,
+                threading.current_thread().name,
+            )
             _append_task_progress(
                 task_id,
                 {
@@ -2345,24 +2445,35 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
             )
             try:
                 login_result = _run_account_codex_login_once(email, acc, headless=False)
+                logger.info(
+                    "[账号登录] 批量 worker 成功: email=%s elapsed=%.1fs thread=%s",
+                    email,
+                    time.time() - started_at,
+                    threading.current_thread().name,
+                )
                 return {"kind": "ok", "email": email, "index": index, "result": login_result}
             except CodexOAuthPhoneRequired as exc:
                 result = _oauth_phone_required_result(email, exc)
+                logger.warning("[账号登录] 批量 worker 手机验证: email=%s elapsed=%.1fs", email, time.time() - started_at)
                 return {"kind": "phone_required", "email": email, "index": index, "result": result}
             except CodexOAuthLoginRequired as exc:
                 result = _oauth_login_required_result(email, exc)
+                logger.warning("[账号登录] 批量 worker 停在登录页: email=%s elapsed=%.1fs", email, time.time() - started_at)
                 return {"kind": "login_required", "email": email, "index": index, "result": result}
             except CodexOAuthAccountDeactivated as exc:
                 result = _oauth_account_deactivated_result(email, exc)
+                logger.warning("[账号登录] 批量 worker 账号停用: email=%s elapsed=%.1fs", email, time.time() - started_at)
                 return {"kind": "account_deactivated", "email": email, "index": index, "result": result}
             except Exception as exc:
+                logger.exception("[账号登录] 批量 worker 异常: email=%s elapsed=%.1fs", email, time.time() - started_at)
                 return {"kind": "failed", "email": email, "index": index, "error": str(exc), "exception": exc}
 
         try:
-            configured_workers = int(os.environ.get("CODEX_OAUTH_BATCH_CONCURRENCY", "2") or "2")
+            configured_workers = int(os.environ.get("CODEX_OAUTH_BATCH_CONCURRENCY", "3") or "3")
         except (TypeError, ValueError):
-            configured_workers = 2
+            configured_workers = 3
         max_workers = max(1, min(total, configured_workers))
+        logger.info("[账号登录] 批量补登录并发启动: total=%s max_workers=%s", total, max_workers)
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="codex-oauth") as executor:
             future_map = {
                 executor.submit(_run_one, index, email, acc): (index, email)
@@ -2375,7 +2486,8 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                     if item["kind"] == "ok":
                         ok.append(item["result"])
                     elif item["kind"] in {"phone_required", "login_required", "account_deactivated"}:
-                        phone_required.append(item["result"])
+                        if item["kind"] == "phone_required":
+                            phone_required.append(item["result"])
                         failed.append(item["result"])
                     else:
                         failed.append({"email": item_email, "error": item["error"]})
@@ -3579,7 +3691,18 @@ def post_bind_card_task(params: BindCardTaskParams):
 @app.post("/api/tasks/gopay-bind", status_code=202)
 def post_gopay_bind_task(params: GoPayBindTaskParams):
     from autoteam import cancel_signal
-    from autoteam.accounts import ACCOUNT_TYPE_PLUS, STATUS_ACTIVE, find_account, load_accounts, save_accounts, update_account
+    from autoteam.accounts import (
+        ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_PLUS,
+        SEAT_CODEX,
+        STATUS_ACTIVE,
+        STATUS_PERSONAL,
+        add_account,
+        find_account,
+        load_accounts,
+        save_accounts,
+        update_account,
+    )
     from autoteam.auth_session_store import get_auth_session_file
     from autoteam.bind_audit import record_bind_audit
     from autoteam.config import normalize_proxy_url
@@ -3620,6 +3743,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     billing_address2 = str(params.billing_address2 or "").strip()
     checkout_url = str(params.checkout_url or "").strip()
     checkout_ui_mode = "hosted" if str(params.checkout_ui_mode or "").strip().lower() == "hosted" else "custom"
+    auto_register_prefix = str(params.auto_register_prefix or "").strip()
+    auto_register_password = str(params.auto_register_password or "").strip()
     proxy_url = str(params.proxy_url or "").strip()
     try:
         normalized_proxy_url = normalize_proxy_url(proxy_url) if proxy_url else ""
@@ -3634,7 +3759,31 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         raise HTTPException(status_code=400, detail="自动注册模式不支持手动 checkout 链接")
     if not auto_register and not email:
         raise HTTPException(status_code=400, detail="email 不能为空")
+    auto_register_domains: list[str] = []
     if auto_register:
+        from autoteam.runtime_config import get_register_domain, get_register_domains
+
+        configured_domains = [str(domain or "").strip().lstrip("@") for domain in get_register_domains()]
+        configured_domains = [domain for domain in configured_domains if domain]
+        requested_domains = []
+        for raw_domain in [params.auto_register_domain, *(params.auto_register_domains or [])]:
+            cleaned = str(raw_domain or "").strip().lstrip("@")
+            if cleaned and cleaned.lower() not in {d.lower() for d in requested_domains}:
+                requested_domains.append(cleaned)
+        if requested_domains and configured_domains:
+            allowed = {domain.lower() for domain in configured_domains}
+            invalid_domains = [domain for domain in requested_domains if domain.lower() not in allowed]
+            if invalid_domains:
+                raise HTTPException(status_code=400, detail=f"自动注册域名未配置: {', '.join(invalid_domains)}")
+        auto_register_domains = requested_domains
+        if not auto_register_domains:
+            default_domain = str(get_register_domain() or "").strip().lstrip("@")
+            if default_domain:
+                auto_register_domains = [default_domain]
+            elif configured_domains:
+                auto_register_domains = [configured_domains[0]]
+        if not auto_register_domains:
+            raise HTTPException(status_code=400, detail="未配置可用注册域名")
         account_emails = []
     elif checkout_url:
         account_emails = []
@@ -3828,9 +3977,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         def _register_one_for_gopay(*, index: int = 1, total: int = 1) -> str:
             from autoteam.mail import TemporaryEmailClient
             from autoteam.manager import create_account_direct
-            from autoteam.runtime_config import get_register_domain
 
-            register_domain = str(get_register_domain() or "").strip().lstrip("@")
+            register_domain = auto_register_domains[(index - 1) % len(auto_register_domains)] if auto_register_domains else ""
+            register_domain = str(register_domain or "").strip().lstrip("@")
             if not register_domain:
                 raise RuntimeError("未配置可用注册域名")
 
@@ -3846,13 +3995,33 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             mail_client = TemporaryEmailClient()
             mail_client.login()
             outcome = {}
+
+            def _register_progress(progress: dict):
+                if not isinstance(progress, dict):
+                    return
+                stage = str(progress.get("stage") or "gopay_auto_register_progress")
+                message = str(progress.get("message") or stage)
+                _append_task_progress(
+                    task_id,
+                    {
+                        **progress,
+                        "stage": stage,
+                        "current": index,
+                        "total": total,
+                        "message": f"自动注册 ({index}/{total})：{message}",
+                    },
+                )
+
             register_result = create_account_direct(
                 mail_client,
                 out_outcome=outcome,
                 domain=register_domain,
+                email_prefix=auto_register_prefix or None,
+                password=auto_register_password or None,
                 skip_post_register=True,
                 post_register_oauth=False,
                 check_team_membership=False,
+                progress_callback=_register_progress,
             )
             registered_email = _normalized_email(
                 (register_result or {}).get("email") if isinstance(register_result, dict) else register_result
@@ -3862,11 +4031,28 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             if not registered_email:
                 raise RuntimeError(outcome.get("reason") or "自动注册未返回邮箱")
 
+            auth_session_file = get_auth_session_file(registered_email)
             registered_account = find_account(load_accounts(), registered_email)
-            if not registered_account or not _resolve_status_auth_file(registered_account):
-                auth_session_file = get_auth_session_file(registered_email)
+            has_auth_file = bool(registered_account and _resolve_status_auth_file(registered_account))
+            if not has_auth_file:
                 if not auth_session_file or not Path(auth_session_file).exists():
                     raise RuntimeError(f"自动注册账号缺少可用 auth_session/auth_file: {registered_email}")
+                register_payload = register_result if isinstance(register_result, dict) else {}
+                if not registered_account:
+                    add_account(
+                        registered_email,
+                        str(register_payload.get("password") or outcome.get("password") or auto_register_password or ""),
+                        cloudmail_account_id=register_payload.get("cloudmail_account_id") or outcome.get("cloudmail_account_id"),
+                        seat_type=SEAT_CODEX,
+                    )
+                update_account(
+                    registered_email,
+                    status=STATUS_PERSONAL,
+                    account_type=ACCOUNT_TYPE_FREE,
+                    seat_type=SEAT_CODEX,
+                    auth_file=auth_session_file,
+                    last_active_at=time.time(),
+                )
 
             _append_task_progress(
                 task_id,
@@ -4149,13 +4335,23 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         rejected_pool_emails = _gopay_rejected_pool_emails(result, actual_email)
         nonzero_blocked_pool_emails = _gopay_nonzero_blocked_pool_emails(result, actual_email)
         payment_failed_pool_emails = _gopay_payment_failed_pool_emails(result, actual_email)
+        token_invalidated_pool_emails = _gopay_token_invalidated_pool_emails(result, actual_email)
         cleanup_pool_emails = []
         for cleanup_email in [*rejected_pool_emails, *nonzero_blocked_pool_emails, *payment_failed_pool_emails]:
             if cleanup_email and cleanup_email not in cleanup_pool_emails:
                 cleanup_pool_emails.append(cleanup_email)
         if params.delete_rejected_accounts:
             removed_pool_emails = _remove_gopay_rejected_accounts_from_pool(cleanup_pool_emails)
-        elif cleanup_pool_emails:
+        if token_invalidated_pool_emails:
+            token_invalidated_removed = _remove_pool_accounts_from_local_and_mail(
+                token_invalidated_pool_emails,
+                log_context="gopay-token-invalidated",
+            )
+            for removed_email in token_invalidated_removed:
+                if removed_email and removed_email not in removed_pool_emails:
+                    removed_pool_emails.append(removed_email)
+            result["token_invalidated_pool_emails"] = token_invalidated_pool_emails
+        if not params.delete_rejected_accounts and cleanup_pool_emails:
             result["rejected_pool_emails"] = rejected_pool_emails
             result["nonzero_blocked_pool_emails"] = nonzero_blocked_pool_emails
             result["payment_failed_pool_emails"] = payment_failed_pool_emails
@@ -4169,7 +4365,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         if removed_pool_emails:
             result["removed_pool_emails"] = removed_pool_emails
             logger.info(
-                "[gopay-bind] removed rejected/nonzero accounts from local pool only: task_id=%s emails=%s",
+                "[gopay-bind] removed unusable accounts from local pool only: task_id=%s emails=%s",
                 task_id[:8] or "<unknown>",
                 removed_pool_emails,
             )
@@ -4216,6 +4412,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
 
     task_params = params.model_dump()
     task_params["auto_register_count"] = auto_register_count
+    task_params["auto_register_domains"] = auto_register_domains
+    task_params["auto_register_domain"] = auto_register_domains[0] if auto_register_domains else ""
+    task_params["auto_register_prefix"] = auto_register_prefix
+    task_params["auto_register_password_present"] = bool(auto_register_password)
+    task_params.pop("auto_register_password", None)
     task = _start_task("gopay-bind", _run, task_params)
     _task_skip_signals[task["task_id"]] = skip_current_signal
     return task

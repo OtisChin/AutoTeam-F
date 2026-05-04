@@ -36,10 +36,18 @@
         {{ manualAccountStatus.error }}
       </div>
 
-      <div v-if="!manualAccountBusy" class="flex flex-wrap gap-3">
+      <div v-if="!manualAccountBusy" class="space-y-3">
+        <input
+          v-model.trim="manualEmail"
+          type="email"
+          autocomplete="username"
+          placeholder="输入账号邮箱，用于自动获取验证码"
+          :disabled="manualSubmitting"
+          class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+        />
         <button
           @click="startManualAccount"
-          :disabled="manualSubmitting"
+          :disabled="manualSubmitting || !manualEmail"
           class="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-sm rounded-lg transition disabled:opacity-50"
         >
           {{ manualSubmitting ? '生成中...' : '生成 OAuth 链接' }}
@@ -59,9 +67,18 @@
         >
           {{
             manualAccountStatus?.auto_callback_available
-              ? '本地自动回调服务已启动：OpenAI 跳回 localhost:1455 后会自动完成认证。'
+              ? (manualAccountStatus?.playwright_available
+                ? 'Playwright OAuth 已启动：系统会从邮箱服务读取验证码并自动填写，成功后会直接完成认证。'
+                : '本地自动回调服务已启动：OpenAI 跳回 localhost:1455 后会自动完成认证。')
               : `本地自动回调不可用：${manualAccountStatus?.auto_callback_error || '请改用手动粘贴回调 URL'}`
           }}
+        </div>
+
+        <div
+          v-if="manualAccountStatus?.playwright_error || manualAccountStatus?.helper_error"
+          class="px-4 py-3 rounded-lg text-sm border bg-amber-500/10 text-amber-300 border-amber-500/20"
+        >
+          自动登录不可用：{{ manualAccountStatus.playwright_error || manualAccountStatus.helper_error }}
         </div>
 
         <div class="space-y-2">
@@ -138,6 +155,7 @@ const props = defineProps({
 const emit = defineEmits(['refresh', 'progress'])
 
 const manualCallbackUrl = ref('')
+const manualEmail = ref('')
 const manualSubmitting = ref(false)
 const manualSubmittingHint = ref('')
 const message = ref('')
@@ -151,6 +169,8 @@ watch(
     if (!next?.in_progress) {
       manualCallbackUrl.value = ''
       manualSubmittingHint.value = ''
+    } else if (next?.email) {
+      manualEmail.value = next.email
     }
   },
   { immediate: true },
@@ -171,7 +191,7 @@ async function startManualAccount() {
   manualSubmitting.value = true
   manualSubmittingHint.value = '正在生成 OAuth 链接...'
   try {
-    const result = await api.startManualAccount()
+    const result = await api.startManualAccount(manualEmail.value)
     setMessage(result.auth_url ? 'OAuth 链接已生成，请完成登录后粘贴回调 URL' : '已开始 OAuth 登录流程')
     emit('progress')
   } catch (e) {

@@ -2,12 +2,11 @@
 
 import json
 import time
-from pathlib import Path
 
 from autoteam.admin_state import get_admin_email
+from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text, write_text
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 ACCOUNTS_FILE = PROJECT_ROOT / "accounts.json"
 
 # 账号状态

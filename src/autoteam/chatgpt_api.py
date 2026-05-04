@@ -7,7 +7,6 @@ import random
 import re
 import time
 import uuid
-from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
@@ -19,11 +18,11 @@ from autoteam.admin_state import (
     update_admin_state,
 )
 from autoteam.config import get_playwright_launch_options
+from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 BASE_DIR = PROJECT_ROOT
 SCREENSHOT_DIR = PROJECT_ROOT / "screenshots"
 
@@ -850,6 +849,10 @@ class ChatGPTTeamAPI:
         return self.submit_login_password(password, actor_label="管理员")
 
     def submit_login_code(self, code, actor_label="账号"):
+        code = str(code or "").strip()
+        if not code:
+            raise RuntimeError("验证码不能为空，请输入邮件中的验证码后再提交")
+
         code_input = self._visible_locator_in_frames(self.CODE_INPUT_SELECTORS, timeout_ms=5000)
         if not code_input:
             time.sleep(3)

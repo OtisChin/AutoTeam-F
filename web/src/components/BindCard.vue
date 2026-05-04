@@ -639,8 +639,19 @@
               </div>
             </div>
             <div v-if="gopayForm.autoRegister && !gopayForm.checkoutUrl" class="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-3">
-              <div class="text-sm text-blue-200">运行时自动注册 {{ normalizedGoPayAutoRegisterCount }} 个 Free 账号，保存 auth_session 后逐个执行 GoPay 绑定。</div>
-              <div class="mt-1 text-xs text-gray-400">该模式会使用当前“注册域名设置”的默认域名，不需要先从号池选择账号。</div>
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-sm text-blue-200">运行时自动注册 {{ normalizedGoPayAutoRegisterCount }} 个 Free 账号，保存 auth_session 后逐个执行 GoPay 绑定。</div>
+                  <div class="mt-1 text-xs text-gray-400">注册配置：{{ gopayAutoRegisterConfigSummary }}</div>
+                </div>
+                <button
+                  type="button"
+                  @click="openGoPayAutoRegisterConfig"
+                  :disabled="gopaySubmitting || gopayTaskRunning"
+                  class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-blue-600/15 hover:bg-blue-600/25 text-blue-200 border-blue-500/30 transition disabled:opacity-50">
+                  配置
+                </button>
+              </div>
               <div class="mt-3">
                 <label class="block text-xs text-gray-400 mb-1">自动注册数量</label>
                 <input
@@ -902,6 +913,122 @@
     </div>
 
     <div
+      v-if="gopayAutoRegisterConfigOpen"
+      class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      @click.self="closeGoPayAutoRegisterConfig"
+    >
+      <div class="w-full max-w-2xl max-h-[82vh] rounded-xl border border-gray-800 bg-gray-900 shadow-2xl flex flex-col">
+        <div class="flex items-center justify-between gap-4 px-5 py-4 border-b border-gray-800">
+          <div>
+            <h4 class="text-lg font-semibold text-white">自动注册配置</h4>
+            <div class="text-xs text-gray-500 mt-1">选择 GoPay 自动注册使用的域名、邮箱前缀和密码。</div>
+          </div>
+          <button
+            type="button"
+            @click="closeGoPayAutoRegisterConfig"
+            class="px-3 py-1.5 rounded-lg text-sm border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition">
+            关闭
+          </button>
+        </div>
+
+        <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4">
+          <div>
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <label class="block text-sm text-gray-400">注册域名</label>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  @click="selectAllGoPayAutoRegisterDomains"
+                  :disabled="gopayRegisterDomainLoading || !gopayRegisterDomainOptions.length || gopayAllAutoRegisterDomainsSelected"
+                  class="px-2 py-1 rounded-md text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                  全选
+                </button>
+                <button
+                  type="button"
+                  @click="clearGoPayAutoRegisterDomains"
+                  :disabled="!gopaySelectedAutoRegisterDomains.length"
+                  class="px-2 py-1 rounded-md text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                  清空
+                </button>
+              </div>
+            </div>
+            <div class="rounded-lg border border-gray-800 bg-gray-950/50">
+              <div class="px-3 py-2 border-b border-gray-800 text-xs text-gray-500">
+                {{ gopayRegisterDomainLoading ? '正在加载域名...' : `已选择 ${gopaySelectedAutoRegisterDomains.length} / ${gopayRegisterDomainOptions.length}` }}
+              </div>
+              <div class="max-h-56 overflow-y-auto px-2 py-2 space-y-1">
+                <label
+                  v-for="domain in gopayRegisterDomainOptions"
+                  :key="`gopay-auto-domain-${domain}`"
+                  class="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-gray-200 hover:bg-gray-800 cursor-pointer"
+                >
+                  <input
+                    v-model="gopayForm.autoRegisterDomains"
+                    type="checkbox"
+                    :value="domain"
+                    class="accent-blue-500"
+                  />
+                  <span class="font-mono text-xs">@{{ domain }}</span>
+                </label>
+                <div v-if="!gopayRegisterDomainOptions.length" class="px-2 py-8 text-center text-sm text-gray-500">
+                  暂无可用注册域名，请先在设置页维护注册域名。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">邮箱前缀</label>
+            <div class="flex items-center rounded-lg border border-gray-700 bg-gray-800">
+              <input
+                v-model.trim="gopayForm.autoRegisterPrefix"
+                type="text"
+                placeholder="例如 gopay"
+                class="flex-1 px-3 py-2 bg-transparent text-sm text-white focus:outline-none"
+              />
+              <div class="px-3 text-xs text-gray-500 border-l border-gray-700">
+                +5位随机字母数字 @随机域名
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">密码</label>
+            <input
+              v-model.trim="gopayForm.autoRegisterPassword"
+              type="text"
+              placeholder="留空自动生成"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
+            <div>注册数量：<span class="text-gray-200">{{ normalizedGoPayAutoRegisterCount }}</span></div>
+            <div>域名轮换：<span class="text-gray-200">{{ gopaySelectedAutoRegisterDomainsLabel }}</span></div>
+            <div>预览邮箱：<span class="font-mono text-gray-200">{{ gopayAutoRegisterPreviewEmail }}</span></div>
+            <div>密码：<span class="text-gray-200">{{ gopayForm.autoRegisterPassword || '自动随机生成' }}</span></div>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <button
+            type="button"
+            @click="closeGoPayAutoRegisterConfig"
+            class="px-4 py-2 rounded-lg text-sm border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition">
+            取消
+          </button>
+          <button
+            type="button"
+            @click="confirmGoPayAutoRegisterConfig"
+            :disabled="!gopaySelectedAutoRegisterDomains.length"
+            class="px-5 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50">
+            确认
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
       v-if="gopayAccountPickerOpen"
       class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
       @click.self="closeGoPayAccountPicker"
@@ -988,6 +1115,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import BindCardPool from './BindCardPool.vue'
 
+const emit = defineEmits(['refresh'])
+
 const BIND_HISTORY_KEY = 'autoteam_bind_history_v1'
 const GOPAY_FORM_STATE_KEY = 'autoteam_gopay_form_state_v1'
 
@@ -1014,6 +1143,9 @@ const gopayForm = ref({
   email: '',
   autoRegister: false,
   autoRegisterCount: 1,
+  autoRegisterDomains: [],
+  autoRegisterPrefix: '',
+  autoRegisterPassword: '',
   batchMode: false,
   accountEmails: [],
   checkoutUrl: '',
@@ -1036,6 +1168,9 @@ const gopayForm = ref({
 })
 const gopayAccountSearchKeyword = ref('')
 const gopayAccountPickerOpen = ref(false)
+const gopayAutoRegisterConfigOpen = ref(false)
+const gopayRegisterDomainOptions = ref([])
+const gopayRegisterDomainLoading = ref(false)
 const gopaySubmitting = ref(false)
 const gopayCancelling = ref(false)
 const gopaySkipping = ref(false)
@@ -1128,6 +1263,43 @@ const normalizedGoPayAutoRegisterCount = computed(() => {
   return normalizeGoPayAutoRegisterCount(gopayForm.value.autoRegisterCount)
 })
 
+const gopaySelectedAutoRegisterDomains = computed(() => {
+  const seen = new Set()
+  return (Array.isArray(gopayForm.value.autoRegisterDomains) ? gopayForm.value.autoRegisterDomains : [])
+    .map(domain => String(domain || '').trim().replace(/^@/, ''))
+    .filter(domain => {
+      if (!domain || seen.has(domain.toLowerCase())) return false
+      if (gopayRegisterDomainOptions.value.length && !gopayRegisterDomainOptions.value.includes(domain)) return false
+      seen.add(domain.toLowerCase())
+      return true
+    })
+})
+
+const gopaySelectedAutoRegisterDomainsLabel = computed(() => {
+  const domains = gopaySelectedAutoRegisterDomains.value
+  if (!domains.length) return '未选择'
+  if (domains.length <= 3) return domains.map(domain => `@${domain}`).join(' / ')
+  return `${domains.slice(0, 3).map(domain => `@${domain}`).join(' / ')} 等 ${domains.length} 个`
+})
+
+const gopayAutoRegisterConfigSummary = computed(() => {
+  const prefix = String(gopayForm.value.autoRegisterPrefix || '').trim()
+  const password = String(gopayForm.value.autoRegisterPassword || '').trim()
+  return `${gopaySelectedAutoRegisterDomainsLabel.value}，前缀 ${prefix || '随机'}，密码 ${password ? '自定义' : '随机'}`
+})
+
+const gopayAutoRegisterPreviewEmail = computed(() => {
+  const prefix = String(gopayForm.value.autoRegisterPrefix || '').trim()
+  const domain = gopaySelectedAutoRegisterDomains.value[0] || gopayRegisterDomainOptions.value[0] || 'domain.com'
+  return `${prefix ? `${prefix}a8k3p` : '__random__'}@${domain}`
+})
+
+const gopayAllAutoRegisterDomainsSelected = computed(() => {
+  if (!gopayRegisterDomainOptions.value.length) return false
+  const selected = new Set(gopaySelectedAutoRegisterDomains.value.map(domain => domain.toLowerCase()))
+  return gopayRegisterDomainOptions.value.every(domain => selected.has(String(domain || '').toLowerCase()))
+})
+
 const gopayAllAccountsSelected = computed(() => {
   if (!accountOptions.value.length) return false
   const selected = new Set(gopaySelectedBatchEmails.value)
@@ -1156,6 +1328,7 @@ const gopayEffectiveEmail = computed(() => {
 const gopayCanSubmit = computed(() => {
   return Boolean(
     (gopayForm.value.autoRegister || gopayEffectiveEmail.value)
+    && (!gopayForm.value.autoRegister || gopaySelectedAutoRegisterDomains.value.length)
     && gopayForm.value.phoneNumber
     && gopayForm.value.smsUrl
     && gopayForm.value.gopayPin
@@ -1268,6 +1441,7 @@ watch(
     gopayForm.value.accountEmails = []
     gopayForm.value.email = ''
     gopayForm.value.checkoutUrl = ''
+    openGoPayAutoRegisterConfig()
   }
 )
 
@@ -1351,6 +1525,18 @@ const gopayStageLabelMap = {
   gopay_auto_register_next: '自动注册绑定进度',
   gopay_auto_register_started: '自动注册账号',
   gopay_auto_register_done: '自动注册完成',
+  register_email_creating: '创建注册邮箱',
+  register_email_created: '注册邮箱已创建',
+  register_attempt_started: '开始注册账号',
+  register_blocked: '注册被阻断',
+  register_duplicate_swap: '切换注册邮箱',
+  register_retry_wait: '注册重试等待',
+  register_chatgpt_success: 'ChatGPT 注册成功',
+  register_auth_session_fetch: '保存 auth_session',
+  register_auth_session_saved: 'auth_session 已保存',
+  register_account_recorded: '账号已写入号池',
+  register_finished: '注册完成',
+  register_failed: '注册失败',
   gopay_oauth_login_started: '开始 OAuth 补登录',
   gopay_oauth_login_done: 'OAuth 补登录成功',
   gopay_oauth_login_failed: 'OAuth 补登录失败',
@@ -1545,8 +1731,14 @@ const gopayBoardProgressStats = computed(() => {
   const params = task.params || {}
   const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
   const isAutoRegister = Boolean(params.auto_register)
+  const autoRegisterEventTotal = (Array.isArray(task.progress_events) ? task.progress_events : []).reduce((maxTotal, event) => {
+    const stage = String(event?.stage || '')
+    if (!(stage.startsWith('gopay_auto_register') || stage.startsWith('register_'))) return maxTotal
+    const total = Number(event?.total || 0)
+    return Number.isFinite(total) ? Math.max(maxTotal, total) : maxTotal
+  }, 0)
   const autoRegisterCount = params.auto_register
-    ? normalizeGoPayAutoRegisterCount(params.auto_register_count || result.auto_register_count || progress.auto_register_count || 1)
+    ? normalizeGoPayAutoRegisterCount(params.auto_register_count || result.auto_register_count || progress.auto_register_count || autoRegisterEventTotal || 1)
     : 0
   const attempted = Array.isArray(result.attempted_emails)
     ? result.attempted_emails.length
@@ -1554,15 +1746,16 @@ const gopayBoardProgressStats = computed(() => {
   const successful = Array.isArray(result.successful_emails)
     ? result.successful_emails.length
     : Number(progress.successful || 0)
+  const done = Math.max(attempted, successful)
   const total = isAutoRegister
     ? autoRegisterCount
     : Number(progress.total || accounts.length || (task.task_id ? 1 : 0))
   const remaining = Number.isFinite(Number(progress.remaining_candidates))
     ? Number(progress.remaining_candidates)
-    : Math.max(0, total - Math.max(attempted, successful))
+    : Math.max(0, Math.max(total, done) - done)
   return {
-    total,
-    attempted: Math.max(attempted, successful),
+    total: Math.max(total, done),
+    attempted: done,
     successful,
     remaining,
   }
@@ -1665,6 +1858,57 @@ function clearGoPayBatchAccounts() {
   gopayForm.value.accountEmails = []
 }
 
+async function loadGoPayAutoRegisterDomains() {
+  if (gopayRegisterDomainLoading.value) return
+  gopayRegisterDomainLoading.value = true
+  try {
+    const result = await api.getRegisterDomain()
+    const domains = Array.isArray(result?.domains) && result.domains.length
+      ? result.domains
+      : (result?.domain ? [result.domain] : [])
+    gopayRegisterDomainOptions.value = domains
+      .map(domain => String(domain || '').trim().replace(/^@/, ''))
+      .filter(Boolean)
+    const selected = gopaySelectedAutoRegisterDomains.value.filter(domain => gopayRegisterDomainOptions.value.includes(domain))
+    if (selected.length) {
+      gopayForm.value.autoRegisterDomains = selected
+    } else {
+      const defaultDomain = String(result?.domain || gopayRegisterDomainOptions.value[0] || '').trim().replace(/^@/, '')
+      gopayForm.value.autoRegisterDomains = defaultDomain ? [defaultDomain] : []
+    }
+  } catch (e) {
+    setMessage(`读取自动注册域名失败: ${e.message}`, false)
+  } finally {
+    gopayRegisterDomainLoading.value = false
+  }
+}
+
+async function openGoPayAutoRegisterConfig() {
+  await loadGoPayAutoRegisterDomains()
+  gopayAutoRegisterConfigOpen.value = true
+}
+
+function closeGoPayAutoRegisterConfig() {
+  gopayAutoRegisterConfigOpen.value = false
+}
+
+function confirmGoPayAutoRegisterConfig() {
+  if (!gopaySelectedAutoRegisterDomains.value.length) {
+    setMessage('请选择至少一个自动注册域名', false)
+    return
+  }
+  gopayForm.value.autoRegisterDomains = gopaySelectedAutoRegisterDomains.value
+  closeGoPayAutoRegisterConfig()
+}
+
+function selectAllGoPayAutoRegisterDomains() {
+  gopayForm.value.autoRegisterDomains = [...gopayRegisterDomainOptions.value]
+}
+
+function clearGoPayAutoRegisterDomains() {
+  gopayForm.value.autoRegisterDomains = []
+}
+
 function openGoPayAccountPicker() {
   gopayAccountPickerOpen.value = true
 }
@@ -1678,6 +1922,8 @@ function getRememberedGoPayForm() {
     email: String(gopayForm.value.email || '').trim().toLowerCase(),
     autoRegister: Boolean(gopayForm.value.autoRegister),
     autoRegisterCount: normalizedGoPayAutoRegisterCount.value,
+    autoRegisterDomains: gopaySelectedAutoRegisterDomains.value,
+    autoRegisterPrefix: String(gopayForm.value.autoRegisterPrefix || '').trim(),
     batchMode: Boolean(gopayForm.value.batchMode),
     accountEmails: normalizeEmailList(gopayForm.value.accountEmails),
     countryCode: digitsOnly(gopayForm.value.countryCode) || '62',
@@ -1702,6 +1948,11 @@ function loadGoPayFormState() {
       email: String(saved.email || '').trim().toLowerCase(),
       autoRegister: Boolean(saved.autoRegister),
       autoRegisterCount: normalizeGoPayAutoRegisterCount(saved.autoRegisterCount),
+      autoRegisterDomains: Array.isArray(saved.autoRegisterDomains)
+        ? saved.autoRegisterDomains.map(domain => String(domain || '').trim().replace(/^@/, '')).filter(Boolean)
+        : [],
+      autoRegisterPrefix: String(saved.autoRegisterPrefix || ''),
+      autoRegisterPassword: '',
       batchMode: Boolean(saved.batchMode),
       accountEmails: normalizeEmailList(saved.accountEmails),
       countryCode: digitsOnly(saved.countryCode) || '62',
@@ -2312,6 +2563,10 @@ async function startGoPayBind() {
       account_emails: gopayBatchActive.value ? gopaySelectedBatchEmails.value : [],
       auto_register: Boolean(gopayForm.value.autoRegister),
       auto_register_count: normalizedGoPayAutoRegisterCount.value,
+      auto_register_domain: gopaySelectedAutoRegisterDomains.value[0] || '',
+      auto_register_domains: gopaySelectedAutoRegisterDomains.value,
+      auto_register_prefix: String(gopayForm.value.autoRegisterPrefix || '').trim(),
+      auto_register_password: String(gopayForm.value.autoRegisterPassword || '').trim(),
       checkout_url: gopayForm.value.checkoutUrl || '',
       checkout_ui_mode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
       country_code: gopayForm.value.countryCode || '',
@@ -2327,9 +2582,11 @@ async function startGoPayBind() {
     pushGoPayLog(`GoPay 任务已提交，任务 ID: ${task.task_id}`, 'success')
     setMessage(`GoPay 任务已提交: ${task.task_id}`)
     await pollGoPayTask(task.task_id)
+    emit('refresh')
   } catch (e) {
     pushGoPayLog(`提交 GoPay 任务失败: ${e.message}`, 'error')
     setMessage(`提交 GoPay 任务失败: ${e.message}`, false)
+    emit('refresh')
   } finally {
     gopaySubmitting.value = false
   }
@@ -2401,6 +2658,9 @@ function openHistoryLink(link) {
 onMounted(() => {
   loadHistory()
   loadGoPayFormState()
+  if (gopayForm.value.autoRegister) {
+    loadGoPayAutoRegisterDomains()
+  }
   loadAccounts()
   loadCards()
   restoreActiveBindTasks()

@@ -1722,12 +1722,21 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         last_active_at=time.time(),
     )
     logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)
-    _record_outcome("success", plan="free", auth_file=auth_file, source="auth_session")
+    _record_outcome(
+        "success",
+        plan="free",
+        auth_file=auth_file,
+        source="auth_session",
+        password=password,
+        cloudmail_account_id=cloudmail_account_id,
+    )
     return {
         "email": email,
         "status": "success",
         "plan_type": "free",
         "auth_file": auth_file,
+        "password": password,
+        "cloudmail_account_id": cloudmail_account_id,
     }
 
 
@@ -2836,6 +2845,7 @@ def create_account_direct(
     skip_post_register=False,
     post_register_oauth=None,
     check_team_membership=True,
+    progress_callback=None,
 ):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
@@ -2852,8 +2862,19 @@ def create_account_direct(
     """
     from autoteam.invite import RegisterBlocked
 
+    def _progress(stage, message, **extra):
+        if not callable(progress_callback):
+            return
+        payload = {"stage": stage, "message": message, **extra}
+        try:
+            progress_callback(payload)
+        except Exception:
+            logger.debug("[直接注册] progress_callback failed", exc_info=True)
+
     resolved_prefix = _with_random_suffix_prefix(email_prefix)
+    _progress("register_email_creating", f"正在创建临时邮箱: domain=@{domain or '<default>'}")
     account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
+    _progress("register_email_created", f"已创建临时邮箱: {email}", email=email)
     chosen_password = password or random_password()
     password = chosen_password
     last_failure_reason = ""
@@ -2890,6 +2911,14 @@ def create_account_direct(
             duplicate_swaps,
             MAX_DUPLICATE_SWAPS,
         )
+        _progress(
+            "register_attempt_started",
+            f"开始注册账号: {email}（尝试 {register_attempts + 1}/{MAX_REGISTER_ATTEMPTS}）",
+            email=email,
+            register_attempt=register_attempts + 1,
+            register_attempts_total=MAX_REGISTER_ATTEMPTS,
+            duplicate_swaps=duplicate_swaps,
+        )
         try:
             result = _register_direct_once(
                 mail_client,
@@ -2904,6 +2933,13 @@ def create_account_direct(
                 success = result
         except RegisterBlocked as blocked:
             logger.error("[直接注册] %s 被阻断: %s", email, blocked)
+            _progress(
+                "register_blocked",
+                f"注册被阻断: {email}: {blocked}",
+                email=email,
+                level="warn",
+                register_blocked_reason=str(blocked),
+            )
             if blocked.is_phone:
                 # 用户明确要求：不绕 add-phone，直接放弃本账号
                 _discard_email("phone_block")
@@ -2935,9 +2971,17 @@ def create_account_direct(
                     )
                     return None
                 _discard_email("duplicate")
+                _progress(
+                    "register_duplicate_swap",
+                    f"邮箱重复，切换临时邮箱后重试: {email}",
+                    email=email,
+                    level="warn",
+                    duplicate_swaps=duplicate_swaps,
+                )
                 account_id, email = mail_client.create_temp_email(prefix=_with_random_suffix_prefix(email_prefix), domain=domain)
                 password = chosen_password
                 logger.info("[直接注册] 已换新临时邮箱: %s", email)
+                _progress("register_email_created", f"已换新临时邮箱: {email}", email=email)
                 continue
             # 其他阻断按普通失败处理
             last_failure_reason = str(blocked)
@@ -2967,9 +3011,11 @@ def create_account_direct(
             last_failure_reason = str(out_outcome.get("reason") or last_failure_reason or "")
 
         if success:
+            _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)
             if not check_team_membership:
                 try:
                     logger.info("[注册] 独立注册成功，开始调用 /api/auth/session 保存 auth_session: %s", email)
+                    _progress("register_auth_session_fetch", f"正在保存 auth_session: {email}", email=email)
                     session_auth = _save_auth_from_session_page(
                         email,
                         password,
@@ -2980,6 +3026,7 @@ def create_account_direct(
                     if session_auth:
                         if not post_register_oauth_enabled:
                             logger.info("[注册] auth_session 已保存，注册后 Codex OAuth 已禁用: %s", email)
+                            _progress("register_auth_session_saved", f"auth_session 已保存: {email}", email=email)
                             return session_auth
                         oauth_auth = _run_post_register_session_oauth(
                             email,
@@ -2991,10 +3038,12 @@ def create_account_direct(
                         )
                         if oauth_auth:
                             logger.info("[注册] auth_session 已保存且 Codex OAuth 已完成: %s", email)
+                            _progress("register_auth_session_saved", f"auth_session 已保存且 OAuth 已完成: {email}", email=email)
                             return oauth_auth
                         if out_outcome is not None and out_outcome.get("status") == "phone_blocked":
                             return None
                         logger.info("[注册] auth_session 已保存，复用会话 OAuth 未完成，等待手动补登录: %s", email)
+                        _progress("register_auth_session_saved", f"auth_session 已保存，等待手动补登录: {email}", email=email)
                         return session_auth
                     logger.warning("[注册] /api/auth/session 未生成 auth_session 文件，继续按注册成功收尾: %s", email)
                 except Exception as exc:
@@ -3015,6 +3064,13 @@ def create_account_direct(
                     email,
                     last_failure_reason or "未知错误",
                 )
+            _progress(
+                "register_retry_wait",
+                f"注册未完成，60 秒后重试: {email}",
+                email=email,
+                level="warn",
+                reason=last_failure_reason or "未知错误",
+            )
             time.sleep(60)
 
     if not success:
@@ -3033,15 +3089,24 @@ def create_account_direct(
             duplicate_swaps=duplicate_swaps,
         )
         _record_outcome("register_failed", reason=last_failure_reason or f"注册 {register_attempts} 次均失败")
+        _progress(
+            "register_failed",
+            f"注册失败: {email}: {last_failure_reason or f'连续 {register_attempts} 次注册尝试失败'}",
+            email=email,
+            level="error",
+            reason=last_failure_reason or f"连续 {register_attempts} 次注册尝试失败",
+        )
         return None
 
     add_account(email, password, cloudmail_account_id=account_id)
+    _progress("register_account_recorded", f"账号已写入号池: {email}", email=email)
     if skip_post_register or not check_team_membership:
         if check_team_membership:
             logger.info("[直接注册] 注册完成，按要求跳过后续 OAuth/入池流程: %s", email)
         else:
             logger.info("[直接注册] 注册完成，独立注册不自动执行 Codex OAuth: %s", email)
         _record_outcome("success", email=email, password=password, skipped_post_register=True)
+        _progress("register_finished", f"注册完成: {email}", email=email)
         return {
             "email": email,
             "password": password,

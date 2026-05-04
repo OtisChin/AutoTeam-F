@@ -6,13 +6,12 @@ import logging
 import re
 import time
 import uuid
-from pathlib import Path
 
 from autoteam.chatgpt_api import ChatGPTTeamAPI
+from autoteam.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 SCREENSHOT_DIR = PROJECT_ROOT / "data" / "bind_screenshots"
 
 CARD_NUMBER_SELECTORS = [

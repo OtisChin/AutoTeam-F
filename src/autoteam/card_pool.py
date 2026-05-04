@@ -6,11 +6,10 @@ import json
 import re
 import time
 import uuid
-from pathlib import Path
 
+from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text, write_text
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 CARD_POOL_FILE = PROJECT_ROOT / "data" / "card_pool.json"
 
 POOL_TYPES = {"redeem", "card"}

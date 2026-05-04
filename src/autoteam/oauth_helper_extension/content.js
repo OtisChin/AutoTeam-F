@@ -124,6 +124,8 @@
   }
 
   function fillCode(code) {
+    code = String(code || "").trim();
+    if (!code) return false;
     const selectors = [
       "input[name='code']",
       "input[autocomplete='one-time-code']",
@@ -141,10 +143,38 @@
     const oneChar = inputs.filter((el) => Number(el.maxLength || 0) === 1 || el.getAttribute("aria-label"));
     if (oneChar.length >= code.length && code.length > 1) {
       for (let i = 0; i < code.length; i++) setNativeValue(oneChar[i], code[i]);
+      return oneChar.slice(0, code.length).every((el) => String(el.value || "").trim());
     } else {
       setNativeValue(inputs[0], code);
+      return String(inputs[0].value || "").trim().length > 0;
     }
-    return true;
+  }
+
+  function hasVisibleCodeInput() {
+    return Boolean(queryFirst([
+      "input[name='code']",
+      "input[autocomplete='one-time-code']",
+      "input[inputmode='numeric']",
+      "input[placeholder*='code' i]",
+      "input[placeholder*='验证码']"
+    ]));
+  }
+
+  function codeInputFilled() {
+    const selectors = [
+      "input[name='code']",
+      "input[autocomplete='one-time-code']",
+      "input[inputmode='numeric']",
+      "input[placeholder*='code' i]",
+      "input[placeholder*='验证码']"
+    ];
+    const values = [];
+    for (const selector of selectors) {
+      for (const el of Array.from(document.querySelectorAll(selector))) {
+        if (visible(el) && !el.disabled) values.push(String(el.value || "").trim());
+      }
+    }
+    return values.some(Boolean);
   }
 
   async function tick() {
@@ -209,7 +239,16 @@
 
     if (state.otp && throttle(`otp_${state.otp}`) && fillCode(String(state.otp))) {
       await postEvent(config, { type: "otp_filled" });
-      setTimeout(() => clickAny(["continue", "继续", "verify", "验证"]), 300);
+      setTimeout(() => {
+        if (codeInputFilled()) clickAny(["continue", "继续", "verify", "验证"]);
+      }, 300);
+      return;
+    }
+
+    if (hasVisibleCodeInput() && !codeInputFilled()) {
+      if (throttle("otp_empty_wait")) {
+        await postEvent(config, { type: "otp_empty_wait" });
+      }
       return;
     }
 

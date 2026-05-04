@@ -84,8 +84,8 @@ def test_check_and_setup_non_interactive_reports_missing_required_fields(tmp_pat
 
     assert ok is False
     assert "[配置] 缺少必填项: CLOUDFLARE_TEMP_EMAIL_BASE_URL" in caplog.text
-    assert "[配置] 缺少必填项: CPA_KEY" in caplog.text
-    assert "[配置] 缺少必填项: CPA_URL" in caplog.text
+    assert "[配置] 缺少必填项: CPA_KEY" not in caplog.text
+    assert "[配置] 缺少必填项: CPA_URL" not in caplog.text
     assert "[配置] 缺少必填项: PLAYWRIGHT_PROXY_URL" not in caplog.text
     assert "[配置] 缺少必填项: PLAYWRIGHT_PROXY_BYPASS" not in caplog.text
     assert "[配置] 缺少必填项: API_KEY" in caplog.text

@@ -1,6 +1,7 @@
 """手动添加账号：本地自动接收回调，失败时也支持手动粘贴回调 URL。"""
 
 import logging
+import os
 import secrets
 import threading
 import time
@@ -22,16 +23,20 @@ from autoteam.accounts import (
 )
 from autoteam.codex_auth import (
     CODEX_CALLBACK_PORT,
+    _OAuthHelperServer,
     _build_auth_url,
     _exchange_auth_code,
     _generate_pkce,
     check_codex_quota,
+    login_codex_via_browser,
     quota_result_quota_info,
     quota_result_resets_at,
     save_auth_file,
 )
 
 logger = logging.getLogger(__name__)
+
+MANUAL_ACCOUNT_TIMEOUT_SECONDS = int(os.environ.get("MANUAL_ACCOUNT_OAUTH_TIMEOUT", "900"))
 
 
 SUCCESS_HTML = """<html><head><meta charset="utf-8"><title>Authentication successful</title></head>
@@ -141,13 +146,28 @@ class _OAuthCallbackServer:
 class ManualAccountFlow:
     """参考 CLIProxyAPI：自动接回调，手动粘贴回调 URL 作为兜底。"""
 
-    def __init__(self):
+    def __init__(self, *, email: str = "", password: str = "", auto_open_helper: bool = False):
+        self.email = (email or "").strip().lower()
+        self.password = password or ""
         self.code_verifier, code_challenge = _generate_pkce()
         self.state = secrets.token_urlsafe(16)
-        self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=True)
+        self.direct_auth_url = _build_auth_url(code_challenge, self.state, native_oauth=True)
+        self.auth_url = self.direct_auth_url
         self.started_at = time.time()
         self._lock = threading.Lock()
         self._server = None
+        self._helper_server = None
+        self._helper_thread = None
+        self._auto_open_helper = bool(auto_open_helper)
+        self._auto_thread = None
+        self._mail_client = None
+        self._latest_email_id = 0
+        self._submitted_codes: set[str] = set()
+        self._helper_available = False
+        self._helper_error = ""
+        self._playwright_available = False
+        self._playwright_error = ""
+        self._otp_status = "idle"
         self._callback_payload = None
         self._callback_source = ""
         self._callback_received_at = None
@@ -158,6 +178,202 @@ class ManualAccountFlow:
         self._auto_callback_available = False
         self._auto_callback_error = ""
         self._finalized = False
+
+    def _mark_timed_out_if_needed(self):
+        if self._finalized or self._status != "pending_callback":
+            return None
+        timeout = max(60, MANUAL_ACCOUNT_TIMEOUT_SECONDS)
+        if time.time() - self.started_at < timeout:
+            return None
+
+        self._status = "error"
+        self._error = "OAuth 登录等待超时，未收到回调。请重新生成链接后再登录。"
+        self._message = self._error
+        self._finalized = True
+        server = self._server
+        helper_server = self._helper_server
+        self._server = None
+        self._helper_server = None
+        logger.warning("[手动添加] OAuth 等待回调超时，已释放流程")
+        return [item for item in (server, helper_server) if item]
+
+    def _helper_auth_url(self) -> str:
+        if not self._helper_server:
+            return ""
+        fragment = urllib.parse.urlencode(
+            {
+                "autoteam_token": self._helper_server.token,
+                "autoteam_port": str(self._helper_server.port),
+                "autoteam_auth": self.direct_auth_url,
+            }
+        )
+        return f"https://auth.openai.com/#{fragment}"
+
+    def _prime_latest_email_id(self):
+        if not self._mail_client or not self.email:
+            return
+        try:
+            emails = self._mail_client.search_emails_by_recipient(self.email, size=1)
+            if emails:
+                self._latest_email_id = int(emails[0].get("emailId") or 0)
+        except Exception as exc:
+            logger.warning("[手动添加] 初始化验证码邮件快照失败: %s", exc)
+            self._latest_email_id = 0
+
+    def _poll_email_otp_once(self):
+        if not self._mail_client or not self.email:
+            return "", 0
+        try:
+            emails = self._mail_client.search_emails_by_recipient(self.email, size=10)
+        except Exception as exc:
+            logger.warning("[手动添加] 查询验证码失败: %s", exc)
+            return "", 0
+
+        for item in emails:
+            try:
+                email_id = int(item.get("emailId") or 0)
+            except Exception:
+                email_id = 0
+            code = self._mail_client.extract_verification_code(item)
+            if code:
+                return str(code), email_id
+        return "", 0
+
+    def _helper_worker(self):
+        while True:
+            with self._lock:
+                done = self._finalized or self._status != "pending_callback"
+            if done:
+                return
+            server = self._helper_server
+            if not server:
+                return
+
+            if server.phone_required_url:
+                with self._lock:
+                    self._status = "error"
+                    self._error = f"OAuth 需要手机号验证: {server.phone_required_url}"
+                    self._message = self._error
+                    self._finalized = True
+                return
+
+            if server.auth_code:
+                callback_url = server.callback_url or (
+                    f"http://localhost:{CODEX_CALLBACK_PORT}/auth/callback?code={urllib.parse.quote(server.auth_code)}"
+                    f"&state={urllib.parse.quote(self.state)}"
+                )
+                try:
+                    self.record_callback(callback_url, source="auto")
+                    self.maybe_finalize()
+                except Exception as exc:
+                    with self._lock:
+                        self._status = "error"
+                        self._error = str(exc)
+                        self._message = str(exc)
+                        self._finalized = True
+                return
+
+            code, email_id = self._poll_email_otp_once()
+            if code:
+                server.otp = code
+                self._submitted_codes.add(code)
+                self._latest_email_id = max(self._latest_email_id, email_id)
+                with self._lock:
+                    self._otp_status = "filled"
+                    self._message = "已从邮箱服务获取验证码，正在等待浏览器回填并完成 OAuth..."
+                logger.info("[手动添加] 已获取邮箱验证码: %s", code)
+                time.sleep(4)
+                continue
+
+            with self._lock:
+                if self._otp_status == "idle":
+                    self._otp_status = "waiting"
+            time.sleep(3)
+
+    def _start_helper_if_possible(self):
+        if not self.email:
+            return
+        try:
+            from autoteam.mail import TemporaryEmailClient
+
+            self._mail_client = TemporaryEmailClient()
+            self._mail_client.login()
+            self._prime_latest_email_id()
+
+            self._helper_server = _OAuthHelperServer(
+                email=self.email,
+                password=self.password,
+                token=secrets.token_urlsafe(18),
+            ).start()
+            self.auth_url = self._helper_auth_url() or self.direct_auth_url
+            self._helper_available = True
+            self._helper_thread = threading.Thread(target=self._helper_worker, daemon=True)
+            self._helper_thread.start()
+            logger.info("[手动添加] 自动取码 helper 已启动: %s", self.email)
+        except Exception as exc:
+            self._helper_available = False
+            self._helper_error = str(exc)
+            self.auth_url = self.direct_auth_url
+            logger.warning("[手动添加] 自动取码 helper 启动失败: %s", exc)
+
+    def _run_playwright_oauth(self):
+        try:
+            from autoteam.mail import TemporaryEmailClient
+            from autoteam.accounts import find_account, load_accounts
+
+            mail_client = TemporaryEmailClient()
+            mail_client.login()
+            with self._lock:
+                if self._finalized:
+                    return
+                self._otp_status = "waiting"
+                self._message = "Playwright OAuth 已启动，正在等待邮箱验证码..."
+
+            bundle = login_codex_via_browser(
+                self.email,
+                self.password,
+                mail_client=mail_client,
+                use_personal=True,
+                native_oauth=True,
+                headless=False,
+                mail_account_id=(find_account(load_accounts(), self.email) or {}).get("cloudmail_account_id"),
+            )
+            if not bundle:
+                raise RuntimeError("Playwright OAuth 未返回 token bundle")
+
+            result = self._finalize_account(bundle)
+            with self._lock:
+                self._status = "completed"
+                self._message = result["message"]
+                self._account = result["account"]
+                self._error = ""
+                self._otp_status = "completed"
+                self._finalized = True
+            logger.info("[手动添加] Playwright OAuth 完成: %s", result["account"]["email"])
+        except Exception as exc:
+            with self._lock:
+                if self._finalized:
+                    return
+                self._status = "error"
+                self._error = str(exc)
+                self._message = str(exc)
+                self._playwright_error = str(exc)
+                self._finalized = True
+            logger.error("[手动添加] Playwright OAuth 失败: %s", exc)
+        finally:
+            if self._server:
+                self._server.stop()
+                self._server = None
+            if self._helper_server:
+                self._helper_server.stop()
+                self._helper_server = None
+
+    def _start_playwright_oauth_if_possible(self):
+        if not self.email:
+            return
+        self._playwright_available = True
+        self._auto_thread = threading.Thread(target=self._run_playwright_oauth, daemon=True)
+        self._auto_thread.start()
 
     def start(self):
         try:
@@ -173,6 +389,10 @@ class ManualAccountFlow:
             self._message = f"本地自动回调服务启动失败（{exc}），请改用手动粘贴回调 URL。"
             logger.warning("[手动添加] 本地回调服务启动失败: %s", exc)
 
+        if self.email:
+            self._start_playwright_oauth_if_possible()
+            self._message = "已启动 Playwright OAuth；系统会从邮箱服务读取验证码并自动填写。"
+
         logger.info("[手动添加] 已生成 OAuth 链接")
         return self.status()
 
@@ -182,6 +402,8 @@ class ManualAccountFlow:
             raise ValueError("OAuth state 不匹配")
 
         with self._lock:
+            if self._finalized:
+                raise ValueError("OAuth 流程已结束，请重新生成链接")
             self._callback_payload = parsed
             self._callback_source = source
             self._callback_received_at = time.time()
@@ -226,6 +448,9 @@ class ManualAccountFlow:
             if self._server:
                 self._server.stop()
                 self._server = None
+            if self._helper_server:
+                self._helper_server.stop()
+                self._helper_server = None
 
     def _finalize_account(self, bundle):
         email = (bundle.get("email") or "").lower()
@@ -291,12 +516,16 @@ class ManualAccountFlow:
 
     def status(self):
         self.maybe_finalize()
+        servers_to_stop = []
         with self._lock:
-            return {
+            servers_to_stop = self._mark_timed_out_if_needed() or []
+            status = {
                 "in_progress": self._status == "pending_callback",
                 "status": self._status,
                 "state": self.state,
                 "auth_url": self.auth_url,
+                "direct_auth_url": self.direct_auth_url,
+                "email": self.email,
                 "started_at": self.started_at,
                 "message": self._message,
                 "error": self._error,
@@ -305,9 +534,20 @@ class ManualAccountFlow:
                 "callback_source": self._callback_source,
                 "auto_callback_available": self._auto_callback_available,
                 "auto_callback_error": self._auto_callback_error,
+                "helper_available": self._helper_available,
+                "helper_error": self._helper_error,
+                "playwright_available": self._playwright_available,
+                "playwright_error": self._playwright_error,
+                "otp_status": self._otp_status,
             }
+        for server_to_stop in servers_to_stop:
+            server_to_stop.stop()
+        return status
 
     def stop(self):
         if self._server:
             self._server.stop()
             self._server = None
+        if self._helper_server:
+            self._helper_server.stop()
+            self._helper_server = None

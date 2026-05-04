@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
+from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text, write_text
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 AUTH_SESSION_DIR = PROJECT_ROOT / "data" / "auth_session"
 
 

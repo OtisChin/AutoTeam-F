@@ -1,13 +1,10 @@
 """配置文件 - 从 .env 文件或环境变量加载"""
 
 import os
-from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
+from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import parse_env_line, parse_env_value, read_text
-
-# 项目根目录（pyproject.toml 所在位置）
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # 加载 .env 文件（从项目根目录）
 _env_file = PROJECT_ROOT / ".env"

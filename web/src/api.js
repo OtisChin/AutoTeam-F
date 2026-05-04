@@ -84,7 +84,7 @@ export const api = {
   submitMainCodexPassword: (password) => request('POST', '/main-codex/password', { password }),
   submitMainCodexCode: (code) => request('POST', '/main-codex/code', { code }),
   cancelMainCodexSync: () => request('POST', '/main-codex/cancel'),
-  startManualAccount: () => request('POST', '/manual-account/start'),
+  startManualAccount: (email = '') => request('POST', '/manual-account/start', { email }),
   submitManualAccountCallback: (redirectUrl) => request('POST', '/manual-account/callback', { redirect_url: redirectUrl }),
   cancelManualAccount: () => request('POST', '/manual-account/cancel'),
 

@@ -111,7 +111,7 @@ def test_sanitize_account_marks_codex_auth_file_as_logged_in(tmp_path, monkeypat
     assert sanitized["needs_codex_login"] is False
 
 
-def test_post_setup_save_keeps_cpa_url_required_and_generates_api_key(monkeypatch):
+def test_post_setup_save_keeps_cpa_optional_and_generates_api_key(monkeypatch):
     written = {}
 
     def fake_write_env(key, value):
@@ -147,7 +147,8 @@ def test_post_setup_save_keeps_cpa_url_required_and_generates_api_key(monkeypatc
     assert written["MAIL_PROVIDER"] == "cloudflare_temp_email"
     assert written["CLOUDFLARE_TEMP_EMAIL_BASE_URL"] == "http://mail.example.com"
     assert written["CLOUDMAIL_BASE_URL"] == "http://mail.example.com"
-    assert written["CPA_URL"] == "http://127.0.0.1:8317"
+    assert written["CPA_URL"] == ""
+    assert written["CPA_KEY"] == "key-1"
     assert written["API_KEY"] == "generated-token"
     assert result["api_key"] == "generated-token"
     assert api.API_KEY == "generated-token"

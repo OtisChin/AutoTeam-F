@@ -28,8 +28,8 @@ MAIL_PROVIDER_OPTIONS = [
 ]
 
 COMMON_SETUP_FIELDS = [
-    ("CPA_URL", "CPA (CLIProxyAPI) 地址", "http://127.0.0.1:8317", False),
-    ("CPA_KEY", "CPA 管理密钥", "", False),
+    ("CPA_URL", "CPA (CLIProxyAPI) 地址（可选）", "", True),
+    ("CPA_KEY", "CPA 管理密钥（可选）", "", True),
     ("PLAYWRIGHT_PROXY_URL", "Playwright 浏览器代理 URL（可选，如 socks5://host:port）", "", True),
     ("PLAYWRIGHT_PROXY_BYPASS", "Playwright 代理绕过列表（可选，如 localhost,127.0.0.1）", "", True),
     ("PLAYWRIGHT_BACKGROUND", "Playwright 后台运行（1=最小化/屏幕外，0=显示窗口）", "1", True),
@@ -96,6 +96,10 @@ def _is_interactive() -> bool:
         return sys.stdin.isatty()
     except Exception:
         return False
+
+
+def _verify_cpa_enabled() -> bool:
+    return os.environ.get("AUTOTEAM_VERIFY_CPA", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def get_mail_provider(raw: str | None = None) -> str:
@@ -392,6 +396,9 @@ def _verify_cpa():
 
     if not cpa_url or not cpa_key:
         return True  # 没配就跳过
+    if not _verify_cpa_enabled():
+        logger.info("[验证] CPA 连通性检测已关闭（设置 AUTOTEAM_VERIFY_CPA=1 可开启）")
+        return True
 
     logger.info("[验证] CPA 配置...")
 

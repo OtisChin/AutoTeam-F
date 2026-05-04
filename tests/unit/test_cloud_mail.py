@@ -12,10 +12,14 @@ from autoteam.mail import cloud_mail as mod
 
 
 def _make_client(monkeypatch):
+    mod.CloudMailProviderClient._SHARED_TOKENS.clear()
     monkeypatch.setenv("CLOUD_MAIL_API_URL", "http://example.com")
     monkeypatch.setenv("CLOUD_MAIL_ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("CLOUD_MAIL_ADMIN_PASSWORD", "secret")
     client = mod.CloudMailProviderClient()
+    client.base_url = "http://example.com"
+    client.username = "admin@example.com"
+    client.password = "secret"
     client.token = "fake.jwt.token"  # 跳过 _ensure_login
     return client
 
@@ -96,7 +100,7 @@ def test_search_emails_by_recipient_filters_by_to_email(monkeypatch):
     monkeypatch.setattr(client, "_resolve_account_id", lambda v: 43)
     monkeypatch.setattr(client, "_resolve_account_email", lambda v: "tmp-user@example.com")
 
-    def fake_list(account_id, size=10):
+    def fake_list(account_id, size=10, account_email_hint=None):
         return [
             {
                 "emailId": 1,
@@ -120,6 +124,32 @@ def test_search_emails_by_recipient_filters_by_to_email(monkeypatch):
 
     out = client.search_emails_by_recipient("tmp-user@example.com", size=10)
     assert [e["emailId"] for e in out] == [1]
+
+
+def test_search_emails_by_recipient_falls_back_to_latest_when_list_empty(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    monkeypatch.setattr(client, "_resolve_account_id", lambda v: 43)
+    monkeypatch.setattr(client, "_resolve_account_email", lambda v: "tmp-user@example.com")
+    monkeypatch.setattr(client, "list_emails", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        client,
+        "get_latest_emails",
+        lambda account_id, email_id=0, all_receive=0: [
+            {
+                "emailId": 9,
+                "accountId": account_id,
+                "toEmail": "tmp-user@example.com",
+                "subject": "你的 OpenAI 代码为 626612",
+                "text": "",
+                "content": "",
+            }
+        ],
+    )
+
+    out = client.search_emails_by_recipient("tmp-user@example.com", size=10)
+
+    assert [e["emailId"] for e in out] == [9]
 
 
 def test_create_temp_email_builds_full_email_address(monkeypatch):
@@ -162,6 +192,9 @@ def test_login_requires_url_and_credentials(monkeypatch):
     monkeypatch.delenv("CLOUD_MAIL_ADMIN_EMAIL", raising=False)
     monkeypatch.delenv("CLOUD_MAIL_ADMIN_PASSWORD", raising=False)
     client = mod.CloudMailProviderClient()
+    client.base_url = ""
+    client.username = ""
+    client.password = ""
 
     with pytest.raises(Exception, match="CLOUD_MAIL_API_URL"):
         client.login()
@@ -186,10 +219,121 @@ def test_login_posts_credentials_and_stores_token(monkeypatch):
     assert captured["body"] == {"email": "admin@example.com", "password": "secret"}
 
 
+def test_login_reuses_shared_token_for_parallel_clients(monkeypatch):
+    client1 = _make_client(monkeypatch)
+    client1.token = None
+    client2 = _make_client(monkeypatch)
+    client2.token = None
+    calls = {"login": 0}
+
+    def fake_post(path, body=None):
+        calls["login"] += 1
+        return {"code": 200, "data": {"token": "shared-jwt"}}
+
+    def unexpected_post(path, body=None):
+        raise AssertionError("second client should reuse cached cloud-mail token")
+
+    monkeypatch.setattr(client1, "_post", fake_post)
+    monkeypatch.setattr(client2, "_post", unexpected_post)
+
+    assert client1.login() == "shared-jwt"
+    assert client2.login() == "shared-jwt"
+    assert client2.token == "shared-jwt"
+    assert calls["login"] == 1
+
+
+def test_auth_invalid_response_relogs_and_retries_once(monkeypatch):
+    client = _make_client(monkeypatch)
+    client.token = "old-token"
+    monkeypatch.setattr(client, "_resolve_account_id", lambda v: 7)
+    monkeypatch.setattr(client, "_resolve_account_email", lambda v: "x@example.com")
+    seen_auth: list[str | None] = []
+
+    class FakeResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+            self.text = str(payload)
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        seen_auth.append((headers or {}).get("Authorization"))
+        if len(seen_auth) == 1:
+            return FakeResponse({"code": 401, "message": "身份认证失效,请重新登录"})
+        return FakeResponse(
+            {
+                "code": 200,
+                "data": {
+                    "list": [
+                        {
+                            "emailId": 8,
+                            "accountId": 7,
+                            "toEmail": "x@example.com",
+                            "subject": "你的 OpenAI 代码为 626612",
+                            "text": "",
+                            "content": "",
+                        }
+                    ]
+                },
+            }
+        )
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        assert url.endswith("/login")
+        return FakeResponse({"code": 200, "data": {"token": "new-token"}})
+
+    monkeypatch.setattr(client.session, "get", fake_get)
+    monkeypatch.setattr(client.session, "post", fake_post)
+
+    out = client.list_emails(7, size=10)
+
+    assert [email["emailId"] for email in out] == [8]
+    assert seen_auth == ["old-token", "new-token"]
+
+
 def test_extract_verification_code_inherits_from_base(monkeypatch):
     client = _make_client(monkeypatch)
     code = client.extract_verification_code({"text": "Your ChatGPT code is 314159", "content": ""})
     assert code == "314159"
+
+
+def test_extract_verification_code_reads_subject_when_body_missing(monkeypatch):
+    client = _make_client(monkeypatch)
+    code = client.extract_verification_code(
+        {
+            "subject": "123456 is your OpenAI verification code",
+            "text": "",
+            "content": "",
+        }
+    )
+    assert code == "123456"
+
+
+def test_extract_verification_code_reads_chinese_openai_subject(monkeypatch):
+    client = _make_client(monkeypatch)
+    code = client.extract_verification_code(
+        {
+            "subject": "你的 OpenAI 代码为 626612",
+            "text": "",
+            "content": "",
+        }
+    )
+    assert code == "626612"
+
+
+def test_extract_verification_code_reads_raw_message_fields(monkeypatch):
+    client = _make_client(monkeypatch)
+    code = client.extract_verification_code(
+        {
+            "subject": "",
+            "text": "",
+            "content": "",
+            "raw": {"message": "<div>Your temporary OpenAI login code is <b>456789</b></div>"},
+        }
+    )
+    assert code == "456789"
 
 
 def test_list_emails_passes_type_zero_to_avoid_empty_response(monkeypatch):
@@ -282,3 +426,20 @@ def test_list_accounts_omits_phantom_mailcount_sendcount_fields(monkeypatch):
     assert out[0]["name"] == "alice"
     assert out[0]["status"] == 0
     assert out[0]["latestEmailTime"] == 1777111200  # 2026-04-25 10:00:00 UTC
+
+
+def test_resolve_account_id_scans_all_accounts(monkeypatch):
+    client = _make_client(monkeypatch)
+    accounts = [{"accountId": i, "email": f"u{i}@e.com"} for i in range(1, 558)]
+    accounts.append({"accountId": 956, "email": "target@example.com"})
+    calls = []
+
+    def fake_list_accounts(size=200):
+        calls.append(size)
+        return accounts
+
+    monkeypatch.setattr(client, "list_accounts", fake_list_accounts)
+
+    assert client._resolve_account_id("target@example.com") == 956
+    assert client._resolve_account_id("target@example.com") == 956
+    assert calls == [0]

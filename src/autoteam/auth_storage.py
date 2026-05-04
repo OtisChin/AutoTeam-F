@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+from autoteam.paths import PROJECT_ROOT
+
 AUTH_DIR = PROJECT_ROOT / "data" / "auths"
 
 # Docker bind mount 下文件常由容器用户写入；给宿主机用户保留可读写权限。

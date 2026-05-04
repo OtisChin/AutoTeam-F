@@ -39,7 +39,9 @@
           ? '管理员登录中...'
           : busyTask.command === 'main-codex-sync'
             ? '主号 Codex 同步中...'
-            : `${busyTask.command} 执行中...` }}
+            : busyTask.command === 'manual-account'
+              ? 'OAuth 登录中...'
+              : `${busyTask.command} 执行中...` }}
       </div>
 
       <!-- 页面内容 -->
@@ -51,7 +53,7 @@
         :running-task="busyTask" :admin-status="adminStatus"
         @task-started="onTaskStarted" @refresh="refresh" />
 
-      <BindCard v-else-if="currentPage === 'bindcard'" />
+      <BindCard v-else-if="currentPage === 'bindcard'" @refresh="refresh" />
 
       <TeamMembers v-else-if="currentPage === 'team'" />
 
@@ -104,6 +106,9 @@ const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autoteam_current_page'
+const IDLE_POLL_INTERVAL_MS = 600000
+const ACTIVE_POLL_INTERVAL_MS = 10000
+const IDLE_POLLING_ENABLED = false
 const currentPage = ref(localStorage.getItem(CURRENT_PAGE_KEY) || 'dashboard')
 
 const status = ref(null)
@@ -120,6 +125,9 @@ const busyTask = computed(() => {
   }
   if (codexStatus.value?.in_progress) {
     return { command: 'main-codex-sync' }
+  }
+  if (manualAccountStatus.value?.in_progress) {
+    return { command: 'manual-account' }
   }
   return runningTask.value
 })
@@ -235,7 +243,7 @@ async function doLogin() {
     } else {
       inputKey.value = ''
       refresh()
-      startPolling(600000)
+      startPolling(IDLE_POLL_INTERVAL_MS)
     }
   } catch (e) {
     clearApiKey()
@@ -287,21 +295,24 @@ async function refresh() {
 }
 
 function onTaskStarted() {
-  startPolling(10000)
+  startPolling(ACTIVE_POLL_INTERVAL_MS)
   refresh()
 }
 
 function onAdminProgress() {
-  startPolling(10000)
+  startPolling(ACTIVE_POLL_INTERVAL_MS)
   refresh()
 }
 
-function startPolling(interval = 600000) {
+function startPolling(interval = IDLE_POLL_INTERVAL_MS) {
   stopPolling()
+  if (interval >= IDLE_POLL_INTERVAL_MS && !IDLE_POLLING_ENABLED && !busyTask.value) {
+    return
+  }
   pollTimer = setInterval(async () => {
     await refresh()
-    if (!busyTask.value && interval < 600000) {
-      startPolling(600000)
+    if (!busyTask.value && interval < IDLE_POLL_INTERVAL_MS) {
+      startPolling(IDLE_POLL_INTERVAL_MS)
     }
   }, interval)
 }
@@ -327,7 +338,7 @@ function onSetupDone() {
   checkAuth().then(ok => {
     if (ok) {
       refresh()
-      startPolling(600000)
+      startPolling(IDLE_POLL_INTERVAL_MS)
     }
   })
 }
@@ -341,7 +352,7 @@ onMounted(async () => {
   const ok = await checkAuth()
   if (ok) {
     refresh()
-    startPolling(600000)
+    startPolling(IDLE_POLL_INTERVAL_MS)
   }
 })
 

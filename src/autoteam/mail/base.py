@@ -231,16 +231,31 @@ class MailProvider(ABC):
 
     # ---- OTP / 邀请链接（共用实现，纯文本） ----
     def extract_verification_code(self, email_data: dict) -> str | None:
-        """从邮件正文中提取 6 位验证码。"""
+        """从邮件标题/正文中提取 6 位验证码。"""
         sources: list[str] = []
 
-        plain_text = str(email_data.get("text") or "").strip()
-        if plain_text:
-            sources.append(plain_text)
+        def add_source(value: Any, *, html: bool = False):
+            if html:
+                text = html_to_visible_text(value)
+            else:
+                text = str(value or "").strip()
+            if text and text not in sources:
+                sources.append(text)
 
-        html_text = html_to_visible_text(email_data.get("content"))
-        if html_text and html_text not in sources:
-            sources.append(html_text)
+        # OpenAI 登录验证码经常直接出现在 subject；部分邮件列表接口首轮只返回标题/摘要。
+        add_source(email_data.get("subject"))
+        add_source(email_data.get("text"))
+        for key in ("content", "message", "html", "body"):
+            add_source(email_data.get(key), html=True)
+
+        raw = email_data.get("raw")
+        if isinstance(raw, dict):
+            add_source(raw.get("subject"))
+            add_source(raw.get("text"))
+            for key in ("content", "message", "html", "body", "snippet", "summary"):
+                add_source(raw.get(key), html=key in {"content", "message", "html", "body"})
+        elif isinstance(raw, str):
+            add_source(raw)
 
         for source in sources:
             for pattern in _VERIFICATION_CODE_PATTERNS:

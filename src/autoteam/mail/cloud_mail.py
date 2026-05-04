@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -79,6 +80,8 @@ class CloudMailProviderClient(MailProvider):
     """cloud-mail 后端客户端。"""
 
     provider_name = "cloud-mail"
+    _TOKEN_LOCK = threading.Lock()
+    _SHARED_TOKENS: dict[tuple[str, str], str] = {}
 
     def __init__(self):
         self.base_url = (CLOUD_MAIL_API_URL or "").rstrip("/")
@@ -86,6 +89,8 @@ class CloudMailProviderClient(MailProvider):
         self.password = CLOUD_MAIL_ADMIN_PASSWORD or ""
         self.session = requests.Session()
         self.token: str | None = None
+        self._account_id_by_email: dict[str, int] = {}
+        self._account_email_by_id: dict[str, str] = {}
 
     # ------------------------------------------------------------------ http
 
@@ -102,21 +107,57 @@ class CloudMailProviderClient(MailProvider):
             headers["Authorization"] = self.token
         return headers
 
+    def _token_cache_key(self) -> tuple[str, str]:
+        return self.base_url, self.username
+
     def _get(self, path: str, params: dict | None = None) -> dict:
-        r = self.session.get(self._url(path), headers=self._headers(), params=params, timeout=30)
-        return self._parse_response(r, path)
+        return self._request_with_auth_retry("get", path, params=params)
 
     def _post(self, path: str, body: dict | None = None) -> dict:
-        r = self.session.post(self._url(path), headers=self._headers(), json=body, timeout=30)
-        return self._parse_response(r, path)
+        return self._request_with_auth_retry("post", path, body=body)
 
     def _delete(self, path: str, params: dict | None = None) -> dict:
-        r = self.session.delete(self._url(path), headers=self._headers(), params=params, timeout=30)
-        return self._parse_response(r, path)
+        return self._request_with_auth_retry("delete", path, params=params)
 
     def _put(self, path: str, body: dict | None = None) -> dict:
-        r = self.session.put(self._url(path), headers=self._headers(), json=body, timeout=30)
-        return self._parse_response(r, path)
+        return self._request_with_auth_retry("put", path, body=body)
+
+    def _request_with_auth_retry(
+        self,
+        method: str,
+        path: str,
+        params: dict | None = None,
+        body: dict | None = None,
+    ) -> dict:
+        request = getattr(self.session, method)
+        kwargs = {"headers": self._headers(), "timeout": 30}
+        if params is not None:
+            kwargs["params"] = params
+        if body is not None:
+            kwargs["json"] = body
+
+        r = request(self._url(path), **kwargs)
+        if path != "/login" and r.status_code == 401:
+            logger.warning("[cloud-mail] %s HTTP 401, 重新登录后重试一次", path)
+            self.login(force=True)
+            kwargs["headers"] = self._headers()
+            r = request(self._url(path), **kwargs)
+
+        resp = self._parse_response(r, path)
+        if path != "/login" and self._looks_like_auth_invalid(resp):
+            logger.warning("[cloud-mail] %s token 已失效, 重新登录后重试一次", path)
+            self.login(force=True)
+            kwargs["headers"] = self._headers()
+            r = request(self._url(path), **kwargs)
+            resp = self._parse_response(r, path)
+        return resp
+
+    @staticmethod
+    def _looks_like_auth_invalid(resp: dict) -> bool:
+        if not isinstance(resp, dict):
+            return False
+        message = str(resp.get("message") or resp.get("msg") or "").lower()
+        return str(resp.get("code")) == "401" or "身份认证失效" in message or ("token" in message and "invalid" in message)
 
     @staticmethod
     def _parse_response(r: requests.Response, path: str) -> dict:
@@ -136,28 +177,36 @@ class CloudMailProviderClient(MailProvider):
 
     # ------------------------------------------------------------------ auth
 
-    def login(self) -> str:
+    def login(self, *, force: bool = False) -> str:
         """POST /login,获得 JWT token。"""
         if not self.base_url:
             raise Exception("cloud-mail 登录失败: 未配置 CLOUD_MAIL_API_URL")
         if not self.username or not self.password:
             raise Exception("cloud-mail 登录失败: 未配置 CLOUD_MAIL_ADMIN_EMAIL / CLOUD_MAIL_ADMIN_PASSWORD")
 
-        # TODO(cloud-mail-verify): 部分部署启用了 Turnstile,登录可能要求 token 字段。
-        # 目前按"无 captcha"的最常见情况实现;若启用 captcha,login() 会以 code!=200 失败,
-        # 此时需要在 .env 里设置 MAILLAB_TURNSTILE_TOKEN(暂未实现)。
-        body = {"email": self.username, "password": self.password}
-        resp = self._post("/login", body)
-        if resp.get("code") != 200:
-            raise Exception(f"cloud-mail 登录失败: {resp.get('message') or resp}")
+        cache_key = self._token_cache_key()
+        with self._TOKEN_LOCK:
+            cached = self._SHARED_TOKENS.get(cache_key)
+            if cached and not force:
+                self.token = cached
+                return cached
 
-        data = resp.get("data") or {}
-        token = data.get("token")
-        if not token:
-            raise Exception(f"cloud-mail 登录响应缺少 token 字段: {data}")
-        self.token = token
-        logger.info("[cloud-mail] 登录成功 (token=%s...)", str(token)[:10])
-        return token
+            # TODO(cloud-mail-verify): 部分部署启用了 Turnstile,登录可能要求 token 字段。
+            # 目前按"无 captcha"的最常见情况实现;若启用 captcha,login() 会以 code!=200 失败,
+            # 此时需要在 .env 里设置 MAILLAB_TURNSTILE_TOKEN(暂未实现)。
+            body = {"email": self.username, "password": self.password}
+            resp = self._post("/login", body)
+            if resp.get("code") != 200:
+                raise Exception(f"cloud-mail 登录失败: {resp.get('message') or resp}")
+
+            data = resp.get("data") or {}
+            token = data.get("token")
+            if not token:
+                raise Exception(f"cloud-mail 登录响应缺少 token 字段: {data}")
+            self.token = token
+            self._SHARED_TOKENS[cache_key] = token
+            logger.info("[cloud-mail] 登录成功 (token=%s...)", str(token)[:10])
+            return token
 
     def _ensure_login(self):
         if not self.token:
@@ -270,6 +319,10 @@ class CloudMailProviderClient(MailProvider):
                         "raw": row,
                     }
                 )
+                email = normalize_email_addr(row.get("email"))
+                if email:
+                    self._account_id_by_email[email] = aid
+                    self._account_email_by_id[str(aid)] = email
                 if target and len(out) >= target:
                     return out
             if new_in_page == 0:
@@ -309,10 +362,17 @@ class CloudMailProviderClient(MailProvider):
         email_str = normalize_email_addr(value)
         if "@" not in email_str:
             return None
+        cached = self._account_id_by_email.get(email_str)
+        if cached:
+            return cached
 
-        for row in self.list_accounts(size=500):
+        for row in self.list_accounts(size=0):
             if normalize_email_addr(row.get("email")) == email_str:
-                return row.get("accountId")
+                account_id = row.get("accountId")
+                if account_id:
+                    self._account_id_by_email[email_str] = account_id
+                    self._account_email_by_id[str(account_id)] = email_str
+                return account_id
         return None
 
     def _resolve_account_email(self, account_id):
@@ -323,8 +383,16 @@ class CloudMailProviderClient(MailProvider):
         except (TypeError, ValueError):
             return str(account_id) if "@" in str(account_id) else None
 
-        for row in self.list_accounts(size=500):
+        cached = self._account_email_by_id.get(str(account_id))
+        if cached:
+            return cached
+
+        for row in self.list_accounts(size=0):
             if str(row.get("accountId")) == str(account_id):
+                email = normalize_email_addr(row.get("email"))
+                if email:
+                    self._account_email_by_id[str(account_id)] = email
+                    self._account_id_by_email[email] = row.get("accountId")
                 return row.get("email")
         return None
 
@@ -368,7 +436,7 @@ class CloudMailProviderClient(MailProvider):
             "raw": row,
         }
 
-    def list_emails(self, account_id, size: int = 10):
+    def list_emails(self, account_id, size: int = 10, account_email_hint: str | None = None):
         """GET /email/list?accountId=N&type=0&size=10。
 
         响应:`{code:200, data:{list:[...], total, latestEmail}}`
@@ -394,10 +462,16 @@ class CloudMailProviderClient(MailProvider):
             },
         )
         if resp.get("code") != 200:
+            logger.warning(
+                "[cloud-mail] /email/list 返回非 200: accountId=%s code=%s message=%s",
+                real_id,
+                resp.get("code"),
+                resp.get("message") or resp,
+            )
             return []
         data = resp.get("data") or {}
         rows = data.get("list") or []
-        hint = self._resolve_account_email(real_id)
+        hint = normalize_email_addr(account_email_hint) if account_email_hint else self._resolve_account_email(real_id)
         return [self._normalize_mail_record(row, account_email_hint=hint) for row in rows]
 
     def get_latest_emails(self, account_id, email_id: int = 0, all_receive: int = 0):
@@ -411,6 +485,12 @@ class CloudMailProviderClient(MailProvider):
             params={"accountId": real_id, "emailId": email_id, "allReceive": all_receive},
         )
         if resp.get("code") != 200:
+            logger.warning(
+                "[cloud-mail] /email/latest 返回非 200: accountId=%s code=%s message=%s",
+                real_id,
+                resp.get("code"),
+                resp.get("message") or resp,
+            )
             return []
         rows = resp.get("data") or []
         hint = self._resolve_account_email(real_id)
@@ -424,7 +504,9 @@ class CloudMailProviderClient(MailProvider):
         real_id = account_id if account_id is not None else self._resolve_account_id(target)
         if not real_id:
             return []
-        results = self.list_emails(real_id, size=size)
+        results = self.list_emails(real_id, size=size, account_email_hint=target)
+        if not results:
+            results = self.get_latest_emails(real_id, email_id=0, all_receive=0)
         # cloud-mail 列表已按 accountId 过滤,这里再做一次 toEmail 严格匹配兜底。
         out = []
         for em in results:

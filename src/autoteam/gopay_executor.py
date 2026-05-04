@@ -10,21 +10,20 @@ import random
 import re
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 import requests
 from urllib3.exceptions import InsecureRequestWarning
 
-from autoteam.auth_session_store import list_auth_session_emails, load_auth_session
+from autoteam.auth_session_store import load_auth_session
 from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.config import normalize_proxy_url
+from autoteam.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 SCREENSHOT_DIR = PROJECT_ROOT / "data" / "bind_screenshots"
 
 SUCCESS_HINTS = (
@@ -410,6 +409,7 @@ def _gopay_progress_level(stage: str) -> str:
         "sms_otp_resend_failed",
         "otp_invalid",
         "gopay_payment_process_failed_rotate",
+        "gopay_account_failed_rotate",
     }:
         return "warn"
     if stage in {"completed", "payment_completed", "billing_info_filled", "gopay_selected", "otp_received"}:
@@ -420,6 +420,7 @@ def _gopay_progress_level(stage: str) -> str:
         "gopay_all_accounts_rejected",
         "gopay_all_payment_process_failed",
         "gopay_all_nonzero_amount_blocked",
+        "gopay_all_accounts_failed",
     }:
         return "error"
     return "info"
@@ -470,6 +471,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "gopay_payment_confirm": "正在确认 GoPay 扣款",
         "gopay_payment_process": "正在提交 GoPay 扣款 PIN",
         "gopay_payment_process_failed_rotate": "GoPay 钱包扣款授权失败，切换下一个账号",
+        "gopay_account_failed_rotate": "当前账号 GoPay 任务失败，切换下一个账号",
         "gopay_nonzero_amount_blocked_rotate": "账单金额非 0，切换下一个账号",
         "payment_completed": "GoPay 支付已提交，正在回查 ChatGPT 状态",
         "chatgpt_verify": "正在回查 ChatGPT 支付结果",
@@ -481,6 +483,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "chatgpt_approve_blocked_rotate": "ChatGPT approve 被拦截，切换下一个账号",
         "gopay_all_accounts_blocked": "所有候选账号的 approve 都被拦截",
         "gopay_all_accounts_rejected": "所有候选账号的付款均未获批准",
+        "gopay_all_accounts_failed": "所有候选账号的 GoPay 任务均失败",
     }
     if stage == "billing_info_ready":
         billing = payload.get("billing_info") if isinstance(payload.get("billing_info"), dict) else {}
@@ -611,6 +614,35 @@ def _is_gopay_nonzero_amount_blocked_result(result: dict | None) -> bool:
         "stripe_charge_guard",
         "midtrans_charge_guard",
     }
+
+
+def _is_gopay_already_linked_result(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "success":
+        return False
+    message = str(result.get("message") or "").lower()
+    return (
+        str(result.get("failure_stage") or "") == "midtrans_linking"
+        and (
+            "already linked" in message
+            or "已绑定其他账号" in message
+            or "绑定其他账号" in message
+        )
+    )
+
+
+def _is_chatgpt_token_invalidated_result(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "success":
+        return False
+    text = json.dumps(result, ensure_ascii=False).lower()
+    return (
+        "token_invalidated" in text
+        or "authentication token has been invalidated" in text
+        or ("http 401" in text and "invalidated" in text)
+    )
 
 
 def _gopay_rate_limited_message() -> str:
@@ -5100,6 +5132,10 @@ def run_gopay_bind_task(
     nonzero_blocked: list[str] = []
     last_nonzero_blocked_result: dict | None = None
     last_nonzero_blocked_email = ""
+    failed: list[str] = []
+    token_invalidated: list[str] = []
+    last_failed_result: dict | None = None
+    last_failed_email = ""
     successful: list[str] = []
     last_success_result: dict | None = None
     last_success_email = ""
@@ -5260,6 +5296,35 @@ def run_gopay_bind_task(
             )
             continue
 
+        if result.get("status") != "success" and not _is_gopay_already_linked_result(result):
+            if cancel_requested() or str(result.get("failure_stage") or "") == "cancelled":
+                return result
+            failed.append(candidate)
+            last_failed_result = result
+            last_failed_email = candidate
+            if _is_chatgpt_token_invalidated_result(result):
+                token_invalidated.append(candidate)
+            logger.info(
+                "[gopay_executor] GoPay candidate failed, rotating: email=%s status=%s failure_stage=%s message=%s",
+                _safe_email_summary(candidate),
+                result.get("status") or "",
+                result.get("failure_stage") or "",
+                _compact_log_text(result.get("message") or "", limit=180),
+            )
+            emit(
+                "gopay_account_failed_rotate",
+                email=candidate,
+                attempted=len(attempted),
+                remaining_candidates=max(0, len(candidates) - index),
+                failure_stage=result.get("failure_stage") or "",
+                token_invalidated=_is_chatgpt_token_invalidated_result(result),
+                message=(
+                    "当前账号 GoPay 任务失败，切换下一个账号: "
+                    f"{_compact_log_text(result.get('message') or '', limit=180)}"
+                ),
+            )
+            continue
+
         if blocked:
             result["blocked_emails"] = blocked[:]
         if rejected:
@@ -5268,11 +5333,15 @@ def run_gopay_bind_task(
             result["payment_failed_emails"] = payment_failed[:]
         if nonzero_blocked:
             result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        if failed:
+            result["failed_emails"] = failed[:]
+        if token_invalidated:
+            result["token_invalidated_emails"] = token_invalidated[:]
         if successful:
             result["successful_emails"] = successful[:]
         if skipped_by_user:
             result["skipped_emails"] = skipped_by_user[:]
-        if blocked or rejected or payment_failed or nonzero_blocked:
+        if blocked or rejected or payment_failed or nonzero_blocked or failed:
             result["rotated_from"] = requested_email
 
         if result.get("status") == "success":
@@ -5311,31 +5380,59 @@ def run_gopay_bind_task(
         last_success_result["rejected_emails"] = rejected[:]
         last_success_result["payment_failed_emails"] = payment_failed[:]
         last_success_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_success_result["failed_emails"] = failed[:]
+        last_success_result["token_invalidated_emails"] = token_invalidated[:]
         last_success_result["skipped_cooldown_emails"] = skipped_cooldown[:]
         last_success_result["skipped_emails"] = skipped_by_user[:]
         last_success_result["attempted_emails"] = attempted[:]
         last_success_result["email_used"] = last_success_email or (successful[-1] if successful else requested_email)
         last_success_result["requested_email"] = requested_email
-        if blocked or rejected or payment_failed or nonzero_blocked:
+        if blocked or rejected or payment_failed or nonzero_blocked or failed:
             last_success_result["rotated_from"] = requested_email
         emit("gopay_batch_completed", attempted=len(attempted), successful=len(successful))
         logger.info(
-            "[gopay_executor] GoPay batch completed: attempted=%s successful=%s blocked=%s rejected=%s payment_failed=%s nonzero_blocked=%s skipped=%s",
+            "[gopay_executor] GoPay batch completed: attempted=%s successful=%s blocked=%s rejected=%s payment_failed=%s nonzero_blocked=%s failed=%s skipped=%s",
             len(attempted),
             [_safe_email_summary(candidate) for candidate in successful],
             [_safe_email_summary(candidate) for candidate in blocked],
             [_safe_email_summary(candidate) for candidate in rejected],
             [_safe_email_summary(candidate) for candidate in payment_failed],
             [_safe_email_summary(candidate) for candidate in nonzero_blocked],
+            [_safe_email_summary(candidate) for candidate in failed],
             [_safe_email_summary(candidate) for candidate in skipped_by_user],
         )
         return last_success_result
+
+    if last_failed_result:
+        last_failed_result = dict(last_failed_result)
+        last_failed_result["message"] = f"GoPay 批量绑定失败: 尝试 {len(attempted)} 个账号均未成功"
+        last_failed_result["failed_emails"] = failed[:]
+        last_failed_result["token_invalidated_emails"] = token_invalidated[:]
+        last_failed_result["blocked_emails"] = blocked[:]
+        last_failed_result["rejected_emails"] = rejected[:]
+        last_failed_result["payment_failed_emails"] = payment_failed[:]
+        last_failed_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_failed_result["skipped_cooldown_emails"] = skipped_cooldown[:]
+        last_failed_result["skipped_emails"] = skipped_by_user[:]
+        last_failed_result["attempted_emails"] = attempted[:]
+        last_failed_result["email_used"] = last_failed_email or (attempted[-1] if attempted else requested_email)
+        last_failed_result["requested_email"] = requested_email
+        emit("gopay_all_accounts_failed", attempted=len(attempted), failed=len(failed))
+        logger.info(
+            "[gopay_executor] all GoPay candidates failed without terminal already-linked error: attempted=%s failed=%s token_invalidated=%s",
+            len(attempted),
+            [_safe_email_summary(candidate) for candidate in failed],
+            [_safe_email_summary(candidate) for candidate in token_invalidated],
+        )
+        return last_failed_result
 
     if last_rejected_result and not last_blocked_result and not last_payment_failed_result and not last_nonzero_blocked_result:
         last_rejected_result = dict(last_rejected_result)
         last_rejected_result["rejected_emails"] = rejected[:]
         last_rejected_result["payment_failed_emails"] = payment_failed[:]
         last_rejected_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_rejected_result["failed_emails"] = failed[:]
+        last_rejected_result["token_invalidated_emails"] = token_invalidated[:]
         last_rejected_result["skipped_emails"] = skipped_by_user[:]
         last_rejected_result["attempted_emails"] = attempted[:]
         last_rejected_result["email_used"] = last_rejected_email or (attempted[-1] if attempted else requested_email)
@@ -5353,6 +5450,8 @@ def run_gopay_bind_task(
         last_payment_failed_result["payment_failed_emails"] = payment_failed[:]
         last_payment_failed_result["rejected_emails"] = rejected[:]
         last_payment_failed_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_payment_failed_result["failed_emails"] = failed[:]
+        last_payment_failed_result["token_invalidated_emails"] = token_invalidated[:]
         last_payment_failed_result["skipped_emails"] = skipped_by_user[:]
         last_payment_failed_result["attempted_emails"] = attempted[:]
         last_payment_failed_result["email_used"] = last_payment_failed_email or (attempted[-1] if attempted else requested_email)
@@ -5370,6 +5469,8 @@ def run_gopay_bind_task(
         last_nonzero_blocked_result["nonzero_blocked_emails"] = nonzero_blocked[:]
         last_nonzero_blocked_result["payment_failed_emails"] = payment_failed[:]
         last_nonzero_blocked_result["rejected_emails"] = rejected[:]
+        last_nonzero_blocked_result["failed_emails"] = failed[:]
+        last_nonzero_blocked_result["token_invalidated_emails"] = token_invalidated[:]
         last_nonzero_blocked_result["skipped_emails"] = skipped_by_user[:]
         last_nonzero_blocked_result["attempted_emails"] = attempted[:]
         last_nonzero_blocked_result["email_used"] = last_nonzero_blocked_email or (attempted[-1] if attempted else requested_email)
@@ -5395,6 +5496,8 @@ def run_gopay_bind_task(
         last_blocked_result["rejected_emails"] = rejected[:]
         last_blocked_result["payment_failed_emails"] = payment_failed[:]
         last_blocked_result["nonzero_blocked_emails"] = nonzero_blocked[:]
+        last_blocked_result["failed_emails"] = failed[:]
+        last_blocked_result["token_invalidated_emails"] = token_invalidated[:]
         last_blocked_result["skipped_cooldown_emails"] = skipped_cooldown[:]
         last_blocked_result["skipped_emails"] = skipped_by_user[:]
         last_blocked_result["attempted_emails"] = attempted[:]
