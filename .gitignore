@@ -31,3 +31,6 @@ auths.bak-*/
 .vscode/
 .ruff_cache/
 .pre-commit-config.yaml.local
+.tmp/
+.pytest_cache/
+.uv-cache/

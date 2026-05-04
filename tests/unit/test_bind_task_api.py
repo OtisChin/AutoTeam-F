@@ -9,6 +9,54 @@ from autoteam import accounts as accounts_module
 from autoteam import gopay_executor
 
 
+class FakeUnlockedLock:
+    def acquire(self, blocking=False):
+        return False
+
+    def release(self):
+        raise AssertionError("release should not be called when acquire returns False")
+
+
+def test_delete_accounts_batch_cleans_auth_session_only_accounts(monkeypatch):
+    captured = {"deleted_sessions": [], "managed": []}
+
+    monkeypatch.setattr(api, "_playwright_lock", FakeUnlockedLock())
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [])
+    monkeypatch.setattr(
+        "autoteam.auth_session_store.get_auth_session_file",
+        lambda email: "data/auth_session/ghost@example_com.json" if email == "ghost@example.com" else "",
+    )
+    monkeypatch.setattr(
+        "autoteam.auth_session_store.delete_auth_session",
+        lambda email: captured["deleted_sessions"].append(email) or True,
+    )
+
+    def fake_delete_managed_account(email, **kwargs):
+        captured["managed"].append((email, kwargs))
+        return {"local_record": False, "local_auth_files": [], "cpa_files": []}
+
+    monkeypatch.setattr("autoteam.account_ops.delete_managed_account", fake_delete_managed_account)
+
+    result = api.delete_accounts_batch(api.DeleteBatchParams(emails=["ghost@example.com"], continue_on_error=True))
+
+    assert result["summary"]["ok"] == 1
+    assert result["results"][0]["ok"] is True
+    assert result["results"][0]["cleanup"]["auth_session_deleted"] is True
+    assert captured["deleted_sessions"] == ["ghost@example.com"]
+    assert captured["managed"][0][0] == "ghost@example.com"
+
+
+def test_delete_accounts_batch_reports_missing_only_when_no_record_or_session(monkeypatch):
+    monkeypatch.setattr(api, "_playwright_lock", FakeUnlockedLock())
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [])
+    monkeypatch.setattr("autoteam.auth_session_store.get_auth_session_file", lambda _email: "")
+
+    result = api.delete_accounts_batch(api.DeleteBatchParams(emails=["missing@example.com"], continue_on_error=True))
+
+    assert result["summary"]["ok"] == 0
+    assert result["results"] == [{"email": "missing@example.com", "ok": False, "error": "账号不存在"}]
+
+
 def test_post_bind_card_task_starts_background_task(monkeypatch):
     captured = {}
 
@@ -1059,6 +1107,171 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
         "third@example.com",
     ]
     assert any(progress["message"] == "补登录成功: second@example.com" for progress in captured["progress"])
+
+
+def test_post_accounts_refresh_quota_marks_401_account_fail(tmp_path, monkeypatch):
+    auth_file = tmp_path / "codex-user.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "access_token": "expired-token",
+                "account": {"id": "account-123"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    account = {
+        "email": "user@example.com",
+        "status": "active",
+        "auth_file": str(auth_file),
+    }
+    updates = {}
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr(
+        "autoteam.accounts.find_account",
+        lambda accounts, email: account if email == "user@example.com" else None,
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: updates.setdefault(email, {}).update(kwargs))
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", lambda token, account_id=None: ("auth_error", None))
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        return {
+            "task_id": "task-refresh",
+            "command": command,
+            "params": params,
+            "result": func("task-refresh"),
+        }
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    result = api.post_accounts_refresh_quota(api.AccountEmailBatchParams(emails=["USER@example.com"]))
+
+    assert result["command"] == "refresh-quota"
+    assert result["result"]["failed"] == [{"email": "user@example.com", "reason": "auth_error"}]
+    assert updates["user@example.com"]["status"] == "fail"
+    assert updates["user@example.com"]["discarded_reason"] == "quota_refresh_401"
+    assert updates["user@example.com"]["last_bind_failure_stage"] == "auth_401"
+
+
+def test_post_accounts_refresh_quota_skips_fail_accounts_without_reactivating(tmp_path, monkeypatch):
+    auth_file = tmp_path / "codex-user.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "access_token": "token",
+                "plan_type": "free",
+            }
+        ),
+        encoding="utf-8",
+    )
+    account = {
+        "email": "discarded@example.com",
+        "status": "fail",
+        "account_type": "plus",
+        "auth_file": str(auth_file),
+    }
+    updates = {}
+    quota_calls = []
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr(
+        "autoteam.accounts.find_account",
+        lambda accounts, email: account if email == "discarded@example.com" else None,
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: updates.setdefault(email, {}).update(kwargs))
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda token, account_id=None: quota_calls.append(token) or ("ok", {"primary_pct": 1, "weekly_pct": 2}),
+    )
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        return {
+            "task_id": "task-refresh",
+            "command": command,
+            "params": params,
+            "result": func("task-refresh"),
+        }
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    result = api.post_accounts_refresh_quota(api.AccountEmailBatchParams(emails=["discarded@example.com"]))
+
+    assert result["result"]["skipped"] == [{"email": "discarded@example.com", "reason": "fail_account"}]
+    assert updates == {}
+    assert quota_calls == []
+
+
+def test_post_accounts_refresh_quota_keeps_network_errors_out_of_fail(tmp_path, monkeypatch):
+    auth_file = tmp_path / "codex-user.json"
+    auth_file.write_text(json.dumps({"access_token": "token"}), encoding="utf-8")
+    account = {
+        "email": "user@example.com",
+        "status": "active",
+        "auth_file": str(auth_file),
+    }
+    updates = {}
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr(
+        "autoteam.accounts.find_account",
+        lambda accounts, email: account if email == "user@example.com" else None,
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: updates.setdefault(email, {}).update(kwargs))
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", lambda token, account_id=None: ("network_error", None))
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        return {
+            "task_id": "task-refresh",
+            "command": command,
+            "params": params,
+            "result": func("task-refresh"),
+        }
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    result = api.post_accounts_refresh_quota(api.AccountEmailBatchParams(emails=["user@example.com"]))
+
+    assert result["result"]["network_error"] == [{"email": "user@example.com", "reason": "network_error"}]
+    assert updates == {}
+
+
+def test_post_accounts_refresh_quota_empty_emails_defaults_to_all_non_main(tmp_path, monkeypatch):
+    auth_file = tmp_path / "codex-user.json"
+    auth_file.write_text(json.dumps({"access_token": "token"}), encoding="utf-8")
+    rows = [
+        {"email": "owner@example.com", "status": "active", "auth_file": str(auth_file)},
+        {"email": "first@example.com", "status": "active", "auth_file": str(auth_file)},
+        {"email": "second@example.com", "status": "active", "auth_file": str(auth_file)},
+    ]
+    checked = []
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr(
+        "autoteam.accounts.find_account",
+        lambda accounts, email: next((account for account in accounts if account["email"] == email), None),
+    )
+    monkeypatch.setattr(api, "_is_main_account_email", lambda email: email == "owner@example.com")
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: checked.append(email))
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda token, account_id=None: ("ok", {"primary_pct": 1, "weekly_pct": 2}),
+    )
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        return {
+            "task_id": "task-refresh",
+            "command": command,
+            "params": params,
+            "result": func("task-refresh"),
+        }
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    result = api.post_accounts_refresh_quota(api.AccountEmailBatchParams(emails=[]))
+
+    assert result["params"]["emails"] == ["first@example.com", "second@example.com"]
+    assert checked == ["first@example.com", "second@example.com"]
 
 
 def test_post_account_login_removes_account_when_oauth_requires_phone(monkeypatch):

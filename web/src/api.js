@@ -64,6 +64,7 @@ export const api = {
   exportAccountCpaAuths: (emails) => request('POST', '/accounts/export-cpa-auths', { emails }),
   loginAccount: (email) => request('POST', '/accounts/login', { email }),
   loginAccountsBatch: (emails) => request('POST', '/accounts/login-batch', { emails }),
+  refreshAccountsQuota: (emails) => request('POST', '/accounts/refresh-quota', { emails }),
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),
   kickAccount: (email) => request('POST', `/accounts/${encodeURIComponent(email)}/kick`),
   getCpaFiles: () => request('GET', '/cpa/files'),

@@ -51,6 +51,24 @@
             {{ batchLoggingIn ? '提交中...' : `批量补登录 (${batchLoginableAccounts.length})` }}
           </button>
           <button
+            @click="refreshAllQuota"
+            :disabled="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-amber-600/10 text-amber-300 border-amber-500/30 hover:bg-amber-600/20'">
+            {{ refreshQuotaButtonLabel }}
+          </button>
+          <button
+            @click="deleteInvalidCredentials"
+            :disabled="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-red-600/10 text-red-300 border-red-500/30 hover:bg-red-600/20'">
+            {{ invalidDeleting ? '删除中...' : `删除无效凭证 (${invalidCredentialAccounts.length})` }}
+          </button>
+          <button
             v-if="selectedEmails.length"
             @click="batchDelete"
             :disabled="deleteDisabled || batchDeleting"
@@ -506,6 +524,8 @@ const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
 const cpaExporting = ref(false)
 const batchLoggingIn = ref(false)
+const quotaRefreshing = ref(false)
+const invalidDeleting = ref(false)
 const credentialLineFormat = ref('{email}-----{password}')
 
 // 批量删除选中态:按邮箱(小写)保存,便于跨刷新复用
@@ -663,7 +683,7 @@ const filteredAccounts = computed(() => {
     .filter(({ acc }) => {
     const email = String(acc?.email || '').toLowerCase()
     const status = String(acc?.status || '')
-    const accountType = String(acc?.account_type || 'free')
+    const accountType = String(acc?.account_type || 'unknown')
     const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
     const authStatus = hasCodexAuthFile(acc) ? 'has_auth' : 'missing_auth'
     const bindTaskId = String(acc?.last_bind_task_id || '').toLowerCase()
@@ -707,7 +727,7 @@ const accountStatusOptions = computed(() => {
 const accountTypeOptions = computed(() => {
   const counts = new Map()
   for (const acc of allAccounts.value) {
-    const accountType = String(acc?.account_type || 'free')
+    const accountType = String(acc?.account_type || 'unknown')
     counts.set(accountType, (counts.get(accountType) || 0) + 1)
   }
   return Array.from(counts.entries())
@@ -765,6 +785,40 @@ const cpaExportableAccounts = computed(() => {
     ? filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
     : filteredAccounts.value
   return rows.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
+})
+const refreshableQuotaAccounts = computed(() =>
+  allAccounts.value.filter(acc =>
+    !acc.is_main_account && String(acc.status || '').toLowerCase() !== 'fail'
+  )
+)
+const invalidCredentialAccounts = computed(() =>
+  allAccounts.value.filter(acc =>
+    !acc.is_main_account && ['fail', 'auth_invalid'].includes(String(acc.status || '').toLowerCase())
+  )
+)
+const refreshQuotaTask = computed(() => {
+  const task = props.runningTask
+  if (!task || task.command !== 'refresh-quota') return null
+  if (!['running', 'pending'].includes(String(task.status || ''))) return null
+  return task
+})
+const refreshQuotaRunning = computed(() => !!refreshQuotaTask.value)
+const refreshQuotaProgress = computed(() => {
+  const progress = refreshQuotaTask.value?.progress || {}
+  const current = Number(progress.current || 0)
+  const total = Number(progress.total || refreshQuotaTask.value?.result?.total || refreshableQuotaAccounts.value.length || 0)
+  return {
+    current: Number.isFinite(current) ? current : 0,
+    total: Number.isFinite(total) ? total : 0,
+  }
+})
+const refreshQuotaButtonLabel = computed(() => {
+  if (refreshQuotaRunning.value) {
+    const { current, total } = refreshQuotaProgress.value
+    return total > 0 ? `刷新中 (${current}/${total})` : '刷新中...'
+  }
+  if (quotaRefreshing.value) return '提交中...'
+  return `刷新凭证 (${refreshableQuotaAccounts.value.length})`
 })
 const credentialPreview = computed(() => {
   const sample = exportableAccounts.value[0] || { email: 'xxx@email.com', status: 'active', seat_type: 'unknown' }
@@ -852,7 +906,7 @@ const cards = computed(() => {
   return [
     { label: '活跃', value: s.active, color: 'text-green-400' },
     { label: '待命', value: s.standby, color: 'text-yellow-400' },
-    { label: '额度用完', value: s.exhausted, color: 'text-red-400' },
+    { label: '废弃', value: s.fail || 0, color: 'text-orange-400' },
     { label: 'Free', value: s.free || 0, color: 'text-fuchsia-400' },
     { label: 'Team', value: s.team || 0, color: 'text-violet-400' },
     { label: 'Plus', value: s.plus || 0, color: 'text-sky-400' },
@@ -869,6 +923,7 @@ function statusClass(s) {
     pending: 'bg-gray-500/10 text-gray-400',
     auth_invalid: 'bg-orange-500/10 text-orange-400',
     orphan: 'bg-amber-500/10 text-amber-300',
+    fail: 'bg-red-500/10 text-red-300',
   }[s] || 'bg-gray-500/10 text-gray-400'
 }
 
@@ -880,6 +935,7 @@ function dotClass(s) {
     pending: 'bg-gray-400',
     auth_invalid: 'bg-orange-400',
     orphan: 'bg-amber-300',
+    fail: 'bg-red-300',
   }[s] || 'bg-gray-400'
 }
 
@@ -891,6 +947,7 @@ function statusLabel(s) {
     pending: 'Pending',
     auth_invalid: '认证失效',
     orphan: '孤立',
+    fail: 'Fail/废弃',
   }[s] || s
 }
 
@@ -909,7 +966,8 @@ function accountTypeLabel(type) {
     team: 'Team',
     plus: 'Plus',
     pro: 'Pro',
-  }[type] || type || 'Free'
+    unknown: '未知',
+  }[type] || type || '未知'
 }
 
 function credentialExportLabel(acc) {
@@ -1133,6 +1191,64 @@ async function batchLoginAccounts() {
   } finally {
     batchLoggingIn.value = false
     setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function refreshAllQuota() {
+  const emails = refreshableQuotaAccounts.value.map(acc => acc.email).filter(Boolean)
+  if (quotaRefreshing.value || !emails.length) return
+
+  quotaRefreshing.value = true
+  message.value = ''
+  try {
+    const result = await api.refreshAccountsQuota([])
+    message.value = `已提交刷新凭证任务: ${result.task_id}，默认刷新全部账号 ${emails.length} 个；401/403 会标记 Fail/废弃`
+    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+    emit('task-started')
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    quotaRefreshing.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function deleteInvalidCredentials() {
+  if (deleteDisabled.value || invalidDeleting.value) return
+  const emails = invalidCredentialAccounts.value.map(acc => acc.email).filter(Boolean)
+  if (!emails.length) return
+
+  const preview = emails.slice(0, 8).join('\n')
+  const more = emails.length > 8 ? `\n...还有 ${emails.length - 8} 个` : ''
+  const ok = window.confirm(
+    `确认删除以下 ${emails.length} 个无效凭证账号？这会清理本地记录、本地/CPA认证文件，并尽量移出 Team/Invite；不会删除邮箱服务中的邮箱账号。\n\n${preview}${more}`
+  )
+  if (!ok) return
+
+  invalidDeleting.value = true
+  message.value = ''
+  try {
+    const r = await api.deleteAccountsBatch(emails, true)
+    const s = r?.summary || {}
+    const failed = (r?.results || []).filter(x => !x.ok)
+    if (failed.length === 0) {
+      message.value = `无效凭证删除完成:成功 ${s.ok}/${s.total}`
+      messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    } else {
+      const head = failed.slice(0, 3).map(x => `${x.email}: ${x.error}`).join('; ')
+      message.value = `无效凭证删除部分失败(成功 ${s.ok}/${s.total}):${head}${failed.length > 3 ? ' …' : ''}`
+      messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+    }
+    clearSelection()
+    emit('refresh')
+  } catch (e) {
+    message.value = `无效凭证删除失败: ${e.message}`
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    invalidDeleting.value = false
+    setTimeout(() => { message.value = '' }, 12000)
   }
 }
 

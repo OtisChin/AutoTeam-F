@@ -157,6 +157,7 @@ function buildDashboardStatusFromAccounts(accounts) {
     pending: 0,
     auth_invalid: 0,
     orphan: 0,
+    fail: 0,
     free: 0,
     team: 0,
     plus: 0,
@@ -281,7 +282,11 @@ async function refresh() {
     adminStatus.value = admin
     codexStatus.value = codex
     manualAccountStatus.value = manualAccount
-    runningTask.value = t.find(t => (t.status === 'running' || t.status === 'pending') && t.exclusive !== false) || null
+    runningTask.value = t.find(task =>
+      (task.status === 'running' || task.status === 'pending') && task.command === 'refresh-quota'
+    ) || t.find(task =>
+      (task.status === 'running' || task.status === 'pending') && task.exclusive !== false
+    ) || null
     refreshFullStatusInBackground()
   } catch (e) {
     if (e.status === 401) {

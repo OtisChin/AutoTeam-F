@@ -759,6 +759,16 @@ def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     return sanitized
 
 
+def _account_id_from_auth_data(auth_data: dict) -> str:
+    account = auth_data.get("account") if isinstance(auth_data.get("account"), dict) else {}
+    return str(
+        account.get("id")
+        or auth_data.get("account_id")
+        or auth_data.get("accountId")
+        or ""
+    ).strip()
+
+
 def _admin_status():
     from autoteam.admin_state import get_admin_state_summary
 
@@ -1741,12 +1751,13 @@ def delete_account(email: str):
         from autoteam.account_ops import delete_managed_account
         from autoteam.accounts import load_accounts
         from autoteam.admin_state import get_admin_session_token, get_chatgpt_account_id
+        from autoteam.auth_session_store import delete_auth_session, get_auth_session_file
 
         if _is_main_account_email(email):
             raise HTTPException(status_code=400, detail="主号不允许删除")
 
         accounts = load_accounts()
-        if not any(a["email"].lower() == email.lower() for a in accounts):
+        if not any(a["email"].lower() == email.lower() for a in accounts) and not get_auth_session_file(email):
             raise HTTPException(status_code=404, detail="账号不存在")
 
         remote_cleanup = bool(lock_acquired and get_admin_session_token() and get_chatgpt_account_id())
@@ -1754,6 +1765,7 @@ def delete_account(email: str):
             cleanup = _pw_executor.run(delete_managed_account, email, remove_remote=remote_cleanup, remove_cloudmail=False)
         else:
             cleanup = delete_managed_account(email, remove_remote=False, remove_cloudmail=False)
+        cleanup["auth_session_deleted"] = delete_auth_session(email)
         return {
             "message": "账号删除完成",
             "deleted_email": email,
@@ -1968,6 +1980,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
     from autoteam.accounts import load_accounts
     from autoteam.chatgpt_api import ChatGPTTeamAPI
     from autoteam.admin_state import get_admin_session_token, get_chatgpt_account_id
+    from autoteam.auth_session_store import delete_auth_session, get_auth_session_file
 
     raw_emails = [(e or "").strip() for e in (params.emails or [])]
     emails = [e for e in raw_emails if e]
@@ -2006,7 +2019,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
             remote_state = fetch_team_state(chatgpt_api) if remote_cleanup else None
 
             for email in emails:
-                if email.lower() not in existing:
+                if email.lower() not in existing and not get_auth_session_file(email):
                     results.append({"email": email, "ok": False, "error": "账号不存在"})
                     if not params.continue_on_error:
                         break
@@ -2020,6 +2033,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
                         remote_state=remote_state,
                         sync_cpa_after=False,
                     )
+                    cleanup["auth_session_deleted"] = delete_auth_session(email)
                     results.append({"email": email, "ok": True, "cleanup": cleanup})
                 except Exception as exc:
                     logger.error("[批量删除] %s 失败: %s", email, exc)
@@ -2560,6 +2574,248 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
     return task
 
 
+@app.post("/api/accounts/refresh-quota", status_code=202)
+def post_accounts_refresh_quota(params: AccountEmailBatchParams):
+    """刷新账号额度；emails 为空时默认刷新全部非主号账号，401/403 直接标记为废弃 Fail。"""
+    from autoteam.accounts import find_account, load_accounts
+
+    emails = []
+    seen = set()
+    for item in params.emails or []:
+        email = _normalized_email(item)
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+
+    account_list = load_accounts()
+    if not emails:
+        for acc in account_list:
+            email = _normalized_email(acc.get("email"))
+            if (
+                email
+                and email not in seen
+                and not _is_main_account_email(email)
+                and str(acc.get("status") or "").strip().lower() != "fail"
+            ):
+                seen.add(email)
+                emails.append(email)
+
+    accounts_by_email = {}
+    missing = []
+    for email in emails:
+        acc = find_account(account_list, email)
+        if not acc:
+            missing.append(email)
+            continue
+        accounts_by_email[email] = acc
+    if not accounts_by_email:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    def _run(task_id: str = ""):
+        from autoteam.accounts import (
+            STATUS_ACTIVE,
+            STATUS_EXHAUSTED,
+            STATUS_FAIL,
+            STATUS_PERSONAL,
+            STATUS_PLUS,
+            STATUS_STANDBY,
+            update_account,
+        )
+        from autoteam.codex_auth import check_codex_quota, quota_result_quota_info, quota_result_resets_at
+
+        ok = []
+        exhausted = []
+        failed = []
+        skipped = []
+        network_error = []
+        total = len(accounts_by_email)
+
+        for index, (email, acc) in enumerate(accounts_by_email.items(), start=1):
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "refresh_quota_account",
+                    "email": email,
+                    "current": index,
+                    "total": total,
+                    "ok": len(ok),
+                    "failed": len(failed),
+                    "message": f"正在刷新账号额度: {email} ({index}/{total})",
+                },
+            )
+            if _is_main_account_email(email):
+                skipped.append({"email": email, "reason": "main_account"})
+                continue
+            if str(acc.get("status") or "").strip().lower() == STATUS_FAIL:
+                skipped.append({"email": email, "reason": "fail_account"})
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "refresh_quota_skipped",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "message": f"跳过废弃账号: {email}",
+                        "level": "warn",
+                    },
+                )
+                continue
+
+            auth_file = _resolve_status_auth_file(acc)
+            if not auth_file:
+                skipped.append({"email": email, "reason": "missing_auth_file"})
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "refresh_quota_skipped",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "message": f"跳过 {email}: 缺少认证文件",
+                        "level": "warn",
+                    },
+                )
+                continue
+
+            try:
+                auth_data = json.loads(read_text(Path(auth_file)))
+            except Exception as exc:
+                skipped.append({"email": email, "reason": "invalid_auth_file", "error": str(exc)})
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "refresh_quota_skipped",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "message": f"跳过 {email}: 认证文件无法读取",
+                        "level": "warn",
+                    },
+                )
+                continue
+
+            access_token = str(auth_data.get("access_token") or "").strip()
+            if not access_token:
+                skipped.append({"email": email, "reason": "missing_access_token"})
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "refresh_quota_skipped",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "message": f"跳过 {email}: 认证文件缺少 access_token",
+                        "level": "warn",
+                    },
+                )
+                continue
+
+            now_ts = time.time()
+            status, info = check_codex_quota(access_token, account_id=_account_id_from_auth_data(auth_data) or None)
+            if status == "ok":
+                update_payload = {"last_quota": info, "last_quota_check_at": now_ts}
+                if (acc.get("status") or "") not in {STATUS_PERSONAL, STATUS_PLUS, STATUS_STANDBY}:
+                    update_payload["status"] = STATUS_ACTIVE
+                update_account(email, **update_payload)
+                ok.append({"email": email, "quota": info})
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "refresh_quota_done",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "ok": len(ok),
+                        "failed": len(failed),
+                        "message": f"额度刷新成功: {email}",
+                    },
+                )
+            elif status == "exhausted":
+                quota_info = quota_result_quota_info(info) or {}
+                update_payload = {
+                    "status": STATUS_EXHAUSTED,
+                    "quota_exhausted_at": now_ts,
+                    "quota_resets_at": quota_result_resets_at(info) or int(now_ts + 18000),
+                    "last_quota_check_at": now_ts,
+                }
+                if quota_info:
+                    update_payload["last_quota"] = quota_info
+                update_account(email, **update_payload)
+                exhausted.append({"email": email, "quota": quota_info, "info": info})
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "refresh_quota_exhausted",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "ok": len(ok),
+                        "failed": len(failed),
+                        "message": f"额度已用完: {email}",
+                        "level": "warn",
+                    },
+                )
+            elif status == "auth_error":
+                update_payload = {
+                    "status": STATUS_FAIL,
+                    "discarded_at": now_ts,
+                    "discarded_reason": "quota_refresh_401",
+                    "last_quota_check_at": now_ts,
+                    "last_bind_status": "failed",
+                    "last_bind_failure_stage": "auth_401",
+                    "last_bind_message": "刷新额度返回 401/403，账号已标记为 Fail/废弃",
+                }
+                update_account(email, **update_payload)
+                failed.append({"email": email, "reason": "auth_error"})
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "refresh_quota_auth_failed",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "ok": len(ok),
+                        "failed": len(failed),
+                        "message": f"刷新额度返回 401/403，已标记 Fail/废弃: {email}",
+                        "level": "error",
+                    },
+                )
+            else:
+                network_error.append({"email": email, "reason": status})
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "refresh_quota_network_error",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "ok": len(ok),
+                        "failed": len(failed),
+                        "message": f"刷新额度遇到临时错误，未改状态: {email}",
+                        "level": "warn",
+                    },
+                )
+
+        return {
+            "ok": ok,
+            "exhausted": exhausted,
+            "failed": failed,
+            "skipped": skipped,
+            "network_error": network_error,
+            "missing": missing,
+            "total": total,
+        }
+
+    task = _start_task(
+        "refresh-quota",
+        _run,
+        {"emails": emails, "missing": missing},
+        exclusive=False,
+        pass_task_id=True,
+    )
+    return task
+
+
 @app.get("/api/status")
 def get_status():
     """获取所有账号状态 + active 账号实时额度"""
@@ -2567,6 +2823,7 @@ def get_status():
         STATUS_ACTIVE,
         STATUS_AUTH_INVALID,
         STATUS_EXHAUSTED,
+        STATUS_FAIL,
         STATUS_ORPHAN,
         STATUS_PENDING,
         STATUS_PERSONAL,
@@ -2609,6 +2866,7 @@ def get_status():
         "pending": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PENDING),
         "auth_invalid": sum(1 for a in sanitized_accounts if a["status"] == STATUS_AUTH_INVALID),
         "orphan": sum(1 for a in sanitized_accounts if a["status"] == STATUS_ORPHAN),
+        "fail": sum(1 for a in sanitized_accounts if a["status"] == STATUS_FAIL),
         "free": sum(1 for a in sanitized_accounts if a.get("account_type") == "free"),
         "team": sum(1 for a in sanitized_accounts if a.get("account_type") == "team"),
         "plus": sum(1 for a in sanitized_accounts if a.get("account_type") == "plus"),

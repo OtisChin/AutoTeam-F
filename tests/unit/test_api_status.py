@@ -49,10 +49,13 @@ def test_get_status_normalizes_main_account_status_from_saved_auth(tmp_path, mon
         "standby": 0,
         "exhausted": 0,
         "pending": 0,
-        "personal": 0,
-        "plus": 0,
         "auth_invalid": 0,
         "orphan": 0,
+        "fail": 0,
+        "free": 0,
+        "team": 1,
+        "plus": 0,
+        "pro": 0,
         "total": 1,
     }
 

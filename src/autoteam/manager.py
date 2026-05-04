@@ -40,6 +40,7 @@ from autoteam.accounts import (
     STATUS_ACTIVE,
     STATUS_AUTH_INVALID,
     STATUS_EXHAUSTED,
+    STATUS_FAIL,
     STATUS_ORPHAN,
     STATUS_PENDING,
     STATUS_PERSONAL,
@@ -393,7 +394,7 @@ def _reconcile_team_members(chatgpt_api=None, *, dry_run=False):
                 logger.debug("[对账] %s 已标 STATUS_ORPHAN,跳过", email)
                 continue
 
-            if status in (STATUS_EXHAUSTED, STATUS_PERSONAL, STATUS_AUTH_INVALID):
+            if status in (STATUS_EXHAUSTED, STATUS_PERSONAL, STATUS_AUTH_INVALID, STATUS_FAIL):
                 logger.warning("[对账] %s 本地=%s 但 Team 里仍挂着,KICK", email, status)
                 rs = _safe_kick(acc.get("email"))
                 if rs in ("removed", "already_absent", "dry_run"):
