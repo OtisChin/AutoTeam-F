@@ -877,6 +877,42 @@ def test_run_gopay_bind_task_refreshes_auth_session_on_token_invalidated(monkeyp
     assert any(event["stage"] == "gopay_auth_session_refresh_done" for event in progress_events)
 
 
+def test_run_gopay_bind_task_treats_user_is_paid_as_success(monkeypatch):
+    calls = []
+    progress_events = []
+
+    def fake_run_once(**kwargs):
+        calls.append(kwargs["email"])
+        if kwargs["email"] != "paid@example.com":
+            return {"status": "success", "message": "GoPay 绑定完成"}
+        return {
+            "status": "failed",
+            "failure_stage": "generate_checkout",
+            "message": "生成印尼区支付链接失败: user is paid",
+        }
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="paid@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://it.tgflare.com/api/record?token=demo",
+        gopay_pin="558023",
+        account_emails=["paid@example.com", "second@example.com"],
+        is_cancelled=lambda: False,
+        progress_callback=progress_events.append,
+    )
+
+    assert calls == ["paid@example.com", "second@example.com"]
+    assert result["status"] == "success"
+    assert result["user_paid_skip_emails"] == ["paid@example.com"]
+    assert sorted(result["successful_emails"]) == ["paid@example.com", "second@example.com"]
+    assert result["pending_retry_emails"] == []
+    assert result["message"] == "GoPay 批量绑定完成: 成功 2/2 个账号"
+    assert any(event["stage"] == "chatgpt_user_paid_skip" for event in progress_events)
+
+
 def test_run_gopay_bind_task_rotates_on_generic_account_failure(monkeypatch):
     calls = []
 

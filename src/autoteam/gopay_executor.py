@@ -417,7 +417,15 @@ def _gopay_progress_level(stage: str) -> str:
         "gopay_auth_session_refresh_failed",
     }:
         return "warn"
-    if stage in {"completed", "payment_completed", "billing_info_filled", "gopay_selected", "otp_received", "gopay_auth_session_refresh_done"}:
+    if stage in {
+        "completed",
+        "payment_completed",
+        "billing_info_filled",
+        "gopay_selected",
+        "otp_received",
+        "gopay_auth_session_refresh_done",
+        "chatgpt_user_paid_skip",
+    }:
         return "success"
     if stage in {
         "failed",
@@ -483,6 +491,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "gopay_auth_session_refresh_started": "auth_session 已失效，正在重新登录刷新",
         "gopay_auth_session_refresh_done": "auth_session 已刷新，稍后重试 GoPay",
         "gopay_auth_session_refresh_failed": "auth_session 刷新失败，账号标记废弃",
+        "chatgpt_user_paid_skip": "账号已是付费用户，跳过 GoPay 绑卡",
         "gopay_account_failed_rotate": "当前账号 GoPay 任务失败，切换下一个账号",
         "gopay_nonzero_amount_blocked_rotate": "账单金额非 0，切换下一个账号",
         "payment_completed": "GoPay 支付已提交，正在回查 ChatGPT 状态",
@@ -644,6 +653,51 @@ def _is_gopay_already_linked_result(result: dict | None) -> bool:
     )
 
 
+def _looks_like_chatgpt_user_paid_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    if not normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "user is paid",
+            "user already paid",
+            "already a paid user",
+            "already paid user",
+            "already subscribed",
+            "already has an active subscription",
+            "用户已付费",
+            "已是付费用户",
+            "已有有效订阅",
+        )
+    )
+
+
+def _is_chatgpt_user_paid_result(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "success":
+        return bool(result.get("user_paid_skip"))
+    return _looks_like_chatgpt_user_paid_text(json.dumps(result, ensure_ascii=False))
+
+
+def _as_chatgpt_user_paid_success(result: dict | None, *, checkout_url: str = "", billing_info: dict | None = None) -> dict:
+    payload = dict(result or {})
+    payload.update(
+        {
+            "status": "success",
+            "failure_stage": "",
+            "message": "ChatGPT 返回 user is paid，账号已是付费用户，跳过 GoPay 绑卡",
+            "user_paid_skip": True,
+        }
+    )
+    if checkout_url and not payload.get("checkout_url"):
+        payload["checkout_url"] = checkout_url
+    if billing_info and not payload.get("billing_info"):
+        payload["billing_info"] = billing_info
+    return payload
+
+
 def _is_midtrans_linking_rate_limited_result(result: dict | None) -> bool:
     if not isinstance(result, dict):
         return False
@@ -670,7 +724,7 @@ def _is_chatgpt_token_invalidated_result(result: dict | None) -> bool:
 def _gopay_pending_retry_reason(result: dict | None) -> str:
     if not isinstance(result, dict) or result.get("status") == "success":
         return ""
-    if _is_chatgpt_token_invalidated_result(result) or _is_gopay_nonzero_amount_blocked_result(result):
+    if _is_chatgpt_user_paid_result(result) or _is_chatgpt_token_invalidated_result(result) or _is_gopay_nonzero_amount_blocked_result(result):
         return ""
     if _is_chatgpt_approve_blocked_result(result):
         return "chatgpt_approve_blocked"
@@ -5070,6 +5124,16 @@ def _run_gopay_bind_task_once(
         )
     except GoPayFlowError as exc:
         logger.exception("[gopay_executor] GoPay HTTP flow failed")
+        if _looks_like_chatgpt_user_paid_text(str(exc)):
+            progress("chatgpt_user_paid_skip", email=email, message="ChatGPT 返回 user is paid，账号已是付费用户，跳过 GoPay 绑卡")
+            return _as_chatgpt_user_paid_success(
+                {
+                    "screenshot_paths": screenshot_paths,
+                    "checkout_url": final_checkout_url,
+                },
+                checkout_url=final_checkout_url,
+                billing_info=public_billing_info,
+            )
         return _build_result(
             "failed",
             failure_stage=exc.stage or "gopay_http",
@@ -5080,6 +5144,16 @@ def _run_gopay_bind_task_once(
         )
     except Exception as exc:
         logger.exception("[gopay_executor] unexpected error")
+        if _looks_like_chatgpt_user_paid_text(str(exc)):
+            progress("chatgpt_user_paid_skip", email=email, message="ChatGPT 返回 user is paid，账号已是付费用户，跳过 GoPay 绑卡")
+            return _as_chatgpt_user_paid_success(
+                {
+                    "screenshot_paths": screenshot_paths,
+                    "checkout_url": final_checkout_url,
+                },
+                checkout_url=final_checkout_url,
+                billing_info=public_billing_info,
+            )
         _capture_screenshot(api, session_id, "gopay-unexpected-error", screenshot_paths)
         return _build_result("failed", failure_stage="post_submit", message=f"执行 GoPay 任务时出现异常: {exc}", screenshot_paths=screenshot_paths, checkout_url=final_checkout_url, billing_info=public_billing_info)
     finally:
@@ -5217,6 +5291,10 @@ def run_gopay_bind_task(
     if not rotation_enabled:
         emit("gopay_try_account", email=requested_email, attempt=1, total=1)
         result = run_once(requested_email, 1)
+        if _is_chatgpt_user_paid_result(result):
+            result = _as_chatgpt_user_paid_success(result, checkout_url=final_checkout_url)
+            result["user_paid_skip_emails"] = [requested_email]
+            emit("chatgpt_user_paid_skip", email=requested_email, message=result.get("message") or "")
         result["email_used"] = requested_email
         result["requested_email"] = requested_email
         logger.info(
@@ -5261,6 +5339,7 @@ def run_gopay_bind_task(
     retried: list[str] = []
     auth_session_refreshed: list[str] = []
     auth_session_refresh_failed: list[str] = []
+    user_paid_skip: list[str] = []
 
     def append_unique(target: list[str], value: str):
         value = str(value or "").strip().lower()
@@ -5274,6 +5353,8 @@ def run_gopay_bind_task(
         target[:] = [item for item in target if item != value]
 
     def queue_pending_retry(candidate: str, *, reason: str, stage: str, retry_round: int = 0):
+        if str(candidate or "").strip().lower() in successful:
+            return
         append_unique(pending_retry, candidate)
         emit(
             "gopay_pending_retry_queued",
@@ -5337,20 +5418,35 @@ def run_gopay_bind_task(
         )
         return True
 
+    def mark_candidate_successful(candidate: str):
+        append_unique(successful, candidate)
+        remove_email(pending_retry, candidate)
+        remove_email(blocked, candidate)
+        remove_email(rejected, candidate)
+        remove_email(payment_failed, candidate)
+        remove_email(nonzero_blocked, candidate)
+        remove_email(failed, candidate)
+        remove_email(token_invalidated, candidate)
+        remove_email(skipped_cooldown, candidate)
+        remove_email(skipped_by_user, candidate)
+        remove_email(auth_session_refresh_failed, candidate)
+
     def attach_common_lists(result: dict):
-        result["blocked_emails"] = blocked[:]
-        result["rejected_emails"] = rejected[:]
-        result["payment_failed_emails"] = payment_failed[:]
-        result["nonzero_blocked_emails"] = nonzero_blocked[:]
-        result["failed_emails"] = failed[:]
-        result["token_invalidated_emails"] = token_invalidated[:]
+        success_set = set(successful)
+        result["blocked_emails"] = [item for item in blocked if item not in success_set]
+        result["rejected_emails"] = [item for item in rejected if item not in success_set]
+        result["payment_failed_emails"] = [item for item in payment_failed if item not in success_set]
+        result["nonzero_blocked_emails"] = [item for item in nonzero_blocked if item not in success_set]
+        result["failed_emails"] = [item for item in failed if item not in success_set]
+        result["token_invalidated_emails"] = [item for item in token_invalidated if item not in success_set]
         result["successful_emails"] = successful[:]
-        result["skipped_emails"] = skipped_by_user[:]
-        result["skipped_cooldown_emails"] = skipped_cooldown[:]
-        result["pending_retry_emails"] = pending_retry[:]
+        result["skipped_emails"] = [item for item in skipped_by_user if item not in success_set]
+        result["skipped_cooldown_emails"] = [item for item in skipped_cooldown if item not in success_set]
+        result["pending_retry_emails"] = [item for item in pending_retry if item not in success_set]
         result["retried_emails"] = retried[:]
         result["auth_session_refreshed_emails"] = auth_session_refreshed[:]
-        result["auth_session_refresh_failed_emails"] = auth_session_refresh_failed[:]
+        result["auth_session_refresh_failed_emails"] = [item for item in auth_session_refresh_failed if item not in success_set]
+        result["user_paid_skip_emails"] = user_paid_skip[:]
         result["pending_retry_attempts"] = pending_retry_attempts
         if blocked or rejected or payment_failed or nonzero_blocked or failed:
             result["rotated_from"] = requested_email
@@ -5404,6 +5500,10 @@ def run_gopay_bind_task(
             emit("gopay_try_account", email=candidate, attempt=index, total=len(candidates))
 
         result = run_once(candidate, index)
+        if _is_chatgpt_user_paid_result(result):
+            result = _as_chatgpt_user_paid_success(result, checkout_url=final_checkout_url)
+            append_unique(user_paid_skip, candidate)
+            emit("chatgpt_user_paid_skip", email=candidate, message=result.get("message") or "")
         result["email_used"] = candidate
         result["requested_email"] = requested_email
         result["attempted_emails"] = attempted[:]
@@ -5575,7 +5675,7 @@ def run_gopay_bind_task(
         attach_common_lists(result)
 
         if result.get("status") == "success":
-            successful.append(candidate)
+            mark_candidate_successful(candidate)
             last_success_result = dict(result)
             last_success_email = candidate
             logger.info(
@@ -5674,15 +5774,17 @@ def run_gopay_bind_task(
                 len(retry_candidates),
             )
             result = run_once(candidate, len(candidates) + retry_attempt_index)
+            if _is_chatgpt_user_paid_result(result):
+                result = _as_chatgpt_user_paid_success(result, checkout_url=final_checkout_url)
+                append_unique(user_paid_skip, candidate)
+                emit("chatgpt_user_paid_skip", email=candidate, retry_round=retry_round, message=result.get("message") or "")
             result["email_used"] = candidate
             result["requested_email"] = requested_email
             result["attempted_emails"] = attempted[:]
             result["retried_emails"] = retried[:]
 
             if result.get("status") == "success":
-                append_unique(successful, candidate)
-                remove_email(blocked, candidate)
-                remove_email(skipped_cooldown, candidate)
+                mark_candidate_successful(candidate)
                 last_success_result = dict(result)
                 last_success_email = candidate
                 logger.info(

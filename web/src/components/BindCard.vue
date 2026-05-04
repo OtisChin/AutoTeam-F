@@ -1712,6 +1712,7 @@ const gopayStageLabelMap = {
   gopay_auth_session_refresh_started: '刷新 auth_session',
   gopay_auth_session_refresh_done: 'auth_session 已刷新',
   gopay_auth_session_refresh_failed: 'auth_session 刷新失败',
+  chatgpt_user_paid_skip: '账号已是付费用户，跳过 GoPay',
   gopay_skip_current_requested: '已请求跳过当前账号',
   gopay_account_skipped_by_user: '已跳过当前账号',
   gopay_all_accounts_skipped: '所有账号都已跳过',
@@ -1905,11 +1906,27 @@ const gopayBoardFailureCount = computed(() => {
 
 const gopayBoardPendingRetryCount = computed(() => {
   const result = gopayTask.value?.result || {}
-  if (Array.isArray(result.pending_retry_emails)) return result.pending_retry_emails.length
-  const progress = gopayTask.value?.progress || {}
-  if (Number.isFinite(Number(progress.pending_retry))) return Number(progress.pending_retry || 0)
-  const pending = new Set()
+  const successful = new Set()
+  if (Array.isArray(result.successful_emails)) {
+    for (const email of result.successful_emails) {
+      const normalized = String(email || '').trim().toLowerCase()
+      if (normalized) successful.add(normalized)
+    }
+  }
   const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
+  for (const event of events) {
+    if (String(event?.stage || '') !== 'gopay_account_bound') continue
+    const normalized = String(event?.email || '').trim().toLowerCase()
+    if (normalized) successful.add(normalized)
+  }
+  if (Array.isArray(result.pending_retry_emails)) {
+    return result.pending_retry_emails.filter(email => {
+      const normalized = String(email || '').trim().toLowerCase()
+      return normalized && !successful.has(normalized)
+    }).length
+  }
+  const progress = gopayTask.value?.progress || {}
+  const pending = new Set()
   for (const event of events) {
     const stage = String(event?.stage || '')
     const email = String(event?.email || '').trim().toLowerCase()
@@ -1919,6 +1936,9 @@ const gopayBoardPendingRetryCount = computed(() => {
       pending.delete(email)
     }
   }
+  for (const email of successful) pending.delete(email)
+  if (pending.size) return pending.size
+  if (Number.isFinite(Number(progress.pending_retry))) return Math.max(0, Number(progress.pending_retry || 0) - successful.size)
   return pending.size
 })
 
@@ -1992,11 +2012,19 @@ const gopayBoardProgressStats = computed(() => {
       return Number.isFinite(current) ? Math.max(maxCurrent, current) : maxCurrent
     }, 0)
     : 0
+  const currentAccountAttempt = !isAutoRegister
+    ? events.reduce((maxCurrent, event) => {
+      const stage = String(event?.stage || '')
+      if (!['gopay_try_account', 'gopay_rotate_account', 'gopay_pending_retry_account'].includes(stage)) return maxCurrent
+      const current = Number(event?.attempt || event?.current || 0)
+      return Number.isFinite(current) ? Math.max(maxCurrent, current) : maxCurrent
+    }, 0)
+    : 0
   const attempted = isAutoRegister
     ? Math.max(Number(result.auto_register_attempted || 0), Number(progress.attempted || progress.attempt || 0), autoRegisterEventAttempted)
     : Array.isArray(result.attempted_emails)
-      ? result.attempted_emails.length
-      : Number(progress.attempted || progress.attempt || 0)
+      ? Math.max(result.attempted_emails.length, currentAccountAttempt)
+      : Math.max(Number(progress.attempted || progress.attempt || 0), currentAccountAttempt)
   const successfulEmails = new Set()
   const hasFinalSuccessfulEmails = Array.isArray(result.successful_emails)
   if (hasFinalSuccessfulEmails) {
