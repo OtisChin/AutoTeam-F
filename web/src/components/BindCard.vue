@@ -1538,6 +1538,7 @@ const gopayStageLabelMap = {
   register_finished: '注册完成',
   register_failed: '注册失败',
   gopay_oauth_login_started: '开始 OAuth 补登录',
+  gopay_oauth_login_retrying: 'OAuth 补登录重试',
   gopay_oauth_login_done: 'OAuth 补登录成功',
   gopay_oauth_login_failed: 'OAuth 补登录失败',
   gopay_oauth_phone_required_removed: 'OAuth 需要手机验证，已删除账号',

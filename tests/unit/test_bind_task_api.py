@@ -916,6 +916,74 @@ def test_gopay_task_runner_auto_oauth_after_success(monkeypatch):
     assert all(update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS for _email, update in captured["updates"])
 
 
+def test_gopay_task_runner_auto_oauth_retries_twice_after_success(monkeypatch):
+    captured = {"updates": [], "progress": [], "oauth_calls": []}
+    oauth_done = threading.Event()
+    account = {"email": "retry@example.com", "password": "pw1", "account_type": "free"}
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr(
+        "autoteam.accounts.find_account",
+        lambda loaded, email: account if email == account["email"] else None,
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
+    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+    monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
+    monkeypatch.setattr(api.time, "sleep", lambda _seconds: None)
+
+    def fake_run_gopay_bind_task(**kwargs):
+        captured["run_kwargs"] = kwargs
+        return {
+            "status": "success",
+            "message": "GoPay 批量绑定完成: 成功 1/1 个账号",
+            "email_used": "retry@example.com",
+            "checkout_url": "https://pay.openai.com/c/pay/cs_done",
+            "successful_emails": ["retry@example.com"],
+        }
+
+    monkeypatch.setattr("autoteam.gopay_executor.run_gopay_bind_task", fake_run_gopay_bind_task)
+
+    def fake_codex_login(email, acc, *, headless=False):
+        captured["oauth_calls"].append((email, acc))
+        if len(captured["oauth_calls"]) < 3:
+            raise RuntimeError(f"temporary oauth failure {len(captured['oauth_calls'])}")
+        oauth_done.set()
+        return {"email": email, "plan": "plus", "auth_file": f"data/auths/{email}.json"}
+
+    monkeypatch.setattr(api, "_run_account_codex_login_once", fake_codex_login)
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        captured["func"] = func
+        return {"task_id": "task-795", "command": command, "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    api.post_gopay_bind_task(
+        api.GoPayBindTaskParams(
+            email="retry@example.com",
+            account_emails=["retry@example.com"],
+            phone_number="+6287761973970",
+            country_code="62",
+            sms_url="https://it.tgflare.com/api/record?token=demo",
+            gopay_pin="558023",
+            auto_oauth_after_success=True,
+        )
+    )
+
+    result = captured["func"]()
+
+    assert result["task_status"] == "completed"
+    assert result["oauth_scheduled_emails"] == ["retry@example.com"]
+    assert oauth_done.wait(2)
+    assert len(captured["oauth_calls"]) == 3
+    stages = [progress["stage"] for progress in captured["progress"]]
+    assert stages.count("gopay_oauth_login_retrying") == 2
+    assert stages.count("gopay_oauth_login_done") == 1
+    assert "gopay_oauth_login_failed" not in stages
+
+
 def test_update_account_type_updates_local_account(monkeypatch):
     captured = {}
     account = {"email": "user@example.com", "status": "pending", "account_type": "free"}

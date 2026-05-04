@@ -4152,60 +4152,97 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             def _oauth_worker():
                 from autoteam.codex_auth import CodexOAuthPhoneRequired
 
-                try:
-                    latest_account = find_account(load_accounts(), success_email) or {"email": success_email}
-                    oauth_result = _run_account_codex_login_once(success_email, latest_account, headless=True)
-                    oauth_successful_emails.append(success_email)
-                    _append_task_progress(
-                        task_id,
-                        {
-                            "stage": "gopay_oauth_login_done",
-                            "email": success_email,
-                            "auth_file": oauth_result.get("auth_file") or "",
-                            "message": f"OAuth 补登录成功: {success_email}",
-                        },
-                    )
-                    logger.info(
-                        "[gopay-bind] OAuth login after GoPay success completed: task_id=%s email=%s auth_file=%s",
-                        task_id[:8] or "<unknown>",
-                        _safe_email_summary(success_email),
-                        oauth_result.get("auth_file") or "",
-                    )
-                except CodexOAuthPhoneRequired as exc:
-                    result_payload = _oauth_phone_required_result(success_email, exc)
-                    oauth_failed_emails.append(
-                        {
-                            "email": success_email,
-                            "error": str(exc),
-                            "failure_stage": "oauth_phone_required",
-                            "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
-                        }
-                    )
-                    _append_task_progress(
-                        task_id,
-                        {
-                            "stage": "gopay_oauth_phone_required_removed",
-                            "email": success_email,
-                            "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
-                            "message": result_payload["message"],
-                            "level": "warn",
-                        },
-                    )
-                except Exception as exc:
-                    oauth_failed_emails.append({"email": success_email, "error": str(exc)})
-                    _append_task_progress(
-                        task_id,
-                        {
-                            "stage": "gopay_oauth_login_failed",
-                            "email": success_email,
-                            "message": f"OAuth 补登录失败: {success_email}: {exc}",
-                        },
-                    )
-                    logger.exception(
-                        "[gopay-bind] OAuth login after GoPay success failed: task_id=%s email=%s",
-                        task_id[:8] or "<unknown>",
-                        _safe_email_summary(success_email),
-                    )
+                max_attempts = 3
+                retry_delay_seconds = 3
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        latest_account = find_account(load_accounts(), success_email) or {"email": success_email}
+                        oauth_result = _run_account_codex_login_once(success_email, latest_account, headless=True)
+                        oauth_successful_emails.append(success_email)
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_oauth_login_done",
+                                "email": success_email,
+                                "auth_file": oauth_result.get("auth_file") or "",
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "message": f"OAuth 补登录成功: {success_email}",
+                            },
+                        )
+                        logger.info(
+                            "[gopay-bind] OAuth login after GoPay success completed: task_id=%s email=%s auth_file=%s attempt=%d/%d",
+                            task_id[:8] or "<unknown>",
+                            _safe_email_summary(success_email),
+                            oauth_result.get("auth_file") or "",
+                            attempt,
+                            max_attempts,
+                        )
+                        return
+                    except CodexOAuthPhoneRequired as exc:
+                        result_payload = _oauth_phone_required_result(success_email, exc)
+                        oauth_failed_emails.append(
+                            {
+                                "email": success_email,
+                                "error": str(exc),
+                                "failure_stage": "oauth_phone_required",
+                                "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
+                            }
+                        )
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_oauth_phone_required_removed",
+                                "email": success_email,
+                                "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "message": result_payload["message"],
+                                "level": "warn",
+                            },
+                        )
+                        return
+                    except Exception as exc:
+                        if attempt < max_attempts:
+                            _append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "gopay_oauth_login_retrying",
+                                    "email": success_email,
+                                    "attempt": attempt,
+                                    "next_attempt": attempt + 1,
+                                    "max_attempts": max_attempts,
+                                    "message": f"OAuth 补登录失败，准备重试 {attempt + 1}/{max_attempts}: {success_email}: {exc}",
+                                    "level": "warn",
+                                },
+                            )
+                            logger.warning(
+                                "[gopay-bind] OAuth login after GoPay success failed, retrying: task_id=%s email=%s attempt=%d/%d error=%s",
+                                task_id[:8] or "<unknown>",
+                                _safe_email_summary(success_email),
+                                attempt,
+                                max_attempts,
+                                exc,
+                            )
+                            time.sleep(retry_delay_seconds)
+                            continue
+                        oauth_failed_emails.append({"email": success_email, "error": str(exc), "attempts": max_attempts})
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_oauth_login_failed",
+                                "email": success_email,
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "message": f"OAuth 补登录失败: {success_email}: {exc}",
+                            },
+                        )
+                        logger.exception(
+                            "[gopay-bind] OAuth login after GoPay success failed: task_id=%s email=%s attempts=%d",
+                            task_id[:8] or "<unknown>",
+                            _safe_email_summary(success_email),
+                            max_attempts,
+                        )
 
             threading.Thread(
                 target=_oauth_worker,
