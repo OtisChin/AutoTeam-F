@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -23,6 +24,25 @@ from autoteam.config import API_KEY
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)) or default)
+    except Exception:
+        return default
+
+
+def _gopay_auto_register_bind_delay_seconds() -> float:
+    min_seconds = max(0.0, _env_float("GOPAY_AUTO_REGISTER_BIND_DELAY_MIN", 10.0))
+    max_seconds = max(0.0, _env_float("GOPAY_AUTO_REGISTER_BIND_DELAY_MAX", 20.0))
+    if max_seconds < min_seconds:
+        min_seconds, max_seconds = max_seconds, min_seconds
+    if max_seconds <= 0:
+        return 0.0
+    if max_seconds == min_seconds:
+        return min_seconds
+    return random.uniform(min_seconds, max_seconds)
 
 app = FastAPI(
     title="AutoTeam API",
@@ -4157,7 +4177,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 for attempt in range(1, max_attempts + 1):
                     try:
                         latest_account = find_account(load_accounts(), success_email) or {"email": success_email}
-                        oauth_result = _run_account_codex_login_once(success_email, latest_account, headless=True)
+                        oauth_result = _run_account_codex_login_once(success_email, latest_account, headless=False)
                         oauth_successful_emails.append(success_email)
                         _append_task_progress(
                             task_id,
@@ -4271,7 +4291,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
 
         def _register_one_for_gopay(*, index: int = 1, total: int = 1) -> str:
             from autoteam.mail import TemporaryEmailClient
-            from autoteam.manager import create_account_direct
+            from autoteam.manager import create_account_direct, wrap_mail_client_with_auth_retry
 
             register_domain = auto_register_domains[(index - 1) % len(auto_register_domains)] if auto_register_domains else ""
             register_domain = str(register_domain or "").strip().lstrip("@")
@@ -4287,8 +4307,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     "message": f"自动注册已开始 ({index}/{total}): domain=@{register_domain}",
                 },
             )
-            mail_client = TemporaryEmailClient()
-            mail_client.login()
+            raw_mail_client = TemporaryEmailClient()
+            raw_mail_client.login()
+            mail_client = wrap_mail_client_with_auth_retry(raw_mail_client, log_prefix="GoPay自动注册")
             outcome = {}
 
             def _register_progress(progress: dict):
@@ -4398,6 +4419,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             payment_failed_emails: list[str] = []
             nonzero_blocked_emails: list[str] = []
             blocked_emails: list[str] = []
+            registered_emails: list[str] = []
+            bind_failed_emails: list[dict] = []
             last_result: dict = {}
             last_success_email = ""
 
@@ -4416,17 +4439,51 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 )
                 try:
                     current_email = _register_one_for_gopay(index=index, total=auto_register_count)
+                    _append_unique(registered_emails, current_email)
                     email = current_email
                     account_emails = []
-                    single_result = dict(_run_one_gopay_bind(current_email, []) or {})
                 except Exception as exc:
-                    logger.exception("[gopay-bind] auto-register GoPay attempt failed: index=%s/%s", index, auto_register_count)
+                    logger.exception("[gopay-bind] auto-register failed before GoPay bind: index=%s/%s", index, auto_register_count)
                     single_result = {
                         "status": "failed",
-                        "failure_stage": "gopay_auto_register" if not current_email else "post_submit",
-                        "message": f"自动注册 GoPay 尝试失败: {exc}",
+                        "failure_stage": "gopay_auto_register",
+                        "register_status": "failed",
+                        "bind_status": "not_started",
+                        "message": f"自动注册失败: {exc}",
                         "screenshot_paths": [],
                     }
+                else:
+                    delay_seconds = _gopay_auto_register_bind_delay_seconds()
+                    if delay_seconds > 0:
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_auto_register_bind_wait",
+                                "email": current_email,
+                                "current": index,
+                                "total": auto_register_count,
+                                "delay_seconds": round(delay_seconds, 1),
+                                "message": f"注册已成功，等待 {delay_seconds:.1f}s 后开始 GoPay 绑定: {current_email}",
+                            },
+                        )
+                        time.sleep(delay_seconds)
+                    try:
+                        single_result = dict(_run_one_gopay_bind(current_email, []) or {})
+                    except Exception as exc:
+                        logger.exception(
+                            "[gopay-bind] GoPay bind failed after auto-register success: index=%s/%s email=%s",
+                            index,
+                            auto_register_count,
+                            _safe_email_summary(current_email),
+                        )
+                        single_result = {
+                            "status": "failed",
+                            "failure_stage": "post_submit",
+                            "register_status": "success",
+                            "bind_status": "failed",
+                            "message": f"注册已成功，GoPay 绑定异常: {exc}",
+                            "screenshot_paths": [],
+                        }
                 single_result.setdefault("status", "failed")
                 single_result.setdefault("failure_stage", "")
                 single_result.setdefault("message", "")
@@ -4434,6 +4491,20 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 single_email = _normalized_email(single_result.get("email_used") or single_result.get("email") or current_email)
                 if single_email:
                     single_result["email_used"] = single_email
+                if current_email:
+                    single_result.setdefault("register_status", "success")
+                single_result.setdefault(
+                    "bind_status",
+                    "success" if single_result.get("status") == "success" else "failed" if current_email else "not_started",
+                )
+                if (
+                    current_email
+                    and single_result.get("status") != "success"
+                    and single_result.get("bind_status") == "failed"
+                    and not str(single_result.get("message") or "").startswith("注册已成功")
+                ):
+                    original_message = str(single_result.get("message") or "GoPay 绑定失败")
+                    single_result["message"] = f"注册已成功，GoPay 绑定失败: {original_message}"
                 single_result["auto_register_index"] = index
                 single_result["auto_register_total"] = auto_register_count
                 aggregate_results.append(single_result)
@@ -4455,11 +4526,21 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     _append_unique(successful_emails, single_email)
                     last_success_email = single_email or last_success_email
                 else:
+                    if single_email and single_result.get("register_status") == "success":
+                        bind_failed_emails.append(
+                            {
+                                "email": single_email,
+                                "failure_stage": single_result.get("failure_stage") or "",
+                                "message": single_result.get("message") or "",
+                            }
+                        )
                     failed_emails.append(
                         {
                             "email": single_email,
                             "failure_stage": single_result.get("failure_stage") or "",
                             "message": single_result.get("message") or "",
+                            "register_status": single_result.get("register_status") or "",
+                            "bind_status": single_result.get("bind_status") or "",
                         }
                     )
 
@@ -4497,8 +4578,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     "auto_register_results": aggregate_results,
                     "auto_register_count": auto_register_count,
                     "auto_register_attempted": attempted_count,
+                    "registered_emails": registered_emails,
                     "successful_emails": successful_emails,
                     "failed_emails": failed_emails,
+                    "bind_failed_emails": bind_failed_emails,
                     "rejected_emails": rejected_emails,
                     "payment_failed_emails": payment_failed_emails,
                     "nonzero_blocked_emails": nonzero_blocked_emails,

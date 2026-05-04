@@ -106,6 +106,54 @@ def _log_auto_cpa_sync_disabled(context: str):
     logger.info("[%s] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”", context)
 
 
+class MailClientAuthRetryWrapper:
+    """Serialize mail-service calls and retry once after auth invalidation."""
+
+    def __init__(self, inner, *, log_prefix: str = "注册账号"):
+        self._inner = inner
+        self._lock = threading.Lock()
+        self._log_prefix = log_prefix
+
+    def __getattr__(self, name):
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def _wrapped(*args, **kwargs):
+            with self._lock:
+                try:
+                    return attr(*args, **kwargs)
+                except Exception as exc:
+                    message = str(exc)
+                    if "身份认证失效" not in message:
+                        raise
+                    step_name = name
+                    logger.warning("[%s] 邮箱服务步骤 %s 返回身份认证失效，10s 后自动重登并重试一次", self._log_prefix, step_name)
+                    time.sleep(10)
+                    self._inner.login()
+                    try:
+                        return attr(*args, **kwargs)
+                    except Exception as retry_exc:
+                        retry_message = str(retry_exc)
+                        if "身份认证失效" in retry_message:
+                            logger.error(
+                                "[%s] 邮箱服务步骤 %s 在自动重登后仍失败: %s",
+                                self._log_prefix,
+                                step_name,
+                                retry_message,
+                            )
+                            raise Exception(
+                                f"邮箱服务步骤 {step_name} 身份认证失效，自动重登后重试仍失败: {retry_message}"
+                            ) from retry_exc
+                        raise
+
+        return _wrapped
+
+
+def wrap_mail_client_with_auth_retry(mail_client, *, log_prefix: str = "注册账号"):
+    return MailClientAuthRetryWrapper(mail_client, log_prefix=log_prefix)
+
+
 _GOOGLE_AUTO_REUSE_DOMAINS = {"gmail.com", "googlemail.com"}
 
 
@@ -3881,47 +3929,7 @@ def cmd_register_accounts(
     # 这里对 mail client 做共享 + 串行化，浏览器注册流程仍可并发，只有邮箱后端 API 被串行化。
     shared_mail_client = TemporaryEmailClient()
     shared_mail_client.login()
-
-    class _SynchronizedMailClient:
-        def __init__(self, inner):
-            self._inner = inner
-            self._lock = threading.Lock()
-
-        def __getattr__(self, name):
-            attr = getattr(self._inner, name)
-            if not callable(attr):
-                return attr
-
-            def _wrapped(*args, **kwargs):
-                with self._lock:
-                    try:
-                        return attr(*args, **kwargs)
-                    except Exception as exc:
-                        message = str(exc)
-                        if "身份认证失效" not in message:
-                            raise
-                        step_name = name
-                        logger.warning("[注册账号] 邮箱服务步骤 %s 返回身份认证失效，10s 后自动重登并重试一次", step_name)
-                        time.sleep(10)
-                        self._inner.login()
-                        try:
-                            return attr(*args, **kwargs)
-                        except Exception as retry_exc:
-                            retry_message = str(retry_exc)
-                            if "身份认证失效" in retry_message:
-                                logger.error(
-                                    "[注册账号] 邮箱服务步骤 %s 在自动重登后仍失败: %s",
-                                    step_name,
-                                    retry_message,
-                                )
-                                raise Exception(
-                                    f"邮箱服务步骤 {step_name} 身份认证失效，自动重登后重试仍失败: {retry_message}"
-                                ) from retry_exc
-                            raise
-
-            return _wrapped
-
-    mail_client = _SynchronizedMailClient(shared_mail_client)
+    mail_client = wrap_mail_client_with_auth_retry(shared_mail_client, log_prefix="注册账号")
     _emit_progress()
 
     def _worker(worker_id):

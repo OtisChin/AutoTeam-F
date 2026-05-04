@@ -1525,6 +1525,7 @@ const gopayStageLabelMap = {
   gopay_auto_register_next: '自动注册绑定进度',
   gopay_auto_register_started: '自动注册账号',
   gopay_auto_register_done: '自动注册完成',
+  gopay_auto_register_bind_wait: '注册后等待绑卡',
   register_email_creating: '创建注册邮箱',
   register_email_created: '注册邮箱已创建',
   register_attempt_started: '开始注册账号',
@@ -1661,13 +1662,13 @@ const gopayTopCards = computed(() => [
     meta: '',
   },
   {
-    label: '成功账号数',
+    label: '绑卡成功',
     value: String(gopayBoardProgressStats.value.successful || 0),
     color: 'text-emerald-400',
-    meta: '',
+    meta: gopayBoardRegistrationMeta.value,
   },
   {
-    label: '失败账号数',
+    label: '绑卡失败',
     value: String(gopayBoardFailureCount.value),
     color: 'text-red-400',
     meta: '',
@@ -1683,11 +1684,13 @@ const gopayBoardFailureCount = computed(() => {
     result.nonzero_blocked_emails,
     result.blocked_emails,
     result.skipped_emails,
+    result.bind_failed_emails,
+    result.failed_emails,
   ]
   for (const list of lists) {
     if (!Array.isArray(list)) continue
-    for (const email of list) {
-      const normalized = String(email || '').trim().toLowerCase()
+    for (const item of list) {
+      const normalized = String((item && typeof item === 'object') ? item.email : item || '').trim().toLowerCase()
       if (normalized) failedEmails.add(normalized)
     }
   }
@@ -1707,6 +1710,14 @@ const gopayBoardFailureCount = computed(() => {
   }
 
   return failedEmails.size
+})
+
+const gopayBoardRegistrationMeta = computed(() => {
+  const result = gopayTask.value?.result || {}
+  const params = gopayTask.value?.params || {}
+  if (!params.auto_register) return ''
+  const registered = Array.isArray(result.registered_emails) ? result.registered_emails.length : 0
+  return `注册成功 ${registered}`
 })
 
 const gopayBoardEmail = computed(() => {

@@ -57,6 +57,15 @@
 ### 安装
 
 ```bash
+# Windows 一键本地部署（.venv + pip，安装后自动启动 Web/API）
+deploy-local.cmd
+
+# macOS / Linux（已安装 PowerShell 时）
+pwsh ./deploy-local.ps1
+
+# 只安装依赖，不启动
+deploy-local.cmd -NoStart
+
 # Linux
 bash setup.sh
 # 或手动: uv sync && uv run playwright install chromium
@@ -66,7 +75,7 @@ uv sync
 uv run playwright install chromium
 ```
 
-支持 Linux、Windows、macOS。Windows/macOS 不需要 xvfb。
+`deploy-local.cmd` / `deploy-local.ps1` 会自动创建 `.venv`、用 pip 安装当前项目、安装 Playwright Chromium，并在缺少 `.env` 时从 `.env.example` 复制一份。项目支持 Linux、Windows、macOS。Windows/macOS 不需要 xvfb。
 
 ### 启动
 
