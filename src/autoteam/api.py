@@ -730,6 +730,10 @@ class AccountHubIngestPayload(BaseModel):
     auths: list[dict] = []
 
 
+class AccountHubSyncParams(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+
+
 def _normalized_email(value: str | None) -> str:
     return (value or "").strip().lower()
 
@@ -3104,11 +3108,14 @@ def post_account_hub_test(params: AccountHubConfigParams):
 
 
 @app.post("/api/account-hub/sync")
-def post_account_hub_sync():
+def post_account_hub_sync(params: AccountHubSyncParams):
     from autoteam.account_hub import upload_to_hub
 
+    emails = [_normalized_email(email) for email in (params.emails or []) if _normalized_email(email)]
+    if not emails:
+        raise HTTPException(status_code=400, detail="请选择要同步到账号 Hub 的账号")
     try:
-        result = upload_to_hub()
+        result = upload_to_hub(selected_emails=emails)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return result

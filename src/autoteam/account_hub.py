@@ -146,11 +146,38 @@ def _syncable_accounts(accounts: list[dict]) -> list[dict]:
     return [acc for acc in accounts if isinstance(acc, dict) and _is_syncable_account(acc)]
 
 
-def build_upload_payload(*, node_name: str | None = None, syncable_only: bool = False) -> dict:
+def _filter_accounts_by_emails(accounts: list[dict], selected_emails: list[str] | None) -> list[dict]:
+    if selected_emails is None:
+        return accounts
+    wanted = []
+    seen = set()
+    for value in selected_emails:
+        email = str(value or "").strip().lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        wanted.append(email)
+    if not wanted:
+        return []
+    by_email = {
+        str(acc.get("email") or "").strip().lower(): acc
+        for acc in accounts
+        if isinstance(acc, dict) and str(acc.get("email") or "").strip()
+    }
+    return [by_email[email] for email in wanted if email in by_email]
+
+
+def build_upload_payload(
+    *,
+    node_name: str | None = None,
+    syncable_only: bool = False,
+    selected_emails: list[str] | None = None,
+) -> dict:
     from autoteam.accounts import load_accounts
 
     name = str(node_name or get_config().get("name") or default_node_name()).strip() or default_node_name()
     accounts = load_accounts()
+    accounts = _filter_accounts_by_emails(accounts, selected_emails)
     if syncable_only:
         accounts = _syncable_accounts(accounts)
     auths = []
@@ -202,13 +229,22 @@ def _mark_accounts_synced(accounts_payload: list[dict], *, synced_at: float | No
     return updated
 
 
-def upload_to_hub(config: dict | None = None, *, syncable_only: bool = False) -> dict:
+def upload_to_hub(
+    config: dict | None = None,
+    *,
+    syncable_only: bool = False,
+    selected_emails: list[str] | None = None,
+) -> dict:
     cfg = normalize_config(config or get_config())
     if not cfg["url"]:
         raise ValueError("远程 Hub URL 不能为空")
     if not cfg["token"]:
         raise ValueError("远程 Hub Token 不能为空")
-    payload = build_upload_payload(node_name=cfg["name"], syncable_only=syncable_only)
+    payload = build_upload_payload(
+        node_name=cfg["name"],
+        syncable_only=syncable_only,
+        selected_emails=selected_emails,
+    )
     resp = requests.post(
         _hub_endpoint(cfg["url"], "/api/account-hub/ingest"),
         headers=_auth_headers(cfg["token"]),

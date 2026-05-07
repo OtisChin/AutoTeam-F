@@ -99,12 +99,12 @@
             class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition disabled:opacity-50 text-gray-400 hover:text-white">
             {{ syncing ? '同步中...' : '同步账号' }}
           </button>
-          <button @click="syncToAccountHub" :disabled="hubSyncing"
+          <button @click="syncToAccountHub" :disabled="hubSyncing || !selectedEmails.length"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-            :class="hubSyncing
+            :class="hubSyncing || !selectedEmails.length
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-violet-600/10 text-violet-300 border-violet-500/30 hover:bg-violet-600/20'">
-            {{ hubSyncing ? '上传中...' : '同步到账号Hub' }}
+            {{ hubSyncing ? '上传中...' : `同步到账号Hub (${selectedEmails.length})` }}
           </button>
         </div>
       </div>
@@ -1353,11 +1353,18 @@ async function syncAccounts() {
 }
 
 async function syncToAccountHub() {
+  const emails = selectedEmails.value
+  if (!emails.length) {
+    message.value = '请先勾选要同步到账号 Hub 的账号'
+    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+    setTimeout(() => { message.value = '' }, 5000)
+    return
+  }
   hubSyncing.value = true
   message.value = ''
   try {
-    const result = await api.syncAccountHub()
-    message.value = result.message || `已上传 ${result.received_accounts || 0} 个账号到账号 Hub`
+    const result = await api.syncAccountHub(emails)
+    message.value = result.message || `已上传 ${result.uploaded_accounts || result.received_accounts || 0} 个勾选账号到账号 Hub`
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     emit('refresh')
   } catch (e) {

@@ -112,3 +112,47 @@ def test_auto_upload_only_syncs_plus_team_pro_and_marks_uploaded(tmp_path, monke
     assert saved["pro@example.com"]["account_hub_synced"] is True
     assert not saved["free@example.com"].get("account_hub_synced")
     assert not saved["bad@example.com"].get("account_hub_synced")
+
+
+def test_upload_to_hub_can_limit_to_selected_emails(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+
+    accounts_mod.save_accounts(
+        [
+            {"email": "one@example.com", "status": "active", "account_type": "plus"},
+            {"email": "two@example.com", "status": "active", "account_type": "free"},
+            {"email": "three@example.com", "status": "active", "account_type": "team"},
+        ]
+    )
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"received_accounts": len(captured["json"]["accounts"])}
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(account_hub.requests, "post", fake_post)
+
+    result = account_hub.upload_to_hub(
+        {"url": "http://hub.local", "token": "secret", "name": "pc-01"},
+        selected_emails=["TWO@example.com", "missing@example.com", "two@example.com", "three@example.com"],
+    )
+
+    uploaded = [acc["email"] for acc in captured["json"]["accounts"]]
+    assert uploaded == ["two@example.com", "three@example.com"]
+    assert result["marked_synced_accounts"] == 2
+
+    saved = {acc["email"]: acc for acc in accounts_mod.load_accounts()}
+    assert not saved["one@example.com"].get("account_hub_synced")
+    assert saved["two@example.com"]["account_hub_synced"] is True
+    assert saved["three@example.com"]["account_hub_synced"] is True
