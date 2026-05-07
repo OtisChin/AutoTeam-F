@@ -822,12 +822,63 @@
           </div>
 
           <div>
-            <label class="block text-sm text-gray-400 mb-1">短信接口 Token / URL</label>
+            <label class="block text-sm text-gray-400 mb-1">OTP 接收方式</label>
+            <div class="grid grid-cols-2 gap-2">
+              <label
+                class="flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer transition"
+                :class="gopayOtpChannel === 'sms' ? 'border-blue-500/50 bg-blue-600/15 text-blue-100' : 'border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700'"
+              >
+                <input
+                  v-model="gopayForm.otpChannel"
+                  type="radio"
+                  value="sms"
+                  :disabled="gopaySubmitting || gopayTaskRunning"
+                  class="accent-blue-500"
+                />
+                短信接口
+              </label>
+              <label
+                class="flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer transition"
+                :class="gopayOtpChannel === 'whatsapp' ? 'border-emerald-500/50 bg-emerald-600/15 text-emerald-100' : 'border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700'"
+              >
+                <input
+                  v-model="gopayForm.otpChannel"
+                  type="radio"
+                  value="whatsapp"
+                  :disabled="gopaySubmitting || gopayTaskRunning"
+                  class="accent-emerald-500"
+                />
+                WhatsApp Web
+              </label>
+            </div>
+            <div v-if="gopayUsingWhatsAppOtp" class="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+              <div class="flex items-center justify-between gap-3">
+                <span>
+                  {{ whatsappOtpStatus?.running ? 'WhatsApp Web 监听中' : '提交任务前会自动启动 WhatsApp Web 监听。首次使用需要扫码登录。' }}
+                </span>
+                <button
+                  type="button"
+                  @click="startWhatsAppOtpListener"
+                  :disabled="whatsappOtpStarting || gopaySubmitting || gopayTaskRunning"
+                  class="shrink-0 px-2 py-1 rounded-md border border-emerald-500/30 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-50 disabled:opacity-50"
+                >
+                  {{ whatsappOtpStarting ? '启动中...' : (whatsappOtpStatus?.running ? '重新检测' : '启动') }}
+                </button>
+              </div>
+              <div v-if="whatsappOtpStatus?.login_required" class="mt-1 text-amber-200">WhatsApp Web 需要扫码登录。</div>
+              <div v-else-if="whatsappOtpStatus?.latest_otp" class="mt-1 text-emerald-200">最近识别到 OTP：{{ whatsappOtpStatus.latest_otp }}</div>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              {{ gopayUsingWhatsAppOtp ? '备用 OTP URL（可空）' : '短信接口 Token / URL' }}
+            </label>
             <input
               v-model.trim="gopayForm.smsUrl"
               type="text"
               :disabled="gopaySubmitting || gopayTaskRunning"
-              placeholder="https://it.tgflare.com/api/record?token=..."
+              :placeholder="gopayUsingWhatsAppOtp ? '留空则使用本机 WhatsApp Web 监听接口' : 'https://it.tgflare.com/api/record?token=...'"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
           </div>
@@ -1097,13 +1148,14 @@
             <textarea
               v-model="gopayForm.phonePoolText"
               rows="9"
-              placeholder="每行：国家区号|手机号|短信接口URL|GoPay PIN&#10;62|81997420107|https://it.tgflare.com/api/record?token=...|558023"
+              :placeholder="gopayPhonePoolPlaceholder"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
             ></textarea>
           </div>
 
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
             <div>有效手机号：<span class="text-gray-200">{{ gopayPhoneAccounts.length }}</span></div>
+            <div>OTP 来源：<span class="text-gray-200">{{ gopayUsingWhatsAppOtp ? 'WhatsApp Web' : '短信接口' }}</span></div>
             <div>轮换方式：<span class="text-gray-200">自动注册按注册序号轮换；批量绑卡按账号候选轮换。</span></div>
             <div>不勾选“使用手机号池”时，会继续使用上方单手机号配置。</div>
           </div>
@@ -1252,6 +1304,7 @@ const gopayForm = ref({
   phoneNumber: '81997420107',
   usePhonePool: false,
   phonePoolText: '',
+  otpChannel: 'sms',
   smsUrl: '',
   gopayPin: '',
   billingName: '',
@@ -1282,6 +1335,8 @@ const gopayLogScrollRef = ref(null)
 const gopayLoggedProgressEventIds = ref(new Set())
 const gopaySuccessNoticeVisible = ref(false)
 const gopaySuccessNoticeEmail = ref('')
+const whatsappOtpStatus = ref(null)
+const whatsappOtpStarting = ref(false)
 let bindTaskPollTimer = 0
 let gopayTaskPollTimer = 0
 let gopaySuccessNoticeTimer = 0
@@ -1423,6 +1478,14 @@ const gopayBatchActive = computed(() => {
   return Boolean(!gopayForm.value.autoRegister && gopayForm.value.batchMode && !gopayForm.value.checkoutUrl && gopaySelectedBatchEmails.value.length > 0)
 })
 
+const gopayOtpChannel = computed(() => {
+  return gopayForm.value.otpChannel === 'whatsapp' ? 'whatsapp' : 'sms'
+})
+
+const gopayUsingWhatsAppOtp = computed(() => {
+  return gopayOtpChannel.value === 'whatsapp'
+})
+
 const gopayEffectiveEmail = computed(() => {
   if (gopayForm.value.autoRegister) return ''
   if (gopayBatchActive.value) {
@@ -1441,6 +1504,17 @@ const gopayPhoneAccounts = computed(() => {
     .map(line => {
       const separator = line.includes('|') ? '|' : ','
       const parts = line.split(separator).map(part => String(part || '').trim()).filter(Boolean)
+      if (gopayUsingWhatsAppOtp.value) {
+        if (parts.length < 2) return null
+        const countryCode = parts.length >= 3 ? digitsOnly(parts[0]) || fallbackCountryCode : fallbackCountryCode
+        const phoneNumber = parts.length >= 3 ? parts[1] : parts[0]
+        const gopayPin = parts[parts.length - 1]
+        if (!phoneNumber || !gopayPin) return null
+        const key = `${countryCode}|${phoneNumber}|whatsapp`
+        if (seen.has(key)) return null
+        seen.add(key)
+        return { country_code: countryCode, phone_number: phoneNumber, sms_url: '', gopay_pin: gopayPin, otp_channel: 'whatsapp' }
+      }
       if (parts.length < 3) return null
       const countryCode = parts.length >= 4 ? digitsOnly(parts[0]) || fallbackCountryCode : fallbackCountryCode
       const phoneNumber = parts.length >= 4 ? parts[1] : parts[0]
@@ -1450,7 +1524,7 @@ const gopayPhoneAccounts = computed(() => {
       const key = `${countryCode}|${phoneNumber}|${smsUrl}`
       if (seen.has(key)) return null
       seen.add(key)
-      return { country_code: countryCode, phone_number: phoneNumber, sms_url: smsUrl, gopay_pin: gopayPin }
+      return { country_code: countryCode, phone_number: phoneNumber, sms_url: smsUrl, gopay_pin: gopayPin, otp_channel: 'sms' }
     })
     .filter(Boolean)
 })
@@ -1465,8 +1539,19 @@ const gopayPhonePoolSummary = computed(() => {
   return `已启用 ${gopayPhoneAccounts.value.length} 个手机号，提交任务时按顺序轮换。`
 })
 
+const gopayPhonePoolPlaceholder = computed(() => {
+  if (gopayUsingWhatsAppOtp.value) {
+    return '每行：国家区号|手机号|GoPay PIN\n86|15825989172|558023'
+  }
+  return '每行：国家区号|手机号|短信接口URL|GoPay PIN\n62|81997420107|https://it.tgflare.com/api/record?token=...|558023'
+})
+
 const gopaySinglePhoneComplete = computed(() => {
-  return Boolean(gopayForm.value.phoneNumber && gopayForm.value.smsUrl && gopayForm.value.gopayPin)
+  return Boolean(
+    gopayForm.value.phoneNumber
+    && gopayForm.value.gopayPin
+    && (gopayUsingWhatsAppOtp.value || gopayForm.value.smsUrl)
+  )
 })
 
 const gopayCanSubmit = computed(() => {
@@ -1756,9 +1841,11 @@ const gopayStageLabelMap = {
   sms_otp_resend_due: '2 分钟未收到 OTP，重新发送',
   sms_otp_resend_failed: '重新发送 OTP 失败',
   sms_otp_trigger_failed: '触发 GoPay SMS OTP 失败',
+  whatsapp_otp_trigger: '触发 WhatsApp OTP',
+  wait_whatsapp_otp: '等待 WhatsApp Web OTP',
   wait_otp: '等待 GoPay OTP',
   fetch_otp: '拉取 GoPay OTP',
-  otp_received: '收到 SMS OTP',
+  otp_received: '收到 GoPay OTP',
   otp_invalid: 'OTP 错误，继续等待新验证码',
   gopay_validate_otp: '校验 GoPay OTP',
   gopay_tokenize_pin: '生成 GoPay PIN token',
@@ -2236,6 +2323,47 @@ function confirmGoPayPhonePoolConfig() {
   closeGoPayPhonePoolConfig()
 }
 
+async function refreshWhatsAppOtpStatus() {
+  try {
+    whatsappOtpStatus.value = await api.getWhatsAppOtpStatus()
+  } catch (e) {
+    whatsappOtpStatus.value = {
+      running: false,
+      login_required: false,
+      latest_otp: '',
+      error: e.message,
+    }
+  }
+}
+
+async function startWhatsAppOtpListener({ silent = false } = {}) {
+  if (whatsappOtpStarting.value) return whatsappOtpStatus.value
+  whatsappOtpStarting.value = true
+  if (!silent) {
+    pushGoPayLog('正在启动 WhatsApp Web OTP 监听', 'info')
+  }
+  try {
+    const status = await api.startWhatsAppOtp({ headless: false })
+    whatsappOtpStatus.value = status
+    if (!silent) {
+      if (status?.login_required) {
+        pushGoPayLog('WhatsApp Web 已打开，请先扫码登录后再等待验证码', 'warn')
+      } else {
+        pushGoPayLog('WhatsApp Web OTP 监听已启动', 'success')
+      }
+    }
+    return status
+  } catch (e) {
+    if (!silent) {
+      pushGoPayLog(`启动 WhatsApp Web OTP 监听失败: ${e.message}`, 'error')
+      setMessage(`启动 WhatsApp Web OTP 监听失败: ${e.message}`, false)
+    }
+    throw e
+  } finally {
+    whatsappOtpStarting.value = false
+  }
+}
+
 function openGoPayAccountPicker() {
   gopayAccountPickerOpen.value = true
 }
@@ -2257,6 +2385,7 @@ function getRememberedGoPayForm() {
     phoneNumber: String(gopayForm.value.phoneNumber || '').trim(),
     usePhonePool: Boolean(gopayForm.value.usePhonePool),
     phonePoolText: String(gopayForm.value.phonePoolText || '').trim(),
+    otpChannel: gopayOtpChannel.value,
     smsUrl: String(gopayForm.value.smsUrl || '').trim(),
     proxyLabel: String(gopayForm.value.proxyLabel || '').trim(),
     proxyUrl: String(gopayForm.value.proxyUrl || '').trim(),
@@ -2289,6 +2418,7 @@ function loadGoPayFormState() {
       phoneNumber: String(saved.phoneNumber || '').trim(),
       usePhonePool: Boolean(saved.usePhonePool),
       phonePoolText: String(saved.phonePoolText || '').trim(),
+      otpChannel: saved.otpChannel === 'whatsapp' ? 'whatsapp' : 'sms',
       smsUrl: String(saved.smsUrl || '').trim(),
       proxyLabel: String(saved.proxyLabel || '').trim(),
       proxyUrl: String(saved.proxyUrl || '').trim(),
@@ -2900,6 +3030,17 @@ async function startGoPayBind() {
     'info'
   )
   try {
+    const effectiveOtpChannel = gopayOtpChannel.value
+    const effectiveSmsUrl = effectiveOtpChannel === 'whatsapp' ? '' : gopayForm.value.smsUrl
+    const effectivePhoneAccounts = gopayActivePhoneAccounts.value.map(account => ({
+      ...account,
+      otp_channel: effectiveOtpChannel,
+      sms_url: effectiveOtpChannel === 'whatsapp' ? '' : account.sms_url,
+    }))
+    if (gopayUsingWhatsAppOtp.value) {
+      await startWhatsAppOtpListener()
+      pushGoPayLog('OTP 来源已切换为 WhatsApp Web，本次任务不会触发 GoPay SMS OTP', 'info')
+    }
     const task = await api.startGoPayBind({
       email: gopayEffectiveEmail.value,
       account_emails: gopayBatchActive.value ? gopaySelectedBatchEmails.value : [],
@@ -2913,8 +3054,9 @@ async function startGoPayBind() {
       checkout_ui_mode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
       country_code: gopayForm.value.countryCode || '',
       phone_number: gopayForm.value.phoneNumber,
-      phone_accounts: gopayActivePhoneAccounts.value,
-      sms_url: gopayForm.value.smsUrl,
+      phone_accounts: effectivePhoneAccounts,
+      otp_channel: effectiveOtpChannel,
+      sms_url: effectiveSmsUrl,
       gopay_pin: gopayForm.value.gopayPin,
       proxy_url: gopayForm.value.proxyUrl || null,
       proxy_label: gopayForm.value.proxyLabel,
@@ -3002,6 +3144,9 @@ function openHistoryLink(link) {
 onMounted(() => {
   loadHistory()
   loadGoPayFormState()
+  if (gopayUsingWhatsAppOtp.value) {
+    refreshWhatsAppOtpStatus()
+  }
   if (gopayForm.value.autoRegister) {
     loadGoPayAutoRegisterDomains()
   }
@@ -3026,6 +3171,17 @@ watch(activeTab, (tab) => {
     loadCards()
   }
 })
+
+watch(
+  () => gopayForm.value.otpChannel,
+  (channel) => {
+    gopayForm.value.otpChannel = channel === 'whatsapp' ? 'whatsapp' : 'sms'
+    if (gopayForm.value.otpChannel === 'whatsapp') {
+      refreshWhatsAppOtpStatus()
+    }
+    saveGoPayFormState()
+  }
+)
 </script>
 
 <style scoped>

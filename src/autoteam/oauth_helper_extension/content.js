@@ -224,16 +224,23 @@
     }
 
     const passwordInput = queryFirst(["input[name='password']", "input[type='password']"]);
+    if (passwordInput && throttle("switch_otp")) {
+      const clicked = clickAny([
+        "一次性验证码", "邮箱验证码", "验证码登录", "验证码登陆", "使用验证码登录", "使用验证码登陆",
+        "用验证码登录", "用验证码登陆", "改用验证码", "改用邮箱验证码",
+        "email login", "email code", "continue with email code", "log in with code",
+        "login with code", "sign in with code", "use a code", "one-time", "otp"
+      ]);
+      if (clicked) {
+        await postEvent(config, { type: "otp_login_clicked", clicked });
+        return;
+      }
+    }
+
     if (passwordInput && !passwordInput.disabled && !passwordInput.readOnly && state.password && throttle("password")) {
       setNativeValue(passwordInput, state.password);
       await postEvent(config, { type: "password_filled" });
       setTimeout(() => clickButtonNear(passwordInput, ["continue", "继续", "log in", "登录"]), 300);
-      return;
-    }
-
-    if (passwordInput && !state.password && throttle("switch_otp")) {
-      const clicked = clickAny(["一次性验证码", "邮箱验证码", "email login", "email code", "one-time"]);
-      if (clicked) await postEvent(config, { type: "otp_login_clicked", clicked });
       return;
     }
 

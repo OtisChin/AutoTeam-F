@@ -44,6 +44,35 @@ def _gopay_auto_register_bind_delay_seconds() -> float:
         return min_seconds
     return random.uniform(min_seconds, max_seconds)
 
+
+def _default_whatsapp_otp_url() -> str:
+    base_url = str(os.environ.get("AUTOTEAM_LOCAL_BASE_URL") or "http://127.0.0.1:8787").strip().rstrip("/")
+    return f"{base_url}/otp/whatsapp/latest"
+
+
+def _mask_gopay_phone_for_log(phone: str) -> str:
+    digits = re.sub(r"\D+", "", str(phone or ""))
+    if not digits:
+        return ""
+    if len(digits) <= 4:
+        return "***"
+    return f"***{digits[-4:]}(len={len(digits)})"
+
+
+def _safe_url_for_log(url: str) -> str:
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    try:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(text)
+        host = parts.netloc or parts.path.split("/", 1)[0]
+        path = parts.path or ""
+        return f"host={host} path={path[:40]}{'...' if len(path) > 40 else ''}"
+    except Exception:
+        return text[:80]
+
 app = FastAPI(
     title="AutoTeam API",
     description="ChatGPT Team 账号自动轮转管理 API",
@@ -570,6 +599,7 @@ class GoPayPhoneAccountParams(BaseModel):
     phone_number: str = Field("", validation_alias=AliasChoices("phone_number", "phoneNumber"))
     sms_url: str = Field("", validation_alias=AliasChoices("sms_url", "smsUrl"))
     gopay_pin: str = Field("", validation_alias=AliasChoices("gopay_pin", "gopayPin"))
+    otp_channel: str = Field("", validation_alias=AliasChoices("otp_channel", "otpChannel"))
 
 
 class GoPayBindTaskParams(BaseModel):
@@ -592,6 +622,7 @@ class GoPayBindTaskParams(BaseModel):
     country_code: str = ""
     sms_url: str = ""
     gopay_pin: str = ""
+    otp_channel: str = Field("sms", validation_alias=AliasChoices("otp_channel", "otpChannel"))
     billing_name: str = ""
     billing_country: str = "US"
     billing_state: str = ""
@@ -640,6 +671,12 @@ class CardPoolRedeemBatchParams(BaseModel):
 
 class CardPoolFetchSmsParams(BaseModel):
     url: str
+
+
+class WhatsAppOtpStartParams(BaseModel):
+    profile_dir: str = Field("", validation_alias=AliasChoices("profile_dir", "profileDir"))
+    headless: bool = False
+    poll_interval_seconds: float = Field(2.0, validation_alias=AliasChoices("poll_interval_seconds", "pollIntervalSeconds"))
 
 
 class ManualRegisterParams(BaseModel):
@@ -2300,15 +2337,19 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
             auth_session_refresh_outcome["auth_session_file"] = auth_session_file
 
     if not bundle:
+        browser_login_kwargs = {
+            "mail_client": mail_client,
+            "use_personal": use_personal,
+            "native_oauth": native_oauth,
+            "headless": headless,
+            "mail_account_id": acc.get("cloudmail_account_id"),
+        }
+        if refresh_auth_session:
+            browser_login_kwargs["auth_session_callback"] = _capture_refreshed_auth_session
         bundle = login_codex_via_browser(
             email,
             acc.get("password", ""),
-            mail_client=mail_client,
-            use_personal=use_personal,
-            native_oauth=native_oauth,
-            headless=headless,
-            mail_account_id=acc.get("cloudmail_account_id"),
-            auth_session_callback=_capture_refreshed_auth_session if refresh_auth_session else None,
+            **browser_login_kwargs,
         )
     if not bundle:
         raise RuntimeError(f"Codex 登录失败: {email}")
@@ -3640,6 +3681,63 @@ def post_card_pool_fetch_sms(params: CardPoolFetchSmsParams):
     }
 
 
+@app.get("/api/whatsapp-otp/status")
+def get_whatsapp_otp_status():
+    from autoteam.whatsapp_otp import get_default_listener
+
+    return get_default_listener().status()
+
+
+@app.post("/api/whatsapp-otp/start")
+def post_whatsapp_otp_start(params: WhatsAppOtpStartParams = WhatsAppOtpStartParams()):
+    from autoteam.whatsapp_otp import DEFAULT_PROFILE_DIR, WhatsAppOtpListener, get_default_listener
+
+    global _whatsapp_otp_listener
+    profile_dir = Path(params.profile_dir).expanduser() if str(params.profile_dir or "").strip() else DEFAULT_PROFILE_DIR
+    listener = get_default_listener()
+    if str(listener.profile_dir) != str(profile_dir) or listener.headless != bool(params.headless):
+        listener.stop()
+        _whatsapp_otp_listener = WhatsAppOtpListener(
+            profile_dir=profile_dir,
+            headless=bool(params.headless),
+            poll_interval_seconds=float(params.poll_interval_seconds or 2.0),
+        )
+        listener = _whatsapp_otp_listener
+        import autoteam.whatsapp_otp as whatsapp_otp_module
+
+        whatsapp_otp_module._DEFAULT_LISTENER = listener
+    return listener.start()
+
+
+@app.post("/api/whatsapp-otp/stop")
+def post_whatsapp_otp_stop():
+    from autoteam.whatsapp_otp import get_default_listener
+
+    return get_default_listener().stop()
+
+
+@app.post("/api/whatsapp-otp/clear")
+def post_whatsapp_otp_clear():
+    from autoteam.whatsapp_otp import get_default_listener
+
+    return get_default_listener().clear()
+
+
+@app.get("/api/whatsapp-otp/latest")
+def get_whatsapp_otp_latest(max_age_seconds: int = 600):
+    from autoteam.whatsapp_otp import get_default_listener
+
+    return get_default_listener().latest_response(max_age_seconds=max_age_seconds)
+
+
+@app.get("/otp/whatsapp/latest")
+def get_whatsapp_otp_latest_public(max_age_seconds: int = 600):
+    """Local, auth-free OTP endpoint compatible with existing GoPay sms_url polling."""
+    from autoteam.whatsapp_otp import get_default_listener
+
+    return get_default_listener().latest_response(max_age_seconds=max_age_seconds)
+
+
 # ---------------------------------------------------------------------------
 # 日志收集
 # ---------------------------------------------------------------------------
@@ -4102,6 +4200,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     country_code = str(params.country_code or "").strip()
     sms_url = str(params.sms_url or "").strip()
     gopay_pin = str(params.gopay_pin or "").strip()
+    otp_channel = str(params.otp_channel or "sms").strip().lower()
+    if otp_channel not in {"sms", "whatsapp"}:
+        raise HTTPException(status_code=400, detail="otp_channel 只支持 sms 或 whatsapp")
     phone_accounts: list[dict] = []
     seen_phone_accounts: set[tuple[str, str, str]] = set()
     for raw_phone_account in params.phone_accounts or []:
@@ -4109,8 +4210,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         account_phone_number = str(raw_phone_account.phone_number or "").strip()
         account_sms_url = str(raw_phone_account.sms_url or "").strip()
         account_gopay_pin = str(raw_phone_account.gopay_pin or "").strip()
+        account_otp_channel = str(raw_phone_account.otp_channel or otp_channel or "sms").strip().lower()
+        if account_otp_channel not in {"sms", "whatsapp"}:
+            raise HTTPException(status_code=400, detail="phone_accounts otp_channel 只支持 sms 或 whatsapp")
         if not account_phone_number and not account_sms_url and not account_gopay_pin:
             continue
+        if account_otp_channel == "whatsapp":
+            account_sms_url = _default_whatsapp_otp_url()
         if not account_phone_number or not account_sms_url or not account_gopay_pin:
             raise HTTPException(status_code=400, detail="phone_accounts 每项都必须填写 phone_number、sms_url、gopay_pin")
         phone_key = (account_country_code, account_phone_number, account_sms_url)
@@ -4123,8 +4229,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 "phone_number": account_phone_number,
                 "sms_url": account_sms_url,
                 "gopay_pin": account_gopay_pin,
+                "otp_channel": account_otp_channel,
             }
         )
+    if otp_channel == "whatsapp":
+        sms_url = _default_whatsapp_otp_url()
     if not phone_accounts and (phone_number or sms_url or gopay_pin):
         phone_accounts.append(
             {
@@ -4132,6 +4241,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 "phone_number": phone_number,
                 "sms_url": sms_url,
                 "gopay_pin": gopay_pin,
+                "otp_channel": otp_channel,
             }
         )
     if phone_accounts:
@@ -4140,6 +4250,21 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         country_code = str(primary_phone_account.get("country_code") or "").strip()
         sms_url = str(primary_phone_account.get("sms_url") or "").strip()
         gopay_pin = str(primary_phone_account.get("gopay_pin") or "").strip()
+        otp_channel = str(primary_phone_account.get("otp_channel") or otp_channel or "sms").strip().lower()
+    logger.info(
+        "[API] GoPay OTP config resolved: otp_channel=%s sms_url=%s phone_accounts=%s",
+        otp_channel,
+        _safe_url_for_log(sms_url) if sms_url else "<empty>",
+        [
+            {
+                "country_code": item.get("country_code") or "",
+                "phone_number": _mask_gopay_phone_for_log(item.get("phone_number") or ""),
+                "otp_channel": item.get("otp_channel") or otp_channel,
+                "sms_url": _safe_url_for_log(item.get("sms_url") or "") if item.get("sms_url") else "<empty>",
+            }
+            for item in phone_accounts
+        ],
+    )
     billing_name = str(params.billing_name or "").strip()
     billing_country = str(params.billing_country or "").strip()
     billing_state = str(params.billing_state or "").strip()
@@ -4423,104 +4548,33 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             )
 
         def _refresh_gopay_auth_session(refresh_email: str, failure_result: dict | None = None) -> dict:
-            from autoteam.codex_auth import (
-                CodexOAuthAccountDeactivated,
-                CodexOAuthLoginRequired,
-                CodexOAuthPhoneRequired,
-            )
-
             normalized = _normalized_email(refresh_email)
             if not normalized:
-                return {"status": "failed", "message": "刷新 auth_session 失败: 邮箱为空"}
+                return {"status": "failed", "message": "auth_session access token 已失效，但邮箱为空，无法标记废弃"}
             if normalized in auth_session_refresh_attempted:
-                return {"status": "failed", "message": f"auth_session 已刷新过一次，仍然失效: {normalized}"}
+                return {"status": "failed", "message": f"auth_session access token 已失效，账号已标记废弃: {normalized}"}
             auth_session_refresh_attempted.add(normalized)
-
+            message = (
+                "auth_session access token 已失效，说明账号已无法使用当前凭证登录，"
+                f"账号已标记 Fail/废弃: {normalized}"
+            )
+            _mark_gopay_token_invalidated_fail(
+                normalized,
+                reason="gopay_token_invalidated",
+                message=message,
+                failure_stage=(failure_result or {}).get("failure_stage") or "token_invalidated",
+            )
             _append_task_progress(
                 task_id,
                 {
-                    "stage": "gopay_auth_session_refresh_started",
+                    "stage": "gopay_auth_session_refresh_failed",
                     "email": normalized,
                     "failure_stage": (failure_result or {}).get("failure_stage") or "token_invalidated",
-                    "message": f"GoPay 遇到 token_invalidated，正在重新登录刷新 auth_session: {normalized}",
-                },
-            )
-            latest_account = find_account(load_accounts(), normalized)
-            if not latest_account:
-                message = f"刷新 auth_session 失败，账号不存在: {normalized}"
-                _append_task_progress(
-                    task_id,
-                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
-                )
-                return {"status": "failed", "message": message}
-
-            try:
-                login_result = _run_account_codex_login_once(normalized, latest_account, headless=False, refresh_auth_session=True)
-            except CodexOAuthPhoneRequired as exc:
-                message = f"刷新 auth_session 需要手机验证，账号已标记 Fail/废弃: {normalized}"
-                _mark_gopay_token_invalidated_fail(
-                    normalized,
-                    reason="gopay_token_invalidated_phone_required",
-                    message=message,
-                    failure_stage="oauth_phone_required",
-                )
-                _append_task_progress(
-                    task_id,
-                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
-                )
-                return {"status": "failed", "message": message, "error": str(exc)}
-            except CodexOAuthAccountDeactivated as exc:
-                message = f"刷新 auth_session 发现账号停用，账号已标记 Fail/废弃: {normalized}"
-                _mark_gopay_token_invalidated_fail(
-                    normalized,
-                    reason="gopay_token_invalidated_account_deactivated",
-                    message=message,
-                    failure_stage="oauth_account_deactivated",
-                )
-                _append_task_progress(
-                    task_id,
-                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
-                )
-                return {"status": "failed", "message": message, "error": str(exc)}
-            except CodexOAuthLoginRequired as exc:
-                message = f"刷新 auth_session 登录未完成，账号已标记 Fail/废弃: {normalized}: {exc}"
-                _mark_gopay_token_invalidated_fail(
-                    normalized,
-                    reason="gopay_token_invalidated_login_required",
-                    message=message,
-                    failure_stage="oauth_login_required",
-                )
-                _append_task_progress(
-                    task_id,
-                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
-                )
-                return {"status": "failed", "message": message, "error": str(exc)}
-            except Exception as exc:
-                message = f"刷新 auth_session 失败，账号已标记 Fail/废弃: {normalized}: {exc}"
-                _mark_gopay_token_invalidated_fail(
-                    normalized,
-                    reason="gopay_token_invalidated_refresh_failed",
-                    message=message,
-                    failure_stage="oauth_refresh_failed",
-                )
-                _append_task_progress(
-                    task_id,
-                    {"stage": "gopay_auth_session_refresh_failed", "email": normalized, "message": message, "level": "warn"},
-                )
-                return {"status": "failed", "message": message, "error": str(exc)}
-
-            auth_session_file = str((login_result or {}).get("auth_session_file") or (login_result or {}).get("auth_file") or "")
-            message = f"auth_session 已刷新，准备重试 GoPay: {normalized}"
-            _append_task_progress(
-                task_id,
-                {
-                    "stage": "gopay_auth_session_refresh_done",
-                    "email": normalized,
-                    "auth_session_file": auth_session_file,
                     "message": message,
+                    "level": "warn",
                 },
             )
-            return {"status": "success", "auth_session_file": auth_session_file, "message": message}
+            return {"status": "failed", "message": message}
 
         def _gopay_progress(progress: dict):
             _update_current_task_progress(progress)
@@ -4656,6 +4710,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 country_code=str(active_phone_account.get("country_code") or country_code),
                 sms_url=str(active_phone_account.get("sms_url") or sms_url),
                 gopay_pin=str(active_phone_account.get("gopay_pin") or gopay_pin),
+                otp_channel=str(active_phone_account.get("otp_channel") or otp_channel),
                 phone_accounts=active_phone_accounts,
                 billing_info={
                     "name": billing_name,
@@ -5104,6 +5159,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             "phone_number": item.get("phone_number") or "",
             "sms_url_present": bool(item.get("sms_url")),
             "gopay_pin_present": bool(item.get("gopay_pin")),
+            "otp_channel": item.get("otp_channel") or otp_channel,
         }
         for item in phone_accounts
     ]
@@ -5618,6 +5674,12 @@ def _start_auto_check():
 @app.on_event("shutdown")
 def _stop_auto_check():
     _auto_check_stop.set()
+    try:
+        from autoteam.whatsapp_otp import get_default_listener
+
+        get_default_listener().stop()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

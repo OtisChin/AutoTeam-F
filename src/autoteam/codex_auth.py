@@ -603,6 +603,40 @@ _EMAIL_INPUT_SELECTORS = (
     'input[autocomplete="username"]'
 )
 _PASSWORD_INPUT_SELECTORS = 'input[name="password"], input[type="password"]'
+_EMAIL_CODE_LOGIN_TEXTS = (
+    "一次性验证码",
+    "邮箱验证码",
+    "验证码登录",
+    "验证码登陆",
+    "使用验证码登录",
+    "使用验证码登陆",
+    "用验证码登录",
+    "用验证码登陆",
+    "改用验证码",
+    "改用邮箱验证码",
+    "使用电子邮件验证码",
+    "通过电子邮件接收验证码",
+    "透过电子邮件接收验证码",
+    "Email code",
+    "email code",
+    "Email login",
+    "email login",
+    "Continue with email code",
+    "Log in with code",
+    "Login with code",
+    "Sign in with code",
+    "Use a code",
+    "Use code",
+    "one-time",
+    "One-time",
+    "OTP",
+    "otp",
+)
+_EMAIL_CODE_LOGIN_SELECTOR = ", ".join(
+    [f'button:has-text("{text}")' for text in _EMAIL_CODE_LOGIN_TEXTS]
+    + [f'a:has-text("{text}")' for text in _EMAIL_CODE_LOGIN_TEXTS]
+    + [f'[role="button"]:has-text("{text}")' for text in _EMAIL_CODE_LOGIN_TEXTS]
+)
 _OTP_INVALID_HINTS = (
     "invalid code",
     "incorrect code",
@@ -825,17 +859,16 @@ def _fill_auth_password_if_present(page, password, *, timeout=5000):
         pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
         if not pwd_input.is_visible(timeout=timeout):
             return False
+        if _click_email_code_login_if_present(page):
+            logger.info("[Codex] 检测到密码页，已切换邮箱验证码登录")
+            return True
         if password:
             if not _fill_text_field_like_user(page, pwd_input, password):
                 return False
             if not _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in", "登录"]):
                 return False
         else:
-            otp_btn = page.locator(
-                'button:has-text("一次性验证码"), button:has-text("邮箱验证码"), '
-                'button:has-text("one-time"), button:has-text("email login"), '
-                'button:has-text("Email login"), a:has-text("one-time"), a:has-text("Email login")'
-            ).first
+            otp_btn = page.locator(_EMAIL_CODE_LOGIN_SELECTOR).first
             if otp_btn.is_visible(timeout=3000):
                 otp_btn.click()
             else:
@@ -1023,28 +1056,49 @@ def _poll_login_otp_then_resend_once(
 
 
 def _click_email_code_login_if_present(page) -> bool:
-    selectors = (
-        'button:has-text("一次性验证码")',
-        'button:has-text("邮箱验证码")',
-        'button:has-text("Email code")',
-        'button:has-text("Email login")',
-        'button:has-text("one-time")',
-        'button:has-text("One-time")',
-        'a:has-text("一次性验证码")',
-        'a:has-text("邮箱验证码")',
-        'a:has-text("Email code")',
-        'a:has-text("Email login")',
-        'a:has-text("one-time")',
-        'a:has-text("One-time")',
-    )
-    for selector in selectors:
-        try:
-            control = page.locator(selector).first
-            if control.is_visible(timeout=500):
-                control.click()
-                return True
-        except Exception:
-            continue
+    try:
+        control = page.locator(_EMAIL_CODE_LOGIN_SELECTOR).first
+        if control.is_visible(timeout=500):
+            control.click()
+            return True
+    except Exception:
+        pass
+    try:
+        clicked = page.evaluate(
+            """(labels) => {
+              const visible = (el) => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+              };
+              const norm = (text) => String(text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+              const skip = /重新发送|重發|resend|send again/i;
+              const zhCode = /验证码|驗證碼|验证代码|驗證代碼/;
+              const zhAction = /登录|登陆|登入|使用|改用|切换|切換|通过|透过|繼續|继续/;
+              const enCode = /(email\\s*)?(code|one[-\\s]?time|otp)/i;
+              const enAction = /(log\\s*in|login|sign\\s*in|continue|use|try|switch)/i;
+              const targets = Array.from(document.querySelectorAll('button, a, [role="button"], [tabindex]'));
+              for (const el of targets) {
+                if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+                const text = norm(el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '');
+                if (!text || skip.test(text)) continue;
+                if (labels.some((label) => text.includes(norm(label)))) {
+                  el.click();
+                  return text;
+                }
+                if ((zhCode.test(text) && zhAction.test(text)) || (enCode.test(text) && enAction.test(text))) {
+                  el.click();
+                  return text;
+                }
+              }
+              return '';
+            }""",
+            list(_EMAIL_CODE_LOGIN_TEXTS),
+        )
+        return bool(clicked)
+    except Exception:
+        pass
     return False
 
 
@@ -1195,41 +1249,6 @@ def _login_codex_via_browser_simple(
                 time.sleep(2)
                 continue
 
-            try:
-                pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
-                password_visible = pwd_input.is_visible(timeout=500)
-            except Exception:
-                pwd_input = None
-                password_visible = False
-            if password_visible:
-                if password:
-                    if password_submitted:
-                        if time.time() - password_submitted_at < 15:
-                            time.sleep(1)
-                            continue
-                        password_required_detail = f"OAuth 密码提交后仍停留在密码页: {email}"
-                        final_oauth_url = page.url or ""
-                        break
-                    logger.info("[Codex] 极简 OAuth 检测到密码页，按注册流程填写密码: %s", email)
-                    if not _fill_text_field_like_user(page, pwd_input, password):
-                        password_required_detail = f"OAuth 密码输入框填写失败: {email}"
-                        final_oauth_url = page.url or ""
-                        break
-                    time.sleep(0.5)
-                    _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in", "登录"])
-                    password_submitted = True
-                    password_submitted_at = time.time()
-                    time.sleep(3)
-                    _screenshot(page, "codex_simple_02_after_password.png")
-                    continue
-                if _click_email_code_login_if_present(page):
-                    logger.info("[Codex] 极简 OAuth 密码页无密码，已切换邮箱验证码登录: %s", email)
-                    time.sleep(2)
-                    continue
-                password_required_detail = f"OAuth 需要密码但账号没有保存密码，且未找到邮箱验证码入口: {email}"
-                final_oauth_url = page.url or ""
-                break
-
             otp_input = _otp_input_locator(page)
             if otp_input and otp_input.is_visible(timeout=500):
                 logger.info("[Codex] 极简 OAuth 检测到验证码输入框: %s", email)
@@ -1262,6 +1281,45 @@ def _login_codex_via_browser_simple(
                 time.sleep(3)
                 _screenshot(page, "codex_simple_02_after_otp.png")
                 continue
+
+            try:
+                pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
+                password_visible = pwd_input.is_visible(timeout=500)
+            except Exception:
+                pwd_input = None
+                password_visible = False
+            if password_visible:
+                if _click_email_code_login_if_present(page):
+                    logger.info("[Codex] 极简 OAuth 检测到密码页，已切换邮箱验证码登录: %s", email)
+                    time.sleep(2)
+                    continue
+                if password:
+                    if password_submitted:
+                        if time.time() - password_submitted_at < 15:
+                            time.sleep(1)
+                            continue
+                        password_required_detail = f"OAuth 密码提交后仍停留在密码页: {email}"
+                        final_oauth_url = page.url or ""
+                        break
+                    logger.info("[Codex] 极简 OAuth 检测到密码页，按注册流程填写密码: %s", email)
+                    if not _fill_text_field_like_user(page, pwd_input, password):
+                        password_required_detail = f"OAuth 密码输入框填写失败: {email}"
+                        final_oauth_url = page.url or ""
+                        break
+                    time.sleep(0.5)
+                    _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in", "登录"])
+                    password_submitted = True
+                    password_submitted_at = time.time()
+                    time.sleep(3)
+                    _screenshot(page, "codex_simple_02_after_password.png")
+                    continue
+                if _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in", "登录"]):
+                    logger.info("[Codex] 极简 OAuth 密码页未找到验证码入口，已提交继续按钮等待页面反馈: %s", email)
+                    time.sleep(3)
+                    continue
+                password_required_detail = f"OAuth 需要密码但账号没有保存密码，且未找到邮箱验证码入口: {email}"
+                final_oauth_url = page.url or ""
+                break
 
             if _simple_fill_about_you_if_present(page):
                 _screenshot(page, "codex_simple_03_after_about_you.png")
@@ -1472,15 +1530,15 @@ def login_codex_via_browser(
             try:
                 pi = _page.locator(_PASSWORD_INPUT_SELECTORS).first
                 if pi.is_visible(timeout=5000):
-                    if password:
+                    if _click_email_code_login_if_present(_page):
+                        logger.info("[Codex] ChatGPT 登录密码页已切换邮箱验证码登录")
+                    elif password:
                         pi.fill(password)
                         time.sleep(0.5)
                         _click_primary_auth_button(_page, pi, ["Continue", "继续", "Log in"])
                     else:
                         # 没有密码，点击"使用一次性验证码登录"
-                        otp_btn = _page.locator(
-                            'button:has-text("一次性验证码"), button:has-text("one-time"), button:has-text("email login")'
-                        ).first
+                        otp_btn = _page.locator(_EMAIL_CODE_LOGIN_SELECTOR).first
                         if otp_btn.is_visible(timeout=3000):
                             logger.info("[Codex] 无密码，点击一次性验证码登录")
                             otp_btn.click()
@@ -1883,16 +1941,16 @@ def login_codex_via_browser(
             try:
                 pwd_field = page.locator(_PASSWORD_INPUT_SELECTORS).first
                 if pwd_field.is_visible(timeout=2000):
-                    if password:
+                    if _click_email_code_login_if_present(page):
+                        logger.info("[Codex] 密码页已切换邮箱验证码登录 (step %d)", step + 1)
+                    elif password:
                         logger.info("[Codex] 需要重新输入密码 (step %d)...", step + 1)
                         pwd_field.fill(password)
                         time.sleep(0.5)
                         _click_primary_auth_button(page, pwd_field, ["Continue", "继续", "Log in"])
                     else:
                         # 没密码，点"使用一次性验证码登录"
-                        otp_btn = page.locator(
-                            'button:has-text("一次性验证码"), button:has-text("one-time"), button:has-text("email login")'
-                        ).first
+                        otp_btn = page.locator(_EMAIL_CODE_LOGIN_SELECTOR).first
                         if otp_btn.is_visible(timeout=3000):
                             logger.info("[Codex] 无密码，点击一次性验证码登录 (step %d)", step + 1)
                             otp_btn.click()
@@ -2284,18 +2342,7 @@ class SessionCodexAuthFlow:
         'input[autocomplete="one-time-code"]',
     ]
     OTP_OPTION_SELECTORS = [
-        'button:has-text("一次性验证码")',
-        'button:has-text("邮箱验证码")',
-        'button:has-text("Email login")',
-        'button:has-text("email login")',
-        'button:has-text("one-time")',
-        'button:has-text("One-time")',
-        'button:has-text("email code")',
-        'button:has-text("Email code")',
-        'a:has-text("一次性验证码")',
-        'a:has-text("邮箱验证码")',
-        'a:has-text("Email login")',
-        'a:has-text("one-time")',
+        _EMAIL_CODE_LOGIN_SELECTOR,
     ]
 
     def __init__(
@@ -2540,6 +2587,13 @@ class SessionCodexAuthFlow:
         return True
 
     def _switch_password_to_otp(self):
+        try:
+            if _click_email_code_login_if_present(self.page):
+                logger.info("[Codex] 主号流程检测到密码页，自动切换到一次性验证码登录")
+                time.sleep(3)
+                return True
+        except Exception:
+            pass
         otp_entry = self._visible_locator(self.OTP_OPTION_SELECTORS, timeout_ms=1500)
         if not otp_entry:
             return False
@@ -2981,6 +3035,11 @@ class ChromeCDPCodexAuthFlow:
         return False
 
     async def _handle_password_step(self):
+        clicked = await self._click_by_text(list(_EMAIL_CODE_LOGIN_TEXTS))
+        if clicked:
+            logger.info("[Codex] Chrome CDP OAuth 已切换邮箱验证码登录")
+            await asyncio.sleep(2)
+            return True
         if self.password:
             result = await self._fill_input(SessionCodexAuthFlow.PASSWORD_SELECTORS, self.password)
             if result:
@@ -2989,13 +3048,6 @@ class ChromeCDPCodexAuthFlow:
                 await self._click_by_text(["Continue", "继续", "Log in", "登录"])
                 await asyncio.sleep(3)
                 return True
-        clicked = await self._click_by_text(
-            ["一次性验证码", "邮箱验证码", "Email login", "Email code", "one-time", "One-time"]
-        )
-        if clicked:
-            logger.info("[Codex] Chrome CDP OAuth 已切换邮箱验证码登录")
-            await asyncio.sleep(2)
-            return True
         return False
 
     async def _handle_code_step(self):

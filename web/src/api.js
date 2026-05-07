@@ -102,6 +102,11 @@ export const api = {
   startCleanup: (maxSeats = null) => request('POST', '/tasks/cleanup', { max_seats: maxSeats }),
   startBindCard: (payload) => request('POST', '/tasks/bind-card', payload),
   startGoPayBind: (payload) => request('POST', '/tasks/gopay-bind', payload),
+  getWhatsAppOtpStatus: () => request('GET', '/whatsapp-otp/status'),
+  startWhatsAppOtp: (payload = {}) => request('POST', '/whatsapp-otp/start', payload),
+  stopWhatsAppOtp: () => request('POST', '/whatsapp-otp/stop'),
+  clearWhatsAppOtp: () => request('POST', '/whatsapp-otp/clear'),
+  getLatestWhatsAppOtp: () => request('GET', '/whatsapp-otp/latest'),
 
   getTasks: () => request('GET', '/tasks'),
   getTask: (id) => request('GET', `/tasks/${id}`),

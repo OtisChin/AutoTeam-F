@@ -51,6 +51,10 @@ CHECKOUT_ERROR_PATTERNS = (
     re.compile(r"customer'?s location.*(?:not|isn'?t).*recognized", re.IGNORECASE),
     re.compile(r"valid customer address", re.IGNORECASE),
     re.compile(r"automatically calculate tax", re.IGNORECASE),
+    re.compile(r"http\s*429", re.IGNORECASE),
+    re.compile(r"too many requests", re.IGNORECASE),
+    re.compile(r"rate limit", re.IGNORECASE),
+    re.compile(r"请求.*(?:过多|频繁)"),
 )
 
 CHECKOUT_PAYMENT_NOT_APPROVED_PATTERNS = (
@@ -405,6 +409,7 @@ def _gopay_progress_level(stage: str) -> str:
         "midtrans_already_linked",
         "midtrans_already_linked_failed",
         "gopay_rate_limited",
+        "midtrans_linking_retry",
         "sms_otp_resend_due",
         "sms_otp_resend_failed",
         "otp_invalid",
@@ -468,11 +473,14 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "stripe_zero_due_confirmed": "已确认 Stripe 应付金额为 0",
         "midtrans_load_transaction": "正在读取 Midtrans 交易",
         "midtrans_linking": "正在发起 GoPay 账户绑定",
+        "midtrans_linking_retry": "GoPay 账户绑定接口 429 限流，正在直接重试协议接口",
         "gopay_validate_reference": "正在校验 GoPay 绑定引用",
         "gopay_user_consent": "正在确认 GoPay 授权",
         "trigger_sms_otp": "正在触发 GoPay SMS OTP",
         "sms_otp_triggered": "已触发 GoPay SMS OTP",
         "sms_otp_resend_due": "1 分钟未收到 GoPay OTP，正在重新发送短信验证码",
+        "whatsapp_otp_trigger": "正在触发 GoPay WhatsApp OTP",
+        "wait_whatsapp_otp": "正在等待 WhatsApp Web 接收 GoPay OTP",
         "wait_otp": "正在等待 GoPay SMS OTP",
         "fetch_otp": "正在从接码接口拉取 GoPay OTP",
         "otp_invalid": "GoPay OTP 错误，继续等待新验证码",
@@ -534,13 +542,17 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
     if stage == "sms_otp_resend_failed":
         reason = str(payload.get("reason") or "").strip()
         return f"GoPay SMS OTP 重新发送失败，继续等待接码接口：{_compact_log_text(reason, limit=120)}" if reason else "GoPay SMS OTP 重新发送失败，继续等待接码接口"
+    if stage == "wait_whatsapp_otp":
+        return "等待 WhatsApp Web 接收 GoPay OTP"
+    if stage == "whatsapp_otp_trigger":
+        return "尝试触发 GoPay WhatsApp OTP"
     if stage == "otp_received":
-        return f"收到 SMS OTP：{payload.get('otp') or '<redacted>'}"
+        return f"收到 GoPay OTP：{payload.get('otp') or '<redacted>'}"
     if stage == "otp_invalid":
         attempt = payload.get("attempt")
         max_attempts = payload.get("max_attempts")
         suffix = f"（第 {attempt}/{max_attempts} 次）" if attempt and max_attempts else ""
-        return f"GoPay OTP 错误，已忽略该验证码并继续等待新短信{suffix}"
+        return f"GoPay OTP 错误，已忽略该验证码并继续等待新验证码{suffix}"
     if stage == "submit_retry":
         reason = str(payload.get("reason") or "").strip()
         return f"订阅提交失败，准备重试：{_compact_log_text(reason, limit=120)}" if reason else "订阅提交失败，准备重试"
@@ -594,6 +606,13 @@ def _is_checkout_customer_location_error(text: str) -> bool:
         or re.search(r"valid customer address", clean, re.IGNORECASE)
         or re.search(r"automatically calculate tax", clean, re.IGNORECASE)
     )
+
+
+def _is_checkout_rate_limited_error(text: str) -> bool:
+    clean = str(text or "").strip()
+    if not clean:
+        return False
+    return "429" in clean or _looks_like_gopay_rate_limit_text(clean)
 
 
 def _is_checkout_payment_not_approved_result(result: dict | None) -> bool:
@@ -706,6 +725,13 @@ def _is_midtrans_linking_rate_limited_result(result: dict | None) -> bool:
     return str(result.get("failure_stage") or "") == "midtrans_linking" and "http 429" in str(
         result.get("message") or ""
     ).lower()
+
+
+def _is_midtrans_linking_rate_limited_error(exc: BaseException) -> bool:
+    stage = str(getattr(exc, "stage", "") or "")
+    if stage != "midtrans_linking":
+        return False
+    return "http 429" in str(exc).lower() or _looks_like_gopay_rate_limit_text(str(exc))
 
 
 def _is_chatgpt_token_invalidated_result(result: dict | None) -> bool:
@@ -1147,10 +1173,10 @@ def _poll_otp_from_sms_url(
             if callable(progress):
                 progress("fetch_otp")
             try:
-                code = _fetch_sms_code(sms_url)
+                ignored_otps = getattr(provider, "_gopay_ignored_otps", set())
+                ignored = {str(item or "").strip() for item in ignored_otps if str(item or "").strip()}
+                code = _fetch_sms_code(sms_url, ignored_otps=ignored)
                 if code:
-                    ignored_otps = getattr(provider, "_gopay_ignored_otps", set())
-                    ignored = {str(item or "").strip() for item in ignored_otps if str(item or "").strip()}
                     if str(code).strip() in ignored:
                         logger.info("[gopay_executor] 忽略已验证失败的 GoPay OTP: %s", _safe_otp_summary(code))
                     else:
@@ -1682,7 +1708,7 @@ def _browser_checkout_to_gopay_redirect(
             device_id=device_id,
         )
 
-    captured: dict[str, str] = {"redirect_url": "", "snap_token": ""}
+    captured: dict[str, Any] = {"redirect_url": "", "snap_token": "", "rate_limited": "", "rate_limited_count": 0}
 
     def remember_from_obj(obj):
         try:
@@ -1690,10 +1716,26 @@ def _browser_checkout_to_gopay_redirect(
         except Exception:
             pass
 
+    def remember_response(obj):
+        remember_from_obj(obj)
+        try:
+            status = int(getattr(obj, "status", 0) or 0)
+        except Exception:
+            status = 0
+        if status == 429:
+            url = str(getattr(obj, "url", "") or "")
+            captured["rate_limited"] = f"HTTP 429 {_safe_url_summary(url)}"
+            captured["rate_limited_count"] = int(captured.get("rate_limited_count") or 0) + 1
+            logger.info(
+                "[gopay_executor] browser checkout observed HTTP 429, will retry submit: url=%s count=%s",
+                _safe_url_summary(url),
+                captured["rate_limited_count"],
+            )
+
     def on_popup(page):
         try:
             page.on("request", remember_from_obj)
-            page.on("response", remember_from_obj)
+            page.on("response", remember_response)
             page.on("framenavigated", remember_from_obj)
         except Exception:
             pass
@@ -1701,7 +1743,7 @@ def _browser_checkout_to_gopay_redirect(
     try:
         api.context.on("page", on_popup)
         api.page.on("request", remember_from_obj)
-        api.page.on("response", remember_from_obj)
+        api.page.on("response", remember_response)
         api.page.on("framenavigated", remember_from_obj)
     except Exception:
         pass
@@ -1732,8 +1774,6 @@ def _browser_checkout_to_gopay_redirect(
     processor_entity = _extract_processor_entity(raw_checkout)
     if not checkout_url or not checkout_session_id:
         raise GoPayFlowError(f"浏览器生成 checkout 失败: {checkout_meta}", stage="generate_checkout")
-    if callable(progress):
-        progress("checkout_ready", checkout_url=checkout_url, mode="browser")
     logger.info("[gopay_executor] browser checkout fallback generated checkout: %s", _safe_url_summary(checkout_url))
 
     if callable(progress):
@@ -1777,12 +1817,13 @@ def _browser_checkout_to_gopay_redirect(
     submit_attempt = 0
     next_submit_at = 0.0
     submit_retry_delay = _env_float("GOPAY_BROWSER_SUBMIT_RETRY_SECONDS", 4.0)
-    max_submit_attempts = max(1, int(_env_float("GOPAY_BROWSER_SUBMIT_RETRY_ATTEMPTS", 4)))
+    max_submit_attempts = max(1, int(_env_float("GOPAY_BROWSER_SUBMIT_RETRY_ATTEMPTS", 10)))
     max_address_retry_attempts = max(0, int(_env_float("GOPAY_BROWSER_ADDRESS_RETRY_ATTEMPTS", 2)))
     address_retry_attempts = 0
     last_click_error = ""
     deadline = time.time() + 90
     last_error = ""
+    handled_rate_limited_count = 0
     while time.time() < deadline:
         if submit_attempt < max_submit_attempts and time.time() >= next_submit_at:
             submit_attempt += 1
@@ -1819,6 +1860,10 @@ def _browser_checkout_to_gopay_redirect(
                 _safe_url_summary(captured.get("redirect_url")),
                 _mask_log_value(captured.get("snap_token")),
             )
+            try:
+                api.page.evaluate("() => window.stop()")
+            except Exception:
+                pass
             return {
                 "checkout_url": checkout_url,
                 "checkout_session_id": checkout_session_id,
@@ -1826,10 +1871,52 @@ def _browser_checkout_to_gopay_redirect(
                 "redirect_url": captured.get("redirect_url", ""),
                 "snap_token": captured.get("snap_token", ""),
             }
+        rate_limited_count = int(captured.get("rate_limited_count") or 0)
+        if rate_limited_count > handled_rate_limited_count:
+            handled_rate_limited_count = rate_limited_count
+            rate_limited_error = str(captured.get("rate_limited") or "HTTP 429")
+            last_error = rate_limited_error
+            logger.info(
+                "[gopay_executor] browser checkout submit hit rate limit, retrying current checkout account: attempt=%s/%s reason=%s",
+                submit_attempt,
+                max_submit_attempts,
+                _compact_log_text(rate_limited_error, limit=180),
+            )
+            if submit_attempt < max_submit_attempts:
+                if callable(progress):
+                    progress(
+                        "submit_retry",
+                        attempt=submit_attempt + 1,
+                        max_attempts=max_submit_attempts,
+                        reason=rate_limited_error,
+                    )
+                next_submit_at = min(next_submit_at, time.time() + max(3.0, submit_retry_delay))
+                try:
+                    api.page.wait_for_timeout(500)
+                except Exception:
+                    time.sleep(0.5)
+                continue
+            break
         error = _extract_checkout_error(api)
         if error:
             last_error = error
             logger.info("[gopay_executor] browser checkout fallback checkout error: %s", error)
+            if _is_checkout_rate_limited_error(error):
+                if submit_attempt < max_submit_attempts:
+                    if callable(progress):
+                        progress(
+                            "submit_retry",
+                            attempt=submit_attempt + 1,
+                            max_attempts=max_submit_attempts,
+                            reason=error,
+                        )
+                    next_submit_at = min(next_submit_at, time.time() + max(3.0, submit_retry_delay))
+                    try:
+                        api.page.wait_for_timeout(500)
+                    except Exception:
+                        time.sleep(0.5)
+                    continue
+                break
             if _is_checkout_payment_not_approved_error(error):
                 _capture_screenshot(api, session_id, "gopay-browser-payment-not-approved", screenshot_paths)
                 raise GoPayFlowError(
@@ -1950,7 +2037,7 @@ class GoPayHttpCharger:
         approve_callback: Callable[[str], dict] | None = None,
         verify_callback: Callable[[str], dict] | None = None,
         sms_otp_trigger_callback: Callable[[str, str], None] | None = None,
-        otp_channel: str = "whatsapp",
+        otp_channel: str = "sms",
         sms_resend_wait_seconds: float | None = None,
         is_cancelled=None,
         progress_callback=None,
@@ -1967,7 +2054,7 @@ class GoPayHttpCharger:
         self.approve_callback = approve_callback
         self.verify_callback = verify_callback
         self.sms_otp_trigger_callback = sms_otp_trigger_callback
-        self.otp_channel = str(otp_channel or "whatsapp").strip().lower()
+        self.otp_channel = str(otp_channel or "sms").strip().lower()
         self.sms_resend_wait_seconds = (
             _env_float("GOPAY_SMS_OTP_DELAY_SECONDS", GOPAY_SMS_OTP_DELAY_S)
             if sms_resend_wait_seconds is None
@@ -2606,7 +2693,14 @@ class GoPayHttpCharger:
             return
 
         if callable(self.sms_otp_trigger_callback):
+            self._progress("whatsapp_otp_trigger")
             self.sms_otp_trigger_callback(reference_id, self.activation_link_url)
+            return
+        self._progress("wait_whatsapp_otp")
+        logger.info(
+            "[gopay_executor] GoPay OTP channel is WhatsApp; protocol SMS resend is disabled, waiting for WhatsApp listener: reference=%s",
+            _mask_log_value(reference_id),
+        )
 
     def _gopay_validate_otp(self, reference_id: str, otp: str) -> tuple[str, str]:
         self._progress("gopay_validate_otp")
@@ -2826,10 +2920,11 @@ class GoPayHttpCharger:
         self._gopay_user_consent(reference_id)
         self._trigger_linking_otp_channel(reference_id)
         self._progress("wait_otp")
-        try:
-            setattr(self.otp_provider, "_gopay_resend_callback", lambda: self._gopay_resend_otp(reference_id))
-        except Exception:
-            pass
+        if self.otp_channel == "sms":
+            try:
+                setattr(self.otp_provider, "_gopay_resend_callback", lambda: self._gopay_resend_otp(reference_id))
+            except Exception:
+                pass
         max_otp_attempts = max(1, _env_int("GOPAY_OTP_VALIDATE_ATTEMPTS", 3))
         invalid_otps: set[str] = set()
         challenge_id = ""
@@ -3830,10 +3925,22 @@ def _accept_checkout_terms_on_page(api: ChatGPTTeamAPI, progress: Callable[..., 
     return total
 
 
-def _extract_sms_code(text: str) -> str:
+def _dedupe_codes(codes: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for code in codes:
+        normalized = str(code or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _extract_sms_codes(text: str) -> list[str]:
     raw = str(text or "").strip()
     if not raw:
-        return ""
+        return []
 
     otp_keys = {
         "code",
@@ -3871,13 +3978,14 @@ def _extract_sms_code(text: str) -> str:
         "payload",
     }
 
-    def code_from_value(value: Any) -> str:
+    def codes_from_value(value: Any) -> list[str]:
         matched = re.fullmatch(r"\D*(\d{4,8})\D*", str(value or "").strip())
-        return matched.group(1) if matched else ""
+        return [matched.group(1)] if matched else []
 
-    def code_from_text(value: Any) -> str:
-        matched = re.search(r"(?<!\d)(\d{4,8})(?!\d)", str(value or ""))
-        return matched.group(1) if matched else ""
+    def codes_from_text(value: Any) -> list[str]:
+        # 接码接口有时会把旧短信和新短信一起返回。按出现顺序反转，优先取最新的验证码。
+        matches = re.findall(r"(?<!\d)(\d{4,8})(?!\d)", str(value or ""))
+        return _dedupe_codes(list(reversed(matches)))
 
     try:
         payload = json.loads(raw)
@@ -3885,48 +3993,51 @@ def _extract_sms_code(text: str) -> str:
         payload = None
 
     if isinstance(payload, dict):
-        def scan(obj: Any) -> str:
+        def scan(obj: Any) -> list[str]:
             if isinstance(obj, list):
+                codes: list[str] = []
                 for item in reversed(obj):
-                    code = scan(item)
-                    if code:
-                        return code
-                return ""
+                    codes.extend(scan(item))
+                return _dedupe_codes(codes)
             if not isinstance(obj, dict):
-                return code_from_value(obj) or code_from_text(obj)
+                return _dedupe_codes(codes_from_value(obj) or codes_from_text(obj))
 
             normalized = {str(key or "").strip().lower(): value for key, value in obj.items()}
             for key in otp_keys:
                 if key in normalized:
-                    code = code_from_value(normalized.get(key)) or code_from_text(normalized.get(key))
-                    if code:
-                        return code
+                    codes = codes_from_value(normalized.get(key)) or codes_from_text(normalized.get(key))
+                    if codes:
+                        return _dedupe_codes(codes)
             for key in text_keys:
                 if key in normalized:
-                    code = code_from_text(normalized.get(key))
-                    if code:
-                        return code
+                    codes = codes_from_text(normalized.get(key))
+                    if codes:
+                        return _dedupe_codes(codes)
+            codes: list[str] = []
             for key, value in normalized.items():
                 if key in container_keys:
-                    code = scan(value)
-                    if code:
-                        return code
-            return ""
+                    codes.extend(scan(value))
+            return _dedupe_codes(codes)
 
         return scan(payload)
 
     if isinstance(payload, list):
+        codes: list[str] = []
         for item in reversed(payload):
-            code = _extract_sms_code(json.dumps(item, ensure_ascii=False) if isinstance(item, (dict, list)) else str(item))
-            if code:
-                return code
-        return ""
+            codes.extend(
+                _extract_sms_codes(json.dumps(item, ensure_ascii=False) if isinstance(item, (dict, list)) else str(item))
+            )
+        return _dedupe_codes(codes)
 
-    matched = re.search(r"(?<!\d)(\d{4,8})(?!\d)", raw)
-    return matched.group(1) if matched else ""
+    return codes_from_text(raw)
 
 
-def _fetch_sms_code(sms_url: str) -> str:
+def _extract_sms_code(text: str) -> str:
+    codes = _extract_sms_codes(text)
+    return codes[0] if codes else ""
+
+
+def _fetch_sms_code(sms_url: str, ignored_otps: set[str] | None = None) -> str:
     resp = requests.get(
         sms_url,
         timeout=20,
@@ -3941,10 +4052,15 @@ def _fetch_sms_code(sms_url: str) -> str:
     text = (resp.text or "").strip()
     if not resp.ok:
         raise RuntimeError(text[:200] or f"接码接口返回异常({resp.status_code})")
-    code = _extract_sms_code(text)
-    if not code:
+    ignored = {str(item or "").strip() for item in (ignored_otps or set()) if str(item or "").strip()}
+    codes = _extract_sms_codes(text)
+    for code in codes:
+        if code not in ignored:
+            return code
+    if codes:
+        raise RuntimeError(f"接码接口仍返回旧验证码，等待新码: {_compact_log_text(text, limit=220)}")
+    else:
         raise RuntimeError(f"接码接口暂无验证码: {_compact_log_text(text, limit=220)}")
-    return code
 
 
 def _wait_for_text(api: ChatGPTTeamAPI, keywords: list[str], timeout_seconds: int = 30):
@@ -4621,6 +4737,7 @@ def _run_gopay_bind_task_once(
     phone_number: str,
     sms_url: str,
     gopay_pin: str,
+    otp_channel: str = "sms",
     billing_info: dict | None = None,
     country_code: str = "",
     proxy_url: str | None = None,
@@ -4955,9 +5072,14 @@ def _run_gopay_bind_task_once(
             midtrans_client_id=midtrans_client_id,
             approve_callback=approve_callback,
             verify_callback=verify_callback,
-            otp_channel=str(os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower(),
+            otp_channel=str(otp_channel or os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower(),
             is_cancelled=is_cancelled,
             progress_callback=progress_callback,
+        )
+        logger.info(
+            "[gopay_executor] GoPay OTP channel resolved: otp_channel=%s sms_url=%s",
+            getattr(charger, "otp_channel", str(otp_channel or os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower()),
+            _safe_url_summary(sms_url) if sms_url else "<empty>",
         )
 
         progress("gopay_http_flow", checkout_session_id=checkout_session_id)
@@ -4967,12 +5089,11 @@ def _run_gopay_bind_task_once(
             direct_redirect_mode,
             browser_checkout_ui_mode,
         )
-        if direct_redirect_mode:
-            flow_result = charger.run_from_redirect(
-                redirect_url=final_checkout_url,
-                checkout_session_id=checkout_session_id,
-            )
-        elif browser_checkout_ui_mode:
+
+        def run_browser_handoff_with_midtrans_retry(*, fallback_stage: str = "browser_checkout"):
+            nonlocal final_checkout_url, public_billing_info, checkout_session_id, processor_entity
+            max_attempts = max(1, _env_int("GOPAY_MIDTRANS_LINKING_429_RETRY_ATTEMPTS", 30))
+            last_exc: GoPayFlowError | None = None
             browser_handoff = _browser_checkout_to_gopay_redirect(
                 api,
                 access_token=access_token,
@@ -4997,18 +5118,54 @@ def _run_gopay_bind_task_once(
             processor_entity = str(browser_handoff.get("processor_entity") or processor_entity)
             redirect_url = str(browser_handoff.get("redirect_url") or "")
             snap_token = str(browser_handoff.get("snap_token") or "")
-            if redirect_url:
-                flow_result = charger.run_from_redirect(
-                    redirect_url=redirect_url,
-                    checkout_session_id=checkout_session_id,
-                )
-            elif snap_token:
-                flow_result = charger.run_from_snap_token(
-                    snap_token=snap_token,
-                    checkout_session_id=checkout_session_id,
-                )
-            else:
-                raise GoPayFlowError("浏览器 checkout UI 未返回 Midtrans 跳转", stage="browser_checkout")
+            if redirect_url and not snap_token:
+                snap_token = charger._fetch_pm_redirect_snap_token(redirect_url)
+            if not snap_token:
+                raise GoPayFlowError("浏览器 checkout UI 未返回 Midtrans 跳转", stage=fallback_stage)
+
+            retry_seconds = max(0.5, _env_float("GOPAY_MIDTRANS_LINKING_429_RETRY_SECONDS", 3.0))
+            for protocol_attempt in range(1, max_attempts + 1):
+                if protocol_attempt > 1:
+                    logger.info(
+                        "[gopay_executor] retry current account by protocol post after Midtrans 429: attempt=%s/%s email=%s snap_token=%s",
+                        protocol_attempt,
+                        max_attempts,
+                        _safe_email_summary(email),
+                        _mask_log_value(snap_token),
+                    )
+                    progress(
+                        "midtrans_linking_retry",
+                        attempt=protocol_attempt,
+                        max_attempts=max_attempts,
+                        reason="Midtrans linking 失败: HTTP 429，直接重试协议接口",
+                    )
+                try:
+                    return charger.run_from_snap_token(
+                        snap_token=snap_token,
+                        checkout_session_id=checkout_session_id,
+                    )
+                except GoPayFlowError as exc:
+                    if not _is_midtrans_linking_rate_limited_error(exc):
+                        raise
+                    last_exc = exc
+                    logger.info(
+                        "[gopay_executor] Midtrans linking 429 after browser handoff; retrying protocol post without refilling billing: attempt=%s/%s error=%s",
+                        protocol_attempt,
+                        max_attempts,
+                        _safe_error_summary(exc),
+                    )
+                    if protocol_attempt >= max_attempts:
+                        break
+                    time.sleep(retry_seconds)
+            raise last_exc or GoPayFlowError("Midtrans linking 429 重试耗尽", stage="midtrans_linking")
+
+        if direct_redirect_mode:
+            flow_result = charger.run_from_redirect(
+                redirect_url=final_checkout_url,
+                checkout_session_id=checkout_session_id,
+            )
+        elif browser_checkout_ui_mode:
+            flow_result = run_browser_handoff_with_midtrans_retry(fallback_stage="browser_checkout")
         else:
             try:
                 flow_result = charger.run(checkout_session_id=checkout_session_id, stripe_pk=stripe_pk)
@@ -5020,40 +5177,7 @@ def _run_gopay_bind_task_once(
                     _mask_log_value(checkout_session_id),
                     _safe_error_summary(exc),
                 )
-                browser_handoff = _browser_checkout_to_gopay_redirect(
-                    api,
-                    access_token=access_token,
-                    checkout_ui_mode=checkout_ui_mode,
-                    session_token=session_token,
-                    cookie_header=cookie_header,
-                    email=email,
-                    account_id=account_id,
-                    device_id=device_id,
-                    billing=billing,
-                    session_id=session_id,
-                    screenshot_paths=screenshot_paths,
-                    proxy_url=proxy_url,
-                    proxy_bypass=proxy_bypass,
-                    progress=progress,
-                )
-                final_checkout_url = str(browser_handoff.get("checkout_url") or final_checkout_url)
-                public_billing_info = _public_billing_info(billing)
-                checkout_session_id = str(browser_handoff.get("checkout_session_id") or checkout_session_id)
-                processor_entity = str(browser_handoff.get("processor_entity") or processor_entity)
-                redirect_url = str(browser_handoff.get("redirect_url") or "")
-                snap_token = str(browser_handoff.get("snap_token") or "")
-                if redirect_url:
-                    flow_result = charger.run_from_redirect(
-                        redirect_url=redirect_url,
-                        checkout_session_id=checkout_session_id,
-                    )
-                elif snap_token:
-                    flow_result = charger.run_from_snap_token(
-                        snap_token=snap_token,
-                        checkout_session_id=checkout_session_id,
-                    )
-                else:
-                    raise GoPayFlowError("浏览器 checkout fallback 未返回 Midtrans 跳转", stage="chatgpt_approve")
+                flow_result = run_browser_handoff_with_midtrans_retry(fallback_stage="chatgpt_approve")
         logger.info(
             "[gopay_executor] GoPay HTTP flow finished: state=%s reference=%s charge_ref=%s snap_token=%s",
             flow_result.get("state", ""),
@@ -5171,6 +5295,7 @@ def run_gopay_bind_task(
     phone_number: str,
     sms_url: str,
     gopay_pin: str,
+    otp_channel: str = "sms",
     phone_accounts: list[dict] | None = None,
     billing_info: dict | None = None,
     country_code: str = "",
@@ -5209,6 +5334,9 @@ def run_gopay_bind_task(
         account_phone_number = str(raw_phone_account.get("phone_number") or raw_phone_account.get("phoneNumber") or "").strip()
         account_sms_url = str(raw_phone_account.get("sms_url") or raw_phone_account.get("smsUrl") or "").strip()
         account_gopay_pin = str(raw_phone_account.get("gopay_pin") or raw_phone_account.get("gopayPin") or "").strip()
+        account_otp_channel = str(raw_phone_account.get("otp_channel") or raw_phone_account.get("otpChannel") or otp_channel or "sms").strip().lower()
+        if account_otp_channel == "whatsapp":
+            account_sms_url = str(os.environ.get("AUTOTEAM_LOCAL_BASE_URL") or "http://127.0.0.1:8787").strip().rstrip("/") + "/otp/whatsapp/latest"
         if not account_phone_number or not account_sms_url or not account_gopay_pin:
             continue
         phone_key = (account_country_code, account_phone_number, account_sms_url)
@@ -5221,15 +5349,20 @@ def run_gopay_bind_task(
                 "phone_number": account_phone_number,
                 "sms_url": account_sms_url,
                 "gopay_pin": account_gopay_pin,
+                "otp_channel": account_otp_channel,
             }
         )
     if not normalized_phone_accounts:
+        fallback_sms_url = str(sms_url or "").strip()
+        if str(otp_channel or "sms").strip().lower() == "whatsapp":
+            fallback_sms_url = str(os.environ.get("AUTOTEAM_LOCAL_BASE_URL") or "http://127.0.0.1:8787").strip().rstrip("/") + "/otp/whatsapp/latest"
         normalized_phone_accounts.append(
             {
                 "country_code": str(country_code or "").strip(),
                 "phone_number": str(phone_number or "").strip(),
-                "sms_url": str(sms_url or "").strip(),
+                "sms_url": fallback_sms_url,
                 "gopay_pin": str(gopay_pin or "").strip(),
+                "otp_channel": str(otp_channel or "sms").strip().lower(),
             }
         )
 
@@ -5261,6 +5394,7 @@ def run_gopay_bind_task(
             phone_number=str(active_phone.get("phone_number") or ""),
             sms_url=str(active_phone.get("sms_url") or ""),
             gopay_pin=str(active_phone.get("gopay_pin") or ""),
+            otp_channel=str(active_phone.get("otp_channel") or otp_channel or "sms"),
             billing_info=billing_info,
             country_code=str(active_phone.get("country_code") or ""),
             proxy_url=proxy_url,
@@ -5368,55 +5502,20 @@ def run_gopay_bind_task(
         )
 
     def refresh_auth_session_for_retry(candidate: str, failure_result: dict, *, retry_round: int = 0) -> bool:
-        if not callable(auth_session_refresh_callback):
-            return False
         normalized = str(candidate or "").strip().lower()
         if not normalized or normalized in auth_session_refreshed or normalized in auth_session_refresh_failed:
             return False
+        append_unique(token_invalidated, normalized)
+        append_unique(auth_session_refresh_failed, normalized)
         emit(
-            "gopay_auth_session_refresh_started",
+            "gopay_auth_session_refresh_failed",
             email=normalized,
             retry_round=retry_round,
             failure_stage=failure_result.get("failure_stage") or "",
-            message=f"auth_session access token 已失效，正在重新登录刷新: {normalized}",
+            message=f"auth_session access token 已失效，账号已标记废弃，不再尝试刷新: {normalized}",
+            level="warn",
         )
-        try:
-            refresh_result = auth_session_refresh_callback(normalized, failure_result)
-        except Exception as exc:
-            append_unique(auth_session_refresh_failed, normalized)
-            emit(
-                "gopay_auth_session_refresh_failed",
-                email=normalized,
-                retry_round=retry_round,
-                error=str(exc),
-                message=f"auth_session 刷新失败，账号标记废弃: {normalized}: {exc}",
-                level="warn",
-            )
-            return False
-        if isinstance(refresh_result, dict):
-            ok = str(refresh_result.get("status") or "").lower() == "success" or bool(refresh_result.get("auth_session_file"))
-            message = str(refresh_result.get("message") or "")
-        else:
-            ok = bool(refresh_result)
-            message = ""
-        if not ok:
-            append_unique(auth_session_refresh_failed, normalized)
-            emit(
-                "gopay_auth_session_refresh_failed",
-                email=normalized,
-                retry_round=retry_round,
-                message=message or f"auth_session 刷新失败，账号标记废弃: {normalized}",
-                level="warn",
-            )
-            return False
-        append_unique(auth_session_refreshed, normalized)
-        emit(
-            "gopay_auth_session_refresh_done",
-            email=normalized,
-            retry_round=retry_round,
-            message=message or f"auth_session 已刷新，稍后重试 GoPay: {normalized}",
-        )
-        return True
+        return False
 
     def mark_candidate_successful(candidate: str):
         append_unique(successful, candidate)
@@ -5650,7 +5749,7 @@ def run_gopay_bind_task(
             last_failed_result = result
             last_failed_email = candidate
             if _is_chatgpt_token_invalidated_result(result):
-                token_invalidated.append(candidate)
+                append_unique(token_invalidated, candidate)
             logger.info(
                 "[gopay_executor] GoPay candidate failed, rotating: email=%s status=%s failure_stage=%s message=%s",
                 _safe_email_summary(candidate),
