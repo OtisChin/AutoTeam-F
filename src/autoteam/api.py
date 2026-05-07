@@ -83,7 +83,13 @@ app = FastAPI(
 # API Key 鉴权中间件
 # ---------------------------------------------------------------------------
 
-_AUTH_SKIP_PATHS = {"/api/auth/check", "/api/setup/status", "/api/setup/save"}
+_AUTH_SKIP_PATHS = {
+    "/api/auth/check",
+    "/api/setup/status",
+    "/api/setup/save",
+    "/api/account-hub/ping",
+    "/api/account-hub/ingest",
+}
 
 
 @app.middleware("http")
@@ -711,6 +717,19 @@ class AccountCredentialExportParams(BaseModel):
     line_format: str = "{email}-----{password}"
 
 
+class AccountHubConfigParams(BaseModel):
+    url: str = ""
+    token: str = ""
+    name: str = ""
+    auto_upload: bool = Field(False, validation_alias=AliasChoices("auto_upload", "autoUpload"))
+
+
+class AccountHubIngestPayload(BaseModel):
+    source: dict = {}
+    accounts: list[dict] = []
+    auths: list[dict] = []
+
+
 def _normalized_email(value: str | None) -> str:
     return (value or "").strip().lower()
 
@@ -815,6 +834,8 @@ def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     sanitized["account_type"] = _display_account_type(acc)
     sanitized["credentials_exported"] = bool(acc.get("credentials_exported"))
     sanitized["credentials_exported_at"] = acc.get("credentials_exported_at")
+    sanitized["account_hub_synced"] = bool(acc.get("account_hub_synced"))
+    sanitized["account_hub_synced_at"] = acc.get("account_hub_synced_at")
     codex_auth_file = _resolve_codex_auth_file(acc)
     sanitized["codex_auth_file"] = codex_auth_file
     sanitized["has_codex_auth_file"] = bool(codex_auth_file)
@@ -3056,6 +3077,71 @@ def get_register_failures_api(limit: int = 50):
     }
 
 
+@app.get("/api/account-hub/config")
+def get_account_hub_config():
+    from autoteam.account_hub import get_config
+
+    return get_config()
+
+
+@app.put("/api/account-hub/config")
+def put_account_hub_config(params: AccountHubConfigParams):
+    from autoteam.account_hub import set_config
+
+    saved = set_config(params.model_dump())
+    return {"message": "远程账号 Hub 配置已保存", "config": saved}
+
+
+@app.post("/api/account-hub/test")
+def post_account_hub_test(params: AccountHubConfigParams):
+    from autoteam.account_hub import test_connection
+
+    try:
+        result = test_connection(params.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+
+@app.post("/api/account-hub/sync")
+def post_account_hub_sync():
+    from autoteam.account_hub import upload_to_hub
+
+    try:
+        result = upload_to_hub()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+
+def _require_account_hub_token(request: Request):
+    from autoteam.account_hub import expected_inbound_token
+
+    expected = expected_inbound_token()
+    if not expected:
+        raise HTTPException(status_code=403, detail="账号 Hub Token 未配置")
+    token = request.headers.get("x-account-hub-token", "")
+    if token != expected:
+        raise HTTPException(status_code=401, detail="账号 Hub Token 无效")
+
+
+@app.post("/api/account-hub/ping")
+def post_account_hub_ping(request: Request):
+    _require_account_hub_token(request)
+    return {"ok": True, "message": "账号 Hub 连接成功", "time": time.time()}
+
+
+@app.post("/api/account-hub/ingest")
+def post_account_hub_ingest(request: Request, payload: AccountHubIngestPayload):
+    _require_account_hub_token(request)
+    from autoteam.account_hub import receive_payload
+
+    try:
+        return receive_payload(payload.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/config/register-domain")
 def get_register_domain_api():
     """读取当前子号注册使用的临时邮箱域名。"""
@@ -4170,6 +4256,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     from autoteam.config import normalize_proxy_url
     from autoteam.gopay_executor import (
         _compact_log_text,
+        _gopay_pending_retry_reason,
+        _gopay_pending_retry_source_stage,
         _safe_email_summary,
         _safe_phone_summary,
         _safe_proxy_summary,
@@ -4699,6 +4787,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             bind_account_emails: list[str],
             *,
             selected_phone_accounts: list[dict] | None = None,
+            pending_retry_override: int | None = None,
         ) -> dict:
             active_phone_accounts = selected_phone_accounts or phone_accounts
             active_phone_account = active_phone_accounts[0] if active_phone_accounts else {}
@@ -4725,7 +4814,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 proxy_bypass=params.proxy_bypass,
                 timeout_seconds=max(120, int(params.timeout_seconds or 900)),
                 account_emails=bind_account_emails,
-                pending_retry_attempts=pending_retry_attempts,
+                pending_retry_attempts=pending_retry_attempts if pending_retry_override is None else pending_retry_override,
                 auth_session_refresh_callback=_refresh_gopay_auth_session,
                 is_cancelled=cancel_signal.is_cancelled,
                 skip_current=skip_current_signal.is_set,
@@ -4744,12 +4833,16 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             blocked_emails: list[str] = []
             registered_emails: list[str] = []
             bind_failed_emails: list[dict] = []
+            pending_retry_items: list[dict] = []
+            retried_emails: list[str] = []
             last_result: dict = {}
             last_success_email = ""
+            auto_register_attempted_count = 0
 
             for index in range(1, auto_register_count + 1):
                 if cancel_signal.is_cancelled():
                     break
+                auto_register_attempted_count = max(auto_register_attempted_count, index)
                 current_email = ""
                 _append_task_progress(
                     task_id,
@@ -4796,6 +4889,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                                 current_email,
                                 [],
                                 selected_phone_accounts=_phone_accounts_for_attempt(index),
+                                pending_retry_override=0,
                             )
                             or {}
                         )
@@ -4839,6 +4933,33 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 single_result["auto_register_total"] = auto_register_count
                 aggregate_results.append(single_result)
                 last_result = single_result
+                retry_reason = _gopay_pending_retry_reason(single_result)
+                if current_email and single_result.get("status") != "success" and retry_reason and pending_retry_attempts > 0:
+                    source_stage = _gopay_pending_retry_source_stage(single_result, retry_reason)
+                    single_result["bind_status"] = "retry_pending"
+                    pending_retry_items.append(
+                        {
+                            "email": single_email,
+                            "index": index,
+                            "phone_accounts": _phone_accounts_for_attempt(index),
+                            "reason": retry_reason,
+                        }
+                    )
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_pending_retry_queued",
+                            "email": single_email,
+                            "current": index,
+                            "total": auto_register_count,
+                            "reason": retry_reason,
+                            "source_stage": source_stage,
+                            "pending_retry": len(pending_retry_items),
+                            "message": f"自动注册账号加入待重试: {single_email}",
+                            "level": "warn",
+                        },
+                    )
+                    continue
                 if single_result.get("status") != "success":
                     _append_task_progress(
                         task_id,
@@ -4893,6 +5014,190 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                         }
                     )
 
+            pending_retry_backoffs = [60.0, 180.0, 300.0]
+            for retry_round in range(1, pending_retry_attempts + 1):
+                retry_candidates = pending_retry_items[:]
+                if not retry_candidates or cancel_signal.is_cancelled():
+                    break
+                pending_retry_items.clear()
+                wait_seconds = pending_retry_backoffs[min(retry_round - 1, len(pending_retry_backoffs) - 1)]
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_pending_retry_wait",
+                        "retry_round": retry_round,
+                        "max_retry_rounds": pending_retry_attempts,
+                        "delay_seconds": wait_seconds,
+                        "pending_retry": len(retry_candidates),
+                        "message": f"自动注册待重试第 {retry_round}/{pending_retry_attempts} 轮将在 {wait_seconds:.0f}s 后开始",
+                    },
+                )
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+                if cancel_signal.is_cancelled():
+                    break
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_pending_retry_started",
+                        "retry_round": retry_round,
+                        "max_retry_rounds": pending_retry_attempts,
+                        "pending_retry": len(retry_candidates),
+                        "message": f"开始自动注册待重试第 {retry_round}/{pending_retry_attempts} 轮，共 {len(retry_candidates)} 个账号",
+                    },
+                )
+                for retry_offset, item in enumerate(retry_candidates, 1):
+                    if cancel_signal.is_cancelled():
+                        break
+                    retry_email = _normalized_email(item.get("email") or "")
+                    retry_index = int(item.get("index") or retry_offset)
+                    if not retry_email:
+                        continue
+                    _append_unique(retried_emails, retry_email)
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_pending_retry_account",
+                            "email": retry_email,
+                            "attempt": retry_offset,
+                            "total": len(retry_candidates),
+                            "current": retry_index,
+                            "auto_register_total": auto_register_count,
+                            "retry_round": retry_round,
+                            "max_retry_rounds": pending_retry_attempts,
+                            "pending_retry": len(pending_retry_items),
+                            "message": f"正在执行自动注册待重试第 {retry_round}/{pending_retry_attempts} 轮: {retry_email} ({retry_offset}/{len(retry_candidates)})",
+                        },
+                    )
+                    try:
+                        single_result = dict(
+                            _run_one_gopay_bind(
+                                retry_email,
+                                [],
+                                selected_phone_accounts=item.get("phone_accounts") or _phone_accounts_for_attempt(retry_index),
+                                pending_retry_override=0,
+                            )
+                            or {}
+                        )
+                    except Exception as exc:
+                        logger.exception(
+                            "[gopay-bind] auto-register pending retry raised: round=%s/%s email=%s",
+                            retry_round,
+                            pending_retry_attempts,
+                            _safe_email_summary(retry_email),
+                        )
+                        single_result = {
+                            "status": "failed",
+                            "failure_stage": "post_submit",
+                            "register_status": "success",
+                            "bind_status": "failed",
+                            "message": f"注册已成功，GoPay 待重试异常: {exc}",
+                            "screenshot_paths": [],
+                        }
+                    single_result.setdefault("status", "failed")
+                    single_result.setdefault("failure_stage", "")
+                    single_result.setdefault("message", "")
+                    single_result.setdefault("screenshot_paths", [])
+                    single_email = _normalized_email(single_result.get("email_used") or single_result.get("email") or retry_email)
+                    if single_email:
+                        single_result["email_used"] = single_email
+                    single_result.setdefault("register_status", "success")
+                    single_result.setdefault(
+                        "bind_status",
+                        "success" if single_result.get("status") == "success" else "failed",
+                    )
+                    if (
+                        single_result.get("status") != "success"
+                        and single_result.get("bind_status") == "failed"
+                        and not str(single_result.get("message") or "").startswith("注册已成功")
+                    ):
+                        original_message = str(single_result.get("message") or "GoPay 绑定失败")
+                        single_result["message"] = f"注册已成功，GoPay 绑定失败: {original_message}"
+                    single_result["auto_register_index"] = retry_index
+                    single_result["auto_register_total"] = auto_register_count
+                    single_result["auto_register_retry_round"] = retry_round
+                    aggregate_results.append(single_result)
+                    last_result = single_result
+
+                    retry_reason = _gopay_pending_retry_reason(single_result)
+                    if single_result.get("status") != "success" and retry_reason and retry_round < pending_retry_attempts:
+                        pending_retry_items.append(
+                            {
+                                "email": single_email,
+                                "index": retry_index,
+                                "phone_accounts": item.get("phone_accounts") or _phone_accounts_for_attempt(retry_index),
+                                "reason": retry_reason,
+                            }
+                        )
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_pending_retry_queued",
+                                "email": single_email,
+                                "current": retry_index,
+                                "total": auto_register_count,
+                                "retry_round": retry_round,
+                                "max_retry_rounds": pending_retry_attempts,
+                                "reason": retry_reason,
+                                "pending_retry": len(pending_retry_items),
+                                "message": f"自动注册账号继续加入下一轮待重试: {single_email}",
+                                "level": "warn",
+                            },
+                        )
+                        continue
+
+                    if single_result.get("status") != "success":
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_pending_retry_failed",
+                                "email": single_email,
+                                "current": retry_index,
+                                "total": auto_register_count,
+                                "retry_round": retry_round,
+                                "max_retry_rounds": pending_retry_attempts,
+                                "failure_stage": single_result.get("failure_stage") or "",
+                                "register_status": single_result.get("register_status") or "",
+                                "bind_status": single_result.get("bind_status") or "",
+                                "message": single_result.get("message") or "自动注册 GoPay 待重试失败",
+                                "level": "error",
+                            },
+                        )
+
+                    _merge_email_list(single_result, "successful_emails", successful_emails)
+                    _merge_email_list(single_result, "rejected_emails", rejected_emails)
+                    _merge_email_list(single_result, "payment_failed_emails", payment_failed_emails)
+                    _merge_email_list(single_result, "nonzero_blocked_emails", nonzero_blocked_emails)
+                    _merge_email_list(single_result, "blocked_emails", blocked_emails)
+                    single_failure_stage = str(single_result.get("failure_stage") or "")
+                    if single_email and _is_gopay_checkout_not_approved_result(single_result):
+                        _append_unique(rejected_emails, single_email)
+                    if single_email and single_failure_stage in {"browser_charge_guard", "stripe_charge_guard", "midtrans_charge_guard"}:
+                        _append_unique(nonzero_blocked_emails, single_email)
+                    if single_email and single_failure_stage == "gopay_payment_process":
+                        _append_unique(payment_failed_emails, single_email)
+                    if single_result.get("status") == "success":
+                        _append_unique(successful_emails, single_email)
+                        last_success_email = single_email or last_success_email
+                    else:
+                        if single_email and single_result.get("register_status") == "success":
+                            bind_failed_emails.append(
+                                {
+                                    "email": single_email,
+                                    "failure_stage": single_result.get("failure_stage") or "",
+                                    "message": single_result.get("message") or "",
+                                }
+                            )
+                        failed_emails.append(
+                            {
+                                "email": single_email,
+                                "failure_stage": single_result.get("failure_stage") or "",
+                                "message": single_result.get("message") or "",
+                                "register_status": single_result.get("register_status") or "",
+                                "bind_status": single_result.get("bind_status") or "",
+                            }
+                        )
+
             if not aggregate_results:
                 return {
                     "status": "cancelled" if cancel_signal.is_cancelled() else "failed",
@@ -4905,7 +5210,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 }
 
             success_count = len(successful_emails)
-            attempted_count = len(aggregate_results)
+            attempted_count = auto_register_attempted_count
             aggregate_status = "success" if success_count else ("cancelled" if cancel_signal.is_cancelled() else "failed")
             failure_stage = ""
             if success_count and failed_emails:
@@ -4931,6 +5236,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     "successful_emails": successful_emails,
                     "failed_emails": failed_emails,
                     "bind_failed_emails": bind_failed_emails,
+                    "pending_retry_emails": [item["email"] for item in pending_retry_items if item.get("email")],
+                    "retried_emails": retried_emails,
                     "rejected_emails": rejected_emails,
                     "payment_failed_emails": payment_failed_emails,
                     "nonzero_blocked_emails": nonzero_blocked_emails,
@@ -5663,6 +5970,13 @@ def _start_auto_check():
     except Exception as exc:
         logger.warning("[启动] 修复 auths 认证文件权限失败: %s", exc)
 
+    try:
+        from autoteam.account_hub import start_auto_upload_loop
+
+        start_auto_upload_loop()
+    except Exception as exc:
+        logger.warning("[启动] 启动账号 Hub 自动同步线程失败: %s", exc)
+
     if not _auto_check_config["enabled"]:
         logger.info("[巡检] 自动巡检已关闭，启动时跳过后台线程")
         return
@@ -5674,6 +5988,12 @@ def _start_auto_check():
 @app.on_event("shutdown")
 def _stop_auto_check():
     _auto_check_stop.set()
+    try:
+        from autoteam.account_hub import stop_auto_upload_loop
+
+        stop_auto_upload_loop()
+    except Exception:
+        pass
     try:
         from autoteam.whatsapp_otp import get_default_listener
 

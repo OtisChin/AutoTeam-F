@@ -389,6 +389,228 @@ def test_gopay_task_runner_auto_register_count_registers_and_binds_sequentially(
     assert updated_emails == registered_emails
 
 
+def test_gopay_task_runner_auto_register_retries_pending_after_first_round(monkeypatch):
+    captured = {"mail_login": 0, "progress": [], "run_emails": [], "slept": []}
+    registered_emails = ["new1@example.com", "new2@example.com"]
+
+    def fake_load_accounts():
+        return [{"email": email} for email in registered_emails]
+
+    def fake_find_account(accounts, email):
+        return next((account for account in accounts if account.get("email") == email), None)
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", fake_load_accounts)
+    monkeypatch.setattr("autoteam.accounts.find_account", fake_find_account)
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda acc: f"data/auth_session/{acc['email']}.json")
+    monkeypatch.setattr("autoteam.auth_session_store.get_auth_session_file", lambda email: f"data/auth_session/{email}.json")
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domain", lambda: "openaibus.com")
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domains", lambda: ["openaibus.com"])
+    monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured.setdefault("updates", []).append((email, kwargs)))
+    monkeypatch.setattr(api, "_gopay_auto_register_bind_delay_seconds", lambda: 0)
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: captured["slept"].append(seconds))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+
+    class FakeMailClient:
+        def login(self):
+            captured["mail_login"] += 1
+
+    monkeypatch.setattr("autoteam.mail.TemporaryEmailClient", FakeMailClient)
+
+    def fake_register(_mail_client, **_kwargs):
+        return {"email": registered_emails[captured["mail_login"] - 1], "status": "success"}
+
+    monkeypatch.setattr("autoteam.manager.create_account_direct", fake_register)
+
+    def fake_run_gopay_bind_task(**kwargs):
+        email = kwargs["email"]
+        captured["run_emails"].append(email)
+        if email == "new1@example.com" and captured["run_emails"].count(email) == 1:
+            return {
+                "status": "failed",
+                "failure_stage": "midtrans_linking",
+                "message": "Midtrans linking 失败: HTTP 429",
+                "email_used": email,
+            }
+        return {
+            "status": "success",
+            "message": f"GoPay 绑定完成: {email}",
+            "email_used": email,
+        }
+
+    monkeypatch.setattr("autoteam.gopay_executor.run_gopay_bind_task", fake_run_gopay_bind_task)
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: captured.update({"func": func, "params": params}) or {"task_id": "task-auto-retry", "command": command, "params": params},
+    )
+
+    api.post_gopay_bind_task(
+        api.GoPayBindTaskParams(
+            email="",
+            auto_register=True,
+            auto_register_count=2,
+            pending_retry_attempts=1,
+            phone_number="+6287761973970",
+            country_code="62",
+            sms_url="https://it.tgflare.com/api/record?token=demo",
+            gopay_pin="558023",
+        )
+    )
+
+    result = captured["func"]()
+
+    assert captured["run_emails"] == ["new1@example.com", "new2@example.com", "new1@example.com"]
+    assert result["status"] == "success"
+    assert sorted(result["successful_emails"]) == registered_emails
+    assert result["retried_emails"] == ["new1@example.com"]
+    assert result["pending_retry_emails"] == []
+    assert captured["slept"] == [60.0]
+    assert any(progress["stage"] == "gopay_pending_retry_queued" for progress in captured["progress"])
+    retry_events = [progress for progress in captured["progress"] if progress["stage"] == "gopay_pending_retry_account"]
+    assert retry_events and retry_events[0]["retry_round"] == 1
+
+
+def test_gopay_task_runner_auto_register_retries_gopay_payment_process(monkeypatch):
+    captured = {"mail_login": 0, "progress": [], "run_emails": [], "slept": []}
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [{"email": "wallet@example.com"}])
+    monkeypatch.setattr("autoteam.accounts.find_account", lambda accounts, email: accounts[0] if email == "wallet@example.com" else None)
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/wallet@example.com.json")
+    monkeypatch.setattr("autoteam.auth_session_store.get_auth_session_file", lambda email: f"data/auth_session/{email}.json")
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domain", lambda: "openaibus.com")
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domains", lambda: ["openaibus.com"])
+    monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured.setdefault("updates", []).append((email, kwargs)))
+    monkeypatch.setattr(api, "_gopay_auto_register_bind_delay_seconds", lambda: 0)
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: captured["slept"].append(seconds))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+
+    class FakeMailClient:
+        def login(self):
+            captured["mail_login"] += 1
+
+    monkeypatch.setattr("autoteam.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(
+        "autoteam.manager.create_account_direct",
+        lambda _mail_client, **_kwargs: {"email": "wallet@example.com", "status": "success"},
+    )
+
+    def fake_run_gopay_bind_task(**kwargs):
+        email = kwargs["email"]
+        captured["run_emails"].append(email)
+        if captured["run_emails"].count(email) == 1:
+            return {
+                "status": "failed",
+                "failure_stage": "gopay_payment_process",
+                "message": (
+                    'gopay_payment_process 失败: HTTP 400 {"success":false,'
+                    '"errors":[{"code":"201","cause":"createAuth call to payment-switch '
+                    'failed for payment_method: GOPAY_WALLET"}]}'
+                ),
+                "email_used": email,
+            }
+        return {"status": "success", "message": f"GoPay 绑定完成: {email}", "email_used": email}
+
+    monkeypatch.setattr("autoteam.gopay_executor.run_gopay_bind_task", fake_run_gopay_bind_task)
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: captured.update({"func": func, "params": params}) or {"task_id": "task-auto-wallet-retry", "command": command, "params": params},
+    )
+
+    api.post_gopay_bind_task(
+        api.GoPayBindTaskParams(
+            email="",
+            auto_register=True,
+            auto_register_count=1,
+            pending_retry_attempts=1,
+            phone_number="+6287761973970",
+            country_code="62",
+            sms_url="https://it.tgflare.com/api/record?token=demo",
+            gopay_pin="558023",
+        )
+    )
+
+    result = captured["func"]()
+
+    assert captured["run_emails"] == ["wallet@example.com", "wallet@example.com"]
+    assert result["status"] == "success"
+    assert result["successful_emails"] == ["wallet@example.com"]
+    assert result["failed_emails"] == []
+    assert result["bind_failed_emails"] == []
+    assert result["retried_emails"] == ["wallet@example.com"]
+    assert captured["slept"] == [60.0]
+    queued = [progress for progress in captured["progress"] if progress["stage"] == "gopay_pending_retry_queued"]
+    assert queued and queued[0]["reason"] == "gopay_payment_process"
+
+
+def test_gopay_task_runner_auto_register_does_not_retry_checkout_not_approved(monkeypatch):
+    captured = {"mail_login": 0, "progress": [], "run_emails": [], "slept": []}
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [{"email": "declined@example.com"}])
+    monkeypatch.setattr("autoteam.accounts.find_account", lambda accounts, email: accounts[0] if email == "declined@example.com" else None)
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/declined@example.com.json")
+    monkeypatch.setattr("autoteam.auth_session_store.get_auth_session_file", lambda email: f"data/auth_session/{email}.json")
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domain", lambda: "openaibus.com")
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domains", lambda: ["openaibus.com"])
+    monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: None)
+    monkeypatch.setattr(api, "_gopay_auto_register_bind_delay_seconds", lambda: 0)
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: captured["slept"].append(seconds))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+
+    class FakeMailClient:
+        def login(self):
+            captured["mail_login"] += 1
+
+    monkeypatch.setattr("autoteam.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(
+        "autoteam.manager.create_account_direct",
+        lambda _mail_client, **_kwargs: {"email": "declined@example.com", "status": "success"},
+    )
+    monkeypatch.setattr(
+        "autoteam.gopay_executor.run_gopay_bind_task",
+        lambda **kwargs: captured["run_emails"].append(kwargs["email"]) or {
+            "status": "failed",
+            "failure_stage": "checkout_not_approved",
+            "message": "付款未获批准",
+            "email_used": kwargs["email"],
+        },
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: captured.update({"func": func, "params": params}) or {"task_id": "task-auto-declined", "command": command, "params": params},
+    )
+
+    api.post_gopay_bind_task(
+        api.GoPayBindTaskParams(
+            email="",
+            auto_register=True,
+            auto_register_count=1,
+            pending_retry_attempts=1,
+            phone_number="+6287761973970",
+            country_code="62",
+            sms_url="https://it.tgflare.com/api/record?token=demo",
+            gopay_pin="558023",
+        )
+    )
+
+    try:
+        captured["func"]()
+    except api.TaskResultError as exc:
+        result = exc.task_result
+    else:
+        raise AssertionError("expected checkout_not_approved to fail without retry")
+
+    assert captured["run_emails"] == ["declined@example.com"]
+    assert result["status"] == "failed"
+    assert result["failed_emails"][0]["email"] == "declined@example.com"
+    assert result["retried_emails"] == []
+    assert not any(progress["stage"] == "gopay_pending_retry_queued" for progress in captured["progress"])
+
+
 def test_gopay_task_runner_auto_register_splits_register_success_from_bind_failure(monkeypatch):
     captured = {"mail_login": 0, "progress": [], "slept": []}
 
@@ -455,7 +677,8 @@ def test_gopay_task_runner_auto_register_splits_register_success_from_bind_failu
     assert result["failed_emails"][0]["bind_status"] == "failed"
     assert result["auto_register_results"][0]["message"].startswith("注册已成功，GoPay 绑定失败")
     assert any(progress["stage"] == "gopay_auto_register_bind_wait" for progress in captured["progress"])
-    assert any(progress["stage"] == "gopay_auto_register_bind_failed" for progress in captured["progress"])
+    assert any(progress["stage"] == "gopay_pending_retry_queued" for progress in captured["progress"])
+    assert any(progress["stage"] == "gopay_pending_retry_failed" for progress in captured["progress"])
     assert 12.5 in captured["slept"]
 
 
@@ -669,6 +892,48 @@ def test_run_gopay_bind_task_retries_pending_blocked_candidate_once(monkeypatch)
     assert any(event["stage"] == "gopay_pending_retry_queued" for event in progress_events)
     assert any(event["stage"] == "gopay_pending_retry_wait" for event in progress_events)
     assert any(event["stage"] == "gopay_pending_retry_account" for event in progress_events)
+    assert slept == [60.0]
+
+
+def test_run_gopay_bind_task_retries_http_403_candidate_once(monkeypatch):
+    calls = []
+    progress_events = []
+    slept = []
+
+    def fake_run_once(**kwargs):
+        email = kwargs["email"]
+        calls.append(email)
+        if email == "first@example.com" and calls.count("first@example.com") == 1:
+            return {
+                "status": "failed",
+                "failure_stage": "post_submit",
+                "message": "执行 GoPay 任务时出现异常: HTTP 403: HTTP 403",
+            }
+        return {"status": "success", "message": "GoPay 绑定完成"}
+
+    monkeypatch.setattr(gopay_executor, "_run_gopay_bind_task_once", fake_run_once)
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = gopay_executor.run_gopay_bind_task(
+        email="first@example.com",
+        checkout_url="",
+        phone_number="+6287761973970",
+        sms_url="https://it.tgflare.com/api/record?token=demo",
+        gopay_pin="558023",
+        account_emails=["first@example.com", "second@example.com"],
+        is_cancelled=lambda: False,
+        progress_callback=progress_events.append,
+    )
+
+    assert calls == ["first@example.com", "second@example.com", "first@example.com"]
+    assert result["status"] == "success"
+    assert sorted(result["successful_emails"]) == ["first@example.com", "second@example.com"]
+    assert result["pending_retry_emails"] == []
+    assert result["retried_emails"] == ["first@example.com"]
+    queued = [event for event in progress_events if event["stage"] == "gopay_pending_retry_queued"]
+    assert queued
+    assert queued[0]["reason"] == "http_403"
+    assert any(event["stage"] == "gopay_retryable_failure_rotate" for event in progress_events)
     assert slept == [60.0]
 
 

@@ -63,6 +63,45 @@ class FakeHttp:
         return response
 
 
+def test_gopay_http_request_wraps_dns_failure_with_stage():
+    http = FakeHttp(
+        [
+            (
+                "GET",
+                "app.midtrans.com",
+                RuntimeError(
+                    "Failed to perform, curl: (6) Could not resolve host: app.midtrans.com. "
+                    "See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+                ),
+            ),
+            (
+                "GET",
+                "app.midtrans.com",
+                RuntimeError(
+                    "Failed to perform, curl: (6) Could not resolve host: app.midtrans.com. "
+                    "See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+                ),
+            ),
+        ]
+    )
+    charger = GoPayHttpCharger(
+        http=http,
+        phone_number="+6287761973970",
+        gopay_pin="558023",
+        otp_provider=lambda: "123456",
+    )
+
+    try:
+        charger._request("GET", "https://app.midtrans.com/snap/v1/transactions/token", stage="midtrans_load_transaction")
+    except GoPayFlowError as exc:
+        assert exc.stage == "midtrans_load_transaction"
+        assert "Could not resolve host: app.midtrans.com" in str(exc)
+    else:
+        raise AssertionError("expected DNS failure to be wrapped as GoPayFlowError")
+
+    assert len(http.requests) == 2
+
+
 def test_get_playwright_launch_options_prefers_task_override(monkeypatch):
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_URL", "socks5://global.example:1080")
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_SERVER", "")
@@ -1938,12 +1977,12 @@ def test_gopay_bind_task_rotates_on_checkout_payment_not_approved(monkeypatch):
         progress_callback=progress_events.append,
     )
 
-    assert calls == ["primary@example.com", "backup@example.com", "primary@example.com"]
+    assert calls == ["primary@example.com", "backup@example.com"]
     assert result["status"] == "success"
     assert result["email_used"] == "backup@example.com"
     assert result["rejected_emails"] == ["primary@example.com"]
-    assert result["retried_emails"] == ["primary@example.com"]
-    assert slept == [60.0]
+    assert result["retried_emails"] == []
+    assert slept == []
     assert any(event["stage"] == "checkout_not_approved_rotate" for event in progress_events)
 
 

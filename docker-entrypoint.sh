@@ -11,7 +11,7 @@ mkdir -p /app/data /app/data/auths /app/data/screenshots
 chmod -R 777 /app/data
 
 # Persist runtime files under /app/data.
-for f in .env accounts.json state.json; do
+for f in .env accounts.json state.json runtime_config.json; do
     [ -f "/app/data/$f" ] || touch "/app/data/$f"
     rm -f "/app/$f"
     ln -s "/app/data/$f" "/app/$f"

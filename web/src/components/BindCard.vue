@@ -1263,6 +1263,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { computeGoPayBoardView } from '../gopayBoard.js'
 import BindCardPool from './BindCardPool.vue'
 
 const emit = defineEmits(['refresh'])
@@ -1819,6 +1820,7 @@ const gopayStageLabelMap = {
   gopay_retryable_failure_rotate: '可重试失败，切换账号',
   gopay_already_linked_retry: 'GoPay 已绑定其他账号，稍后重试',
   gopay_rate_limited_retry: 'GoPay/Midtrans 限流，稍后重试',
+  midtrans_linking_retry: 'GoPay 账户绑定限流重试',
   gopay_otp_retry: 'GoPay OTP 未完成，稍后重试',
   gopay_all_accounts_rejected: '所有账号付款均未获批准',
   resolve_midtrans_redirect: '解析 Midtrans 跳转',
@@ -1907,126 +1909,25 @@ const gopayBoardStatusLabel = computed(() => {
   return bindStatusText(gopayTask.value)
 })
 
-const gopayTopCards = computed(() => [
-  {
-    label: '当前账号',
-    value: gopayBoardEmail.value,
-    color: 'text-cyan-300 font-mono text-base',
-    meta: '',
-  },
-  {
-    label: '任务进度',
-    value: gopayBoardProgress.value,
-    color: 'text-blue-400',
-    meta: '',
-  },
-  {
-    label: '绑卡成功',
-    value: String(gopayBoardProgressStats.value.successful || 0),
-    color: 'text-emerald-400',
-    meta: gopayBoardRegistrationMeta.value,
-  },
-  {
-    label: '待重试',
-    value: String(gopayBoardPendingRetryCount.value),
-    color: 'text-violet-300',
-    meta: '',
-  },
-  {
-    label: '绑卡失败',
-    value: String(gopayBoardFailureCount.value),
-    color: 'text-red-400',
-    meta: '',
-  },
-])
+const gopayBoardView = computed(() => computeGoPayBoardView({
+  task: gopayTask.value,
+  form: gopayForm.value,
+  batchActive: gopayBatchActive.value,
+  selectedBatchEmails: gopaySelectedBatchEmails.value,
+}))
+
+const gopayTopCards = computed(() => gopayBoardView.value.cards)
 
 const gopayBoardFailureCount = computed(() => {
-  const failedEmails = new Set()
-  const result = gopayTask.value?.result || {}
-  const hasFinalResult = Boolean(gopayTask.value?.result)
-  const lists = [
-    result.rejected_emails,
-    result.payment_failed_emails,
-    result.nonzero_blocked_emails,
-    result.bind_failed_emails,
-    result.failed_emails,
-  ]
-  if (hasFinalResult && !(Array.isArray(result.pending_retry_emails) && result.pending_retry_emails.length)) {
-    lists.push(result.blocked_emails)
-  }
-  for (const list of lists) {
-    if (!Array.isArray(list)) continue
-    for (const [index, item] of list.entries()) {
-      const normalized = String((item && typeof item === 'object') ? item.email : item || '').trim().toLowerCase()
-      if (normalized) {
-        failedEmails.add(normalized)
-      } else if (item && typeof item === 'object') {
-        const current = String(item.auto_register_index || item.current || index + 1)
-        failedEmails.add(`attempt:${current}`)
-      }
-    }
-  }
-
-  if (!hasFinalResult) {
-    const failureStages = new Set([
-      'checkout_not_approved_rotate',
-      'gopay_payment_process_failed_rotate',
-      'gopay_nonzero_amount_blocked_rotate',
-      'gopay_auto_register_bind_failed',
-      'gopay_auto_register_failed',
-    ])
-    const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
-    for (const event of events) {
-      if (!failureStages.has(String(event?.stage || ''))) continue
-      const normalized = String(event?.email || '').trim().toLowerCase()
-      if (normalized) {
-        failedEmails.add(normalized)
-      } else {
-        const current = String(event?.current || event?.attempt || event?.event_id || '')
-        if (current) failedEmails.add(`attempt:${current}`)
-      }
-    }
-  }
-
-  return failedEmails.size
+  return gopayBoardView.value.failureCount
 })
 
 const gopayBoardPendingRetryCount = computed(() => {
-  const result = gopayTask.value?.result || {}
-  const successful = new Set()
-  if (Array.isArray(result.successful_emails)) {
-    for (const email of result.successful_emails) {
-      const normalized = String(email || '').trim().toLowerCase()
-      if (normalized) successful.add(normalized)
-    }
-  }
-  const events = Array.isArray(gopayTask.value?.progress_events) ? gopayTask.value.progress_events : []
-  for (const event of events) {
-    if (String(event?.stage || '') !== 'gopay_account_bound') continue
-    const normalized = String(event?.email || '').trim().toLowerCase()
-    if (normalized) successful.add(normalized)
-  }
-  if (Array.isArray(result.pending_retry_emails)) {
-    return result.pending_retry_emails.filter(email => {
-      const normalized = String(email || '').trim().toLowerCase()
-      return normalized && !successful.has(normalized)
-    }).length
-  }
-  const progress = gopayTask.value?.progress || {}
-  const pending = new Set()
-  for (const event of events) {
-    const stage = String(event?.stage || '')
-    const email = String(event?.email || '').trim().toLowerCase()
-    if (!email) continue
-    if (stage === 'gopay_pending_retry_queued') pending.add(email)
-    if (stage === 'gopay_pending_retry_account' || stage === 'gopay_account_bound' || stage === 'gopay_pending_retry_failed') {
-      pending.delete(email)
-    }
-  }
-  for (const email of successful) pending.delete(email)
-  if (pending.size) return pending.size
-  if (Number.isFinite(Number(progress.pending_retry))) return Math.max(0, Number(progress.pending_retry || 0) - successful.size)
-  return pending.size
+  return gopayBoardView.value.pendingRetryCount
+})
+
+const gopayBoardPendingRetryMeta = computed(() => {
+  return gopayBoardView.value.pendingRetryMeta
 })
 
 const gopayBoardRegistrationMeta = computed(() => {
@@ -2051,18 +1952,7 @@ const gopayBoardRegistrationMeta = computed(() => {
 })
 
 const gopayBoardEmail = computed(() => {
-  const progress = gopayTask.value?.progress || {}
-  const result = gopayTask.value?.result || {}
-  const params = gopayTask.value?.params || {}
-  const email = progress.email || result.email || result.email_used || params.email || gopayForm.value.email
-  if (email) return email
-  if (params.auto_register) {
-    const current = Number(progress.current || progress.attempt || 0)
-    const total = normalizeGoPayAutoRegisterCount(params.auto_register_count || result.auto_register_count || 1)
-    if (current > 0) return `第 ${current}/${total} 个`
-    return `自动注册 ${total} 个`
-  }
-  return '-'
+  return gopayBoardView.value.currentAccount
 })
 
 const gopayBoardStage = computed(() => {
@@ -2075,79 +1965,11 @@ const gopayBoardStage = computed(() => {
 })
 
 const gopayBoardProgressStats = computed(() => {
-  const task = gopayTask.value || {}
-  const progress = task.progress || {}
-  const result = task.result || {}
-  const params = task.params || {}
-  const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
-  const isAutoRegister = Boolean(params.auto_register)
-  const events = Array.isArray(task.progress_events) ? task.progress_events : []
-  const autoRegisterEventTotal = events.reduce((maxTotal, event) => {
-    const stage = String(event?.stage || '')
-    if (!(stage.startsWith('gopay_auto_register') || stage.startsWith('register_'))) return maxTotal
-    const total = Number(event?.total || 0)
-    return Number.isFinite(total) ? Math.max(maxTotal, total) : maxTotal
-  }, 0)
-  const autoRegisterCount = params.auto_register
-    ? normalizeGoPayAutoRegisterCount(params.auto_register_count || result.auto_register_count || progress.auto_register_count || autoRegisterEventTotal || 1)
-    : 0
-  const autoRegisterEventAttempted = isAutoRegister
-    ? events.reduce((maxCurrent, event) => {
-      const stage = String(event?.stage || '')
-      if (!(stage.startsWith('gopay_auto_register') || stage.startsWith('register_'))) return maxCurrent
-      const current = Number(event?.current || event?.attempt || 0)
-      return Number.isFinite(current) ? Math.max(maxCurrent, current) : maxCurrent
-    }, 0)
-    : 0
-  const currentAccountAttempt = !isAutoRegister
-    ? events.reduce((maxCurrent, event) => {
-      const stage = String(event?.stage || '')
-      if (!['gopay_try_account', 'gopay_rotate_account', 'gopay_pending_retry_account'].includes(stage)) return maxCurrent
-      const current = Number(event?.attempt || event?.current || 0)
-      return Number.isFinite(current) ? Math.max(maxCurrent, current) : maxCurrent
-    }, 0)
-    : 0
-  const attempted = isAutoRegister
-    ? Math.max(Number(result.auto_register_attempted || 0), Number(progress.attempted || progress.attempt || 0), autoRegisterEventAttempted)
-    : Array.isArray(result.attempted_emails)
-      ? Math.max(result.attempted_emails.length, currentAccountAttempt)
-      : Math.max(Number(progress.attempted || progress.attempt || 0), currentAccountAttempt)
-  const successfulEmails = new Set()
-  const hasFinalSuccessfulEmails = Array.isArray(result.successful_emails)
-  if (hasFinalSuccessfulEmails) {
-    for (const email of result.successful_emails) {
-      const normalized = String(email || '').trim().toLowerCase()
-      if (normalized) successfulEmails.add(normalized)
-    }
-  }
-  if (!hasFinalSuccessfulEmails) {
-    for (const event of events) {
-      if (String(event?.stage || '') !== 'gopay_account_bound') continue
-      const normalized = String(event?.email || '').trim().toLowerCase()
-      if (normalized) successfulEmails.add(normalized)
-    }
-  }
-  const successful = successfulEmails.size || Number(progress.successful || 0)
-  const done = Math.max(attempted, successful)
-  const total = isAutoRegister
-    ? autoRegisterCount
-    : Number(progress.total || accounts.length || (task.task_id ? 1 : 0))
-  const remaining = Number.isFinite(Number(progress.remaining_candidates))
-    ? Number(progress.remaining_candidates)
-    : Math.max(0, Math.max(total, done) - done)
-  return {
-    total: Math.max(total, done),
-    attempted: done,
-    successful,
-    remaining,
-  }
+  return gopayBoardView.value.metrics.progressStats
 })
 
 const gopayBoardProgress = computed(() => {
-  const stats = gopayBoardProgressStats.value
-  if (!stats.total) return '0/0'
-  const done = Math.max(stats.attempted, stats.successful)
-  return `${done}/${stats.total}`
+  return gopayBoardView.value.progressText
 })
 
 const gopayBoardProgressPercent = computed(() => {

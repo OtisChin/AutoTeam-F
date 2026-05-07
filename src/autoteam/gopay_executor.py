@@ -222,10 +222,29 @@ def _ensure_ok(resp, stage: str):
 def _is_transient_http_error(exc: Exception) -> bool:
     if isinstance(exc, requests.RequestException):
         return True
+    text = str(exc or "").lower()
+    if any(
+        marker in text
+        for marker in (
+            "curl: (6)",
+            "could not resolve host",
+            "couldn't resolve host",
+            "name resolution",
+            "temporary failure in name resolution",
+            "getaddrinfo",
+            "dns",
+            "failed to connect",
+            "connection timed out",
+            "connection timeout",
+            "connection reset",
+            "connection refused",
+        )
+    ):
+        return True
     module = exc.__class__.__module__
     name = exc.__class__.__name__.lower()
     return module.startswith("curl_cffi") and any(
-        marker in name for marker in ("timeout", "connection", "proxy", "ssl", "requests")
+        marker in name for marker in ("timeout", "connection", "proxy", "ssl", "requests", "dns", "resolve")
     )
 
 
@@ -747,6 +766,13 @@ def _is_chatgpt_token_invalidated_result(result: dict | None) -> bool:
     )
 
 
+def _looks_like_http_forbidden_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    if not normalized:
+        return False
+    return "http 403" in normalized or "status 403" in normalized or "forbidden" in normalized
+
+
 def _gopay_pending_retry_reason(result: dict | None) -> str:
     if not isinstance(result, dict) or result.get("status") == "success":
         return ""
@@ -754,8 +780,6 @@ def _gopay_pending_retry_reason(result: dict | None) -> str:
         return ""
     if _is_chatgpt_approve_blocked_result(result):
         return "chatgpt_approve_blocked"
-    if _is_checkout_payment_not_approved_result(result):
-        return "checkout_not_approved"
     if _is_gopay_payment_process_rotatable_result(result):
         return "gopay_payment_process"
     if _is_gopay_already_linked_result(result):
@@ -766,6 +790,8 @@ def _gopay_pending_retry_reason(result: dict | None) -> str:
         return "rate_limited"
     if stage in {"fetch_otp", "gopay_validate_otp", "trigger_sms_otp"}:
         return "gopay_otp"
+    if _looks_like_http_forbidden_text(message):
+        return "http_403"
     if stage in {
         "resolve_midtrans_redirect",
         "pm_redirect",
@@ -2107,8 +2133,14 @@ class GoPayHttpCharger:
                 return resp
             except Exception as exc:
                 last_exc = exc
-                if attempt >= attempts or not _is_transient_http_error(exc):
+                transient_error = _is_transient_http_error(exc)
+                if not transient_error:
                     raise
+                if attempt >= attempts:
+                    raise GoPayFlowError(
+                        f"{stage} 网络请求失败: {_safe_error_summary(exc)}",
+                        stage=stage,
+                    ) from exc
                 logger.info(
                     "[gopay_executor] transient HTTP error at %s, retry %s/%s: %s",
                     stage,

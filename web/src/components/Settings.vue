@@ -320,6 +320,79 @@
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
+          <h2 class="text-lg font-semibold text-white">远程账号 Hub</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            将本机账号池和 data/auths 里的 CPA 凭证上传到一个中心节点，便于统一筛选和导出。
+          </p>
+        </div>
+        <span
+          class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
+          :class="accountHubConfigured
+            ? 'bg-green-500/10 text-green-400 border-green-500/20'
+            : 'bg-gray-800 text-gray-400 border-gray-700'">
+          {{ accountHubConfigured ? '已配置' : '未配置' }}
+        </span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">远程 URL</label>
+          <input
+            v-model.trim="accountHubForm.url"
+            type="text"
+            placeholder="例如 http://192.168.1.10:8787 或 https://hub.example.com"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">节点名称</label>
+          <input
+            v-model.trim="accountHubForm.name"
+            type="text"
+            placeholder="例如 pc-01 / vps-01"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-sm text-gray-400 mb-1">Token</label>
+          <input
+            v-model="accountHubForm.token"
+            type="password"
+            autocomplete="off"
+            placeholder="所有节点和 Hub 端保持一致"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
+          <div class="text-xs text-gray-500 mt-2">
+            作为中心 Hub 的机器也需要配置同一个 Token；作为上传节点时再填写远程 URL。
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+          <input v-model="accountHubForm.auto_upload" type="checkbox" class="accent-blue-500" />
+          每 5 分钟自动同步 Plus / Team / Pro 账号到账号 Hub
+        </label>
+        <div class="flex flex-wrap gap-3">
+          <button
+            @click="testAccountHub"
+            :disabled="accountHubBusy || !accountHubForm.url || !accountHubForm.token"
+            class="px-4 py-2 rounded-lg text-sm border transition"
+            :class="accountHubBusy || !accountHubForm.url || !accountHubForm.token
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-200 border-emerald-500/30'">
+            {{ accountHubTesting ? '测试中...' : '连接测试' }}
+          </button>
+          <button
+            @click="saveAccountHub"
+            :disabled="accountHubBusy"
+            class="px-4 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50">
+            {{ accountHubSaving ? '保存中...' : '保存 Hub 配置' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
           <h2 class="text-lg font-semibold text-white">注册域名设置</h2>
           <p class="text-sm text-gray-400 mt-1">
             维护“注册账号”页面可选的域名列表。一个域名一行，或使用逗号分隔。
@@ -440,6 +513,12 @@ const codexSubmittingHint = ref('')
 const registerDomainsText = ref('')
 const registerDomainLoading = ref(false)
 const registerDomainSaving = ref(false)
+const accountHubForm = ref({ url: '', token: '', name: '', auto_upload: false })
+const accountHubSaving = ref(false)
+const accountHubTesting = ref(false)
+
+const accountHubBusy = computed(() => accountHubSaving.value || accountHubTesting.value)
+const accountHubConfigured = computed(() => Boolean(accountHubForm.value.token || accountHubForm.value.url))
 
 const adminConfigured = computed(() => !!props.adminStatus?.configured)
 const adminBusy = computed(() => !!props.adminStatus?.login_in_progress)
@@ -499,6 +578,7 @@ onMounted(async () => {
     console.error('加载巡检配置失败:', e)
   }
   loadRegisterDomains()
+  loadAccountHubConfig()
 })
 
 function setMessage(text, type = 'success') {
@@ -725,6 +805,51 @@ async function saveRegisterDomains() {
     setMessage(e.message, 'error')
   } finally {
     registerDomainSaving.value = false
+  }
+}
+
+async function loadAccountHubConfig() {
+  try {
+    const cfg = await api.getAccountHubConfig()
+    accountHubForm.value = {
+      url: cfg.url || '',
+      token: cfg.token || '',
+      name: cfg.name || '',
+      auto_upload: Boolean(cfg.auto_upload),
+    }
+  } catch (e) {
+    console.error('加载账号 Hub 配置失败:', e)
+  }
+}
+
+async function saveAccountHub() {
+  accountHubSaving.value = true
+  try {
+    const result = await api.saveAccountHubConfig(accountHubForm.value)
+    const cfg = result.config || accountHubForm.value
+    accountHubForm.value = {
+      url: cfg.url || '',
+      token: cfg.token || '',
+      name: cfg.name || '',
+      auto_upload: Boolean(cfg.auto_upload),
+    }
+    setMessage(result.message || '账号 Hub 配置已保存')
+  } catch (e) {
+    setMessage(e.message, 'error')
+  } finally {
+    accountHubSaving.value = false
+  }
+}
+
+async function testAccountHub() {
+  accountHubTesting.value = true
+  try {
+    const result = await api.testAccountHub(accountHubForm.value)
+    setMessage(result.message || '账号 Hub 连接成功')
+  } catch (e) {
+    setMessage(e.message, 'error')
+  } finally {
+    accountHubTesting.value = false
   }
 }
 </script>

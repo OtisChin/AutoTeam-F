@@ -99,6 +99,13 @@
             class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition disabled:opacity-50 text-gray-400 hover:text-white">
             {{ syncing ? '同步中...' : '同步账号' }}
           </button>
+          <button @click="syncToAccountHub" :disabled="hubSyncing"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="hubSyncing
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-violet-600/10 text-violet-300 border-violet-500/30 hover:bg-violet-600/20'">
+            {{ hubSyncing ? '上传中...' : '同步到账号Hub' }}
+          </button>
         </div>
       </div>
       <div class="px-4 py-3 border-b border-gray-800 bg-gray-950/30 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -131,6 +138,14 @@
             class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
             <option value="">全部导出状态</option>
             <option v-for="option in credentialExportOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.count }})
+            </option>
+          </select>
+          <select
+            v-model="accountHubSyncFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部同步状态</option>
+            <option v-for="option in accountHubSyncOptions" :key="option.value" :value="option.value">
               {{ option.label }} ({{ option.count }})
             </option>
           </select>
@@ -172,7 +187,7 @@
             placeholder="GoPay 任务ID"
             class="w-full sm:w-40 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter || bindTaskFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter || bindTaskFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -205,6 +220,7 @@
               <th class="px-4 py-3 font-medium">账号类型</th>
               <th class="px-4 py-3 font-medium">状态</th>
               <th class="px-4 py-3 font-medium">账密导出</th>
+              <th class="px-4 py-3 font-medium">Hub同步</th>
               <th class="px-4 py-3 font-medium text-right">5h 剩余</th>
               <th class="px-4 py-3 font-medium text-right">周 剩余</th>
               <th class="px-4 py-3 font-medium">5h 重置</th>
@@ -214,7 +230,7 @@
           </thead>
           <tbody>
             <tr v-if="!filteredAccounts.length">
-              <td class="px-4 py-8 text-center text-gray-500" colspan="11">没有匹配的账号</td>
+              <td class="px-4 py-8 text-center text-gray-500" colspan="12">没有匹配的账号</td>
             </tr>
             <tr v-for="(acc, i) in filteredAccounts" :key="acc.email"
               class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
@@ -228,7 +244,12 @@
                   class="accent-rose-500 cursor-pointer" />
               </td>
               <td class="px-4 py-3 text-gray-500">{{ i + 1 }}</td>
-              <td class="px-4 py-3 font-mono text-xs">{{ acc.email }}</td>
+              <td class="px-4 py-3">
+                <div class="font-mono text-xs text-gray-200">{{ acc.email }}</div>
+                <div v-if="acc.hub_source_name" class="mt-1 text-[11px] text-violet-300">
+                  Hub: {{ acc.hub_source_name }}
+                </div>
+              </td>
               <td class="px-4 py-3">
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
                   :class="accountTypeClass(acc.account_type)">
@@ -246,6 +267,12 @@
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
                   :class="credentialExportClass(acc)">
                   {{ credentialExportLabel(acc) }}
+                </span>
+              </td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="accountHubSyncClass(acc)">
+                  {{ accountHubSyncLabel(acc) }}
                 </span>
               </td>
               <td class="px-4 py-3 text-right font-mono" :class="pctColor(quota(acc, 'primary'))">
@@ -515,6 +542,7 @@ const emit = defineEmits(['refresh', 'task-started'])
 const actionEmail = ref('')
 const actionType = ref('')
 const syncing = ref(false)
+const hubSyncing = ref(false)
 const message = ref('')
 const exportData = ref(null)
 const copied = ref(false)
@@ -523,6 +551,7 @@ const emailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
 const credentialExportFilter = ref('')
+const accountHubSyncFilter = ref('')
 const authCredentialFilter = ref('')
 const bindDateFilter = ref(dateKey(new Date()))
 const bindStartTimeFilter = ref('')
@@ -695,6 +724,7 @@ const filteredAccounts = computed(() => {
   const statusNeedle = statusFilter.value
   const typeNeedle = accountTypeFilter.value
   const exportNeedle = credentialExportFilter.value
+  const hubSyncNeedle = accountHubSyncFilter.value
   const authNeedle = authCredentialFilter.value
   const bindRange = bindTimeRange.value
   const bindTaskNeedle = bindTaskFilter.value.trim().toLowerCase()
@@ -705,12 +735,14 @@ const filteredAccounts = computed(() => {
     const status = String(acc?.status || '')
     const accountType = String(acc?.account_type || 'unknown')
     const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
+    const hubSyncStatus = acc?.account_hub_synced ? 'synced' : 'unsynced'
     const authStatus = hasCodexAuthFile(acc) ? 'has_auth' : 'missing_auth'
     const bindTaskId = String(acc?.last_bind_task_id || '').toLowerCase()
     if (emailNeedle && !email.includes(emailNeedle)) return false
     if (statusNeedle && status !== statusNeedle) return false
     if (typeNeedle && accountType !== typeNeedle) return false
     if (exportNeedle && exportStatus !== exportNeedle) return false
+    if (hubSyncNeedle && hubSyncStatus !== hubSyncNeedle) return false
     if (authNeedle && authStatus !== authNeedle) return false
     if (bindRange.start || bindRange.end) {
       const bindTs = accountBindTs(acc)
@@ -764,6 +796,18 @@ const credentialExportOptions = computed(() => {
   return [
     { value: 'unexported', label: '未导出', count: unexported },
     { value: 'exported', label: '已导出', count: exported },
+  ]
+})
+const accountHubSyncOptions = computed(() => {
+  let synced = 0
+  let unsynced = 0
+  for (const acc of allAccounts.value) {
+    if (acc?.account_hub_synced) synced += 1
+    else unsynced += 1
+  }
+  return [
+    { value: 'unsynced', label: '未同步', count: unsynced },
+    { value: 'synced', label: '已同步', count: synced },
   ]
 })
 const authCredentialOptions = computed(() => {
@@ -883,6 +927,7 @@ function clearFilters() {
   statusFilter.value = ''
   accountTypeFilter.value = ''
   credentialExportFilter.value = ''
+  accountHubSyncFilter.value = ''
   authCredentialFilter.value = ''
   bindDateFilter.value = dateKey(new Date())
   bindStartTimeFilter.value = ''
@@ -1003,6 +1048,16 @@ function credentialExportClass(acc) {
     : 'bg-gray-500/10 text-gray-400'
 }
 
+function accountHubSyncLabel(acc) {
+  return acc?.account_hub_synced ? '已同步' : '未同步'
+}
+
+function accountHubSyncClass(acc) {
+  return acc?.account_hub_synced
+    ? 'bg-violet-500/10 text-violet-300'
+    : 'bg-gray-500/10 text-gray-400'
+}
+
 function quota(acc, type) {
   const qi = props.status?.quota_cache?.[acc.email] || acc.last_quota
   if (!qi) return null
@@ -1086,6 +1141,7 @@ function exportAccounts() {
       status: statusFilter.value || '',
       account_type: accountTypeFilter.value || '',
       credentials_exported: credentialExportFilter.value || '',
+      account_hub_synced: accountHubSyncFilter.value || '',
       auth_credential: authCredentialFilter.value || '',
       bind_date: bindDateFilter.value || '',
       bind_start_time: bindStartTimeFilter.value || '',
@@ -1113,6 +1169,9 @@ function exportAccounts() {
       last_bind_failure_stage: acc.last_bind_failure_stage || '',
       credentials_exported: !!acc.credentials_exported,
       credentials_exported_at: acc.credentials_exported_at || null,
+      account_hub_synced: !!acc.account_hub_synced,
+      account_hub_synced_at: acc.account_hub_synced_at || null,
+      hub_source_name: acc.hub_source_name || '',
       is_main_account: !!acc.is_main_account,
     })),
   }
@@ -1289,6 +1348,23 @@ async function syncAccounts() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     syncing.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function syncToAccountHub() {
+  hubSyncing.value = true
+  message.value = ''
+  try {
+    const result = await api.syncAccountHub()
+    message.value = result.message || `已上传 ${result.received_accounts || 0} 个账号到账号 Hub`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    hubSyncing.value = false
     setTimeout(() => { message.value = '' }, 8000)
   }
 }

@@ -93,6 +93,10 @@ export const api = {
   postSyncFromCpa: () => request('POST', '/sync/from-cpa'),
   postSyncAccounts: () => request('POST', '/sync/accounts'),
   postSyncMainCodex: () => request('POST', '/sync/main-codex'),
+  getAccountHubConfig: () => request('GET', '/account-hub/config'),
+  saveAccountHubConfig: (config) => request('PUT', '/account-hub/config', config),
+  testAccountHub: (config) => request('POST', '/account-hub/test', config),
+  syncAccountHub: () => request('POST', '/account-hub/sync'),
 
   startRotate: (target = 5) => request('POST', '/tasks/rotate', { target }),
   startCheck: () => request('POST', '/tasks/check'),
