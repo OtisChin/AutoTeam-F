@@ -56,6 +56,7 @@ def test_receive_payload_upserts_accounts_preserves_exported_state_and_auth(tmp_
     assert saved["user@example.com"]["hub_source_name"] == "pc-01"
     assert saved["user@example.com"]["account_hub_synced"] is True
     assert saved["user@example.com"]["account_hub_synced_at"] == 456
+    assert saved["user@example.com"]["auth_file"] == str(auth_dir / "codex-user@example.com-plus-abcd1234.json")
     assert saved["user@example.com"]["credentials_exported"] is True
     assert saved["user@example.com"]["credentials_exported_at"] == 123
     assert saved["new@example.com"]["hub_source_name"] == "pc-01"
@@ -77,6 +78,7 @@ def test_auto_upload_only_syncs_plus_team_pro_and_marks_uploaded(tmp_path, monke
             {"email": "pro@example.com", "status": "active", "account_type": "pro"},
             {"email": "free@example.com", "status": "active", "account_type": "free"},
             {"email": "bad@example.com", "status": "fail", "account_type": "plus"},
+            {"email": "done@example.com", "status": "active", "account_type": "plus", "account_hub_synced": True},
         ]
     )
 

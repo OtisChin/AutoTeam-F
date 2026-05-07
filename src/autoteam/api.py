@@ -785,21 +785,29 @@ def _resolve_status_auth_file(acc: dict) -> str:
 
 def _resolve_codex_auth_file(acc: dict) -> str:
     auth_file = (acc.get("auth_file") or "").strip()
-    if not auth_file:
-        return ""
+    from autoteam.auth_storage import AUTH_DIR
 
-    path = Path(auth_file)
-    if not path.exists() or not path.is_file():
-        return ""
+    if auth_file:
+        path = Path(auth_file)
+        if path.exists() and path.is_file():
+            try:
+                path.resolve().relative_to(AUTH_DIR.resolve())
+                return str(path)
+            except Exception:
+                pass
 
+    email = _normalized_email(acc.get("email"))
+    if not email:
+        return ""
     try:
-        from autoteam.auth_storage import AUTH_DIR
-
-        path.resolve().relative_to(AUTH_DIR.resolve())
+        candidates = sorted(
+            AUTH_DIR.glob(f"codex-{email}-*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
     except Exception:
         return ""
-
-    return str(path)
+    return str(candidates[0]) if candidates else ""
 
 
 def _display_account_status(acc: dict, quota_snapshot: dict | None = None) -> str:

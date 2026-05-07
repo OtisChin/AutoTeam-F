@@ -132,6 +132,8 @@ def _auth_candidates_for_account(acc: dict) -> list[Path]:
 
 
 def _is_syncable_account(acc: dict) -> bool:
+    if bool(acc.get("account_hub_synced")):
+        return False
     account_type = str(acc.get("account_type") or "").strip().lower()
     status = str(acc.get("status") or "").strip().lower()
     if status in SYNC_EXCLUDED_STATUSES:
@@ -365,6 +367,7 @@ def receive_payload(payload: dict) -> dict:
 
     AUTH_DIR.mkdir(parents=True, exist_ok=True)
     saved_auths = 0
+    saved_auth_by_email: dict[str, str] = {}
     for item in incoming_auths:
         if not isinstance(item, dict):
             continue
@@ -375,7 +378,21 @@ def receive_payload(payload: dict) -> dict:
         path = AUTH_DIR / filename
         write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
         ensure_auth_file_permissions(path)
+        email = str(item.get("email") or data.get("email") or "").strip().lower()
+        if email:
+            saved_auth_by_email[email] = str(path)
         saved_auths += 1
+    if saved_auth_by_email:
+        updated_auth_file = 0
+        for acc in accounts:
+            email = str(acc.get("email") or "").strip().lower()
+            auth_file = saved_auth_by_email.get(email)
+            if not auth_file:
+                continue
+            acc["auth_file"] = auth_file
+            updated_auth_file += 1
+        if updated_auth_file:
+            save_accounts(accounts)
 
     return {
         "message": f"账号 Hub 已接收 {upserted} 个账号，{saved_auths} 个认证文件",
