@@ -320,6 +320,89 @@
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
+          <h2 class="text-lg font-semibold text-white">邮件 Provider</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            配置注册账号时使用的接码服务。LuckMail 支持已购邮箱 token，格式为 email----tok_xxx。
+          </p>
+        </div>
+        <span
+          class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
+          :class="mailProvider
+            ? 'bg-green-500/10 text-green-400 border-green-500/20'
+            : 'bg-gray-800 text-gray-400 border-gray-700'">
+          {{ mailProvider || '未配置' }}
+        </span>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Mail Provider</label>
+          <select
+            v-model="mailProvider"
+            :disabled="mailSetupLoading || mailSetupSaving"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          >
+            <option v-for="option in mailProviderOptions" :key="option.value" :value="option.value">
+              {{ option.label }} ({{ option.description }})
+            </option>
+          </select>
+        </div>
+
+        <div v-if="mailProviderFieldTitle" class="text-xs font-semibold uppercase tracking-wide text-gray-500">
+          {{ mailProviderFieldTitle }}
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div
+            v-for="field in mailProviderFields"
+            :key="field.key"
+            :class="isLongTextField(field.key) ? 'md:col-span-2' : ''"
+          >
+            <label class="block text-sm text-gray-400 mb-1">
+              {{ field.prompt }}
+              <span v-if="!field.optional" class="text-red-400">*</span>
+              <span v-if="field.configured" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <textarea
+              v-if="isLongTextField(field.key)"
+              v-model="mailProviderForm[field.key]"
+              rows="4"
+              spellcheck="false"
+              :placeholder="field.default || ''"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-blue-500"
+            ></textarea>
+            <input
+              v-else
+              v-model="mailProviderForm[field.key]"
+              :type="isSecretField(field.key) ? 'password' : 'text'"
+              :placeholder="field.default || ''"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-3">
+          <button
+            @click="loadMailProviderConfig"
+            :disabled="mailSetupLoading || mailSetupSaving"
+            class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+          >
+            {{ mailSetupLoading ? '刷新中...' : '刷新配置' }}
+          </button>
+          <button
+            @click="saveMailProvider"
+            :disabled="mailSetupSaving || !mailProvider"
+            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+          >
+            {{ mailSetupSaving ? '验证并保存中...' : '保存邮件配置' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
           <h2 class="text-lg font-semibold text-white">远程账号 Hub</h2>
           <p class="text-sm text-gray-400 mt-1">
             将本机账号池和 data/auths 里的 CPA 凭证上传到一个中心节点，便于统一筛选和导出。
@@ -516,9 +599,25 @@ const registerDomainSaving = ref(false)
 const accountHubForm = ref({ url: '', token: '', name: '', auto_upload: false })
 const accountHubSaving = ref(false)
 const accountHubTesting = ref(false)
+const mailSetupLoading = ref(false)
+const mailSetupSaving = ref(false)
+const mailProvider = ref('cloudflare_temp_email')
+const mailProviderOptions = ref([])
+const mailProviderFieldGroups = ref({})
+const mailProviderForm = ref({})
 
 const accountHubBusy = computed(() => accountHubSaving.value || accountHubTesting.value)
 const accountHubConfigured = computed(() => Boolean(accountHubForm.value.token || accountHubForm.value.url))
+const mailProviderFields = computed(() => mailProviderFieldGroups.value[mailProvider.value] || [])
+const mailProviderFieldTitle = computed(() =>
+  mailProvider.value === 'cloud-mail'
+    ? 'cloud-mail 配置'
+    : mailProvider.value === 'outlook'
+      ? 'Outlook 配置'
+      : mailProvider.value === 'luckmail'
+        ? 'LuckMail 配置'
+        : 'cloudflare_temp_email 配置'
+)
 
 const adminConfigured = computed(() => !!props.adminStatus?.configured)
 const adminBusy = computed(() => !!props.adminStatus?.login_in_progress)
@@ -579,6 +678,7 @@ onMounted(async () => {
   }
   loadRegisterDomains()
   loadAccountHubConfig()
+  loadMailProviderConfig()
 })
 
 function setMessage(text, type = 'success') {
@@ -850,6 +950,52 @@ async function testAccountHub() {
     setMessage(e.message, 'error')
   } finally {
     accountHubTesting.value = false
+  }
+}
+
+function isSecretField(key) {
+  return key.includes('PASSWORD') || key.includes('KEY') || key.includes('TOKEN')
+}
+
+function isLongTextField(key) {
+  return key.endsWith('_ACCOUNTS')
+}
+
+async function loadMailProviderConfig() {
+  mailSetupLoading.value = true
+  try {
+    const result = await api.getMailProviderConfig()
+    mailProvider.value = result.provider || 'cloudflare_temp_email'
+    mailProviderOptions.value = result.provider_options || []
+    mailProviderFieldGroups.value = result.provider_fields || {}
+    const nextForm = {}
+    for (const fields of Object.values(mailProviderFieldGroups.value)) {
+      for (const field of fields) {
+        nextForm[field.key] = field.value || ''
+      }
+    }
+    mailProviderForm.value = nextForm
+  } catch (e) {
+    setMessage(e.message || '加载邮件 Provider 配置失败', 'error')
+  } finally {
+    mailSetupLoading.value = false
+  }
+}
+
+async function saveMailProvider() {
+  mailSetupSaving.value = true
+  try {
+    const payload = { MAIL_PROVIDER: mailProvider.value }
+    for (const field of mailProviderFields.value) {
+      payload[field.key] = mailProviderForm.value[field.key] || ''
+    }
+    const result = await api.saveMailProviderConfig(payload)
+    setMessage(result.message || '邮件 Provider 配置已保存')
+    await loadMailProviderConfig()
+  } catch (e) {
+    setMessage(e.message || '保存邮件 Provider 配置失败', 'error')
+  } finally {
+    mailSetupSaving.value = false
   }
 }
 </script>

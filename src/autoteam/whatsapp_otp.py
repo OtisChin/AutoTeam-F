@@ -1,13 +1,16 @@
-"""WhatsApp Web OTP listener.
+"""WhatsApp OTP listener backed by a local Android emulator.
 
-The listener keeps a dedicated WhatsApp Web browser profile open, reads visible
-message text, and exposes recent OTP candidates to the GoPay polling flow.
+The listener polls an adb-connected emulator where WhatsApp is already logged
+in, reads notification/UI text, and exposes recent OTP candidates through the
+same local endpoint used by the GoPay polling flow.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -20,16 +23,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROFILE_DIR = PROJECT_ROOT / "data" / "whatsapp_profile"
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 DEFAULT_RECENT_LIMIT = 20
+DEFAULT_ADB_PATH = os.environ.get("ANDROID_ADB_PATH") or os.environ.get("ADB_PATH") or "adb"
+DEFAULT_ADB_SERIAL = os.environ.get("WHATSAPP_ADB_SERIAL") or os.environ.get("ANDROID_ADB_SERIAL") or ""
 
 _OTP_RE = re.compile(r"(?<!\d)(\d{4,8})(?!\d)")
 _MESSAGE_HINT_RE = re.compile(
-    r"gopay|gojek|openai|otp|kode|code|verification|verifikasi|hubungkan|link",
+    r"gopay|gojek|openai|kode|verification|verifikasi|hubungkan|\botp\b|\bcode\b",
     re.IGNORECASE,
 )
-_LOGIN_HINT_RE = re.compile(
-    r"use whatsapp on your computer|link with phone number|scan.*qr|whatsapp web",
+_OTP_LABELED_RE = re.compile(
+    r"(?:\botp\b|\bkode\b|\bcode\b|verification(?:\s+code)?)[^\d]{0,32}(\d{4,8})(?!\d)",
     re.IGNORECASE,
 )
+_OTP_BEFORE_LABEL_RE = re.compile(
+    r"(?<!\d)(\d{4,8})(?!\d)[^\n\r]{0,48}(?:\botp\b|\bkode\b|\bcode\b|verification(?:\s+code)?)",
+    re.IGNORECASE,
+)
+_WHATSAPP_HINT_RE = re.compile(r"whatsapp|com\.whatsapp", re.IGNORECASE)
 
 
 def _now() -> float:
@@ -46,10 +56,13 @@ def _extract_otp_from_text(text: str) -> str:
     raw = str(text or "")
     if not raw or not _MESSAGE_HINT_RE.search(raw):
         return ""
-    matches = _OTP_RE.findall(raw)
-    if not matches:
-        return ""
-    return str(matches[-1] or "").strip()
+    labeled_matches = _OTP_LABELED_RE.findall(raw)
+    if labeled_matches:
+        return str(labeled_matches[-1] or "").strip()
+    before_label_matches = _OTP_BEFORE_LABEL_RE.findall(raw)
+    if before_label_matches:
+        return str(before_label_matches[-1] or "").strip()
+    return ""
 
 
 class WhatsAppOtpListener:
@@ -60,11 +73,17 @@ class WhatsAppOtpListener:
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         recent_limit: int = DEFAULT_RECENT_LIMIT,
         headless: bool = False,
+        adb_path: str = DEFAULT_ADB_PATH,
+        adb_serial: str = DEFAULT_ADB_SERIAL,
     ):
+        # Kept for backward-compatible API/status shape; no browser profile is used.
         self.profile_dir = Path(profile_dir)
+        self.headless = bool(headless)
         self.poll_interval_seconds = max(0.5, float(poll_interval_seconds or DEFAULT_POLL_INTERVAL_SECONDS))
         self.recent_limit = max(1, int(recent_limit or DEFAULT_RECENT_LIMIT))
-        self.headless = bool(headless)
+        self.adb_path = str(adb_path or DEFAULT_ADB_PATH)
+        self.adb_serial = str(adb_serial or "").strip()
+        self._resolved_serial = ""
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -80,16 +99,26 @@ class WhatsAppOtpListener:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return self.status()
-            self.profile_dir.mkdir(parents=True, exist_ok=True)
             self._stop_event.clear()
             self._last_error = ""
-            self._thread = threading.Thread(target=self._run, name="whatsapp-otp-listener", daemon=True)
+            self._resolved_serial = ""
+            self._thread = threading.Thread(target=self._run, name="whatsapp-adb-otp-listener", daemon=True)
             self._thread.start()
-            return self.status()
+        return self._wait_for_start_status()
+
+    def _wait_for_start_status(self, *, timeout_seconds: float = 3.0) -> dict:
+        deadline = _now() + max(0.0, float(timeout_seconds or 0))
+        while _now() < deadline:
+            status = self.status()
+            with self._lock:
+                resolved = bool(self._resolved_serial)
+            if resolved or status.get("last_error") or not status.get("thread_alive"):
+                return status
+            time.sleep(0.05)
+        return self.status()
 
     def stop(self) -> dict:
         self._stop_event.set()
-        thread = None
         with self._lock:
             thread = self._thread
         if thread and thread.is_alive():
@@ -116,25 +145,26 @@ class WhatsAppOtpListener:
                 "thread_alive": thread_alive,
                 "login_required": bool(self._login_required),
                 "profile_dir": str(self.profile_dir),
+                "adb_path": self.adb_path,
+                "adb_serial": self._resolved_serial or self.adb_serial,
                 "last_error": self._last_error,
                 "last_seen_at": self._last_seen_at,
                 "latest": latest,
+                "latest_otp": latest.get("code") or "",
                 "recent_count": len(self._recent),
                 "otp_url": "/otp/whatsapp/latest",
+                "source": "android_emulator",
             }
 
     def latest_response(self, *, max_age_seconds: int = 600) -> dict:
         with self._lock:
             recent = [dict(item) for item in self._recent]
             latest = dict(self._latest or {})
-            login_required = self._login_required
             running = self._running and bool(self._thread and self._thread.is_alive())
             last_error = self._last_error
 
         if not running:
-            return {"code": 0, "msg": "WhatsApp OTP listener is not running", "data": {"code": "", "messages": recent}}
-        if login_required:
-            return {"code": 0, "msg": "WhatsApp Web needs login", "data": {"code": "", "messages": recent}}
+            return {"code": 0, "msg": "WhatsApp Android listener is not running", "data": {"code": "", "messages": recent}}
         if last_error:
             logger.debug("[whatsapp-otp] last listener error: %s", last_error)
 
@@ -153,7 +183,7 @@ class WhatsAppOtpListener:
             "data": {
                 "code": latest.get("raw") or latest.get("code") or "",
                 "otp": latest.get("code") or "",
-                "source": "whatsapp",
+                "source": "whatsapp_android",
                 "received_at": latest.get("received_at"),
                 "messages": recent,
             },
@@ -171,7 +201,7 @@ class WhatsAppOtpListener:
             item = {
                 "code": code,
                 "raw": raw,
-                "source": "whatsapp",
+                "source": "whatsapp_android",
                 "received_at": _now(),
             }
             self._seen_keys.add(key)
@@ -181,97 +211,140 @@ class WhatsAppOtpListener:
             self._last_seen_at = item["received_at"]
             if len(self._seen_keys) > self.recent_limit * 4:
                 self._seen_keys = {f"{entry.get('code')}|{entry.get('raw')}" for entry in self._recent}
-        logger.info("[whatsapp-otp] captured WhatsApp OTP: %s", code)
+        logger.info("[whatsapp-otp] captured WhatsApp Android OTP: %s", code)
+
+    def _adb_base_command(self) -> list[str]:
+        command = [self.adb_path]
+        serial = self._resolved_serial or self.adb_serial
+        if serial:
+            command += ["-s", serial]
+        return command
+
+    def _run_adb(self, args: list[str], *, timeout: int = 10) -> str:
+        command = self._adb_base_command() + args
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        if proc.returncode != 0:
+            raise RuntimeError(_compact(output or f"adb exited {proc.returncode}", 500))
+        return output
+
+    def _resolve_device(self) -> str:
+        command = [self.adb_path, "devices"]
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(_compact((proc.stdout or "") + (proc.stderr or ""), 500) or "adb devices failed")
+        devices: list[str] = []
+        for line in (proc.stdout or "").splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                devices.append(parts[0])
+        wanted = self.adb_serial
+        if wanted:
+            if wanted not in devices:
+                raise RuntimeError(f"未找到指定 Android 模拟器: {wanted}; 当前 devices={devices}")
+            return wanted
+        if not devices:
+            raise RuntimeError("未发现 adb 设备，请确认模拟器已启动且 adb devices 可见")
+        if len(devices) > 1:
+            raise RuntimeError(f"发现多个 adb 设备，请设置 WHATSAPP_ADB_SERIAL 指定一个: {devices}")
+        return devices[0]
 
     def _run(self):
-        playwright = None
-        context = None
         try:
-            from playwright.sync_api import sync_playwright
-
             with self._lock:
                 self._running = True
                 self._login_required = False
                 self._last_error = ""
 
-            playwright = sync_playwright().start()
-            context = playwright.chromium.launch_persistent_context(
-                str(self.profile_dir),
-                headless=self.headless,
-                viewport={"width": 1280, "height": 900},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--disable-dev-shm-usage",
-                ],
-            )
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto("https://web.whatsapp.com/", wait_until="domcontentloaded", timeout=60000)
-            logger.info("[whatsapp-otp] WhatsApp Web listener started: profile=%s", self.profile_dir)
+            self._resolved_serial = self._resolve_device()
+            logger.info("[whatsapp-otp] Android emulator listener started: serial=%s adb=%s", self._resolved_serial, self.adb_path)
 
             while not self._stop_event.is_set():
                 try:
-                    state = self._scrape_page(page)
-                    with self._lock:
-                        self._login_required = bool(state.get("login_required"))
-                        self._last_error = ""
-                    for message in state.get("messages") or []:
-                        text = str(message or "")
-                        code = _extract_otp_from_text(text)
+                    for message in self._scrape_device():
+                        code = _extract_otp_from_text(message)
                         if code:
-                            self._record_message(code=code, raw=text)
+                            self._record_message(code=code, raw=message)
+                    with self._lock:
+                        self._last_error = ""
                 except Exception as exc:
                     with self._lock:
-                        self._last_error = _compact(exc, 300)
-                    logger.debug("[whatsapp-otp] scrape failed: %s", exc)
+                        self._last_error = _compact(exc, 500)
+                    logger.debug("[whatsapp-otp] Android scrape failed: %s", exc)
                 self._stop_event.wait(self.poll_interval_seconds)
         except Exception as exc:
             with self._lock:
                 self._last_error = _compact(exc, 500)
-            logger.exception("[whatsapp-otp] listener failed")
+            logger.exception("[whatsapp-otp] Android listener failed")
         finally:
-            try:
-                if context:
-                    context.close()
-            except Exception:
-                pass
-            try:
-                if playwright:
-                    playwright.stop()
-            except Exception:
-                pass
             with self._lock:
                 self._running = False
-            logger.info("[whatsapp-otp] listener stopped")
+            logger.info("[whatsapp-otp] Android listener stopped")
+
+    def _scrape_device(self) -> list[str]:
+        messages: list[str] = []
+        try:
+            dumpsys_text = self._run_adb(["shell", "dumpsys", "notification", "--noredact"], timeout=12)
+        except Exception as exc:
+            logger.debug("[whatsapp-otp] dumpsys --noredact failed, retrying without it: %s", exc)
+            dumpsys_text = self._run_adb(["shell", "dumpsys", "notification"], timeout=12)
+        messages.extend(self._extract_candidates_from_blob(dumpsys_text))
+
+        if not messages:
+            try:
+                self._run_adb(["shell", "uiautomator", "dump", "/sdcard/autoteam_whatsapp.xml"], timeout=8)
+                ui_text = self._run_adb(["shell", "cat", "/sdcard/autoteam_whatsapp.xml"], timeout=8)
+                messages.extend(self._extract_candidates_from_blob(ui_text))
+            except Exception as exc:
+                logger.debug("[whatsapp-otp] UI fallback failed: %s", exc)
+
+        unique: list[str] = []
+        seen: set[str] = set()
+        for message in messages:
+            normalized = _compact(message, 800)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append(normalized)
+        return unique[-30:]
 
     @staticmethod
-    def _scrape_page(page) -> dict:
-        return page.evaluate(
-            """() => {
-              const visible = (el) => {
-                if (!el) return false;
-                const style = window.getComputedStyle(el);
-                const rect = el.getBoundingClientRect();
-                return style && style.visibility !== 'hidden' && style.display !== 'none'
-                  && rect.width > 0 && rect.height > 0;
-              };
-              const normalize = (text) => String(text || '').replace(/\\s+/g, ' ').trim();
-              const body = normalize(document.body ? document.body.innerText : '');
-              const loginRequired = /Use WhatsApp on your computer|Link with phone number|Scan.*QR|WhatsApp Web/i.test(body)
-                && !/Search or start new chat|Chats|Archived/i.test(body);
-              const candidates = [];
-              const nodes = Array.from(document.querySelectorAll('[data-pre-plain-text], [role="row"], span, div'));
-              for (const el of nodes) {
-                if (!visible(el)) continue;
-                const text = normalize(el.innerText || el.textContent || '');
-                if (!text || text.length < 8 || text.length > 800) continue;
-                if (!/(gopay|gojek|openai|otp|kode|code|verification|verifikasi|hubungkan|link)/i.test(text)) continue;
-                if (!/(?<!\\d)\\d{4,8}(?!\\d)/.test(text)) continue;
-                candidates.push(text);
-              }
-              return { login_required: loginRequired, messages: Array.from(new Set(candidates)).slice(-30) };
-            }"""
-        )
+    def _extract_candidates_from_blob(blob: str) -> list[str]:
+        text = str(blob or "")
+        if not text:
+            return []
+        candidates: list[str] = []
+        lines = text.splitlines()
+        for idx, line in enumerate(lines):
+            if not _MESSAGE_HINT_RE.search(line):
+                continue
+            window = " ".join(lines[max(0, idx - 4) : min(len(lines), idx + 8)])
+            if _MESSAGE_HINT_RE.search(window) and _OTP_RE.search(window):
+                candidates.append(window)
+
+        compact_text = _compact(text, 20000)
+        if (
+            compact_text.startswith("<?xml")
+            and _WHATSAPP_HINT_RE.search(compact_text)
+            and _MESSAGE_HINT_RE.search(compact_text)
+            and _OTP_RE.search(compact_text)
+        ):
+            candidates.append(compact_text)
+        return candidates
 
 
 _DEFAULT_LISTENER = WhatsAppOtpListener()

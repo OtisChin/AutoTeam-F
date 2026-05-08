@@ -137,6 +137,18 @@ class SetupConfig(BaseModel):
     CLOUD_MAIL_ADMIN_EMAIL: str = ""
     CLOUD_MAIL_ADMIN_PASSWORD: str = ""
     CLOUD_MAIL_DOMAIN: str = ""
+    OUTLOOK_ACCOUNTS_FILE: str = ""
+    OUTLOOK_ACCOUNTS: str = ""
+    OUTLOOK_DEFAULT_CLIENT_ID: str = ""
+    OUTLOOK_PROVIDER_PRIORITY: str = ""
+    OUTLOOK_PROXY_URL: str = ""
+    LUCKMAIL_BASE_URL: str = ""
+    LUCKMAIL_API_KEY: str = ""
+    LUCKMAIL_PROJECT_CODE: str = ""
+    LUCKMAIL_EMAIL_TYPE: str = ""
+    LUCKMAIL_PREFERRED_DOMAIN: str = ""
+    LUCKMAIL_ACCOUNTS_FILE: str = ""
+    LUCKMAIL_ACCOUNTS: str = ""
     CPA_URL: str = ""
     CPA_KEY: str = ""
     PLAYWRIGHT_PROXY_URL: str = ""
@@ -190,6 +202,22 @@ def post_setup_save(config: SetupConfig):
             "CLOUD_MAIL_ADMIN_EMAIL",
             "CLOUD_MAIL_ADMIN_PASSWORD",
             "CLOUD_MAIL_DOMAIN",
+        },
+        "outlook": {
+            "OUTLOOK_ACCOUNTS_FILE",
+            "OUTLOOK_ACCOUNTS",
+            "OUTLOOK_DEFAULT_CLIENT_ID",
+            "OUTLOOK_PROVIDER_PRIORITY",
+            "OUTLOOK_PROXY_URL",
+        },
+        "luckmail": {
+            "LUCKMAIL_BASE_URL",
+            "LUCKMAIL_API_KEY",
+            "LUCKMAIL_PROJECT_CODE",
+            "LUCKMAIL_EMAIL_TYPE",
+            "LUCKMAIL_PREFERRED_DOMAIN",
+            "LUCKMAIL_ACCOUNTS_FILE",
+            "LUCKMAIL_ACCOUNTS",
         },
     }
     allowed_keys = {
@@ -254,6 +282,99 @@ def post_setup_save(config: SetupConfig):
     API_KEY = data["API_KEY"]
 
     return {"message": "配置保存成功", "api_key": data["API_KEY"], "configured": True}
+
+
+def _mail_provider_field_keys(provider: str) -> set[str]:
+    fields = {
+        "cloudflare_temp_email": {
+            "CLOUDFLARE_TEMP_EMAIL_BASE_URL",
+            "CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD",
+            "CLOUDFLARE_TEMP_EMAIL_DOMAIN",
+        },
+        "cloud-mail": {
+            "CLOUD_MAIL_API_URL",
+            "CLOUD_MAIL_ADMIN_EMAIL",
+            "CLOUD_MAIL_ADMIN_PASSWORD",
+            "CLOUD_MAIL_DOMAIN",
+        },
+        "outlook": {
+            "OUTLOOK_ACCOUNTS_FILE",
+            "OUTLOOK_ACCOUNTS",
+            "OUTLOOK_DEFAULT_CLIENT_ID",
+            "OUTLOOK_PROVIDER_PRIORITY",
+            "OUTLOOK_PROXY_URL",
+        },
+        "luckmail": {
+            "LUCKMAIL_BASE_URL",
+            "LUCKMAIL_API_KEY",
+            "LUCKMAIL_PROJECT_CODE",
+            "LUCKMAIL_EMAIL_TYPE",
+            "LUCKMAIL_PREFERRED_DOMAIN",
+            "LUCKMAIL_ACCOUNTS_FILE",
+            "LUCKMAIL_ACCOUNTS",
+        },
+    }
+    if provider not in fields:
+        raise HTTPException(status_code=400, detail=f"未知 MAIL_PROVIDER={provider}")
+    return fields[provider]
+
+
+@app.get("/api/config/mail-provider")
+def get_mail_provider_config():
+    from autoteam.setup_wizard import _read_env, get_mail_provider, get_setup_schema
+
+    env = _read_env()
+    schema = get_setup_schema(env)
+    provider = get_mail_provider(env.get("MAIL_PROVIDER", "") or os.environ.get("MAIL_PROVIDER", ""))
+
+    provider_fields = {}
+    for name, fields in (schema.get("provider_fields") or {}).items():
+        provider_fields[name] = []
+        for field in fields:
+            key = field["key"]
+            provider_fields[name].append(
+                {
+                    **field,
+                    "value": env.get(key, "") or os.environ.get(key, "") or field.get("default", ""),
+                    "configured": bool(env.get(key, "") or os.environ.get(key, "")),
+                }
+            )
+
+    return {
+        "provider": provider,
+        "provider_options": schema.get("provider_options") or [],
+        "provider_fields": provider_fields,
+    }
+
+
+@app.put("/api/config/mail-provider")
+async def save_mail_provider_config(request: Request):
+    from autoteam.setup_wizard import _verify_temporary_email, _write_env, get_mail_provider
+
+    data = await request.json()
+    provider = get_mail_provider(data.get("MAIL_PROVIDER"))
+    allowed = {"MAIL_PROVIDER"} | _mail_provider_field_keys(provider)
+
+    for key, value in data.items():
+        if key not in allowed:
+            continue
+        text = "" if value is None else str(value)
+        _write_env(key, text)
+        os.environ[key] = text
+
+    _write_env("MAIL_PROVIDER", provider)
+    os.environ["MAIL_PROVIDER"] = provider
+
+    import importlib
+
+    import autoteam.config
+
+    importlib.reload(autoteam.config)
+
+    if not _verify_temporary_email():
+        raise HTTPException(status_code=400, detail="邮件 Provider 验证失败，请检查配置")
+
+    return {"message": "邮件 Provider 配置已保存", "provider": provider}
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +734,22 @@ class GoPayBindTaskParams(BaseModel):
     account_emails: list[str] = []
     auto_register: bool = Field(False, validation_alias=AliasChoices("auto_register", "autoRegister"))
     auto_register_count: int = Field(1, validation_alias=AliasChoices("auto_register_count", "autoRegisterCount"))
+    auto_register_mail_provider: str | None = Field(
+        None,
+        validation_alias=AliasChoices("auto_register_mail_provider", "autoRegisterMailProvider"),
+    )
+    auto_register_luckmail_email_type: str | None = Field(
+        None,
+        validation_alias=AliasChoices("auto_register_luckmail_email_type", "autoRegisterLuckmailEmailType"),
+    )
+    auto_register_luckmail_preferred_domain: str | None = Field(
+        None,
+        validation_alias=AliasChoices("auto_register_luckmail_preferred_domain", "autoRegisterLuckmailPreferredDomain"),
+    )
+    auto_register_luckmail_preferred_domains: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("auto_register_luckmail_preferred_domains", "autoRegisterLuckmailPreferredDomains"),
+    )
     auto_register_domain: str = Field("", validation_alias=AliasChoices("auto_register_domain", "autoRegisterDomain"))
     auto_register_domains: list[str] = Field(
         default_factory=list,
@@ -682,6 +819,8 @@ class CardPoolFetchSmsParams(BaseModel):
 class WhatsAppOtpStartParams(BaseModel):
     profile_dir: str = Field("", validation_alias=AliasChoices("profile_dir", "profileDir"))
     headless: bool = False
+    adb_path: str = Field("", validation_alias=AliasChoices("adb_path", "adbPath"))
+    adb_serial: str = Field("", validation_alias=AliasChoices("adb_serial", "adbSerial"))
     poll_interval_seconds: float = Field(2.0, validation_alias=AliasChoices("poll_interval_seconds", "pollIntervalSeconds"))
 
 
@@ -696,6 +835,16 @@ class ManualRegisterParams(BaseModel):
     domains: list[str] = []
     prefix: str | None = None
     password: str | None = None
+    mail_provider: str | None = Field(None, validation_alias=AliasChoices("mail_provider", "mailProvider"))
+    luckmail_email_type: str | None = Field(None, validation_alias=AliasChoices("luckmail_email_type", "luckmailEmailType"))
+    luckmail_preferred_domain: str | None = Field(
+        None,
+        validation_alias=AliasChoices("luckmail_preferred_domain", "luckmailPreferredDomain"),
+    )
+    luckmail_preferred_domains: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("luckmail_preferred_domains", "luckmailPreferredDomains"),
+    )
     post_register_oauth: bool = False
 
 
@@ -3795,13 +3944,24 @@ def post_whatsapp_otp_start(params: WhatsAppOtpStartParams = WhatsAppOtpStartPar
 
     global _whatsapp_otp_listener
     profile_dir = Path(params.profile_dir).expanduser() if str(params.profile_dir or "").strip() else DEFAULT_PROFILE_DIR
+    adb_path = str(params.adb_path or "").strip()
+    adb_serial = str(params.adb_serial or "").strip()
+    poll_interval_seconds = float(params.poll_interval_seconds or 2.0)
     listener = get_default_listener()
-    if str(listener.profile_dir) != str(profile_dir) or listener.headless != bool(params.headless):
+    if (
+        str(listener.profile_dir) != str(profile_dir)
+        or listener.headless != bool(params.headless)
+        or (adb_path and getattr(listener, "adb_path", "") != adb_path)
+        or (adb_serial and getattr(listener, "adb_serial", "") != adb_serial)
+        or float(getattr(listener, "poll_interval_seconds", 2.0)) != poll_interval_seconds
+    ):
         listener.stop()
         _whatsapp_otp_listener = WhatsAppOtpListener(
             profile_dir=profile_dir,
             headless=bool(params.headless),
-            poll_interval_seconds=float(params.poll_interval_seconds or 2.0),
+            adb_path=adb_path or None,
+            adb_serial=adb_serial,
+            poll_interval_seconds=poll_interval_seconds,
         )
         listener = _whatsapp_otp_listener
         import autoteam.whatsapp_otp as whatsapp_otp_module
@@ -4379,6 +4539,20 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     checkout_ui_mode = "hosted" if str(params.checkout_ui_mode or "").strip().lower() == "hosted" else "custom"
     auto_register_prefix = str(params.auto_register_prefix or "").strip()
     auto_register_password = str(params.auto_register_password or "").strip()
+    from autoteam.setup_wizard import get_mail_provider
+
+    auto_register_mail_provider = get_mail_provider(params.auto_register_mail_provider) if params.auto_register_mail_provider else ""
+    auto_register_luckmail_email_type = str(params.auto_register_luckmail_email_type or "").strip()
+    auto_register_luckmail_preferred_domain = str(params.auto_register_luckmail_preferred_domain or "").strip().lstrip("@")
+    auto_register_luckmail_preferred_domains = []
+    seen_luckmail_domains = set()
+    for raw_domain in list(params.auto_register_luckmail_preferred_domains or []) + ([auto_register_luckmail_preferred_domain] if auto_register_luckmail_preferred_domain else []):
+        cleaned = str(raw_domain or "").strip().lstrip("@")
+        key = cleaned.lower()
+        if key in seen_luckmail_domains:
+            continue
+        seen_luckmail_domains.add(key)
+        auto_register_luckmail_preferred_domains.append(cleaned)
     proxy_url = str(params.proxy_url or "").strip()
     try:
         normalized_proxy_url = normalize_proxy_url(proxy_url) if proxy_url else ""
@@ -4410,13 +4584,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             if invalid_domains:
                 raise HTTPException(status_code=400, detail=f"自动注册域名未配置: {', '.join(invalid_domains)}")
         auto_register_domains = requested_domains
-        if not auto_register_domains:
+        if auto_register_mail_provider != "luckmail" and not auto_register_domains:
             default_domain = str(get_register_domain() or "").strip().lstrip("@")
             if default_domain:
                 auto_register_domains = [default_domain]
             elif configured_domains:
                 auto_register_domains = [configured_domains[0]]
-        if not auto_register_domains:
+        if auto_register_mail_provider != "luckmail" and not auto_register_domains:
             raise HTTPException(status_code=400, detail="未配置可用注册域名")
         account_emails = []
     elif checkout_url:
@@ -4700,12 +4874,23 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
 
         def _register_one_for_gopay(*, index: int = 1, total: int = 1) -> str:
             from autoteam.mail import TemporaryEmailClient
-            from autoteam.manager import create_account_direct, wrap_mail_client_with_auth_retry
+            from autoteam.manager import _temporary_mail_provider, create_account_direct, wrap_mail_client_with_auth_retry
 
             register_domain = auto_register_domains[(index - 1) % len(auto_register_domains)] if auto_register_domains else ""
             register_domain = str(register_domain or "").strip().lstrip("@")
-            if not register_domain:
+            if auto_register_mail_provider != "luckmail" and not register_domain:
                 raise RuntimeError("未配置可用注册域名")
+            luckmail_register_domain = (
+                auto_register_luckmail_preferred_domains[(index - 1) % len(auto_register_luckmail_preferred_domains)]
+                if auto_register_luckmail_preferred_domains
+                else auto_register_luckmail_preferred_domain
+            )
+            mail_provider_overrides = {}
+            if auto_register_mail_provider == "luckmail":
+                if auto_register_luckmail_email_type:
+                    mail_provider_overrides["LUCKMAIL_EMAIL_TYPE"] = auto_register_luckmail_email_type
+                if luckmail_register_domain is not None:
+                    mail_provider_overrides["LUCKMAIL_PREFERRED_DOMAIN"] = luckmail_register_domain
 
             _append_task_progress(
                 task_id,
@@ -4713,10 +4898,16 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     "stage": "gopay_auto_register_started",
                     "current": index,
                     "total": total,
-                    "message": f"自动注册已开始 ({index}/{total}): domain=@{register_domain}",
+                    "message": (
+                        f"自动注册已开始 ({index}/{total}): LuckMail/{auto_register_luckmail_email_type or '默认'}"
+                        + (f"/@{luckmail_register_domain}" if luckmail_register_domain else "/自动分配")
+                        if auto_register_mail_provider == "luckmail"
+                        else f"自动注册已开始 ({index}/{total}): domain=@{register_domain}"
+                    ),
                 },
             )
-            raw_mail_client = TemporaryEmailClient()
+            with _temporary_mail_provider(auto_register_mail_provider, mail_provider_overrides):
+                raw_mail_client = TemporaryEmailClient()
             raw_mail_client.login()
             mail_client = wrap_mail_client_with_auth_retry(raw_mail_client, log_prefix="GoPay自动注册")
             outcome = {}
@@ -5470,6 +5661,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     task_params["auto_register_count"] = auto_register_count
     task_params["auto_register_domains"] = auto_register_domains
     task_params["auto_register_domain"] = auto_register_domains[0] if auto_register_domains else ""
+    task_params["auto_register_mail_provider"] = auto_register_mail_provider or "<default>"
+    task_params["auto_register_luckmail_email_type"] = auto_register_luckmail_email_type or ""
+    task_params["auto_register_luckmail_preferred_domain"] = auto_register_luckmail_preferred_domain or ""
+    task_params["auto_register_luckmail_preferred_domains"] = auto_register_luckmail_preferred_domains
     task_params["auto_register_prefix"] = auto_register_prefix
     task_params["auto_register_password_present"] = bool(auto_register_password)
     task_params["pending_retry_attempts"] = pending_retry_attempts
@@ -5548,8 +5743,22 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
     from autoteam.identity import random_password
     from autoteam.runtime_config import get_register_domain, get_register_domains
 
+    from autoteam.setup_wizard import get_mail_provider
+
     prefix = (params.prefix or "").strip() or None
     password = (params.password or "").strip() or None
+    mail_provider = get_mail_provider(params.mail_provider) if params.mail_provider else ""
+    luckmail_email_type = (params.luckmail_email_type or "").strip()
+    luckmail_preferred_domain = (params.luckmail_preferred_domain or "").strip().lstrip("@")
+    luckmail_preferred_domains = []
+    seen_luckmail_domains = set()
+    for raw_domain in list(params.luckmail_preferred_domains or []) + ([luckmail_preferred_domain] if luckmail_preferred_domain else []):
+        cleaned = str(raw_domain or "").strip().lstrip("@")
+        key = cleaned.lower()
+        if key in seen_luckmail_domains:
+            continue
+        seen_luckmail_domains.add(key)
+        luckmail_preferred_domains.append(cleaned)
     resolved_password = password or random_password()
     mode = (params.mode or "single").strip().lower()
     count = max(1, int(params.count or 1))
@@ -5561,6 +5770,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
 
     configured_domains = get_register_domains()
+    domain_required = mail_provider != "luckmail"
 
     def _clean_domain(value) -> str:
         return str(value or "").strip().lstrip("@").strip()
@@ -5581,7 +5791,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             seen.add(value)
             selected_domains.append(value)
 
-    if not selected_domains:
+    if not selected_domains and domain_required:
         if selected_domain:
             _validate_domain(selected_domain)
         else:
@@ -5589,17 +5799,17 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         if selected_domain:
             selected_domains = [selected_domain]
 
-    if not selected_domains:
+    if not selected_domains and domain_required:
         raise HTTPException(status_code=400, detail="未配置可用注册域名")
 
-    selected_domain = selected_domains[0]
+    selected_domain = selected_domains[0] if selected_domains else ""
 
     if mode == "single":
         count = 1
         concurrency = 1
         jitter_min_seconds = 0.0
         jitter_max_seconds = 0.0
-        selected_domains = [selected_domain]
+        selected_domains = [selected_domain] if selected_domain else []
     if jitter_min_seconds > jitter_max_seconds:
         raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
 
@@ -5617,6 +5827,10 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             "domains": selected_domains,
             "prefix": prefix or "",
             "password_mode": "provided" if password else "random",
+            "mail_provider": mail_provider or "<default>",
+            "luckmail_email_type": luckmail_email_type or "",
+            "luckmail_preferred_domain": luckmail_preferred_domain or "",
+            "luckmail_preferred_domains": luckmail_preferred_domains,
             "post_register_oauth": bool(params.post_register_oauth),
         },
         count=count,
@@ -5628,6 +5842,10 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         password=resolved_password,
         domain=selected_domain,
         domains=selected_domains,
+        mail_provider=mail_provider or None,
+        luckmail_email_type=luckmail_email_type or None,
+        luckmail_preferred_domain=luckmail_preferred_domain,
+        luckmail_preferred_domains=luckmail_preferred_domains,
         post_register_oauth=bool(params.post_register_oauth),
         progress_callback=_update_current_task_progress,
     )

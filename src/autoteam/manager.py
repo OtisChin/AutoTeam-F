@@ -19,6 +19,7 @@ import autoteam.display  # noqa: F401 — 自动设置虚拟显示器
 """
 
 import getpass
+import contextlib
 import json
 import logging
 import os
@@ -86,12 +87,40 @@ from autoteam.textio import read_text, write_text
 logger = logging.getLogger(__name__)
 
 MAIL_TIMEOUT = int(os.environ.get("MAIL_TIMEOUT", "180"))
+OUTLOOK_REGISTER_CODE_TIMEOUT = int(os.environ.get("OUTLOOK_REGISTER_CODE_TIMEOUT", "30"))
 POST_REGISTER_OAUTH_ENABLED = os.environ.get("POST_REGISTER_OAUTH_ENABLED", "false").strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
+
+
+class DirectRegisterEmailCodeTimeout(RuntimeError):
+    """Raised when a provider should abandon this mailbox after code timeout."""
+
+
+@contextlib.contextmanager
+def _temporary_mail_provider(provider: str | None, overrides: dict[str, str] | None = None):
+    selected = str(provider or "").strip()
+    override_values = {str(k): str(v) for k, v in (overrides or {}).items() if k and v is not None}
+    if not selected and not override_values:
+        yield
+        return
+    previous = {"MAIL_PROVIDER": os.environ.get("MAIL_PROVIDER")}
+    previous.update({key: os.environ.get(key) for key in override_values})
+    if selected:
+        os.environ["MAIL_PROVIDER"] = selected
+    for key, value in override_values.items():
+        os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _normalized_email(value: str | None) -> str:
@@ -152,6 +181,45 @@ class MailClientAuthRetryWrapper:
 
 def wrap_mail_client_with_auth_retry(mail_client, *, log_prefix: str = "注册账号"):
     return MailClientAuthRetryWrapper(mail_client, log_prefix=log_prefix)
+
+
+def _mail_client_provider_name(mail_client) -> str:
+    provider = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
+    if provider:
+        return provider
+    inner = getattr(mail_client, "_inner", None)
+    return str(getattr(inner, "provider_name", "") or "").strip().lower()
+
+
+_MICROSOFT_MAIL_DOMAINS = {
+    "hotmail.com",
+    "hotmail.de",
+    "live.com",
+    "msn.com",
+    "outlook.com",
+    "outlook.de",
+    "outlook.jp",
+    "outlook.my",
+}
+
+
+def _direct_register_code_timeout(mail_client, email: str | None = None) -> int:
+    provider_name = _mail_client_provider_name(mail_client)
+    email_domain = _normalized_email(email).rsplit("@", 1)[-1] if "@" in _normalized_email(email) else ""
+    inner = getattr(mail_client, "_inner", None)
+    luckmail_type = str(
+        getattr(mail_client, "email_type", "")
+        or getattr(inner, "email_type", "")
+        or ""
+    ).strip().lower()
+    if provider_name == "outlook":
+        return max(5, OUTLOOK_REGISTER_CODE_TIMEOUT)
+    if provider_name == "luckmail" and (
+        email_domain in _MICROSOFT_MAIL_DOMAINS
+        or luckmail_type in {"ms_graph", "ms_imap", "microsoft"}
+    ):
+        return max(5, OUTLOOK_REGISTER_CODE_TIMEOUT)
+    return MAIL_TIMEOUT
 
 
 _GOOGLE_AUTO_REUSE_DOMAINS = {"gmail.com", "googlemail.com"}
@@ -2803,10 +2871,12 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             timeout=8,
         )
         if code_step == "code":
-            logger.info("[直接注册] 等待验证码...")
+            code_timeout = _direct_register_code_timeout(mail_client, email)
+            provider_name = _mail_client_provider_name(mail_client)
+            logger.info("[直接注册] 等待验证码... provider=%s timeout=%ss", provider_name or "<unknown>", code_timeout)
             verification_code = None
             start_t = time.time()
-            while time.time() - start_t < MAIL_TIMEOUT:
+            while time.time() - start_t < code_timeout:
                 emails = mail_client.search_emails_by_recipient(email, size=10, account_id=cloudmail_account_id)
                 for em in emails:
                     verification_code = mail_client.extract_verification_code(em)
@@ -2829,7 +2899,9 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
                 _click_primary_auth_button(page, anchor, ["Continue", "Verify", "Submit", "继续"])
                 time.sleep(8)
             else:
-                logger.error("[直接注册] 未收到验证码")
+                logger.error("[直接注册] %ss 内未收到验证码 provider=%s email=%s", code_timeout, provider_name or "<unknown>", email)
+                if provider_name == "outlook":
+                    raise DirectRegisterEmailCodeTimeout(f"Outlook 邮箱 {code_timeout}s 内未收到验证码")
                 return _finish(False)
         elif code_step == "google":
             logger.warning("[直接注册] 验证码步骤误跳转到 Google 登录页")
@@ -3035,6 +3107,25 @@ def create_account_direct(
             # 其他阻断按普通失败处理
             last_failure_reason = str(blocked)
             success = False
+        except DirectRegisterEmailCodeTimeout as exc:
+            logger.warning("[直接注册] %s 验证码超时，跳过当前邮箱: %s", email, exc)
+            _discard_email("email_code_timeout")
+            record_failure(
+                email,
+                "email_code_timeout",
+                str(exc),
+                register_attempts=register_attempts,
+                duplicate_swaps=duplicate_swaps,
+            )
+            _record_outcome("email_code_timeout", reason=str(exc))
+            _progress(
+                "register_email_code_timeout",
+                f"Outlook 邮箱 30 秒未收到验证码，跳过当前邮箱: {email}",
+                email=email,
+                level="warn",
+                reason=str(exc),
+            )
+            return None
         except Exception as exc:
             # Playwright 崩溃 / 网络异常等:只丢弃当前本地记录并保留邮箱服务账号,再抛给上层重试。
             logger.error(
@@ -3880,6 +3971,10 @@ def cmd_register_accounts(
     domain=None,
     domains=None,
     post_register_oauth=False,
+    mail_provider=None,
+    luckmail_email_type=None,
+    luckmail_preferred_domain=None,
+    luckmail_preferred_domains=None,
     progress_callback=None,
 ):
     """执行独立注册；成功后保存 auth_session，并复用注册会话尝试生成 Codex OAuth 文件。
@@ -3901,6 +3996,15 @@ def cmd_register_accounts(
         seen_domains.add(value)
         domain_pool.append(value)
     selected_fallback_domain = domain_pool[0] if domain_pool else domain
+    luckmail_domain_pool = []
+    seen_luckmail_domains = set()
+    for raw_domain in list(luckmail_preferred_domains or []) + ([luckmail_preferred_domain] if luckmail_preferred_domain is not None else []):
+        value = str(raw_domain or "").strip().lstrip("@").strip()
+        key = value.lower()
+        if key in seen_luckmail_domains:
+            continue
+        seen_luckmail_domains.add(key)
+        luckmail_domain_pool.append(value)
     results = [None] * total
     next_index = 0
     index_lock = threading.Lock()
@@ -3927,7 +4031,16 @@ def cmd_register_accounts(
     # cloud-mail 看起来对同一管理员账号的并发 login/token 刷新不友好：
     # 后一个 worker 登录后，前一个 worker 的 token 会被服务端判成“身份认证失效”。
     # 这里对 mail client 做共享 + 串行化，浏览器注册流程仍可并发，只有邮箱后端 API 被串行化。
-    shared_mail_client = TemporaryEmailClient()
+    mail_provider_overrides = {}
+    if str(mail_provider or "").strip().lower() == "luckmail":
+        if luckmail_email_type:
+            mail_provider_overrides["LUCKMAIL_EMAIL_TYPE"] = str(luckmail_email_type).strip()
+        if luckmail_domain_pool:
+            mail_provider_overrides["LUCKMAIL_PREFERRED_DOMAIN"] = luckmail_domain_pool[0]
+        elif luckmail_preferred_domain is not None:
+            mail_provider_overrides["LUCKMAIL_PREFERRED_DOMAIN"] = str(luckmail_preferred_domain).strip().lstrip("@")
+    with _temporary_mail_provider(mail_provider, mail_provider_overrides):
+        shared_mail_client = TemporaryEmailClient()
     shared_mail_client.login()
     mail_client = wrap_mail_client_with_auth_retry(shared_mail_client, log_prefix="注册账号")
     _emit_progress()
@@ -3947,13 +4060,21 @@ def cmd_register_accounts(
                 _emit_progress()
 
             job_domain = random.choice(domain_pool) if domain_pool else selected_fallback_domain
+            if str(mail_provider or "").strip().lower() == "luckmail" and luckmail_domain_pool:
+                job_domain = luckmail_domain_pool[job_index % len(luckmail_domain_pool)]
             outcome = {}
+            provider_label = _mail_client_provider_name(mail_client) or str(mail_provider or "").strip().lower() or "default"
+            register_target = (
+                f"provider={provider_label}"
+                if provider_label in {"luckmail", "outlook"}
+                else f"domain=@{job_domain or ''}"
+            )
             logger.info(
-                "[注册账号] worker-%d 开始第 %d/%d 个 domain=@%s",
+                "[注册账号] worker-%d 开始第 %d/%d 个 %s",
                 worker_id,
                 job_index + 1,
                 total,
-                job_domain or "",
+                register_target,
             )
             try:
                 raw_result = create_account_direct(

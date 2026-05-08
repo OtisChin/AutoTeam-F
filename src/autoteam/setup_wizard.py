@@ -25,6 +25,16 @@ MAIL_PROVIDER_OPTIONS = [
         "label": "cloud-mail",
         "description": "cloud-mail",
     },
+    {
+        "value": "outlook",
+        "label": "Outlook",
+        "description": "Outlook/Hotmail 账号池注册",
+    },
+    {
+        "value": "luckmail",
+        "label": "LuckMail",
+        "description": "LuckMail 已购邮箱 token 接码",
+    },
 ]
 
 COMMON_SETUP_FIELDS = [
@@ -47,6 +57,22 @@ PROVIDER_SETUP_FIELDS = {
         ("CLOUD_MAIL_ADMIN_EMAIL", "cloud-mail 管理员邮箱", "", False),
         ("CLOUD_MAIL_ADMIN_PASSWORD", "cloud-mail 管理员密码", "", False),
         ("CLOUD_MAIL_DOMAIN", "cloud-mail 邮箱域名（如 @example.com）", "", False),
+    ],
+    "outlook": [
+        ("OUTLOOK_ACCOUNTS_FILE", "Outlook 账号池文件路径（默认 data/outlook_accounts.txt）", "data/outlook_accounts.txt", True),
+        ("OUTLOOK_ACCOUNTS", "Outlook 账号池内联（email----password，每行/分号分隔）", "", True),
+        ("OUTLOOK_DEFAULT_CLIENT_ID", "Outlook OAuth 默认 Client ID（可选）", "24d9a0ed-8787-4584-883c-2fd79308940a", True),
+        ("OUTLOOK_PROVIDER_PRIORITY", "Outlook 读取优先级", "imap_old,imap_new,graph_api", True),
+        ("OUTLOOK_PROXY_URL", "Outlook 邮件读取代理 URL（可选）", "", True),
+    ],
+    "luckmail": [
+        ("LUCKMAIL_BASE_URL", "LuckMail API 地址", "https://mail.luckyous.com", True),
+        ("LUCKMAIL_ACCOUNTS_FILE", "LuckMail 已购邮箱文件路径（默认 data/luckmail_accounts.txt）", "data/luckmail_accounts.txt", True),
+        ("LUCKMAIL_ACCOUNTS", "LuckMail 已购邮箱内联（email----tok_xxx，每行/分号分隔）", "", True),
+        ("LUCKMAIL_API_KEY", "LuckMail API Key（可选，用于自动购买邮箱）", "", True),
+        ("LUCKMAIL_PROJECT_CODE", "LuckMail 项目编码", "openai", True),
+        ("LUCKMAIL_EMAIL_TYPE", "LuckMail 邮箱类型", "ms_graph", True),
+        ("LUCKMAIL_PREFERRED_DOMAIN", "LuckMail 优先域名（可选，如 outlook.my）", "", True),
     ],
 }
 
@@ -108,6 +134,10 @@ def get_mail_provider(raw: str | None = None) -> str:
         return "cloudflare_temp_email"
     if provider in ("maillab", "cloud-mail", "cloud_mail"):
         return "cloud-mail"
+    if provider in ("outlook", "microsoft_outlook", "hotmail"):
+        return "outlook"
+    if provider in ("luckmail", "lucky_mail", "lucky-mail"):
+        return "luckmail"
     return provider
 
 
@@ -314,6 +344,8 @@ def _verify_temporary_email():
     根据 MAIL_PROVIDER 自动走对应分支:
       - cloudflare_temp_email(默认):需要 CLOUDFLARE_TEMP_EMAIL_BASE_URL / CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD / CLOUDFLARE_TEMP_EMAIL_DOMAIN
       - cloud-mail:需要 CLOUD_MAIL_API_URL / CLOUD_MAIL_ADMIN_EMAIL / CLOUD_MAIL_ADMIN_PASSWORD / CLOUD_MAIL_DOMAIN
+      - outlook:需要 OUTLOOK_ACCOUNTS_FILE 或 OUTLOOK_ACCOUNTS 提供 Outlook 账号池
+      - luckmail:需要 LUCKMAIL_ACCOUNTS_FILE / LUCKMAIL_ACCOUNTS，或 LUCKMAIL_API_KEY 自动购买
     """
     provider = get_mail_provider()
 
@@ -340,9 +372,28 @@ def _verify_temporary_email():
         check_keys = "CLOUD_MAIL_API_URL、CLOUD_MAIL_ADMIN_EMAIL、CLOUD_MAIL_ADMIN_PASSWORD"
         domain_key = "CLOUD_MAIL_DOMAIN"
         label = "cloud-mail"
+    elif provider == "outlook":
+        accounts_file = os.environ.get("OUTLOOK_ACCOUNTS_FILE", "")
+        accounts_inline = os.environ.get("OUTLOOK_ACCOUNTS", "")
+        default_file = PROJECT_ROOT / "data" / "outlook_accounts.txt"
+        if not accounts_inline and not accounts_file and not default_file.exists():
+            return
+        check_keys = "OUTLOOK_ACCOUNTS_FILE 或 OUTLOOK_ACCOUNTS"
+        domain_key = "OUTLOOK_ACCOUNTS_FILE"
+        label = "outlook"
+    elif provider == "luckmail":
+        accounts_file = os.environ.get("LUCKMAIL_ACCOUNTS_FILE", "")
+        accounts_inline = os.environ.get("LUCKMAIL_ACCOUNTS", "")
+        api_key = os.environ.get("LUCKMAIL_API_KEY", "")
+        default_file = PROJECT_ROOT / "data" / "luckmail_accounts.txt"
+        if not accounts_inline and not accounts_file and not default_file.exists() and not api_key:
+            return
+        check_keys = "LUCKMAIL_ACCOUNTS_FILE / LUCKMAIL_ACCOUNTS 或 LUCKMAIL_API_KEY"
+        domain_key = "LUCKMAIL_ACCOUNTS_FILE"
+        label = "luckmail"
     else:
         logger.error(
-            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail",
+            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | luckmail",
             provider,
         )
         return False
@@ -363,6 +414,10 @@ def _verify_temporary_email():
         logger.error("[验证] %s 登录失败: %s", label, e)
         logger.error("[验证] 请检查 %s", check_keys)
         return False
+
+    if provider in ("outlook", "luckmail"):
+        logger.info("[验证] %s 配置验证通过", label)
+        return True
 
     test_account_id = None
     try:

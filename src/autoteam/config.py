@@ -34,6 +34,10 @@ def normalize_mail_provider(raw: str | None) -> str:
         return "cloudflare_temp_email"
     if provider in ("cloud-mail", "cloud_mail", "maillab"):
         return "cloud-mail"
+    if provider in ("outlook", "microsoft_outlook", "hotmail"):
+        return "outlook"
+    if provider in ("luckmail", "lucky_mail", "lucky-mail"):
+        return "luckmail"
     return provider
 
 
@@ -52,6 +56,22 @@ CLOUD_MAIL_API_URL = _first_env("CLOUD_MAIL_API_URL", "MAILLAB_API_URL")
 CLOUD_MAIL_ADMIN_EMAIL = _first_env("CLOUD_MAIL_ADMIN_EMAIL", "MAILLAB_USERNAME")
 CLOUD_MAIL_ADMIN_PASSWORD = _first_env("CLOUD_MAIL_ADMIN_PASSWORD", "MAILLAB_PASSWORD")
 CLOUD_MAIL_DOMAIN = _first_env("CLOUD_MAIL_DOMAIN", "MAILLAB_DOMAIN", "CLOUDMAIL_DOMAIN")
+
+# Outlook account-pool registration provider
+OUTLOOK_ACCOUNTS_FILE = _first_env("OUTLOOK_ACCOUNTS_FILE", default="")
+OUTLOOK_ACCOUNTS = _first_env("OUTLOOK_ACCOUNTS", default="")
+OUTLOOK_DEFAULT_CLIENT_ID = _first_env("OUTLOOK_DEFAULT_CLIENT_ID", default="24d9a0ed-8787-4584-883c-2fd79308940a")
+OUTLOOK_PROVIDER_PRIORITY = _first_env("OUTLOOK_PROVIDER_PRIORITY", default="imap_old,imap_new,graph_api")
+OUTLOOK_PROXY_URL = _first_env("OUTLOOK_PROXY_URL", default="")
+
+# LuckMail purchased-token registration provider
+LUCKMAIL_BASE_URL = _first_env("LUCKMAIL_BASE_URL", default="https://mail.luckyous.com")
+LUCKMAIL_API_KEY = _first_env("LUCKMAIL_API_KEY", default="")
+LUCKMAIL_PROJECT_CODE = _first_env("LUCKMAIL_PROJECT_CODE", default="openai")
+LUCKMAIL_EMAIL_TYPE = _first_env("LUCKMAIL_EMAIL_TYPE", default="ms_graph")
+LUCKMAIL_PREFERRED_DOMAIN = _first_env("LUCKMAIL_PREFERRED_DOMAIN", default="")
+LUCKMAIL_ACCOUNTS_FILE = _first_env("LUCKMAIL_ACCOUNTS_FILE", default="")
+LUCKMAIL_ACCOUNTS = _first_env("LUCKMAIL_ACCOUNTS", default="")
 
 # Backward-compatible aliases used by existing code paths
 CLOUDMAIL_BASE_URL = CLOUDFLARE_TEMP_EMAIL_BASE_URL

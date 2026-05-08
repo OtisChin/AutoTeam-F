@@ -119,6 +119,8 @@ export const api = {
 
   getAutoCheckConfig: () => request('GET', '/config/auto-check'),
   setAutoCheckConfig: (cfg) => request('PUT', '/config/auto-check', cfg),
+  getMailProviderConfig: () => request('GET', '/config/mail-provider'),
+  saveMailProviderConfig: (cfg) => request('PUT', '/config/mail-provider', cfg),
 
   getRegisterDomain: () => request('GET', '/config/register-domain'),
   setRegisterDomain: (domain, verify = true) => request('PUT', '/config/register-domain', { domain, verify }),

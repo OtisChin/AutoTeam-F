@@ -31,6 +31,8 @@ def get_mail_client() -> MailProvider:
     可选值:
       - cloudflare_temp_email(默认)
       - cloud-mail
+      - outlook
+      - luckmail
       - `cf_temp_email` / `maillab` 为历史别名
 
     任何拼写错误都会抛 ValueError 并列出可选值,避免静默走默认。
@@ -44,7 +46,15 @@ def get_mail_client() -> MailProvider:
         from autoteam.mail.cloud_mail import CloudMailProviderClient
 
         return CloudMailProviderClient()
-    raise ValueError(f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail)")
+    if raw in ("outlook", "microsoft_outlook", "hotmail"):
+        from autoteam.mail.outlook import OutlookMailProvider
+
+        return OutlookMailProvider()
+    if raw in ("luckmail", "lucky_mail", "lucky-mail"):
+        from autoteam.mail.luckmail import LuckMailProvider
+
+        return LuckMailProvider()
+    raise ValueError(f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | luckmail)")
 
 
 # 对外统一后的首选名字。

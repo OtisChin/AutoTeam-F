@@ -848,13 +848,13 @@
                   :disabled="gopaySubmitting || gopayTaskRunning"
                   class="accent-emerald-500"
                 />
-                WhatsApp Web
+                WhatsApp
               </label>
             </div>
             <div v-if="gopayUsingWhatsAppOtp" class="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="flex items-center justify-between gap-3">
                 <span>
-                  {{ whatsappOtpStatus?.running ? 'WhatsApp Web 监听中' : '提交任务前会自动启动 WhatsApp Web 监听。首次使用需要扫码登录。' }}
+                  {{ whatsappOtpStatus?.running ? 'WhatsApp 监听中' : '提交任务前会自动启动 WhatsApp 监听。请确认本机接收端已准备好。' }}
                 </span>
                 <button
                   type="button"
@@ -865,20 +865,23 @@
                   {{ whatsappOtpStarting ? '启动中...' : (whatsappOtpStatus?.running ? '重新检测' : '启动') }}
                 </button>
               </div>
-              <div v-if="whatsappOtpStatus?.login_required" class="mt-1 text-amber-200">WhatsApp Web 需要扫码登录。</div>
+              <div class="mt-1 text-emerald-200">
+                {{ formatWhatsAppAdbStatus(whatsappOtpStatus) }}
+              </div>
+              <div v-if="whatsappOtpStatus?.last_error" class="mt-1 text-amber-200">监听异常：{{ whatsappOtpStatus.last_error }}</div>
               <div v-else-if="whatsappOtpStatus?.latest_otp" class="mt-1 text-emerald-200">最近识别到 OTP：{{ whatsappOtpStatus.latest_otp }}</div>
             </div>
           </div>
 
-          <div>
+          <div v-if="!gopayUsingWhatsAppOtp">
             <label class="block text-sm text-gray-400 mb-1">
-              {{ gopayUsingWhatsAppOtp ? '备用 OTP URL（可空）' : '短信接口 Token / URL' }}
+              短信接口 Token / URL
             </label>
             <input
               v-model.trim="gopayForm.smsUrl"
               type="text"
               :disabled="gopaySubmitting || gopayTaskRunning"
-              :placeholder="gopayUsingWhatsAppOtp ? '留空则使用本机 WhatsApp Web 监听接口' : 'https://it.tgflare.com/api/record?token=...'"
+              placeholder="https://it.tgflare.com/api/record?token=..."
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
           </div>
@@ -1028,6 +1031,50 @@
 
         <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4">
           <div>
+            <label class="block text-sm text-gray-400 mb-1">邮件 Provider</label>
+            <select
+              v-model="gopayForm.autoRegisterMailProvider"
+              :disabled="gopayMailProviderLoading"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            >
+              <option v-for="option in gopayMailProviderOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <div class="mt-1 text-xs text-gray-500">
+              API Key / token 池仍在“设置 → 邮件 Provider”里维护，这里只决定本次自动注册使用哪个 Provider。
+            </div>
+          </div>
+
+          <div v-if="gopayAutoRegisterUsesLuckMail" class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1">LuckMail 邮箱类型</label>
+              <select
+                v-model="gopayForm.autoRegisterLuckmailEmailType"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option v-for="option in luckmailEmailTypeOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-400 mb-1">LuckMail 购买域名</label>
+              <select
+                v-model="gopayForm.autoRegisterLuckmailPreferredDomain"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option v-for="option in luckmailDomainOptions" :key="option.value || 'auto'" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div class="col-span-2 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-gray-300">
+              LuckMail 模式会从已购邮箱池选择；池子为空时按这里的类型和域名自动购买微软邮箱。选择自动分配时由 LuckMail 按库存自动分配。
+            </div>
+          </div>
+
+          <div v-if="!gopayAutoRegisterUsesLuckMail">
             <div class="flex items-center justify-between gap-3 mb-2">
               <label class="block text-sm text-gray-400">注册域名</label>
               <div class="flex items-center gap-2">
@@ -1099,7 +1146,9 @@
 
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
             <div>注册数量：<span class="text-gray-200">{{ normalizedGoPayAutoRegisterCount }}</span></div>
-            <div>域名轮换：<span class="text-gray-200">{{ gopaySelectedAutoRegisterDomainsLabel }}</span></div>
+            <div>邮件 Provider：<span class="text-gray-200">{{ gopayAutoRegisterProviderLabel }}</span></div>
+            <div v-if="gopayAutoRegisterUsesLuckMail">LuckMail 购买：<span class="text-gray-200">{{ gopayLuckmailPurchaseLabel }}</span></div>
+            <div v-else>域名轮换：<span class="text-gray-200">{{ gopaySelectedAutoRegisterDomainsLabel }}</span></div>
             <div>预览邮箱：<span class="font-mono text-gray-200">{{ gopayAutoRegisterPreviewEmail }}</span></div>
             <div>密码：<span class="text-gray-200">{{ gopayForm.autoRegisterPassword || '自动随机生成' }}</span></div>
           </div>
@@ -1115,7 +1164,7 @@
           <button
             type="button"
             @click="confirmGoPayAutoRegisterConfig"
-            :disabled="!gopaySelectedAutoRegisterDomains.length"
+            :disabled="!gopayAutoRegisterUsesLuckMail && !gopaySelectedAutoRegisterDomains.length"
             class="px-5 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50">
             确认
           </button>
@@ -1155,7 +1204,7 @@
 
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
             <div>有效手机号：<span class="text-gray-200">{{ gopayPhoneAccounts.length }}</span></div>
-            <div>OTP 来源：<span class="text-gray-200">{{ gopayUsingWhatsAppOtp ? 'WhatsApp Web' : '短信接口' }}</span></div>
+            <div>OTP 来源：<span class="text-gray-200">{{ gopayUsingWhatsAppOtp ? 'WhatsApp' : '短信接口' }}</span></div>
             <div>轮换方式：<span class="text-gray-200">自动注册按注册序号轮换；批量绑卡按账号候选轮换。</span></div>
             <div>不勾选“使用手机号池”时，会继续使用上方单手机号配置。</div>
           </div>
@@ -1270,6 +1319,23 @@ const emit = defineEmits(['refresh'])
 
 const BIND_HISTORY_KEY = 'autoteam_bind_history_v1'
 const GOPAY_FORM_STATE_KEY = 'autoteam_gopay_form_state_v1'
+const luckmailEmailTypeOptions = [
+  { value: 'ms_graph', label: '微软 Graph 邮箱' },
+  { value: 'ms_imap', label: '微软 IMAP 邮箱' },
+  { value: 'microsoft', label: '微软邮箱' },
+  { value: 'self_built', label: '自建邮箱' },
+]
+const luckmailDomainOptions = [
+  { value: '', label: '自动分配' },
+  { value: 'outlook.com', label: 'outlook.com' },
+  { value: 'outlook.de', label: 'outlook.de' },
+  { value: 'outlook.jp', label: 'outlook.jp' },
+  { value: 'outlook.my', label: 'outlook.my' },
+  { value: 'hotmail.com', label: 'hotmail.com' },
+  { value: 'hotmail.de', label: 'hotmail.de' },
+  { value: 'live.com', label: 'live.com' },
+]
+const luckmailSelectableDomainOptions = luckmailDomainOptions.filter(option => option.value)
 
 const activeTab = ref('bind')
 const message = ref('')
@@ -1294,6 +1360,10 @@ const gopayForm = ref({
   email: '',
   autoRegister: false,
   autoRegisterCount: 1,
+  autoRegisterMailProvider: '',
+  autoRegisterLuckmailEmailType: 'ms_graph',
+  autoRegisterLuckmailPreferredDomain: '',
+  autoRegisterLuckmailPreferredDomains: [],
   autoRegisterDomains: [],
   autoRegisterPrefix: '',
   autoRegisterPassword: '',
@@ -1325,6 +1395,8 @@ const gopayAccountSearchKeyword = ref('')
 const gopayAccountPickerOpen = ref(false)
 const gopayAutoRegisterConfigOpen = ref(false)
 const gopayPhonePoolConfigOpen = ref(false)
+const gopayMailProviderLoading = ref(false)
+const gopayMailProviderOptions = ref([])
 const gopayRegisterDomainOptions = ref([])
 const gopayRegisterDomainLoading = ref(false)
 const gopaySubmitting = ref(false)
@@ -1425,6 +1497,25 @@ const normalizedGoPayPendingRetryAttempts = computed(() => {
   return normalizeGoPayPendingRetryAttempts(gopayForm.value.pendingRetryAttempts)
 })
 
+const gopayAutoRegisterUsesLuckMail = computed(() => gopayForm.value.autoRegisterMailProvider === 'luckmail')
+
+const gopayAutoRegisterProviderLabel = computed(() => {
+  const value = gopayForm.value.autoRegisterMailProvider || ''
+  return gopayMailProviderOptions.value.find(option => option.value === value)?.label || value || '默认配置'
+})
+
+const gopayLuckmailPurchaseLabel = computed(() => {
+  const emailType = luckmailEmailTypeOptions.find(option => option.value === gopayForm.value.autoRegisterLuckmailEmailType)?.label
+    || gopayForm.value.autoRegisterLuckmailEmailType
+    || '微软 Graph 邮箱'
+  const domain = gopayForm.value.autoRegisterLuckmailPreferredDomain || '自动分配'
+  const domains = Array.isArray(gopayForm.value.autoRegisterLuckmailPreferredDomains)
+    ? gopayForm.value.autoRegisterLuckmailPreferredDomains.filter(Boolean)
+    : []
+  const domainLabel = domains.length ? domains.map(value => `@${value}`).join(' / ') : domain
+  return `${emailType} / ${domainLabel}`
+})
+
 const gopaySelectedAutoRegisterDomains = computed(() => {
   const seen = new Set()
   return (Array.isArray(gopayForm.value.autoRegisterDomains) ? gopayForm.value.autoRegisterDomains : [])
@@ -1447,10 +1538,14 @@ const gopaySelectedAutoRegisterDomainsLabel = computed(() => {
 const gopayAutoRegisterConfigSummary = computed(() => {
   const prefix = String(gopayForm.value.autoRegisterPrefix || '').trim()
   const password = String(gopayForm.value.autoRegisterPassword || '').trim()
+  if (gopayAutoRegisterUsesLuckMail.value) {
+    return `${gopayAutoRegisterProviderLabel.value}，${gopayLuckmailPurchaseLabel.value}，密码 ${password ? '自定义' : '随机'}`
+  }
   return `${gopaySelectedAutoRegisterDomainsLabel.value}，前缀 ${prefix || '随机'}，密码 ${password ? '自定义' : '随机'}`
 })
 
 const gopayAutoRegisterPreviewEmail = computed(() => {
+  if (gopayAutoRegisterUsesLuckMail.value) return 'LuckMail邮箱池中选择'
   const prefix = String(gopayForm.value.autoRegisterPrefix || '').trim()
   const domain = gopaySelectedAutoRegisterDomains.value[0] || gopayRegisterDomainOptions.value[0] || 'domain.com'
   return `${prefix ? `${prefix}a8k3p` : '__random__'}@${domain}`
@@ -1558,7 +1653,7 @@ const gopaySinglePhoneComplete = computed(() => {
 const gopayCanSubmit = computed(() => {
   return Boolean(
     (gopayForm.value.autoRegister || gopayEffectiveEmail.value)
-    && (!gopayForm.value.autoRegister || gopaySelectedAutoRegisterDomains.value.length)
+    && (!gopayForm.value.autoRegister || gopayAutoRegisterUsesLuckMail.value || gopaySelectedAutoRegisterDomains.value.length)
     && (gopayForm.value.usePhonePool ? gopayPhoneAccounts.value.length > 0 : gopaySinglePhoneComplete.value)
   )
 })
@@ -1844,7 +1939,7 @@ const gopayStageLabelMap = {
   sms_otp_resend_failed: '重新发送 OTP 失败',
   sms_otp_trigger_failed: '触发 GoPay SMS OTP 失败',
   whatsapp_otp_trigger: '触发 WhatsApp OTP',
-  wait_whatsapp_otp: '等待 WhatsApp Web OTP',
+  wait_whatsapp_otp: '等待 WhatsApp OTP',
   wait_otp: '等待 GoPay OTP',
   fetch_otp: '拉取 GoPay OTP',
   otp_received: '收到 GoPay OTP',
@@ -2087,8 +2182,34 @@ async function loadGoPayAutoRegisterDomains() {
   }
 }
 
+async function loadGoPayAutoRegisterMailProviders() {
+  if (gopayMailProviderLoading.value) return
+  gopayMailProviderLoading.value = true
+  try {
+    const result = await api.getMailProviderConfig()
+    gopayMailProviderOptions.value = result.provider_options || []
+    if (!gopayForm.value.autoRegisterMailProvider) {
+      gopayForm.value.autoRegisterMailProvider = result.provider || 'cloudflare_temp_email'
+    }
+    const luckmailFields = result.provider_fields?.luckmail || []
+    const emailTypeField = luckmailFields.find(field => field.key === 'LUCKMAIL_EMAIL_TYPE')
+    const domainField = luckmailFields.find(field => field.key === 'LUCKMAIL_PREFERRED_DOMAIN')
+    if (!gopayForm.value.autoRegisterLuckmailEmailType && emailTypeField?.value) {
+      gopayForm.value.autoRegisterLuckmailEmailType = emailTypeField.value
+    }
+    if (!gopayForm.value.autoRegisterLuckmailPreferredDomain && domainField?.value) {
+      gopayForm.value.autoRegisterLuckmailPreferredDomain = domainField.value
+      gopayForm.value.autoRegisterLuckmailPreferredDomains = [String(domainField.value).trim().replace(/^@/, '')].filter(Boolean)
+    }
+  } catch (e) {
+    setMessage(`读取邮件 Provider 失败: ${e.message}`, false)
+  } finally {
+    gopayMailProviderLoading.value = false
+  }
+}
+
 async function openGoPayAutoRegisterConfig() {
-  await loadGoPayAutoRegisterDomains()
+  await Promise.all([loadGoPayAutoRegisterMailProviders(), loadGoPayAutoRegisterDomains()])
   gopayAutoRegisterConfigOpen.value = true
 }
 
@@ -2105,7 +2226,7 @@ function closeGoPayAutoRegisterConfig() {
 }
 
 function confirmGoPayAutoRegisterConfig() {
-  if (!gopaySelectedAutoRegisterDomains.value.length) {
+  if (!gopayAutoRegisterUsesLuckMail.value && !gopaySelectedAutoRegisterDomains.value.length) {
     setMessage('请选择至少一个自动注册域名', false)
     return
   }
@@ -2158,27 +2279,37 @@ async function refreshWhatsAppOtpStatus() {
   }
 }
 
+function formatWhatsAppAdbStatus(status) {
+  const serial = String(status?.adb_serial || '').trim()
+  const adbPath = String(status?.adb_path || '').trim()
+  const running = Boolean(status?.running)
+  const state = running ? '运行中' : '未运行'
+  if (!serial && !adbPath) return `ADB：${state}`
+  if (serial && adbPath) return `ADB：${serial} / ${adbPath} / ${state}`
+  return `ADB：${serial || adbPath} / ${state}`
+}
+
 async function startWhatsAppOtpListener({ silent = false } = {}) {
   if (whatsappOtpStarting.value) return whatsappOtpStatus.value
   whatsappOtpStarting.value = true
   if (!silent) {
-    pushGoPayLog('正在启动 WhatsApp Web OTP 监听', 'info')
+    pushGoPayLog('正在启动 WhatsApp OTP 监听', 'info')
   }
   try {
-    const status = await api.startWhatsAppOtp({ headless: false })
+    const status = await api.startWhatsAppOtp({})
     whatsappOtpStatus.value = status
     if (!silent) {
-      if (status?.login_required) {
-        pushGoPayLog('WhatsApp Web 已打开，请先扫码登录后再等待验证码', 'warn')
+      if (status?.last_error) {
+        pushGoPayLog(`WhatsApp 监听异常: ${status.last_error}`, 'warn')
       } else {
-        pushGoPayLog('WhatsApp Web OTP 监听已启动', 'success')
+        pushGoPayLog(`WhatsApp OTP 监听已启动，${formatWhatsAppAdbStatus(status)}`, 'success')
       }
     }
     return status
   } catch (e) {
     if (!silent) {
-      pushGoPayLog(`启动 WhatsApp Web OTP 监听失败: ${e.message}`, 'error')
-      setMessage(`启动 WhatsApp Web OTP 监听失败: ${e.message}`, false)
+      pushGoPayLog(`启动 WhatsApp OTP 监听失败: ${e.message}`, 'error')
+      setMessage(`启动 WhatsApp OTP 监听失败: ${e.message}`, false)
     }
     throw e
   } finally {
@@ -2199,6 +2330,12 @@ function getRememberedGoPayForm() {
     email: String(gopayForm.value.email || '').trim().toLowerCase(),
     autoRegister: Boolean(gopayForm.value.autoRegister),
     autoRegisterCount: normalizedGoPayAutoRegisterCount.value,
+    autoRegisterMailProvider: String(gopayForm.value.autoRegisterMailProvider || ''),
+    autoRegisterLuckmailEmailType: String(gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
+    autoRegisterLuckmailPreferredDomain: String(gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
+    autoRegisterLuckmailPreferredDomains: Array.isArray(gopayForm.value.autoRegisterLuckmailPreferredDomains)
+      ? gopayForm.value.autoRegisterLuckmailPreferredDomains
+      : [],
     autoRegisterDomains: gopaySelectedAutoRegisterDomains.value,
     autoRegisterPrefix: String(gopayForm.value.autoRegisterPrefix || '').trim(),
     batchMode: Boolean(gopayForm.value.batchMode),
@@ -2229,6 +2366,12 @@ function loadGoPayFormState() {
       email: String(saved.email || '').trim().toLowerCase(),
       autoRegister: Boolean(saved.autoRegister),
       autoRegisterCount: normalizeGoPayAutoRegisterCount(saved.autoRegisterCount),
+      autoRegisterMailProvider: String(saved.autoRegisterMailProvider || gopayForm.value.autoRegisterMailProvider || ''),
+      autoRegisterLuckmailEmailType: String(saved.autoRegisterLuckmailEmailType || gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
+      autoRegisterLuckmailPreferredDomain: String(saved.autoRegisterLuckmailPreferredDomain || gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
+      autoRegisterLuckmailPreferredDomains: Array.isArray(saved.autoRegisterLuckmailPreferredDomains)
+        ? saved.autoRegisterLuckmailPreferredDomains.map(domain => String(domain || '').trim().replace(/^@/, '')).filter(Boolean)
+        : (saved.autoRegisterLuckmailPreferredDomain ? [String(saved.autoRegisterLuckmailPreferredDomain).trim().replace(/^@/, '')].filter(Boolean) : gopayForm.value.autoRegisterLuckmailPreferredDomains),
       autoRegisterDomains: Array.isArray(saved.autoRegisterDomains)
         ? saved.autoRegisterDomains.map(domain => String(domain || '').trim().replace(/^@/, '')).filter(Boolean)
         : [],
@@ -2861,13 +3004,17 @@ async function startGoPayBind() {
     }))
     if (gopayUsingWhatsAppOtp.value) {
       await startWhatsAppOtpListener()
-      pushGoPayLog('OTP 来源已切换为 WhatsApp Web，本次任务不会触发 GoPay SMS OTP', 'info')
+      pushGoPayLog('OTP 来源已切换为 WhatsApp，本次任务不会触发 GoPay SMS OTP', 'info')
     }
     const task = await api.startGoPayBind({
       email: gopayEffectiveEmail.value,
       account_emails: gopayBatchActive.value ? gopaySelectedBatchEmails.value : [],
       auto_register: Boolean(gopayForm.value.autoRegister),
       auto_register_count: normalizedGoPayAutoRegisterCount.value,
+      auto_register_mail_provider: gopayForm.value.autoRegisterMailProvider || null,
+      auto_register_luckmail_email_type: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailEmailType : null,
+      auto_register_luckmail_preferred_domain: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailPreferredDomain : null,
+      auto_register_luckmail_preferred_domains: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailPreferredDomains : [],
       auto_register_domain: gopaySelectedAutoRegisterDomains.value[0] || '',
       auto_register_domains: gopaySelectedAutoRegisterDomains.value,
       auto_register_prefix: String(gopayForm.value.autoRegisterPrefix || '').trim(),
@@ -2970,6 +3117,7 @@ onMounted(() => {
     refreshWhatsAppOtpStatus()
   }
   if (gopayForm.value.autoRegister) {
+    loadGoPayAutoRegisterMailProviders()
     loadGoPayAutoRegisterDomains()
   }
   loadAccounts()

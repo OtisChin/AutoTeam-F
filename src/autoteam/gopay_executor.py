@@ -499,7 +499,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "sms_otp_triggered": "已触发 GoPay SMS OTP",
         "sms_otp_resend_due": "1 分钟未收到 GoPay OTP，正在重新发送短信验证码",
         "whatsapp_otp_trigger": "正在触发 GoPay WhatsApp OTP",
-        "wait_whatsapp_otp": "正在等待 WhatsApp Web 接收 GoPay OTP",
+        "wait_whatsapp_otp": "正在等待安卓模拟器 WhatsApp 接收 GoPay OTP",
         "wait_otp": "正在等待 GoPay SMS OTP",
         "fetch_otp": "正在从接码接口拉取 GoPay OTP",
         "otp_invalid": "GoPay OTP 错误，继续等待新验证码",
@@ -562,7 +562,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         reason = str(payload.get("reason") or "").strip()
         return f"GoPay SMS OTP 重新发送失败，继续等待接码接口：{_compact_log_text(reason, limit=120)}" if reason else "GoPay SMS OTP 重新发送失败，继续等待接码接口"
     if stage == "wait_whatsapp_otp":
-        return "等待 WhatsApp Web 接收 GoPay OTP"
+        return "等待安卓模拟器 WhatsApp 接收 GoPay OTP"
     if stage == "whatsapp_otp_trigger":
         return "尝试触发 GoPay WhatsApp OTP"
     if stage == "otp_received":
@@ -2730,7 +2730,7 @@ class GoPayHttpCharger:
             return
         self._progress("wait_whatsapp_otp")
         logger.info(
-            "[gopay_executor] GoPay OTP channel is WhatsApp; protocol SMS resend is disabled, waiting for WhatsApp listener: reference=%s",
+            "[gopay_executor] GoPay OTP channel is WhatsApp; waiting for WhatsApp listener and will trigger protocol resend if OTP is not received: reference=%s",
             _mask_log_value(reference_id),
         )
 
@@ -2952,7 +2952,7 @@ class GoPayHttpCharger:
         self._gopay_user_consent(reference_id)
         self._trigger_linking_otp_channel(reference_id)
         self._progress("wait_otp")
-        if self.otp_channel == "sms":
+        if self.otp_channel in {"sms", "whatsapp"}:
             try:
                 setattr(self.otp_provider, "_gopay_resend_callback", lambda: self._gopay_resend_otp(reference_id))
             except Exception:
@@ -4070,6 +4070,8 @@ def _extract_sms_code(text: str) -> str:
 
 
 def _fetch_sms_code(sms_url: str, ignored_otps: set[str] | None = None) -> str:
+    is_whatsapp_otp_url = "/otp/whatsapp/" in str(sms_url or "").lower()
+    source_label = "WhatsApp 监听" if is_whatsapp_otp_url else "接码接口"
     resp = requests.get(
         sms_url,
         timeout=20,
@@ -4083,16 +4085,16 @@ def _fetch_sms_code(sms_url: str, ignored_otps: set[str] | None = None) -> str:
     )
     text = (resp.text or "").strip()
     if not resp.ok:
-        raise RuntimeError(text[:200] or f"接码接口返回异常({resp.status_code})")
+        raise RuntimeError(text[:200] or f"{source_label}返回异常({resp.status_code})")
     ignored = {str(item or "").strip() for item in (ignored_otps or set()) if str(item or "").strip()}
     codes = _extract_sms_codes(text)
     for code in codes:
         if code not in ignored:
             return code
     if codes:
-        raise RuntimeError(f"接码接口仍返回旧验证码，等待新码: {_compact_log_text(text, limit=220)}")
+        raise RuntimeError(f"{source_label}仍返回旧验证码，等待新码: {_compact_log_text(text, limit=220)}")
     else:
-        raise RuntimeError(f"接码接口暂无验证码: {_compact_log_text(text, limit=220)}")
+        raise RuntimeError(f"{source_label}暂无验证码: {_compact_log_text(text, limit=220)}")
 
 
 def _wait_for_text(api: ChatGPTTeamAPI, keywords: list[str], timeout_seconds: int = 30):
@@ -5085,10 +5087,12 @@ def _run_gopay_bind_task_once(
                     "verify": {"error": _safe_error_summary(exc)},
                 }
 
+        resolved_otp_channel = str(otp_channel or os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower()
         otp_provider = _poll_otp_from_sms_url(
             sms_url,
             timeout_seconds=max(90, min(int(timeout_seconds or 900), 600)),
             initial_delay_seconds=0,
+            resend_after_seconds=60 if resolved_otp_channel == "whatsapp" else None,
             is_cancelled=is_cancelled,
             progress=progress,
         )
@@ -5104,13 +5108,13 @@ def _run_gopay_bind_task_once(
             midtrans_client_id=midtrans_client_id,
             approve_callback=approve_callback,
             verify_callback=verify_callback,
-            otp_channel=str(otp_channel or os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower(),
+            otp_channel=resolved_otp_channel,
             is_cancelled=is_cancelled,
             progress_callback=progress_callback,
         )
         logger.info(
             "[gopay_executor] GoPay OTP channel resolved: otp_channel=%s sms_url=%s",
-            getattr(charger, "otp_channel", str(otp_channel or os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower()),
+            getattr(charger, "otp_channel", resolved_otp_channel),
             _safe_url_summary(sms_url) if sms_url else "<empty>",
         )
 
