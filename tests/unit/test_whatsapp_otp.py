@@ -67,6 +67,28 @@ def test_whatsapp_listener_extracts_candidates_from_adb_blob():
     assert _extract_otp_from_text(candidates[-1]) == "511937"
 
 
+def test_whatsapp_listener_keeps_otp_candidates_when_many_noisy_notifications(monkeypatch, tmp_path):
+    otp_blob = """
+      NotificationRecord(pkg=com.whatsapp user=UserHandle{0})
+        android.title=String (GoPay)
+        android.text=SpannableString (273576 is your verification code. For your security, do not share this code.)
+    """
+    noisy_blob = "\n".join(
+        f"NotificationRecord(pkg=com.gojek.gopay user=UserHandle{{0}}) android.text=String (Rp1.000 from user {index} has been received in your GoPay.)"
+        for index in range(80)
+    )
+    listener = WhatsAppOtpListener(profile_dir=tmp_path)
+    monkeypatch.setattr(
+        listener,
+        "_run_adb",
+        lambda args, **_kwargs: otp_blob + "\n" + noisy_blob if "dumpsys" in args else "",
+    )
+
+    messages = listener._scrape_device()
+
+    assert any(_extract_otp_from_text(message) == "273576" for message in messages)
+
+
 def test_extract_whatsapp_otp_ignores_notification_metadata_numbers():
     text = (
         "Group summaries: 0|com.gojek.gopay|2147483647|ranker_group|10055 "

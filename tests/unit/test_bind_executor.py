@@ -2,6 +2,7 @@ from autoteam import bind_executor, config, gopay_executor
 from autoteam.gopay_executor import (
     GoPayFlowError,
     GoPayHttpCharger,
+    GoPayOTPCancelled,
     GoPayPINRejected,
     _build_result,
     _browser_checkout_nonzero_amount_hint,
@@ -367,6 +368,33 @@ def test_poll_otp_resends_after_two_minutes_without_code(monkeypatch):
     assert provider() == "123456"
     assert resend_calls == [120.0]
     assert {"stage": "sms_otp_resend_due", "wait_seconds": 120} in progress_events
+
+
+def test_poll_otp_stops_after_max_resend_attempts(monkeypatch):
+    now = [0.0]
+    resend_calls = []
+
+    monkeypatch.setattr(gopay_executor.time, "time", lambda: now[0])
+    monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    monkeypatch.setattr(gopay_executor, "_fetch_sms_code", lambda *_args, **_kwargs: "")
+
+    provider = _poll_otp_from_sms_url(
+        "http://127.0.0.1:8787/otp/whatsapp/latest",
+        timeout_seconds=600,
+        initial_delay_seconds=0,
+        resend_after_seconds=60,
+        max_resend_attempts=3,
+    )
+    setattr(provider, "_gopay_resend_callback", lambda: resend_calls.append(now[0]))
+
+    try:
+        provider()
+    except GoPayOTPCancelled as exc:
+        assert "上限 3 次" in str(exc)
+    else:
+        raise AssertionError("expected OTP polling to stop after max resend attempts")
+
+    assert resend_calls == [60.0, 120.0, 180.0]
 
 
 def test_extract_checkout_session_id_from_response_or_url():

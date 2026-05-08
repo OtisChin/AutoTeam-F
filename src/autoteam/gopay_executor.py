@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 SCREENSHOT_DIR = PROJECT_ROOT / "data" / "bind_screenshots"
+GOPAY_NETWORK_CAPTURE_DIR = PROJECT_ROOT / "data" / "gopay_network_captures"
 
 SUCCESS_HINTS = (
     "payment successful",
@@ -414,6 +415,22 @@ def _safe_otp_summary(otp: Any) -> str:
     return f"{digits[:2]}***{digits[-2:]}(len={len(digits)})"
 
 
+def _redact_network_capture_text(text: Any, *, limit: int = 900) -> str:
+    raw = _compact_log_text(text, limit=max(limit * 2, 1200))
+    if not raw:
+        return ""
+    raw = re.sub(r"\b(reference_id|reference|token|client_secret|otp|pin|password)=([^&\s]+)", r"\1=<redacted>", raw, flags=re.IGNORECASE)
+    raw = re.sub(r'"(reference_id|reference|token|client_secret|otp|pin|password)"\s*:\s*"[^"]*"', r'"\1":"<redacted>"', raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\b(cs|pm|pi|seti|tok|src|snap)_[A-Za-z0-9_=-]{12,}\b", lambda m: _mask_log_value(m.group(0)), raw)
+    raw = re.sub(
+        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+        lambda m: _mask_log_value(m.group(0)),
+        raw,
+        flags=re.IGNORECASE,
+    )
+    return raw[:limit]
+
+
 def _gopay_progress_level(stage: str) -> str:
     if stage in {
         "checkout_not_approved",
@@ -495,9 +512,9 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "midtrans_linking_retry": "GoPay 账户绑定接口 429 限流，正在直接重试协议接口",
         "gopay_validate_reference": "正在校验 GoPay 绑定引用",
         "gopay_user_consent": "正在确认 GoPay 授权",
-        "trigger_sms_otp": "正在触发 GoPay SMS OTP",
-        "sms_otp_triggered": "已触发 GoPay SMS OTP",
-        "sms_otp_resend_due": "1 分钟未收到 GoPay OTP，正在重新发送短信验证码",
+        "trigger_sms_otp": "正在触发 GoPay OTP",
+        "sms_otp_triggered": "已触发 GoPay OTP",
+        "sms_otp_resend_due": "1 分钟未收到 GoPay OTP，正在重新发送验证码",
         "whatsapp_otp_trigger": "正在触发 GoPay WhatsApp OTP",
         "wait_whatsapp_otp": "正在等待安卓模拟器 WhatsApp 接收 GoPay OTP",
         "wait_otp": "正在等待 GoPay SMS OTP",
@@ -835,11 +852,17 @@ def _looks_like_gopay_rate_limit_text(text: str) -> bool:
         for marker in (
             "请求过多",
             "请求太多",
+            "尝试过多",
             "请求频繁",
             "操作过于频繁",
             "访问过于频繁",
+            "请稍后重试",
             "请稍后再试",
             "稍后再试",
+            "稍后重试",
+            "更换 gopay",
+            "更换 gopay 手机号",
+            "更换 gopay 手机号/钱包",
             "too many attempts",
             "too many requests",
             "rate limited",
@@ -1165,6 +1188,7 @@ def _poll_otp_from_sms_url(
     timeout_seconds: int,
     initial_delay_seconds: float | None = None,
     resend_after_seconds: float | None = None,
+    max_resend_attempts: int | None = None,
     is_cancelled=None,
     progress: Callable[..., None] | None = None,
 ) -> Callable[[], str]:
@@ -1181,6 +1205,8 @@ def _poll_otp_from_sms_url(
             if resend_after_seconds is None
             else float(resend_after_seconds or 0)
         )
+        resend_limit = None if max_resend_attempts is None else max(0, int(max_resend_attempts or 0))
+        resend_attempts = 0
         if delay_seconds > 0:
             waited = 0.0
             if callable(progress):
@@ -1212,9 +1238,15 @@ def _poll_otp_from_sms_url(
             if next_resend_at and time.time() >= next_resend_at:
                 resend_callback = getattr(provider, "_gopay_resend_callback", None)
                 if callable(resend_callback):
+                    if resend_limit is not None and resend_attempts >= resend_limit:
+                        raise GoPayOTPCancelled(
+                            f"未收到 GoPay OTP，重新发送验证码已达到上限 {resend_limit} 次",
+                            stage="fetch_otp",
+                        )
                     if callable(progress):
                         progress("sms_otp_resend_due", wait_seconds=int(resend_interval))
                     try:
+                        resend_attempts += 1
                         resend_callback()
                     except Exception as exc:
                         logger.info("[gopay_executor] GoPay OTP resend while polling failed: %s", _safe_error_summary(exc))
@@ -1701,6 +1733,196 @@ def _remember_gopay_redirect_url(url: Any, captured: dict):
         captured["snap_token"] = snap_token
 
 
+def _diagnose_gopay_authorize_network(
+    api: ChatGPTTeamAPI,
+    *,
+    activation_link_url: str,
+    reference_id: str,
+    label: str = "whatsapp_authorize",
+) -> dict:
+    """Capture GoPay authorize page network when explicitly enabled.
+
+    This is a diagnostic helper for comparing the browser "back and re-enter"
+    behavior with the known protocol endpoints. It records only sanitized
+    request/response metadata and small redacted payload snippets.
+    """
+    if not _env_truthy("GOPAY_CAPTURE_AUTH_NETWORK"):
+        return {"enabled": False}
+    activation_link_url = str(activation_link_url or "").strip()
+    if not activation_link_url:
+        return {"enabled": True, "error": "empty activation link"}
+
+    GOPAY_NETWORK_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    capture_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    capture_path = GOPAY_NETWORK_CAPTURE_DIR / f"{label}_{capture_id}.json"
+    events: list[dict[str, Any]] = []
+
+    def interested(url: Any) -> bool:
+        raw = str(url or "").lower()
+        return any(
+            host in raw
+            for host in (
+                "app.midtrans.com",
+                "gwa.gopayapi.com",
+                "customer.gopayapi.com",
+                "merchants-gws-app.gopayapi.com",
+                "pin-web-client.gopayapi.com",
+            )
+        )
+
+    def record(event: dict[str, Any]):
+        event["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        events.append(event)
+
+    def click_consent_if_present() -> bool:
+        selectors = [
+            "button:has-text('Hubungkan')",
+            "button:has-text('Connect')",
+            "button:has-text('Lanjut')",
+            "button:has-text('Continue')",
+            "button:has-text('Oke')",
+            "button",
+        ]
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if not locator.is_visible(timeout=1200):
+                    continue
+                text = ""
+                try:
+                    text = locator.inner_text(timeout=800)
+                except Exception:
+                    text = ""
+                record({"type": "marker", "action": "click_consent", "selector": selector, "text": _compact_log_text(text, limit=80)})
+                locator.click(timeout=5000)
+                page.wait_for_timeout(6000)
+                record({"type": "marker", "action": "after_click_consent", "page_url": _safe_url_summary(getattr(page, "url", ""))})
+                return True
+            except Exception:
+                continue
+        record({"type": "marker", "action": "click_consent_not_found", "page_url": _safe_url_summary(getattr(page, "url", ""))})
+        return False
+
+    def on_request(req):
+        try:
+            url = str(getattr(req, "url", "") or "")
+            if not interested(url):
+                return
+            post_data = ""
+            try:
+                post_data = getattr(req, "post_data", "") or ""
+            except Exception:
+                post_data = ""
+            record(
+                {
+                    "type": "request",
+                    "method": str(getattr(req, "method", "") or ""),
+                    "url": _safe_url_summary(url),
+                    "payload": _redact_network_capture_text(post_data, limit=700),
+                }
+            )
+        except Exception:
+            pass
+
+    def on_response(resp):
+        try:
+            url = str(getattr(resp, "url", "") or "")
+            if not interested(url):
+                return
+            body = ""
+            try:
+                content_type = ""
+                try:
+                    headers = getattr(resp, "headers", {}) or {}
+                    content_type = str(headers.get("content-type") or headers.get("Content-Type") or "")
+                except Exception:
+                    content_type = ""
+                if "json" in content_type or "text" in content_type or "javascript" in content_type:
+                    body = resp.text() if callable(getattr(resp, "text", None)) else ""
+            except Exception:
+                body = ""
+            record(
+                {
+                    "type": "response",
+                    "status": int(getattr(resp, "status", 0) or 0),
+                    "url": _safe_url_summary(url),
+                    "body": _redact_network_capture_text(body, limit=900),
+                }
+            )
+        except Exception:
+            pass
+
+    page = None
+    try:
+        page = api.context.new_page() if getattr(api, "context", None) else getattr(api, "page", None)
+    except Exception:
+        page = getattr(api, "page", None)
+    if not page:
+        return {"enabled": True, "error": "browser page unavailable"}
+
+    try:
+        page.on("request", on_request)
+        page.on("response", on_response)
+    except Exception:
+        pass
+
+    result = {"enabled": True, "path": str(capture_path), "events": 0}
+    try:
+        record(
+            {
+                "type": "marker",
+                "action": "open_activation_link",
+                "url": _safe_url_summary(activation_link_url),
+                "reference": _mask_log_value(reference_id),
+            }
+        )
+        page.goto(activation_link_url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(5000)
+        record({"type": "marker", "action": "after_open", "page_url": _safe_url_summary(getattr(page, "url", ""))})
+        click_consent_if_present()
+
+        try:
+            record({"type": "marker", "action": "go_back"})
+            page.go_back(wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2500)
+            record({"type": "marker", "action": "after_back", "page_url": _safe_url_summary(getattr(page, "url", ""))})
+            click_consent_if_present()
+        except Exception as exc:
+            record({"type": "marker", "action": "go_back_failed", "error": _safe_error_summary(exc)})
+
+        record({"type": "marker", "action": "reopen_activation_link", "url": _safe_url_summary(activation_link_url)})
+        page.goto(activation_link_url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(8000)
+        record({"type": "marker", "action": "after_reopen", "page_url": _safe_url_summary(getattr(page, "url", ""))})
+        click_consent_if_present()
+    except Exception as exc:
+        result["error"] = _safe_error_summary(exc)
+        record({"type": "marker", "action": "capture_failed", "error": _safe_error_summary(exc)})
+    finally:
+        result["events"] = len(events)
+        payload = {
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "activation_link": _safe_url_summary(activation_link_url),
+            "reference": _mask_log_value(reference_id),
+            "events": events,
+        }
+        try:
+            capture_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info(
+                "[gopay_executor] GoPay auth network capture saved: path=%s events=%s",
+                capture_path,
+                len(events),
+            )
+        except Exception as exc:
+            result["write_error"] = _safe_error_summary(exc)
+        try:
+            if page is not getattr(api, "page", None):
+                page.close()
+        except Exception:
+            pass
+    return result
+
+
 def _browser_checkout_to_gopay_redirect(
     api: ChatGPTTeamAPI,
     *,
@@ -2081,6 +2303,7 @@ class GoPayHttpCharger:
         self.verify_callback = verify_callback
         self.sms_otp_trigger_callback = sms_otp_trigger_callback
         self.otp_channel = str(otp_channel or "sms").strip().lower()
+        self._auth_network_capture_done = False
         self.sms_resend_wait_seconds = (
             _env_float("GOPAY_SMS_OTP_DELAY_SECONDS", GOPAY_SMS_OTP_DELAY_S)
             if sms_resend_wait_seconds is None
@@ -2709,7 +2932,7 @@ class GoPayHttpCharger:
         if not payload.get("success"):
             raise GoPayFlowError(f"GoPay resend-otp 失败: {payload}", stage="trigger_sms_otp")
         self._progress("sms_otp_triggered")
-        logger.info("[gopay_executor] GoPay SMS OTP triggered via protocol resend: reference=%s", _mask_log_value(reference_id))
+        logger.info("[gopay_executor] GoPay OTP triggered via protocol resend: reference=%s", _mask_log_value(reference_id))
 
     def _trigger_linking_otp_channel(self, reference_id: str):
         if self.otp_channel == "sms":
@@ -2724,7 +2947,7 @@ class GoPayHttpCharger:
             self._gopay_resend_otp(reference_id)
             return
 
-        if callable(self.sms_otp_trigger_callback):
+        if callable(self.sms_otp_trigger_callback) and not self._auth_network_capture_done:
             self._progress("whatsapp_otp_trigger")
             self.sms_otp_trigger_callback(reference_id, self.activation_link_url)
             return
@@ -2948,6 +3171,14 @@ class GoPayHttpCharger:
         transaction = self._midtrans_load_transaction(snap_token)
         self._guard_before_gopay_binding(transaction)
         reference_id = self._midtrans_init_linking(snap_token)
+        if (
+            self.otp_channel == "whatsapp"
+            and _env_truthy("GOPAY_CAPTURE_AUTH_NETWORK")
+            and callable(self.sms_otp_trigger_callback)
+        ):
+            self._progress("whatsapp_otp_trigger")
+            self.sms_otp_trigger_callback(reference_id, self.activation_link_url)
+            self._auth_network_capture_done = True
         self._gopay_validate_reference(reference_id)
         self._gopay_user_consent(reference_id)
         self._trigger_linking_otp_channel(reference_id)
@@ -5093,9 +5324,26 @@ def _run_gopay_bind_task_once(
             timeout_seconds=max(90, min(int(timeout_seconds or 900), 600)),
             initial_delay_seconds=0,
             resend_after_seconds=60 if resolved_otp_channel == "whatsapp" else None,
+            max_resend_attempts=3 if resolved_otp_channel == "whatsapp" else None,
             is_cancelled=is_cancelled,
             progress=progress,
         )
+
+        sms_otp_trigger_callback = None
+        if resolved_otp_channel == "whatsapp" and _env_truthy("GOPAY_CAPTURE_AUTH_NETWORK"):
+            def sms_otp_trigger_callback(reference_id: str, activation_link_url: str) -> None:
+                progress("whatsapp_otp_trigger")
+                result = _diagnose_gopay_authorize_network(
+                    api,
+                    activation_link_url=activation_link_url,
+                    reference_id=reference_id,
+                )
+                logger.info(
+                    "[gopay_executor] GoPay WhatsApp authorize network diagnostic finished: %s",
+                    _safe_error_summary(result),
+                )
+                if _env_truthy("GOPAY_CAPTURE_AUTH_NETWORK_ONLY"):
+                    raise GoPayOTPCancelled("GoPay 授权页网络诊断已完成，按配置停止在 OTP 前", stage="fetch_otp")
 
         charger = GoPayHttpCharger(
             http=_new_http_session(proxy_url),
@@ -5108,6 +5356,7 @@ def _run_gopay_bind_task_once(
             midtrans_client_id=midtrans_client_id,
             approve_callback=approve_callback,
             verify_callback=verify_callback,
+            sms_otp_trigger_callback=sms_otp_trigger_callback,
             otp_channel=resolved_otp_channel,
             is_cancelled=is_cancelled,
             progress_callback=progress_callback,

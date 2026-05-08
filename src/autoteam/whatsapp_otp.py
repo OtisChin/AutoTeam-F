@@ -275,7 +275,10 @@ class WhatsAppOtpListener:
 
             while not self._stop_event.is_set():
                 try:
-                    for message in self._scrape_device():
+                    # Android notification dumps list newer notifications first. Record
+                    # oldest-to-newest so the cached latest OTP is not overwritten by
+                    # an older notification from the same scrape.
+                    for message in reversed(self._scrape_device()):
                         code = _extract_otp_from_text(message)
                         if code:
                             self._record_message(code=code, raw=message)
@@ -304,13 +307,12 @@ class WhatsAppOtpListener:
             dumpsys_text = self._run_adb(["shell", "dumpsys", "notification"], timeout=12)
         messages.extend(self._extract_candidates_from_blob(dumpsys_text))
 
-        if not messages:
-            try:
-                self._run_adb(["shell", "uiautomator", "dump", "/sdcard/autoteam_whatsapp.xml"], timeout=8)
-                ui_text = self._run_adb(["shell", "cat", "/sdcard/autoteam_whatsapp.xml"], timeout=8)
-                messages.extend(self._extract_candidates_from_blob(ui_text))
-            except Exception as exc:
-                logger.debug("[whatsapp-otp] UI fallback failed: %s", exc)
+        try:
+            self._run_adb(["shell", "uiautomator", "dump", "/sdcard/autoteam_whatsapp.xml"], timeout=8)
+            ui_text = self._run_adb(["shell", "cat", "/sdcard/autoteam_whatsapp.xml"], timeout=8)
+            messages.extend(self._extract_candidates_from_blob(ui_text))
+        except Exception as exc:
+            logger.debug("[whatsapp-otp] UI fallback failed: %s", exc)
 
         unique: list[str] = []
         seen: set[str] = set()
@@ -320,7 +322,11 @@ class WhatsAppOtpListener:
                 continue
             seen.add(normalized)
             unique.append(normalized)
-        return unique[-30:]
+        otp_messages = [message for message in unique if _extract_otp_from_text(message)]
+        other_messages = [message for message in unique if not _extract_otp_from_text(message)]
+        if len(otp_messages) >= 30:
+            return otp_messages[:30]
+        return otp_messages + other_messages[-(30 - len(otp_messages)) :]
 
     @staticmethod
     def _extract_candidates_from_blob(blob: str) -> list[str]:

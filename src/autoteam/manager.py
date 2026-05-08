@@ -87,7 +87,7 @@ from autoteam.textio import read_text, write_text
 logger = logging.getLogger(__name__)
 
 MAIL_TIMEOUT = int(os.environ.get("MAIL_TIMEOUT", "180"))
-OUTLOOK_REGISTER_CODE_TIMEOUT = int(os.environ.get("OUTLOOK_REGISTER_CODE_TIMEOUT", "30"))
+OUTLOOK_REGISTER_CODE_TIMEOUT = int(os.environ.get("OUTLOOK_REGISTER_CODE_TIMEOUT", "90"))
 POST_REGISTER_OAUTH_ENABLED = os.environ.get("POST_REGISTER_OAUTH_ENABLED", "false").strip().lower() in {
     "1",
     "true",
@@ -3120,7 +3120,7 @@ def create_account_direct(
             _record_outcome("email_code_timeout", reason=str(exc))
             _progress(
                 "register_email_code_timeout",
-                f"Outlook 邮箱 30 秒未收到验证码，跳过当前邮箱: {email}",
+                f"{exc}，跳过当前邮箱: {email}",
                 email=email,
                 level="warn",
                 reason=str(exc),
