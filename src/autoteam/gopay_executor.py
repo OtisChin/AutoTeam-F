@@ -2953,7 +2953,7 @@ class GoPayHttpCharger:
             return
         self._progress("wait_whatsapp_otp")
         logger.info(
-            "[gopay_executor] GoPay OTP channel is WhatsApp; waiting for WhatsApp listener and will trigger protocol resend if OTP is not received: reference=%s",
+            "[gopay_executor] GoPay OTP channel is WhatsApp; waiting for WhatsApp listener without protocol resend: reference=%s",
             _mask_log_value(reference_id),
         )
 
@@ -3183,7 +3183,7 @@ class GoPayHttpCharger:
         self._gopay_user_consent(reference_id)
         self._trigger_linking_otp_channel(reference_id)
         self._progress("wait_otp")
-        if self.otp_channel in {"sms", "whatsapp"}:
+        if self.otp_channel == "sms":
             try:
                 setattr(self.otp_provider, "_gopay_resend_callback", lambda: self._gopay_resend_otp(reference_id))
             except Exception:
@@ -5321,10 +5321,10 @@ def _run_gopay_bind_task_once(
         resolved_otp_channel = str(otp_channel or os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower()
         otp_provider = _poll_otp_from_sms_url(
             sms_url,
-            timeout_seconds=max(90, min(int(timeout_seconds or 900), 600)),
+            timeout_seconds=60 if resolved_otp_channel == "whatsapp" else max(90, min(int(timeout_seconds or 900), 600)),
             initial_delay_seconds=0,
-            resend_after_seconds=60 if resolved_otp_channel == "whatsapp" else None,
-            max_resend_attempts=3 if resolved_otp_channel == "whatsapp" else None,
+            resend_after_seconds=None,
+            max_resend_attempts=None,
             is_cancelled=is_cancelled,
             progress=progress,
         )

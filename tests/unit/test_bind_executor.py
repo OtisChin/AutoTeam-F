@@ -777,7 +777,7 @@ def test_gopay_http_charger_triggers_sms_otp_via_protocol(monkeypatch):
     assert http.responses == []
 
 
-def test_gopay_http_charger_whatsapp_channel_sets_delayed_resend_callback(monkeypatch):
+def test_gopay_http_charger_whatsapp_channel_does_not_set_resend_callback(monkeypatch):
     monkeypatch.setattr(gopay_executor.time, "sleep", lambda *args, **kwargs: None)
 
     snap_token = "11111111-1111-4111-8111-111111111111"
@@ -857,7 +857,7 @@ def test_gopay_http_charger_whatsapp_channel_sets_delayed_resend_callback(monkey
     assert result["state"] == "succeeded"
     assert not any(request["url"].endswith("/resend-otp") for request in http.requests)
     assert any(event["stage"] == "wait_whatsapp_otp" for event in progress_events)
-    assert otp_callback_present == [True]
+    assert otp_callback_present == [False]
     assert http.responses == []
 
 
