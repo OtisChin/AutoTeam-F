@@ -2038,7 +2038,6 @@ def _browser_checkout_to_gopay_redirect(
         raise GoPayChargeBlocked(
             (
                 f"浏览器 checkout 页面今日应付金额非 0 ({nonzero_hint})，已在填写账单前停止；"
-                "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
             ),
             stage="browser_charge_guard",
         )
@@ -2050,7 +2049,6 @@ def _browser_checkout_to_gopay_redirect(
             raise GoPayChargeBlocked(
                 (
                     f"浏览器 checkout 页面今日应付金额非 0 ({amount_hint})，已在填写账单前停止；"
-                    "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
                 ),
                 stage="browser_charge_guard",
             )
@@ -2781,7 +2779,6 @@ class GoPayHttpCharger:
         raise GoPayChargeBlocked(
             (
                 f"Stripe expected_amount={self.expected_due_amount} 非 0，已在 ChatGPT approve / GoPay 绑定前停止；"
-                "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
             ),
             stage="stripe_charge_guard",
         )

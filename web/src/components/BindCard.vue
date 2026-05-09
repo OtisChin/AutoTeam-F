@@ -852,6 +852,22 @@
               </label>
             </div>
             <div v-if="gopayUsingWhatsAppOtp" class="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+              <div class="mb-2">
+                <label class="mb-1 block text-[11px] text-emerald-200/80">ADB 模拟器端口</label>
+                <select
+                  v-model="gopayForm.whatsappAdbPort"
+                  :disabled="whatsappOtpStarting || gopaySubmitting || gopayTaskRunning"
+                  class="w-full rounded-md border border-emerald-500/20 bg-gray-900 px-2 py-1.5 text-xs text-emerald-50 focus:outline-none focus:border-emerald-400"
+                >
+                  <option
+                    v-for="option in whatsappAdbPortOptions"
+                    :key="option.value || 'auto'"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+              </div>
               <div class="flex items-center justify-between gap-3">
                 <span>
                   {{ whatsappOtpStatus?.running ? 'WhatsApp 监听中' : '提交任务前会自动启动 WhatsApp 监听。请确认本机接收端已准备好。' }}
@@ -1380,6 +1396,7 @@ const gopayForm = ref({
   usePhonePool: false,
   phonePoolText: '',
   otpChannel: 'sms',
+  whatsappAdbPort: '',
   smsUrl: '',
   gopayPin: '',
   billingName: '',
@@ -1414,6 +1431,15 @@ const gopaySuccessNoticeVisible = ref(false)
 const gopaySuccessNoticeEmail = ref('')
 const whatsappOtpStatus = ref(null)
 const whatsappOtpStarting = ref(false)
+const whatsappAdbPortOptions = [
+  { value: '', label: '自动检测' },
+  { value: '5554', label: 'emulator-5554' },
+  { value: '5556', label: 'emulator-5556' },
+  { value: '5558', label: 'emulator-5558' },
+  { value: '5560', label: 'emulator-5560' },
+  { value: '5562', label: 'emulator-5562' },
+  { value: '5564', label: 'emulator-5564' },
+]
 let bindTaskPollTimer = 0
 let gopayTaskPollTimer = 0
 let gopaySuccessNoticeTimer = 0
@@ -2312,7 +2338,8 @@ async function startWhatsAppOtpListener({ silent = false } = {}) {
     pushGoPayLog('正在启动 WhatsApp OTP 监听', 'info')
   }
   try {
-    const status = await api.startWhatsAppOtp({})
+    const adbPort = String(gopayForm.value.whatsappAdbPort || '').replace(/\D/g, '')
+    const status = await api.startWhatsAppOtp({ adb_port: adbPort })
     whatsappOtpStatus.value = status
     if (!silent) {
       if (status?.last_error) {
@@ -2361,6 +2388,7 @@ function getRememberedGoPayForm() {
     usePhonePool: Boolean(gopayForm.value.usePhonePool),
     phonePoolText: String(gopayForm.value.phonePoolText || '').trim(),
     otpChannel: gopayOtpChannel.value,
+    whatsappAdbPort: String(gopayForm.value.whatsappAdbPort || '').trim(),
     smsUrl: String(gopayForm.value.smsUrl || '').trim(),
     proxyLabel: String(gopayForm.value.proxyLabel || '').trim(),
     proxyUrl: String(gopayForm.value.proxyUrl || '').trim(),
@@ -2400,6 +2428,7 @@ function loadGoPayFormState() {
       usePhonePool: Boolean(saved.usePhonePool),
       phonePoolText: String(saved.phonePoolText || '').trim(),
       otpChannel: saved.otpChannel === 'whatsapp' ? 'whatsapp' : 'sms',
+      whatsappAdbPort: String(saved.whatsappAdbPort || '').replace(/\D/g, '').slice(0, 5),
       smsUrl: String(saved.smsUrl || '').trim(),
       proxyLabel: String(saved.proxyLabel || '').trim(),
       proxyUrl: String(saved.proxyUrl || '').trim(),

@@ -821,6 +821,7 @@ class WhatsAppOtpStartParams(BaseModel):
     headless: bool = False
     adb_path: str = Field("", validation_alias=AliasChoices("adb_path", "adbPath"))
     adb_serial: str = Field("", validation_alias=AliasChoices("adb_serial", "adbSerial"))
+    adb_port: str = Field("", validation_alias=AliasChoices("adb_port", "adbPort"))
     poll_interval_seconds: float = Field(2.0, validation_alias=AliasChoices("poll_interval_seconds", "pollIntervalSeconds"))
 
 
@@ -3941,26 +3942,30 @@ def get_whatsapp_otp_status():
 
 @app.post("/api/whatsapp-otp/start")
 def post_whatsapp_otp_start(params: WhatsAppOtpStartParams = WhatsAppOtpStartParams()):
-    from autoteam.whatsapp_otp import DEFAULT_PROFILE_DIR, WhatsAppOtpListener, get_default_listener
+    from autoteam.whatsapp_otp import DEFAULT_ADB_PATH, DEFAULT_PROFILE_DIR, WhatsAppOtpListener, get_default_listener
 
     global _whatsapp_otp_listener
     profile_dir = Path(params.profile_dir).expanduser() if str(params.profile_dir or "").strip() else DEFAULT_PROFILE_DIR
     adb_path = str(params.adb_path or "").strip()
     adb_serial = str(params.adb_serial or "").strip()
+    adb_port = re.sub(r"\D+", "", str(params.adb_port or ""))
+    if not adb_serial and adb_port:
+        adb_serial = f"emulator-{adb_port}"
+    requested_adb_path = adb_path or DEFAULT_ADB_PATH
     poll_interval_seconds = float(params.poll_interval_seconds or 2.0)
     listener = get_default_listener()
     if (
         str(listener.profile_dir) != str(profile_dir)
         or listener.headless != bool(params.headless)
-        or (adb_path and getattr(listener, "adb_path", "") != adb_path)
-        or (adb_serial and getattr(listener, "adb_serial", "") != adb_serial)
+        or getattr(listener, "adb_path", "") != requested_adb_path
+        or getattr(listener, "adb_serial", "") != adb_serial
         or float(getattr(listener, "poll_interval_seconds", 2.0)) != poll_interval_seconds
     ):
         listener.stop()
         _whatsapp_otp_listener = WhatsAppOtpListener(
             profile_dir=profile_dir,
             headless=bool(params.headless),
-            adb_path=adb_path or None,
+            adb_path=requested_adb_path,
             adb_serial=adb_serial,
             poll_interval_seconds=poll_interval_seconds,
         )

@@ -63,13 +63,21 @@ def find_account(accounts, email):
     return None
 
 
-def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNOWN):
+def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNOWN, mail_provider=None):
     """添加新账号。seat_type 取值见 SEAT_CHATGPT / SEAT_CODEX / SEAT_UNKNOWN。"""
     accounts = load_accounts()
-    if find_account(accounts, email):
-        # 已存在仍允许补写 seat_type,避免旧记录一直是 unknown
+    existing = find_account(accounts, email)
+    if existing:
+        changed = False
+        # 已存在仍允许补写 seat_type/mail_provider,避免旧记录一直缺少注册邮箱来源。
         if seat_type and seat_type != SEAT_UNKNOWN:
-            update_account(email, seat_type=seat_type)
+            existing["seat_type"] = seat_type
+            changed = True
+        if mail_provider and not existing.get("mail_provider"):
+            existing["mail_provider"] = mail_provider
+            changed = True
+        if changed:
+            save_accounts(accounts)
         return
 
     accounts.append(
@@ -77,6 +85,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
             "email": email,
             "password": password,
             "cloudmail_account_id": cloudmail_account_id,
+            "mail_provider": mail_provider or None,
             "status": STATUS_PENDING,
             "account_type": ACCOUNT_TYPE_FREE,
             "seat_type": seat_type or SEAT_UNKNOWN,
