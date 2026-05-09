@@ -833,9 +833,25 @@ def _click_auth_retry_if_timed_out(page):
 
 def _fill_auth_email_if_present(page, email, *, timeout=800):
     try:
+        if _is_email_verification_page(page):
+            return False
+        try:
+            password_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
+            if password_input.is_visible(timeout=100):
+                return False
+        except Exception:
+            pass
         deadline = time.time() + max(timeout, 0) / 1000
         email_input = None
         while time.time() <= deadline:
+            if _is_email_verification_page(page):
+                return False
+            try:
+                password_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
+                if password_input.is_visible(timeout=100):
+                    return False
+            except Exception:
+                pass
             email_input = _email_input_locator(page)
             if email_input:
                 break
@@ -1299,15 +1315,6 @@ def _login_codex_via_browser_simple(
                 logger.info("[Codex] 极简 OAuth 点击重试: %s", email)
                 time.sleep(3)
                 continue
-            if _fill_auth_email_if_present(page, email, timeout=800):
-                logger.info("[Codex] 极简 OAuth 已提交邮箱: %s", email)
-                time.sleep(2)
-                continue
-            if _click_email_code_login_if_present(page):
-                logger.info("[Codex] 极简 OAuth 已切换邮箱验证码登录: %s", email)
-                time.sleep(2)
-                continue
-
             otp_input = _otp_input_locator(page)
             if otp_input and otp_input.is_visible(timeout=500):
                 logger.info("[Codex] 极简 OAuth 检测到验证码输入框: %s", email)
@@ -1340,7 +1347,6 @@ def _login_codex_via_browser_simple(
                 time.sleep(3)
                 _screenshot(page, "codex_simple_02_after_otp.png")
                 continue
-
             try:
                 pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
                 password_visible = pwd_input.is_visible(timeout=500)
@@ -1379,6 +1385,15 @@ def _login_codex_via_browser_simple(
                 password_required_detail = f"OAuth 需要密码但账号没有保存密码，且未找到邮箱验证码入口: {email}"
                 final_oauth_url = page.url or ""
                 break
+
+            if _fill_auth_email_if_present(page, email, timeout=800):
+                logger.info("[Codex] 极简 OAuth 已提交邮箱: %s", email)
+                time.sleep(2)
+                continue
+            if _click_email_code_login_if_present(page):
+                logger.info("[Codex] 极简 OAuth 已切换邮箱验证码登录: %s", email)
+                time.sleep(2)
+                continue
 
             if _simple_fill_about_you_if_present(page):
                 _screenshot(page, "codex_simple_03_after_about_you.png")
@@ -2603,6 +2618,9 @@ class SessionCodexAuthFlow:
         return acted
 
     def _auto_fill_email(self):
+        if _is_email_verification_page(self.page):
+            return False
+
         if _fill_auth_email_if_present(self.page, self.email, timeout=500):
             time.sleep(2)
             return True

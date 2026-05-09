@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import time
 import urllib.parse
 
@@ -12,6 +13,7 @@ from autoteam.codex_auth import (
     _extract_auth_code_from_url,
     _extract_session_token_from_cookie_header,
     _follow_codex_oauth_redirects_protocol,
+    _fill_auth_email_if_present,
     _fill_otp_input_and_verify,
     _login_codex_via_browser_simple,
     _is_personal_codex_plan,
@@ -393,6 +395,82 @@ def test_fill_otp_input_rejects_partial_single_digit_fill():
     assert _fill_otp_input_and_verify(fake, "123456") is False
 
 
+def test_fill_auth_email_does_not_write_on_email_verification_page(monkeypatch):
+    class FakeField:
+        value = ""
+
+        def click(self, *args, **kwargs):
+            pass
+
+        def press(self, *_args, **_kwargs):
+            pass
+
+        def fill(self, value):
+            self.value = value
+
+        def input_value(self, timeout=1000):
+            return self.value
+
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+        def __init__(self):
+            self.field = FakeField()
+            self.keyboard = type("Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)})()
+
+        def locator(self, selector):
+            return self.field
+
+    page = FakePage()
+    monkeypatch.setattr("autoteam.codex_auth._email_input_locator", lambda _page: page.field)
+
+    assert _fill_auth_email_if_present(page, "denisemaynard4560@outlook.com", timeout=10) is False
+    assert page.field.value == ""
+
+
+def test_fill_auth_email_does_not_run_on_visible_password_page(monkeypatch):
+    class FakeField:
+        value = ""
+
+        def click(self, *args, **kwargs):
+            pass
+
+        def press(self, *_args, **_kwargs):
+            pass
+
+        def fill(self, value):
+            self.value = value
+
+        def input_value(self, timeout=1000):
+            return self.value
+
+    class FakePasswordLocator:
+        first = None
+
+        def __init__(self):
+            self.first = self
+
+        def is_visible(self, timeout=100):
+            return True
+
+    class FakePage:
+        url = "https://auth.openai.com/log-in/password"
+
+        def __init__(self):
+            self.field = FakeField()
+            self.password = FakePasswordLocator()
+            self.keyboard = type("Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)})()
+
+        def locator(self, selector):
+            return self.password
+
+    page = FakePage()
+    monkeypatch.setattr("autoteam.codex_auth._email_input_locator", lambda _page: page.field)
+
+    assert _fill_auth_email_if_present(page, "rjtr26009@outlook.com", timeout=10) is False
+    assert page.field.value == ""
+
+
 def test_manual_account_flow_polls_mail_like_registration(monkeypatch):
     class FakeMailClient:
         def search_emails_by_recipient(self, email, size=10):
@@ -639,6 +717,54 @@ def test_account_login_skips_protocol_oauth_by_default(monkeypatch):
         "native_oauth": True,
         "mail_account_id": 956,
     }
+
+
+def test_account_login_uses_luckmail_provider_for_token_account_id(monkeypatch):
+    captured = {}
+    account = {
+        "email": "plus@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": "tok_luck",
+    }
+
+    class FakeMailClient:
+        def __init__(self):
+            captured["mail_provider_env"] = os.environ.get("MAIL_PROVIDER")
+
+        def login(self):
+            pass
+
+    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
+        captured["login"] = {
+            "email": email,
+            "native_oauth": native_oauth,
+            "mail_account_id": mail_account_id,
+        }
+        return {
+            "email": email,
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "id_token": "id",
+            "account_id": "acct-plus",
+            "plan_type": "plus",
+        }
+
+    monkeypatch.delenv("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL", raising=False)
+    monkeypatch.delenv("MAIL_PROVIDER", raising=False)
+    monkeypatch.setattr("autoteam.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autoteam.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr("autoteam.codex_auth.login_codex_via_browser", fake_login)
+    monkeypatch.setattr("autoteam.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: None)
+
+    result = api._run_account_codex_login_once(account["email"], account)
+
+    assert result["email"] == "plus@example.com"
+    assert captured["mail_provider_env"] == "luckmail"
+    assert captured["login"]["mail_account_id"] == "tok_luck"
 
 
 def test_team_account_login_keeps_team_oauth(monkeypatch):

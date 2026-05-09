@@ -2449,7 +2449,16 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
         ACCOUNT_TYPE_PRO,
     }
 
-    mail_client = TemporaryEmailClient()
+    mail_provider = str(acc.get("mail_provider") or "").strip().lower()
+    if not mail_provider and str(acc.get("cloudmail_account_id") or "").strip().startswith("tok_"):
+        mail_provider = "luckmail"
+    if mail_provider:
+        from autoteam.manager import _temporary_mail_provider
+
+        with _temporary_mail_provider(mail_provider):
+            mail_client = TemporaryEmailClient()
+    else:
+        mail_client = TemporaryEmailClient()
     mail_client.login()
     if not acc.get("cloudmail_account_id") and hasattr(mail_client, "_resolve_account_id"):
         try:
@@ -4970,6 +4979,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                         str(register_payload.get("password") or outcome.get("password") or auto_register_password or ""),
                         cloudmail_account_id=register_payload.get("cloudmail_account_id") or outcome.get("cloudmail_account_id"),
                         seat_type=SEAT_CODEX,
+                        mail_provider=register_payload.get("mail_provider") or outcome.get("mail_provider") or auto_register_mail_provider or None,
                     )
                 update_account(
                     registered_email,

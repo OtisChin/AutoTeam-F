@@ -1795,7 +1795,7 @@ def _fetch_auth_session_from_page(
     return last_result
 
 
-def _save_auth_from_session_page(email, password, cloudmail_account_id, session_data, out_outcome=None):
+def _save_auth_from_session_page(email, password, cloudmail_account_id, session_data, out_outcome=None, mail_provider=None):
     """
     在已登录的 ChatGPT 页面里直接调用 /api/auth/session 提取 accessToken，
     并把完整 JSON 保存到 data/auth_session/<email>.json。
@@ -1829,7 +1829,13 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         return None
 
     auth_file = save_auth_session(email, data)
-    add_account(email, password, cloudmail_account_id=cloudmail_account_id, seat_type=SEAT_CODEX)
+    add_account(
+        email,
+        password,
+        cloudmail_account_id=cloudmail_account_id,
+        seat_type=SEAT_CODEX,
+        mail_provider=mail_provider,
+    )
     logger.info("[注册] auth_session 已保存: %s", auth_file)
     update_account(
         email,
@@ -1846,6 +1852,7 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         source="auth_session",
         password=password,
         cloudmail_account_id=cloudmail_account_id,
+        mail_provider=mail_provider,
     )
     return {
         "email": email,
@@ -1854,6 +1861,7 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         "auth_file": auth_file,
         "password": password,
         "cloudmail_account_id": cloudmail_account_id,
+        "mail_provider": mail_provider,
     }
 
 
@@ -2040,7 +2048,13 @@ def _run_post_register_session_oauth(
     status = STATUS_ACTIVE if plan_type in {"free", "team", "plus", "pro"} else STATUS_PERSONAL
     auth_file = oauth_result.get("auth_file") or save_auth_file(bundle)
 
-    add_account(email, password, cloudmail_account_id=cloudmail_account_id, seat_type=seat_type)
+    add_account(
+        email,
+        password,
+        cloudmail_account_id=cloudmail_account_id,
+        seat_type=seat_type,
+        mail_provider=_mail_client_provider_name(mail_client) or None,
+    )
     update_account(
         email,
         status=status,
@@ -3162,6 +3176,7 @@ def create_account_direct(
                         account_id,
                         session_data,
                         out_outcome=out_outcome,
+                        mail_provider=_mail_client_provider_name(mail_client) or None,
                     )
                     if session_auth:
                         if not post_register_oauth_enabled:
@@ -3238,7 +3253,12 @@ def create_account_direct(
         )
         return None
 
-    add_account(email, password, cloudmail_account_id=account_id)
+    add_account(
+        email,
+        password,
+        cloudmail_account_id=account_id,
+        mail_provider=_mail_client_provider_name(mail_client) or None,
+    )
     _progress("register_account_recorded", f"账号已写入号池: {email}", email=email)
     if skip_post_register or not check_team_membership:
         if check_team_membership:
