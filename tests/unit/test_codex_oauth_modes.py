@@ -15,6 +15,7 @@ from autoteam.codex_auth import (
     _follow_codex_oauth_redirects_protocol,
     _fill_auth_email_if_present,
     _fill_otp_input_and_verify,
+    _click_oauth_consent_if_present,
     _login_codex_via_browser_simple,
     _is_personal_codex_plan,
     _poll_login_otp,
@@ -428,6 +429,64 @@ def test_fill_auth_email_does_not_write_on_email_verification_page(monkeypatch):
     assert page.field.value == ""
 
 
+def test_fill_auth_email_does_not_match_username_autocomplete_on_code_page(monkeypatch):
+    class FakeField:
+        value = ""
+
+        def click(self, *args, **kwargs):
+            pass
+
+        def press(self, *_args, **_kwargs):
+            pass
+
+        def fill(self, value):
+            self.value = value
+
+        def input_value(self, timeout=1000):
+            return self.value
+
+    class FakeLocator:
+        first = None
+
+        def __init__(self, field):
+            self.first = self
+            self.field = field
+
+        def inner_text(self, timeout=500):
+            return "检查你的收件箱 输入我们刚刚发送的验证码"
+
+        def is_visible(self, timeout=300):
+            return True
+
+        def click(self, *args, **kwargs):
+            self.field.click(*args, **kwargs)
+
+        def press(self, *args, **kwargs):
+            self.field.press(*args, **kwargs)
+
+        def fill(self, value):
+            self.field.fill(value)
+
+        def input_value(self, timeout=1000):
+            return self.field.input_value(timeout=timeout)
+
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+        def __init__(self):
+            self.field = FakeField()
+            self.locator_obj = FakeLocator(self.field)
+            self.keyboard = type("Keyboard", (), {"type": lambda _self, value, **_kwargs: setattr(self.field, "value", value)})()
+
+        def locator(self, selector):
+            return self.locator_obj
+
+    page = FakePage()
+
+    assert _fill_auth_email_if_present(page, "davidsloan2776@outlook.com", timeout=10) is False
+    assert page.field.value == ""
+
+
 def test_fill_auth_email_does_not_run_on_visible_password_page(monkeypatch):
     class FakeField:
         value = ""
@@ -469,6 +528,88 @@ def test_fill_auth_email_does_not_run_on_visible_password_page(monkeypatch):
 
     assert _fill_auth_email_if_present(page, "rjtr26009@outlook.com", timeout=10) is False
     assert page.field.value == ""
+
+
+def test_click_oauth_consent_clicks_continue_on_consent_page():
+    class FakeLocator:
+        def __init__(self, *, visible=False):
+            self.visible = visible
+            self.clicked = False
+            self.first = self
+
+        def is_visible(self, timeout=1000):
+            return self.visible
+
+        def is_enabled(self, timeout=1000):
+            return True
+
+        def scroll_into_view_if_needed(self, timeout=1000):
+            pass
+
+        def click(self, *args, **kwargs):
+            self.clicked = True
+
+    class FakePage:
+        url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+
+        def __init__(self):
+            self.hidden = FakeLocator(visible=False)
+            self.button = FakeLocator(visible=True)
+
+        def locator(self, selector):
+            if "input" in selector and "submit" not in selector:
+                return self.hidden
+            if "Continue" in selector:
+                return self.button
+            return self.hidden
+
+        def evaluate(self, *_args, **_kwargs):
+            return ""
+
+    page = FakePage()
+
+    assert _click_oauth_consent_if_present(page, timeout=10) is True
+    assert page.button.clicked is True
+
+
+def test_click_oauth_consent_does_not_click_on_login_input_page():
+    class FakeLocator:
+        first = None
+
+        def __init__(self, visible):
+            self.visible = visible
+            self.clicked = False
+            self.first = self
+
+        def is_visible(self, timeout=1000):
+            return self.visible
+
+        def is_enabled(self, timeout=1000):
+            return True
+
+        def click(self, *args, **kwargs):
+            self.clicked = True
+
+    class FakePage:
+        url = "https://auth.openai.com/log-in"
+
+        def __init__(self):
+            self.input = FakeLocator(True)
+            self.button = FakeLocator(True)
+
+        def locator(self, selector):
+            if "input" in selector and "submit" not in selector:
+                return self.input
+            return self.button
+
+        def evaluate(self, *_args, **_kwargs):
+            self.button.clicked = True
+            return "continue"
+
+    page = FakePage()
+
+    assert _click_oauth_consent_if_present(page, timeout=10) is False
+    assert page.button.clicked is False
 
 
 def test_manual_account_flow_polls_mail_like_registration(monkeypatch):

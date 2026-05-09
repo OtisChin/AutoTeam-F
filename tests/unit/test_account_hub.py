@@ -183,3 +183,70 @@ def test_upload_to_hub_can_limit_to_selected_emails(tmp_path, monkeypatch):
     assert not saved["one@example.com"].get("account_hub_synced")
     assert saved["two@example.com"]["account_hub_synced"] is True
     assert saved["three@example.com"]["account_hub_synced"] is True
+
+
+def test_build_upload_payload_enriches_luckmail_token_from_config(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    luckmail_file = tmp_path / "luckmail_accounts.txt"
+    luckmail_file.write_text("user@example.com----tok_user_123\nother@example.com----tok_other\n", encoding="utf-8")
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+    monkeypatch.setenv("LUCKMAIL_ACCOUNTS_FILE", str(luckmail_file))
+    monkeypatch.delenv("LUCKMAIL_ACCOUNTS", raising=False)
+
+    accounts_mod.save_accounts(
+        [
+            {
+                "email": "USER@example.com",
+                "status": "active",
+                "account_type": "plus",
+                "cloudmail_account_id": None,
+                "mail_provider": None,
+            }
+        ]
+    )
+
+    payload = account_hub.build_upload_payload(selected_emails=["user@example.com"])
+
+    assert payload["accounts"][0]["email"] == "user@example.com"
+    assert payload["accounts"][0]["cloudmail_account_id"] == "tok_user_123"
+    assert payload["accounts"][0]["mail_provider"] == "luckmail"
+
+
+def test_receive_payload_preserves_existing_luckmail_token_when_incoming_is_empty(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+
+    accounts_mod.save_accounts(
+        [
+            {
+                "email": "user@example.com",
+                "status": "active",
+                "account_type": "plus",
+                "cloudmail_account_id": "tok_existing",
+                "mail_provider": "luckmail",
+            }
+        ]
+    )
+
+    account_hub.receive_payload(
+        {
+            "source": {"name": "pc-01", "uploaded_at": 456},
+            "accounts": [
+                {
+                    "email": "user@example.com",
+                    "status": "active",
+                    "account_type": "plus",
+                    "cloudmail_account_id": None,
+                    "mail_provider": None,
+                }
+            ],
+        }
+    )
+
+    saved = {acc["email"]: acc for acc in accounts_mod.load_accounts()}
+    assert saved["user@example.com"]["cloudmail_account_id"] == "tok_existing"
+    assert saved["user@example.com"]["mail_provider"] == "luckmail"

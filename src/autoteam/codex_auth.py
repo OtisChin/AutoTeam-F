@@ -577,6 +577,144 @@ def _click_primary_auth_button(page, field, labels):
         return False
 
 
+_OAUTH_CONSENT_TEXTS = (
+    "Continue",
+    "继续",
+    "繼續",
+    "Allow",
+    "Allow access",
+    "Authorize",
+    "授权",
+    "授權",
+    "同意",
+    "允许",
+    "允許",
+    "Confirm",
+    "确认",
+    "確認",
+    "Agree",
+)
+
+
+def _has_visible_auth_input(page) -> bool:
+    if _is_email_verification_page(page):
+        return True
+    for selector in (_OTP_INPUT_SELECTORS, _PASSWORD_INPUT_SELECTORS, _EMAIL_INPUT_SELECTORS):
+        try:
+            field = page.locator(selector).first
+            if field.is_visible(timeout=150):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _click_oauth_consent_if_present(page, *, timeout=1000) -> bool:
+    """Click the OAuth consent/continue button without touching login form steps."""
+    if _has_visible_auth_input(page):
+        return False
+
+    def click_candidate(control) -> bool:
+        try:
+            if not control.is_visible(timeout=timeout):
+                return False
+            try:
+                if not control.is_enabled(timeout=timeout):
+                    return False
+            except Exception:
+                pass
+            try:
+                control.scroll_into_view_if_needed(timeout=1000)
+            except Exception:
+                pass
+            try:
+                control.click(timeout=2000)
+                return True
+            except Exception:
+                try:
+                    control.click(timeout=2000, force=True)
+                    return True
+                except Exception:
+                    pass
+            try:
+                handle = control.element_handle(timeout=1000)
+                if handle:
+                    page.evaluate("(el) => el.click()", handle)
+                    return True
+            except Exception:
+                pass
+        except Exception:
+            return False
+        return False
+
+    label_selectors = []
+    for text in _OAUTH_CONSENT_TEXTS:
+        label_selectors.extend(
+            [
+                f'button:has-text("{text}")',
+                f'a:has-text("{text}")',
+                f'[role="button"]:has-text("{text}")',
+                f'input[type="submit"][value*="{text}" i]',
+            ]
+        )
+    try:
+        consent_url = "consent" in (page.url or "").lower()
+    except Exception:
+        consent_url = False
+    if consent_url:
+        label_selectors.extend(['button[type="submit"]', 'input[type="submit"]'])
+
+    for selector in label_selectors:
+        try:
+            control = page.locator(selector).first
+            if click_candidate(control):
+                return True
+        except Exception:
+            continue
+
+    try:
+        clicked = page.evaluate(
+            """({labels, consentUrl}) => {
+              const visible = (el) => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+              };
+              const norm = (text) => String(text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+              const blocked = /(google|apple|microsoft|resend|重新发送|重發|password|密码|密碼|email code|验证码登录|驗證碼登入|privacy|terms|隐私|使用条款)/i;
+              const zhConsent = /(继续|繼續|同意|授权|授權|允许|允許|确认|確認)/;
+              const enConsent = /^(continue|allow|allow access|authorize|confirm|agree)(\\b|$)|continue to|allow access/i;
+              const targets = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"]'));
+              for (const el of targets) {
+                if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+                const text = norm(el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+                if (text && blocked.test(text)) continue;
+                if (text && labels.some((label) => text.includes(norm(label)))) {
+                  el.scrollIntoView({block: 'center', inline: 'center'});
+                  el.click();
+                  return text;
+                }
+                if (text && (zhConsent.test(text) || enConsent.test(text))) {
+                  el.scrollIntoView({block: 'center', inline: 'center'});
+                  el.click();
+                  return text;
+                }
+                if (consentUrl && el.matches('button[type="submit"], input[type="submit"]')) {
+                  el.scrollIntoView({block: 'center', inline: 'center'});
+                  el.click();
+                  return text || 'submit';
+                }
+              }
+              return '';
+            }""",
+            {"labels": list(_OAUTH_CONSENT_TEXTS), "consentUrl": consent_url},
+        )
+        return bool(clicked)
+    except Exception:
+        return False
+
+
 def _is_google_redirect(page):
     url = (page.url or "").lower()
     if "accounts.google.com" in url:
@@ -658,9 +796,14 @@ def _is_email_verification_page(page) -> bool:
         pass
     try:
         text = page.locator("body").inner_text(timeout=500).lower()
-        return ("检查您的收件箱" in text or "check your inbox" in text) and (
-            "验证码" in text or "verification code" in text
+        inbox_hints = (
+            "检查您的收件箱",
+            "检查你的收件箱",
+            "检查收件箱",
+            "check your inbox",
+            "check your email",
         )
+        return any(hint in text for hint in inbox_hints) and ("验证码" in text or "verification code" in text)
     except Exception:
         return False
 
@@ -752,15 +895,17 @@ def _is_auth_login_url(url: str) -> bool:
 
 
 def _email_input_locator(page):
+    if _is_email_verification_page(page):
+        return None
+    if not _is_auth_login_url(page.url or ""):
+        return None
+
     try:
         specific = page.locator(_EMAIL_INPUT_SELECTORS).first
         if specific.is_visible(timeout=300):
             return specific
     except Exception:
         pass
-
-    if not _is_auth_login_url(page.url or ""):
-        return None
 
     try:
         generic = page.locator(
@@ -1399,18 +1544,11 @@ def _login_codex_via_browser_simple(
                 _screenshot(page, "codex_simple_03_after_about_you.png")
                 continue
 
-            consent = page.locator(
-                'button:has-text("继续"), button:has-text("Continue"), button:has-text("Allow"), button[type="submit"]'
-            ).first
-            try:
-                if consent.is_visible(timeout=1000):
-                    logger.info("[Codex] 极简 OAuth 点击授权/继续按钮: %s", email)
-                    consent.click()
-                    time.sleep(3)
-                    _screenshot(page, f"codex_simple_04_consent_{step + 1}.png")
-                    continue
-            except Exception:
-                pass
+            if _click_oauth_consent_if_present(page, timeout=1000):
+                logger.info("[Codex] 极简 OAuth 点击授权/继续按钮: %s", email)
+                time.sleep(3)
+                _screenshot(page, f"codex_simple_04_consent_{step + 1}.png")
+                continue
 
             time.sleep(1)
 
@@ -2122,18 +2260,11 @@ def login_codex_via_browser(
             except Exception:
                 pass
 
-            try:
-                consent_btn = page.locator(
-                    'button:has-text("继续"), button:has-text("Continue"), button:has-text("Allow")'
-                ).first
-                if consent_btn.is_visible(timeout=5000):
-                    logger.info("[Codex] 点击同意/继续按钮 (step %d)...", step + 1)
-                    consent_btn.click()
-                    time.sleep(5)
-                    _screenshot(page, f"codex_04_consent_{step + 1}.png")
-                else:
-                    break
-            except Exception:
+            if _click_oauth_consent_if_present(page, timeout=5000):
+                logger.info("[Codex] 点击同意/继续按钮 (step %d)...", step + 1)
+                time.sleep(5)
+                _screenshot(page, f"codex_04_consent_{step + 1}.png")
+            else:
                 break
 
         # 等待 redirect callback 获取 auth code。add-phone 已经是确定失败，不继续空等。
@@ -2352,17 +2483,10 @@ def login_codex_via_session():
             except Exception:
                 pass
 
-            try:
-                consent_btn = page.locator(
-                    'button:has-text("继续"), button:has-text("Continue"), button:has-text("Allow")'
-                ).first
-                if consent_btn.is_visible(timeout=3000):
-                    logger.info("[Codex] 主号点击继续/授权 (step %d)...", step + 1)
-                    consent_btn.click()
-                    time.sleep(4)
-                    continue
-            except Exception:
-                pass
+            if _click_oauth_consent_if_present(page, timeout=3000):
+                logger.info("[Codex] 主号点击继续/授权 (step %d)...", step + 1)
+                time.sleep(4)
+                continue
 
             try:
                 cur = page.url
@@ -2603,17 +2727,10 @@ class SessionCodexAuthFlow:
         except Exception:
             pass
 
-        try:
-            consent_btn = self.page.locator(
-                'button:has-text("继续"), button:has-text("Continue"), button:has-text("Allow")'
-            ).first
-            if consent_btn.is_visible(timeout=1000):
-                consent_btn.click()
-                logger.info("[Codex] 主号点击继续/授权")
-                time.sleep(3)
-                acted = True
-        except Exception:
-            pass
+        if _click_oauth_consent_if_present(self.page, timeout=1000):
+            logger.info("[Codex] 主号点击继续/授权")
+            time.sleep(3)
+            acted = True
 
         return acted
 

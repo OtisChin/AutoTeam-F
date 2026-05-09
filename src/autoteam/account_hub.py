@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import socket
 import threading
@@ -169,6 +170,69 @@ def _filter_accounts_by_emails(accounts: list[dict], selected_emails: list[str] 
     return [by_email[email] for email in wanted if email in by_email]
 
 
+def _parse_luckmail_account_line(line: str) -> tuple[str, str] | None:
+    value = str(line or "").strip()
+    if not value or value.startswith("#"):
+        return None
+    if "----" in value:
+        parts = [part.strip() for part in value.split("----")]
+    elif "," in value:
+        parts = [part.strip() for part in value.split(",")]
+    else:
+        parts = [part.strip() for part in value.split()]
+    email = str(parts[0] if parts else "").strip().lower()
+    token = str(parts[1] if len(parts) > 1 else "").strip()
+    if "@" not in email or not token:
+        return None
+    return email, token
+
+
+def _luckmail_tokens_by_email() -> dict[str, str]:
+    raw = str(os.environ.get("LUCKMAIL_ACCOUNTS") or "")
+    file_value = str(os.environ.get("LUCKMAIL_ACCOUNTS_FILE") or "").strip()
+    candidates: list[Path] = []
+    if file_value:
+        path = Path(file_value)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        candidates.append(path)
+    else:
+        candidates.append(PROJECT_ROOT / "data" / "luckmail_accounts.txt")
+
+    for path in candidates:
+        try:
+            if path.exists():
+                raw += ("\n" if raw else "") + read_text(path)
+        except Exception as exc:
+            logger.warning("[account_hub] 读取 LuckMail token 文件失败 %s: %s", path, exc)
+
+    tokens: dict[str, str] = {}
+    for line in raw.replace(";", "\n").splitlines():
+        parsed = _parse_luckmail_account_line(line)
+        if not parsed:
+            continue
+        email, token = parsed
+        tokens.setdefault(email, token)
+    return tokens
+
+
+def _account_payload_for_hub(acc: dict, luckmail_tokens: dict[str, str]) -> dict:
+    payload = dict(acc)
+    email = str(payload.get("email") or "").strip().lower()
+    if email:
+        payload["email"] = email
+
+    cloudmail_account_id = str(payload.get("cloudmail_account_id") or "").strip()
+    token = cloudmail_account_id if cloudmail_account_id.startswith("tok_") else ""
+    if not token and email:
+        token = luckmail_tokens.get(email, "")
+    if token:
+        payload["cloudmail_account_id"] = token
+        if not str(payload.get("mail_provider") or "").strip():
+            payload["mail_provider"] = "luckmail"
+    return payload
+
+
 def build_upload_payload(
     *,
     node_name: str | None = None,
@@ -182,8 +246,10 @@ def build_upload_payload(
     accounts = _filter_accounts_by_emails(accounts, selected_emails)
     if syncable_only:
         accounts = _syncable_accounts(accounts)
+    luckmail_tokens = _luckmail_tokens_by_email()
+    accounts_payload = [_account_payload_for_hub(acc, luckmail_tokens) for acc in accounts]
     auths = []
-    for acc in accounts:
+    for acc in accounts_payload:
         email = str(acc.get("email") or "").strip().lower()
         for path in _auth_candidates_for_account(acc):
             try:
@@ -198,7 +264,7 @@ def build_upload_payload(
     except Exception:
         load_auth_session = None
     if load_auth_session:
-        for acc in accounts:
+        for acc in accounts_payload:
             email = str(acc.get("email") or "").strip().lower()
             if not email:
                 continue
@@ -214,7 +280,7 @@ def build_upload_payload(
             "name": name,
             "uploaded_at": time.time(),
         },
-        "accounts": accounts,
+        "accounts": accounts_payload,
         "auths": auths,
         "auth_sessions": auth_sessions,
     }
@@ -367,6 +433,9 @@ def receive_payload(payload: dict) -> dict:
             continue
         incoming = dict(raw)
         incoming["email"] = email
+        incoming_token = str(incoming.get("cloudmail_account_id") or "").strip()
+        if incoming_token.startswith("tok_") and not str(incoming.get("mail_provider") or "").strip():
+            incoming["mail_provider"] = "luckmail"
         incoming["hub_source_name"] = source_name
         incoming["hub_uploaded_at"] = uploaded_at
         incoming["hub_received_at"] = time.time()
@@ -376,6 +445,10 @@ def receive_payload(payload: dict) -> dict:
         if existing:
             exported = bool(existing.get("credentials_exported"))
             exported_at = existing.get("credentials_exported_at")
+            if not incoming_token and existing.get("cloudmail_account_id"):
+                incoming.pop("cloudmail_account_id", None)
+            if not str(incoming.get("mail_provider") or "").strip() and existing.get("mail_provider"):
+                incoming.pop("mail_provider", None)
             existing.update(incoming)
             if exported:
                 existing["credentials_exported"] = True
