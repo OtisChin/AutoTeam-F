@@ -24,6 +24,7 @@ from autoteam.config import API_KEY
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
+_account_delete_audit_lock = threading.Lock()
 
 
 def _env_float(name: str, default: float) -> float:
@@ -1221,7 +1222,74 @@ def _gopay_token_invalidated_pool_emails(result: dict, actual_email: str) -> lis
     return emails
 
 
-def _remove_pool_accounts_from_local_and_mail(emails: list[str], *, log_context: str = "account-cleanup") -> list[str]:
+def _account_delete_audit_path() -> Path:
+    from autoteam.paths import PROJECT_ROOT
+
+    return PROJECT_ROOT / "data" / "account_delete_audit.jsonl"
+
+
+def _append_account_delete_audit(
+    *,
+    email: str,
+    log_context: str,
+    reason: str,
+    account: dict | None,
+    record_deleted: bool,
+    auth_session_deleted: bool,
+    mail_service_deleted: bool = False,
+    message: str = "",
+) -> None:
+    payload = {
+        "ts": time.time(),
+        "email": _normalized_email(email),
+        "source": log_context,
+        "reason": reason,
+        "message": message,
+        "record_deleted": bool(record_deleted),
+        "auth_session_deleted": bool(auth_session_deleted),
+        "mail_service_deleted": bool(mail_service_deleted),
+        "account_existed": bool(account),
+        "status": (account or {}).get("status"),
+        "account_type": (account or {}).get("account_type"),
+        "seat_type": (account or {}).get("seat_type"),
+        "mail_provider": (account or {}).get("mail_provider"),
+        "cloudmail_account_id_present": bool((account or {}).get("cloudmail_account_id")),
+        "auth_file": (account or {}).get("auth_file"),
+        "last_bind_status": (account or {}).get("last_bind_status"),
+        "last_bind_failure_stage": (account or {}).get("last_bind_failure_stage"),
+        "last_bind_message": (account or {}).get("last_bind_message"),
+        "last_bind_task_id": (account or {}).get("last_bind_task_id"),
+        "last_bind_at": (account or {}).get("last_bind_at"),
+    }
+    try:
+        path = _account_delete_audit_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        with _account_delete_audit_lock:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except Exception as exc:
+        logger.warning("[account-delete-audit] failed to persist delete audit: email=%s error=%s", email, exc)
+    logger.warning(
+        "[account-delete-audit] account removed: email=%s source=%s reason=%s record_deleted=%s auth_session_deleted=%s account_type=%s status=%s task_id=%s",
+        email,
+        log_context,
+        reason,
+        record_deleted,
+        auth_session_deleted,
+        payload.get("account_type"),
+        payload.get("status"),
+        payload.get("last_bind_task_id") or "",
+    )
+
+
+def _remove_pool_accounts_from_local_and_mail(
+    emails: list[str],
+    *,
+    log_context: str = "account-cleanup",
+    reason: str = "unspecified",
+    message: str = "",
+) -> list[str]:
     """Remove unusable accounts from the local pool without deleting mail-service accounts."""
     if not emails:
         return []
@@ -1238,10 +1306,21 @@ def _remove_pool_accounts_from_local_and_mail(emails: list[str], *, log_context:
         session_deleted = delete_auth_session(email)
         if record_deleted or session_deleted:
             removed.append(email)
+        _append_account_delete_audit(
+            email=email,
+            log_context=log_context,
+            reason=reason,
+            message=message,
+            account=account,
+            record_deleted=record_deleted,
+            auth_session_deleted=session_deleted,
+            mail_service_deleted=False,
+        )
         logger.info(
-            "[%s] account removed locally: email=%s record_deleted=%s auth_session_deleted=%s mail_service_deleted=%s cloudmail_account_id=%s",
+            "[%s] account removed locally: email=%s reason=%s record_deleted=%s auth_session_deleted=%s mail_service_deleted=%s cloudmail_account_id=%s",
             log_context,
             email,
+            reason,
             record_deleted,
             session_deleted,
             False,
@@ -1296,11 +1375,27 @@ def _mark_pool_accounts_fail(
 
 
 def _remove_gopay_rejected_accounts_from_pool(emails: list[str]) -> list[str]:
-    return _remove_pool_accounts_from_local_and_mail(emails, log_context="gopay-bind")
+    return _remove_pool_accounts_from_local_and_mail(
+        emails,
+        log_context="gopay-bind",
+        reason="gopay_rejected_or_unusable",
+    )
 
 
 def _remove_oauth_phone_required_accounts_from_pool(emails: list[str]) -> list[str]:
-    return _remove_pool_accounts_from_local_and_mail(emails, log_context="oauth-phone-required")
+    return _remove_pool_accounts_from_local_and_mail(
+        emails,
+        log_context="oauth-phone-required",
+        reason="oauth_phone_required",
+    )
+
+
+def _remove_oauth_account_deactivated_accounts_from_pool(emails: list[str]) -> list[str]:
+    return _remove_pool_accounts_from_local_and_mail(
+        emails,
+        log_context="oauth-account-deactivated",
+        reason="oauth_account_deactivated",
+    )
 
 
 def _session_only_account_stub(email: str) -> dict:
@@ -2619,7 +2714,7 @@ def _oauth_login_required_result(email: str, exc: Exception) -> dict:
 
 
 def _oauth_account_deactivated_result(email: str, exc: Exception) -> dict:
-    removed = _remove_oauth_phone_required_accounts_from_pool([email])
+    removed = _remove_oauth_account_deactivated_accounts_from_pool([email])
     return {
         "email": email,
         "status": "failed",

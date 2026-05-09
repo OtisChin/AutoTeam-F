@@ -1,12 +1,51 @@
 import base64
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
 from autoteam import api
 from autoteam import accounts as accounts_module
 from autoteam import gopay_executor
+
+
+def test_remove_pool_accounts_persists_delete_audit(monkeypatch):
+    audit_dir = Path(".pytest_tmp")
+    audit_dir.mkdir(exist_ok=True)
+    audit_path = audit_dir / "account_delete_audit.jsonl"
+    if audit_path.exists():
+        audit_path.unlink()
+    account = {
+        "email": "dead@example.com",
+        "status": "active",
+        "account_type": "plus",
+        "cloudmail_account_id": "tok_dead",
+        "mail_provider": "luckmail",
+        "last_bind_task_id": "task-1",
+    }
+
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autoteam.accounts.delete_account", lambda email: email == "dead@example.com")
+    monkeypatch.setattr("autoteam.auth_session_store.delete_auth_session", lambda email: email == "dead@example.com")
+    monkeypatch.setattr(api, "_account_delete_audit_path", lambda: audit_path)
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+
+    removed = api._remove_pool_accounts_from_local_and_mail(
+        ["dead@example.com"],
+        log_context="oauth-account-deactivated",
+        reason="oauth_account_deactivated",
+    )
+
+    assert removed == ["dead@example.com"]
+    rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["email"] == "dead@example.com"
+    assert rows[0]["source"] == "oauth-account-deactivated"
+    assert rows[0]["reason"] == "oauth_account_deactivated"
+    assert rows[0]["record_deleted"] is True
+    assert rows[0]["auth_session_deleted"] is True
+    assert rows[0]["cloudmail_account_id_present"] is True
+    assert rows[0]["last_bind_task_id"] == "task-1"
 
 
 class FakeUnlockedLock:
@@ -2147,7 +2186,11 @@ def test_post_account_login_removes_account_when_oauth_requires_phone(monkeypatc
     monkeypatch.setattr("autoteam.accounts.find_account", lambda items, email: account if email == account["email"] else None)
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
     monkeypatch.setattr(api, "_run_account_codex_login_once", lambda *_args, **_kwargs: (_ for _ in ()).throw(CodexOAuthPhoneRequired("https://auth.openai.com/add-phone")))
-    monkeypatch.setattr(api, "_remove_oauth_phone_required_accounts_from_pool", lambda emails: captured.setdefault("removed", list(emails)))
+    monkeypatch.setattr(
+        api,
+        "_remove_oauth_account_deactivated_accounts_from_pool",
+        lambda emails: captured.setdefault("removed", list(emails)),
+    )
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
 
     def fake_start_task(command, func, params, *args, **kwargs):
@@ -2181,7 +2224,11 @@ def test_post_account_login_removes_account_when_oauth_account_deactivated(monke
     monkeypatch.setattr("autoteam.accounts.find_account", lambda items, email: account if email == account["email"] else None)
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
     monkeypatch.setattr(api, "_run_account_codex_login_once", lambda *_args, **_kwargs: (_ for _ in ()).throw(CodexOAuthAccountDeactivated("account_deactivated")))
-    monkeypatch.setattr(api, "_remove_oauth_phone_required_accounts_from_pool", lambda emails: captured.setdefault("removed", list(emails)))
+    monkeypatch.setattr(
+        api,
+        "_remove_oauth_account_deactivated_accounts_from_pool",
+        lambda emails: captured.setdefault("removed", list(emails)),
+    )
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
 
     def fake_start_task(command, func, params, *args, **kwargs):
