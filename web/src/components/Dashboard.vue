@@ -142,6 +142,30 @@
             </option>
           </select>
           <select
+            v-model="exportDateFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">全部导出日期</option>
+            <option v-for="option in exportDateOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="exportStartTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">导出开始</option>
+            <option v-for="option in bindTimeOptions" :key="`export-start-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="exportEndTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">导出结束</option>
+            <option v-for="option in bindTimeOptions" :key="`export-end-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
             v-model="accountHubSyncFilter"
             class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
             <option value="">全部同步状态</option>
@@ -187,7 +211,7 @@
             placeholder="GoPay 任务ID"
             class="w-full sm:w-40 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter || bindTaskFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter || bindTaskFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -220,6 +244,7 @@
               <th class="px-4 py-3 font-medium">账号类型</th>
               <th class="px-4 py-3 font-medium">状态</th>
               <th class="px-4 py-3 font-medium">账密导出</th>
+              <th class="px-4 py-3 font-medium">导出时间</th>
               <th class="px-4 py-3 font-medium">Hub同步</th>
               <th class="px-4 py-3 font-medium text-right">5h 剩余</th>
               <th class="px-4 py-3 font-medium text-right">周 剩余</th>
@@ -230,7 +255,7 @@
           </thead>
           <tbody>
             <tr v-if="!filteredAccounts.length">
-              <td class="px-4 py-8 text-center text-gray-500" colspan="12">没有匹配的账号</td>
+              <td class="px-4 py-8 text-center text-gray-500" colspan="13">没有匹配的账号</td>
             </tr>
             <tr v-for="(acc, i) in filteredAccounts" :key="acc.email"
               class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
@@ -269,6 +294,7 @@
                   {{ credentialExportLabel(acc) }}
                 </span>
               </td>
+              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ exportTimeLabel(acc) }}</td>
               <td class="px-4 py-3">
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
                   :class="accountHubSyncClass(acc)">
@@ -551,6 +577,9 @@ const emailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
 const credentialExportFilter = ref('')
+const exportDateFilter = ref('')
+const exportStartTimeFilter = ref('')
+const exportEndTimeFilter = ref('')
 const accountHubSyncFilter = ref('')
 const authCredentialFilter = ref('')
 const bindDateFilter = ref(dateKey(new Date()))
@@ -642,6 +671,10 @@ function accountBindTs(acc) {
   return Number(acc?.plus_bound_at || acc?.last_bind_at || 0) || 0
 }
 
+function accountExportTs(acc) {
+  return Number(acc?.credentials_exported_at || 0) || 0
+}
+
 function isPlusAccount(acc) {
   return String(acc?.account_type || '').toLowerCase() === 'plus'
 }
@@ -690,6 +723,19 @@ const bindDateOptions = computed(() => {
     .map(value => ({ value, label: dateLabel(value) }))
 })
 
+const exportDateOptions = computed(() => {
+  const values = new Set()
+  for (const acc of allAccounts.value) {
+    const ts = accountExportTs(acc)
+    if (!ts) continue
+    values.add(dateKey(ts * 1000))
+  }
+  return Array.from(values)
+    .filter(Boolean)
+    .sort((a, b) => b.localeCompare(a))
+    .map(value => ({ value, label: dateLabel(value) }))
+})
+
 const bindTimeOptions = computed(() => {
   const items = []
   for (let hour = 0; hour < 24; hour += 1) {
@@ -719,11 +765,24 @@ const bindTimeRange = computed(() => {
   }
 })
 
+const exportTimeRange = computed(() => {
+  if (!exportDateFilter.value) return { start: 0, end: 0 }
+  const start = dateTimeFilterTimestamp(exportDateFilter.value, exportStartTimeFilter.value, '00:00')
+  const end = exportEndTimeFilter.value
+    ? dateTimeFilterTimestamp(exportDateFilter.value, exportEndTimeFilter.value, '23:59') + 3599
+    : dateTimeFilterTimestamp(exportDateFilter.value, '', '23:59', 59)
+  return {
+    start,
+    end,
+  }
+})
+
 const filteredAccounts = computed(() => {
   const emailNeedle = emailFilter.value.trim().toLowerCase()
   const statusNeedle = statusFilter.value
   const typeNeedle = accountTypeFilter.value
   const exportNeedle = credentialExportFilter.value
+  const exportRange = exportTimeRange.value
   const hubSyncNeedle = accountHubSyncFilter.value
   const authNeedle = authCredentialFilter.value
   const bindRange = bindTimeRange.value
@@ -742,6 +801,12 @@ const filteredAccounts = computed(() => {
     if (statusNeedle && status !== statusNeedle) return false
     if (typeNeedle && accountType !== typeNeedle) return false
     if (exportNeedle && exportStatus !== exportNeedle) return false
+    if (exportRange.start || exportRange.end) {
+      const exportTs = accountExportTs(acc)
+      if (!exportTs) return false
+      if (exportRange.start && exportTs < exportRange.start) return false
+      if (exportRange.end && exportTs > exportRange.end) return false
+    }
     if (hubSyncNeedle && hubSyncStatus !== hubSyncNeedle) return false
     if (authNeedle && authStatus !== authNeedle) return false
     if (bindRange.start || bindRange.end) {
@@ -927,6 +992,9 @@ function clearFilters() {
   statusFilter.value = ''
   accountTypeFilter.value = ''
   credentialExportFilter.value = ''
+  exportDateFilter.value = ''
+  exportStartTimeFilter.value = ''
+  exportEndTimeFilter.value = ''
   accountHubSyncFilter.value = ''
   authCredentialFilter.value = ''
   bindDateFilter.value = dateKey(new Date())
@@ -1046,6 +1114,10 @@ function credentialExportClass(acc) {
   return acc?.credentials_exported
     ? 'bg-emerald-500/10 text-emerald-400'
     : 'bg-gray-500/10 text-gray-400'
+}
+
+function exportTimeLabel(acc) {
+  return accountExportTs(acc) ? fmtTs(accountExportTs(acc)) : '-'
 }
 
 function accountHubSyncLabel(acc) {

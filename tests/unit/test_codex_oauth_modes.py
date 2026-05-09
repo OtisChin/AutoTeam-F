@@ -908,6 +908,68 @@ def test_account_login_uses_luckmail_provider_for_token_account_id(monkeypatch):
     assert captured["login"]["mail_account_id"] == "tok_luck"
 
 
+def test_account_login_restores_missing_luckmail_token_before_browser_oauth(monkeypatch):
+    captured = {}
+    account = {
+        "email": "plus@outlook.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": None,
+        "mail_provider": "luckmail",
+    }
+
+    class FakeMailClient:
+        def __init__(self):
+            captured["mail_provider_env"] = os.environ.get("MAIL_PROVIDER")
+
+        def login(self):
+            pass
+
+    def fake_restore(rows):
+        rows[0]["cloudmail_account_id"] = "tok_restored"
+        rows[0]["mail_provider"] = "luckmail"
+        return 1
+
+    def fake_update(email, **kwargs):
+        captured.setdefault("updates", []).append((email, kwargs))
+
+    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
+        captured["login"] = {
+            "email": email,
+            "native_oauth": native_oauth,
+            "mail_account_id": mail_account_id,
+        }
+        return {
+            "email": email,
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "id_token": "id",
+            "account_id": "acct-plus",
+            "plan_type": "plus",
+        }
+
+    monkeypatch.delenv("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL", raising=False)
+    monkeypatch.delenv("MAIL_PROVIDER", raising=False)
+    monkeypatch.setattr("autoteam.account_hub._restore_luckmail_tokens_for_accounts", fake_restore)
+    monkeypatch.setattr("autoteam.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autoteam.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr("autoteam.codex_auth.login_codex_via_browser", fake_login)
+    monkeypatch.setattr("autoteam.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autoteam.accounts.update_account", fake_update)
+
+    result = api._run_account_codex_login_once(account["email"], account)
+
+    assert result["email"] == "plus@outlook.com"
+    assert captured["mail_provider_env"] == "luckmail"
+    assert captured["login"]["mail_account_id"] == "tok_restored"
+    assert captured["updates"][0] == (
+        "plus@outlook.com",
+        {"cloudmail_account_id": "tok_restored", "mail_provider": "luckmail"},
+    )
+
+
 def test_team_account_login_keeps_team_oauth(monkeypatch):
     captured = {}
     account = {

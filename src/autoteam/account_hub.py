@@ -25,11 +25,16 @@ CONFIG_KEY = "account_hub"
 AUTO_UPLOAD_INTERVAL_SECONDS = 300
 SYNC_ACCOUNT_TYPES = {"plus", "team", "pro"}
 SYNC_EXCLUDED_STATUSES = {"fail", "auth_invalid", "orphan"}
+LUCKMAIL_PURCHASES_PATH = "/api/v1/openapi/email/purchases"
+LUCKMAIL_TOKEN_LOOKUP_MAX_PAGES = 30
+LUCKMAIL_TOKEN_LOOKUP_PAGE_SIZE = 100
 
 _auto_upload_stop = threading.Event()
 _auto_upload_lock = threading.Lock()
 _auto_upload_thread_lock = threading.Lock()
 _auto_upload_thread: threading.Thread | None = None
+_luckmail_purchase_cache_lock = threading.Lock()
+_luckmail_purchase_cache: tuple[float, dict[str, str]] | None = None
 
 
 def _normalize_url(value: str) -> str:
@@ -216,8 +221,115 @@ def _luckmail_tokens_by_email() -> dict[str, str]:
     return tokens
 
 
+def _is_luckmail_token_missing(acc: dict) -> bool:
+    email = str(acc.get("email") or "").strip().lower()
+    if "@" not in email:
+        return False
+    token = str(acc.get("cloudmail_account_id") or "").strip()
+    if token.startswith("tok_"):
+        return False
+    provider = str(acc.get("mail_provider") or "").strip().lower()
+    if provider == "luckmail":
+        return True
+    domain = email.rsplit("@", 1)[-1]
+    return domain.startswith("outlook.") or domain in {"outlook.com", "hotmail.com", "live.com"}
+
+
+def _purchase_item_to_luckmail_token(item: dict) -> tuple[str, str] | None:
+    email = str(item.get("email_address") or item.get("address") or item.get("email") or "").strip().lower()
+    token = str(item.get("token") or "").strip()
+    if "@" not in email or not token.startswith("tok_"):
+        return None
+    return email, token
+
+
+def _luckmail_purchase_tokens_by_email(*, force: bool = False) -> dict[str, str]:
+    global _luckmail_purchase_cache
+    api_key = str(os.environ.get("LUCKMAIL_API_KEY") or "").strip()
+    if not api_key:
+        return {}
+    now = time.time()
+    with _luckmail_purchase_cache_lock:
+        if not force and _luckmail_purchase_cache and now - _luckmail_purchase_cache[0] < 300:
+            return dict(_luckmail_purchase_cache[1])
+
+    base_url = str(os.environ.get("LUCKMAIL_BASE_URL") or "https://mail.luckyous.com").strip().rstrip("/")
+    tokens: dict[str, str] = {}
+    total = 0
+    for page in range(1, LUCKMAIL_TOKEN_LOOKUP_MAX_PAGES + 1):
+        resp = requests.get(
+            f"{base_url}{LUCKMAIL_PURCHASES_PATH}",
+            headers={"X-API-Key": api_key, "Accept": "application/json"},
+            params={"page": page, "page_size": LUCKMAIL_TOKEN_LOOKUP_PAGE_SIZE},
+            timeout=45,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"LuckMail 购买记录接口失败: HTTP {resp.status_code} {(resp.text or '')[:300]}")
+        body = resp.json() or {}
+        data = body.get("data") if isinstance(body.get("data"), dict) else {}
+        items = data.get("list") if isinstance(data.get("list"), list) else []
+        if not items:
+            break
+        if not total:
+            try:
+                total = int(data.get("total") or 0)
+            except Exception:
+                total = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            parsed = _purchase_item_to_luckmail_token(item)
+            if parsed:
+                email, token = parsed
+                tokens.setdefault(email, token)
+        if total and page * LUCKMAIL_TOKEN_LOOKUP_PAGE_SIZE >= total:
+            break
+
+    with _luckmail_purchase_cache_lock:
+        _luckmail_purchase_cache = (time.time(), dict(tokens))
+    return tokens
+
+
+def _restore_luckmail_tokens_for_accounts(accounts: list[dict]) -> int:
+    missing = [
+        str(acc.get("email") or "").strip().lower()
+        for acc in accounts
+        if isinstance(acc, dict) and _is_luckmail_token_missing(acc)
+    ]
+    missing = [email for email in dict.fromkeys(missing) if email]
+    if not missing:
+        return 0
+
+    tokens = _luckmail_tokens_by_email()
+    missing_after_local = [email for email in missing if not tokens.get(email)]
+    if missing_after_local:
+        try:
+            tokens.update(_luckmail_purchase_tokens_by_email())
+        except Exception as exc:
+            logger.warning("[account_hub] 从 LuckMail 购买记录恢复 token 失败: missing=%s error=%s", len(missing_after_local), exc)
+
+    restored = 0
+    for acc in accounts:
+        if not isinstance(acc, dict) or not _is_luckmail_token_missing(acc):
+            continue
+        email = str(acc.get("email") or "").strip().lower()
+        token = tokens.get(email, "")
+        if not token:
+            continue
+        acc["cloudmail_account_id"] = token
+        acc["mail_provider"] = "luckmail"
+        restored += 1
+    if restored:
+        logger.info("[account_hub] 已自动恢复 LuckMail token: restored=%s missing_before=%s", restored, len(missing))
+    return restored
+
+
 def _account_payload_for_hub(acc: dict, luckmail_tokens: dict[str, str]) -> dict:
     payload = dict(acc)
+    # Export state is local to the machine doing the export. Do not propagate it
+    # through Hub sync, otherwise newly received accounts look already exported.
+    payload.pop("credentials_exported", None)
+    payload.pop("credentials_exported_at", None)
     email = str(payload.get("email") or "").strip().lower()
     if email:
         payload["email"] = email
@@ -243,6 +355,11 @@ def build_upload_payload(
 
     name = str(node_name or get_config().get("name") or default_node_name()).strip() or default_node_name()
     accounts = load_accounts()
+    restored = _restore_luckmail_tokens_for_accounts(accounts)
+    if restored:
+        from autoteam.accounts import save_accounts
+
+        save_accounts(accounts)
     accounts = _filter_accounts_by_emails(accounts, selected_emails)
     if syncable_only:
         accounts = _syncable_accounts(accounts)
@@ -441,6 +558,8 @@ def receive_payload(payload: dict) -> dict:
         incoming["hub_received_at"] = time.time()
         incoming["account_hub_synced"] = True
         incoming["account_hub_synced_at"] = uploaded_at
+        incoming.pop("credentials_exported", None)
+        incoming.pop("credentials_exported_at", None)
         existing = find_account(accounts, email)
         if existing:
             exported = bool(existing.get("credentials_exported"))
@@ -450,10 +569,11 @@ def receive_payload(payload: dict) -> dict:
             if not str(incoming.get("mail_provider") or "").strip() and existing.get("mail_provider"):
                 incoming.pop("mail_provider", None)
             existing.update(incoming)
-            if exported:
-                existing["credentials_exported"] = True
-                existing["credentials_exported_at"] = exported_at
+            existing["credentials_exported"] = exported
+            existing["credentials_exported_at"] = exported_at if exported else None
         else:
+            incoming["credentials_exported"] = False
+            incoming["credentials_exported_at"] = None
             accounts.append(incoming)
         upserted += 1
     save_accounts(accounts)

@@ -39,6 +39,8 @@ def test_receive_payload_upserts_accounts_preserves_exported_state_and_auth(tmp_
                     "email": "new@example.com",
                     "password": "pw",
                     "status": "active",
+                    "credentials_exported": True,
+                    "credentials_exported_at": 456,
                 },
             ],
             "auths": [
@@ -73,6 +75,8 @@ def test_receive_payload_upserts_accounts_preserves_exported_state_and_auth(tmp_
     assert saved["user@example.com"]["credentials_exported"] is True
     assert saved["user@example.com"]["credentials_exported_at"] == 123
     assert saved["new@example.com"]["hub_source_name"] == "pc-01"
+    assert saved["new@example.com"]["credentials_exported"] is False
+    assert saved["new@example.com"]["credentials_exported_at"] is None
 
     auth_file = auth_dir / "codex-user@example.com-plus-abcd1234.json"
     assert json.loads(auth_file.read_text())["email"] == "user@example.com"
@@ -203,6 +207,8 @@ def test_build_upload_payload_enriches_luckmail_token_from_config(tmp_path, monk
                 "account_type": "plus",
                 "cloudmail_account_id": None,
                 "mail_provider": None,
+                "credentials_exported": True,
+                "credentials_exported_at": 123,
             }
         ]
     )
@@ -212,6 +218,65 @@ def test_build_upload_payload_enriches_luckmail_token_from_config(tmp_path, monk
     assert payload["accounts"][0]["email"] == "user@example.com"
     assert payload["accounts"][0]["cloudmail_account_id"] == "tok_user_123"
     assert payload["accounts"][0]["mail_provider"] == "luckmail"
+    assert "credentials_exported" not in payload["accounts"][0]
+    assert "credentials_exported_at" not in payload["accounts"][0]
+
+
+def test_build_upload_payload_restores_missing_luckmail_token_from_purchases(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+    monkeypatch.setenv("LUCKMAIL_API_KEY", "luck_test")
+    monkeypatch.setenv("LUCKMAIL_BASE_URL", "https://mail.example.test")
+    monkeypatch.delenv("LUCKMAIL_ACCOUNTS_FILE", raising=False)
+    monkeypatch.delenv("LUCKMAIL_ACCOUNTS", raising=False)
+    monkeypatch.setattr(account_hub, "_luckmail_purchase_cache", None)
+
+    accounts_mod.save_accounts(
+        [
+            {
+                "email": "USER@outlook.com",
+                "status": "active",
+                "account_type": "plus",
+                "cloudmail_account_id": None,
+                "mail_provider": "luckmail",
+            }
+        ]
+    )
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "data": {
+                    "total": 1,
+                    "list": [
+                        {
+                            "email_address": "user@outlook.com",
+                            "token": "tok_restored",
+                        }
+                    ],
+                }
+            }
+
+    def fake_get(url, headers, params, timeout):
+        assert url == "https://mail.example.test/api/v1/openapi/email/purchases"
+        assert headers["X-API-Key"] == "luck_test"
+        assert params["page"] == 1
+        return FakeResponse()
+
+    monkeypatch.setattr(account_hub.requests, "get", fake_get)
+
+    payload = account_hub.build_upload_payload(selected_emails=["user@outlook.com"])
+
+    assert payload["accounts"][0]["cloudmail_account_id"] == "tok_restored"
+    assert payload["accounts"][0]["mail_provider"] == "luckmail"
+    saved = {acc["email"].lower(): acc for acc in accounts_mod.load_accounts()}
+    assert saved["user@outlook.com"]["cloudmail_account_id"] == "tok_restored"
+    assert saved["user@outlook.com"]["mail_provider"] == "luckmail"
 
 
 def test_receive_payload_preserves_existing_luckmail_token_when_incoming_is_empty(tmp_path, monkeypatch):

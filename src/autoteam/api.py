@@ -2533,6 +2533,19 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
     )
     from autoteam.auth_session_store import load_auth_session
 
+    try:
+        from autoteam.account_hub import _restore_luckmail_tokens_for_accounts
+
+        if _restore_luckmail_tokens_for_accounts([acc]):
+            update_account(
+                email,
+                cloudmail_account_id=acc.get("cloudmail_account_id"),
+                mail_provider=acc.get("mail_provider") or "luckmail",
+            )
+            logger.info("[账号登录] 已自动恢复 LuckMail token: %s", email)
+    except Exception as exc:
+        logger.warning("[账号登录] 自动恢复 LuckMail token 失败，将继续尝试现有邮箱配置: %s error=%s", email, exc)
+
     # 账号类型决定登录模式：
     # - Team 走旧 Team workspace OAuth；
     # - Free/Plus/Pro 走原生 Codex OAuth，避免被强行注入 Team _account。
