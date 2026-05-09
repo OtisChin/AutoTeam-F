@@ -433,6 +433,13 @@ def test_browser_checkout_nonzero_hint_uses_today_total(monkeypatch):
     )
     assert _browser_checkout_nonzero_amount_hint(FakeApi()) == "IDR 10,000.00"
 
+    monkeypatch.setattr(
+        gopay_executor,
+        "_body_excerpt",
+        lambda api, limit: "Subtotal Rp349.000 Discount -Rp349.000 Total payment Rp1",
+    )
+    assert _browser_checkout_nonzero_amount_hint(FakeApi()) == "Rp1"
+
 
 def test_split_gopay_phone_defaults_to_indonesia():
     assert _split_gopay_phone("+6287761973970") == ("62", "87761973970")

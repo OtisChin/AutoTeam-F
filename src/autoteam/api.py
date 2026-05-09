@@ -4585,13 +4585,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             if invalid_domains:
                 raise HTTPException(status_code=400, detail=f"自动注册域名未配置: {', '.join(invalid_domains)}")
         auto_register_domains = requested_domains
-        if auto_register_mail_provider != "luckmail" and not auto_register_domains:
+        if auto_register_mail_provider not in {"luckmail", "outlook"} and not auto_register_domains:
             default_domain = str(get_register_domain() or "").strip().lstrip("@")
             if default_domain:
                 auto_register_domains = [default_domain]
             elif configured_domains:
                 auto_register_domains = [configured_domains[0]]
-        if auto_register_mail_provider != "luckmail" and not auto_register_domains:
+        if auto_register_mail_provider not in {"luckmail", "outlook"} and not auto_register_domains:
             raise HTTPException(status_code=400, detail="未配置可用注册域名")
         account_emails = []
     elif checkout_url:
@@ -4879,7 +4879,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
 
             register_domain = auto_register_domains[(index - 1) % len(auto_register_domains)] if auto_register_domains else ""
             register_domain = str(register_domain or "").strip().lstrip("@")
-            if auto_register_mail_provider != "luckmail" and not register_domain:
+            if auto_register_mail_provider not in {"luckmail", "outlook"} and not register_domain:
                 raise RuntimeError("未配置可用注册域名")
             luckmail_register_domain = (
                 auto_register_luckmail_preferred_domains[(index - 1) % len(auto_register_luckmail_preferred_domains)]
@@ -4903,7 +4903,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                         f"自动注册已开始 ({index}/{total}): LuckMail/{auto_register_luckmail_email_type or '默认'}"
                         + (f"/@{luckmail_register_domain}" if luckmail_register_domain else "/自动分配")
                         if auto_register_mail_provider == "luckmail"
-                        else f"自动注册已开始 ({index}/{total}): domain=@{register_domain}"
+                        else (
+                            f"自动注册已开始 ({index}/{total}): Outlook账号池"
+                            if auto_register_mail_provider == "outlook"
+                            else f"自动注册已开始 ({index}/{total}): domain=@{register_domain}"
+                        )
                     ),
                 },
             )
@@ -5771,7 +5775,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
 
     configured_domains = get_register_domains()
-    domain_required = mail_provider != "luckmail"
+    domain_required = mail_provider not in {"luckmail", "outlook"}
 
     def _clean_domain(value) -> str:
         return str(value or "").strip().lstrip("@").strip()

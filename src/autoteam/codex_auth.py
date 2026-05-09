@@ -918,13 +918,72 @@ def _fill_otp_input_and_verify(otp_input, otp: str) -> bool:
     otp = str(otp or "").strip()
     if not otp:
         return False
-    otp_input.fill(otp)
+
+    def _page_level_fill() -> bool:
+        try:
+            return bool(
+                otp_input.evaluate(
+                    """(el, code) => {
+                      const doc = el && el.ownerDocument;
+                      if (!doc) return false;
+                      const visible = (node) => {
+                        if (!node || node.disabled || node.readOnly) return false;
+                        const style = doc.defaultView.getComputedStyle(node);
+                        const rect = node.getBoundingClientRect();
+                        return style && style.visibility !== 'hidden' && style.display !== 'none'
+                          && rect.width > 0 && rect.height > 0;
+                      };
+                      const setValue = (node, value) => {
+                        node.focus();
+                        const proto = Object.getPrototypeOf(node);
+                        const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                        if (desc && desc.set) desc.set.call(node, value);
+                        else node.value = value;
+                        node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+                        node.dispatchEvent(new Event('change', { bubbles: true }));
+                        node.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: value.slice(-1) || '' }));
+                      };
+                      const inputs = Array.from(doc.querySelectorAll('input')).filter((node) => {
+                        const type = String(node.getAttribute('type') || '').toLowerCase();
+                        const name = String(node.getAttribute('name') || '').toLowerCase();
+                        const autocomplete = String(node.getAttribute('autocomplete') || '').toLowerCase();
+                        if (!visible(node)) return false;
+                        if (type === 'hidden' || type === 'email' || type === 'password') return false;
+                        if (name === 'email' || autocomplete === 'email' || autocomplete === 'username') return false;
+                        return true;
+                      });
+                      const oneChar = inputs.filter((node) => Number(node.maxLength || 0) === 1);
+                      if (oneChar.length >= code.length && code.length > 1) {
+                        for (let i = 0; i < code.length; i++) setValue(oneChar[i], code[i]);
+                        return oneChar.slice(0, code.length).map((node) => String(node.value || '')).join('') === code;
+                      }
+                      setValue(el, code);
+                      return String(el.value || '').trim() === code;
+                    }""",
+                    otp,
+                )
+            )
+        except Exception:
+            return False
+
+    if _page_level_fill():
+        time.sleep(0.5)
+        return True
+
+    try:
+        otp_input.fill(otp)
+    except Exception:
+        pass
     time.sleep(0.5)
     try:
         current = str(otp_input.input_value(timeout=1000) or "").strip()
     except Exception:
         current = ""
-    return bool(current)
+    if current == otp:
+        return True
+    if current:
+        logger.warning("[Codex] 验证码输入不完整: expected_len=%s actual_len=%s", len(otp), len(current))
+    return False
 
 
 def _poll_login_otp(

@@ -1019,7 +1019,7 @@
         <div class="flex items-center justify-between gap-4 px-5 py-4 border-b border-gray-800">
           <div>
             <h4 class="text-lg font-semibold text-white">自动注册配置</h4>
-            <div class="text-xs text-gray-500 mt-1">选择 GoPay 自动注册使用的域名、邮箱前缀和密码。</div>
+            <div class="text-xs text-gray-500 mt-1">选择 GoPay 自动注册使用的邮箱来源、邮箱前缀和密码。</div>
           </div>
           <button
             type="button"
@@ -1074,7 +1074,11 @@
             </div>
           </div>
 
-          <div v-if="!gopayAutoRegisterUsesLuckMail">
+          <div v-if="gopayAutoRegisterUsesOutlook" class="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-sm text-gray-300">
+            Outlook 模式会从已配置的微软邮箱账号池中选择，注册域名选择不参与本次任务。
+          </div>
+
+          <div v-if="gopayAutoRegisterUsesDomains">
             <div class="flex items-center justify-between gap-3 mb-2">
               <label class="block text-sm text-gray-400">注册域名</label>
               <div class="flex items-center gap-2">
@@ -1129,7 +1133,7 @@
                 class="flex-1 px-3 py-2 bg-transparent text-sm text-white focus:outline-none"
               />
               <div class="px-3 text-xs text-gray-500 border-l border-gray-700">
-                +5位随机字母数字 @随机域名
+                +5位随机字母数字 {{ gopayAutoRegisterSuffixLabel }}
               </div>
             </div>
           </div>
@@ -1148,7 +1152,7 @@
             <div>注册数量：<span class="text-gray-200">{{ normalizedGoPayAutoRegisterCount }}</span></div>
             <div>邮件 Provider：<span class="text-gray-200">{{ gopayAutoRegisterProviderLabel }}</span></div>
             <div v-if="gopayAutoRegisterUsesLuckMail">LuckMail 购买：<span class="text-gray-200">{{ gopayLuckmailPurchaseLabel }}</span></div>
-            <div v-else>域名轮换：<span class="text-gray-200">{{ gopaySelectedAutoRegisterDomainsLabel }}</span></div>
+            <div v-else-if="gopayAutoRegisterUsesDomains">域名轮换：<span class="text-gray-200">{{ gopaySelectedAutoRegisterDomainsLabel }}</span></div>
             <div>预览邮箱：<span class="font-mono text-gray-200">{{ gopayAutoRegisterPreviewEmail }}</span></div>
             <div>密码：<span class="text-gray-200">{{ gopayForm.autoRegisterPassword || '自动随机生成' }}</span></div>
           </div>
@@ -1164,7 +1168,7 @@
           <button
             type="button"
             @click="confirmGoPayAutoRegisterConfig"
-            :disabled="!gopayAutoRegisterUsesLuckMail && !gopaySelectedAutoRegisterDomains.length"
+            :disabled="gopayAutoRegisterUsesDomains && !gopaySelectedAutoRegisterDomains.length"
             class="px-5 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50">
             确认
           </button>
@@ -1498,6 +1502,8 @@ const normalizedGoPayPendingRetryAttempts = computed(() => {
 })
 
 const gopayAutoRegisterUsesLuckMail = computed(() => gopayForm.value.autoRegisterMailProvider === 'luckmail')
+const gopayAutoRegisterUsesOutlook = computed(() => gopayForm.value.autoRegisterMailProvider === 'outlook')
+const gopayAutoRegisterUsesDomains = computed(() => !gopayAutoRegisterUsesLuckMail.value && !gopayAutoRegisterUsesOutlook.value)
 
 const gopayAutoRegisterProviderLabel = computed(() => {
   const value = gopayForm.value.autoRegisterMailProvider || ''
@@ -1541,14 +1547,24 @@ const gopayAutoRegisterConfigSummary = computed(() => {
   if (gopayAutoRegisterUsesLuckMail.value) {
     return `${gopayAutoRegisterProviderLabel.value}，${gopayLuckmailPurchaseLabel.value}，密码 ${password ? '自定义' : '随机'}`
   }
+  if (gopayAutoRegisterUsesOutlook.value) {
+    return `${gopayAutoRegisterProviderLabel.value}，Outlook账号池，密码 ${password ? '自定义' : '随机'}`
+  }
   return `${gopaySelectedAutoRegisterDomainsLabel.value}，前缀 ${prefix || '随机'}，密码 ${password ? '自定义' : '随机'}`
 })
 
 const gopayAutoRegisterPreviewEmail = computed(() => {
   if (gopayAutoRegisterUsesLuckMail.value) return 'LuckMail邮箱池中选择'
+  if (gopayAutoRegisterUsesOutlook.value) return 'Outlook邮箱池中选择'
   const prefix = String(gopayForm.value.autoRegisterPrefix || '').trim()
   const domain = gopaySelectedAutoRegisterDomains.value[0] || gopayRegisterDomainOptions.value[0] || 'domain.com'
   return `${prefix ? `${prefix}a8k3p` : '__random__'}@${domain}`
+})
+
+const gopayAutoRegisterSuffixLabel = computed(() => {
+  if (gopayAutoRegisterUsesOutlook.value) return '@Outlook账号池'
+  if (gopayAutoRegisterUsesLuckMail.value) return '@LuckMail'
+  return '@随机域名'
 })
 
 const gopayAllAutoRegisterDomainsSelected = computed(() => {
@@ -1653,7 +1669,7 @@ const gopaySinglePhoneComplete = computed(() => {
 const gopayCanSubmit = computed(() => {
   return Boolean(
     (gopayForm.value.autoRegister || gopayEffectiveEmail.value)
-    && (!gopayForm.value.autoRegister || gopayAutoRegisterUsesLuckMail.value || gopaySelectedAutoRegisterDomains.value.length)
+    && (!gopayForm.value.autoRegister || !gopayAutoRegisterUsesDomains.value || gopaySelectedAutoRegisterDomains.value.length)
     && (gopayForm.value.usePhonePool ? gopayPhoneAccounts.value.length > 0 : gopaySinglePhoneComplete.value)
   )
 })
@@ -2226,11 +2242,11 @@ function closeGoPayAutoRegisterConfig() {
 }
 
 function confirmGoPayAutoRegisterConfig() {
-  if (!gopayAutoRegisterUsesLuckMail.value && !gopaySelectedAutoRegisterDomains.value.length) {
+  if (gopayAutoRegisterUsesDomains.value && !gopaySelectedAutoRegisterDomains.value.length) {
     setMessage('请选择至少一个自动注册域名', false)
     return
   }
-  gopayForm.value.autoRegisterDomains = gopaySelectedAutoRegisterDomains.value
+  gopayForm.value.autoRegisterDomains = gopayAutoRegisterUsesDomains.value ? gopaySelectedAutoRegisterDomains.value : []
   closeGoPayAutoRegisterConfig()
 }
 
@@ -3015,8 +3031,8 @@ async function startGoPayBind() {
       auto_register_luckmail_email_type: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailEmailType : null,
       auto_register_luckmail_preferred_domain: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailPreferredDomain : null,
       auto_register_luckmail_preferred_domains: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailPreferredDomains : [],
-      auto_register_domain: gopaySelectedAutoRegisterDomains.value[0] || '',
-      auto_register_domains: gopaySelectedAutoRegisterDomains.value,
+      auto_register_domain: gopayAutoRegisterUsesDomains.value ? (gopaySelectedAutoRegisterDomains.value[0] || '') : '',
+      auto_register_domains: gopayAutoRegisterUsesDomains.value ? gopaySelectedAutoRegisterDomains.value : [],
       auto_register_prefix: String(gopayForm.value.autoRegisterPrefix || '').trim(),
       auto_register_password: String(gopayForm.value.autoRegisterPassword || '').trim(),
       checkout_url: gopayForm.value.checkoutUrl || '',

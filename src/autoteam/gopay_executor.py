@@ -2043,6 +2043,18 @@ def _browser_checkout_to_gopay_redirect(
             stage="browser_charge_guard",
         )
 
+    def guard_checkout_due_amount(*, where: str):
+        amount_hint = _browser_checkout_nonzero_amount_hint(api)
+        if amount_hint and not _env_truthy("GOPAY_ALLOW_NONZERO_CHARGE"):
+            _capture_screenshot(api, session_id, f"gopay-browser-nonzero-amount-blocked-{where}", screenshot_paths)
+            raise GoPayChargeBlocked(
+                (
+                    f"浏览器 checkout 页面今日应付金额非 0 ({amount_hint})，已在填写账单前停止；"
+                    "如确认要真实扣款，设置 GOPAY_ALLOW_NONZERO_CHARGE=1 后重试"
+                ),
+                stage="browser_charge_guard",
+            )
+
     if callable(progress):
         progress("select_gopay")
     selected, select_error = _select_gopay_option(api)
@@ -2051,9 +2063,11 @@ def _browser_checkout_to_gopay_redirect(
     else:
         if callable(progress):
             progress("gopay_selected")
+        guard_checkout_due_amount(where="after-gopay-select")
     ok, fill_error = _fill_billing_form_on_page(api, billing, session_id, screenshot_paths, progress=progress)
     if not ok:
         raise GoPayFlowError(f"浏览器填写 checkout 账单地址失败: {fill_error}", stage="browser_checkout")
+    guard_checkout_due_amount(where="after-billing-fill")
     _accept_checkout_terms_on_page(api, progress=progress)
 
     submit_selectors = [
@@ -4780,10 +4794,10 @@ def _browser_checkout_nonzero_amount_hint(api: ChatGPTTeamAPI) -> str:
     compact = re.sub(r"\s+", " ", text or "").strip()
     if not compact:
         return ""
+    amount_expr = r"(?:IDR|Rp|US\$|\$)\s*[-+]?\d[\d,.]*(?:\.\d{1,2})?|[-+]?\d[\d,.]*(?:\.\d{1,2})?\s*(?:IDR|Rp|USD)"
     today_patterns = (
-        r"(?:今日应付合计|今天应付合计|今日应付|今天应付)\s*((?:IDR|Rp|US\$|\$)\s*[-+]?\d[\d,.]*(?:\.\d{1,2})?|[-+]?\d[\d,.]*(?:\.\d{1,2})?\s*(?:IDR|Rp|USD))",
-        r"(?:total\s+due\s+today|due\s+today|today'?s\s+total)\s*((?:IDR|Rp|US\$|\$)\s*[-+]?\d[\d,.]*(?:\.\d{1,2})?|[-+]?\d[\d,.]*(?:\.\d{1,2})?\s*(?:IDR|Rp|USD))",
-        r"((?:IDR|Rp|US\$|\$)\s*[-+]?\d[\d,.]*(?:\.\d{1,2})?|[-+]?\d[\d,.]*(?:\.\d{1,2})?\s*(?:IDR|Rp|USD))\s*(?:total\s+due\s+today|due\s+today|today'?s\s+total|今日应付合计|今天应付合计|今日应付|今天应付)",
+        rf"(?:今日应付合计|今天应付合计|今日应付|今天应付|今日支付合计|今天支付合计|应付金额|支付金额|amount\s+due|total\s+due\s+today|due\s+today|today'?s\s+total|total\s+payment|payment\s+total|jumlah\s+yang\s+harus\s+dibayar|total\s+pembayaran)\s*({amount_expr})",
+        rf"({amount_expr})\s*(?:total\s+due\s+today|due\s+today|today'?s\s+total|total\s+payment|payment\s+total|今日应付合计|今天应付合计|今日应付|今天应付|今日支付合计|今天支付合计|应付金额|支付金额|jumlah\s+yang\s+harus\s+dibayar|total\s+pembayaran)",
     )
     for pattern in today_patterns:
         matched = re.search(pattern, compact, flags=re.IGNORECASE)
@@ -4811,8 +4825,8 @@ def _browser_checkout_nonzero_amount_hint(api: ChatGPTTeamAPI) -> str:
         return ""
     amount_patterns = (
         r"(?:us\$|\$)\s*(?:[1-9]\d*)(?:[.,]\d{2})?",
-        r"(?:idr|rp)\s*[1-9]\d{2,}(?:[.,]\d{3})*",
-        r"[1-9]\d{2,}(?:[.,]\d{3})*\s*(?:idr|rp)",
+        r"(?:idr|rp)\s*[1-9]\d*(?:[.,]\d{3})*(?:\.\d{1,2})?",
+        r"[1-9]\d*(?:[.,]\d{3})*(?:\.\d{1,2})?\s*(?:idr|rp)",
     )
     for pattern in amount_patterns:
         matched = re.search(pattern, compact, flags=re.IGNORECASE)

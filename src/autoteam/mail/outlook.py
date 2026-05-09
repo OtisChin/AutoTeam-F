@@ -147,6 +147,8 @@ class OutlookMailProvider(MailProvider):
             return None
         if "----" in value:
             parts = [p.strip() for p in value.split("----")]
+        elif "|" in value:
+            parts = [p.strip() for p in value.split("|")]
         elif "," in value:
             parts = [p.strip() for p in value.split(",")]
         else:
@@ -158,9 +160,20 @@ class OutlookMailProvider(MailProvider):
         password = parts[1] if len(parts) > 1 else ""
         client_id = parts[2] if len(parts) > 2 else ""
         refresh_token = parts[3] if len(parts) > 3 else ""
+        if OutlookMailProvider._looks_like_refresh_token(client_id) and OutlookMailProvider._looks_like_client_id(refresh_token):
+            client_id, refresh_token = refresh_token, client_id
         if not client_id and refresh_token:
             client_id = _env("OUTLOOK_DEFAULT_CLIENT_ID", "24d9a0ed-8787-4584-883c-2fd79308940a")
         return OutlookAccount(email=email, password=password, client_id=client_id, refresh_token=refresh_token)
+
+    @staticmethod
+    def _looks_like_client_id(value: str) -> bool:
+        return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", str(value or "").strip()))
+
+    @staticmethod
+    def _looks_like_refresh_token(value: str) -> bool:
+        token = str(value or "").strip()
+        return token.startswith("M.") or len(token) > 80
 
     # ------------------------------------------------------------------ public
 
@@ -168,7 +181,8 @@ class OutlookMailProvider(MailProvider):
         if not self.accounts:
             raise RuntimeError(
                 "Outlook provider 未配置账号。请设置 OUTLOOK_ACCOUNTS_FILE 或 OUTLOOK_ACCOUNTS；"
-                "格式: email----mail_password 或 email----mail_password----client_id----refresh_token"
+                "格式: email----mail_password、email----mail_password----client_id----refresh_token，"
+                "或 email|mail_password|refresh_token|client_id"
             )
         logger.info("[outlook] 已加载 %d 个 Outlook 账号", len(self.accounts))
         return f"outlook:{len(self.accounts)}"

@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 _VERIFICATION_CODE_PATTERNS = (
-    r"(?:temporary\s+(?:openai|chatgpt)\s+login\s+code(?:\s+is)?|verification\s+code(?:\s+is)?|login\s+code(?:\s+is)?|code(?:\s+is)?|验证码(?:为|是)?)\D{0,24}(\d{6})",
+    r"(?:temporary\s+(?:openai|chatgpt)\s+login\s+code(?:\s+is)?|verification\s+code(?:\s+is)?|login\s+code(?:\s+is)?|code(?:\s+is)?|临时验证码|一次性验证码|验证码(?:为|是)?)\D{0,80}(\d{6})",
+    r"(?:openai|chatgpt)?\s*(?:临时验证码|一次性验证码|验证码|验证代码|登录代码|登入代码|代码)(?:为|是|以继续)?\D{0,80}(\d{6})",
     r"\b(\d{6})\b",
 )
 
@@ -244,6 +245,8 @@ class MailProvider(ABC):
 
         # OpenAI 登录验证码经常直接出现在 subject；部分邮件列表接口首轮只返回标题/摘要。
         add_source(email_data.get("subject"))
+        for key in ("verification_code", "verify_code", "code", "otp"):
+            add_source(email_data.get(key))
         add_source(email_data.get("text"))
         for key in ("content", "message", "html", "body"):
             add_source(email_data.get(key), html=True)
@@ -251,6 +254,8 @@ class MailProvider(ABC):
         raw = email_data.get("raw")
         if isinstance(raw, dict):
             add_source(raw.get("subject"))
+            for key in ("verification_code", "verify_code", "code", "otp"):
+                add_source(raw.get(key))
             add_source(raw.get("text"))
             for key in ("content", "message", "html", "body", "snippet", "summary"):
                 add_source(raw.get(key), html=key in {"content", "message", "html", "body"})

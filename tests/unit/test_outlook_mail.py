@@ -15,6 +15,20 @@ def test_parse_outlook_account_line_supports_codex_console_format():
     assert account.has_oauth()
 
 
+def test_parse_outlook_account_line_supports_pipe_refresh_token_before_client_id():
+    account = OutlookMailProvider._parse_account_line(
+        "User@Hotmail.com|mail-pass|M.C556_BAY.0.U.-long-refresh-token-value-"
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|"
+        "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
+    )
+
+    assert account.email == "user@hotmail.com"
+    assert account.password == "mail-pass"
+    assert account.client_id == "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
+    assert account.refresh_token.startswith("M.C556_BAY")
+    assert account.has_oauth()
+
+
 def test_create_temp_email_skips_registered_accounts(monkeypatch):
     client = OutlookMailProvider()
     client.accounts = [

@@ -44,7 +44,7 @@
         <div>
           <h3 class="text-lg font-semibold text-white">注册配置</h3>
           <p class="text-sm text-gray-400 mt-1">
-            指定前缀后，邮箱格式会变成 `prefix + 5位随机字母数字 @domain`，例如 `gptteama8k3p@openaibus.com`。
+            域名型邮箱会按前缀生成地址；Outlook / LuckMail 会从已配置的邮箱池中选择账号。
           </p>
         </div>
       </div>
@@ -95,13 +95,17 @@
             </div>
           </div>
 
-          <div>
+          <div v-if="registerProviderUsesPool">
             <label class="block text-sm text-gray-400 mb-1">注册域名</label>
-            <div v-if="isLuckMailProvider" class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2 text-sm text-gray-300">
-              LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。
+            <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2 text-sm text-gray-300">
+              {{ registerProviderPoolMessage }}
             </div>
+          </div>
+
+          <div v-else>
+            <label class="block text-sm text-gray-400 mb-1">注册域名</label>
             <select
-              v-else-if="registerForm.mode === 'single'"
+              v-if="registerForm.mode === 'single'"
               v-model="registerForm.domain"
               :disabled="registeringBusy || !registerDomainOptions.length"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
@@ -162,7 +166,7 @@
                 </div>
               </div>
             </div>
-            <div v-if="!isLuckMailProvider" class="mt-1 text-xs text-gray-500">
+            <div class="mt-1 text-xs text-gray-500">
               <span v-if="registerForm.mode === 'batch'">
                 已选择 {{ selectedRegisterDomains.length }} / {{ registerDomainOptions.length }} 个域名，批量注册时每个账号随机使用一个。
               </span>
@@ -298,7 +302,7 @@
             <div v-if="isLuckMailProvider">LuckMail 购买：<span class="text-gray-200">{{ luckmailPurchaseLabel }}</span></div>
             <div>密码：<span class="text-gray-200">{{ registerForm.password || '自动随机生成' }}</span></div>
             <div>行为：<span class="text-gray-200">{{ registerBehaviorLabel }}</span></div>
-            <div v-if="registerForm.mode === 'batch'">域名轮换：<span class="text-gray-200">{{ selectedRegisterDomainsLabel }}</span></div>
+            <div v-if="registerForm.mode === 'batch' && registerProviderUsesDomains">域名轮换：<span class="text-gray-200">{{ selectedRegisterDomainsLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch'">批量策略：<span class="text-gray-200">并发 {{ validConcurrency }}，固定间隔 {{ validIntervalSeconds }}s，随机抖动 {{ validJitterMinSeconds }}-{{ validJitterMaxSeconds }}s</span></div>
           </div>
 
@@ -466,8 +470,16 @@ const registerAllDomainsSelected = computed(() => {
   return registerDomainOptions.value.every(domain => selected.has(domain))
 })
 const isLuckMailProvider = computed(() => registerForm.value.mailProvider === 'luckmail')
+const isOutlookProvider = computed(() => registerForm.value.mailProvider === 'outlook')
+const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookProvider.value)
+const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value)
+const registerProviderPoolMessage = computed(() => {
+  if (isOutlookProvider.value) return 'Outlook 使用已配置的微软邮箱账号池，注册域名选择不参与本次任务。'
+  return 'LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。'
+})
 const registerDomainSuffixLabel = computed(() => {
   if (isLuckMailProvider.value) return '@LuckMail'
+  if (isOutlookProvider.value) return '@Outlook账号池'
   if (registerForm.value.mode === 'batch') {
     return selectedRegisterDomains.value.length
       ? `@随机域名(${selectedRegisterDomains.value.length})`
@@ -481,6 +493,7 @@ const registerPreviewEmail = computed(() => {
     ? (selectedRegisterDomains.value[0] || 'domain.com')
     : (registerForm.value.domain || 'domain.com')
   if (isLuckMailProvider.value) return 'LuckMail邮箱池中选择'
+  if (isOutlookProvider.value) return 'Outlook邮箱池中选择'
   return `${prefix}@${domain}`
 })
 const luckmailPurchaseLabel = computed(() => {
@@ -492,7 +505,7 @@ const luckmailPurchaseLabel = computed(() => {
 const registerBehaviorLabel = computed(() => '只注册免费账号并保存 auth_session')
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
-  if (isLuckMailProvider.value) return true
+  if (registerProviderUsesPool.value) return true
   return registerForm.value.mode === 'batch'
     ? selectedRegisterDomains.value.length > 0
     : Boolean(registerForm.value.domain)
@@ -742,8 +755,8 @@ async function submitManualRegister() {
       interval_seconds: registerForm.value.mode === 'batch' ? validIntervalSeconds.value : 0,
       jitter_min_seconds: registerForm.value.mode === 'batch' ? validJitterMinSeconds.value : 0,
       jitter_max_seconds: registerForm.value.mode === 'batch' ? validJitterMaxSeconds.value : 0,
-      domain: registerForm.value.domain,
-      domains: isLuckMailProvider.value ? [] : (registerForm.value.mode === 'batch' ? selectedRegisterDomains.value : []),
+      domain: registerProviderUsesDomains.value ? registerForm.value.domain : '',
+      domains: registerProviderUsesDomains.value && registerForm.value.mode === 'batch' ? selectedRegisterDomains.value : [],
       mail_provider: registerForm.value.mailProvider || null,
       luckmail_email_type: isLuckMailProvider.value ? registerForm.value.luckmailEmailType : null,
       luckmail_preferred_domain: isLuckMailProvider.value ? registerForm.value.luckmailPreferredDomain : null,

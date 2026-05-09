@@ -226,6 +226,33 @@ def test_post_add_uses_selected_domain_and_random_password(monkeypatch):
     assert captured["kwargs"]["post_register_oauth"] is False
 
 
+def test_post_add_outlook_does_not_require_register_domain(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domains", lambda: [])
+    monkeypatch.setattr("autoteam.runtime_config.get_register_domain", lambda: "")
+    monkeypatch.setattr("autoteam.identity.random_password", lambda: "RandomPass123!")
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        captured["command"] = command
+        captured["params"] = params
+        captured["kwargs"] = kwargs
+        return {"task_id": "task-outlook", "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    result = api.post_add(api.ManualRegisterParams(mail_provider="outlook", domain="", domains=[]))
+
+    assert result["task_id"] == "task-outlook"
+    assert captured["command"] == "register"
+    assert captured["params"]["mail_provider"] == "outlook"
+    assert captured["params"]["domain"] == ""
+    assert captured["params"]["domains"] == []
+    assert captured["kwargs"]["mail_provider"] == "outlook"
+    assert captured["kwargs"]["domain"] == ""
+    assert captured["kwargs"]["domains"] == []
+
+
 def test_post_add_batch_accepts_multiple_domains(monkeypatch):
     captured = {}
 

@@ -323,6 +323,26 @@ def test_extract_verification_code_reads_chinese_openai_subject(monkeypatch):
     assert code == "626612"
 
 
+def test_extract_verification_code_reads_chinese_temporary_code_body(monkeypatch):
+    client = _make_client(monkeypatch)
+    code = client.extract_verification_code(
+        {
+            "subject": "OpenAI 验证码",
+            "text": """OpenAI
+输入此临时验证码以继续：
+
+937183
+
+未请求验证码？你可以忽略此邮件。
+
+谨致问候
+OpenAI 团队""",
+            "content": "",
+        }
+    )
+    assert code == "937183"
+
+
 def test_extract_verification_code_reads_raw_message_fields(monkeypatch):
     client = _make_client(monkeypatch)
     code = client.extract_verification_code(
@@ -334,6 +354,13 @@ def test_extract_verification_code_reads_raw_message_fields(monkeypatch):
         }
     )
     assert code == "456789"
+
+
+def test_extract_verification_code_reads_structured_code_fields(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    assert client.extract_verification_code({"verification_code": "135790"}) == "135790"
+    assert client.extract_verification_code({"raw": {"code": "246801"}}) == "246801"
 
 
 def test_list_emails_passes_type_zero_to_avoid_empty_response(monkeypatch):

@@ -12,6 +12,7 @@ from autoteam.codex_auth import (
     _extract_auth_code_from_url,
     _extract_session_token_from_cookie_header,
     _follow_codex_oauth_redirects_protocol,
+    _fill_otp_input_and_verify,
     _login_codex_via_browser_simple,
     _is_personal_codex_plan,
     _poll_login_otp,
@@ -374,6 +375,22 @@ def test_poll_login_otp_matches_registration_without_snapshot_filters():
     )
 
     assert (code, email_id) == ("111222", 9)
+
+
+def test_fill_otp_input_rejects_partial_single_digit_fill():
+    class FakeOtpInput:
+        def evaluate(self, *_args, **_kwargs):
+            return False
+
+        def fill(self, value):
+            self.value = str(value)[0]
+
+        def input_value(self, timeout=1000):
+            return self.value
+
+    fake = FakeOtpInput()
+
+    assert _fill_otp_input_and_verify(fake, "123456") is False
 
 
 def test_manual_account_flow_polls_mail_like_registration(monkeypatch):
