@@ -293,6 +293,7 @@ def test_extract_sms_code():
     assert _extract_sms_code('{"code":0,"data":{"records":[{"sms_content":"Kode OTP GoPay kamu 456789"}]}}') == "456789"
     assert _extract_sms_code('{"status":"ok","result":{"items":[{"message":"no code"},{"message":"OpenAI OTP: 567890"}]}}') == "567890"
     assert _extract_sms_codes("old OTP: 111111\nnew OTP: 222222") == ["222222", "111111"]
+    assert _extract_sms_code('{"code":1,"data":{"code":"GoPay 1234 is your verification code"}}') == ""
 
 
 def test_fetch_sms_code_skips_ignored_old_otp(monkeypatch):

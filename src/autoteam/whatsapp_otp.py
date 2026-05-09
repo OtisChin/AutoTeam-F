@@ -26,17 +26,17 @@ DEFAULT_RECENT_LIMIT = 20
 DEFAULT_ADB_PATH = os.environ.get("ANDROID_ADB_PATH") or os.environ.get("ADB_PATH") or "adb"
 DEFAULT_ADB_SERIAL = os.environ.get("WHATSAPP_ADB_SERIAL") or os.environ.get("ANDROID_ADB_SERIAL") or ""
 
-_OTP_RE = re.compile(r"(?<!\d)(\d{4,8})(?!\d)")
+_OTP_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 _MESSAGE_HINT_RE = re.compile(
     r"gopay|gojek|openai|kode|verification|verifikasi|hubungkan|\botp\b|\bcode\b",
     re.IGNORECASE,
 )
 _OTP_LABELED_RE = re.compile(
-    r"(?:\botp\b|\bkode\b|\bcode\b|verification(?:\s+code)?)[^\d]{0,32}(\d{4,8})(?!\d)",
+    r"(?:\botp\b|\bkode\b|\bcode\b|verification(?:\s+code)?)[^\d]{0,32}(\d{6})(?!\d)",
     re.IGNORECASE,
 )
 _OTP_BEFORE_LABEL_RE = re.compile(
-    r"(?<!\d)(\d{4,8})(?!\d)[^\n\r]{0,48}(?:\botp\b|\bkode\b|\bcode\b|verification(?:\s+code)?)",
+    r"(?<!\d)(\d{6})(?!\d)[^\n\r]{0,48}(?:\botp\b|\bkode\b|\bcode\b|verification(?:\s+code)?)",
     re.IGNORECASE,
 )
 _WHATSAPP_HINT_RE = re.compile(r"whatsapp|com\.whatsapp", re.IGNORECASE)

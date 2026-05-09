@@ -2,13 +2,16 @@ import json
 
 from autoteam import account_hub
 from autoteam import accounts as accounts_mod
+from autoteam import auth_session_store
 
 
 def test_receive_payload_upserts_accounts_preserves_exported_state_and_auth(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     auth_dir = tmp_path / "data" / "auths"
+    auth_session_dir = tmp_path / "data" / "auth_session"
     monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
     monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", auth_session_dir)
 
     accounts_mod.save_accounts(
         [
@@ -45,6 +48,16 @@ def test_receive_payload_upserts_accounts_preserves_exported_state_and_auth(tmp_
                     "data": {"email": "user@example.com", "type": "codex"},
                 }
             ],
+            "auth_sessions": [
+                {
+                    "email": "new@example.com",
+                    "data": {
+                        "accessToken": "access-session",
+                        "sessionToken": "session-token",
+                        "account": {"id": "account-id"},
+                    },
+                }
+            ],
         }
     )
 
@@ -63,6 +76,8 @@ def test_receive_payload_upserts_accounts_preserves_exported_state_and_auth(tmp_
 
     auth_file = auth_dir / "codex-user@example.com-plus-abcd1234.json"
     assert json.loads(auth_file.read_text())["email"] == "user@example.com"
+    assert auth_session_store.load_auth_session("new@example.com")["accessToken"] == "access-session"
+    assert result["received_auth_sessions"] == 1
 
 
 def test_auto_upload_only_syncs_plus_team_pro_and_marks_uploaded(tmp_path, monkeypatch):
@@ -119,8 +134,10 @@ def test_auto_upload_only_syncs_plus_team_pro_and_marks_uploaded(tmp_path, monke
 def test_upload_to_hub_can_limit_to_selected_emails(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     auth_dir = tmp_path / "data" / "auths"
+    auth_session_dir = tmp_path / "data" / "auth_session"
     monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
     monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", auth_session_dir)
 
     accounts_mod.save_accounts(
         [
@@ -128,6 +145,10 @@ def test_upload_to_hub_can_limit_to_selected_emails(tmp_path, monkeypatch):
             {"email": "two@example.com", "status": "active", "account_type": "free"},
             {"email": "three@example.com", "status": "active", "account_type": "team"},
         ]
+    )
+    auth_session_store.save_auth_session(
+        "two@example.com",
+        {"accessToken": "access-free", "sessionToken": "session-free"},
     )
 
     captured = {}
@@ -152,6 +173,10 @@ def test_upload_to_hub_can_limit_to_selected_emails(tmp_path, monkeypatch):
 
     uploaded = [acc["email"] for acc in captured["json"]["accounts"]]
     assert uploaded == ["two@example.com", "three@example.com"]
+    assert captured["json"]["auth_sessions"] == [
+        {"email": "two@example.com", "data": {"accessToken": "access-free", "sessionToken": "session-free"}}
+    ]
+    assert result["uploaded_auth_sessions"] == 1
     assert result["marked_synced_accounts"] == 2
 
     saved = {acc["email"]: acc for acc in accounts_mod.load_accounts()}

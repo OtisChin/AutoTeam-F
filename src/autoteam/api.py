@@ -877,6 +877,7 @@ class AccountHubIngestPayload(BaseModel):
     source: dict = {}
     accounts: list[dict] = []
     auths: list[dict] = []
+    auth_sessions: list[dict] = []
 
 
 class AccountHubSyncParams(BaseModel):

@@ -4242,12 +4242,12 @@ def _extract_sms_codes(text: str) -> list[str]:
     }
 
     def codes_from_value(value: Any) -> list[str]:
-        matched = re.fullmatch(r"\D*(\d{4,8})\D*", str(value or "").strip())
+        matched = re.fullmatch(r"\D*(\d{6})\D*", str(value or "").strip())
         return [matched.group(1)] if matched else []
 
     def codes_from_text(value: Any) -> list[str]:
         # 接码接口有时会把旧短信和新短信一起返回。按出现顺序反转，优先取最新的验证码。
-        matches = re.findall(r"(?<!\d)(\d{4,8})(?!\d)", str(value or ""))
+        matches = re.findall(r"(?<!\d)(\d{6})(?!\d)", str(value or ""))
         return _dedupe_codes(list(reversed(matches)))
 
     try:

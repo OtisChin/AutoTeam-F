@@ -96,3 +96,9 @@ def test_extract_whatsapp_otp_ignores_notification_metadata_numbers():
     )
 
     assert _extract_otp_from_text(text) == ""
+
+
+def test_extract_whatsapp_otp_requires_six_digits():
+    text = "GoPay 1234 is your verification code. For your security, do not share this code."
+
+    assert _extract_otp_from_text(text) == ""

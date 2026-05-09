@@ -192,6 +192,23 @@ def build_upload_payload(
                 logger.warning("[account_hub] 跳过无法读取的 auth 文件 %s: %s", path, exc)
                 continue
             auths.append({"email": email, "filename": path.name, "data": data})
+    auth_sessions = []
+    try:
+        from autoteam.auth_session_store import load_auth_session
+    except Exception:
+        load_auth_session = None
+    if load_auth_session:
+        for acc in accounts:
+            email = str(acc.get("email") or "").strip().lower()
+            if not email:
+                continue
+            try:
+                data = load_auth_session(email)
+            except Exception as exc:
+                logger.warning("[account_hub] 跳过无法读取的 auth_session %s: %s", email, exc)
+                continue
+            if isinstance(data, dict) and data:
+                auth_sessions.append({"email": email, "data": data})
     return {
         "source": {
             "name": name,
@@ -199,6 +216,7 @@ def build_upload_payload(
         },
         "accounts": accounts,
         "auths": auths,
+        "auth_sessions": auth_sessions,
     }
 
 
@@ -262,6 +280,7 @@ def upload_to_hub(
     )
     result.setdefault("uploaded_accounts", len(payload.get("accounts") or []))
     result.setdefault("uploaded_auths", len(payload.get("auths") or []))
+    result.setdefault("uploaded_auth_sessions", len(payload.get("auth_sessions") or []))
     result.setdefault("marked_synced_accounts", marked)
     result.setdefault("syncable_only", syncable_only)
     return result
@@ -333,6 +352,7 @@ def receive_payload(payload: dict) -> dict:
     uploaded_at = float(source.get("uploaded_at") or time.time())
     incoming_accounts = payload.get("accounts") if isinstance(payload.get("accounts"), list) else []
     incoming_auths = payload.get("auths") if isinstance(payload.get("auths"), list) else []
+    incoming_auth_sessions = payload.get("auth_sessions") if isinstance(payload.get("auth_sessions"), list) else []
 
     accounts = load_accounts()
     upserted = 0
@@ -394,10 +414,28 @@ def receive_payload(payload: dict) -> dict:
         if updated_auth_file:
             save_accounts(accounts)
 
+    saved_auth_sessions = 0
+    if incoming_auth_sessions:
+        try:
+            from autoteam.auth_session_store import save_auth_session
+        except Exception:
+            save_auth_session = None
+        if save_auth_session:
+            for item in incoming_auth_sessions:
+                if not isinstance(item, dict):
+                    continue
+                email = str(item.get("email") or "").strip().lower()
+                data = item.get("data")
+                if not email or not isinstance(data, dict):
+                    continue
+                save_auth_session(email, data)
+                saved_auth_sessions += 1
+
     return {
-        "message": f"账号 Hub 已接收 {upserted} 个账号，{saved_auths} 个认证文件",
+        "message": f"账号 Hub 已接收 {upserted} 个账号，{saved_auths} 个认证文件，{saved_auth_sessions} 个 auth_session",
         "source_name": source_name,
         "received_accounts": upserted,
         "skipped_accounts": skipped,
         "received_auths": saved_auths,
+        "received_auth_sessions": saved_auth_sessions,
     }
