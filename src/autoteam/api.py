@@ -385,13 +385,73 @@ async def save_mail_provider_config(request: Request):
 _tasks: dict[str, dict] = {}
 _playwright_lock = threading.Lock()
 _current_task_id: str | None = None
+_task_context = threading.local()
+TASK_GROUP_DEFAULT = "default"
+TASK_GROUP_REGISTER = "register"
+TASK_GROUP_BIND_CARD = "bind_card"
+TASK_GROUP_GOPAY = "gopay"
+TASK_GROUP_OAUTH = "oauth"
+TASK_GROUP_QUOTA = "quota"
+TASK_GROUP_TEAM = "team"
+_task_group_locks: dict[str, threading.Lock] = {}
+_current_task_ids: dict[str, str | None] = {}
 _task_skip_signals: dict[str, threading.Event] = {}
+_task_cancel_signals: dict[str, threading.Event] = {}
 _admin_login_api = None
 _admin_login_step: str | None = None
 _main_codex_flow = None
 _main_codex_step: str | None = None
 _manual_account_flow = None
 MAX_TASK_HISTORY = 50
+
+
+def _task_group_lock(task_group: str) -> threading.Lock:
+    group = str(task_group or TASK_GROUP_DEFAULT)
+    lock = _task_group_locks.get(group)
+    if lock is None:
+        lock = threading.Lock()
+        _task_group_locks[group] = lock
+    return lock
+
+
+def _normalize_task_group(task_group: str | None, command: str = "") -> str:
+    explicit = str(task_group or "").strip()
+    if explicit:
+        return explicit
+    raw_command = str(command or "").strip()
+    mapping = {
+        "register": TASK_GROUP_REGISTER,
+        "add": TASK_GROUP_REGISTER,
+        "bind-card": TASK_GROUP_BIND_CARD,
+        "gopay-bind": TASK_GROUP_GOPAY,
+        "login": TASK_GROUP_OAUTH,
+        "login-batch": TASK_GROUP_OAUTH,
+        "refresh-quota": TASK_GROUP_QUOTA,
+        "check": TASK_GROUP_QUOTA,
+        "rotate": TASK_GROUP_TEAM,
+        "replace": TASK_GROUP_TEAM,
+        "fill": TASK_GROUP_TEAM,
+        "fill-personal": TASK_GROUP_TEAM,
+        "cleanup": TASK_GROUP_TEAM,
+    }
+    if raw_command.startswith("login:"):
+        return TASK_GROUP_OAUTH
+    return mapping.get(raw_command, TASK_GROUP_DEFAULT)
+
+
+def _running_task_for_group(task_group: str | None) -> dict:
+    group = str(task_group or TASK_GROUP_DEFAULT)
+    task_id = _current_task_ids.get(group)
+    return _tasks.get(task_id or "", {}) if task_id else {}
+
+
+def _current_task_id_for_group(task_group: str | None = None) -> str | None:
+    current = getattr(_task_context, "task_id", None)
+    if current:
+        return current
+    if task_group:
+        return _current_task_ids.get(str(task_group or TASK_GROUP_DEFAULT))
+    return _current_task_id
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +528,7 @@ class TaskResultError(RuntimeError):
         self.task_result = task_result
 
 
-def _current_busy_detail(default_message: str):
+def _current_busy_detail(default_message: str, task_group: str | None = None):
     if _admin_login_api:
         return {
             "message": default_message,
@@ -489,12 +549,13 @@ def _current_busy_detail(default_message: str):
             },
         }
 
-    running = _tasks.get(_current_task_id, {})
+    running = _running_task_for_group(task_group) if task_group else _tasks.get(_current_task_id, {})
     return {
         "message": default_message,
         "running_task": {
-            "task_id": _current_task_id,
+            "task_id": running.get("task_id") or _current_task_id,
             "command": running.get("command", "unknown"),
+            "task_group": running.get("task_group") or task_group,
             "started_at": running.get("started_at"),
         },
     }
@@ -533,9 +594,9 @@ def _append_task_progress(task_id: str | None, progress: dict):
         del progress_events[: len(progress_events) - 300]
 
 
-def _update_current_task_progress(progress: dict):
+def _update_current_task_progress(progress: dict, task_group: str | None = None):
     """更新当前运行任务的实时进度。"""
-    _append_task_progress(_current_task_id, progress)
+    _append_task_progress(_current_task_id_for_group(task_group), progress)
 
 
 def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
@@ -544,15 +605,40 @@ def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
 
     global _current_task_id
     task = _tasks[task_id]
+    task_group = str(task.get("task_group") or TASK_GROUP_DEFAULT)
+    group_lock = _task_group_lock(task_group)
 
-    _playwright_lock.acquire()
-    # 顺序很关键: 先 reset() 再暴露 _current_task_id。否则 post_task_cancel 在
-    # 两行之间读到新 task_id 并 request_cancel(),随后被我们的 reset() 清掉,
-    # 用户的取消请求被静默吞掉。
-    cancel_signal.reset()
+    lock_preacquired = bool(task.pop("_group_lock_preacquired", False))
+    if not lock_preacquired:
+        group_lock.acquire()
+    cancel_event = _task_cancel_signals.get(task_id) or threading.Event()
+    _task_context.task_id = task_id
+    _task_context.task_group = task_group
+    _task_context.cancel_event = cancel_event
+    cancel_signal.set_current_event(cancel_event)
+    _task_cancel_signals[task_id] = cancel_event
     _current_task_id = task_id
+    _current_task_ids[task_group] = task_id
     task["status"] = "running"
     task["started_at"] = time.time()
+    if cancel_event.is_set():
+        task["status"] = "cancelled"
+        task["result"] = {"status": "cancelled", "message": "任务启动前已取消"}
+        task["finished_at"] = time.time()
+        if _current_task_id == task_id:
+            _current_task_id = None
+        if _current_task_ids.get(task_group) == task_id:
+            _current_task_ids[task_group] = None
+        cancel_signal.clear_current_event()
+        for attr in ("task_id", "task_group", "cancel_event"):
+            try:
+                delattr(_task_context, attr)
+            except AttributeError:
+                pass
+        _task_skip_signals.pop(task_id, None)
+        _task_cancel_signals.pop(task_id, None)
+        group_lock.release()
+        return
 
     try:
         result = func(task_id, *args, **kwargs) if pass_task_id else func(*args, **kwargs)
@@ -567,16 +653,48 @@ def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
         logger.error("[API] 任务 %s %s: %s", task_id[:8], task["status"], e)
     finally:
         task["finished_at"] = time.time()
-        _current_task_id = None
+        if _current_task_id == task_id:
+            _current_task_id = None
+        if _current_task_ids.get(task_group) == task_id:
+            _current_task_ids[task_group] = None
+        cancel_signal.clear_current_event()
+        for attr in ("task_id", "task_group", "cancel_event"):
+            try:
+                delattr(_task_context, attr)
+            except AttributeError:
+                pass
         _task_skip_signals.pop(task_id, None)
-        _playwright_lock.release()
+        _task_cancel_signals.pop(task_id, None)
+        group_lock.release()
 
 
 def _run_task_nonexclusive(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
     """Run a task without occupying the global Playwright task lock."""
+    from autoteam import cancel_signal
+
     task = _tasks[task_id]
+    task_group = str(task.get("task_group") or TASK_GROUP_DEFAULT)
+    cancel_event = _task_cancel_signals.get(task_id) or threading.Event()
+    _task_context.task_id = task_id
+    _task_context.task_group = task_group
+    _task_context.cancel_event = cancel_event
+    cancel_signal.set_current_event(cancel_event)
+    _task_cancel_signals[task_id] = cancel_event
     task["status"] = "running"
     task["started_at"] = time.time()
+    if cancel_event.is_set():
+        task["status"] = "cancelled"
+        task["result"] = {"status": "cancelled", "message": "任务启动前已取消"}
+        task["finished_at"] = time.time()
+        cancel_signal.clear_current_event()
+        for attr in ("task_id", "task_group", "cancel_event"):
+            try:
+                delattr(_task_context, attr)
+            except AttributeError:
+                pass
+        _task_skip_signals.pop(task_id, None)
+        _task_cancel_signals.pop(task_id, None)
+        return
 
     try:
         result = func(task_id, *args, **kwargs) if pass_task_id else func(*args, **kwargs)
@@ -590,7 +708,14 @@ def _run_task_nonexclusive(task_id: str, func, pass_task_id: bool = False, *args
         logger.error("[API] 非独占任务 %s failed: %s", task_id[:8], e)
     finally:
         task["finished_at"] = time.time()
+        cancel_signal.clear_current_event()
+        for attr in ("task_id", "task_group", "cancel_event"):
+            try:
+                delattr(_task_context, attr)
+            except AttributeError:
+                pass
         _task_skip_signals.pop(task_id, None)
+        _task_cancel_signals.pop(task_id, None)
 
 
 def _start_task(
@@ -600,18 +725,23 @@ def _start_task(
     *args,
     exclusive: bool = True,
     pass_task_id: bool = False,
+    task_group: str | None = None,
     **kwargs,
 ) -> dict:
     """创建并启动后台任务，返回任务信息"""
-    if exclusive and not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再试"))
+    normalized_group = _normalize_task_group(task_group, command)
+    group_lock_preacquired = False
     if exclusive:
-        _playwright_lock.release()
+        group_lock = _task_group_lock(normalized_group)
+        if not group_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail=_current_busy_detail("同类任务正在执行，请等待完成后再试", normalized_group))
+        group_lock_preacquired = True
 
     task_id = uuid.uuid4().hex[:12]
     task = {
         "task_id": task_id,
         "command": command,
+        "task_group": normalized_group,
         "params": params,
         "exclusive": exclusive,
         "status": "pending",
@@ -623,12 +753,22 @@ def _start_task(
         "progress": None,
         "progress_events": [],
     }
+    if group_lock_preacquired:
+        task["_group_lock_preacquired"] = True
     _tasks[task_id] = task
+    _task_cancel_signals[task_id] = threading.Event()
     _prune_tasks()
 
     target = _run_task if exclusive else _run_task_nonexclusive
-    thread = threading.Thread(target=target, args=(task_id, func, pass_task_id, *args), kwargs=kwargs, daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=target, args=(task_id, func, pass_task_id, *args), kwargs=kwargs, daemon=True)
+        thread.start()
+    except Exception:
+        if group_lock_preacquired:
+            _task_group_lock(normalized_group).release()
+        _tasks.pop(task_id, None)
+        _task_cancel_signals.pop(task_id, None)
+        raise
 
     return task
 
@@ -1412,6 +1552,22 @@ def _session_only_account_stub(email: str) -> dict:
     }
 
 
+def _load_accounts_with_session_stubs() -> list[dict]:
+    """Load managed accounts and include auth_session-only accounts for UI consistency."""
+    from autoteam.accounts import load_accounts
+    from autoteam.auth_session_store import list_auth_session_emails
+
+    accounts = load_accounts()
+    existing_emails = {_normalized_email(acc.get("email")) for acc in accounts if _normalized_email(acc.get("email"))}
+    for email in list_auth_session_emails():
+        normalized = _normalized_email(email)
+        if not normalized or normalized in existing_emails:
+            continue
+        accounts.append(_session_only_account_stub(normalized))
+        existing_emails.add(normalized)
+    return accounts
+
+
 # ---------------------------------------------------------------------------
 # 同步端点
 # ---------------------------------------------------------------------------
@@ -2052,15 +2208,7 @@ def post_manual_account_cancel():
 @app.get("/api/accounts")
 def get_accounts():
     """获取所有账号列表"""
-    from autoteam.accounts import load_accounts
-    from autoteam.auth_session_store import list_auth_session_emails
-
-    accounts = load_accounts()
-    existing_emails = {str(acc.get("email") or "").strip().lower() for acc in accounts}
-    for email in list_auth_session_emails():
-        if email in existing_emails:
-            continue
-        accounts.append(_session_only_account_stub(email))
+    accounts = _load_accounts_with_session_stubs()
     return [_sanitize_account(a) for a in accounts]
 
 
@@ -2889,7 +3037,7 @@ def post_account_login(params: LoginAccountParams):
             )
             raise TaskResultError(result["message"], task_result=result) from exc
 
-    task = _start_task(f"login:{email}", _run, {"email": email}, exclusive=False, pass_task_id=True)
+    task = _start_task(f"login:{email}", _run, {"email": email}, task_group=TASK_GROUP_OAUTH, pass_task_id=True)
     return task
 
 
@@ -3103,7 +3251,7 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
             "concurrency": max_workers,
         }
 
-    task = _start_task("login-batch", _run, {"emails": emails, "missing": missing}, exclusive=False, pass_task_id=True)
+    task = _start_task("login-batch", _run, {"emails": emails, "missing": missing}, task_group=TASK_GROUP_OAUTH, pass_task_id=True)
     return task
 
 
@@ -3343,7 +3491,7 @@ def post_accounts_refresh_quota(params: AccountEmailBatchParams):
         "refresh-quota",
         _run,
         {"emails": emails, "missing": missing},
-        exclusive=False,
+        task_group=TASK_GROUP_QUOTA,
         pass_task_id=True,
     )
     return task
@@ -3361,11 +3509,10 @@ def get_status():
         STATUS_PENDING,
         STATUS_PERSONAL,
         STATUS_STANDBY,
-        load_accounts,
     )
     from autoteam.codex_auth import check_codex_quota, quota_result_quota_info
 
-    accounts = load_accounts()
+    accounts = _load_accounts_with_session_stubs()
     quota_cache = {}
 
     for acc in accounts:
@@ -4454,6 +4601,37 @@ class CheckParams(BaseModel):
     include_standby: bool = False  # True 时额外探测 standby 池(限速+24h 去重)
 
 
+class TaskControlParams(BaseModel):
+    task_id: str = ""
+    task_group: str = ""
+
+
+def _find_control_task(params: TaskControlParams | None, *, default_group: str | None = None, command: str | None = None) -> dict:
+    requested_id = str((params.task_id if params else "") or "").strip()
+    if requested_id:
+        task = _tasks.get(requested_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return task
+
+    requested_group = str((params.task_group if params else "") or default_group or "").strip()
+    if requested_group:
+        task = _running_task_for_group(requested_group)
+        if task:
+            return task
+
+    running = [
+        task
+        for task in _tasks.values()
+        if task.get("status") in ("running", "pending")
+        and (not command or task.get("command") == command)
+        and (not requested_group or task.get("task_group") == requested_group)
+    ]
+    if not running:
+        raise HTTPException(status_code=404, detail="当前没有正在运行的任务")
+    return sorted(running, key=lambda item: item.get("started_at") or item.get("created_at") or 0, reverse=True)[0]
+
+
 @app.post("/api/tasks/bind-card", status_code=202)
 def post_bind_card_task(params: BindCardTaskParams):
     from autoteam import cancel_signal
@@ -4492,7 +4670,7 @@ def post_bind_card_task(params: BindCardTaskParams):
         raise HTTPException(status_code=400, detail=f"卡当前状态为 {card_item.get('status')}，不可用于绑卡")
 
     def _run():
-        task_id = _current_task_id or ""
+        task_id = _current_task_id_for_group() or ""
         started_at = time.time()
         reserved = False
         result = None
@@ -4510,7 +4688,8 @@ def post_bind_card_task(params: BindCardTaskParams):
                 raise RuntimeError("预占绑卡卡片失败：记录不存在")
             reserved = True
 
-            _update_current_task_progress(
+            _append_task_progress(
+                task_id,
                 {
                     "stage": "binding",
                     "email": email,
@@ -4602,7 +4781,8 @@ def post_bind_card_task(params: BindCardTaskParams):
             }
         )
 
-        _update_current_task_progress(
+        _append_task_progress(
+            task_id,
             {
                 "stage": "completed",
                 "bind_status": result.get("status") or "failed",
@@ -4615,7 +4795,7 @@ def post_bind_card_task(params: BindCardTaskParams):
             raise TaskResultError(result.get("message") or "绑卡失败", task_result=result)
         return result
 
-    task = _start_task("bind-card", _run, params.model_dump())
+    task = _start_task("bind-card", _run, params.model_dump(), task_group=TASK_GROUP_BIND_CARD)
     return task
 
 
@@ -4865,7 +5045,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
 
     def _run():
         nonlocal email, account_emails
-        task_id = _current_task_id or ""
+        task_id = _current_task_id_for_group() or ""
         started_at = time.time()
         result = None
         realtime_successful_emails: set[str] = set()
@@ -4888,7 +5068,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             if success_email not in realtime_successful_emails:
                 realtime_successful_emails.add(success_email)
                 marked_at = time.time()
-                update_account(
+                updated_account = update_account(
                     success_email,
                     last_bind_status="success",
                     last_bind_at=marked_at,
@@ -4901,6 +5081,24 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     account_type=ACCOUNT_TYPE_PLUS,
                     plus_bound_at=marked_at,
                 )
+                if not updated_account and not find_account(load_accounts(), success_email):
+                    auth_session_file = get_auth_session_file(success_email)
+                    add_account(success_email, "", seat_type=SEAT_CODEX)
+                    update_account(
+                        success_email,
+                        last_bind_status="success",
+                        last_bind_at=marked_at,
+                        last_checkout_url=success_checkout_url or checkout_url,
+                        last_proxy_label=params.proxy_label,
+                        last_bind_task_id=task_id,
+                        last_bind_message=message or "GoPay 绑定成功",
+                        last_bind_failure_stage="",
+                        status=STATUS_ACTIVE,
+                        account_type=ACCOUNT_TYPE_PLUS,
+                        seat_type=SEAT_CODEX,
+                        auth_file=auth_session_file if auth_session_file and Path(auth_session_file).exists() else None,
+                        plus_bound_at=marked_at,
+                    )
                 logger.info(
                     "[gopay-bind] marked account Plus immediately after GoPay success: task_id=%s email=%s",
                     task_id[:8] or "<unknown>",
@@ -5079,7 +5277,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     success_checkout_url=str(progress.get("checkout_url") or ""),
                 )
                 progress = {**progress, **success_fields}
-            _update_current_task_progress(progress)
+            _append_task_progress(task_id, progress)
 
         def _append_unique(target: list, value: str):
             normalized = _normalized_email(value)
@@ -5423,6 +5621,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                     _append_unique(payment_failed_emails, single_email)
                 if single_result.get("status") == "success":
                     _append_unique(successful_emails, single_email)
+                    if single_email:
+                        _mark_gopay_success_account(
+                            single_email,
+                            message=single_result.get("message") or "GoPay 绑定成功",
+                            success_checkout_url=single_result.get("checkout_url") or checkout_url or "",
+                        )
                     last_success_email = single_email or last_success_email
                 else:
                     if single_email and single_result.get("register_status") == "success":
@@ -5691,7 +5895,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 proxy_config_state,
                 _safe_proxy_summary(normalized_proxy_url or proxy_url),
             )
-            _update_current_task_progress(
+            _append_task_progress(
+                task_id,
                 {
                     "stage": "gopay_binding",
                     "email": email,
@@ -5870,7 +6075,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             }
         )
 
-        _update_current_task_progress(
+        _append_task_progress(
+            task_id,
             {
                 "stage": "completed" if result.get("status") == "success" else "failed",
                 "status": result.get("status") or "failed",
@@ -5908,7 +6114,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         for item in phone_accounts
     ]
     task_params.pop("gopay_pin", None)
-    task = _start_task("gopay-bind", _run, task_params)
+    task = _start_task("gopay-bind", _run, task_params, task_group=TASK_GROUP_GOPAY)
     _task_skip_signals[task["task_id"]] = skip_current_signal
     return task
 
@@ -5924,7 +6130,7 @@ def post_check(params: CheckParams = CheckParams()):
         exhausted = cmd_check(include_standby=include_standby)
         return {"exhausted": [a["email"] for a in exhausted]}
 
-    task = _start_task("check", _run, {"include_standby": include_standby})
+    task = _start_task("check", _run, {"include_standby": include_standby}, task_group=TASK_GROUP_QUOTA)
     return task
 
 
@@ -5933,7 +6139,7 @@ def post_rotate(params: TaskParams = TaskParams()):
     """智能轮转（后台执行）"""
     from autoteam.manager import cmd_rotate
 
-    task = _start_task("rotate", cmd_rotate, {"target": params.target}, params.target)
+    task = _start_task("rotate", cmd_rotate, {"target": params.target}, params.target, task_group=TASK_GROUP_TEAM)
     return task
 
 
@@ -5959,6 +6165,7 @@ def post_replace(params: ReplaceParams):
         {"email": email, "reason": params.reason},
         email,
         params.reason,
+        task_group=TASK_GROUP_TEAM,
     )
     return task
 
@@ -6040,26 +6247,50 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
     if jitter_min_seconds > jitter_max_seconds:
         raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
 
+    task_params = {
+        "mode": mode,
+        "count": count,
+        "concurrency": concurrency,
+        "interval_seconds": interval_seconds,
+        "jitter_min_seconds": jitter_min_seconds,
+        "jitter_max_seconds": jitter_max_seconds,
+        "domain": selected_domain,
+        "domains": selected_domains,
+        "prefix": prefix or "",
+        "password_mode": "provided" if password else "random",
+        "mail_provider": mail_provider or "<default>",
+        "luckmail_email_type": luckmail_email_type or "",
+        "luckmail_preferred_domain": luckmail_preferred_domain or "",
+        "luckmail_preferred_domains": luckmail_preferred_domains,
+        "post_register_oauth": bool(params.post_register_oauth),
+    }
+
+    def _run_register(task_id: str, **_ignored_kwargs):
+        def _register_progress(progress: dict):
+            _append_task_progress(task_id, progress)
+
+        return cmd_register_accounts(
+            count=count,
+            concurrency=concurrency,
+            interval_seconds=interval_seconds,
+            jitter_min_seconds=jitter_min_seconds,
+            jitter_max_seconds=jitter_max_seconds,
+            email_prefix=prefix,
+            password=resolved_password,
+            domain=selected_domain,
+            domains=selected_domains,
+            mail_provider=mail_provider or None,
+            luckmail_email_type=luckmail_email_type or None,
+            luckmail_preferred_domain=luckmail_preferred_domain,
+            luckmail_preferred_domains=luckmail_preferred_domains,
+            post_register_oauth=bool(params.post_register_oauth),
+            progress_callback=_register_progress,
+        )
+
     task = _start_task(
         "register",
-        cmd_register_accounts,
-        {
-            "mode": mode,
-            "count": count,
-            "concurrency": concurrency,
-            "interval_seconds": interval_seconds,
-            "jitter_min_seconds": jitter_min_seconds,
-            "jitter_max_seconds": jitter_max_seconds,
-            "domain": selected_domain,
-            "domains": selected_domains,
-            "prefix": prefix or "",
-            "password_mode": "provided" if password else "random",
-            "mail_provider": mail_provider or "<default>",
-            "luckmail_email_type": luckmail_email_type or "",
-            "luckmail_preferred_domain": luckmail_preferred_domain or "",
-            "luckmail_preferred_domains": luckmail_preferred_domains,
-            "post_register_oauth": bool(params.post_register_oauth),
-        },
+        _run_register,
+        task_params,
         count=count,
         concurrency=concurrency,
         interval_seconds=interval_seconds,
@@ -6074,7 +6305,8 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         luckmail_preferred_domain=luckmail_preferred_domain,
         luckmail_preferred_domains=luckmail_preferred_domains,
         post_register_oauth=bool(params.post_register_oauth),
-        progress_callback=_update_current_task_progress,
+        task_group=TASK_GROUP_REGISTER,
+        pass_task_id=True,
     )
     return task
 
@@ -6109,6 +6341,7 @@ def post_fill(params: TaskParams = TaskParams()):
         {"target": params.target, "leave_workspace": params.leave_workspace},
         params.target,
         leave_workspace=params.leave_workspace,
+        task_group=TASK_GROUP_TEAM,
     )
     return task
 
@@ -6118,7 +6351,7 @@ def post_cleanup(params: CleanupParams = CleanupParams()):
     """清理多余成员（后台执行）"""
     from autoteam.manager import cmd_cleanup
 
-    task = _start_task("cleanup", cmd_cleanup, {"max_seats": params.max_seats}, params.max_seats)
+    task = _start_task("cleanup", cmd_cleanup, {"max_seats": params.max_seats}, params.max_seats, task_group=TASK_GROUP_TEAM)
     return task
 
 
@@ -6139,7 +6372,7 @@ def get_task(task_id: str):
 
 
 @app.post("/api/tasks/cancel", status_code=202)
-def post_task_cancel():
+def post_task_cancel(params: TaskControlParams = TaskControlParams()):
     """
     请求当前正在运行的任务在下一个安全点退出。
     协作式:后台 worker 在每个批次/账号边界检查 cancel_signal.is_cancelled(),
@@ -6147,26 +6380,29 @@ def post_task_cancel():
     """
     from autoteam import cancel_signal
 
-    if not _current_task_id:
-        raise HTTPException(status_code=404, detail="当前没有正在运行的任务")
-    task = _tasks.get(_current_task_id) or {}
+    task = _find_control_task(params)
+    task_id = str(task.get("task_id") or "")
     if task.get("status") not in ("running", "pending"):
         raise HTTPException(status_code=400, detail=f"任务当前状态 {task.get('status')} 无法取消")
-    cancel_signal.request_cancel(f"手动停止 task={_current_task_id[:8]}")
+    cancel_event = _task_cancel_signals.get(task_id)
+    if cancel_event is not None:
+        cancel_signal.request_cancel_event(cancel_event, f"手动停止 task={task_id[:8]}")
+    else:
+        cancel_signal.request_cancel(f"手动停止 task={task_id[:8]}")
     task["cancel_requested"] = True
     return {
         "message": "已请求中止,等待当前步骤安全退出",
-        "task_id": _current_task_id,
+        "task_id": task_id,
         "command": task.get("command"),
+        "task_group": task.get("task_group"),
     }
 
 
 @app.post("/api/tasks/skip-current", status_code=202)
-def post_task_skip_current():
+def post_task_skip_current(params: TaskControlParams = TaskControlParams()):
     """请求 GoPay 批量任务跳过当前账号，并在安全点切换到下一个账号。"""
-    if not _current_task_id:
-        raise HTTPException(status_code=404, detail="当前没有正在运行的任务")
-    task = _tasks.get(_current_task_id) or {}
+    task = _find_control_task(params, default_group=TASK_GROUP_GOPAY, command="gopay-bind")
+    task_id = str(task.get("task_id") or "")
     if task.get("status") not in ("running", "pending"):
         raise HTTPException(status_code=400, detail=f"任务当前状态 {task.get('status')} 无法跳过")
     if task.get("command") != "gopay-bind":
@@ -6177,22 +6413,24 @@ def post_task_skip_current():
     if len(account_emails) <= 1:
         raise HTTPException(status_code=400, detail="当前 GoPay 任务没有下一个账号可切换")
 
-    skip_signal = _task_skip_signals.get(_current_task_id)
+    skip_signal = _task_skip_signals.get(task_id)
     if skip_signal is None:
         raise HTTPException(status_code=400, detail="当前 GoPay 任务不支持跳过账号")
     skip_signal.set()
     task["skip_current_requested"] = True
-    _update_current_task_progress(
+    _append_task_progress(
+        task_id,
         {
             "stage": "gopay_skip_current_requested",
             "message": "已请求跳过当前账号，等待当前步骤在安全点退出后切换下一个账号",
         }
     )
-    logger.info("[API] requested GoPay current-account skip: task=%s", _current_task_id[:8])
+    logger.info("[API] requested GoPay current-account skip: task=%s", task_id[:8])
     return {
         "message": "已请求跳过当前账号，等待切换下一个账号",
-        "task_id": _current_task_id,
+        "task_id": task_id,
         "command": task.get("command"),
+        "task_group": task.get("task_group"),
     }
 
 
@@ -6288,14 +6526,15 @@ def _auto_check_loop():
                     # 冷却期内仍然继续做"低额度替换"(下面的 low_accounts 逻辑),
                     # 只是不触发全量 cmd_rotate
                 else:
-                    if not _playwright_lock.acquire(blocking=False):
+                    team_lock = _task_group_lock(TASK_GROUP_TEAM)
+                    if not team_lock.acquire(blocking=False):
                         logger.info(
                             "[巡检] active=%d < %d 但有任务在跑,本轮先跳过自动补位",
                             len(active),
                             TEAM_SUB_ACCOUNT_HARD_CAP,
                         )
                         continue
-                    _playwright_lock.release()
+                    team_lock.release()
                     logger.warning(
                         "[巡检] active 账号 %d < %d,触发 auto-fill(cmd_rotate 全流程补位)",
                         len(active),
@@ -6309,6 +6548,7 @@ def _auto_check_loop():
                             cmd_rotate,
                             {"target_seats": TEAM_SUB_ACCOUNT_HARD_CAP + 1},
                             TEAM_SUB_ACCOUNT_HARD_CAP + 1,
+                            task_group=TASK_GROUP_TEAM,
                         )
                         _auto_fill_last_trigger_ts = now_ts
                     except Exception as e:
@@ -6342,10 +6582,11 @@ def _auto_check_loop():
                 )
 
                 # 有任务在跑则本轮跳过(下轮再替换,避免重复 kick)
-                if not _playwright_lock.acquire(blocking=False):
+                team_lock = _task_group_lock(TASK_GROUP_TEAM)
+                if not team_lock.acquire(blocking=False):
                     logger.info("[巡检] 有任务正在执行，本轮跳过即时替换")
                     continue
-                _playwright_lock.release()
+                team_lock.release()
 
                 # 先标记 exhausted,cmd_check 入口的对账在此之后再看到就会补 kick(双保险)。
                 # 必须同时写 quota_resets_at —— 否则 get_standby_accounts() 看到 None 就默认
@@ -6378,6 +6619,7 @@ def _auto_check_loop():
                         {"emails": emails_to_replace, "trigger": "auto-check"},
                         emails_to_replace,
                         "auto-check",
+                        task_group=TASK_GROUP_TEAM,
                     )
                 except Exception as e:
                     logger.error("[巡检] 即时替换启动失败: %s", e)

@@ -24,6 +24,7 @@ def test_get_status_normalizes_main_account_status_from_saved_auth(tmp_path, mon
             }
         ],
     )
+    monkeypatch.setattr("autoteam.auth_session_store.list_auth_session_emails", lambda: [])
     monkeypatch.setattr(api, "_is_main_account_email", lambda email: email == main_email)
     monkeypatch.setattr("autoteam.codex_auth.get_saved_main_auth_file", lambda: str(auth_file))
     monkeypatch.setattr(
@@ -93,6 +94,26 @@ def test_sanitize_account_marks_auth_session_only_account_needs_codex_login(tmp_
     assert sanitized["codex_auth_file"] == ""
     assert sanitized["has_codex_auth_file"] is False
     assert sanitized["needs_codex_login"] is True
+
+
+def test_get_status_counts_auth_session_only_accounts(monkeypatch):
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [])
+    monkeypatch.setattr(
+        "autoteam.auth_session_store.list_auth_session_emails",
+        lambda: ["session-one@example.com", "Session-Two@Example.com"],
+    )
+    monkeypatch.setattr("autoteam.auth_session_store.get_auth_session_file", lambda _email: "")
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+
+    result = api.get_status()
+
+    assert [acc["email"] for acc in result["accounts"]] == [
+        "session-one@example.com",
+        "session-two@example.com",
+    ]
+    assert result["summary"]["active"] == 2
+    assert result["summary"]["free"] == 2
+    assert result["summary"]["total"] == 2
 
 
 def test_sanitize_account_marks_codex_auth_file_as_logged_in(tmp_path, monkeypatch):

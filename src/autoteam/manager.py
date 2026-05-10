@@ -2,7 +2,7 @@
 import autoteam.display  # noqa: F401 — 自动设置虚拟显示器
 
 """
-账号轮转管理器
+Token自由管理系统
 
 功能:
 - 检查所有活跃账号的 Codex 额度
@@ -5101,7 +5101,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="manager.py",
-        description="ChatGPT Team 账号轮转管理器",
+        description="ChatGPT Token自由管理系统",
     )
     sub = parser.add_subparsers(dest="command", help="可用命令")
 

@@ -1,3 +1,5 @@
+import pytest
+
 from autoteam import bind_executor, config, gopay_executor
 from autoteam.gopay_executor import (
     GoPayFlowError,
@@ -14,8 +16,10 @@ from autoteam.gopay_executor import (
     _extract_sms_codes,
     _fetch_random_billing_address,
     _generate_id_checkout_http,
+    _generate_id_checkout_in_page,
     _is_checkout_customer_location_error,
     _is_checkout_rate_limited_error,
+    _is_playwright_navigation_race_error,
     _poll_otp_from_sms_url,
     _looks_like_phone_number,
     _safe_error_summary,
@@ -27,6 +31,11 @@ from autoteam.gopay_executor import (
     _split_address_lines,
     _split_gopay_phone,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fast_gopay_sms_resend(monkeypatch):
+    monkeypatch.setenv("GOPAY_SMS_OTP_DELAY_SECONDS", "0")
 
 
 class FakeResponse:
@@ -520,6 +529,7 @@ def test_gopay_http_charger_success_flow(monkeypatch):
             ),
             ("POST", "/v1/linking/validate-reference", FakeResponse(json_data={"success": True})),
             ("POST", "/v1/linking/user-consent", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/resend-otp", FakeResponse(json_data={"success": True})),
             (
                 "POST",
                 "/v1/linking/validate-otp",
@@ -589,7 +599,7 @@ def test_gopay_http_charger_success_flow(monkeypatch):
     assert result["charge_ref"] == "CHARGE123"
     assert approved == []
     assert verified == ["cs_test"]
-    assert sms_triggers == [(reference_id, activation_link)]
+    assert sms_triggers == []
     linking_request = next(request for request in http.requests if request["url"].endswith("/linking"))
     assert linking_request["kwargs"]["json"] == {
         "type": "gopay",
@@ -648,6 +658,7 @@ def test_gopay_http_charger_skips_approve_when_confirm_returns_redirect(monkeypa
             ),
             ("POST", "/v1/linking/validate-reference", FakeResponse(json_data={"success": True})),
             ("POST", "/v1/linking/user-consent", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/resend-otp", FakeResponse(json_data={"success": True})),
             (
                 "POST",
                 "/v1/linking/validate-otp",
@@ -1104,6 +1115,53 @@ def test_generate_id_checkout_http_builds_canonical_url():
     assert http.headers["oai-client-build-number"] == "123"
 
 
+def test_playwright_navigation_race_error_is_retryable():
+    assert _is_playwright_navigation_race_error(
+        "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
+    )
+    assert not _is_playwright_navigation_race_error("HTTP 403")
+
+
+def test_generate_id_checkout_in_page_retries_navigation_race(monkeypatch):
+    monkeypatch.setenv("GOPAY_BROWSER_CHECKOUT_EVALUATE_ATTEMPTS", "2")
+
+    class FakePage:
+        url = "https://chatgpt.com/"
+
+        def __init__(self):
+            self.calls = 0
+            self.waits = []
+
+        def evaluate(self, _script, _args):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("Page.evaluate: Execution context was destroyed, most likely because of a navigation")
+            return {
+                "ok": True,
+                "status": 200,
+                "url": "https://chatgpt.com/checkout/openai_llc/cs_test_123",
+                "raw": {"checkout_session_id": "cs_test_123"},
+            }
+
+        def wait_for_load_state(self, state, timeout=0):
+            self.waits.append((state, timeout))
+
+        def wait_for_timeout(self, timeout):
+            self.waits.append(("timeout", timeout))
+
+    class FakeApi:
+        def __init__(self):
+            self.page = FakePage()
+
+    fake_api = FakeApi()
+
+    result = _generate_id_checkout_in_page(fake_api, access_token="access")
+
+    assert result["url"] == "https://chatgpt.com/checkout/openai_llc/cs_test_123"
+    assert fake_api.page.calls == 2
+    assert ("domcontentloaded", 10000) in fake_api.page.waits
+
+
 def test_gopay_http_charger_retries_linking_when_account_already_linked(monkeypatch):
     sleeps = []
     monkeypatch.setattr(gopay_executor.time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -1125,6 +1183,7 @@ def test_gopay_http_charger_retries_linking_when_account_already_linked(monkeypa
             ),
             ("POST", "/v1/linking/validate-reference", FakeResponse(json_data={"success": True})),
             ("POST", "/v1/linking/user-consent", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/resend-otp", FakeResponse(json_data={"success": True})),
             (
                 "POST",
                 "/v1/linking/validate-otp",
@@ -1406,6 +1465,7 @@ def test_gopay_http_charger_allows_zero_stripe_due_with_midtrans_gross(monkeypat
             ),
             ("POST", "/v1/linking/validate-reference", FakeResponse(json_data={"success": True})),
             ("POST", "/v1/linking/user-consent", FakeResponse(json_data={"success": True})),
+            ("POST", "/v1/linking/resend-otp", FakeResponse(json_data={"success": True})),
             (
                 "POST",
                 "/v1/linking/validate-otp",

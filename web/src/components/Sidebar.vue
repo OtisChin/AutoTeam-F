@@ -3,7 +3,7 @@
   <nav class="hidden md:flex w-48 shrink-0 bg-gray-900 border-r border-gray-800 min-h-screen p-4 flex-col">
     <div class="mb-6">
       <h1 class="text-lg font-bold text-white">AutoPro</h1>
-      <p class="text-xs text-gray-500 mt-0.5">账号轮转管理</p>
+      <p class="text-xs text-gray-500 mt-0.5">Token自由管理系统</p>
     </div>
     <div class="space-y-1 flex-1">
       <button v-for="item in items" :key="item.key"

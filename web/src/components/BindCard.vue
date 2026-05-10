@@ -1346,6 +1346,7 @@ const emit = defineEmits(['refresh'])
 
 const BIND_HISTORY_KEY = 'autoteam_bind_history_v1'
 const GOPAY_FORM_STATE_KEY = 'autoteam_gopay_form_state_v1'
+const GOPAY_RECENT_TASK_KEY = 'autoteam_gopay_recent_task_id_v1'
 const luckmailEmailTypeOptions = [
   { value: 'ms_graph', label: '微软 Graph 邮箱' },
   { value: 'ms_imap', label: '微软 IMAP 邮箱' },
@@ -2569,6 +2570,16 @@ function pushGoPayLog(message, level = 'info') {
   scrollGoPayLogToBottom()
 }
 
+function rememberGoPayTaskId(taskId) {
+  const id = String(taskId || '').trim()
+  if (!id) return
+  try {
+    localStorage.setItem(GOPAY_RECENT_TASK_KEY, id)
+  } catch (e) {
+    console.error('rememberGoPayTaskId', e)
+  }
+}
+
 function goPayProgressLogLevel(event) {
   const level = String(event?.level || '').trim()
   if (['info', 'success', 'warn', 'error'].includes(level)) return level
@@ -2600,6 +2611,31 @@ function processGoPayProgressEvents(task) {
     printed += 1
   }
   return printed
+}
+
+function hydrateGoPayTaskLog(task, restoreMessage = '') {
+  if (!task) return
+  activeTab.value = 'gopay'
+  gopayTask.value = task
+  rememberGoPayTaskId(task.task_id)
+  if (restoreMessage) {
+    pushGoPayLog(restoreMessage, 'info')
+  }
+  if (task.progress?.stage) {
+    pushGoPayLog(`执行阶段：${gopayStageLabelMap[task.progress.stage] || task.progress.stage}`, 'info')
+  }
+  const printed = processGoPayProgressEvents(task)
+  if (!printed && task.progress?.message) {
+    pushGoPayLog(task.progress.message, goPayProgressLogLevel(task.progress))
+  }
+  if (!isTaskActive(task)) {
+    const statusLabel = bindStatusText(task)
+    pushGoPayLog(`任务状态：${statusLabel}`, task.status === 'failed' ? 'error' : task.status === 'completed' ? 'success' : task.status === 'cancelled' ? 'warn' : 'info')
+    const resultMessage = String(task.result?.message || '').trim()
+    if (resultMessage) {
+      pushGoPayLog(resultMessage, task.result?.status === 'success' ? 'success' : task.status === 'cancelled' ? 'warn' : 'error')
+    }
+  }
 }
 
 function formatCardOption(card) {
@@ -2730,6 +2766,7 @@ async function pollGoPayTask(taskId) {
     const previous = gopayTask.value
     const task = await api.getTask(taskId)
     gopayTask.value = task
+    rememberGoPayTaskId(task.task_id || taskId)
     const statusLabel = task.status === 'pending'
       ? '排队中'
       : task.status === 'running'
@@ -2797,16 +2834,25 @@ async function restoreActiveBindTasks() {
   try {
     const tasks = await api.getTasks()
     const running = (tasks || []).find(task => isTaskActive(task) && ['bind-card', 'gopay-bind'].includes(task.command))
-    if (!running) return
+    const recentGoPay = (tasks || []).find(task => task.command === 'gopay-bind')
+    if (!running) {
+      let restored = recentGoPay
+      if (!restored) {
+        try {
+          const savedGoPayTaskId = localStorage.getItem(GOPAY_RECENT_TASK_KEY)
+          if (savedGoPayTaskId) restored = await api.getTask(savedGoPayTaskId)
+        } catch {
+          restored = null
+        }
+      }
+      if (restored?.command === 'gopay-bind') {
+        hydrateGoPayTaskLog(restored, `已恢复最近 GoPay 任务日志：${restored.task_id}`)
+      }
+      return
+    }
 
     if (running.command === 'gopay-bind') {
-      activeTab.value = 'gopay'
-      gopayTask.value = running
-      pushGoPayLog(`已恢复 GoPay 任务轮询：${running.task_id}`, 'info')
-      const printed = processGoPayProgressEvents(running)
-      if (!printed && running.progress?.message) {
-        pushGoPayLog(running.progress.message, 'info')
-      }
+      hydrateGoPayTaskLog(running, `已恢复 GoPay 任务轮询：${running.task_id}`)
       await pollGoPayTask(running.task_id)
       return
     }
@@ -3087,6 +3133,7 @@ async function startGoPayBind() {
       pending_retry_attempts: normalizedGoPayPendingRetryAttempts.value,
     })
     gopayTask.value = task
+    rememberGoPayTaskId(task.task_id)
     pushGoPayLog(`GoPay 任务已提交，任务 ID: ${task.task_id}`, 'success')
     setMessage(`GoPay 任务已提交: ${task.task_id}`)
     await pollGoPayTask(task.task_id)

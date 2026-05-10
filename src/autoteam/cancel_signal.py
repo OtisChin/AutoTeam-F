@@ -14,18 +14,39 @@ import threading
 logger = logging.getLogger(__name__)
 
 _event = threading.Event()
+_local = threading.local()
+
+
+def _active_event() -> threading.Event:
+    event = getattr(_local, "event", None)
+    return event if hasattr(event, "is_set") and hasattr(event, "set") else _event
+
+
+def set_current_event(event: threading.Event) -> None:
+    """Bind a task-scoped cancel event to the current worker thread."""
+    _local.event = event
+
+
+def clear_current_event() -> None:
+    if hasattr(_local, "event"):
+        delattr(_local, "event")
 
 
 def reset() -> None:
     """任务开始前清零,避免上一次的 cancel 标记泄漏到下一次。"""
-    _event.clear()
+    _active_event().clear()
 
 
 def request_cancel(reason: str = "") -> None:
     """外部调用,请求当前任务在下一个安全点退出。"""
     logger.warning("[Cancel] 收到取消请求%s", f": {reason}" if reason else "")
-    _event.set()
+    _active_event().set()
+
+
+def request_cancel_event(event: threading.Event, reason: str = "") -> None:
+    logger.warning("[Cancel] 收到取消请求%s", f": {reason}" if reason else "")
+    event.set()
 
 
 def is_cancelled() -> bool:
-    return _event.is_set()
+    return _active_event().is_set()

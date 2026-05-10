@@ -426,6 +426,11 @@ def test_gopay_task_runner_auto_register_count_registers_and_binds_sequentially(
     assert "成功 2/2" in task_result["message"]
     updated_emails = [email for email, _kwargs in captured["updates"]]
     assert updated_emails == registered_emails
+    for _email, update in captured["updates"]:
+        assert update["last_bind_status"] == "success"
+        assert update["status"] == accounts_module.STATUS_ACTIVE
+        assert update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
+        assert update["plus_bound_at"] == update["last_bind_at"]
 
 
 def test_gopay_task_runner_auto_register_retries_pending_after_first_round(monkeypatch):
@@ -754,16 +759,16 @@ def test_post_task_skip_current_sets_gopay_skip_signal(monkeypatch):
     task = {
         "task_id": "task-skip",
         "command": "gopay-bind",
+        "task_group": api.TASK_GROUP_GOPAY,
         "status": "running",
         "params": {"account_emails": ["user@example.com", "backup@example.com"]},
     }
 
-    monkeypatch.setattr(api, "_current_task_id", "task-skip")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: progress_updates.append(progress))
     api._tasks["task-skip"] = task
     api._task_skip_signals["task-skip"] = signal
     try:
         result = api.post_task_skip_current()
+        progress_updates.extend(task.get("progress_events") or [])
     finally:
         api._tasks.pop("task-skip", None)
         api._task_skip_signals.pop("task-skip", None)
@@ -1413,7 +1418,7 @@ def test_gopay_task_runner_raises_on_failed_executor_result(monkeypatch):
     monkeypatch.setattr("autoteam.accounts.delete_account", lambda email: captured.setdefault("deleted_accounts", []).append(email) or True)
     monkeypatch.setattr("autoteam.auth_session_store.delete_auth_session", lambda email: captured.setdefault("deleted_sessions", []).append(email) or True)
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: progress_updates.append(progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: progress_updates.append(progress))
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
     def fake_run_gopay_bind_task(**kwargs):
         captured["run_kwargs"] = kwargs
@@ -1464,7 +1469,7 @@ def test_gopay_task_runner_marks_success_account_plus(monkeypatch):
     monkeypatch.setattr("autoteam.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None)
     monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
     def fake_run_gopay_bind_task(**kwargs):
@@ -1516,7 +1521,7 @@ def test_gopay_task_runner_passes_whatsapp_otp_channel_and_default_url(monkeypat
     monkeypatch.setattr("autoteam.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None)
     monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
     def fake_run_gopay_bind_task(**kwargs):
@@ -1569,7 +1574,7 @@ def test_gopay_task_runner_marks_all_batch_success_accounts_plus(monkeypatch):
     )
     monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
     def fake_run_gopay_bind_task(**kwargs):
@@ -1611,6 +1616,65 @@ def test_gopay_task_runner_marks_all_batch_success_accounts_plus(monkeypatch):
         assert update["plus_bound_at"] == update["last_bind_at"]
 
 
+def test_gopay_task_runner_persists_session_only_batch_success_as_plus(monkeypatch, tmp_path):
+    captured = {"progress": []}
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "auth_session"
+    auth_dir.mkdir()
+    first_auth = auth_dir / "first.json"
+    second_auth = auth_dir / "second.json"
+    first_auth.write_text("{}", encoding="utf-8")
+    second_auth.write_text("{}", encoding="utf-8")
+    auth_files = {
+        "first@example.com": str(first_auth),
+        "second@example.com": str(second_auth),
+    }
+
+    monkeypatch.setattr(accounts_module, "ACCOUNTS_FILE", accounts_file)
+    accounts_module.save_accounts([])
+    monkeypatch.setattr("autoteam.auth_session_store.get_auth_session_file", lambda email: auth_files.get(email, ""))
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda acc: auth_files.get((acc.get("email") or "").lower(), ""))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+    monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
+
+    def fake_run_gopay_bind_task(**kwargs):
+        captured["run_kwargs"] = kwargs
+        return {
+            "status": "success",
+            "message": "GoPay 批量绑定完成: 成功 2/2 个账号",
+            "email_used": "second@example.com",
+            "successful_emails": ["first@example.com", "second@example.com"],
+        }
+
+    monkeypatch.setattr("autoteam.gopay_executor.run_gopay_bind_task", fake_run_gopay_bind_task)
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        captured["func"] = func
+        return {"task_id": "task-session-only-plus", "command": command, "params": params}
+
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    api.post_gopay_bind_task(
+        api.GoPayBindTaskParams(
+            email="first@example.com",
+            account_emails=["first@example.com", "second@example.com"],
+            phone_number="+6287761973970",
+            country_code="62",
+            sms_url="https://it.tgflare.com/api/record?token=demo",
+            gopay_pin="558023",
+        )
+    )
+
+    result = captured["func"]()
+    saved = {account["email"]: account for account in accounts_module.load_accounts()}
+
+    assert result["task_status"] == "completed"
+    assert saved["first@example.com"]["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
+    assert saved["second@example.com"]["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
+    assert saved["first@example.com"]["status"] == accounts_module.STATUS_ACTIVE
+    assert saved["second@example.com"]["status"] == accounts_module.STATUS_ACTIVE
+
+
 def test_gopay_task_runner_marks_batch_success_account_plus_immediately(monkeypatch):
     captured = {"updates": [], "progress": []}
     accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
@@ -1622,7 +1686,7 @@ def test_gopay_task_runner_marks_batch_success_account_plus_immediately(monkeypa
     )
     monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
     def fake_run_gopay_bind_task(**kwargs):
@@ -1697,7 +1761,7 @@ def test_gopay_task_runner_auto_oauth_after_success(monkeypatch):
     )
     monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
@@ -1766,7 +1830,7 @@ def test_gopay_task_runner_auto_oauth_retries_twice_after_success(monkeypatch):
     )
     monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda progress: captured["progress"].append(progress))
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
     monkeypatch.setattr(api.time, "sleep", lambda _seconds: None)
@@ -2038,6 +2102,7 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
         captured["command"] = command
         captured["params"] = params
         captured["exclusive"] = kwargs.get("exclusive")
+        captured["task_group"] = kwargs.get("task_group")
         captured["pass_task_id"] = kwargs.get("pass_task_id")
         captured["result"] = func("task-login-batch")
         return {"task_id": "task-login-batch", "command": command, "params": params}
@@ -2052,7 +2117,8 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
 
     assert result["task_id"] == "task-login-batch"
     assert captured["command"] == "login-batch"
-    assert captured["exclusive"] is False
+    assert captured["task_group"] == api.TASK_GROUP_OAUTH
+    assert captured["exclusive"] is None
     assert captured["pass_task_id"] is True
     assert captured["params"]["emails"] == [
         "first@example.com",
@@ -2248,7 +2314,7 @@ def test_post_account_login_removes_account_when_oauth_requires_phone(monkeypatc
     monkeypatch.setattr(api, "_run_account_codex_login_once", lambda *_args, **_kwargs: (_ for _ in ()).throw(CodexOAuthPhoneRequired("https://auth.openai.com/add-phone")))
     monkeypatch.setattr(
         api,
-        "_remove_oauth_account_deactivated_accounts_from_pool",
+        "_remove_oauth_phone_required_accounts_from_pool",
         lambda emails: captured.setdefault("removed", list(emails)),
     )
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
@@ -2256,6 +2322,7 @@ def test_post_account_login_removes_account_when_oauth_requires_phone(monkeypatc
     def fake_start_task(command, func, params, *args, **kwargs):
         captured["command"] = command
         captured["exclusive"] = kwargs.get("exclusive")
+        captured["task_group"] = kwargs.get("task_group")
         captured["pass_task_id"] = kwargs.get("pass_task_id")
         try:
             func("task-login-phone")
@@ -2268,7 +2335,8 @@ def test_post_account_login_removes_account_when_oauth_requires_phone(monkeypatc
     api.post_account_login(api.LoginAccountParams(email="phone@example.com"))
 
     assert captured["removed"] == ["phone@example.com"]
-    assert captured["exclusive"] is False
+    assert captured["task_group"] == api.TASK_GROUP_OAUTH
+    assert captured["exclusive"] is None
     assert captured["pass_task_id"] is True
     assert captured["error"].task_result["failure_stage"] == "oauth_phone_required"
     assert captured["progress"][-1]["stage"] == "account_login_phone_required_removed"
@@ -2334,6 +2402,7 @@ def test_post_accounts_login_batch_continues_after_phone_required(monkeypatch):
 
     def fake_start_task(command, func, params, *args, **kwargs):
         captured["exclusive"] = kwargs.get("exclusive")
+        captured["task_group"] = kwargs.get("task_group")
         captured["pass_task_id"] = kwargs.get("pass_task_id")
         captured["result"] = func("task-login-batch")
         return {"task_id": "task-login-batch", "command": command, "params": params}
@@ -2345,7 +2414,8 @@ def test_post_accounts_login_batch_continues_after_phone_required(monkeypatch):
     )
 
     assert [item["email"] for item in captured["result"]["ok"]] == ["ok@example.com"]
-    assert captured["exclusive"] is False
+    assert captured["task_group"] == api.TASK_GROUP_OAUTH
+    assert captured["exclusive"] is None
     assert captured["pass_task_id"] is True
     assert captured["result"]["phone_required"][0]["email"] == "phone@example.com"
     assert any(progress["stage"] == "account_login_phone_required_removed" for progress in captured["progress"])
@@ -2367,7 +2437,7 @@ def test_gopay_task_runner_removes_rejected_batch_accounts(monkeypatch):
     monkeypatch.setattr("autoteam.accounts.delete_account", lambda email: captured["deleted_accounts"].append(email) or True)
     monkeypatch.setattr("autoteam.auth_session_store.delete_auth_session", lambda email: captured["deleted_sessions"].append(email) or True)
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda _progress: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, _progress: None)
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
     class FakeMailClient:
@@ -2438,7 +2508,7 @@ def test_gopay_task_runner_removes_nonzero_blocked_accounts(monkeypatch):
     monkeypatch.setattr("autoteam.accounts.delete_account", lambda email: captured["deleted_accounts"].append(email) or True)
     monkeypatch.setattr("autoteam.auth_session_store.delete_auth_session", lambda email: captured["deleted_sessions"].append(email) or True)
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda _progress: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, _progress: None)
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
     class FakeMailClient:
@@ -2506,7 +2576,7 @@ def test_gopay_task_runner_removes_payment_process_failed_accounts(monkeypatch):
     monkeypatch.setattr("autoteam.accounts.delete_account", lambda email: captured["deleted_accounts"].append(email) or True)
     monkeypatch.setattr("autoteam.auth_session_store.delete_auth_session", lambda email: captured["deleted_sessions"].append(email) or True)
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda _progress: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, _progress: None)
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
     class FakeMailClient:
@@ -2575,7 +2645,7 @@ def test_gopay_task_runner_marks_token_invalidated_accounts_fail(monkeypatch):
     monkeypatch.setattr("autoteam.accounts.delete_account", lambda email: captured["deleted_accounts"].append(email) or True)
     monkeypatch.setattr("autoteam.auth_session_store.delete_auth_session", lambda email: captured["deleted_sessions"].append(email) or True)
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda _progress: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, _progress: None)
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 
     def fake_run_gopay_bind_task(**kwargs):
@@ -2638,7 +2708,7 @@ def test_gopay_task_runner_refreshes_auth_session_before_retry(monkeypatch):
     )
     monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/account.json")
-    monkeypatch.setattr(api, "_update_current_task_progress", lambda _progress: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, _progress: None)
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
     monkeypatch.setattr("autoteam.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
 

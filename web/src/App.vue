@@ -32,25 +32,13 @@
 
     <!-- 主内容区 -->
     <div class="flex-1 p-4 md:p-6 overflow-y-auto pb-20 md:pb-6">
-      <!-- 任务执行中提示 -->
-      <div v-if="busyTask" class="flex items-center gap-2 text-sm text-yellow-400 mb-4">
-        <span class="animate-spin inline-block w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full"></span>
-        {{ busyTask.command === 'admin-login'
-          ? '管理员登录中...'
-          : busyTask.command === 'main-codex-sync'
-            ? '主号 Codex 同步中...'
-            : busyTask.command === 'manual-account'
-              ? 'OAuth 登录中...'
-              : `${busyTask.command} 执行中...` }}
-      </div>
-
       <!-- 页面内容 -->
       <Dashboard v-if="currentPage === 'dashboard'"
         :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus"
         @task-started="onTaskStarted" @refresh="refresh" />
 
 <RegisterAccountPage v-else-if="currentPage === 'register'"
-        :running-task="busyTask" :admin-status="adminStatus"
+        :running-task="registerRunningTask" :admin-status="adminStatus"
         @task-started="onTaskStarted" @refresh="refresh" />
 
       <BindCardPool v-else-if="currentPage === 'cardpool'" />
@@ -72,6 +60,36 @@
       <Settings v-else-if="currentPage === 'settings'"
         :admin-status="adminStatus" :codex-status="codexStatus"
         @refresh="refresh" @admin-progress="onAdminProgress" />
+    </div>
+
+    <div
+      v-if="busyTasks.length"
+      class="fixed top-4 right-4 z-50 w-[min(380px,calc(100vw-2rem))] max-h-[calc(100vh-2rem)] overflow-y-auto space-y-3"
+    >
+      <div
+        v-for="task in busyTasks"
+        :key="taskNoticeKey(task)"
+        class="rounded-lg border border-yellow-400/30 bg-gray-950/95 shadow-2xl shadow-black/40 backdrop-blur"
+      >
+        <div class="px-4 py-3">
+        <div class="flex items-start gap-3">
+          <span class="mt-1 animate-spin inline-block w-4 h-4 shrink-0 border-2 border-yellow-300 border-t-transparent rounded-full"></span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-sm font-semibold text-white truncate">{{ taskNoticeTitle(task) }}</div>
+              <div class="text-xs font-mono text-yellow-200 shrink-0">{{ taskProgress(task).text }}</div>
+            </div>
+            <div class="mt-1 text-xs text-gray-400 truncate">{{ taskNoticeSubtitle(task) }}</div>
+            <div class="mt-3 h-1.5 rounded-full bg-gray-800 overflow-hidden">
+              <div
+                class="h-full rounded-full bg-yellow-300 transition-all duration-300"
+                :style="{ width: `${taskProgress(task).percent}%` }"
+              ></div>
+            </div>
+          </div>
+        </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -100,7 +118,7 @@ const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autoteam_current_page'
 const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
-const ACTIVE_POLL_INTERVAL_MS = 10000
+const ACTIVE_POLL_INTERVAL_MS = 3000
 const IDLE_POLLING_ENABLED = false
 const savedPage = localStorage.getItem(CURRENT_PAGE_KEY)
 const currentPage = ref(PAGE_KEYS.has(savedPage) ? savedPage : 'dashboard')
@@ -113,20 +131,122 @@ const tasks = ref([])
 const loading = ref(false)
 const statusRefreshing = ref(false)
 const runningTask = ref(null)
-const busyTask = computed(() => {
+const activeTasks = computed(() => (tasks.value || []).filter(task => ['running', 'pending'].includes(String(task?.status || ''))))
+const registerRunningTask = computed(() => activeTasks.value.find(task => task?.command === 'register') || null)
+const busyTasks = computed(() => {
+  const items = []
   if (adminStatus.value?.login_in_progress) {
-    return { command: 'admin-login' }
+    items.push({ command: 'admin-login', status: 'running', task_id: 'admin-login' })
   }
   if (codexStatus.value?.in_progress) {
-    return { command: 'main-codex-sync' }
+    items.push({ command: 'main-codex-sync', status: 'running', task_id: 'main-codex-sync' })
   }
   if (manualAccountStatus.value?.in_progress) {
-    return { command: 'manual-account' }
+    items.push({ command: 'manual-account', status: 'running', task_id: 'manual-account' })
   }
-  return runningTask.value
+  for (const task of activeTasks.value) {
+    items.push(task)
+  }
+  return items
 })
+const busyTask = computed(() => busyTasks.value[0] || null)
+
+function taskNoticeKey(task) {
+  return task?.task_id || `${task?.command || 'task'}-${task?.created_at || ''}`
+}
+
+function taskNoticeTitle(task) {
+  const command = String(task?.command || '')
+  const label = taskCommandLabel(command)
+  const status = taskStatusLabel(task?.status)
+  return `${label}${status ? ` · ${status}` : ''}`
+}
+
+function taskNoticeSubtitle(task) {
+  task = task || {}
+  const progress = task.progress || {}
+  return progress.message || taskStageLabel(progress.stage) || task.task_id || '后台任务正在执行'
+}
 
 let pollTimer = null
+let pollIntervalMs = null
+
+function taskCommandLabel(command) {
+  const value = String(command || '')
+  if (value.startsWith('login:')) return 'OAuth 补登录'
+  return {
+    'admin-login': '管理员登录',
+    'main-codex-sync': '主号 Codex 同步',
+    'manual-account': 'OAuth 登录',
+    register: '注册账号',
+    'bind-card': '绑卡任务',
+    'gopay-bind': 'GoPay 绑定',
+    'login-batch': '批量补登录',
+    'refresh-quota': '刷新凭证',
+    check: '额度检测',
+    rotate: '账号轮换',
+    replace: '替换账号',
+    fill: '补满账号',
+    'fill-personal': '生产免费号',
+    cleanup: '清理账号',
+    'auto-fill': '自动补位',
+    'auto-replace': '自动替换',
+  }[value] || value || '后台任务'
+}
+
+function taskStatusLabel(status) {
+  return {
+    pending: '等待中',
+    running: '执行中',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+  }[String(status || '')] || ''
+}
+
+function taskStageLabel(stage) {
+  return {
+    gopay_binding: 'GoPay 绑定准备中',
+    gopay_auto_register_next: '自动注册并绑定',
+    gopay_pending_retry_wait: '等待重试',
+    gopay_pending_retry_account: '正在重试账号',
+    binding: '绑卡中',
+    completed: '流程完成',
+    failed: '流程失败',
+  }[String(stage || '')] || ''
+}
+
+function taskProgress(task) {
+  const progress = task?.progress || {}
+  const params = task?.params || {}
+  const result = task?.result || {}
+  const total = Number(
+    progress.total ||
+    progress.account_count ||
+    result.total ||
+    params.auto_register_count ||
+    params.count ||
+    (Array.isArray(params.account_emails) ? params.account_emails.length : 0) ||
+    0
+  )
+  const done = Number(
+    progress.current ||
+    progress.processed ||
+    progress.successful + progress.failed ||
+    progress.ok + progress.failed ||
+    result.successful ||
+    0
+  )
+  if (total > 0) {
+    const current = Math.max(0, Math.min(total, Number.isFinite(done) ? done : 0))
+    return {
+      text: `${current}/${total}`,
+      percent: Math.max(4, Math.round((current / total) * 100)),
+    }
+  }
+  if (task?.status === 'pending') return { text: '等待中', percent: 8 }
+  return { text: '进行中', percent: 35 }
+}
 
 function withTimeout(promise, ms, label) {
   let timer = null
@@ -237,8 +357,8 @@ async function doLogin() {
       authError.value = 'API Key 无效'
     } else {
       inputKey.value = ''
-      refresh()
-      startPolling(IDLE_POLL_INTERVAL_MS)
+      await refresh()
+      syncPollingWithTasks()
     }
   } catch (e) {
     clearApiKey()
@@ -282,6 +402,7 @@ async function refresh() {
       (task.status === 'running' || task.status === 'pending') && task.exclusive !== false
     ) || null
     refreshFullStatusInBackground()
+    syncPollingWithTasks()
   } catch (e) {
     if (e.status === 401) {
       authenticated.value = false
@@ -304,15 +425,16 @@ function onAdminProgress() {
 }
 
 function startPolling(interval = IDLE_POLL_INTERVAL_MS) {
+  if (pollTimer && pollIntervalMs === interval) {
+    return
+  }
   stopPolling()
   if (interval >= IDLE_POLL_INTERVAL_MS && !IDLE_POLLING_ENABLED && !busyTask.value) {
     return
   }
+  pollIntervalMs = interval
   pollTimer = setInterval(async () => {
     await refresh()
-    if (!busyTask.value && interval < IDLE_POLL_INTERVAL_MS) {
-      startPolling(IDLE_POLL_INTERVAL_MS)
-    }
   }, interval)
 }
 
@@ -320,6 +442,15 @@ function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
+  }
+  pollIntervalMs = null
+}
+
+function syncPollingWithTasks() {
+  if (busyTasks.value.length) {
+    startPolling(ACTIVE_POLL_INTERVAL_MS)
+  } else {
+    startPolling(IDLE_POLL_INTERVAL_MS)
   }
 }
 
@@ -334,10 +465,10 @@ async function checkSetup() {
 
 function onSetupDone() {
   needSetup.value = false
-  checkAuth().then(ok => {
+  checkAuth().then(async ok => {
     if (ok) {
-      refresh()
-      startPolling(IDLE_POLL_INTERVAL_MS)
+      await refresh()
+      syncPollingWithTasks()
     }
   })
 }
@@ -350,8 +481,8 @@ onMounted(async () => {
   }
   const ok = await checkAuth()
   if (ok) {
-    refresh()
-    startPolling(IDLE_POLL_INTERVAL_MS)
+    await refresh()
+    syncPollingWithTasks()
   }
 })
 

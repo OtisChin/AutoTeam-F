@@ -620,6 +620,37 @@ def _safe_error_summary(error: Any, *, limit: int = 240) -> str:
     return text
 
 
+def _is_playwright_navigation_race_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    return bool(
+        "execution context was destroyed" in text
+        or "most likely because of a navigation" in text
+        or "cannot find context with specified id" in text
+    )
+
+
+def _wait_for_page_navigation_quiet(page: Any, *, quiet_ms: int = 700, timeout_ms: int = 5000) -> None:
+    """Wait until the current Playwright page URL stops changing briefly."""
+    deadline = time.time() + max(0.1, timeout_ms / 1000)
+    quiet_deadline = 0.0
+    last_url = None
+    while time.time() < deadline:
+        try:
+            current_url = str(getattr(page, "url", "") or "")
+        except Exception:
+            current_url = ""
+        now = time.time()
+        if current_url != last_url:
+            last_url = current_url
+            quiet_deadline = now + max(0.1, quiet_ms / 1000)
+        elif quiet_deadline and now >= quiet_deadline:
+            return
+        try:
+            page.wait_for_timeout(200)
+        except Exception:
+            time.sleep(0.2)
+
+
 def _is_chatgpt_approve_blocked_result(result: dict | None) -> bool:
     if not isinstance(result, dict):
         return False
@@ -4955,13 +4986,44 @@ def _generate_id_checkout_in_page(api: ChatGPTTeamAPI, access_token: str, checko
       }
       return last;
     }"""
-    result = api.page.evaluate(
-        script,
-        {
-            "accessToken": access_token,
-            "payload": _chatgpt_checkout_payload(checkout_ui_mode),
-        },
-    )
+    result = None
+    last_error: Exception | None = None
+    max_attempts = max(1, _env_int("GOPAY_BROWSER_CHECKOUT_EVALUATE_ATTEMPTS", 8))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            _wait_for_page_navigation_quiet(api.page)
+            result = api.page.evaluate(
+                script,
+                {
+                    "accessToken": access_token,
+                    "payload": _chatgpt_checkout_payload(checkout_ui_mode),
+                },
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+            if not _is_playwright_navigation_race_error(exc) or attempt >= max_attempts:
+                raise
+            logger.info(
+                "[gopay_executor] checkout generation evaluate raced with page navigation, retrying: attempt=%s/%s current=%s error=%s",
+                attempt,
+                max_attempts,
+                _safe_url_summary(getattr(api.page, "url", "")),
+                _safe_error_summary(exc),
+            )
+            try:
+                api.page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+            try:
+                api.page.wait_for_timeout(1500)
+            except Exception:
+                time.sleep(1.5)
+            _wait_for_page_navigation_quiet(api.page)
+    if result is None and last_error is not None:
+        raise last_error
+    if not isinstance(result, dict):
+        raise RuntimeError(f"生成印尼区支付链接失败: unexpected result {type(result).__name__}")
     if not result.get("ok"):
         detail = result.get("detail") or "生成印尼区支付链接失败"
         status = result.get("status")
@@ -5012,13 +5074,42 @@ def _open_id_checkout_via_page_script(api: ChatGPTTeamAPI, access_token: str, ch
         return { ok: false, detail: String(e && e.message ? e.message : e) };
       }
     }"""
-    result = api.page.evaluate(
-        script,
-        {
-            "accessToken": access_token,
-            "checkoutUiMode": _normalize_checkout_ui_mode(checkout_ui_mode),
-        },
-    )
+    result = None
+    last_error: Exception | None = None
+    max_attempts = max(1, _env_int("GOPAY_BROWSER_CHECKOUT_EVALUATE_ATTEMPTS", 8))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            _wait_for_page_navigation_quiet(api.page)
+            result = api.page.evaluate(
+                script,
+                {
+                    "accessToken": access_token,
+                    "checkoutUiMode": _normalize_checkout_ui_mode(checkout_ui_mode),
+                },
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+            if not _is_playwright_navigation_race_error(exc) or attempt >= max_attempts:
+                raise
+            logger.info(
+                "[gopay_executor] checkout redirect evaluate raced with page navigation, retrying: attempt=%s/%s current=%s error=%s",
+                attempt,
+                max_attempts,
+                _safe_url_summary(getattr(api.page, "url", "")),
+                _safe_error_summary(exc),
+            )
+            try:
+                api.page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+            try:
+                api.page.wait_for_timeout(1500)
+            except Exception:
+                time.sleep(1.5)
+            _wait_for_page_navigation_quiet(api.page)
+    if result is None and last_error is not None:
+        raise last_error
     if not result.get("ok"):
         raise RuntimeError(result.get("detail") or "页面内生成并跳转 checkout 失败")
     return {
