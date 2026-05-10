@@ -62,6 +62,7 @@ export const api = {
   updateAccountType: (email, accountType) => request('POST', `/accounts/${encodeURIComponent(email)}/type`, { account_type: accountType }),
   exportAccountCredentials: (emails, lineFormat) => request('POST', '/accounts/export-credentials', { emails, line_format: lineFormat }),
   exportAccountCpaAuths: (emails) => request('POST', '/accounts/export-cpa-auths', { emails }),
+  exportAccountSubAuths: (emails) => request('POST', '/accounts/export-sub-auths', { emails }),
   loginAccount: (email) => request('POST', '/accounts/login', { email }),
   loginAccountsBatch: (emails) => request('POST', '/accounts/login-batch', { emails }),
   refreshAccountsQuota: (emails) => request('POST', '/accounts/refresh-quota', { emails }),

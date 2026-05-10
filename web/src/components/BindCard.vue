@@ -9,20 +9,30 @@
       </div>
     </div>
 
-    <h2 class="text-xl font-bold text-white mb-2">自助绑卡服务</h2>
+    <h2 class="text-xl font-bold text-white mb-2">{{ standalone ? 'GoPay' : '自动绑卡服务' }}</h2>
     <p class="text-sm text-gray-400 mb-6">
-      支持生成官方优惠链接，visa卡池管理，以及一键绑卡服务。
+      {{ standalone
+        ? '走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。'
+        : '支持生成官方优惠链接，以及 ChatGPT、Kiro 绑卡流程。' }}
     </p>
 
     <div class="relative mb-6">
-      <div class="flex flex-wrap gap-2">
+      <div v-if="!standalone" class="flex flex-wrap gap-2">
         <button
           @click="activeTab = 'bind'"
           class="px-4 py-2 rounded-lg text-sm border transition"
           :class="activeTab === 'bind'
             ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
             : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-          自动绑卡
+          ChatGPT
+        </button>
+        <button
+          @click="activeTab = 'kiro'"
+          class="px-4 py-2 rounded-lg text-sm border transition"
+          :class="activeTab === 'kiro'
+            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+          Kiro
         </button>
         <button
           @click="activeTab = 'generate'"
@@ -32,26 +42,13 @@
             : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
           生成支付链接
         </button>
-        <button
-          @click="activeTab = 'pool'"
-          class="px-4 py-2 rounded-lg text-sm border transition"
-          :class="activeTab === 'pool'
-            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-          卡池
-        </button>
-        <button
-          @click="activeTab = 'gopay'"
-          class="px-4 py-2 rounded-lg text-sm border transition"
-          :class="activeTab === 'gopay'
-            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-          GoPay
-        </button>
       </div>
       <div
         v-if="activeTab === 'gopay'"
-        class="mt-4 grid grid-cols-2 gap-3 xl:absolute xl:right-0 xl:-top-14 xl:mt-0 xl:w-[1180px] xl:grid-cols-5">
+        class="grid grid-cols-2 gap-3"
+        :class="standalone
+          ? 'xl:grid-cols-5'
+          : 'mt-4 xl:absolute xl:right-0 xl:-top-14 xl:mt-0 xl:w-[1180px] xl:grid-cols-5'">
         <div
           v-for="card in gopayTopCards"
           :key="card.label"
@@ -310,7 +307,7 @@
 
     <div v-if="activeTab === 'bind'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
       <div class="mb-4">
-        <h3 class="text-lg font-semibold text-white">自动绑卡</h3>
+        <h3 class="text-lg font-semibold text-white">ChatGPT</h3>
         <p class="text-sm text-gray-400 mt-1">
           选择号池账号后，可手动输入支付链接；留空时系统会先自动生成支付链接，再提交绑卡任务。
         </p>
@@ -600,18 +597,19 @@
       </div>
     </div>
 
-    <BindCardPool v-else-if="activeTab === 'pool'" />
+    <div v-else-if="activeTab === 'kiro'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
+      <div class="mb-4">
+        <h3 class="text-lg font-semibold text-white">Kiro</h3>
+        <p class="text-sm text-gray-400 mt-1">
+          Kiro 绑卡任务。
+        </p>
+      </div>
+      <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-6 text-sm text-gray-400">
+        当前没有可提交的 Kiro 绑卡任务。
+      </div>
+    </div>
 
     <div v-else-if="activeTab === 'gopay'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
-      <div class="mb-4">
-        <div>
-          <h3 class="text-lg font-semibold text-white">GoPay</h3>
-          <p class="text-sm text-gray-400 mt-1">
-            走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。
-          </p>
-        </div>
-      </div>
-
       <div class="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-4">
         <div class="space-y-3">
           <div>
@@ -1333,8 +1331,17 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import { computeGoPayBoardView } from '../gopayBoard.js'
-import BindCardPool from './BindCardPool.vue'
 
+const props = defineProps({
+  initialTab: {
+    type: String,
+    default: 'bind',
+  },
+  standalone: {
+    type: Boolean,
+    default: false,
+  },
+})
 const emit = defineEmits(['refresh'])
 
 const BIND_HISTORY_KEY = 'autoteam_bind_history_v1'
@@ -1357,7 +1364,8 @@ const luckmailDomainOptions = [
 ]
 const luckmailSelectableDomainOptions = luckmailDomainOptions.filter(option => option.value)
 
-const activeTab = ref('bind')
+const initialTab = ['bind', 'kiro', 'generate', 'gopay'].includes(props.initialTab) ? props.initialTab : 'bind'
+const activeTab = ref(props.standalone ? 'gopay' : initialTab)
 const message = ref('')
 const messageClass = ref('')
 const generating = ref(false)

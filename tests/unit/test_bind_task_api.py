@@ -1956,6 +1956,61 @@ def test_export_account_cpa_auths_returns_existing_data_auths_file(tmp_path, mon
     assert decoded == payload
 
 
+def test_export_account_sub_auths_returns_sub2api_json(tmp_path, monkeypatch):
+    def fake_jwt(payload):
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        encoded = base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+        return f"header.{encoded}.signature"
+
+    auth_dir = tmp_path / "data" / "auths"
+    auth_file = auth_dir / "codex-user@example.com-plus-deadbeef.json"
+    auth_dir.mkdir(parents=True)
+    payload = {
+        "email": "user@example.com",
+        "access_token": fake_jwt(
+            {
+                "client_id": "app_client",
+                "https://api.openai.com/profile": {"email": "user@example.com"},
+                "https://api.openai.com/auth": {"chatgpt_account_id": "account-1"},
+            }
+        ),
+        "refresh_token": "refresh-token",
+        "expired": "2026-04-18T12:20:50+08:00",
+    }
+    auth_file.write_text(json.dumps(payload), encoding="utf-8")
+    captured = {"updates": []}
+
+    monkeypatch.setattr("autoteam.auth_storage.AUTH_DIR", auth_dir)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}],
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: captured["updates"].append((email, kwargs)))
+    monkeypatch.setattr(api.time, "time", lambda: 1779999999.0)
+
+    result = api.export_account_sub_auths(api.AccountEmailBatchParams(emails=["USER@example.com"]))
+
+    assert result["filename"].startswith("sub2api-account-")
+    assert result["filename"].endswith(".json")
+    assert result["content_type"] == "application/json"
+    assert result["count"] == 1
+    assert result["missing"] == []
+    assert result["invalid"] == []
+    assert result["exported_emails"] == ["user@example.com"]
+    assert result["exported_at"] == 1779999999.0
+    assert captured["updates"] == [
+        (
+            "user@example.com",
+            {"credentials_exported": True, "credentials_exported_at": 1779999999.0},
+        )
+    ]
+    decoded = json.loads(base64.b64decode(result["content_base64"]).decode("utf-8"))
+    assert decoded["accounts"][0]["name"] == "user"
+    assert decoded["accounts"][0]["platform"] == "openai"
+    assert decoded["accounts"][0]["credentials"]["email"] == "user@example.com"
+    assert decoded["accounts"][0]["credentials"]["refresh_token"] == "refresh-token"
+
+
 def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
     captured = {"progress": []}
     rows = [

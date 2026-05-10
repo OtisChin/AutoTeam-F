@@ -1,7 +1,7 @@
 <template>
   <div class="min-h-screen flex items-center justify-center p-4">
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 w-full max-w-lg">
-      <h1 class="text-xl font-bold text-white text-center mb-2">AutoTeam 初始配置</h1>
+      <h1 class="text-xl font-bold text-white text-center mb-2">AutoPro 初始配置</h1>
       <p class="text-sm text-gray-400 text-center mb-6">首次使用请填写以下配置项</p>
 
       <div v-if="message" class="mb-4 px-4 py-3 rounded-lg text-sm border" :class="messageClass">

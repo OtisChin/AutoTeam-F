@@ -2362,6 +2362,92 @@ def export_account_cpa_auths(params: AccountEmailBatchParams):
     }
 
 
+@app.post("/api/accounts/export-sub-auths")
+def export_account_sub_auths(params: AccountEmailBatchParams):
+    """导出所选账号的 Sub2API 导入 JSON。"""
+    from autoteam.accounts import find_account, load_accounts, update_account
+    from autoteam.sub2api_converter import ConversionError, ExportSettings, export_records, generate_default_filename, inspect_sources
+
+    requested = []
+    seen = set()
+    for email in params.emails or []:
+        normalized = _normalized_email(email)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            requested.append(normalized)
+    if not requested:
+        raise HTTPException(status_code=400, detail="emails 不能为空")
+
+    accounts = load_accounts()
+    sources = []
+    missing = []
+    for email in requested:
+        account = find_account(accounts, email)
+        if not account:
+            missing.append(email)
+            continue
+        auth_file = _resolve_codex_auth_file(account)
+        if not auth_file:
+            missing.append(email)
+            continue
+        path = Path(auth_file)
+        try:
+            content = read_text(path)
+            json.loads(content)
+        except Exception as exc:
+            logger.warning("[API] Sub auth 导出跳过无效文件: email=%s path=%s error=%s", email, path, exc)
+            missing.append(email)
+            continue
+        sources.append({"email": email, "filename": path.name, "content": content})
+
+    if not sources:
+        raise HTTPException(status_code=404, detail="选中的账号没有可转换的 data/auths 认证文件")
+
+    try:
+        records = inspect_sources([(item["filename"], item["content"]) for item in sources])
+        filename = generate_default_filename()
+        payload = export_records(records, ExportSettings(output_filename=filename))
+    except ConversionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    valid_filenames = {record.file_name for record in records if record.is_valid and record.selected}
+    exported_sources = [item for item in sources if item["filename"] in valid_filenames]
+    invalid = [
+        {
+            "filename": record.file_name,
+            "error": record.error_message or record.status_text,
+        }
+        for record in records
+        if not record.is_valid
+    ]
+
+    exported_at = time.time()
+    exported_emails = []
+    for item in exported_sources:
+        email = _normalized_email(item.get("email"))
+        if not email:
+            continue
+        update_account(
+            email,
+            credentials_exported=True,
+            credentials_exported_at=exported_at,
+        )
+        exported_emails.append(email)
+
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    return {
+        "filename": filename,
+        "content_type": "application/json",
+        "content_base64": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "count": len(payload.get("accounts") or []),
+        "missing": missing,
+        "invalid": invalid,
+        "exported_emails": exported_emails,
+        "exported_at": exported_at,
+        "files": [{"email": item["email"], "filename": item["filename"]} for item in exported_sources],
+    }
+
+
 @app.post("/api/accounts/delete-batch")
 def delete_accounts_batch(params: DeleteBatchParams):
     """

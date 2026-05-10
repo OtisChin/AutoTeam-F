@@ -2,7 +2,7 @@
   <!-- 桌面端侧边栏 -->
   <nav class="hidden md:flex w-48 shrink-0 bg-gray-900 border-r border-gray-800 min-h-screen p-4 flex-col">
     <div class="mb-6">
-      <h1 class="text-lg font-bold text-white">AutoTeam</h1>
+      <h1 class="text-lg font-bold text-white">AutoPro</h1>
       <p class="text-xs text-gray-500 mt-0.5">账号轮转管理</p>
     </div>
     <div class="space-y-1 flex-1">
@@ -55,10 +55,9 @@ defineEmits(['navigate', 'refresh', 'logout'])
 const items = [
   { key: 'dashboard', icon: '📊', label: '仪表盘', mobileLabel: '仪表盘' },
   { key: 'register', icon: '🆕', label: '注册账号', mobileLabel: '注册' },
-  { key: 'bindcard', icon: '💳', label: '自动绑卡服务', mobileLabel: '绑卡' },
-  { key: 'team', icon: '👥', label: 'Team 成员', mobileLabel: '成员' },
-  { key: 'pool', icon: '🔁', label: '账号池操作', mobileLabel: '账号池' },
-  { key: 'sync', icon: '🔄', label: '同步中心', mobileLabel: '同步' },
+  { key: 'cardpool', icon: '💳', label: '卡池', mobileLabel: '卡池' },
+  { key: 'bindcard', icon: '🔗', label: '自动绑卡服务', mobileLabel: '绑卡' },
+  { key: 'gopay', icon: '💸', label: 'GoPay', mobileLabel: 'GoPay' },
   { key: 'cpa2sub', icon: '🧩', label: 'CPA_2_Sub', mobileLabel: 'CPA2Sub' },
   { key: 'oauth', icon: '🔐', label: 'OAuth 登录', mobileLabel: 'OAuth' },
   { key: 'tasks', icon: '📜', label: '任务历史', mobileLabel: '任务' },

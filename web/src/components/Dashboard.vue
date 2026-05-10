@@ -1,5 +1,19 @@
 <template>
   <div v-if="status">
+    <div class="mb-6 flex flex-wrap gap-2">
+      <button
+        v-for="tab in dashboardTabs"
+        :key="tab.value"
+        @click="activeDashboardTab = tab.value"
+        class="px-4 py-2 rounded-lg text-sm border transition"
+        :class="activeDashboardTab === tab.value
+          ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+          : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+        {{ tab.label }}
+      </button>
+    </div>
+
+    <template v-if="activeDashboardTab === 'chatgpt'">
     <!-- 统计卡片 -->
     <div class="flex items-center justify-between gap-3 mb-3">
       <h2 class="text-lg font-semibold text-white">统计面板</h2>
@@ -47,6 +61,15 @@
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-sky-600/10 text-sky-400 border-sky-500/30 hover:bg-sky-600/20'">
             {{ cpaExporting ? '导出中...' : `导出CPA认证 (${cpaExportableAccounts.length})` }}
+          </button>
+          <button
+            @click="exportSubAuths"
+            :disabled="!cpaExportableAccounts.length || subExporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="!cpaExportableAccounts.length || subExporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-indigo-600/10 text-indigo-300 border-indigo-500/30 hover:bg-indigo-600/20'">
+            {{ subExporting ? '导出中...' : `导出Sub认证 (${cpaExportableAccounts.length})` }}
           </button>
           <button
             @click="batchLoginAccounts"
@@ -539,6 +562,33 @@
         </div>
       </div>
     </div>
+    </template>
+
+    <div v-else class="space-y-6">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <h2 class="text-lg font-semibold text-white">Kiro 统计面板</h2>
+        <button @click="emit('refresh')"
+          class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
+          刷新
+        </button>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div v-for="card in kiroCards" :key="card.label"
+          class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+          <div class="text-sm text-gray-400">{{ card.label }}</div>
+          <div class="text-3xl font-bold mt-1" :class="card.color">{{ card.value }}</div>
+        </div>
+      </div>
+
+      <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3 flex-wrap">
+          <h2 class="text-lg font-semibold text-white">Kiro 账号列表</h2>
+        </div>
+        <div class="px-4 py-10 text-sm text-gray-500">
+          暂无 Kiro 数据。
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Loading skeleton -->
@@ -565,6 +615,11 @@ const props = defineProps({
 })
 const emit = defineEmits(['refresh', 'task-started'])
 
+const dashboardTabs = [
+  { value: 'chatgpt', label: 'ChatGPT' },
+  { value: 'kiro', label: 'Kiro' },
+]
+const activeDashboardTab = ref('chatgpt')
 const actionEmail = ref('')
 const actionType = ref('')
 const syncing = ref(false)
@@ -592,6 +647,7 @@ const accountTypeSaving = ref(false)
 const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
 const cpaExporting = ref(false)
+const subExporting = ref(false)
 const batchLoggingIn = ref(false)
 const quotaRefreshing = ref(false)
 const invalidDeleting = ref(false)
@@ -901,25 +957,23 @@ const exportableAccounts = computed(() => {
   }
   return filteredAccounts.value
 })
-const batchLoginableAccounts = computed(() => {
+const scopedAccounts = computed(() => {
   const selected = new Set(selectedEmails.value.map(email => email.toLowerCase()))
-  const rows = selected.size
+  return selected.size
     ? filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
     : filteredAccounts.value
-  return rows.filter(acc => !acc.is_main_account && needsCodexLogin(acc))
+})
+const batchLoginableAccounts = computed(() => {
+  return scopedAccounts.value.filter(acc => !acc.is_main_account && needsCodexLogin(acc))
 })
 const cpaExportableAccounts = computed(() => {
-  const selected = new Set(selectedEmails.value.map(email => email.toLowerCase()))
-  const rows = selected.size
-    ? filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
-    : filteredAccounts.value
-  return rows.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
+  return scopedAccounts.value.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
 })
 const bindableFreeAccounts = computed(() =>
   allAccounts.value.filter(isBindableFreeAccount)
 )
 const refreshableQuotaAccounts = computed(() =>
-  allAccounts.value.filter(acc =>
+  scopedAccounts.value.filter(acc =>
     !acc.is_main_account && String(acc.status || '').toLowerCase() !== 'fail'
   )
 )
@@ -950,7 +1004,9 @@ const refreshQuotaButtonLabel = computed(() => {
     return total > 0 ? `刷新中 (${current}/${total})` : '刷新中...'
   }
   if (quotaRefreshing.value) return '提交中...'
-  return `刷新凭证 (${refreshableQuotaAccounts.value.length})`
+  return selectedEmails.value.length
+    ? `刷新选中凭证 (${refreshableQuotaAccounts.value.length})`
+    : `刷新筛选凭证 (${refreshableQuotaAccounts.value.length})`
 })
 const credentialPreview = computed(() => {
   const sample = exportableAccounts.value[0] || { email: 'xxx@email.com', status: 'active', seat_type: 'unknown' }
@@ -1050,6 +1106,13 @@ const cards = computed(() => {
     { label: '总计', value: s.total, color: 'text-white' },
   ]
 })
+
+const kiroCards = [
+  { label: '活跃', value: 0, color: 'text-green-400' },
+  { label: '待命', value: 0, color: 'text-yellow-400' },
+  { label: '废弃', value: 0, color: 'text-orange-400' },
+  { label: '总计', value: 0, color: 'text-white' },
+]
 
 function statusClass(s) {
   return {
@@ -1326,6 +1389,29 @@ async function exportCpaAuths() {
   }
 }
 
+async function exportSubAuths() {
+  const emails = cpaExportableAccounts.value.map(acc => acc.email).filter(Boolean)
+  if (!emails.length) return
+
+  subExporting.value = true
+  message.value = ''
+  try {
+    const result = await api.exportAccountSubAuths(emails)
+    downloadBase64File(result.content_base64, result.filename, result.content_type)
+    const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无认证文件账号` : ''
+    const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，${result.invalid.length} 个认证文件无法转换` : ''
+    message.value = `已导出 ${result.count || 0} 个 Sub 认证账号${missing}${invalid}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    subExporting.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
 async function batchLoginAccounts() {
   if (loginDisabled.value || batchLoggingIn.value) return
   const emails = batchLoginableAccounts.value.map(acc => acc.email).filter(Boolean)
@@ -1355,8 +1441,9 @@ async function refreshAllQuota() {
   quotaRefreshing.value = true
   message.value = ''
   try {
-    const result = await api.refreshAccountsQuota([])
-    message.value = `已提交刷新凭证任务: ${result.task_id}，默认刷新全部账号 ${emails.length} 个；401/403 会标记 Fail/废弃`
+    const result = await api.refreshAccountsQuota(emails)
+    const scope = selectedEmails.value.length ? '选中' : '筛选'
+    message.value = `已提交刷新${scope}凭证任务: ${result.task_id}，账号 ${emails.length} 个；401/403 会标记 Fail/废弃`
     messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
     emit('task-started')
     emit('refresh')

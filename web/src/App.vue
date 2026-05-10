@@ -5,7 +5,7 @@
   <!-- 登录页 -->
   <div v-else-if="!authenticated" class="min-h-screen flex items-center justify-center">
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-8 w-full max-w-sm">
-      <h1 class="text-xl font-bold text-white text-center mb-2">AutoTeam</h1>
+      <h1 class="text-xl font-bold text-white text-center mb-2">AutoPro</h1>
       <p class="text-sm text-gray-400 text-center mb-6">请输入 API Key 登录</p>
       <div v-if="authError" class="mb-4 px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">
         {{ authError }}
@@ -53,17 +53,11 @@
         :running-task="busyTask" :admin-status="adminStatus"
         @task-started="onTaskStarted" @refresh="refresh" />
 
-      <BindCard v-else-if="currentPage === 'bindcard'" @refresh="refresh" />
+      <BindCardPool v-else-if="currentPage === 'cardpool'" />
 
-      <TeamMembers v-else-if="currentPage === 'team'" />
+      <BindCard v-else-if="currentPage === 'bindcard'" key="bindcard" @refresh="refresh" />
 
-      <PoolPage v-else-if="currentPage === 'pool'"
-        :running-task="busyTask" :admin-status="adminStatus"
-        @task-started="onTaskStarted" @refresh="refresh" />
-
-      <SyncPage v-else-if="currentPage === 'sync'"
-        :running-task="busyTask" :admin-status="adminStatus"
-        @task-started="onTaskStarted" @refresh="refresh" />
+      <BindCard v-else-if="currentPage === 'gopay'" key="gopay" initial-tab="gopay" standalone @refresh="refresh" />
 
       <CpaToSub2ApiPage v-else-if="currentPage === 'cpa2sub'" />
 
@@ -90,9 +84,7 @@ import Sidebar from './components/Sidebar.vue'
 import Dashboard from './components/Dashboard.vue'
 import RegisterAccountPage from './components/RegisterAccountPage.vue'
 import BindCard from './components/BindCard.vue'
-import TeamMembers from './components/TeamMembers.vue'
-import PoolPage from './components/PoolPage.vue'
-import SyncPage from './components/SyncPage.vue'
+import BindCardPool from './components/BindCardPool.vue'
 import CpaToSub2ApiPage from './components/CpaToSub2ApiPage.vue'
 import TaskHistoryPage from './components/TaskHistoryPage.vue'
 import LogViewer from './components/LogViewer.vue'
@@ -106,10 +98,12 @@ const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autoteam_current_page'
+const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 10000
 const IDLE_POLLING_ENABLED = false
-const currentPage = ref(localStorage.getItem(CURRENT_PAGE_KEY) || 'dashboard')
+const savedPage = localStorage.getItem(CURRENT_PAGE_KEY)
+const currentPage = ref(PAGE_KEYS.has(savedPage) ? savedPage : 'dashboard')
 
 const status = ref(null)
 const adminStatus = ref(null)
@@ -261,7 +255,7 @@ function doLogout() {
 }
 
 function navigateTo(page) {
-  currentPage.value = page || 'dashboard'
+  currentPage.value = PAGE_KEYS.has(page) ? page : 'dashboard'
   try {
     localStorage.setItem(CURRENT_PAGE_KEY, currentPage.value)
   } catch {}
