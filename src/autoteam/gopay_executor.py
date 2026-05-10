@@ -4314,6 +4314,28 @@ def _extract_sms_code(text: str) -> str:
 def _fetch_sms_code(sms_url: str, ignored_otps: set[str] | None = None) -> str:
     is_whatsapp_otp_url = "/otp/whatsapp/" in str(sms_url or "").lower()
     source_label = "WhatsApp 监听" if is_whatsapp_otp_url else "接码接口"
+    if is_whatsapp_otp_url:
+        try:
+            from autoteam.whatsapp_otp import get_default_listener
+
+            payload = get_default_listener().latest_response(max_age_seconds=600)
+            text = json.dumps(payload, ensure_ascii=False)
+            ignored = {str(item or "").strip() for item in (ignored_otps or set()) if str(item or "").strip()}
+            direct_otp = str(((payload.get("data") or {}) if isinstance(payload, dict) else {}).get("otp") or "").strip()
+            if re.fullmatch(r"\d{6}", direct_otp):
+                if direct_otp not in ignored:
+                    return direct_otp
+                raise RuntimeError(f"{source_label}仍返回旧验证码，等待新码: {_compact_log_text(text, limit=220)}")
+            codes = _extract_sms_codes(text)
+            for code in codes:
+                if code not in ignored:
+                    return code
+            if codes:
+                raise RuntimeError(f"{source_label}仍返回旧验证码，等待新码: {_compact_log_text(text, limit=220)}")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.debug("[gopay_executor] in-process WhatsApp OTP lookup failed, falling back to HTTP: %s", exc)
     resp = requests.get(
         sms_url,
         timeout=20,

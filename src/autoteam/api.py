@@ -4788,35 +4788,43 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         oauth_failed_emails: list[dict] = []
         auth_session_refresh_attempted: set[str] = set()
 
-        def _mark_gopay_success_account(email_value: str, *, message: str = "", success_checkout_url: str = ""):
+        def _gopay_success_progress_fields() -> dict:
+            successful_list = sorted(realtime_successful_emails)
+            return {
+                "successful": len(successful_list),
+                "successful_emails": successful_list,
+            }
+
+        def _mark_gopay_success_account(email_value: str, *, message: str = "", success_checkout_url: str = "") -> dict:
             success_email = _normalized_email(email_value)
-            if not success_email or success_email in realtime_successful_emails:
-                return
-            realtime_successful_emails.add(success_email)
-            marked_at = time.time()
-            update_account(
-                success_email,
-                last_bind_status="success",
-                last_bind_at=marked_at,
-                last_checkout_url=success_checkout_url or checkout_url,
-                last_proxy_label=params.proxy_label,
-                last_bind_task_id=task_id,
-                last_bind_message=message or "GoPay 绑定成功",
-                last_bind_failure_stage="",
-                status=STATUS_ACTIVE,
-                account_type=ACCOUNT_TYPE_PLUS,
-                plus_bound_at=marked_at,
-            )
-            logger.info(
-                "[gopay-bind] marked account Plus immediately after GoPay success: task_id=%s email=%s",
-                task_id[:8] or "<unknown>",
-                _safe_email_summary(success_email),
-            )
+            if not success_email:
+                return _gopay_success_progress_fields()
+            if success_email not in realtime_successful_emails:
+                realtime_successful_emails.add(success_email)
+                marked_at = time.time()
+                update_account(
+                    success_email,
+                    last_bind_status="success",
+                    last_bind_at=marked_at,
+                    last_checkout_url=success_checkout_url or checkout_url,
+                    last_proxy_label=params.proxy_label,
+                    last_bind_task_id=task_id,
+                    last_bind_message=message or "GoPay 绑定成功",
+                    last_bind_failure_stage="",
+                    status=STATUS_ACTIVE,
+                    account_type=ACCOUNT_TYPE_PLUS,
+                    plus_bound_at=marked_at,
+                )
+                logger.info(
+                    "[gopay-bind] marked account Plus immediately after GoPay success: task_id=%s email=%s",
+                    task_id[:8] or "<unknown>",
+                    _safe_email_summary(success_email),
+                )
             if not params.auto_oauth_after_success:
-                return
+                return _gopay_success_progress_fields()
 
             if success_email in oauth_scheduled_emails:
-                return
+                return _gopay_success_progress_fields()
             oauth_scheduled_emails.add(success_email)
 
             _append_task_progress(
@@ -4928,6 +4936,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 name=f"gopay-oauth-{success_email[:24]}",
                 daemon=True,
             ).start()
+            return _gopay_success_progress_fields()
 
         def _mark_gopay_token_invalidated_fail(email_value: str, *, reason: str, message: str, failure_stage: str = "token_invalidated"):
             fail_email = _normalized_email(email_value)
@@ -4977,14 +4986,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
             return {"status": "failed", "message": message}
 
         def _gopay_progress(progress: dict):
+            if isinstance(progress, dict) and progress.get("stage") == "gopay_account_bound":
+                success_fields = _mark_gopay_success_account(
+                    str(progress.get("email") or ""),
+                    message=str(progress.get("message") or "GoPay 绑定成功"),
+                    success_checkout_url=str(progress.get("checkout_url") or ""),
+                )
+                progress = {**progress, **success_fields}
             _update_current_task_progress(progress)
-            if not isinstance(progress, dict) or progress.get("stage") != "gopay_account_bound":
-                return
-            _mark_gopay_success_account(
-                str(progress.get("email") or ""),
-                message=str(progress.get("message") or "GoPay 绑定成功"),
-                success_checkout_url=str(progress.get("checkout_url") or ""),
-            )
 
         def _append_unique(target: list, value: str):
             normalized = _normalized_email(value)
@@ -5697,6 +5706,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
         elif not successful_emails and actual_email:
             update_account(actual_email, **account_update)
 
+        if realtime_successful_emails:
+            result["successful_emails"] = sorted(realtime_successful_emails)
+
         if oauth_scheduled_emails:
             result["oauth_scheduled_emails"] = sorted(oauth_scheduled_emails)
         if oauth_successful_emails:
@@ -5778,6 +5790,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                 "status": result.get("status") or "failed",
                 "failure_stage": result.get("failure_stage") or "",
                 "message": result.get("message") or "",
+                **_gopay_success_progress_fields(),
             }
         )
 

@@ -18,6 +18,7 @@ function taskEvents(task) {
 
 function successfulEmailSet(task) {
   const result = task?.result || {}
+  const progress = task?.progress || {}
   const successful = new Set()
   if (Array.isArray(result.successful_emails)) {
     for (const email of result.successful_emails) {
@@ -25,7 +26,19 @@ function successfulEmailSet(task) {
       if (normalized) successful.add(normalized)
     }
   }
+  if (Array.isArray(progress.successful_emails)) {
+    for (const email of progress.successful_emails) {
+      const normalized = normalizedEmail(email)
+      if (normalized) successful.add(normalized)
+    }
+  }
   for (const event of taskEvents(task)) {
+    if (Array.isArray(event?.successful_emails)) {
+      for (const email of event.successful_emails) {
+        const normalized = normalizedEmail(email)
+        if (normalized) successful.add(normalized)
+      }
+    }
     if (String(event?.stage || '') !== 'gopay_account_bound') continue
     const normalized = normalizedEmail(event?.email)
     if (normalized) successful.add(normalized)
@@ -228,16 +241,18 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
       return Number.isFinite(current) ? Math.max(maxCurrent, current) : maxCurrent
     }, 0)
     : 0
+  const progressSuccessful = Number.isFinite(Number(progress.successful)) ? Math.max(0, Number(progress.successful || 0)) : 0
+  const resultSuccessful = Array.isArray(result.successful_emails) ? result.successful_emails.filter(email => normalizedEmail(email)).length : 0
+  const knownSuccessfulCount = Math.max(successful.size, progressSuccessful, resultSuccessful)
   const baseTotal = isAutoRegister
-    ? Math.max(autoRegisterCount, successful.size, Number(result.auto_register_attempted || 0), autoRegisterEventAttempted)
+    ? Math.max(autoRegisterCount, knownSuccessfulCount, Number(result.auto_register_attempted || 0), autoRegisterEventAttempted)
     : Number(accounts.length || (batchActive ? selectedBatchEmails.length : 0) || (params.email ? 1 : 0) || progress.total || (task?.task_id ? 1 : 0))
   const attempted = isAutoRegister
     ? Math.max(Number(result.auto_register_attempted || 0), Number(progress.attempted || progress.attempt || 0), autoRegisterEventAttempted)
     : Array.isArray(result.attempted_emails)
       ? Math.max(result.attempted_emails.length, currentAccountAttempt)
       : Math.max(Number(progress.attempted || progress.attempt || 0), currentAccountAttempt)
-  const progressSuccessful = Number(progress.successful || 0)
-  const successfulCount = successful.size || (events.length ? 0 : progressSuccessful)
+  const successfulCount = knownSuccessfulCount
   const rawDone = Math.max(attempted, successfulCount)
   const done = baseTotal ? Math.min(baseTotal, rawDone) : rawDone
   const total = baseTotal

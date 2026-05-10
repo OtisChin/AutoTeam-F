@@ -1677,6 +1677,9 @@ def test_gopay_task_runner_marks_batch_success_account_plus_immediately(monkeypa
     assert captured["updates"][0][1]["last_checkout_url"] == "https://pay.openai.com/c/pay/cs_first"
     assert captured["updates"][1][1]["last_checkout_url"] == "https://pay.openai.com/c/pay/cs_second"
     assert all(update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS for _email, update in captured["updates"])
+    success_progress = [progress for progress in captured["progress"] if progress["stage"] == "gopay_account_bound"]
+    assert [progress["successful"] for progress in success_progress] == [1, 2]
+    assert success_progress[-1]["successful_emails"] == ["first@example.com", "second@example.com"]
 
 
 def test_gopay_task_runner_auto_oauth_after_success(monkeypatch):
@@ -1747,6 +1750,8 @@ def test_gopay_task_runner_auto_oauth_after_success(monkeypatch):
     assert stages.count("gopay_oauth_login_started") == 2
     assert stages.count("gopay_oauth_login_done") == 2
     assert all(update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS for _email, update in captured["updates"])
+    assert all("credentials_exported" not in update for _email, update in captured["updates"])
+    assert all("credentials_exported_at" not in update for _email, update in captured["updates"])
 
 
 def test_gopay_task_runner_auto_oauth_retries_twice_after_success(monkeypatch):

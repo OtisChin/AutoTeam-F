@@ -25,6 +25,11 @@ DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 DEFAULT_RECENT_LIMIT = 20
 DEFAULT_ADB_PATH = os.environ.get("ANDROID_ADB_PATH") or os.environ.get("ADB_PATH") or "adb"
 DEFAULT_ADB_SERIAL = os.environ.get("WHATSAPP_ADB_SERIAL") or os.environ.get("ANDROID_ADB_SERIAL") or ""
+_GLOBAL_LOCK = threading.RLock()
+_GLOBAL_LATEST: dict[str, Any] | None = None
+_GLOBAL_RECENT: list[dict[str, Any]] = []
+_GLOBAL_SEEN_KEYS: set[str] = set()
+_GLOBAL_SEEN_CODES: set[str] = set()
 
 _OTP_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 _MESSAGE_HINT_RE = re.compile(
@@ -94,6 +99,7 @@ class WhatsAppOtpListener:
         self._latest: dict[str, Any] | None = None
         self._recent: list[dict[str, Any]] = []
         self._seen_keys: set[str] = set()
+        self._seen_codes: set[str] = set()
 
     def start(self) -> dict:
         with self._lock:
@@ -129,17 +135,27 @@ class WhatsAppOtpListener:
         return self.status()
 
     def clear(self) -> dict:
+        global _GLOBAL_LATEST
         with self._lock:
             self._latest = None
             self._recent = []
             self._seen_keys = set()
+            self._seen_codes = set()
             self._last_seen_at = 0.0
+        with _GLOBAL_LOCK:
+            _GLOBAL_LATEST = None
+            _GLOBAL_RECENT.clear()
+            _GLOBAL_SEEN_KEYS.clear()
+            _GLOBAL_SEEN_CODES.clear()
         return self.status()
 
     def status(self) -> dict:
         with self._lock:
             thread_alive = bool(self._thread and self._thread.is_alive())
             latest = dict(self._latest or {})
+            if not latest:
+                with _GLOBAL_LOCK:
+                    latest = dict(_GLOBAL_LATEST or {})
             return {
                 "running": bool(self._running and thread_alive),
                 "thread_alive": thread_alive,
@@ -162,8 +178,25 @@ class WhatsAppOtpListener:
             latest = dict(self._latest or {})
             running = self._running and bool(self._thread and self._thread.is_alive())
             last_error = self._last_error
+        with _GLOBAL_LOCK:
+            global_latest = dict(_GLOBAL_LATEST or {})
+            if global_latest:
+                local_received_at = float(latest.get("received_at") or 0) if latest else 0.0
+                global_received_at = float(global_latest.get("received_at") or 0)
+                if not latest or global_received_at >= local_received_at:
+                    latest = global_latest
+            if _GLOBAL_RECENT:
+                merged_recent: list[dict[str, Any]] = []
+                seen_recent: set[str] = set()
+                for item in [*recent, *[dict(entry) for entry in _GLOBAL_RECENT]]:
+                    key = f"{item.get('code')}|{item.get('raw')}|{item.get('received_at')}"
+                    if key in seen_recent:
+                        continue
+                    seen_recent.add(key)
+                    merged_recent.append(item)
+                recent = sorted(merged_recent, key=lambda item: float(item.get("received_at") or 0))[-self.recent_limit :]
 
-        if not running:
+        if not running and not latest:
             return {"code": 0, "msg": "WhatsApp Android listener is not running", "data": {"code": "", "messages": recent}}
         if last_error:
             logger.debug("[whatsapp-otp] last listener error: %s", last_error)
@@ -190,13 +223,14 @@ class WhatsAppOtpListener:
         }
 
     def _record_message(self, *, code: str, raw: str):
+        global _GLOBAL_LATEST
         code = str(code or "").strip()
         raw = _compact(raw, 500)
         if not code or not raw:
             return
         key = f"{code}|{raw}"
         with self._lock:
-            if key in self._seen_keys:
+            if key in self._seen_keys or code in self._seen_codes:
                 return
             item = {
                 "code": code,
@@ -205,12 +239,26 @@ class WhatsAppOtpListener:
                 "received_at": _now(),
             }
             self._seen_keys.add(key)
+            self._seen_codes.add(code)
             self._latest = item
             self._recent.append(item)
             self._recent = self._recent[-self.recent_limit :]
             self._last_seen_at = item["received_at"]
             if len(self._seen_keys) > self.recent_limit * 4:
                 self._seen_keys = {f"{entry.get('code')}|{entry.get('raw')}" for entry in self._recent}
+                self._seen_codes = {str(entry.get("code") or "") for entry in self._recent if entry.get("code")}
+        with _GLOBAL_LOCK:
+            if key not in _GLOBAL_SEEN_KEYS and code not in _GLOBAL_SEEN_CODES:
+                _GLOBAL_SEEN_KEYS.add(key)
+                _GLOBAL_SEEN_CODES.add(code)
+                _GLOBAL_LATEST = item
+                _GLOBAL_RECENT.append(dict(item))
+                del _GLOBAL_RECENT[:-self.recent_limit]
+                if len(_GLOBAL_SEEN_KEYS) > self.recent_limit * 4:
+                    _GLOBAL_SEEN_KEYS.clear()
+                    _GLOBAL_SEEN_KEYS.update(f"{entry.get('code')}|{entry.get('raw')}" for entry in _GLOBAL_RECENT)
+                    _GLOBAL_SEEN_CODES.clear()
+                    _GLOBAL_SEEN_CODES.update(str(entry.get("code") or "") for entry in _GLOBAL_RECENT if entry.get("code"))
         logger.info("[whatsapp-otp] captured WhatsApp Android OTP: %s", code)
 
     def _adb_base_command(self) -> list[str]:
@@ -299,21 +347,28 @@ class WhatsAppOtpListener:
             logger.info("[whatsapp-otp] Android listener stopped")
 
     def _scrape_device(self) -> list[str]:
-        messages: list[str] = []
         try:
             dumpsys_text = self._run_adb(["shell", "dumpsys", "notification", "--noredact"], timeout=12)
         except Exception as exc:
             logger.debug("[whatsapp-otp] dumpsys --noredact failed, retrying without it: %s", exc)
             dumpsys_text = self._run_adb(["shell", "dumpsys", "notification"], timeout=12)
-        messages.extend(self._extract_candidates_from_blob(dumpsys_text))
+        notification_messages = self._extract_candidates_from_blob(dumpsys_text)
+        notification_otp_messages = [message for message in notification_messages if _extract_otp_from_text(message)]
+        if notification_otp_messages:
+            return self._dedupe_messages(notification_otp_messages)
 
         try:
             self._run_adb(["shell", "uiautomator", "dump", "/sdcard/autoteam_whatsapp.xml"], timeout=8)
             ui_text = self._run_adb(["shell", "cat", "/sdcard/autoteam_whatsapp.xml"], timeout=8)
-            messages.extend(self._extract_candidates_from_blob(ui_text))
+            messages = self._extract_candidates_from_blob(ui_text)
         except Exception as exc:
             logger.debug("[whatsapp-otp] UI fallback failed: %s", exc)
+            messages = notification_messages
 
+        return self._dedupe_messages(messages)
+
+    @staticmethod
+    def _dedupe_messages(messages: list[str]) -> list[str]:
         unique: list[str] = []
         seen: set[str] = set()
         for message in messages:
@@ -344,6 +399,8 @@ class WhatsAppOtpListener:
 
         compact_text = _compact(text, 20000)
         if (
+            not candidates
+            and
             compact_text.startswith("<?xml")
             and _WHATSAPP_HINT_RE.search(compact_text)
             and _MESSAGE_HINT_RE.search(compact_text)

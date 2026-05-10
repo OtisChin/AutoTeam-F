@@ -323,6 +323,26 @@ def test_fetch_sms_code_waits_when_only_ignored_otp_is_available(monkeypatch):
         raise AssertionError("expected ignored-only OTP response to wait for a new code")
 
 
+def test_fetch_whatsapp_sms_code_prefers_latest_otp_field(monkeypatch):
+    class Listener:
+        def latest_response(self, *, max_age_seconds=600):
+            return {
+                "code": 1,
+                "data": {
+                    "otp": "493828",
+                    "code": "GoPay 493828 is your verification code.",
+                    "messages": [
+                        {"code": "751104", "raw": "GoPay 751104 is your verification code."},
+                        {"code": "493828", "raw": "GoPay 493828 is your verification code."},
+                    ],
+                },
+            }
+
+    monkeypatch.setattr("autoteam.whatsapp_otp.get_default_listener", lambda: Listener())
+
+    assert gopay_executor._fetch_sms_code("http://127.0.0.1:8787/otp/whatsapp/latest") == "493828"
+
+
 def test_poll_otp_waits_sms_window_before_fetch(monkeypatch):
     sleeps = []
     fetches = []
