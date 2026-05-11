@@ -12,6 +12,7 @@
 `scripts/migrate_to_sqlite.py` 手动导入。
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -80,7 +81,27 @@ def _save_state(state):
 
 
 def load_admin_state():
-    return _normalize_state(_load_state_from_db() or {})
+    state = _normalize_state(_load_state_from_db() or {})
+    if any(state.values()):
+        return state
+    try:
+        if STATE_FILE.exists():
+            raw = json.loads(STATE_FILE.read_text(encoding="utf-8") or "{}")
+            state = _normalize_state(raw)
+            if any(state.values()):
+                _save_state(state)
+                return state
+    except Exception:
+        pass
+    try:
+        if LEGACY_SESSION_FILE.exists():
+            state = _normalize_state({"session_token": LEGACY_SESSION_FILE.read_text(encoding="utf-8").strip()})
+            _save_state(state)
+            LEGACY_SESSION_FILE.unlink()
+            return state
+    except Exception:
+        pass
+    return state
 
 
 def save_admin_state(state):

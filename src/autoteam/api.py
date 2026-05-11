@@ -16,6 +16,7 @@ from pathlib import Path
 
 import requests
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, Field
@@ -80,6 +81,18 @@ app = FastAPI(
     version="0.1.0",
 )
 
+_cors_origins = [
+    origin.strip()
+    for origin in str(os.environ.get("PLUS_EXTRACTOR_CORS_ORIGINS") or "*").split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins or ["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 # ---------------------------------------------------------------------------
 # API Key 鉴权中间件
 # ---------------------------------------------------------------------------
@@ -90,12 +103,18 @@ _AUTH_SKIP_PATHS = {
     "/api/setup/save",
     "/api/account-hub/ping",
     "/api/account-hub/ingest",
+    "/api/public/plus-extractor/redeem",
+    "/api/public/plus-extractor/query",
+    "/api/public/plus-extractor/cdk-status",
+    "/api/public/plus-extractor/set-password",
 }
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
+    if request.method == "OPTIONS":
+        return await call_next(request)
     # 不鉴权的路径：非 /api 路径、auth/check 端点
     if not path.startswith("/api/") or path in _AUTH_SKIP_PATHS:
         return await call_next(request)
@@ -979,7 +998,6 @@ def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
     _current_task_ids[task_group] = task_id
     task["status"] = "running"
     task["started_at"] = time.time()
-    _persist_task_snapshot(task)
     if cancel_event.is_set():
         task["status"] = "cancelled"
         task["result"] = {"status": "cancelled", "message": "任务启动前已取消"}
@@ -1043,7 +1061,6 @@ def _run_task_nonexclusive(task_id: str, func, pass_task_id: bool = False, *args
     _task_cancel_signals[task_id] = cancel_event
     task["status"] = "running"
     task["started_at"] = time.time()
-    _persist_task_snapshot(task)
     if cancel_event.is_set():
         task["status"] = "cancelled"
         task["result"] = {"status": "cancelled", "message": "任务启动前已取消"}
@@ -1373,6 +1390,11 @@ class AccountCredentialExportParams(BaseModel):
     line_format: str = "{email}-----{password}"
 
 
+class AccountExportStatusUpdateParams(BaseModel):
+    emails: list[str]
+    exported: bool
+
+
 class AccountHubConfigParams(BaseModel):
     url: str = ""
     token: str = ""
@@ -1389,6 +1411,33 @@ class AccountHubIngestPayload(BaseModel):
 
 class AccountHubSyncParams(BaseModel):
     emails: list[str] = Field(default_factory=list)
+
+
+class TradeCreateCdkParams(BaseModel):
+    quota_total: int = Field(1, validation_alias=AliasChoices("quota_total", "quotaTotal"))
+    note: str = ""
+
+
+class TradeRedeemParams(BaseModel):
+    code: str = ""
+    password: str = ""
+    count: int = 1
+    format: str = "cpa"
+    formats: list[str] = Field(default_factory=list)
+
+
+class TradeQueryParams(BaseModel):
+    code: str = ""
+    password: str = ""
+
+
+class TradeSetPasswordParams(BaseModel):
+    code: str = ""
+    password: str = ""
+
+
+class TradeCdkStatusParams(BaseModel):
+    code: str = ""
 
 
 def _normalized_email(value: str | None) -> str:
@@ -1540,7 +1589,7 @@ def _sanitize_account_with_indexes(
 ) -> dict:
     sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
     email = _normalized_email(acc.get("email"))
-    is_main = bool(email and email == main_email)
+    is_main = bool(email and (email == main_email or _is_main_account_email(email)))
     sanitized["is_main_account"] = is_main
     status = acc.get("status", "")
     if status in ("personal", "plus"):
@@ -1554,13 +1603,29 @@ def _sanitize_account_with_indexes(
     sanitized["credentials_exported_at"] = acc.get("credentials_exported_at")
     sanitized["account_hub_synced"] = bool(acc.get("account_hub_synced"))
     sanitized["account_hub_synced_at"] = acc.get("account_hub_synced_at")
-    codex_auth_file = auth_files.get(email) or ""
+    indexed_auth_file = auth_files.get(email) or ""
+    if indexed_auth_file:
+        try:
+            from autoteam.auth_storage import AUTH_DIR
+
+            Path(indexed_auth_file).resolve().relative_to(AUTH_DIR.resolve())
+        except Exception:
+            indexed_auth_file = ""
+    codex_auth_file = _resolve_codex_auth_file(acc) or indexed_auth_file
     if not codex_auth_file and sanitized["is_main_account"]:
         codex_auth_file = _resolve_codex_auth_file(acc)
     sanitized["codex_auth_file"] = codex_auth_file
     sanitized["has_codex_auth_file"] = bool(codex_auth_file)
     sanitized["needs_codex_login"] = not sanitized["is_main_account"] and not bool(codex_auth_file)
-    sanitized["auth_session_file"] = auth_session_files.get(email, "")
+    auth_session_file = auth_session_files.get(email, "")
+    if not auth_session_file:
+        try:
+            from autoteam.auth_session_store import get_auth_session_file
+
+            auth_session_file = get_auth_session_file(email) or ""
+        except Exception:
+            auth_session_file = ""
+    sanitized["auth_session_file"] = auth_session_file
     return sanitized
 
 
@@ -2865,6 +2930,7 @@ def update_account_type(email: str, params: AccountTypeUpdateParams):
 def export_account_credentials(params: AccountCredentialExportParams):
     """按自定义行格式导出本地账号池账密。"""
     from autoteam.accounts import load_accounts, update_account
+    from autoteam.trade import credential_password_for_account
 
     line_format = (params.line_format or "{email}-----{password}").strip()
     if not line_format:
@@ -2879,7 +2945,6 @@ def export_account_credentials(params: AccountCredentialExportParams):
         if normalized and normalized not in seen:
             seen.add(normalized)
             requested.append(normalized)
-    requested_set = set(requested)
 
     accounts = load_accounts()
     rows = []
@@ -2898,7 +2963,7 @@ def export_account_credentials(params: AccountCredentialExportParams):
     def render_line(account: dict) -> str:
         values = {
             "email": str(account.get("email") or ""),
-            "password": str(account.get("password") or ""),
+            "password": credential_password_for_account(account),
         }
         line = line_format
         for key, value in values.items():
@@ -3098,6 +3163,59 @@ def export_account_sub_auths(params: AccountEmailBatchParams):
         "exported_emails": exported_emails,
         "exported_at": exported_at,
         "files": [{"email": item["email"], "filename": item["filename"]} for item in exported_sources],
+    }
+
+
+@app.post("/api/accounts/export-status")
+def update_accounts_export_status(params: AccountExportStatusUpdateParams):
+    """批量修改本地账号账密导出状态。"""
+    from autoteam.accounts import find_account, load_accounts, update_account
+
+    requested = []
+    seen = set()
+    for email in params.emails or []:
+        normalized = _normalized_email(email)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            requested.append(normalized)
+    if not requested:
+        raise HTTPException(status_code=400, detail="emails 不能为空")
+
+    accounts = load_accounts()
+    exported_at = time.time() if params.exported else None
+    updated = []
+    updated_emails = []
+    missing = []
+    for email in requested:
+        if _is_main_account_email(email):
+            missing.append(email)
+            continue
+        account = find_account(accounts, email)
+        if not account:
+            missing.append(email)
+            continue
+        saved = update_account(
+            email,
+            credentials_exported=bool(params.exported),
+            credentials_exported_at=exported_at,
+        )
+        if saved:
+            updated_emails.append(email)
+            updated.append(_sanitize_account(saved))
+    trade_allocations = {"cleared": 0, "codes": []}
+    if not params.exported and updated_emails:
+        from autoteam.trade import clear_trade_allocations_for_emails
+
+        trade_allocations = clear_trade_allocations_for_emails(updated_emails)
+
+    return {
+        "message": f"已更新 {len(updated)} 个账号导出状态",
+        "updated": len(updated),
+        "exported": bool(params.exported),
+        "exported_at": exported_at,
+        "missing": missing,
+        "trade_allocations": trade_allocations,
+        "accounts": updated,
     }
 
 
@@ -3815,108 +3933,124 @@ def post_accounts_refresh_quota(params: AccountEmailBatchParams):
         skipped = []
         network_error = []
         total = len(accounts_by_email)
+        completed = 0
+        progress_lock = threading.Lock()
+        update_lock = threading.Lock()
 
-        for index, (email, acc) in enumerate(accounts_by_email.items(), start=1):
-            _append_task_progress(
-                task_id,
+        def _int_env(name: str, default: int, *, minimum: int = 0, maximum: int = 9999) -> int:
+            try:
+                value = int(os.environ.get(name, str(default)) or default)
+            except (TypeError, ValueError):
+                value = default
+            return max(minimum, min(maximum, value))
+
+        max_workers = min(total, _int_env("REFRESH_QUOTA_CONCURRENCY", 8, minimum=1, maximum=32))
+        retry_count = _int_env("REFRESH_QUOTA_RETRIES", 1, minimum=0, maximum=5)
+        account_timeout = _int_env("REFRESH_QUOTA_ACCOUNT_TIMEOUT", 25, minimum=10, maximum=60)
+
+        _append_task_progress(
+            task_id,
+            {
+                "stage": "refresh_quota_started",
+                "current": 0,
+                "total": total,
+                "ok": 0,
+                "failed": 0,
+                "skipped": 0,
+                "network_error": 0,
+                "concurrency": max_workers,
+                "retry_count": retry_count,
+                "account_timeout": account_timeout,
+                "message": f"开始并发刷新凭证: {total} 个账号，并发 {max_workers}，超时 {account_timeout}s，失败重试 {retry_count} 次",
+            },
+        )
+
+        def _emit(progress: dict):
+            with progress_lock:
+                _append_task_progress(task_id, progress)
+
+        def _run_one(index: int, email: str, acc: dict) -> dict:
+            _emit(
                 {
                     "stage": "refresh_quota_account",
                     "email": email,
-                    "current": index,
+                    "current": completed,
+                    "account_index": index,
                     "total": total,
                     "ok": len(ok),
                     "failed": len(failed),
+                    "skipped": len(skipped),
+                    "network_error": len(network_error),
                     "message": f"正在刷新账号额度: {email} ({index}/{total})",
-                },
+                }
             )
             if _is_main_account_email(email):
-                skipped.append({"email": email, "reason": "main_account"})
-                continue
+                return {"kind": "skipped", "email": email, "index": index, "reason": "main_account", "message": f"跳过主账号: {email}"}
             if str(acc.get("status") or "").strip().lower() == STATUS_FAIL:
-                skipped.append({"email": email, "reason": "fail_account"})
-                _append_task_progress(
-                    task_id,
-                    {
-                        "stage": "refresh_quota_skipped",
-                        "email": email,
-                        "current": index,
-                        "total": total,
-                        "message": f"跳过废弃账号: {email}",
-                        "level": "warn",
-                    },
-                )
-                continue
+                return {"kind": "skipped", "email": email, "index": index, "reason": "fail_account", "message": f"跳过废弃账号: {email}"}
 
             auth_file = _resolve_status_auth_file(acc)
             if not auth_file:
-                skipped.append({"email": email, "reason": "missing_auth_file"})
-                _append_task_progress(
-                    task_id,
-                    {
-                        "stage": "refresh_quota_skipped",
-                        "email": email,
-                        "current": index,
-                        "total": total,
-                        "message": f"跳过 {email}: 缺少认证文件",
-                        "level": "warn",
-                    },
-                )
-                continue
+                return {"kind": "skipped", "email": email, "index": index, "reason": "missing_auth_file", "message": f"跳过 {email}: 缺少认证文件"}
 
             try:
                 auth_data = json.loads(read_text(Path(auth_file)))
             except Exception as exc:
-                skipped.append({"email": email, "reason": "invalid_auth_file", "error": str(exc)})
-                _append_task_progress(
-                    task_id,
-                    {
-                        "stage": "refresh_quota_skipped",
-                        "email": email,
-                        "current": index,
-                        "total": total,
-                        "message": f"跳过 {email}: 认证文件无法读取",
-                        "level": "warn",
-                    },
-                )
-                continue
+                return {
+                    "kind": "skipped",
+                    "email": email,
+                    "index": index,
+                    "reason": "invalid_auth_file",
+                    "error": str(exc),
+                    "message": f"跳过 {email}: 认证文件无法读取",
+                }
 
             access_token = str(auth_data.get("access_token") or "").strip()
             if not access_token:
-                skipped.append({"email": email, "reason": "missing_access_token"})
-                _append_task_progress(
-                    task_id,
+                return {
+                    "kind": "skipped",
+                    "email": email,
+                    "index": index,
+                    "reason": "missing_access_token",
+                    "message": f"跳过 {email}: 认证文件缺少 access_token",
+                }
+
+            now_ts = time.time()
+            attempts = 0
+            status = "network_error"
+            info = None
+            for attempt in range(retry_count + 1):
+                attempts = attempt + 1
+                status, info = check_codex_quota(
+                    access_token,
+                    account_id=_account_id_from_auth_data(auth_data) or None,
+                    timeout=account_timeout,
+                )
+                if status != "network_error" or attempt >= retry_count:
+                    break
+                _emit(
                     {
-                        "stage": "refresh_quota_skipped",
+                        "stage": "refresh_quota_retry",
                         "email": email,
-                        "current": index,
+                        "current": completed,
+                        "account_index": index,
                         "total": total,
-                        "message": f"跳过 {email}: 认证文件缺少 access_token",
+                        "attempt": attempts,
+                        "retry_count": retry_count,
+                        "message": f"刷新凭证临时失败，准备重试: {email} ({attempts}/{retry_count + 1})",
                         "level": "warn",
                     },
                 )
-                continue
 
-            now_ts = time.time()
-            status, info = check_codex_quota(access_token, account_id=_account_id_from_auth_data(auth_data) or None)
             if status == "ok":
                 update_payload = {"last_quota": info, "last_quota_check_at": now_ts}
                 if (acc.get("status") or "") not in {STATUS_PERSONAL, STATUS_PLUS, STATUS_STANDBY}:
                     update_payload["status"] = STATUS_ACTIVE
-                update_account(email, **update_payload)
-                ok.append({"email": email, "quota": info})
-                _append_task_progress(
-                    task_id,
-                    {
-                        "stage": "refresh_quota_done",
-                        "email": email,
-                        "current": index,
-                        "total": total,
-                        "ok": len(ok),
-                        "failed": len(failed),
-                        "message": f"额度刷新成功: {email}",
-                    },
-                )
-            elif status == "exhausted":
+                with update_lock:
+                    update_account(email, **update_payload)
+                return {"kind": "ok", "email": email, "index": index, "quota": info, "attempts": attempts, "message": f"额度刷新成功: {email}"}
+
+            if status == "exhausted":
                 quota_info = quota_result_quota_info(info) or {}
                 update_payload = {
                     "status": STATUS_EXHAUSTED,
@@ -3926,22 +4060,19 @@ def post_accounts_refresh_quota(params: AccountEmailBatchParams):
                 }
                 if quota_info:
                     update_payload["last_quota"] = quota_info
-                update_account(email, **update_payload)
-                exhausted.append({"email": email, "quota": quota_info, "info": info})
-                _append_task_progress(
-                    task_id,
-                    {
-                        "stage": "refresh_quota_exhausted",
-                        "email": email,
-                        "current": index,
-                        "total": total,
-                        "ok": len(ok),
-                        "failed": len(failed),
-                        "message": f"额度已用完: {email}",
-                        "level": "warn",
-                    },
-                )
-            elif status == "auth_error":
+                with update_lock:
+                    update_account(email, **update_payload)
+                return {
+                    "kind": "exhausted",
+                    "email": email,
+                    "index": index,
+                    "quota": quota_info,
+                    "info": info,
+                    "attempts": attempts,
+                    "message": f"额度已用完: {email}",
+                }
+
+            if status == "auth_error":
                 update_payload = {
                     "status": STATUS_FAIL,
                     "discarded_at": now_ts,
@@ -3951,34 +4082,92 @@ def post_accounts_refresh_quota(params: AccountEmailBatchParams):
                     "last_bind_failure_stage": "auth_401",
                     "last_bind_message": "刷新额度返回 401/403，账号已标记为 Fail/废弃",
                 }
-                update_account(email, **update_payload)
-                failed.append({"email": email, "reason": "auth_error"})
+                with update_lock:
+                    update_account(email, **update_payload)
+                return {
+                    "kind": "failed",
+                    "email": email,
+                    "index": index,
+                    "reason": "auth_error",
+                    "attempts": attempts,
+                    "message": f"刷新额度返回 401/403，已标记 Fail/废弃: {email}",
+                }
+
+            return {
+                "kind": "network_error",
+                "email": email,
+                "index": index,
+                "reason": status,
+                "attempts": attempts,
+                "message": f"刷新额度遇到临时错误，未改状态: {email}",
+            }
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="quota-refresh") as executor:
+            future_map = {
+                executor.submit(_run_one, index, email, acc): (index, email)
+                for index, (email, acc) in enumerate(accounts_by_email.items(), start=1)
+            }
+            for future in as_completed(future_map):
+                index, email = future_map[future]
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    item = {
+                        "kind": "network_error",
+                        "email": email,
+                        "index": index,
+                        "reason": "exception",
+                        "error": str(exc),
+                        "attempts": 1,
+                        "message": f"刷新凭证异常，未改状态: {email}: {exc}",
+                    }
+                    logger.exception("[刷新凭证] worker 异常: email=%s", email)
+
+                completed += 1
+                kind = item.get("kind")
+                if kind == "ok":
+                    ok.append({"email": item["email"], "quota": item.get("quota"), "attempts": item.get("attempts", 1)})
+                    stage = "refresh_quota_done"
+                    level = "info"
+                elif kind == "exhausted":
+                    exhausted.append({"email": item["email"], "quota": item.get("quota") or {}, "info": item.get("info")})
+                    stage = "refresh_quota_exhausted"
+                    level = "warn"
+                elif kind == "failed":
+                    failed.append({"email": item["email"], "reason": item.get("reason") or "failed"})
+                    stage = "refresh_quota_auth_failed"
+                    level = "error"
+                elif kind == "skipped":
+                    skipped_item = {
+                        "email": item["email"],
+                        "reason": item.get("reason") or "skipped",
+                    }
+                    if item.get("error"):
+                        skipped_item["error"] = item.get("error")
+                    skipped.append(skipped_item)
+                    stage = "refresh_quota_skipped"
+                    level = "warn"
+                else:
+                    network_error.append({"email": item.get("email") or email, "reason": item.get("reason") or "network_error"})
+                    stage = "refresh_quota_network_error"
+                    level = "warn"
+
                 _append_task_progress(
                     task_id,
                     {
-                        "stage": "refresh_quota_auth_failed",
-                        "email": email,
-                        "current": index,
+                        "stage": stage,
+                        "email": item.get("email") or email,
+                        "current": completed,
+                        "account_index": item.get("index") or index,
                         "total": total,
                         "ok": len(ok),
                         "failed": len(failed),
-                        "message": f"刷新额度返回 401/403，已标记 Fail/废弃: {email}",
-                        "level": "error",
-                    },
-                )
-            else:
-                network_error.append({"email": email, "reason": status})
-                _append_task_progress(
-                    task_id,
-                    {
-                        "stage": "refresh_quota_network_error",
-                        "email": email,
-                        "current": index,
-                        "total": total,
-                        "ok": len(ok),
-                        "failed": len(failed),
-                        "message": f"刷新额度遇到临时错误，未改状态: {email}",
-                        "level": "warn",
+                        "exhausted": len(exhausted),
+                        "skipped": len(skipped),
+                        "network_error": len(network_error),
+                        "attempts": item.get("attempts", 1),
+                        "message": item.get("message") or f"刷新凭证完成: {email}",
+                        "level": level,
                     },
                 )
 
@@ -3990,6 +4179,9 @@ def post_accounts_refresh_quota(params: AccountEmailBatchParams):
             "network_error": network_error,
             "missing": missing,
             "total": total,
+            "concurrency": max_workers,
+            "retry_count": retry_count,
+            "account_timeout": account_timeout,
         }
 
     task = _start_task(
@@ -4003,7 +4195,7 @@ def post_accounts_refresh_quota(params: AccountEmailBatchParams):
 
 
 @app.get("/api/status")
-def get_status(include_session_stubs: bool = False):
+def get_status(include_session_stubs: bool = True):
     """获取所有账号状态。
 
     不在页面读取路径里批量请求 Codex quota。真实账号较多时逐个实时探测会让
@@ -4017,7 +4209,6 @@ def get_status(include_session_stubs: bool = False):
         STATUS_FAIL,
         STATUS_ORPHAN,
         STATUS_PENDING,
-        STATUS_PERSONAL,
         STATUS_STANDBY,
     )
 
@@ -4147,6 +4338,104 @@ def post_account_hub_ingest(request: Request, payload: AccountHubIngestPayload):
         return receive_payload(payload.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _trade_http_error(exc: Exception):
+    from autoteam.trade import TradeError
+
+    if isinstance(exc, TradeError):
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trade/summary")
+def get_trade_summary():
+    from autoteam.trade import inventory_summary
+
+    try:
+        return inventory_summary()
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.get("/api/trade/cdks")
+def get_trade_cdks(limit: int = 200):
+    from autoteam.trade import list_cdks
+
+    try:
+        return {"items": list_cdks(limit=limit)}
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.post("/api/trade/cdks")
+def post_trade_cdk(params: TradeCreateCdkParams):
+    from autoteam.trade import create_cdk
+
+    try:
+        return create_cdk(params.quota_total, note=params.note)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.get("/api/trade/cdks/{code}")
+def get_trade_cdk(code: str):
+    from autoteam.trade import get_cdk
+
+    try:
+        return get_cdk(code)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.post("/api/trade/cdks/{code}/revoke")
+def post_trade_cdk_revoke(code: str):
+    from autoteam.trade import revoke_cdk
+
+    try:
+        return revoke_cdk(code)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.post("/api/public/plus-extractor/redeem")
+def post_public_plus_extractor_redeem(params: TradeRedeemParams):
+    from autoteam.trade import redeem_cdk
+
+    try:
+        return redeem_cdk(params.code, params.password, params.count, params.formats or params.format)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.post("/api/public/plus-extractor/query")
+def post_public_plus_extractor_query(params: TradeQueryParams):
+    from autoteam.trade import query_cdk_remaining
+
+    try:
+        return query_cdk_remaining(params.code, params.password)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.post("/api/public/plus-extractor/set-password")
+def post_public_plus_extractor_set_password(params: TradeSetPasswordParams):
+    from autoteam.trade import set_cdk_password
+
+    try:
+        return set_cdk_password(params.code, params.password)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.post("/api/public/plus-extractor/cdk-status")
+def post_public_plus_extractor_cdk_status(params: TradeCdkStatusParams):
+    from autoteam.trade import public_cdk_status
+
+    try:
+        return public_cdk_status(params.code)
+    except Exception as exc:
+        _trade_http_error(exc)
 
 
 @app.get("/api/config/register-domain")
@@ -6967,12 +7256,82 @@ _auto_check_config = {
 }
 _auto_check_stop = threading.Event()
 _auto_check_restart = threading.Event()  # 配置变更时通知线程重启
+_auto_refresh_quota_config = {
+    "enabled": False,
+    "interval": 0,
+}
+_auto_refresh_quota_stop = threading.Event()
+_auto_refresh_quota_restart = threading.Event()
 
 # auto-fill watchdog 冷却:防止反复触发 cmd_rotate 导致 OpenAI 对短时间内
 # 多次 invite/kick 的子号批量 revoke token。30 分钟内只触发一次,给 OpenAI
 # 风控系统冷却时间。0 表示从未触发过。
 _auto_fill_last_trigger_ts = 0.0
 _AUTO_FILL_COOLDOWN_SECONDS = 1800  # 30 min
+
+
+def _load_auto_refresh_quota_config() -> None:
+    """Load persisted automatic credential refresh settings from SQLite."""
+    try:
+        from autoteam import sqlite_store
+
+        saved = sqlite_store.get_json("config", "auto_refresh_quota", default={})
+    except Exception as exc:
+        logger.warning("[刷新凭证] 读取自动刷新配置失败，使用默认关闭: %s", exc)
+        saved = {}
+    try:
+        interval = int((saved or {}).get("interval") or os.environ.get("AUTO_REFRESH_QUOTA_INTERVAL", "0") or 0)
+    except (TypeError, ValueError):
+        interval = 0
+    enabled = bool((saved or {}).get("enabled", False)) and interval > 0
+    _auto_refresh_quota_config.update(
+        {
+            "enabled": enabled,
+            "interval": max(60, interval) if enabled else 0,
+        }
+    )
+
+
+def _save_auto_refresh_quota_config() -> None:
+    try:
+        from autoteam import sqlite_store
+
+        sqlite_store.set_json("config", "auto_refresh_quota", _auto_refresh_quota_config.copy())
+    except Exception as exc:
+        logger.warning("[刷新凭证] 保存自动刷新配置失败: %s", exc)
+
+
+def _auto_refresh_quota_loop():
+    """Periodically submit the refresh-quota task without blocking other task groups."""
+    while not _auto_refresh_quota_stop.is_set():
+        cfg = _auto_refresh_quota_config.copy()
+        enabled = bool(cfg.get("enabled"))
+        interval = int(cfg.get("interval") or 0)
+        if not enabled or interval <= 0:
+            _auto_refresh_quota_restart.clear()
+            logger.info("[刷新凭证] 自动刷新已关闭，等待重新启用")
+            _auto_refresh_quota_restart.wait(60)
+            continue
+
+        logger.info("[刷新凭证] 等待 %d 分钟后执行下一轮自动刷新", max(1, interval // 60))
+        _auto_refresh_quota_restart.clear()
+        if _auto_refresh_quota_stop.wait(interval):
+            break
+        if _auto_refresh_quota_restart.is_set():
+            continue
+
+        try:
+            logger.info("[刷新凭证] 开始自动提交刷新凭证任务")
+            post_accounts_refresh_quota(AccountEmailBatchParams(emails=[]))
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                logger.info("[刷新凭证] 已有刷新凭证任务在执行，本轮自动刷新跳过")
+            elif exc.status_code == 404:
+                logger.info("[刷新凭证] 没有可刷新凭证的账号，本轮跳过")
+            else:
+                logger.warning("[刷新凭证] 自动刷新提交失败: %s", exc.detail)
+        except Exception as exc:
+            logger.warning("[刷新凭证] 自动刷新提交异常: %s", exc)
 
 
 def _auto_check_loop():
@@ -7144,6 +7503,11 @@ class AutoCheckConfig(BaseModel):
     min_low: int = 2  # 触发轮转的最少账号数
 
 
+class AutoRefreshQuotaConfig(BaseModel):
+    enabled: bool | None = None
+    interval: int = 0  # 自动刷新凭证间隔（秒），0 表示关闭
+
+
 @app.get("/api/config/auto-check")
 def get_auto_check_config():
     """获取巡检配置"""
@@ -7168,12 +7532,40 @@ def set_auto_check_config(cfg: AutoCheckConfig):
     return _auto_check_config.copy()
 
 
+@app.get("/api/config/auto-refresh-quota")
+def get_auto_refresh_quota_config():
+    """获取自动刷新凭证配置。"""
+    return _auto_refresh_quota_config.copy()
+
+
+@app.put("/api/config/auto-refresh-quota")
+def set_auto_refresh_quota_config(cfg: AutoRefreshQuotaConfig):
+    """修改自动刷新凭证配置（运行时生效，写入 SQLite）。"""
+    interval = max(0, int(cfg.interval or 0))
+    enabled = bool(cfg.enabled) if cfg.enabled is not None else interval > 0
+    if not enabled or interval <= 0:
+        _auto_refresh_quota_config["enabled"] = False
+        _auto_refresh_quota_config["interval"] = 0
+    else:
+        _auto_refresh_quota_config["enabled"] = True
+        _auto_refresh_quota_config["interval"] = max(60, interval)
+    _save_auto_refresh_quota_config()
+    _auto_refresh_quota_restart.set()
+    logger.info(
+        "[刷新凭证] 自动刷新配置已更新: enabled=%s interval=%ds",
+        _auto_refresh_quota_config["enabled"],
+        _auto_refresh_quota_config["interval"],
+    )
+    return _auto_refresh_quota_config.copy()
+
+
 @app.on_event("startup")
 def _start_auto_check():
     try:
         from autoteam import sqlite_store
 
         sqlite_store.initialize()
+        _load_auto_refresh_quota_config()
         cancelled_tasks = _cancel_orphaned_task_snapshots()
         if cancelled_tasks:
             logger.warning("[启动] 已取消 %d 个后端重启后残留的运行中任务快照", cancelled_tasks)
@@ -7198,15 +7590,19 @@ def _start_auto_check():
 
     if not _auto_check_config["enabled"]:
         logger.info("[巡检] 自动巡检已关闭，启动时跳过后台线程")
-        return
+    else:
+        thread = threading.Thread(target=_auto_check_loop, daemon=True)
+        thread.start()
 
-    thread = threading.Thread(target=_auto_check_loop, daemon=True)
-    thread.start()
+    quota_thread = threading.Thread(target=_auto_refresh_quota_loop, daemon=True)
+    quota_thread.start()
 
 
 @app.on_event("shutdown")
 def _stop_auto_check():
     _auto_check_stop.set()
+    _auto_refresh_quota_stop.set()
+    _auto_refresh_quota_restart.set()
     try:
         from autoteam.account_hub import stop_auto_upload_loop
 

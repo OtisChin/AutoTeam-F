@@ -6,8 +6,8 @@ Modules can pass an explicit path in tests to keep fixtures isolated.
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -161,6 +161,57 @@ def initialize(path: str | Path | None = None) -> None:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_task_snapshots_created_at ON task_snapshots(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_task_snapshots_status ON task_snapshots(status)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plus_cdks (
+                    code TEXT PRIMARY KEY,
+                    quota_total INTEGER NOT NULL,
+                    password_salt TEXT NOT NULL DEFAULT '',
+                    password_hash TEXT NOT NULL DEFAULT '',
+                    password_plain TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    revoked_at REAL,
+                    updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+                )
+                """
+            )
+            plus_cdk_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(plus_cdks)").fetchall()
+            }
+            if "password_plain" not in plus_cdk_columns:
+                conn.execute("ALTER TABLE plus_cdks ADD COLUMN password_plain TEXT NOT NULL DEFAULT ''")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_plus_cdks_status ON plus_cdks(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_plus_cdks_expires_at ON plus_cdks(expires_at)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plus_cdk_allocations (
+                    email TEXT PRIMARY KEY COLLATE NOCASE,
+                    code TEXT NOT NULL,
+                    allocated_at REAL NOT NULL,
+                    FOREIGN KEY(code) REFERENCES plus_cdks(code)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_plus_cdk_allocations_code ON plus_cdk_allocations(code)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plus_cdk_redemptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_id TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    email TEXT NOT NULL COLLATE NOCASE,
+                    format TEXT NOT NULL,
+                    redeemed_at REAL NOT NULL,
+                    FOREIGN KEY(code) REFERENCES plus_cdks(code)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_plus_cdk_redemptions_code ON plus_cdk_redemptions(code)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_plus_cdk_redemptions_batch ON plus_cdk_redemptions(batch_id)")
 
 
 def get_json(namespace: str, key: str, default=None, path: str | Path | None = None):

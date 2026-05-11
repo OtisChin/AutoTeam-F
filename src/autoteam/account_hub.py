@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 CONFIG_KEY = "account_hub"
 AUTO_UPLOAD_INTERVAL_SECONDS = 300
 SYNC_ACCOUNT_TYPES = {"plus", "team", "pro"}
-SYNC_EXCLUDED_STATUSES = {"fail", "auth_invalid", "orphan"}
+SYNC_EXCLUDED_STATUSES = {"fail", "auth_invalid", "orphan", "exhausted", "standby", "pending"}
 LUCKMAIL_PURCHASES_PATH = "/api/v1/openapi/email/purchases"
 LUCKMAIL_TOKEN_LOOKUP_MAX_PAGES = 30
 LUCKMAIL_TOKEN_LOOKUP_PAGE_SIZE = 100
@@ -145,10 +145,9 @@ def _is_syncable_account(acc: dict) -> bool:
     status = str(acc.get("status") or "").strip().lower()
     if status in SYNC_EXCLUDED_STATUSES:
         return False
-    if account_type in SYNC_ACCOUNT_TYPES:
-        return True
-    # 兼容旧数据：早期 GoPay 成功只写 status=plus。
-    return status == "plus"
+    if account_type not in SYNC_ACCOUNT_TYPES and status != "plus":
+        return False
+    return True
 
 
 def _syncable_accounts(accounts: list[dict]) -> list[dict]:

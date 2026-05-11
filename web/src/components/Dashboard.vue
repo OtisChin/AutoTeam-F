@@ -69,7 +69,7 @@
             :class="!cpaExportableAccounts.length || subExporting
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-indigo-600/10 text-indigo-300 border-indigo-500/30 hover:bg-indigo-600/20'">
-            {{ subExporting ? '导出中...' : `导出Sub认证 (${cpaExportableAccounts.length})` }}
+            {{ subExporting ? '导出中...' : `导出Sub2API认证 (${cpaExportableAccounts.length})` }}
           </button>
           <button
             @click="batchLoginAccounts"
@@ -97,6 +97,26 @@
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-red-600/10 text-red-300 border-red-500/30 hover:bg-red-600/20'">
             {{ invalidDeleting ? '删除中...' : `删除无效凭证 (${invalidCredentialAccounts.length})` }}
+          </button>
+          <button
+            v-if="selectedEmails.length"
+            @click="batchUpdateExportStatus(true)"
+            :disabled="exportStatusUpdating"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="exportStatusUpdating
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
+            标记已导出 ({{ selectedEmails.length }})
+          </button>
+          <button
+            v-if="selectedEmails.length"
+            @click="batchUpdateExportStatus(false)"
+            :disabled="exportStatusUpdating"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="exportStatusUpdating
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-gray-700/70 text-gray-300 border-gray-600 hover:bg-gray-700'">
+            标记未导出 ({{ selectedEmails.length }})
           </button>
           <button
             v-if="selectedEmails.length"
@@ -648,6 +668,7 @@ const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
 const cpaExporting = ref(false)
 const subExporting = ref(false)
+const exportStatusUpdating = ref(false)
 const batchLoggingIn = ref(false)
 const quotaRefreshing = ref(false)
 const invalidDeleting = ref(false)
@@ -1400,7 +1421,7 @@ async function exportSubAuths() {
     downloadBase64File(result.content_base64, result.filename, result.content_type)
     const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无认证文件账号` : ''
     const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，${result.invalid.length} 个认证文件无法转换` : ''
-    message.value = `已导出 ${result.count || 0} 个 Sub 认证账号${missing}${invalid}`
+    message.value = `已导出 ${result.count || 0} 个 Sub2API 认证账号${missing}${invalid}`
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     emit('refresh')
   } catch (e) {
@@ -1408,6 +1429,27 @@ async function exportSubAuths() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     subExporting.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function batchUpdateExportStatus(exported) {
+  const emails = selectedEmails.value
+  if (exportStatusUpdating.value || !emails.length) return
+
+  exportStatusUpdating.value = true
+  message.value = ''
+  try {
+    const result = await api.updateAccountsExportStatus(emails, exported)
+    const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个不存在或不可修改账号` : ''
+    message.value = `${exported ? '已标记为已导出' : '已标记为未导出'} ${result.updated || 0} 个账号${missing}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    exportStatusUpdating.value = false
     setTimeout(() => { message.value = '' }, 8000)
   }
 }

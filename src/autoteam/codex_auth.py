@@ -3926,7 +3926,7 @@ def get_quota_exhausted_info(quota_info, *, limit_reached=False):
     }
 
 
-def check_codex_quota(access_token, account_id=None):
+def check_codex_quota(access_token, account_id=None, *, timeout=30):
     """
     通过 /backend-api/wham/usage 查询 Codex 额度状态，不消耗额度。
     返回:
@@ -3955,7 +3955,7 @@ def check_codex_quota(access_token, account_id=None):
         resp = requests.get(
             "https://chatgpt.com/backend-api/wham/usage",
             headers=headers,
-            timeout=30,
+            timeout=timeout,
         )
     except (
         requests.exceptions.ConnectionError,

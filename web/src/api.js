@@ -63,6 +63,7 @@ export const api = {
   exportAccountCredentials: (emails, lineFormat) => request('POST', '/accounts/export-credentials', { emails, line_format: lineFormat }),
   exportAccountCpaAuths: (emails) => request('POST', '/accounts/export-cpa-auths', { emails }),
   exportAccountSubAuths: (emails) => request('POST', '/accounts/export-sub-auths', { emails }),
+  updateAccountsExportStatus: (emails, exported) => request('POST', '/accounts/export-status', { emails, exported }),
   loginAccount: (email) => request('POST', '/accounts/login', { email }),
   loginAccountsBatch: (emails) => request('POST', '/accounts/login-batch', { emails }),
   refreshAccountsQuota: (emails) => request('POST', '/accounts/refresh-quota', { emails }),
@@ -98,6 +99,11 @@ export const api = {
   saveAccountHubConfig: (config) => request('PUT', '/account-hub/config', config),
   testAccountHub: (config) => request('POST', '/account-hub/test', config),
   syncAccountHub: (emails) => request('POST', '/account-hub/sync', { emails }),
+  getTradeSummary: () => request('GET', '/trade/summary'),
+  getTradeCdks: (limit = 200) => request('GET', `/trade/cdks?limit=${encodeURIComponent(limit)}`),
+  createTradeCdk: (quotaTotal, note = '') => request('POST', '/trade/cdks', { quota_total: quotaTotal, note }),
+  getTradeCdk: (code) => request('GET', `/trade/cdks/${encodeURIComponent(code)}`),
+  revokeTradeCdk: (code) => request('POST', `/trade/cdks/${encodeURIComponent(code)}/revoke`),
 
   startRotate: (target = 5) => request('POST', '/tasks/rotate', { target }),
   startCheck: () => request('POST', '/tasks/check'),
@@ -120,6 +126,8 @@ export const api = {
 
   getAutoCheckConfig: () => request('GET', '/config/auto-check'),
   setAutoCheckConfig: (cfg) => request('PUT', '/config/auto-check', cfg),
+  getAutoRefreshQuotaConfig: () => request('GET', '/config/auto-refresh-quota'),
+  setAutoRefreshQuotaConfig: (cfg) => request('PUT', '/config/auto-refresh-quota', cfg),
   getMailProviderConfig: () => request('GET', '/config/mail-provider'),
   saveMailProviderConfig: (cfg) => request('PUT', '/config/mail-provider', cfg),
 

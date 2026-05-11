@@ -35,3 +35,19 @@ auths.bak-*/
 .pytest_cache/
 .pytest_tmp*/
 .uv-cache/
+.autoteam-*.log
+
+# 本地测试 / 验证产物，不进入 git
+tests/
+.verify/
+*.tmp
+*.temp
+web/.vite-*.log
+
+# Local verification / temporary artifacts
+tests/
+.verify/
+web/.vite-*.log
+tmp/
+*.tmp
+*.temp

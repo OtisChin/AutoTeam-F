@@ -451,7 +451,7 @@
       <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <label class="inline-flex items-center gap-2 text-sm text-gray-300">
           <input v-model="accountHubForm.auto_upload" type="checkbox" class="accent-blue-500" />
-          每 5 分钟自动同步 Plus / Team / Pro 账号到账号 Hub
+          每 5 分钟自动同步可用且已有凭证的 Plus / Team / Pro 账号到账号 Hub
         </label>
         <div class="flex flex-wrap gap-3">
           <button
@@ -508,6 +508,51 @@
             {{ registerDomainSaving ? '保存中...' : '保存域名列表' }}
           </button>
         </div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold text-white">自动刷新凭证</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            按固定间隔后台刷新账号额度快照，使用“刷新凭证”的并发逻辑；已有刷新任务运行时会自动跳过本轮。
+          </p>
+        </div>
+        <span v-if="quotaRefreshSaved" class="text-xs text-green-400 transition">已保存</span>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+          <input v-model="quotaRefreshForm.enabled" type="checkbox" class="accent-blue-500" />
+          启用自动刷新凭证
+        </label>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">刷新间隔</label>
+          <div class="flex items-center gap-2">
+            <input
+              v-model.number="quotaRefreshForm.interval"
+              type="number"
+              min="1"
+              :disabled="!quotaRefreshForm.enabled"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            />
+            <span class="text-sm text-gray-500 shrink-0">分钟</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-3 flex items-center justify-between gap-3">
+        <p class="text-xs text-gray-500">
+          {{ quotaRefreshForm.enabled ? `每 ${quotaRefreshForm.interval || 1} 分钟自动执行一次刷新凭证任务` : '当前关闭，不会自动刷新凭证' }}
+        </p>
+        <button
+          @click="saveAutoRefreshQuota"
+          :disabled="quotaRefreshSaving"
+          class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+        >
+          {{ quotaRefreshSaving ? '保存中...' : '保存' }}
+        </button>
       </div>
     </div>
 
@@ -577,6 +622,9 @@ const emit = defineEmits(['refresh', 'admin-progress'])
 const form = ref({ interval: 5, threshold: 10, min_low: 2 })
 const saving = ref(false)
 const saved = ref(false)
+const quotaRefreshForm = ref({ enabled: false, interval: 30 })
+const quotaRefreshSaving = ref(false)
+const quotaRefreshSaved = ref(false)
 
 const email = ref('')
 const sessionEmail = ref('')
@@ -675,6 +723,15 @@ onMounted(async () => {
     }
   } catch (e) {
     console.error('加载巡检配置失败:', e)
+  }
+  try {
+    const cfg = await api.getAutoRefreshQuotaConfig()
+    quotaRefreshForm.value = {
+      enabled: !!cfg.enabled,
+      interval: Math.max(1, Math.round((cfg.interval || 1800) / 60)),
+    }
+  } catch (e) {
+    console.error('加载自动刷新凭证配置失败:', e)
   }
   loadRegisterDomains()
   loadAccountHubConfig()
@@ -878,6 +935,28 @@ async function save() {
     console.error('保存失败:', e)
   } finally {
     saving.value = false
+  }
+}
+
+async function saveAutoRefreshQuota() {
+  quotaRefreshSaving.value = true
+  quotaRefreshSaved.value = false
+  try {
+    const minutes = Math.max(1, Number(quotaRefreshForm.value.interval || 1))
+    const cfg = await api.setAutoRefreshQuotaConfig({
+      enabled: !!quotaRefreshForm.value.enabled,
+      interval: quotaRefreshForm.value.enabled ? minutes * 60 : 0,
+    })
+    quotaRefreshForm.value = {
+      enabled: !!cfg.enabled,
+      interval: Math.max(1, Math.round((cfg.interval || minutes * 60) / 60)),
+    }
+    quotaRefreshSaved.value = true
+    setTimeout(() => { quotaRefreshSaved.value = false }, 3000)
+  } catch (e) {
+    setMessage(e.message || '保存自动刷新凭证配置失败', 'error')
+  } finally {
+    quotaRefreshSaving.value = false
   }
 }
 

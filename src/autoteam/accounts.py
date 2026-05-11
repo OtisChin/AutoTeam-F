@@ -8,9 +8,9 @@ import json
 import time
 from pathlib import Path
 
+from autoteam import sqlite_store
 from autoteam.admin_state import get_admin_email
 from autoteam.paths import PROJECT_ROOT
-from autoteam import sqlite_store
 
 ACCOUNTS_FILE = PROJECT_ROOT / "accounts.json"
 
@@ -227,6 +227,30 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
 
 def update_account(email, **kwargs):
     """更新账号字段"""
+    hub_dirty_keys = {
+        "status",
+        "account_type",
+        "seat_type",
+        "password",
+        "cloudmail_account_id",
+        "mail_provider",
+        "auth_file",
+        "last_active_at",
+        "last_bind_status",
+        "last_bind_at",
+        "last_checkout_url",
+        "last_card_id",
+        "last_proxy_label",
+        "last_bind_task_id",
+        "last_bind_message",
+        "last_bind_failure_stage",
+        "quota_exhausted_at",
+        "quota_resets_at",
+        "last_quota_check_at",
+    }
+    if any(key in kwargs for key in hub_dirty_keys) and "account_hub_synced" not in kwargs:
+        kwargs["account_hub_synced"] = False
+        kwargs["account_hub_synced_at"] = None
     accounts = load_accounts()
     acc = find_account(accounts, email)
     if acc:
