@@ -6,9 +6,10 @@ import json
 import re
 import time
 import uuid
+from pathlib import Path
 
+from autoteam import sqlite_store
 from autoteam.paths import PROJECT_ROOT
-from autoteam.textio import read_text, write_text
 
 CARD_POOL_FILE = PROJECT_ROOT / "data" / "card_pool.json"
 
@@ -20,27 +21,100 @@ def _default_pool():
     return {"redeem": [], "card": []}
 
 
-def _ensure_parent():
-    CARD_POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
+def _db_path() -> Path:
+    try:
+        if Path(CARD_POOL_FILE).resolve() != (PROJECT_ROOT / "data" / "card_pool.json").resolve():
+            return Path(CARD_POOL_FILE).with_suffix(".sqlite3")
+    except Exception:
+        pass
+    return sqlite_store.default_db_path()
+
+
+def _row_to_item(row):
+    try:
+        meta = json.loads(row["meta"] or "{}")
+    except Exception:
+        meta = {}
+    return _ensure_item_defaults(
+        {
+            "id": row["id"],
+            "type": row["pool_type"],
+            "value": row["value"],
+            "provider": row["provider"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+            "used_by": row["used_by"],
+            "used_at": row["used_at"],
+            "meta": meta,
+        }
+    )
+
+
+def _upsert_item(conn, item):
+    item = _ensure_item_defaults(dict(item or {}))
+    item_id = str(item.get("id") or uuid.uuid4().hex)
+    item["id"] = item_id
+    conn.execute(
+        """
+        INSERT INTO card_pool_items (
+            id, pool_type, value, provider, status, created_at, expires_at,
+            used_by, used_at, meta, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+        ON CONFLICT(id) DO UPDATE SET
+            pool_type=excluded.pool_type,
+            value=excluded.value,
+            provider=excluded.provider,
+            status=excluded.status,
+            created_at=excluded.created_at,
+            expires_at=excluded.expires_at,
+            used_by=excluded.used_by,
+            used_at=excluded.used_at,
+            meta=excluded.meta,
+            updated_at=excluded.updated_at
+        """,
+        (
+            item_id,
+            _normalize_pool_type(item.get("type") or item.get("pool_type")),
+            str(item.get("value") or "").strip(),
+            str(item.get("provider") or "").strip(),
+            _normalize_status(item.get("status")),
+            item.get("created_at") or time.time(),
+            str(item.get("expires_at") or "").strip(),
+            str(item.get("used_by") or "").strip(),
+            item.get("used_at"),
+            json.dumps(item.get("meta") or {}, ensure_ascii=False),
+        ),
+    )
 
 
 def load_card_pool():
-    _ensure_parent()
-    if not CARD_POOL_FILE.exists():
-        return _default_pool()
-    raw = read_text(CARD_POOL_FILE).strip()
-    if not raw:
-        return _default_pool()
-    data = json.loads(raw)
-    return {
-        "redeem": data.get("redeem", []) if isinstance(data.get("redeem", []), list) else [],
-        "card": data.get("card", []) if isinstance(data.get("card", []), list) else [],
-    }
+    sqlite_store.initialize(_db_path())
+    with sqlite_store.connect(_db_path()) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM card_pool_items
+            ORDER BY COALESCE(created_at, 0) DESC, id DESC
+            """
+        ).fetchall()
+    data = _default_pool()
+    for row in rows:
+        item = _row_to_item(row)
+        pool_type = _normalize_pool_type(item.get("type"))
+        data[pool_type].append(item)
+    return data
 
 
 def save_card_pool(data):
-    _ensure_parent()
-    write_text(CARD_POOL_FILE, json.dumps(data, indent=2, ensure_ascii=False))
+    sqlite_store.initialize(_db_path())
+    with sqlite_store.connect(_db_path()) as conn:
+        conn.execute("DELETE FROM card_pool_items")
+        for pool_type in POOL_TYPES:
+            for item in (data or {}).get(pool_type, []):
+                payload = dict(item or {})
+                payload["type"] = pool_type
+                _upsert_item(conn, payload)
 
 
 def _normalize_status(status: str | None) -> str:

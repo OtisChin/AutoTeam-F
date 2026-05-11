@@ -24,6 +24,7 @@ from autoteam.admin_state import (
     get_chatgpt_account_id,
     get_chatgpt_workspace_name,
 )
+from autoteam.auth_index import delete_codex_auth_file, upsert_codex_auth_file
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
 from autoteam.config import get_playwright_launch_options
 from autoteam.paths import PROJECT_ROOT
@@ -523,6 +524,10 @@ def _write_auth_file(filepath, bundle):
 
     write_text(filepath, json.dumps(auth_data, indent=2))
     ensure_auth_file_permissions(filepath)
+    try:
+        upsert_codex_auth_file(filepath, auth_data, main=filepath.name.startswith("codex-main-"))
+    except Exception as exc:
+        logger.warning("[Codex] SQLite auth 索引写入失败: %s", exc)
     logger.info("[Codex] 认证文件已保存: %s", filepath)
     return str(filepath)
 
@@ -3795,6 +3800,7 @@ def save_auth_file(bundle):
 
     # 清理同一邮箱的旧文件（避免 free/team 并存）
     for old in AUTH_DIR.glob(f"codex-{email}-*.json"):
+        delete_codex_auth_file(old)
         old.unlink()
         logger.info("[Codex] 清理旧文件: %s", old.name)
 
@@ -3808,6 +3814,7 @@ def save_main_auth_file(bundle):
     account_id = bundle.get("account_id") or hashlib.md5(bundle.get("email", "main").encode()).hexdigest()[:8]
 
     for old in AUTH_DIR.glob("codex-main-*.json"):
+        delete_codex_auth_file(old)
         old.unlink()
         logger.info("[Codex] 清理旧主号文件: %s", old.name)
 

@@ -70,6 +70,10 @@ def _extract_otp_from_text(text: str) -> str:
     return ""
 
 
+def _message_seen_key(*, code: str, raw: str) -> str:
+    return f"{str(code or '').strip()}|{_compact(raw, 500)}"
+
+
 class WhatsAppOtpListener:
     def __init__(
         self,
@@ -136,17 +140,31 @@ class WhatsAppOtpListener:
 
     def clear(self) -> dict:
         global _GLOBAL_LATEST
+        baseline_messages = self._current_otp_messages_for_baseline()
+        baseline_keys = {
+            _message_seen_key(code=_extract_otp_from_text(message), raw=message)
+            for message in baseline_messages
+            if _extract_otp_from_text(message)
+        }
+        baseline_codes = {
+            _extract_otp_from_text(message)
+            for message in baseline_messages
+            if _extract_otp_from_text(message)
+        }
+        baseline_codes.discard("")
         with self._lock:
             self._latest = None
             self._recent = []
-            self._seen_keys = set()
-            self._seen_codes = set()
+            self._seen_keys = set(baseline_keys)
+            self._seen_codes = set(baseline_codes)
             self._last_seen_at = 0.0
         with _GLOBAL_LOCK:
             _GLOBAL_LATEST = None
             _GLOBAL_RECENT.clear()
             _GLOBAL_SEEN_KEYS.clear()
+            _GLOBAL_SEEN_KEYS.update(baseline_keys)
             _GLOBAL_SEEN_CODES.clear()
+            _GLOBAL_SEEN_CODES.update(baseline_codes)
         return self.status()
 
     def status(self) -> dict:
@@ -228,7 +246,7 @@ class WhatsAppOtpListener:
         raw = _compact(raw, 500)
         if not code or not raw:
             return
-        key = f"{code}|{raw}"
+        key = _message_seen_key(code=code, raw=raw)
         with self._lock:
             if key in self._seen_keys or code in self._seen_codes:
                 return
@@ -320,6 +338,7 @@ class WhatsAppOtpListener:
 
             self._resolved_serial = self._resolve_device()
             logger.info("[whatsapp-otp] Android emulator listener started: serial=%s adb=%s", self._resolved_serial, self.adb_path)
+            self._seed_current_notifications_as_seen()
 
             while not self._stop_event.is_set():
                 try:
@@ -345,6 +364,47 @@ class WhatsAppOtpListener:
             with self._lock:
                 self._running = False
             logger.info("[whatsapp-otp] Android listener stopped")
+
+    def _current_otp_messages_for_baseline(self) -> list[str]:
+        try:
+            if not (self._resolved_serial or self.adb_serial):
+                self._resolved_serial = self._resolve_device()
+            return [
+                message
+                for message in self._scrape_device()
+                if _extract_otp_from_text(message)
+            ]
+        except Exception as exc:
+            logger.debug("[whatsapp-otp] baseline scrape failed: %s", exc)
+            return []
+
+    def _seed_current_notifications_as_seen(self) -> None:
+        global _GLOBAL_LATEST
+        messages = self._current_otp_messages_for_baseline()
+        if not messages:
+            return
+        keys: set[str] = set()
+        codes: set[str] = set()
+        for message in messages:
+            code = _extract_otp_from_text(message)
+            if not code:
+                continue
+            keys.add(_message_seen_key(code=code, raw=message))
+            codes.add(code)
+        if not keys and not codes:
+            return
+        with self._lock:
+            self._seen_keys.update(keys)
+            self._seen_codes.update(codes)
+            self._latest = None
+            self._recent = []
+            self._last_seen_at = 0.0
+        with _GLOBAL_LOCK:
+            _GLOBAL_LATEST = None
+            _GLOBAL_RECENT.clear()
+            _GLOBAL_SEEN_KEYS.update(keys)
+            _GLOBAL_SEEN_CODES.update(codes)
+        logger.info("[whatsapp-otp] seeded current Android notifications as baseline: count=%s", len(keys))
 
     def _scrape_device(self) -> list[str]:
         try:

@@ -1357,6 +1357,7 @@ const luckmailDomainOptions = [
   { value: '', label: '自动分配' },
   { value: 'outlook.com', label: 'outlook.com' },
   { value: 'outlook.de', label: 'outlook.de' },
+  { value: 'outlook.fr', label: 'outlook.fr' },
   { value: 'outlook.jp', label: 'outlook.jp' },
   { value: 'outlook.my', label: 'outlook.my' },
   { value: 'hotmail.com', label: 'hotmail.com' },
@@ -2834,13 +2835,16 @@ async function restoreActiveBindTasks() {
   try {
     const tasks = await api.getTasks()
     const running = (tasks || []).find(task => isTaskActive(task) && ['bind-card', 'gopay-bind'].includes(task.command))
-    const recentGoPay = (tasks || []).find(task => task.command === 'gopay-bind')
+    const recentGoPay = (tasks || []).find(task => task.command === 'gopay-bind' && isTaskActive(task))
     if (!running) {
       let restored = recentGoPay
       if (!restored) {
         try {
           const savedGoPayTaskId = localStorage.getItem(GOPAY_RECENT_TASK_KEY)
-          if (savedGoPayTaskId) restored = await api.getTask(savedGoPayTaskId)
+          if (savedGoPayTaskId) {
+            const saved = await api.getTask(savedGoPayTaskId)
+            if (saved?.command === 'gopay-bind' && isTaskActive(saved)) restored = saved
+          }
         } catch {
           restored = null
         }

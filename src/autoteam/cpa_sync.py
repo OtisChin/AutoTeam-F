@@ -10,6 +10,7 @@ from pathlib import Path
 
 import requests
 
+from autoteam.auth_index import delete_codex_auth_file, upsert_codex_auth_file
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
 from autoteam.config import CPA_KEY, CPA_URL
 from autoteam.textio import read_text, write_text
@@ -316,6 +317,10 @@ def _write_auth_file(filepath, bundle):
     }
     write_text(filepath, json.dumps(auth_data, indent=2))
     ensure_auth_file_permissions(filepath)
+    try:
+        upsert_codex_auth_file(filepath, auth_data, main=Path(filepath).name.startswith("codex-main-"))
+    except Exception as exc:
+        logger.warning("[CPA] SQLite auth 索引写入失败: %s", exc)
     return filepath
 
 
@@ -325,11 +330,13 @@ def _save_normalized_auth_file(bundle, main=False):
     if main:
         for old in AUTH_DIR.glob("codex-main-*.json"):
             if old != filepath and old.exists():
+                delete_codex_auth_file(old)
                 old.unlink()
     else:
         email = bundle.get("email", "")
         for old in AUTH_DIR.glob(f"codex-{email}-*.json"):
             if old != filepath and old.exists():
+                delete_codex_auth_file(old)
                 old.unlink()
 
     return _write_auth_file(filepath, bundle)

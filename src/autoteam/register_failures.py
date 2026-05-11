@@ -1,4 +1,4 @@
-"""注册失败明细日志（持久化到 register_failures.json）。
+"""注册失败明细日志（持久化到 SQLite）。
 
 用户要求：失败账号不能污染账号列表，但失败原因必须能追溯 —— 比如 add-phone 触发了几次、
 哪些临时邮箱在 OAuth 阶段挂了、哪些被判 duplicate。本模块单独存这类明细，不与 accounts.json 混。
@@ -11,50 +11,81 @@ record_failure —— 无锁的读-改-写会互相覆盖导致丢记录。全�
 
 import json
 import logging
-import os
 import threading
 import time
+from pathlib import Path
 
+from autoteam import sqlite_store
 from autoteam.paths import PROJECT_ROOT
-from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
 FAILURES_FILE = PROJECT_ROOT / "register_failures.json"
 FAILURES_FILE_MODE = 0o666
 RECORD_LIMIT = 500
+_EVENT_KIND = "register_failure"
 
 _LOCK = threading.Lock()
 
 
-def _load():
-    if not FAILURES_FILE.exists():
-        return []
+def _db_path() -> Path:
     try:
-        raw = read_text(FAILURES_FILE).strip()
-        if not raw:
-            return []
-        data = json.loads(raw)
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        # 不静默吞：文件损坏时保留原件便于人工排查,返回空让新一轮写入继续。
-        corrupt_path = FAILURES_FILE.with_suffix(f".corrupt-{int(time.time())}.json")
-        try:
-            FAILURES_FILE.rename(corrupt_path)
-            logger.error("[register_failures] 解析失败, 已保留原文件为 %s: %s", corrupt_path.name, exc)
-        except Exception as rename_exc:
-            logger.error("[register_failures] 解析失败且无法重命名 (%s): %s", exc, rename_exc)
-        return []
+        if Path(FAILURES_FILE).resolve() != (PROJECT_ROOT / "register_failures.json").resolve():
+            return Path(FAILURES_FILE).with_suffix(".sqlite3")
+    except Exception:
+        pass
+    return sqlite_store.default_db_path()
+
+
+def _row_to_record(row):
+    try:
+        data = json.loads(row["data"] or "{}")
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("timestamp", row["timestamp"])
+    data.setdefault("email", row["email"])
+    data.setdefault("category", row["category"])
+    return data
+
+
+def _insert_record(conn, record):
+    payload = dict(record or {})
+    conn.execute(
+        """
+        INSERT INTO event_records(kind, timestamp, email, category, task_id, status, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            _EVENT_KIND,
+            float(payload.get("timestamp") or time.time()),
+            str(payload.get("email") or ""),
+            str(payload.get("category") or ""),
+            str(payload.get("task_id") or ""),
+            str(payload.get("status") or ""),
+            json.dumps(payload, ensure_ascii=False),
+        ),
+    )
+
+
+def _load():
+    sqlite_store.initialize(_db_path())
+    with sqlite_store.connect(_db_path()) as conn:
+        rows = conn.execute(
+            "SELECT * FROM event_records WHERE kind = ? ORDER BY id ASC",
+            (_EVENT_KIND,),
+        ).fetchall()
+    return [_row_to_record(row) for row in rows]
 
 
 def _save(records):
     records = records[-RECORD_LIMIT:]
-    target = FAILURES_FILE.resolve()
-    write_text(target, json.dumps(records, indent=2, ensure_ascii=False))
-    try:
-        os.chmod(target, FAILURES_FILE_MODE)
-    except Exception:
-        pass
+    sqlite_store.initialize(_db_path())
+    with sqlite_store.connect(_db_path()) as conn:
+        conn.execute("DELETE FROM event_records WHERE kind = ?", (_EVENT_KIND,))
+        for record in records:
+            _insert_record(conn, record)
 
 
 def record_failure(email, category, reason, **extra):

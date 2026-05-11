@@ -1099,7 +1099,7 @@ const cards = computed(() => {
     { label: '活跃', value: s.active, color: 'text-green-400' },
     { label: '待命', value: s.standby, color: 'text-yellow-400' },
     { label: '废弃', value: s.fail || 0, color: 'text-orange-400' },
-    { label: 'Free', value: bindableFreeAccounts.value.length, color: 'text-fuchsia-400' },
+    { label: 'Free', value: s.free || 0, color: 'text-fuchsia-400' },
     { label: 'Team', value: s.team || 0, color: 'text-violet-400' },
     { label: 'Plus', value: s.plus || 0, color: 'text-sky-400' },
     { label: 'Pro', value: s.pro || 0, color: 'text-cyan-400' },

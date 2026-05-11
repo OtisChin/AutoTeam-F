@@ -1,11 +1,16 @@
-"""账号池管理 - 持久化存储所有账号状态"""
+"""账号池管理 - 通过 SQLite 持久化存储所有账号状态。
+
+运行时只读写 ``data/autoteam.sqlite3``。旧版 ``accounts.json`` 需要通过
+``scripts/migrate_to_sqlite.py`` 手动迁移，避免启动时隐式合并旧数据造成误删或卡顿。
+"""
 
 import json
 import time
+from pathlib import Path
 
 from autoteam.admin_state import get_admin_email
 from autoteam.paths import PROJECT_ROOT
-from autoteam.textio import read_text, write_text
+from autoteam import sqlite_store
 
 ACCOUNTS_FILE = PROJECT_ROOT / "accounts.json"
 
@@ -31,7 +36,6 @@ SEAT_CHATGPT = "chatgpt"  # 完整 ChatGPT 席位(PATCH invite seat_type=default
 SEAT_CODEX = "codex"  # 仅 Codex 席位(usage_based,PATCH 改 default 失败时保留的兜底)
 SEAT_UNKNOWN = "unknown"  # 未知/未记录,老账号或手动导入默认值
 
-
 def _normalized_email(value):
     return (value or "").strip().lower()
 
@@ -40,18 +44,129 @@ def _is_main_account_email(email):
     return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
 
 
+def _db_path() -> Path:
+    configured = sqlite_store.default_db_path()
+    # Tests commonly monkeypatch ACCOUNTS_FILE to tmp_path/accounts.json. Keep
+    # those fixtures isolated without requiring every test to patch DB_FILE too.
+    try:
+        if Path(ACCOUNTS_FILE).resolve() != (PROJECT_ROOT / "accounts.json").resolve():
+            return Path(ACCOUNTS_FILE).with_suffix(".sqlite3")
+    except Exception:
+        pass
+    return configured
+
+
+def _normalize_account_record(account: dict) -> dict:
+    acc = dict(account or {})
+    acc["email"] = _normalized_email(acc.get("email"))
+    acc.setdefault("password", "")
+    acc.setdefault("cloudmail_account_id", None)
+    acc.setdefault("mail_provider", None)
+    acc.setdefault("status", STATUS_PENDING)
+    acc.setdefault("account_type", ACCOUNT_TYPE_FREE)
+    acc.setdefault("seat_type", SEAT_UNKNOWN)
+    acc.setdefault("auth_file", None)
+    acc.setdefault("quota_exhausted_at", None)
+    acc.setdefault("quota_resets_at", None)
+    acc.setdefault("last_quota_check_at", None)
+    acc.setdefault("created_at", time.time())
+    acc.setdefault("last_active_at", None)
+    acc.setdefault("last_bind_status", "")
+    acc.setdefault("last_bind_at", None)
+    acc.setdefault("last_checkout_url", "")
+    acc.setdefault("last_card_id", "")
+    acc.setdefault("last_proxy_label", "")
+    acc.setdefault("last_bind_task_id", "")
+    acc.setdefault("last_bind_message", "")
+    acc.setdefault("last_bind_failure_stage", "")
+    acc.setdefault("credentials_exported", False)
+    acc.setdefault("credentials_exported_at", None)
+    return acc
+
+
+def _row_to_account(row) -> dict:
+    data = {}
+    try:
+        data = json.loads(row["data"] or "{}")
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.update(
+        {
+            "email": row["email"],
+            "status": row["status"],
+            "account_type": row["account_type"],
+            "seat_type": row["seat_type"],
+            "password": row["password"],
+            "cloudmail_account_id": data.get("cloudmail_account_id", row["cloudmail_account_id"]),
+            "mail_provider": data.get("mail_provider", row["mail_provider"]),
+            "auth_file": data.get("auth_file", row["auth_file"]),
+            "credentials_exported": bool(row["credentials_exported"]),
+            "created_at": row["created_at"],
+        }
+    )
+    return _normalize_account_record(data)
+
+
+def _upsert_account(conn, account: dict) -> None:
+    acc = _normalize_account_record(account)
+    if not acc.get("email"):
+        return
+    data = dict(acc)
+    now = time.time()
+    conn.execute(
+        """
+        INSERT INTO accounts (
+            email, status, account_type, seat_type, password, cloudmail_account_id,
+            mail_provider, auth_file, credentials_exported, created_at, updated_at, data
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET
+            status=excluded.status,
+            account_type=excluded.account_type,
+            seat_type=excluded.seat_type,
+            password=excluded.password,
+            cloudmail_account_id=excluded.cloudmail_account_id,
+            mail_provider=excluded.mail_provider,
+            auth_file=excluded.auth_file,
+            credentials_exported=excluded.credentials_exported,
+            created_at=excluded.created_at,
+            updated_at=excluded.updated_at,
+            data=excluded.data
+        """,
+        (
+            acc["email"],
+            str(acc.get("status") or STATUS_PENDING),
+            str(acc.get("account_type") or ACCOUNT_TYPE_FREE),
+            str(acc.get("seat_type") or SEAT_UNKNOWN),
+            str(acc.get("password") or ""),
+            None if acc.get("cloudmail_account_id") is None else str(acc.get("cloudmail_account_id")),
+            acc.get("mail_provider"),
+            acc.get("auth_file"),
+            1 if bool(acc.get("credentials_exported")) else 0,
+            acc.get("created_at") or now,
+            now,
+            json.dumps(data, ensure_ascii=False),
+        ),
+    )
+
+
 def load_accounts():
     """加载账号列表"""
-    if ACCOUNTS_FILE.exists():
-        text = read_text(ACCOUNTS_FILE).strip()
-        if text:
-            return json.loads(text)
-    return []
+    sqlite_store.initialize(_db_path())
+    with sqlite_store.connect(_db_path()) as conn:
+        rows = conn.execute("SELECT * FROM accounts ORDER BY rowid").fetchall()
+        return [_row_to_account(row) for row in rows]
 
 
 def save_accounts(accounts):
     """保存账号列表"""
-    write_text(ACCOUNTS_FILE, json.dumps(accounts, indent=2, ensure_ascii=False))
+    sqlite_store.initialize(_db_path())
+    with sqlite_store.connect(_db_path()) as conn:
+        conn.execute("DELETE FROM accounts")
+        for account in accounts or []:
+            _upsert_account(conn, account)
 
 
 def find_account(accounts, email):
@@ -122,12 +237,13 @@ def update_account(email, **kwargs):
 
 def delete_account(email):
     """从账号池彻底移除（不动认证文件、不动临时邮箱账户）。返回是否真的删除了记录。"""
-    accounts = load_accounts()
-    remaining = [a for a in accounts if a.get("email") != email]
-    if len(remaining) == len(accounts):
+    target = _normalized_email(email)
+    if not target:
         return False
-    save_accounts(remaining)
-    return True
+    sqlite_store.initialize(_db_path())
+    with sqlite_store.connect(_db_path()) as conn:
+        cursor = conn.execute("DELETE FROM accounts WHERE email = ?", (target,))
+        return cursor.rowcount > 0
 
 
 def get_active_accounts():

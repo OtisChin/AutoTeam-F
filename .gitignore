@@ -33,4 +33,5 @@ auths.bak-*/
 .pre-commit-config.yaml.local
 .tmp/
 .pytest_cache/
+.pytest_tmp*/
 .uv-cache/

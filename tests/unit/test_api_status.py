@@ -1,4 +1,5 @@
 import json
+import os
 
 from autoteam import api
 
@@ -59,6 +60,35 @@ def test_get_status_normalizes_main_account_status_from_saved_auth(tmp_path, mon
         "pro": 0,
         "total": 1,
     }
+
+
+def test_start_server_sets_local_base_url_from_requested_port(monkeypatch):
+    captured = {}
+
+    monkeypatch.delenv("AUTOTEAM_LOCAL_BASE_URL", raising=False)
+    monkeypatch.setattr("autoteam.setup_wizard.check_and_setup", lambda interactive: None)
+    monkeypatch.setattr(
+        "uvicorn.run",
+        lambda app, host, port, log_level: captured.update(
+            {"app": app, "host": host, "port": port, "log_level": log_level}
+        ),
+    )
+
+    api.start_server(host="0.0.0.0", port=8899)
+
+    assert os.environ["AUTOTEAM_LOCAL_BASE_URL"] == "http://127.0.0.1:8899"
+    assert captured["host"] == "0.0.0.0"
+    assert captured["port"] == 8899
+
+
+def test_start_server_keeps_explicit_local_base_url(monkeypatch):
+    monkeypatch.setenv("AUTOTEAM_LOCAL_BASE_URL", "https://public.example.com")
+    monkeypatch.setattr("autoteam.setup_wizard.check_and_setup", lambda interactive: None)
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+
+    api.start_server(host="127.0.0.1", port=8899)
+
+    assert os.environ["AUTOTEAM_LOCAL_BASE_URL"] == "https://public.example.com"
 
 
 def test_sanitize_account_keeps_exportable_main_account_active_without_live_quota(tmp_path, monkeypatch):

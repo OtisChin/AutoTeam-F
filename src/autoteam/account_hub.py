@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 
 import requests
 
+from autoteam.auth_index import upsert_codex_auth_file
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
 from autoteam.paths import PROJECT_ROOT
 from autoteam.runtime_config import get, set_value
@@ -591,6 +592,10 @@ def receive_payload(payload: dict) -> dict:
         path = AUTH_DIR / filename
         write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
         ensure_auth_file_permissions(path)
+        try:
+            upsert_codex_auth_file(path, data, main=filename.startswith("codex-main-"))
+        except Exception as exc:
+            logger.warning("[AccountHub] SQLite auth 索引写入失败: %s", exc)
         email = str(item.get("email") or data.get("email") or "").strip().lower()
         if email:
             saved_auth_by_email[email] = str(path)

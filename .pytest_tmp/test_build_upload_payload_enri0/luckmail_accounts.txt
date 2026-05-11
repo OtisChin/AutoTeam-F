@@ -1,2 +1,0 @@
-user@example.com----tok_user_123
-other@example.com----tok_other

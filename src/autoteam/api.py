@@ -571,6 +571,363 @@ def _prune_tasks():
             del _tasks[tid]
 
 
+def _task_public_snapshot(task: dict) -> dict:
+    snapshot = dict(task or {})
+    snapshot.pop("_group_lock_preacquired", None)
+    return snapshot
+
+
+_TASK_LIST_PARAM_ALLOW_KEYS = {
+    "account_count",
+    "account_emails_count",
+    "auto_register",
+    "auto_register_count",
+    "checkout_ui_mode",
+    "count",
+    "emails_count",
+    "link_type",
+    "phone_country_code",
+    "proxy_label",
+    "task_id",
+    "timeout",
+}
+
+_TASK_LIST_PROGRESS_DROP_KEYS = {
+    "account_emails",
+    "auth_session",
+    "billing_info",
+    "checkout",
+    "checkout_url",
+    "cookie_header",
+    "raw",
+    "removed_pool_emails",
+    "screenshot_paths",
+    "successful_emails",
+}
+
+_TASK_LIST_RESULT_ALLOW_KEYS = {
+    "concurrency",
+    "failed",
+    "failure_stage",
+    "message",
+    "missing",
+    "ok",
+    "status",
+    "success",
+    "successful",
+    "total",
+}
+
+
+def _truncate_task_list_value(value, *, max_string: int = 240):
+    if isinstance(value, str):
+        return value if len(value) <= max_string else f"{value[:max_string]}..."
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        if len(value) <= 6 and all(not isinstance(item, (dict, list)) for item in value):
+            return value
+        return {"count": len(value)}
+    if isinstance(value, dict):
+        return {
+            str(k): _truncate_task_list_value(v, max_string=120)
+            for k, v in list(value.items())[:12]
+            if str(k) not in _TASK_LIST_PROGRESS_DROP_KEYS
+        }
+    return str(value)
+
+
+def _compact_task_params(params: dict | None) -> dict:
+    if not isinstance(params, dict):
+        return {}
+    compact = {
+        key: _truncate_task_list_value(params.get(key))
+        for key in _TASK_LIST_PARAM_ALLOW_KEYS
+        if key in params
+    }
+    for key in ("account_emails", "emails"):
+        value = params.get(key)
+        if isinstance(value, list):
+            compact[f"{key}_count"] = len(value)
+    return compact
+
+
+def _compact_task_progress(progress: dict | None) -> dict:
+    if not isinstance(progress, dict):
+        return {}
+    return {
+        str(key): _truncate_task_list_value(value)
+        for key, value in progress.items()
+        if str(key) not in _TASK_LIST_PROGRESS_DROP_KEYS
+    }
+
+
+def _compact_task_result(result):
+    if not isinstance(result, dict):
+        return _truncate_task_list_value(result)
+    return {
+        key: _truncate_task_list_value(result.get(key))
+        for key in _TASK_LIST_RESULT_ALLOW_KEYS
+        if key in result
+    }
+
+
+def _task_list_snapshot(task: dict) -> dict:
+    """Lightweight task snapshot for list polling.
+
+    Full progress history stays available from /api/tasks/{task_id}. The
+    dashboard polls /api/tasks frequently; returning 50 tasks * 300 progress
+    events makes the first screen slow once the system has real history.
+    """
+    snapshot = _task_public_snapshot(task)
+    progress_events = snapshot.pop("progress_events", None)
+    if isinstance(progress_events, list):
+        snapshot["progress_event_count"] = len(progress_events)
+    snapshot["params"] = _compact_task_params(snapshot.get("params"))
+    snapshot["progress"] = _compact_task_progress(snapshot.get("progress"))
+    snapshot["result"] = _compact_task_result(snapshot.get("result"))
+    if snapshot.get("error"):
+        snapshot["error"] = _truncate_task_list_value(snapshot.get("error"))
+    return snapshot
+
+
+def _persist_task_snapshot(task: dict | None) -> None:
+    if not task or not task.get("task_id"):
+        return
+    try:
+        from autoteam import sqlite_store
+
+        snapshot = _task_public_snapshot(task)
+        sqlite_store.initialize()
+        with sqlite_store.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO task_snapshots(
+                    task_id, command, task_group, status, created_at, started_at,
+                    finished_at, owner_pid, data, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                ON CONFLICT(task_id) DO UPDATE SET
+                    command=excluded.command,
+                    task_group=excluded.task_group,
+                    status=excluded.status,
+                    started_at=excluded.started_at,
+                    finished_at=excluded.finished_at,
+                    owner_pid=excluded.owner_pid,
+                    data=excluded.data,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    str(snapshot.get("task_id") or ""),
+                    str(snapshot.get("command") or ""),
+                    str(snapshot.get("task_group") or TASK_GROUP_DEFAULT),
+                    str(snapshot.get("status") or "pending"),
+                    float(snapshot.get("created_at") or time.time()),
+                    snapshot.get("started_at"),
+                    snapshot.get("finished_at"),
+                    os.getpid(),
+                    json.dumps(snapshot, ensure_ascii=False),
+                ),
+            )
+    except Exception:
+        logger.debug("[tasks] failed to persist task snapshot", exc_info=True)
+
+
+def _process_is_running(pid: int | None) -> bool:
+    try:
+        value = int(pid or 0)
+    except Exception:
+        return False
+    if value <= 0:
+        return False
+    if value == os.getpid():
+        return True
+
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            process_query_limited_information = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            handle = kernel32.OpenProcess(process_query_limited_information, False, value)
+            if not handle:
+                return False
+            try:
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return False
+                return exit_code.value == 259  # STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return False
+
+    try:
+        os.kill(value, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def _cancel_orphaned_task_snapshots() -> int:
+    """Mark persisted running tasks as cancelled when their owner process is gone."""
+    try:
+        from autoteam import sqlite_store
+
+        sqlite_store.initialize()
+        with sqlite_store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT task_id, owner_pid, data
+                FROM task_snapshots
+                WHERE status IN ('running', 'pending')
+                """
+            ).fetchall()
+            cancelled = 0
+            now = time.time()
+            for row in rows:
+                owner_pid = row["owner_pid"]
+                if _process_is_running(owner_pid):
+                    continue
+                try:
+                    data = json.loads(row["data"] or "{}")
+                except Exception:
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                data.setdefault("task_id", row["task_id"])
+                data["status"] = "cancelled"
+                data["finished_at"] = now
+                data["error"] = "后端已重启，旧任务已中断"
+                event = {
+                    "stage": "task_interrupted_on_startup",
+                    "message": "后端已重启，旧任务已中断，可重新提交任务",
+                    "event_id": uuid.uuid4().hex[:12],
+                    "updated_at": now,
+                }
+                data["progress"] = {**(data.get("progress") or {}), **event}
+                progress_events = data.setdefault("progress_events", [])
+                if isinstance(progress_events, list):
+                    progress_events.append(event)
+                    if len(progress_events) > 300:
+                        del progress_events[: len(progress_events) - 300]
+                else:
+                    data["progress_events"] = [event]
+                conn.execute(
+                    """
+                    UPDATE task_snapshots
+                    SET status = 'cancelled',
+                        finished_at = ?,
+                        data = ?,
+                        updated_at = strftime('%s','now')
+                    WHERE task_id = ?
+                    """,
+                    (now, json.dumps(data, ensure_ascii=False), row["task_id"]),
+                )
+                cancelled += 1
+            return cancelled
+    except Exception:
+        logger.debug("[tasks] failed to cancel orphaned task snapshots", exc_info=True)
+        return 0
+
+
+def _interrupted_task_snapshot(data: dict, *, now: float | None = None) -> dict:
+    timestamp = now or time.time()
+    snapshot = dict(data or {})
+    snapshot["status"] = "cancelled"
+    snapshot["finished_at"] = timestamp
+    snapshot["error"] = "后端已重启，旧任务已中断"
+    event = {
+        "stage": "task_interrupted_on_startup",
+        "message": "后端已重启，旧任务已中断，可重新提交任务",
+        "event_id": uuid.uuid4().hex[:12],
+        "updated_at": timestamp,
+    }
+    snapshot["progress"] = {**(snapshot.get("progress") or {}), **event}
+    progress_events = snapshot.get("progress_events")
+    if isinstance(progress_events, list):
+        progress_events = [*progress_events, event]
+        if len(progress_events) > 300:
+            progress_events = progress_events[-300:]
+    else:
+        progress_events = [event]
+    snapshot["progress_events"] = progress_events
+    return snapshot
+
+
+def _load_task_snapshots(limit: int = MAX_TASK_HISTORY) -> list[dict]:
+    try:
+        from autoteam import sqlite_store
+
+        sqlite_store.initialize()
+        with sqlite_store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT task_id, owner_pid, status, data
+                FROM task_snapshots
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+            tasks = []
+            stale_updates = []
+            now = time.time()
+            for row in rows:
+                try:
+                    data = json.loads(row["data"] or "{}")
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                data.setdefault("task_id", row["task_id"])
+                status = str(row["status"] or data.get("status") or "")
+                if status in ("running", "pending") and not _process_is_running(row["owner_pid"]):
+                    data = _interrupted_task_snapshot(data, now=now)
+                    stale_updates.append((json.dumps(data, ensure_ascii=False), row["task_id"], now))
+                if data.get("task_id"):
+                    tasks.append(data)
+            for data_json, task_id, finished_at in stale_updates:
+                conn.execute(
+                    """
+                    UPDATE task_snapshots
+                    SET status = 'cancelled',
+                        finished_at = ?,
+                        data = ?,
+                        updated_at = strftime('%s','now')
+                    WHERE task_id = ?
+                    """,
+                    (finished_at, data_json, task_id),
+                )
+            return tasks
+    except Exception:
+        logger.debug("[tasks] failed to load task snapshots", exc_info=True)
+        return []
+
+
+def _merged_task_snapshots(*, compact: bool = False) -> list[dict]:
+    snapshot_fn = _task_list_snapshot if compact else _task_public_snapshot
+    merged = {str(task.get("task_id") or ""): snapshot_fn(task) for task in _load_task_snapshots()}
+    for task_id, task in _tasks.items():
+        merged[str(task_id)] = snapshot_fn(task)
+    return sorted(
+        [task for task in merged.values() if task.get("task_id")],
+        key=lambda t: float(t.get("created_at") or 0),
+        reverse=True,
+    )
+
+
 def _append_task_progress(task_id: str | None, progress: dict):
     """Append a progress event to a specific task, even from detached worker threads."""
     if not task_id:
@@ -592,6 +949,7 @@ def _append_task_progress(task_id: str | None, progress: dict):
     progress_events.append(event)
     if len(progress_events) > 300:
         del progress_events[: len(progress_events) - 300]
+    _persist_task_snapshot(task)
 
 
 def _update_current_task_progress(progress: dict, task_group: str | None = None):
@@ -621,10 +979,12 @@ def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
     _current_task_ids[task_group] = task_id
     task["status"] = "running"
     task["started_at"] = time.time()
+    _persist_task_snapshot(task)
     if cancel_event.is_set():
         task["status"] = "cancelled"
         task["result"] = {"status": "cancelled", "message": "任务启动前已取消"}
         task["finished_at"] = time.time()
+        _persist_task_snapshot(task)
         if _current_task_id == task_id:
             _current_task_id = None
         if _current_task_ids.get(task_group) == task_id:
@@ -653,6 +1013,7 @@ def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
         logger.error("[API] 任务 %s %s: %s", task_id[:8], task["status"], e)
     finally:
         task["finished_at"] = time.time()
+        _persist_task_snapshot(task)
         if _current_task_id == task_id:
             _current_task_id = None
         if _current_task_ids.get(task_group) == task_id:
@@ -682,10 +1043,12 @@ def _run_task_nonexclusive(task_id: str, func, pass_task_id: bool = False, *args
     _task_cancel_signals[task_id] = cancel_event
     task["status"] = "running"
     task["started_at"] = time.time()
+    _persist_task_snapshot(task)
     if cancel_event.is_set():
         task["status"] = "cancelled"
         task["result"] = {"status": "cancelled", "message": "任务启动前已取消"}
         task["finished_at"] = time.time()
+        _persist_task_snapshot(task)
         cancel_signal.clear_current_event()
         for attr in ("task_id", "task_group", "cancel_event"):
             try:
@@ -708,6 +1071,7 @@ def _run_task_nonexclusive(task_id: str, func, pass_task_id: bool = False, *args
         logger.error("[API] 非独占任务 %s failed: %s", task_id[:8], e)
     finally:
         task["finished_at"] = time.time()
+        _persist_task_snapshot(task)
         cancel_signal.clear_current_event()
         for attr in ("task_id", "task_group", "cancel_event"):
             try:
@@ -757,6 +1121,7 @@ def _start_task(
         task["_group_lock_preacquired"] = True
     _tasks[task_id] = task
     _task_cancel_signals[task_id] = threading.Event()
+    _persist_task_snapshot(task)
     _prune_tasks()
 
     target = _run_task if exclusive else _run_task_nonexclusive
@@ -1132,24 +1497,70 @@ def _display_account_type(acc: dict) -> str:
 
 def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     """脱敏账号信息（去掉 password 等敏感字段）"""
+    return _sanitize_accounts_batch([acc], {acc.get("email"): quota_snapshot} if quota_snapshot else {}).pop()
+
+
+def _sanitize_accounts_batch(accounts: list[dict], quota_cache: dict | None = None) -> list[dict]:
+    """Batch sanitize accounts without per-row filesystem scans."""
+    quota_cache = quota_cache or {}
+    emails = [_normalized_email(acc.get("email")) for acc in accounts if _normalized_email(acc.get("email"))]
+    try:
+        from autoteam.admin_state import get_admin_email
+
+        main_email = _normalized_email(get_admin_email())
+    except Exception:
+        main_email = ""
+    try:
+        from autoteam.auth_index import codex_auth_files_by_email
+
+        auth_files = codex_auth_files_by_email(emails)
+    except Exception:
+        auth_files = {}
+    try:
+        from autoteam.auth_session_store import auth_session_files_by_email
+
+        auth_session_files = auth_session_files_by_email(emails)
+    except Exception:
+        auth_session_files = {}
+
+    sanitized_rows = []
+    for acc in accounts:
+        email = _normalized_email(acc.get("email"))
+        quota_snapshot = quota_cache.get(email) if isinstance(quota_cache, dict) else None
+        sanitized_rows.append(_sanitize_account_with_indexes(acc, quota_snapshot, auth_files, auth_session_files, main_email))
+    return sanitized_rows
+
+
+def _sanitize_account_with_indexes(
+    acc: dict,
+    quota_snapshot: dict | None,
+    auth_files: dict[str, str],
+    auth_session_files: dict[str, str],
+    main_email: str = "",
+) -> dict:
     sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
-    sanitized["is_main_account"] = _is_main_account_email(acc.get("email"))
-    sanitized["status"] = _display_account_status(acc, quota_snapshot)
+    email = _normalized_email(acc.get("email"))
+    is_main = bool(email and email == main_email)
+    sanitized["is_main_account"] = is_main
+    status = acc.get("status", "")
+    if status in ("personal", "plus"):
+        status = "active"
+    if is_main:
+        quota_status = _quota_snapshot_status(quota_snapshot) or _quota_snapshot_status(acc.get("last_quota"))
+        status = quota_status or ("active" if _resolve_status_auth_file(acc) else status)
+    sanitized["status"] = status
     sanitized["account_type"] = _display_account_type(acc)
     sanitized["credentials_exported"] = bool(acc.get("credentials_exported"))
     sanitized["credentials_exported_at"] = acc.get("credentials_exported_at")
     sanitized["account_hub_synced"] = bool(acc.get("account_hub_synced"))
     sanitized["account_hub_synced_at"] = acc.get("account_hub_synced_at")
-    codex_auth_file = _resolve_codex_auth_file(acc)
+    codex_auth_file = auth_files.get(email) or ""
+    if not codex_auth_file and sanitized["is_main_account"]:
+        codex_auth_file = _resolve_codex_auth_file(acc)
     sanitized["codex_auth_file"] = codex_auth_file
     sanitized["has_codex_auth_file"] = bool(codex_auth_file)
     sanitized["needs_codex_login"] = not sanitized["is_main_account"] and not bool(codex_auth_file)
-    try:
-        from autoteam.auth_session_store import get_auth_session_file
-
-        sanitized["auth_session_file"] = get_auth_session_file(acc.get("email") or "")
-    except Exception:
-        sanitized["auth_session_file"] = ""
+    sanitized["auth_session_file"] = auth_session_files.get(email, "")
     return sanitized
 
 
@@ -1368,6 +1779,20 @@ def _account_delete_audit_path() -> Path:
     return PROJECT_ROOT / "data" / "account_delete_audit.jsonl"
 
 
+def _account_delete_audit_db_path(path: Path) -> Path:
+    from autoteam.paths import PROJECT_ROOT
+
+    default_path = PROJECT_ROOT / "data" / "account_delete_audit.jsonl"
+    try:
+        if Path(path).resolve() != default_path.resolve():
+            return Path(path).with_suffix(".sqlite3")
+    except Exception:
+        pass
+    from autoteam.sqlite_store import default_db_path
+
+    return default_db_path()
+
+
 def _append_account_delete_audit(
     *,
     email: str,
@@ -1403,6 +1828,25 @@ def _append_account_delete_audit(
     }
     try:
         path = _account_delete_audit_path()
+        from autoteam import sqlite_store
+
+        sqlite_store.initialize(_account_delete_audit_db_path(path))
+        with sqlite_store.connect(_account_delete_audit_db_path(path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO event_records(kind, timestamp, email, category, task_id, status, data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "account_delete_audit",
+                    float(payload.get("ts") or time.time()),
+                    str(payload.get("email") or ""),
+                    str(payload.get("reason") or ""),
+                    str(payload.get("last_bind_task_id") or ""),
+                    str(payload.get("status") or ""),
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         with _account_delete_audit_lock:
@@ -1421,6 +1865,57 @@ def _append_account_delete_audit(
         payload.get("status"),
         payload.get("last_bind_task_id") or "",
     )
+
+
+def _migrate_account_delete_audit_jsonl() -> int:
+    path = _account_delete_audit_path()
+    if not path.exists():
+        return 0
+    try:
+        from autoteam import sqlite_store
+
+        marker = sqlite_store.get_json("migrations", "account_delete_audit_jsonl", default=None)
+        if isinstance(marker, dict) and marker.get("done"):
+            return 0
+
+        rows = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+        if not rows:
+            sqlite_store.set_json("migrations", "account_delete_audit_jsonl", {"done": True, "count": 0})
+            return 0
+
+        sqlite_store.initialize()
+        with sqlite_store.connect() as conn:
+            for payload in rows:
+                conn.execute(
+                    """
+                    INSERT INTO event_records(kind, timestamp, email, category, task_id, status, data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "account_delete_audit",
+                        float(payload.get("ts") or payload.get("timestamp") or time.time()),
+                        str(payload.get("email") or ""),
+                        str(payload.get("reason") or ""),
+                        str(payload.get("last_bind_task_id") or ""),
+                        str(payload.get("status") or ""),
+                        json.dumps(payload, ensure_ascii=False),
+                    ),
+                )
+        sqlite_store.set_json("migrations", "account_delete_audit_jsonl", {"done": True, "count": len(rows)})
+        return len(rows)
+    except Exception as exc:
+        logger.warning("[启动] 迁移账号删除审计 JSONL 失败: %s", exc)
+        return 0
 
 
 def _remove_pool_accounts_from_local_and_mail(
@@ -1552,12 +2047,22 @@ def _session_only_account_stub(email: str) -> dict:
     }
 
 
-def _load_accounts_with_session_stubs() -> list[dict]:
-    """Load managed accounts and include auth_session-only accounts for UI consistency."""
+def _load_accounts_with_session_stubs(*, include_session_stubs: bool = False) -> list[dict]:
+    """Load managed accounts.
+
+    Auth-session-only files are not account-pool records. Including them in the
+    default dashboard path makes deleted accounts reappear and pollutes summary
+    counts after the SQLite migration. Callers that explicitly need legacy
+    session placeholders can opt in.
+    """
     from autoteam.accounts import load_accounts
-    from autoteam.auth_session_store import list_auth_session_emails
 
     accounts = load_accounts()
+    if not include_session_stubs:
+        return accounts
+
+    from autoteam.auth_session_store import list_auth_session_emails
+
     existing_emails = {_normalized_email(acc.get("email")) for acc in accounts if _normalized_email(acc.get("email"))}
     for email in list_auth_session_emails():
         normalized = _normalized_email(email)
@@ -2206,10 +2711,10 @@ def post_manual_account_cancel():
 
 
 @app.get("/api/accounts")
-def get_accounts():
+def get_accounts(include_session_stubs: bool = False):
     """获取所有账号列表"""
-    accounts = _load_accounts_with_session_stubs()
-    return [_sanitize_account(a) for a in accounts]
+    accounts = _load_accounts_with_session_stubs(include_session_stubs=include_session_stubs)
+    return _sanitize_accounts_batch(accounts)
 
 
 @app.get("/api/accounts/{email}/codex-auth")
@@ -3498,8 +4003,13 @@ def post_accounts_refresh_quota(params: AccountEmailBatchParams):
 
 
 @app.get("/api/status")
-def get_status():
-    """获取所有账号状态 + active 账号实时额度"""
+def get_status(include_session_stubs: bool = False):
+    """获取所有账号状态。
+
+    不在页面读取路径里批量请求 Codex quota。真实账号较多时逐个实时探测会让
+    仪表盘卡死；额度刷新应走 /api/accounts/refresh-quota 后台任务，状态页只读取
+    已持久化的 last_quota 快照。
+    """
     from autoteam.accounts import (
         STATUS_ACTIVE,
         STATUS_AUTH_INVALID,
@@ -3510,34 +4020,15 @@ def get_status():
         STATUS_PERSONAL,
         STATUS_STANDBY,
     )
-    from autoteam.codex_auth import check_codex_quota, quota_result_quota_info
 
-    accounts = _load_accounts_with_session_stubs()
-    quota_cache = {}
+    accounts = _load_accounts_with_session_stubs(include_session_stubs=include_session_stubs)
+    quota_cache = {
+        acc["email"]: acc.get("last_quota")
+        for acc in accounts
+        if isinstance(acc.get("last_quota"), dict) and acc.get("email")
+    }
 
-    for acc in accounts:
-        if acc["status"] not in (STATUS_ACTIVE, STATUS_PERSONAL) and not _is_main_account_email(acc.get("email")):
-            continue
-
-        auth_file = _resolve_status_auth_file(acc)
-        if not auth_file:
-            continue
-
-        try:
-            auth_data = json.loads(read_text(Path(auth_file)))
-            access_token = auth_data.get("access_token")
-            if access_token:
-                status, info = check_codex_quota(access_token)
-                if status == "ok" and isinstance(info, dict):
-                    quota_cache[acc["email"]] = info
-                elif status == "exhausted":
-                    quota_info = quota_result_quota_info(info)
-                    if quota_info:
-                        quota_cache[acc["email"]] = quota_info
-        except Exception:
-            pass
-
-    sanitized_accounts = [_sanitize_account(a, quota_cache.get(a.get("email"))) for a in accounts]
+    sanitized_accounts = _sanitize_accounts_batch(accounts, quota_cache)
 
     summary = {
         "active": sum(1 for a in sanitized_accounts if a["status"] == STATUS_ACTIVE),
@@ -5152,6 +5643,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                         return
                     except CodexOAuthPhoneRequired as exc:
                         result_payload = _oauth_phone_required_result(success_email, exc)
+                        removed_after_success = {
+                            _normalized_email(raw_email)
+                            for raw_email in (result_payload.get("removed_pool_emails") or [])
+                            if _normalized_email(raw_email)
+                        }
+                        if not removed_after_success:
+                            removed_after_success.add(success_email)
+                        realtime_successful_emails.difference_update(removed_after_success)
                         oauth_failed_emails.append(
                             {
                                 "email": success_email,
@@ -5168,6 +5667,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
                                 "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
                                 "attempt": attempt,
                                 "max_attempts": max_attempts,
+                                **_gopay_success_progress_fields(),
                                 "message": result_payload["message"],
                                 "level": "warn",
                             },
@@ -6356,10 +6856,13 @@ def post_cleanup(params: CleanupParams = CleanupParams()):
 
 
 @app.get("/api/tasks")
-def get_tasks():
-    """查看所有任务"""
-    sorted_tasks = sorted(_tasks.values(), key=lambda t: t["created_at"], reverse=True)
-    return sorted_tasks
+def get_tasks(detail: bool = False):
+    """查看所有任务。
+
+    默认返回轻量摘要，避免仪表盘轮询时传输完整 progress_events。
+    需要完整日志时使用 /api/tasks/{task_id} 或 detail=true。
+    """
+    return _merged_task_snapshots(compact=not detail)
 
 
 @app.get("/api/tasks/{task_id}")
@@ -6367,8 +6870,12 @@ def get_task(task_id: str):
     """查看任务状态"""
     task = _tasks.get(task_id)
     if not task:
+        for snapshot in _load_task_snapshots():
+            if str(snapshot.get("task_id") or "") == task_id:
+                return snapshot
+    if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return task
+    return _task_public_snapshot(task)
 
 
 @app.post("/api/tasks/cancel", status_code=202)
@@ -6664,6 +7171,16 @@ def set_auto_check_config(cfg: AutoCheckConfig):
 @app.on_event("startup")
 def _start_auto_check():
     try:
+        from autoteam import sqlite_store
+
+        sqlite_store.initialize()
+        cancelled_tasks = _cancel_orphaned_task_snapshots()
+        if cancelled_tasks:
+            logger.warning("[启动] 已取消 %d 个后端重启后残留的运行中任务快照", cancelled_tasks)
+    except Exception as exc:
+        logger.warning("[启动] 初始化 SQLite 存储失败: %s", exc)
+
+    try:
         from autoteam.auth_storage import ensure_auth_file_permissions
 
         fixed = ensure_auth_file_permissions()
@@ -6747,6 +7264,10 @@ class _QuietAccessLog(logging.Filter):
 def start_server(host: str = "0.0.0.0", port: int = 8787):
     """启动 API 服务器"""
     import uvicorn
+
+    if not os.environ.get("AUTOTEAM_LOCAL_BASE_URL"):
+        local_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+        os.environ["AUTOTEAM_LOCAL_BASE_URL"] = f"http://{local_host}:{port}"
 
     # 过滤轮询日志，避免刷屏
     logging.getLogger("uvicorn.access").addFilter(_QuietAccessLog())

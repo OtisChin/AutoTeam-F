@@ -885,6 +885,12 @@ def _check_and_refresh(acc):
             auth_data["refresh_token"] = new_tokens.get("refresh_token", rt)
             auth_data["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             write_text(Path(auth_file), json.dumps(auth_data, indent=2))
+            try:
+                from autoteam.auth_index import upsert_codex_auth_file
+
+                upsert_codex_auth_file(Path(auth_file), auth_data, main=Path(auth_file).name.startswith("codex-main-"))
+            except Exception:
+                pass
             logger.info("[%s] token 已刷新，重新检查额度...", email)
             status, info = check_codex_quota(new_tokens["access_token"], account_id=acc_id)
         else:
@@ -1800,7 +1806,7 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
     在已登录的 ChatGPT 页面里直接调用 /api/auth/session 提取 accessToken，
     并把完整 JSON 保存到 data/auth_session/<email>.json。
     """
-    from autoteam.accounts import SEAT_CODEX, STATUS_PERSONAL, add_account, update_account
+    from autoteam.accounts import SEAT_CODEX, STATUS_ACTIVE, add_account, update_account
     from autoteam.auth_session_store import save_auth_session
 
     def _record_outcome(status, **extra):
@@ -1839,7 +1845,7 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
     logger.info("[注册] auth_session 已保存: %s", auth_file)
     update_account(
         email,
-        status=STATUS_PERSONAL,
+        status=STATUS_ACTIVE,
         seat_type=SEAT_CODEX,
         auth_file=auth_file,
         last_active_at=time.time(),
@@ -4043,6 +4049,11 @@ def cmd_register_accounts(
             return
         progress_callback(
             {
+                "stage": "register_progress",
+                "message": (
+                    f"注册进度 {progress['completed']}/{total}，"
+                    f"成功 {progress['ok']}，失败 {progress['failed']}，运行中 {progress['running']}"
+                ),
                 **progress,
                 "successRate": (progress["ok"] / total * 100) if total > 0 else 0,
             }

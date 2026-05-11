@@ -1,6 +1,6 @@
 """管理员登录态持久化。
 
-统一使用项目根目录下的 `state.json` 文件保存：
+统一使用 `data/autoteam.sqlite3` 保存：
 - session_token
 - email
 - password
@@ -8,21 +8,23 @@
 - workspace_name
 - updated_at
 
-兼容：
-- 旧的纯文本 `session`（仅保存 session token）
+旧的项目根目录 `state.json` / `session` 需要通过
+`scripts/migrate_to_sqlite.py` 手动导入。
 """
 
-import json
 import os
 import time
 from pathlib import Path
 
+from autoteam import sqlite_store
 from autoteam.paths import PROJECT_ROOT
-from autoteam.textio import read_text, write_text
+from autoteam.textio import write_text
 
 STATE_FILE = PROJECT_ROOT / "state.json"
 LEGACY_SESSION_FILE = PROJECT_ROOT / "session"
 STATE_FILE_MODE = 0o666
+_KV_NAMESPACE = "admin_state"
+_KV_KEY = "state"
 
 
 def _normalize_state(data):
@@ -38,54 +40,47 @@ def _normalize_state(data):
     }
 
 
-def _load_state_from_file(path: Path):
-    if not path.exists():
-        return {}
-
+def _db_path() -> Path:
     try:
-        raw = read_text(path).strip()
+        if Path(STATE_FILE).resolve() != (PROJECT_ROOT / "state.json").resolve():
+            return Path(STATE_FILE).with_suffix(".sqlite3")
     except Exception:
-        return {}
+        pass
+    return sqlite_store.default_db_path()
 
-    if not raw:
-        return {}
 
+def _load_state_from_db():
+    return sqlite_store.get_json(_KV_NAMESPACE, _KV_KEY, default=None, path=_db_path())
+
+
+def _should_write_state_file() -> bool:
     try:
-        return _normalize_state(json.loads(raw))
+        if Path(STATE_FILE).resolve() != (PROJECT_ROOT / "state.json").resolve():
+            return True
     except Exception:
-        # 兼容旧版纯文本 session 文件
-        return {
-            "email": "",
-            "session_token": raw,
-            "account_id": "",
-            "workspace_name": "",
-            "updated_at": path.stat().st_mtime,
-        }
+        return True
+    return STATE_FILE.exists() or STATE_FILE.is_symlink()
+
+
+def _write_state_file_mirror(state):
+    if not _should_write_state_file():
+        return
+    target = STATE_FILE.resolve()
+    write_text(target, json.dumps(_normalize_state(state), indent=2, ensure_ascii=False))
+    try:
+        os.chmod(target, STATE_FILE_MODE)
+    except Exception:
+        pass
 
 
 def _save_state(state):
-    # 如果是软链，写入目标路径（避免 Docker 场景下误删/替换软链）
-    target = STATE_FILE.resolve()
-    write_text(target, json.dumps(_normalize_state(state), indent=2, ensure_ascii=False))
-    # Docker bind mount 下文件常由容器用户写入；给宿主机用户保留可访问权限
-    os.chmod(target, STATE_FILE_MODE)
-
-
-def _migrate_legacy_state():
-    if STATE_FILE.exists():
-        return
-    state = _load_state_from_file(LEGACY_SESSION_FILE)
-    if state:
-        _save_state(state)
-        try:
-            LEGACY_SESSION_FILE.unlink()
-        except Exception:
-            pass
+    normalized = _normalize_state(state)
+    sqlite_store.set_json(_KV_NAMESPACE, _KV_KEY, normalized, path=_db_path())
+    _write_state_file_mirror(normalized)
 
 
 def load_admin_state():
-    _migrate_legacy_state()
-    return _load_state_from_file(STATE_FILE)
+    return _normalize_state(_load_state_from_db() or {})
 
 
 def save_admin_state(state):
@@ -101,13 +96,19 @@ def update_admin_state(**kwargs):
 
 
 def clear_admin_state():
-    if STATE_FILE.exists():
-        # 写空内容而不是删除（保护 Docker 软链）
+    sqlite_store.set_json(_KV_NAMESPACE, _KV_KEY, {}, path=_db_path())
+    if _should_write_state_file():
         target = STATE_FILE.resolve()
         write_text(target, "{}")
-        os.chmod(target, STATE_FILE_MODE)
-    if LEGACY_SESSION_FILE.exists():
-        LEGACY_SESSION_FILE.unlink()
+        try:
+            os.chmod(target, STATE_FILE_MODE)
+        except Exception:
+            pass
+    try:
+        if LEGACY_SESSION_FILE.exists():
+            LEGACY_SESSION_FILE.unlink()
+    except Exception:
+        pass
 
 
 def get_admin_email():

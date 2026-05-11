@@ -60,6 +60,9 @@
 # Windows 一键本地部署（.venv + pip，安装后自动启动 Web/API）
 deploy-local.cmd
 
+# 指定端口启动（例如 8899）
+deploy-local.cmd -Port 8899
+
 # macOS / Linux（已安装 PowerShell 时）
 pwsh ./deploy-local.ps1
 
@@ -82,6 +85,9 @@ uv run playwright install chromium
 ```bash
 # Web 面板 + API（推荐）
 uv run autoteam api
+
+# 指定端口
+uv run autoteam api --port 8899
 
 # 或直接轮转
 uv run autoteam rotate
@@ -110,7 +116,7 @@ Linux + Docker 访问宿主机服务，详见 [Docker 部署文档](docs/docker.
 
 | 命令 | 说明 |
 |------|------|
-| `api` | 启动 Web 面板 + HTTP API（默认端口 8787） |
+| `api [--host HOST] [--port PORT]` | 启动 Web 面板 + HTTP API（默认端口 8787） |
 | `rotate [N]` | 智能轮转，补满到 N 个（默认 5） |
 | `status` | 查看账号状态 |
 | `check` | 检查额度 |
@@ -127,6 +133,21 @@ Linux + Docker 访问宿主机服务，详见 [Docker 部署文档](docs/docker.
 ## Web 管理面板
 
 启动 `uv run autoteam api` 后访问 `http://localhost:8787`。
+
+### Windows exe 打包与一键启动
+
+```powershell
+# 构建 dist\autoteam.exe，并复制启动脚本到 dist\
+.\scripts\build-exe.ps1
+
+# 启动 exe 版本（默认 127.0.0.1:8787）
+.\dist\start-exe.cmd
+
+# 指定端口
+.\dist\start-exe.cmd -Port 8899
+```
+
+`dist\start-exe.cmd` 会在 exe 同级目录创建 `data\`，缺少 `.env` 时会从 `.env.example` 复制一份，然后执行 `autoteam.exe api --host ... --port ...`。需要对外监听时可指定 `-HostAddress 0.0.0.0`。
 
 | 页面 | 功能 |
 |------|------|

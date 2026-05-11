@@ -63,6 +63,27 @@ function registeredEmailSet(task) {
   return registered
 }
 
+function removedEmailSet(task) {
+  const result = task?.result || {}
+  const removed = new Set()
+  const addList = list => {
+    if (!Array.isArray(list)) return
+    for (const item of list) {
+      const normalized = listEmail(item)
+      if (normalized) removed.add(normalized)
+    }
+  }
+  addList(result.removed_pool_emails)
+  for (const event of taskEvents(task)) {
+    addList(event?.removed_pool_emails)
+    if (String(event?.stage || '') === 'gopay_oauth_phone_required_removed') {
+      const normalized = normalizedEmail(event?.email)
+      if (normalized) removed.add(normalized)
+    }
+  }
+  return removed
+}
+
 function latestEvent(events, stages) {
   const wanted = new Set(stages)
   for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -97,6 +118,8 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
   const accounts = Array.isArray(params.account_emails) ? params.account_emails : []
   const isAutoRegister = Boolean(params.auto_register)
   const successful = successfulEmailSet(task)
+  const removed = removedEmailSet(task)
+  for (const email of removed) successful.delete(email)
 
   const failedEmails = new Set()
   const eventPendingEmails = new Set()
@@ -109,6 +132,7 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
     result.nonzero_blocked_emails,
     result.bind_failed_emails,
     result.failed_emails,
+    result.removed_pool_emails,
   ]
   if (hasFinalResult && !(Array.isArray(result.pending_retry_emails) && result.pending_retry_emails.length)) {
     lists.push(result.blocked_emails)
@@ -147,6 +171,10 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
       if (stage === 'gopay_account_bound') {
         eventPendingEmails.delete(email)
         eventFailedEmails.delete(email)
+      }
+      if (removed.has(email) || stage === 'gopay_oauth_phone_required_removed') {
+        eventPendingEmails.delete(email)
+        if (!successful.has(email)) eventFailedEmails.add(email)
       }
       if (terminalFailureStages.has(stage)) {
         eventPendingEmails.delete(email)
@@ -243,7 +271,9 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
     : 0
   const progressSuccessful = Number.isFinite(Number(progress.successful)) ? Math.max(0, Number(progress.successful || 0)) : 0
   const resultSuccessful = Array.isArray(result.successful_emails) ? result.successful_emails.filter(email => normalizedEmail(email)).length : 0
-  const knownSuccessfulCount = Math.max(successful.size, progressSuccessful, resultSuccessful)
+  const adjustedProgressSuccessful = Math.max(0, progressSuccessful - removed.size)
+  const adjustedResultSuccessful = Math.max(0, resultSuccessful - removed.size)
+  const knownSuccessfulCount = Math.max(successful.size, adjustedProgressSuccessful, adjustedResultSuccessful)
   const baseTotal = isAutoRegister
     ? Math.max(autoRegisterCount, knownSuccessfulCount, Number(result.auto_register_attempted || 0), autoRegisterEventAttempted)
     : Number(accounts.length || (batchActive ? selectedBatchEmails.length : 0) || (params.email ? 1 : 0) || progress.total || (task?.task_id ? 1 : 0))

@@ -226,6 +226,9 @@ function taskProgress(task) {
     result.total ||
     params.auto_register_count ||
     params.count ||
+    params.account_count ||
+    params.account_emails_count ||
+    params.emails_count ||
     (Array.isArray(params.account_emails) ? params.account_emails.length : 0) ||
     0
   )

@@ -44,8 +44,14 @@ try {
     )
 
     uv run --with pyinstaller pyinstaller @args
+
+    Copy-Item -LiteralPath "scripts\start-exe.ps1" -Destination "dist\start-exe.ps1" -Force
+    Copy-Item -LiteralPath "scripts\start-exe.cmd" -Destination "dist\start-exe.cmd" -Force
+    if (Test-Path ".env.example") {
+        Copy-Item -LiteralPath ".env.example" -Destination "dist\.env.example" -Force
+    }
+    New-Item -ItemType Directory -Force -Path "dist\data" | Out-Null
 }
 finally {
     Pop-Location
 }
-
