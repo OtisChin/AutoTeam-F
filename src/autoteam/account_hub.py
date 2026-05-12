@@ -147,7 +147,7 @@ def _is_syncable_account(acc: dict) -> bool:
         return False
     if account_type not in SYNC_ACCOUNT_TYPES and status != "plus":
         return False
-    return True
+    return bool(_auth_candidates_for_account(acc))
 
 
 def _syncable_accounts(accounts: list[dict]) -> list[dict]:
