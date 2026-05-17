@@ -409,6 +409,7 @@ TASK_GROUP_DEFAULT = "default"
 TASK_GROUP_REGISTER = "register"
 TASK_GROUP_BIND_CARD = "bind_card"
 TASK_GROUP_GOPAY = "gopay"
+TASK_GROUP_PAYPAL = "paypal"
 TASK_GROUP_OAUTH = "oauth"
 TASK_GROUP_QUOTA = "quota"
 TASK_GROUP_TEAM = "team"
@@ -443,6 +444,7 @@ def _normalize_task_group(task_group: str | None, command: str = "") -> str:
         "add": TASK_GROUP_REGISTER,
         "bind-card": TASK_GROUP_BIND_CARD,
         "gopay-bind": TASK_GROUP_GOPAY,
+        "paypal": TASK_GROUP_PAYPAL,
         "login": TASK_GROUP_OAUTH,
         "login-batch": TASK_GROUP_OAUTH,
         "refresh-quota": TASK_GROUP_QUOTA,
@@ -605,7 +607,9 @@ _TASK_LIST_PARAM_ALLOW_KEYS = {
     "count",
     "emails_count",
     "link_type",
+    "mode",
     "phone_country_code",
+    "project_path",
     "proxy_label",
     "task_id",
     "timeout",
@@ -1305,6 +1309,25 @@ class GoPayBindTaskParams(BaseModel):
     delete_rejected_accounts: bool = False
     auto_oauth_after_success: bool = False
     pending_retry_attempts: int = Field(1, validation_alias=AliasChoices("pending_retry_attempts", "pendingRetryAttempts"))
+
+
+class PayPalTaskParams(BaseModel):
+    project_path: str = Field("", validation_alias=AliasChoices("project_path", "projectPath"))
+    config_path: str = Field("", validation_alias=AliasChoices("config_path", "configPath"))
+    python_executable: str = Field("", validation_alias=AliasChoices("python_executable", "pythonExecutable"))
+    mode: str = "single"
+    batch: int = 1
+    workers: int = 3
+    self_dealer: int = Field(1, validation_alias=AliasChoices("self_dealer", "selfDealer"))
+    count: int = 0
+    register_only: bool = Field(False, validation_alias=AliasChoices("register_only", "registerOnly"))
+    pay_only: bool = Field(False, validation_alias=AliasChoices("pay_only", "payOnly"))
+    rt_only: bool = Field(False, validation_alias=AliasChoices("rt_only", "rtOnly"))
+    register_mode: str = Field("browser", validation_alias=AliasChoices("register_mode", "registerMode"))
+    target_emails: list[str] = Field(default_factory=list, validation_alias=AliasChoices("target_emails", "targetEmails"))
+    extra_args: str = Field("", validation_alias=AliasChoices("extra_args", "extraArgs"))
+    use_xvfb: bool | None = Field(None, validation_alias=AliasChoices("use_xvfb", "useXvfb"))
+    timeout_seconds: int = Field(0, validation_alias=AliasChoices("timeout_seconds", "timeoutSeconds"))
 
 
 class CardPoolImportParams(BaseModel):
@@ -6905,6 +6928,42 @@ def post_gopay_bind_task(params: GoPayBindTaskParams):
     task_params.pop("gopay_pin", None)
     task = _start_task("gopay-bind", _run, task_params, task_group=TASK_GROUP_GOPAY)
     _task_skip_signals[task["task_id"]] = skip_current_signal
+    return task
+
+
+@app.post("/api/tasks/paypal", status_code=202)
+def post_paypal_task(params: PayPalTaskParams):
+    mode = str(params.mode or "single").strip().lower()
+    if mode not in {"single", "batch", "self_dealer", "daemon", "free_register", "free_backfill_rt"}:
+        raise HTTPException(status_code=400, detail="不支持的 PayPal 运行模式")
+    if mode == "batch" and params.batch < 1:
+        raise HTTPException(status_code=400, detail="批量模式 batch 必须大于 0")
+    if mode == "self_dealer" and params.self_dealer < 1:
+        raise HTTPException(status_code=400, detail="self_dealer 模式成员数必须大于 0")
+    if mode == "free_register" and params.count < 0:
+        raise HTTPException(status_code=400, detail="注册数量不能为负数")
+    if params.timeout_seconds < 0:
+        raise HTTPException(status_code=400, detail="超时时间不能为负数")
+
+    payload = params.model_dump()
+    payload["mode"] = mode
+    payload["target_emails"] = [str(email).strip() for email in payload.get("target_emails") or [] if str(email).strip()]
+
+    def _run(task_id: str):
+        from autoteam import cancel_signal
+        from autoteam.paypal_executor import run_paypal_pipeline
+
+        logger.info("[paypal] task submitted: mode=%s project=%s config=%s", mode, payload.get("project_path") or "<default>", payload.get("config_path") or "<default>")
+        return run_paypal_pipeline(
+            payload,
+            on_progress=lambda event: _append_task_progress(task_id, event),
+            is_cancelled=cancel_signal.is_cancelled,
+        )
+
+    task_params = dict(payload)
+    if task_params.get("python_executable"):
+        task_params["python_executable"] = task_params["python_executable"]
+    task = _start_task("paypal", _run, task_params, task_group=TASK_GROUP_PAYPAL, pass_task_id=True)
     return task
 
 

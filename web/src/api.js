@@ -113,15 +113,16 @@ export const api = {
   startCleanup: (maxSeats = null) => request('POST', '/tasks/cleanup', { max_seats: maxSeats }),
   startBindCard: (payload) => request('POST', '/tasks/bind-card', payload),
   startGoPayBind: (payload) => request('POST', '/tasks/gopay-bind', payload),
+  startPayPal: (payload) => request('POST', '/tasks/paypal', payload),
   getWhatsAppOtpStatus: () => request('GET', '/whatsapp-otp/status'),
   startWhatsAppOtp: (payload = {}) => request('POST', '/whatsapp-otp/start', payload),
   stopWhatsAppOtp: () => request('POST', '/whatsapp-otp/stop'),
   clearWhatsAppOtp: () => request('POST', '/whatsapp-otp/clear'),
   getLatestWhatsAppOtp: () => request('GET', '/whatsapp-otp/latest'),
 
-  getTasks: () => request('GET', '/tasks'),
+  getTasks: (detail = false) => request('GET', `/tasks${detail ? '?detail=true' : ''}`),
   getTask: (id) => request('GET', `/tasks/${id}`),
-  cancelTask: () => request('POST', '/tasks/cancel'),
+  cancelTask: (params = null) => request('POST', '/tasks/cancel', params),
   skipCurrentTask: () => request('POST', '/tasks/skip-current'),
 
   getAutoCheckConfig: () => request('GET', '/config/auto-check'),

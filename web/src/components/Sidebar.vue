@@ -58,6 +58,7 @@ const items = [
   { key: 'cardpool', icon: '💳', label: '卡池', mobileLabel: '卡池' },
   { key: 'bindcard', icon: '🔗', label: '自动绑卡服务', mobileLabel: '绑卡' },
   { key: 'gopay', icon: '💸', label: 'GoPay', mobileLabel: 'GoPay' },
+  { key: 'paypal', icon: '🅿️', label: 'PayPal', mobileLabel: 'PayPal' },
   { key: 'trade', icon: '🎫', label: '交易管理', mobileLabel: '交易' },
   { key: 'cpa2sub', icon: '🧩', label: 'CPA_2_Sub2API', mobileLabel: 'CPA2Sub2API' },
   { key: 'oauth', icon: '🔐', label: 'OAuth 登录', mobileLabel: 'OAuth' },
