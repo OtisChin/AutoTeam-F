@@ -7333,6 +7333,128 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             )
             return wallet
 
+        class _GoPayWalletBalanceNotReady(RuntimeError):
+            pass
+
+        def _gopay_wallet_balance_poll_intervals() -> list[float]:
+            poll_intervals = _gopay_auto_signup_no_transfer_retry_waits_seconds()
+            return poll_intervals or [30.0, 60.0, 120.0]
+
+        def _wait_for_gopay_wallet_balance_ready(
+            wallet,
+            *,
+            index: int = 1,
+            total: int = 1,
+            poll_intervals: list[float] | None = None,
+            initial_wait: float | None = None,
+            not_ready_message: str = "GoPay 余额三次查询仍未到账，舍弃该钱包并重新注册",
+            ready_message: str = "GoPay 钱包余额已到账，开始绑定",
+            raise_on_not_ready: bool = True,
+        ) -> bool:
+            if wallet is None:
+                return False
+            if id(wallet) in gopay_wallet_balance_ready_ids:
+                return True
+            access_token = str(getattr(wallet, "access_token", "") or "").strip()
+            if not access_token:
+                return False
+
+            from autoteam.gopay_auto_register import query_gopay_balance
+
+            intervals = list(poll_intervals if poll_intervals is not None else _gopay_wallet_balance_poll_intervals())
+            if initial_wait is not None:
+                intervals = [float(initial_wait), *intervals]
+            if not intervals:
+                intervals = [0.0]
+            max_checks = max(1, len(intervals))
+            for check_index, wait_seconds in enumerate(intervals, 1):
+                wait_seconds = max(0.0, float(wait_seconds))
+                if wait_seconds > 0:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_wallet_balance_wait",
+                            "current": index,
+                            "total": total,
+                            "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                            "delay_seconds": round(wait_seconds, 1),
+                            "attempt": check_index,
+                            "max_attempts": max_checks,
+                            "message": f"等待 {wait_seconds:.1f}s 后第 {check_index}/{max_checks} 次查询 GoPay 余额",
+                            "level": "warn",
+                        },
+                    )
+                    time.sleep(wait_seconds)
+                try:
+                    balance = query_gopay_balance(
+                        access_token=access_token,
+                        gopay_cfg=getattr(wallet, "gopay_cfg", None) or {},
+                        session=getattr(wallet, "session", None),
+                        timeout=20,
+                    )
+                except Exception as exc:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_wallet_balance_check_failed",
+                            "current": index,
+                            "total": total,
+                            "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                            "attempt": check_index,
+                            "max_attempts": max_checks,
+                            "message": f"GoPay 余额查询失败 ({check_index}/{max_checks}): {_compact_log_text(exc, limit=160)}",
+                            "level": "warn",
+                        },
+                    )
+                    continue
+                value = float(balance.get("value") or 0)
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_wallet_balance_checked",
+                        "current": index,
+                        "total": total,
+                        "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                        "balance": value,
+                        "currency": balance.get("currency") or "IDR",
+                        "display_value": balance.get("display_value") or "",
+                        "attempt": check_index,
+                        "max_attempts": max_checks,
+                        "message": f"GoPay 钱包余额查询: {balance.get('display_value') or value} ({check_index}/{max_checks})",
+                    },
+                )
+                if value >= 1:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_wallet_balance_ready",
+                            "current": index,
+                            "total": total,
+                            "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                            "balance": value,
+                            "currency": balance.get("currency") or "IDR",
+                            "display_value": balance.get("display_value") or "",
+                            "message": ready_message,
+                            "level": "success",
+                        },
+                    )
+                    gopay_wallet_balance_ready_ids.add(id(wallet))
+                    return True
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_wallet_balance_not_ready",
+                    "current": index,
+                    "total": total,
+                    "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                    "message": not_ready_message,
+                    "level": "warn",
+                },
+            )
+            if not raise_on_not_ready:
+                return False
+            raise _GoPayWalletBalanceNotReady(not_ready_message)
+
         def _fund_gopay_wallet_for_bind(wallet, *, index: int = 1, total: int = 1) -> dict | None:
             from autoteam.rekberinaja import fund_gopay_wallet_if_enabled, is_rekberinaja_enabled
 
@@ -7344,6 +7466,26 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     phone = str((wallet.as_phone_account() or {}).get("phone_number") or "").strip()
                 except Exception:
                     phone = ""
+            if _wait_for_gopay_wallet_balance_ready(
+                wallet,
+                index=index,
+                total=total,
+                poll_intervals=[0.0],
+                not_ready_message="GoPay 钱包余额不足，准备通过 Rekberinaja 转账",
+                ready_message="GoPay 钱包已有余额，跳过 Rekberinaja 转账并开始绑定",
+                raise_on_not_ready=False,
+            ):
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_wallet_funding_skipped",
+                        "current": index,
+                        "total": total,
+                        "phone_number": _mask_gopay_phone_for_log(phone),
+                        "message": "GoPay 钱包已有 ≥1Rp 余额，本次跳过 Rekberinaja 转账",
+                    },
+                )
+                return None
             if id(wallet) in funded_gopay_wallet_ids:
                 _append_task_progress(
                     task_id,
@@ -7354,6 +7496,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         "phone_number": _mask_gopay_phone_for_log(phone),
                         "message": "复用的 GoPay 钱包已记录为已充值或已提交过充值订单，本次不重复转账",
                     },
+                )
+                _wait_for_gopay_wallet_balance_ready(
+                    wallet,
+                    index=index,
+                    total=total,
+                    poll_intervals=_gopay_wallet_balance_poll_intervals(),
+                    not_ready_message="GoPay 已提交过充值订单但余额仍未到账，舍弃该钱包并重新注册",
                 )
                 return None
 
@@ -7414,10 +7563,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     "message": f"Rekberinaja GoPay 钱包充值完成 ({index}/{total})",
                 },
             )
+            _wait_for_gopay_wallet_balance_ready(
+                wallet,
+                index=index,
+                total=total,
+                poll_intervals=[0.0, *_gopay_wallet_balance_poll_intervals()],
+                not_ready_message="Rekberinaja 转账后 GoPay 余额仍未到账，舍弃该钱包并重新注册",
+            )
             return result
-
-        class _GoPayWalletBalanceNotReady(RuntimeError):
-            pass
 
         def _wait_after_gopay_pin_when_transfer_disabled(wallet, *, index: int = 1, total: int = 1) -> None:
             from autoteam.rekberinaja import is_rekberinaja_enabled
@@ -7428,98 +7581,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 return
             access_token = str(getattr(wallet, "access_token", "") or "").strip()
             if access_token:
-                from autoteam.gopay_auto_register import query_gopay_balance
-
-                poll_intervals = _gopay_auto_signup_no_transfer_retry_waits_seconds()
-                if not poll_intervals:
-                    poll_intervals = [30.0, 60.0, 120.0]
-                max_checks = max(1, len(poll_intervals))
-                for check_index, wait_seconds in enumerate(poll_intervals, 1):
-                    wait_seconds = max(0.0, float(wait_seconds))
-                    if wait_seconds > 0:
-                        _append_task_progress(
-                            task_id,
-                            {
-                                "stage": "gopay_wallet_balance_wait",
-                                "current": index,
-                                "total": total,
-                                "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
-                                "delay_seconds": round(wait_seconds, 1),
-                                "attempt": check_index,
-                                "max_attempts": max_checks,
-                                "message": f"等待 {wait_seconds:.1f}s 后第 {check_index}/{max_checks} 次查询 GoPay 余额",
-                                "level": "warn",
-                            },
-                        )
-                        time.sleep(wait_seconds)
-                    try:
-                        balance = query_gopay_balance(
-                            access_token=access_token,
-                            gopay_cfg=getattr(wallet, "gopay_cfg", None) or {},
-                            session=getattr(wallet, "session", None),
-                            timeout=20,
-                        )
-                    except Exception as exc:
-                        _append_task_progress(
-                            task_id,
-                            {
-                                "stage": "gopay_wallet_balance_check_failed",
-                                "current": index,
-                                "total": total,
-                                "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
-                                "attempt": check_index,
-                                "max_attempts": max_checks,
-                                "message": f"GoPay 余额查询失败 ({check_index}/{max_checks}): {_compact_log_text(exc, limit=160)}",
-                                "level": "warn",
-                            },
-                        )
-                        continue
-                    value = float(balance.get("value") or 0)
-                    _append_task_progress(
-                        task_id,
-                        {
-                            "stage": "gopay_wallet_balance_checked",
-                            "current": index,
-                            "total": total,
-                            "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
-                            "balance": value,
-                            "currency": balance.get("currency") or "IDR",
-                            "display_value": balance.get("display_value") or "",
-                            "attempt": check_index,
-                            "max_attempts": max_checks,
-                            "message": f"GoPay 钱包余额查询: {balance.get('display_value') or value} ({check_index}/{max_checks})",
-                        },
-                    )
-                    if value >= 1:
-                        _append_task_progress(
-                            task_id,
-                            {
-                                "stage": "gopay_wallet_balance_ready",
-                                "current": index,
-                                "total": total,
-                                "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
-                                "balance": value,
-                                "currency": balance.get("currency") or "IDR",
-                                "display_value": balance.get("display_value") or "",
-                                "message": "GoPay 钱包余额已到账，开始绑定",
-                                "level": "success",
-                            },
-                        )
-                        gopay_wallet_balance_ready_ids.add(id(wallet))
-                        return
-                message = "GoPay 余额三次查询仍未到账，舍弃该钱包并重新注册"
-                _append_task_progress(
-                    task_id,
-                    {
-                        "stage": "gopay_wallet_balance_not_ready",
-                        "current": index,
-                        "total": total,
-                        "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
-                        "message": message,
-                        "level": "warn",
-                    },
+                _wait_for_gopay_wallet_balance_ready(
+                    wallet,
+                    index=index,
+                    total=total,
+                    poll_intervals=_gopay_wallet_balance_poll_intervals(),
                 )
-                raise _GoPayWalletBalanceNotReady(message)
+                return
             delay_seconds = _gopay_auto_signup_no_transfer_bind_wait_seconds()
             if delay_seconds <= 0:
                 return
