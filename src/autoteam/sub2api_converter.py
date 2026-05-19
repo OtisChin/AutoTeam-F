@@ -234,7 +234,7 @@ def build_normalized_account(
 
 def normalize_source_data(raw_data: dict[str, Any]) -> dict[str, Any]:
     access_token = require_string(raw_data, "access_token")
-    refresh_token = require_string(raw_data, "refresh_token")
+    refresh_token = clean_string(raw_data.get("refresh_token"))
     expires_at = normalize_datetime_value(raw_data.get("expired"), "expired")
     id_token = clean_string(raw_data.get("id_token"))
 
@@ -295,10 +295,11 @@ def normalize_source_data(raw_data: dict[str, Any]) -> dict[str, Any]:
 
     credentials: dict[str, Any] = {
         "access_token": access_token,
-        "refresh_token": refresh_token,
         "expires_at": expires_at,
         "email": email,
     }
+    if refresh_token:
+        credentials["refresh_token"] = refresh_token
     if id_token:
         credentials["id_token"] = id_token
     if client_id:

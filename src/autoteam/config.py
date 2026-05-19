@@ -156,9 +156,9 @@ def normalize_proxy_url(proxy_url: str | None) -> str:
             raw = f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
 
     parsed = urlsplit(raw)
-    if parsed.scheme not in {"http", "https", "socks4", "socks5"} or not parsed.hostname:
+    if parsed.scheme not in {"http", "https", "socks4", "socks5", "socks5h"} or not parsed.hostname:
         raise ValueError(
-            "代理 URL 格式无效，请使用 http://user:pass@host:port 或 socks5://user:pass@host:port"
+            "代理 URL 格式无效，请使用 http://user:pass@host:port 或 socks5h://user:pass@host:port"
         )
     try:
         if parsed.port is None:
@@ -184,7 +184,8 @@ def _parse_proxy_url(proxy_url: str):
     parsed = urlsplit(proxy_url)
 
     host = _format_proxy_host(parsed.hostname)
-    server = f"{parsed.scheme}://{host}"
+    scheme = "socks5" if parsed.scheme == "socks5h" else parsed.scheme
+    server = f"{scheme}://{host}"
     if parsed.port:
         server = f"{server}:{parsed.port}"
 

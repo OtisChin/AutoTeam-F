@@ -102,7 +102,48 @@
             </div>
           </div>
 
-          <div v-else>
+          <div v-if="isOutlookProvider" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 space-y-3">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <div class="text-sm font-medium text-white">导入 Outlook 邮箱池</div>
+                <div class="mt-1 text-xs text-gray-500">
+                  支持 txt 上传或直接粘贴，一行一个账号；格式沿用 Outlook 账号池配置。
+                </div>
+              </div>
+              <button
+                type="button"
+                @click="importOutlookAccounts"
+                :disabled="outlookImporting || !outlookImportContent.trim()"
+                class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-200 border-gray-700 transition disabled:opacity-50">
+                {{ outlookImporting ? '导入中...' : '导入' }}
+              </button>
+            </div>
+            <textarea
+              v-model="outlookImportContent"
+              :disabled="outlookImporting"
+              rows="5"
+              placeholder="例如：&#10;user@hotmail.com----https://mailapi.icu/key?type=html&orderNo=xxxx&#10;user@outlook.com----password----client_id----refresh_token"
+              class="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-xs font-mono text-gray-100 placeholder:text-gray-600 focus:outline-none focus:border-blue-500 resize-y"
+            ></textarea>
+            <div class="flex flex-wrap items-center gap-3">
+              <label class="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition cursor-pointer">
+                <input
+                  type="file"
+                  accept=".txt,text/plain"
+                  class="hidden"
+                  :disabled="outlookImporting"
+                  @change="handleOutlookImportFile"
+                />
+                选择 txt 文件
+              </label>
+              <span class="text-xs text-gray-500">{{ outlookImportFilename || '未选择文件' }}</span>
+            </div>
+            <div v-if="outlookImportResult" class="rounded-lg border px-3 py-2 text-xs" :class="outlookImportResultClass">
+              {{ outlookImportResult }}
+            </div>
+          </div>
+
+          <div v-if="registerProviderUsesDomains">
             <label class="block text-sm text-gray-400 mb-1">注册域名</label>
             <select
               v-if="registerForm.mode === 'single'"
@@ -378,6 +419,11 @@ const registerConfigLoading = ref(false)
 const registeringAccount = ref(false)
 const registerDomainOptions = ref([])
 const registerDomainDropdownOpen = ref(false)
+const outlookImportContent = ref('')
+const outlookImportFilename = ref('')
+const outlookImporting = ref(false)
+const outlookImportResult = ref('')
+const outlookImportResultOk = ref(true)
 const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
@@ -504,6 +550,9 @@ const luckmailPurchaseLabel = computed(() => {
   return `${emailType} / ${domain}`
 })
 const registerBehaviorLabel = computed(() => '只注册免费账号并保存 auth_session')
+const outlookImportResultClass = computed(() => outlookImportResultOk.value
+  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+  : 'bg-red-500/10 text-red-300 border-red-500/20')
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
   if (registerProviderUsesPool.value) return true
@@ -550,6 +599,49 @@ function selectAllRegisterDomains() {
 
 function clearRegisterDomains() {
   registerForm.value.selectedDomains = []
+}
+
+async function handleOutlookImportFile(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  outlookImportFilename.value = file.name
+  try {
+    outlookImportContent.value = await file.text()
+    outlookImportResult.value = `已读取 ${file.name}，请确认内容后点击导入。`
+    outlookImportResultOk.value = true
+  } catch (e) {
+    outlookImportResult.value = `读取文件失败: ${e.message}`
+    outlookImportResultOk.value = false
+  } finally {
+    event.target.value = ''
+  }
+}
+
+async function importOutlookAccounts() {
+  const content = outlookImportContent.value.trim()
+  if (!content || outlookImporting.value) return
+  outlookImporting.value = true
+  outlookImportResult.value = ''
+  try {
+    const result = await api.importOutlookAccounts(content, outlookImportFilename.value || 'pasted.txt')
+    const firstHint = result.first_imported_email
+      ? `，单次注册将优先使用 ${result.first_imported_email}`
+      : ''
+    outlookImportResult.value = `导入完成：新增 ${result.imported}，重复 ${result.duplicates}，无效 ${result.invalid}${firstHint}，写入 ${result.file}`
+    outlookImportResultOk.value = result.invalid === 0
+    if (result.imported > 0) {
+      if (registerForm.value.mode === 'batch') {
+        registerForm.value.count = result.imported
+      }
+      outlookImportContent.value = ''
+      outlookImportFilename.value = ''
+    }
+  } catch (e) {
+    outlookImportResult.value = `导入失败: ${e.message}`
+    outlookImportResultOk.value = false
+  } finally {
+    outlookImporting.value = false
+  }
 }
 
 function loadSavedRegisterForm() {

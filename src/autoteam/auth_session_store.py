@@ -68,9 +68,16 @@ def _materialize_file(email: str, session_data: dict) -> str:
 
 
 def save_auth_session(email: str, session_data: dict) -> str:
+    normalized = _normalized_email(email)
     path = _upsert_session(email, session_data)
     if path:
-        _materialize_file(_normalized_email(email), session_data)
+        _materialize_file(normalized, session_data)
+        try:
+            from autoteam.accounts import ensure_session_only_account
+
+            ensure_session_only_account(normalized)
+        except Exception:
+            pass
     return path
 
 

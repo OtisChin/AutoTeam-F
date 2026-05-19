@@ -11,7 +11,7 @@ import re
 import time
 import uuid
 from typing import Any, Callable
-from urllib.parse import parse_qsl, quote, unquote, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import requests
 from urllib3.exceptions import InsecureRequestWarning
@@ -447,6 +447,7 @@ def _gopay_progress_level(stage: str) -> str:
         "gopay_rate_limited",
         "midtrans_linking_retry",
         "sms_otp_resend_due",
+        "sms_provider_resend_failed",
         "sms_otp_resend_failed",
         "otp_invalid",
         "gopay_payment_process_failed_rotate",
@@ -515,6 +516,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "trigger_sms_otp": "正在触发 GoPay OTP",
         "sms_otp_triggered": "已触发 GoPay OTP",
         "sms_otp_resend_due": "1 分钟未收到 GoPay OTP，正在重新发送验证码",
+        "sms_provider_resend_triggered": "已通知短信平台重新接收 GoPay OTP",
         "whatsapp_otp_trigger": "正在触发 GoPay WhatsApp OTP",
         "wait_whatsapp_otp": "正在等待安卓模拟器 WhatsApp 接收 GoPay OTP",
         "wait_otp": "正在等待 GoPay SMS OTP",
@@ -578,6 +580,9 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
     if stage == "sms_otp_resend_failed":
         reason = str(payload.get("reason") or "").strip()
         return f"GoPay SMS OTP 重新发送失败，继续等待接码接口：{_compact_log_text(reason, limit=120)}" if reason else "GoPay SMS OTP 重新发送失败，继续等待接码接口"
+    if stage == "sms_provider_resend_failed":
+        reason = str(payload.get("reason") or "").strip()
+        return f"短信平台重新接收 GoPay OTP 失败，继续等待接码接口：{_compact_log_text(reason, limit=120)}" if reason else "短信平台重新接收 GoPay OTP 失败，继续等待接码接口"
     if stage == "wait_whatsapp_otp":
         return "等待安卓模拟器 WhatsApp 接收 GoPay OTP"
     if stage == "whatsapp_otp_trigger":
@@ -1213,6 +1218,61 @@ def _looks_like_pm_redirect_url(url: str) -> bool:
     return "pm-redirects.stripe.com/authorize/" in raw or "app.midtrans.com/snap/" in raw
 
 
+def _gopay_signup_bridge_resend_url(sms_url: str) -> str:
+    raw = _normalize_local_gopay_signup_bridge_url(sms_url)
+    if "/otp/gopay-signup/" not in raw:
+        return ""
+    parsed = urlsplit(raw)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["resend"] = "1"
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
+def _normalize_local_gopay_signup_bridge_url(sms_url: str) -> str:
+    raw = str(sms_url or "").strip()
+    if "/otp/gopay-signup/" not in raw:
+        return raw
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return raw
+    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return raw
+    base = str(os.environ.get("AUTOTEAM_LOCAL_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        return raw
+    try:
+        base_parsed = urlsplit(base)
+    except Exception:
+        return raw
+    if not base_parsed.scheme or not base_parsed.netloc:
+        return raw
+    if parsed.netloc == base_parsed.netloc and parsed.scheme == base_parsed.scheme:
+        return raw
+    return urlunsplit((base_parsed.scheme, base_parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def _trigger_gopay_signup_bridge_resend(sms_url: str) -> bool:
+    resend_url = _gopay_signup_bridge_resend_url(sms_url)
+    if not resend_url:
+        return False
+    resp = requests.get(
+        resend_url,
+        timeout=20,
+        verify=False,
+        headers={
+            "User-Agent": "Mozilla/5.0 AutoTeam/1.0",
+            "Accept": "application/json, text/plain, text/html, */*",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        },
+    )
+    text = (resp.text or "").strip()
+    if not resp.ok:
+        raise RuntimeError(text[:200] or f"短信平台重发接口返回异常({resp.status_code})")
+    return True
+
+
 def _poll_otp_from_sms_url(
     sms_url: str,
     *,
@@ -1268,7 +1328,8 @@ def _poll_otp_from_sms_url(
                 logger.info("[gopay_executor] 等待 GoPay OTP: %s", exc)
             if next_resend_at and time.time() >= next_resend_at:
                 resend_callback = getattr(provider, "_gopay_resend_callback", None)
-                if callable(resend_callback):
+                bridge_resend_url = _gopay_signup_bridge_resend_url(sms_url)
+                if callable(resend_callback) or bridge_resend_url:
                     if resend_limit is not None and resend_attempts >= resend_limit:
                         raise GoPayOTPCancelled(
                             f"未收到 GoPay OTP，重新发送验证码已达到上限 {resend_limit} 次",
@@ -1276,17 +1337,42 @@ def _poll_otp_from_sms_url(
                         )
                     if callable(progress):
                         progress("sms_otp_resend_due", wait_seconds=int(resend_interval))
+                    resend_attempts += 1
                     try:
-                        resend_attempts += 1
-                        resend_callback()
+                        if bridge_resend_url:
+                            _trigger_gopay_signup_bridge_resend(sms_url)
+                            if callable(progress):
+                                progress("sms_provider_resend_triggered")
                     except Exception as exc:
-                        logger.info("[gopay_executor] GoPay OTP resend while polling failed: %s", _safe_error_summary(exc))
+                        logger.info(
+                            "[gopay_executor] SMS provider resend while polling failed: %s",
+                            _safe_error_summary(exc),
+                        )
                         if callable(progress):
-                            progress("sms_otp_resend_failed", reason=_safe_error_summary(exc))
+                            progress("sms_provider_resend_failed", reason=_safe_error_summary(exc))
+                    if callable(resend_callback):
+                        try:
+                            delay = max(0.0, _env_float("GOPAY_SMS_PROVIDER_RESEND_DELAY_SECONDS", 2.0)) if bridge_resend_url else 0.0
+                            if delay:
+                                time.sleep(delay)
+                            resend_callback()
+                        except Exception as exc:
+                            logger.info(
+                                "[gopay_executor] GoPay OTP resend while polling failed: %s",
+                                _safe_error_summary(exc),
+                            )
+                            if callable(progress):
+                                progress("sms_otp_resend_failed", reason=_safe_error_summary(exc))
                 next_resend_at = time.time() + max(0.0, resend_interval)
             time.sleep(5)
         raise GoPayOTPCancelled("等待 GoPay OTP 超时", stage="fetch_otp")
 
+    try:
+        setattr(provider, "_gopay_sms_url", sms_url)
+        if _gopay_signup_bridge_resend_url(sms_url):
+            setattr(provider, "_gopay_sms_provider_resend_callback", lambda: _trigger_gopay_signup_bridge_resend(sms_url))
+    except Exception:
+        pass
     return provider
 
 
@@ -2976,6 +3062,22 @@ class GoPayHttpCharger:
         self._progress("sms_otp_triggered")
         logger.info("[gopay_executor] GoPay OTP triggered via protocol resend: reference=%s", _mask_log_value(reference_id))
 
+    def _trigger_sms_provider_resend_before_gopay_otp(self) -> bool:
+        callback = getattr(self.otp_provider, "_gopay_sms_provider_resend_callback", None)
+        if self.otp_channel != "sms" or not callable(callback):
+            return False
+        try:
+            callback()
+            self._progress("sms_provider_resend_triggered", reason="before_gopay_otp")
+            return True
+        except Exception as exc:
+            logger.info(
+                "[gopay_executor] SMS provider resend before GoPay OTP failed: %s",
+                _safe_error_summary(exc),
+            )
+            self._progress("sms_provider_resend_failed", reason=_safe_error_summary(exc))
+            return False
+
     def _trigger_linking_otp_channel(self, reference_id: str):
         if self.otp_channel == "sms":
             wait_seconds = max(0.0, float(self.sms_resend_wait_seconds or 0))
@@ -2986,6 +3088,10 @@ class GoPayHttpCharger:
                 int(wait_seconds),
             )
             self._sleep_with_cancel(wait_seconds)
+            if self._trigger_sms_provider_resend_before_gopay_otp():
+                delay = max(0.0, _env_float("GOPAY_SMS_PROVIDER_RESEND_DELAY_SECONDS", 2.0))
+                if delay:
+                    self._sleep_with_cancel(delay)
             self._gopay_resend_otp(reference_id)
             return
 
@@ -4343,6 +4449,7 @@ def _extract_sms_code(text: str) -> str:
 
 
 def _fetch_sms_code(sms_url: str, ignored_otps: set[str] | None = None) -> str:
+    sms_url = _normalize_local_gopay_signup_bridge_url(sms_url)
     is_whatsapp_otp_url = "/otp/whatsapp/" in str(sms_url or "").lower()
     source_label = "WhatsApp 监听" if is_whatsapp_otp_url else "接码接口"
     if is_whatsapp_otp_url:
@@ -5443,12 +5550,14 @@ def _run_gopay_bind_task_once(
                 }
 
         resolved_otp_channel = str(otp_channel or os.environ.get("GOPAY_OTP_CHANNEL") or "sms").strip().lower()
+        sms_otp_timeout = _env_int("GOPAY_BIND_SMS_OTP_TIMEOUT_SECONDS", 180)
+        sms_otp_resend_limit = _env_int("GOPAY_BIND_SMS_OTP_MAX_RESEND_ATTEMPTS", 2)
         otp_provider = _poll_otp_from_sms_url(
             sms_url,
-            timeout_seconds=60 if resolved_otp_channel == "whatsapp" else max(90, min(int(timeout_seconds or 900), 600)),
+            timeout_seconds=60 if resolved_otp_channel == "whatsapp" else max(60, sms_otp_timeout),
             initial_delay_seconds=0,
             resend_after_seconds=None,
-            max_resend_attempts=None,
+            max_resend_attempts=None if resolved_otp_channel == "whatsapp" else max(0, sms_otp_resend_limit),
             is_cancelled=is_cancelled,
             progress=progress,
         )

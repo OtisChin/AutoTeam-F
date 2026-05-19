@@ -1,319 +1,260 @@
 <template>
   <div class="mt-6 space-y-6">
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold text-white">配置导入 / 导出</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            导出设置页相关配置为 JSON，包含 API Key、短信服务商、代理、Rekberinaja 等敏感密钥，只在可信设备间传递。
+          </p>
+        </div>
+        <span
+          v-if="configImportExportBusy"
+          class="px-3 py-1.5 rounded-full text-xs text-blue-200 border border-blue-500/30 bg-blue-500/10 whitespace-nowrap"
+        >
+          处理中
+        </span>
+      </div>
+
+      <textarea
+        v-model="configImportText"
+        rows="5"
+        spellcheck="false"
+        placeholder="可粘贴导出的配置 JSON，或点击“选择 JSON 文件”导入"
+        class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-blue-500"
+      ></textarea>
+      <input
+        ref="configImportFileInput"
+        type="file"
+        accept="application/json,.json"
+        class="hidden"
+        @change="onConfigImportFileSelected"
+      />
+
+      <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-xs text-gray-500">
+          导入会写回 `.env`，并同步账号 Hub、注册域名、巡检和自动刷新配置。
+        </p>
+        <div class="flex flex-wrap gap-3">
+          <button
+            @click="exportConfig"
+            :disabled="configExporting || configImporting"
+            class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+          >
+            {{ configExporting ? '导出中...' : '导出配置' }}
+          </button>
+          <button
+            @click="configImportFileInput?.click()"
+            :disabled="configExporting || configImporting"
+            class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+          >
+            选择 JSON 文件
+          </button>
+          <button
+            @click="importConfig"
+            :disabled="configImporting || !configImportText.trim()"
+            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+          >
+            {{ configImporting ? '导入中...' : '导入配置' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
-          <h2 class="text-lg font-semibold text-white">管理员登录</h2>
+          <h2 class="text-lg font-semibold text-white">GoPay 自动注册</h2>
           <p class="text-sm text-gray-400 mt-1">
-            首次启动先在这里完成主号登录，系统会统一写入单个 state.json 文件，保存邮箱、session、workspace ID、workspace 名称；如果你走了密码登录，也会保留密码供主号 Codex 复用。
+            配置自动注册 GoPay 钱包时使用的短信服务商凭证。GoPay 任务页面只选择服务商，不直接输入密钥。
           </p>
         </div>
         <span
           class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
-          :class="adminConfigured
+          :class="gopayAutoSignupConfigured
             ? 'bg-green-500/10 text-green-400 border-green-500/20'
-            : adminBusy
-              ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20'
-              : 'bg-gray-800 text-gray-400 border-gray-700'"
-        >
-          {{ adminConfigured ? '已配置' : adminBusy ? '登录中' : '未配置' }}
+            : 'bg-gray-800 text-gray-400 border-gray-700'">
+          {{ gopayAutoSignupConfigured ? '已配置' : '未配置' }}
         </span>
       </div>
 
-      <div v-if="message" class="mb-4 px-4 py-3 rounded-lg text-sm border" :class="messageClass">
-        {{ message }}
-      </div>
-
-      <div v-if="adminConfigured && !adminBusy" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg">
-          <div class="text-gray-500 mb-1">管理员邮箱</div>
-          <div class="font-mono text-white break-all">{{ props.adminStatus?.email || '-' }}</div>
-        </div>
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg">
-          <div class="text-gray-500 mb-1">Workspace ID</div>
-          <div class="font-mono text-white break-all">{{ props.adminStatus?.account_id || '-' }}</div>
-        </div>
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg md:col-span-2">
-          <div class="text-gray-500 mb-1">Workspace 名称</div>
-          <div class="text-white">{{ props.adminStatus?.workspace_name || '未识别' }}</div>
-        </div>
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg md:col-span-2">
-          <div class="text-gray-500 mb-1">Session Token</div>
-          <div v-if="props.adminStatus?.session_present" class="text-green-400 text-xs">已配置</div>
-          <div v-else class="space-y-2">
-            <div class="text-amber-400 text-xs">未配置（Team 管理功能需要 session token）</div>
-            <div class="text-gray-400 text-xs space-y-2">
-              <div>获取方式：</div>
-              <ol class="list-decimal list-inside space-y-1">
-                <li>
-                  在浏览器中打开
-                  <a href="https://chatgpt.com" target="_blank" rel="noreferrer" class="text-blue-400 hover:underline">
-                    chatgpt.com
-                  </a>
-                  并登录管理员账号
-                </li>
-                <li>按 F12 打开开发者工具 → Application → Cookies → chatgpt.com</li>
-                <li>找到 <code class="bg-gray-800 px-1 rounded">__Secure-next-auth.session-token</code></li>
-                <li>
-                  如果有 <code class="bg-gray-800 px-1 rounded">.0</code> 和
-                  <code class="bg-gray-800 px-1 rounded">.1</code> 两个，将值按顺序拼接在一起
-                </li>
-                <li>粘贴到下方输入框</li>
-              </ol>
-            </div>
-            <div class="space-y-2">
-              <input
-                v-model.trim="sessionToken"
-                type="password"
-                placeholder="粘贴 session token"
-                class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs text-white font-mono focus:outline-none focus:border-blue-500"
-              />
-              <div class="flex justify-end">
-                <button
-                  @click="importSessionToken"
-                  :disabled="submitting || !sessionEmail || !sessionToken"
-                  class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition disabled:opacity-50"
-                >
-                  {{ submitting ? '校验中...' : '保存' }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg md:col-span-2">
-          <div class="text-gray-500 mb-1">管理员密码</div>
-          <div class="text-white">{{ props.adminStatus?.password_saved ? '已保存，可用于主号 Codex 登录' : '未保存' }}</div>
-        </div>
-      </div>
-
-      <div v-if="!adminBusy" class="mt-4">
-        <div v-if="!adminConfigured" class="space-y-4">
-          <div class="flex flex-col sm:flex-row gap-3">
-            <input
-              v-model.trim="email"
-              type="email"
-              autocomplete="username"
-              placeholder="输入主号邮箱"
-              class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-            />
-            <button
-              @click="startLogin"
-              :disabled="submitting || !email"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
-            >
-              {{ submitting ? '提交中...' : '开始登录' }}
-            </button>
-          </div>
-
-          <div class="border border-gray-800 rounded-xl p-4 bg-gray-800/30">
-            <div class="text-sm font-medium text-white">或手动导入 session_token</div>
-            <p class="text-xs text-gray-400 mt-1 mb-3">
-              适合你已经在浏览器里拿到 <span class="font-mono">__Secure-next-auth.session-token</span> 的场景。系统会校验 token，并自动识别 workspace ID / 名称。
-            </p>
-            <div class="text-gray-400 text-xs space-y-2 mb-3">
-              <div>获取方式：</div>
-              <ol class="list-decimal list-inside space-y-1">
-                <li>
-                  在浏览器中打开
-                  <a href="https://chatgpt.com" target="_blank" rel="noreferrer" class="text-blue-400 hover:underline">
-                    chatgpt.com
-                  </a>
-                  并登录管理员账号
-                </li>
-                <li>按 F12 打开开发者工具 → Application → Cookies → chatgpt.com</li>
-                <li>找到 <code class="bg-gray-800 px-1 rounded">__Secure-next-auth.session-token</code></li>
-                <li>
-                  如果有 <code class="bg-gray-800 px-1 rounded">.0</code> 和
-                  <code class="bg-gray-800 px-1 rounded">.1</code> 两个，将值按顺序拼接在一起
-                </li>
-                <li>粘贴到下方输入框</li>
-              </ol>
-            </div>
-            <div class="space-y-3">
-              <input
-                v-model.trim="sessionEmail"
-                type="email"
-                autocomplete="username"
-                placeholder="输入主号邮箱"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-500"
-              />
-              <textarea
-                v-model.trim="sessionToken"
-                rows="4"
-                spellcheck="false"
-                placeholder="粘贴完整 session_token"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-500"
-              ></textarea>
-              <div class="flex justify-end">
-                <button
-                  @click="importSessionToken"
-                  :disabled="submitting || !sessionEmail || !sessionToken"
-                  class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
-                >
-                  {{ submitting ? '校验中...' : '导入 session_token' }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div v-else-if="!codexBusy" class="flex flex-wrap gap-3">
-          <button
-            @click="syncMainCodex"
-            :disabled="submitting || syncingMain"
-            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
-          >
-            {{ syncingMain ? '同步中...' : '同步主号 Codex 到 CPA' }}
-          </button>
-          <button
-            @click="logoutAdmin"
-            :disabled="submitting || syncingMain"
-            class="px-4 py-2 bg-rose-700/80 hover:bg-rose-700 text-white text-sm rounded-lg transition disabled:opacity-50"
-          >
-            {{ submitting ? '处理中...' : '清除登录态' }}
-          </button>
-        </div>
-      </div>
-
-      <div v-if="adminBusy" class="space-y-4">
-        <div class="text-sm text-gray-300">
-          当前邮箱: <span class="font-mono">{{ loginEmail || props.adminStatus?.email || '-' }}</span>
-        </div>
-
-        <div v-if="props.adminStatus?.login_step === 'password_required'" class="flex flex-col sm:flex-row gap-3">
-          <input
-            v-model="password"
-            type="password"
-            autocomplete="current-password"
-            placeholder="输入主号密码"
-            :disabled="submitting"
-            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-          />
-          <button
-            @click="submitPassword"
-            :disabled="submitting || !password"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
-          >
-            {{ submitting ? '提交中...' : '提交密码' }}
-          </button>
-        </div>
-
-        <div v-else-if="props.adminStatus?.login_step === 'code_required'" class="flex flex-col sm:flex-row gap-3">
-          <input
-            v-model.trim="code"
-            type="text"
-            inputmode="numeric"
-            autocomplete="one-time-code"
-            placeholder="输入邮箱验证码"
-            :disabled="submitting"
-            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-          />
-          <button
-            @click="submitCode"
-            :disabled="submitting || !code"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50 disabled:bg-gray-700 disabled:hover:bg-gray-700"
-          >
-            {{ submitting ? '提交中...' : '提交验证码' }}
-          </button>
-        </div>
-
-        <div v-else-if="props.adminStatus?.login_step === 'workspace_required'" class="space-y-3">
-          <div class="text-sm text-gray-300">
-            请选择要进入的组织 / workspace
-          </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">短信服务商</label>
           <select
-            v-model="workspaceOptionId"
-            :disabled="submitting"
+            v-model="gopayAutoSignupForm.provider"
+            :disabled="gopayAutoSignupLoading || gopayAutoSignupSaving"
             class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
           >
-            <option disabled value="">请选择组织</option>
-            <option
-              v-for="opt in props.adminStatus?.workspace_options || []"
-              :key="opt.id"
-              :value="opt.id"
-            >
-              {{ opt.label }}{{ opt.kind === 'fallback' ? ' (可能是个人/免费)' : '' }}
-            </option>
+            <option value="smscloud">smscloud</option>
+            <option value="hero_sms">hero-sms</option>
           </select>
-          <button
-            @click="submitWorkspace"
-            :disabled="submitting || !workspaceOptionId"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50 disabled:bg-gray-700 disabled:hover:bg-gray-700"
-          >
-            {{ submitting ? '提交中...' : '确认组织选择' }}
-          </button>
         </div>
-
-        <div v-if="submitting && adminSubmittingHint" class="text-xs text-blue-300">
-          {{ adminSubmittingHint }}
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">
+            GoPay 注册/PIN 印尼代理
+            <span v-if="gopayAutoSignupStatus.proxy_url_present" class="text-xs text-green-400 ml-1">已保存</span>
+          </label>
+          <input
+            v-model.trim="gopayAutoSignupForm.proxy_url"
+            type="password"
+            autocomplete="off"
+            placeholder="socks5://user:pass@host:port，留空直连"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+          <p class="mt-1 text-xs text-gray-500">只用于 GoPay 注册和设置 PIN 阶段；绑定 checkout/支付阶段仍按任务逻辑直连。</p>
         </div>
-
-        <div class="flex justify-end">
-          <button
-            @click="cancelLogin"
-            :disabled="submitting"
-            class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
-          >
-            取消登录
-          </button>
+        <div v-if="gopayAutoSignupForm.provider === 'smscloud'">
+          <label class="block text-sm text-gray-400 mb-1">
+            smscloud XI_TOKEN
+            <span v-if="gopayAutoSignupStatus.smscloud_xi_token_present" class="text-xs text-green-400 ml-1">已保存</span>
+          </label>
+          <input
+            v-model="gopayAutoSignupForm.smscloud_xi_token"
+            type="password"
+            autocomplete="off"
+            :placeholder="gopayAutoSignupStatus.smscloud_xi_token_masked || '留空则保留现有配置'"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+          <p class="mt-1 text-xs text-gray-500">填写 smscloud 登录后浏览器 localStorage 里的 XI_TOKEN，不是资料页 API密钥。</p>
+        </div>
+        <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 md:col-span-2">
+          <div>
+          <label class="block text-sm text-gray-400 mb-1">
+            hero-sms API Key
+            <span v-if="gopayAutoSignupStatus.hero_sms_api_key_present" class="text-xs text-green-400 ml-1">已保存</span>
+          </label>
+          <input
+            v-model="gopayAutoSignupForm.hero_sms_api_key"
+            type="password"
+            autocomplete="off"
+            :placeholder="gopayAutoSignupStatus.hero_sms_api_key_masked || '留空则保留现有配置'"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">hero-sms 最高价格</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.hero_sms_max_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.045，留空不限价"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">会作为 maxPrice 传给取号接口，超过该价格的号码不会购买。</p>
+          </div>
         </div>
       </div>
 
-      <div v-if="codexBusy" class="mt-4 space-y-4 border-t border-gray-800 pt-4">
-        <div class="text-sm text-gray-300">
-          主号 Codex 登录继续中
-        </div>
+      <div class="mt-3 flex justify-end gap-3">
+        <button
+          @click="loadGoPayAutoSignupConfig"
+          :disabled="gopayAutoSignupLoading || gopayAutoSignupSaving"
+          class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+        >
+          {{ gopayAutoSignupLoading ? '刷新中...' : '刷新配置' }}
+        </button>
+        <button
+          @click="saveGoPayAutoSignupConfig"
+          :disabled="gopayAutoSignupSaving"
+          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+        >
+          {{ gopayAutoSignupSaving ? '保存中...' : '保存 GoPay 配置' }}
+        </button>
+      </div>
+    </div>
 
-        <div v-if="props.codexStatus?.step === 'password_required'" class="flex flex-col sm:flex-row gap-3">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold text-white">Rekberinaja GoPay 充值</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            转账开关默认关闭。开启后，自动注册 GoPay 钱包完成 PIN 设置后，使用 Rekberinaja 站内余额充值最低 GoPay 面额；关闭时不转账，先等待 60 秒后首次绑定，若疑似 1rp 未到账会复用同一钱包延长等待重试。
+          </p>
+        </div>
+        <span
+          class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
+          :class="rekberinajaConfigured
+            ? 'bg-green-500/10 text-green-400 border-green-500/20'
+            : 'bg-gray-800 text-gray-400 border-gray-700'">
+          {{ rekberinajaConfigured ? '已启用' : '未启用' }}
+        </span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <label class="inline-flex items-center gap-2 text-sm text-gray-300 md:col-span-2">
+          <input v-model="rekberinajaForm.enabled" type="checkbox" class="accent-blue-500" />
+          启用 Rekberinaja 站内余额充值/转账
+        </label>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">登录邮箱</label>
           <input
-            v-model="codexPassword"
+            v-model.trim="rekberinajaForm.email"
+            type="email"
+            autocomplete="off"
+            placeholder="Rekberinaja 账号邮箱"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">
+            登录密码
+            <span v-if="rekberinajaStatus.password_present" class="text-xs text-green-400 ml-1">已保存</span>
+          </label>
+          <input
+            v-model="rekberinajaForm.password"
             type="password"
-            autocomplete="current-password"
-            placeholder="输入主号密码"
-            :disabled="syncingMain"
-            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            autocomplete="off"
+            :placeholder="rekberinajaStatus.password_masked || '留空则保留现有配置'"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
           />
-          <button
-            @click="submitMainCodexPassword"
-            :disabled="syncingMain || !codexPassword"
-            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
-          >
-            {{ syncingMain ? '提交中...' : '提交密码' }}
-          </button>
         </div>
-
-        <div v-else-if="props.codexStatus?.step === 'code_required'" class="flex flex-col sm:flex-row gap-3">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">最低余额要求</label>
           <input
-            v-model.trim="codexCode"
-            type="text"
-            inputmode="numeric"
-            autocomplete="one-time-code"
-            placeholder="输入主号 Codex 验证码"
-            :disabled="syncingMain"
-            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            v-model.number="rekberinajaForm.min_balance"
+            type="number"
+            min="0"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
           />
-          <button
-            @click="submitMainCodexCode"
-            :disabled="syncingMain || !codexCode"
-            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
-          >
-            {{ syncingMain ? '提交中...' : '提交验证码' }}
-          </button>
         </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">到账等待超时（秒）</label>
+          <input
+            v-model.number="rekberinajaForm.poll_timeout"
+            type="number"
+            min="10"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-sm text-gray-400 mb-1">Invoice Email（可选）</label>
+          <input
+            v-model.trim="rekberinajaForm.invoice_email"
+            type="email"
+            autocomplete="off"
+            placeholder="留空即可"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+      </div>
 
-        <div v-if="syncingMain && codexSubmittingHint" class="text-xs text-cyan-300">
-          {{ codexSubmittingHint }}
-        </div>
-
-        <div class="flex justify-end">
-          <button
-            @click="cancelMainCodexSync"
-            :disabled="syncingMain"
-            class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
-          >
-            取消主号 Codex 登录
-          </button>
-        </div>
+      <div class="mt-3 flex justify-end gap-3">
+        <button
+          @click="loadRekberinajaConfig"
+          :disabled="rekberinajaLoading || rekberinajaSaving"
+          class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+        >
+          {{ rekberinajaLoading ? '刷新中...' : '刷新配置' }}
+        </button>
+        <button
+          @click="saveRekberinajaConfig"
+          :disabled="rekberinajaSaving"
+          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+        >
+          {{ rekberinajaSaving ? '保存中...' : '保存 Rekberinaja 配置' }}
+        </button>
       </div>
     </div>
 
@@ -603,21 +544,8 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { api } from '../api.js'
-
-const props = defineProps({
-  adminStatus: {
-    type: Object,
-    default: null,
-  },
-  codexStatus: {
-    type: Object,
-    default: null,
-  },
-})
-
-const emit = defineEmits(['refresh', 'admin-progress'])
 
 const form = ref({ interval: 5, threshold: 10, min_low: 2 })
 const saving = ref(false)
@@ -626,21 +554,12 @@ const quotaRefreshForm = ref({ enabled: false, interval: 30 })
 const quotaRefreshSaving = ref(false)
 const quotaRefreshSaved = ref(false)
 
-const email = ref('')
-const sessionEmail = ref('')
-const sessionToken = ref('')
-const password = ref('')
-const code = ref('')
-const workspaceOptionId = ref('')
-const loginEmail = ref('')
-const codexPassword = ref('')
-const codexCode = ref('')
-const submitting = ref(false)
-const syncingMain = ref(false)
 const message = ref('')
 const messageClass = ref('')
-const adminSubmittingHint = ref('')
-const codexSubmittingHint = ref('')
+const configImportText = ref('')
+const configImporting = ref(false)
+const configExporting = ref(false)
+const configImportFileInput = ref(null)
 const registerDomainsText = ref('')
 const registerDomainLoading = ref(false)
 const registerDomainSaving = ref(false)
@@ -653,9 +572,38 @@ const mailProvider = ref('cloudflare_temp_email')
 const mailProviderOptions = ref([])
 const mailProviderFieldGroups = ref({})
 const mailProviderForm = ref({})
+const gopayAutoSignupLoading = ref(false)
+const gopayAutoSignupSaving = ref(false)
+const gopayAutoSignupStatus = ref({})
+const gopayAutoSignupForm = ref({
+  provider: 'smscloud',
+  country_code: '+62',
+  smscloud_xi_token: '',
+  hero_sms_api_key: '',
+  hero_sms_max_price: '',
+  proxy_url: '',
+})
+const rekberinajaLoading = ref(false)
+const rekberinajaSaving = ref(false)
+const rekberinajaStatus = ref({})
+const rekberinajaForm = ref({
+  enabled: false,
+  email: '',
+  password: '',
+  min_balance: 5000,
+  poll_timeout: 180,
+  invoice_email: '',
+})
 
 const accountHubBusy = computed(() => accountHubSaving.value || accountHubTesting.value)
+const configImportExportBusy = computed(() => configImporting.value || configExporting.value)
 const accountHubConfigured = computed(() => Boolean(accountHubForm.value.token || accountHubForm.value.url))
+const gopayAutoSignupConfigured = computed(() => {
+  return gopayAutoSignupForm.value.provider === 'hero_sms'
+    ? Boolean(gopayAutoSignupStatus.value.hero_sms_api_key_present)
+    : Boolean(gopayAutoSignupStatus.value.smscloud_xi_token_present)
+})
+const rekberinajaConfigured = computed(() => Boolean(rekberinajaStatus.value.configured))
 const mailProviderFields = computed(() => mailProviderFieldGroups.value[mailProvider.value] || [])
 const mailProviderFieldTitle = computed(() =>
   mailProvider.value === 'cloud-mail'
@@ -667,9 +615,6 @@ const mailProviderFieldTitle = computed(() =>
         : 'cloudflare_temp_email 配置'
 )
 
-const adminConfigured = computed(() => !!props.adminStatus?.configured)
-const adminBusy = computed(() => !!props.adminStatus?.login_in_progress)
-const codexBusy = computed(() => !!props.codexStatus?.in_progress)
 const parsedRegisterDomains = computed(() =>
   Array.from(new Set(
     registerDomainsText.value
@@ -677,40 +622,6 @@ const parsedRegisterDomains = computed(() =>
       .map(v => v.trim().replace(/^@/, ''))
       .filter(Boolean)
   ))
-)
-
-watch(
-  () => props.adminStatus,
-  (next) => {
-    if (next?.configured && next.email) {
-      email.value = next.email
-      sessionEmail.value = next.email
-    }
-    if (!next?.login_in_progress) {
-      password.value = ''
-      code.value = ''
-      workspaceOptionId.value = ''
-      adminSubmittingHint.value = ''
-      loginEmail.value = next?.email || loginEmail.value
-    }
-    if (next?.login_step === 'workspace_required' && !workspaceOptionId.value) {
-      const preferred = next?.workspace_options?.find(opt => opt.kind === 'preferred')
-      workspaceOptionId.value = preferred?.id || next?.workspace_options?.[0]?.id || ''
-    }
-  },
-  { immediate: true },
-)
-
-watch(
-  () => props.codexStatus,
-  (next) => {
-    if (!next?.in_progress) {
-      codexPassword.value = ''
-      codexCode.value = ''
-      codexSubmittingHint.value = ''
-    }
-  },
-  { immediate: true },
 )
 
 onMounted(async () => {
@@ -735,6 +646,8 @@ onMounted(async () => {
   }
   loadRegisterDomains()
   loadAccountHubConfig()
+  loadGoPayAutoSignupConfig()
+  loadRekberinajaConfig()
   loadMailProviderConfig()
 })
 
@@ -749,169 +662,80 @@ function setMessage(text, type = 'success') {
   }, 8000)
 }
 
-async function startLogin() {
-  submitting.value = true
-  adminSubmittingHint.value = '正在打开管理员登录页...'
+function downloadTextFile(filename, content, mime = 'application/json') {
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+async function exportConfig() {
+  configExporting.value = true
   try {
-    loginEmail.value = email.value
-    const result = await api.startAdminLogin(email.value)
-    setMessage(result.status === 'completed' ? '管理员登录完成' : '已进入下一步登录流程')
-    emit('admin-progress')
+    const result = await api.exportConfig()
+    const content = JSON.stringify(result, null, 2)
+    configImportText.value = content
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    downloadTextFile(`autoteam-config-${stamp}.json`, content)
+    setMessage('配置已导出')
   } catch (e) {
-    setMessage(e.message, 'error')
+    setMessage(e.message || '导出配置失败', 'error')
   } finally {
-    submitting.value = false
-    adminSubmittingHint.value = ''
+    configExporting.value = false
   }
 }
 
-async function importSessionToken() {
-  submitting.value = true
-  adminSubmittingHint.value = '正在校验 session_token 并识别 workspace...'
+async function importConfig() {
+  configImporting.value = true
   try {
-    loginEmail.value = sessionEmail.value
-    const result = await api.submitAdminSession(sessionEmail.value, sessionToken.value)
-    sessionToken.value = ''
-    setMessage(result.status === 'completed' ? 'session_token 导入成功' : 'session_token 已提交')
-    emit('refresh')
+    const text = configImportText.value.trim()
+    JSON.parse(text)
+    const result = await api.importConfig({ content: text, overwrite_empty: true })
+    setMessage(result.message || '配置导入完成')
+    await Promise.allSettled([
+      loadGoPayAutoSignupConfig(),
+      loadRekberinajaConfig(),
+      loadMailProviderConfig(),
+      loadRegisterDomains(),
+      loadAccountHubConfig(),
+      api.getAutoCheckConfig().then(cfg => {
+        form.value = {
+          interval: Math.round(cfg.interval / 60),
+          threshold: cfg.threshold,
+          min_low: cfg.min_low,
+        }
+      }),
+      api.getAutoRefreshQuotaConfig().then(cfg => {
+        quotaRefreshForm.value = {
+          enabled: !!cfg.enabled,
+          interval: Math.max(1, Math.round((cfg.interval || 1800) / 60)),
+        }
+      }),
+    ])
   } catch (e) {
-    setMessage(e.message, 'error')
+    setMessage(e.message || '导入配置失败', 'error')
   } finally {
-    submitting.value = false
-    adminSubmittingHint.value = ''
+    configImporting.value = false
   }
 }
 
-async function submitPassword() {
-  submitting.value = true
-  adminSubmittingHint.value = '密码已提交，正在等待登录页响应...'
+async function onConfigImportFileSelected(event) {
+  const file = event?.target?.files?.[0]
+  if (!file) return
   try {
-    const result = await api.submitAdminPassword(password.value)
-    setMessage(result.status === 'completed' ? '管理员登录完成' : '密码已提交，请继续下一步')
-    emit('admin-progress')
+    configImportText.value = await file.text()
+    setMessage(`已读取配置文件：${file.name}`)
   } catch (e) {
-    setMessage(e.message, 'error')
+    setMessage(e.message || '读取配置文件失败', 'error')
   } finally {
-    submitting.value = false
-    adminSubmittingHint.value = ''
-  }
-}
-
-async function submitCode() {
-  submitting.value = true
-  adminSubmittingHint.value = '验证码已提交，正在等待登录页响应，通常需要 5 到 10 秒...'
-  try {
-    const result = await api.submitAdminCode(code.value)
-    setMessage(result.status === 'completed' ? '管理员登录完成' : '验证码已提交，请继续下一步')
-    emit('admin-progress')
-  } catch (e) {
-    setMessage(e.message, 'error')
-  } finally {
-    submitting.value = false
-    adminSubmittingHint.value = ''
-  }
-}
-
-async function submitWorkspace() {
-  submitting.value = true
-  adminSubmittingHint.value = '组织选择已提交，正在等待登录页响应...'
-  try {
-    const result = await api.submitAdminWorkspace(workspaceOptionId.value)
-    setMessage(result.status === 'completed' ? '管理员登录完成' : '组织选择已提交，请继续下一步')
-    emit('admin-progress')
-  } catch (e) {
-    setMessage(e.message, 'error')
-  } finally {
-    submitting.value = false
-    adminSubmittingHint.value = ''
-  }
-}
-
-async function cancelLogin() {
-  submitting.value = true
-  try {
-    await api.cancelAdminLogin()
-    password.value = ''
-    code.value = ''
-    setMessage('管理员登录已取消')
-    emit('refresh')
-  } catch (e) {
-    setMessage(e.message, 'error')
-  } finally {
-    submitting.value = false
-  }
-}
-
-async function logoutAdmin() {
-  submitting.value = true
-  try {
-    await api.logoutAdmin()
-    password.value = ''
-    code.value = ''
-    setMessage('管理员登录态已清除')
-    emit('refresh')
-  } catch (e) {
-    setMessage(e.message, 'error')
-  } finally {
-    submitting.value = false
-  }
-}
-
-async function syncMainCodex() {
-  syncingMain.value = true
-  codexSubmittingHint.value = '正在打开主号 Codex 登录页...'
-  try {
-    const result = await api.startMainCodexSync()
-    setMessage(result.status === 'completed' ? (result.message || '主号 Codex 已同步') : '主号 Codex 登录进入下一步')
-    emit('admin-progress')
-  } catch (e) {
-    setMessage(e.message, 'error')
-  } finally {
-    syncingMain.value = false
-    codexSubmittingHint.value = ''
-  }
-}
-
-async function submitMainCodexPassword() {
-  syncingMain.value = true
-  codexSubmittingHint.value = '密码已提交，正在等待主号 Codex 登录页响应...'
-  try {
-    const result = await api.submitMainCodexPassword(codexPassword.value)
-    setMessage(result.status === 'completed' ? (result.message || '主号 Codex 已同步') : '主号 Codex 密码已提交')
-    emit('admin-progress')
-  } catch (e) {
-    setMessage(e.message, 'error')
-  } finally {
-    syncingMain.value = false
-    codexSubmittingHint.value = ''
-  }
-}
-
-async function submitMainCodexCode() {
-  syncingMain.value = true
-  codexSubmittingHint.value = '验证码已提交，正在等待主号 Codex 登录页响应，通常需要 5 到 10 秒...'
-  try {
-    const result = await api.submitMainCodexCode(codexCode.value)
-    setMessage(result.status === 'completed' ? (result.message || '主号 Codex 已同步') : '主号 Codex 验证码已提交')
-    emit('admin-progress')
-  } catch (e) {
-    setMessage(e.message, 'error')
-  } finally {
-    syncingMain.value = false
-    codexSubmittingHint.value = ''
-  }
-}
-
-async function cancelMainCodexSync() {
-  syncingMain.value = true
-  try {
-    await api.cancelMainCodexSync()
-    setMessage('主号 Codex 登录已取消')
-    emit('refresh')
-  } catch (e) {
-    setMessage(e.message, 'error')
-  } finally {
-    syncingMain.value = false
+    if (event?.target) {
+      event.target.value = ''
+    }
   }
 }
 
@@ -1029,6 +853,77 @@ async function testAccountHub() {
     setMessage(e.message, 'error')
   } finally {
     accountHubTesting.value = false
+  }
+}
+
+async function loadGoPayAutoSignupConfig() {
+  gopayAutoSignupLoading.value = true
+  try {
+    const cfg = await api.getGoPayAutoSignupConfig()
+    gopayAutoSignupStatus.value = cfg || {}
+    gopayAutoSignupForm.value = {
+      provider: cfg?.provider === 'hero_sms' ? 'hero_sms' : 'smscloud',
+      country_code: '+62',
+      smscloud_xi_token: '',
+      hero_sms_api_key: '',
+      hero_sms_max_price: cfg?.hero_sms_max_price || '',
+      proxy_url: cfg?.proxy_url || '',
+    }
+  } catch (e) {
+    setMessage(e.message || '加载 GoPay 自动注册配置失败', 'error')
+  } finally {
+    gopayAutoSignupLoading.value = false
+  }
+}
+
+async function saveGoPayAutoSignupConfig() {
+  gopayAutoSignupSaving.value = true
+  try {
+    const result = await api.saveGoPayAutoSignupConfig(gopayAutoSignupForm.value)
+    gopayAutoSignupStatus.value = result || {}
+    gopayAutoSignupForm.value.smscloud_xi_token = ''
+    gopayAutoSignupForm.value.hero_sms_api_key = ''
+    setMessage(result.message || 'GoPay 自动注册配置已保存')
+    await loadGoPayAutoSignupConfig()
+  } catch (e) {
+    setMessage(e.message || '保存 GoPay 自动注册配置失败', 'error')
+  } finally {
+    gopayAutoSignupSaving.value = false
+  }
+}
+
+async function loadRekberinajaConfig() {
+  rekberinajaLoading.value = true
+  try {
+    const cfg = await api.getRekberinajaConfig()
+    rekberinajaStatus.value = cfg || {}
+    rekberinajaForm.value = {
+      enabled: !!(cfg?.transfer_enabled ?? cfg?.enabled),
+      email: cfg?.email || '',
+      password: '',
+      min_balance: Number(cfg?.min_balance || 5000),
+      poll_timeout: Number(cfg?.poll_timeout || 180),
+      invoice_email: cfg?.invoice_email || '',
+    }
+  } catch (e) {
+    setMessage(e.message || '加载 Rekberinaja 配置失败', 'error')
+  } finally {
+    rekberinajaLoading.value = false
+  }
+}
+
+async function saveRekberinajaConfig() {
+  rekberinajaSaving.value = true
+  try {
+    const result = await api.saveRekberinajaConfig(rekberinajaForm.value)
+    rekberinajaStatus.value = result || {}
+    rekberinajaForm.value.password = ''
+    setMessage(result.message || 'Rekberinaja 配置已保存')
+    await loadRekberinajaConfig()
+  } catch (e) {
+    setMessage(e.message || '保存 Rekberinaja 配置失败', 'error')
+  } finally {
+    rekberinajaSaving.value = false
   }
 }
 

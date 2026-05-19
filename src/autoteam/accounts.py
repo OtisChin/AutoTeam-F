@@ -5,6 +5,7 @@
 """
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -24,6 +25,7 @@ STATUS_PLUS = "plus"  # 已通过 GoPay/支付流程升级为 Plus，不再参�
 STATUS_AUTH_INVALID = "auth_invalid"  # auth_file token 已不可用(401/403),待 reconcile 清理或重登
 STATUS_ORPHAN = "orphan"  # 在 workspace 里占着席位,但本地没 auth_file(残废,待人工介入或兜底 kick)
 STATUS_FAIL = "fail"  # 已废弃账号,不再参与号池/轮转
+STATUS_SESSION_ONLY = "session_only"  # 旧状态兼容：新逻辑不再写入，auth_session-only 账号也显示 active
 
 # 账号类型:和运行状态分离。新注册账号默认 Free；Team/Plus/Pro 用于前端选择和业务过滤。
 ACCOUNT_TYPE_FREE = "free"
@@ -35,6 +37,10 @@ ACCOUNT_TYPE_PRO = "pro"
 SEAT_CHATGPT = "chatgpt"  # 完整 ChatGPT 席位(PATCH invite seat_type=default 成功)
 SEAT_CODEX = "codex"  # 仅 Codex 席位(usage_based,PATCH 改 default 失败时保留的兜底)
 SEAT_UNKNOWN = "unknown"  # 未知/未记录,老账号或手动导入默认值
+
+ACCOUNT_SOURCE_MANAGED = "managed"
+ACCOUNT_SOURCE_AUTH_SESSION_STUB = "auth_session_stub"
+_accounts_write_lock = threading.RLock()
 
 def _normalized_email(value):
     return (value or "").strip().lower()
@@ -81,6 +87,7 @@ def _normalize_account_record(account: dict) -> dict:
     acc.setdefault("last_bind_failure_stage", "")
     acc.setdefault("credentials_exported", False)
     acc.setdefault("credentials_exported_at", None)
+    acc.setdefault("account_source", ACCOUNT_SOURCE_MANAGED)
     return acc
 
 
@@ -162,11 +169,12 @@ def load_accounts():
 
 def save_accounts(accounts):
     """保存账号列表"""
-    sqlite_store.initialize(_db_path())
-    with sqlite_store.connect(_db_path()) as conn:
-        conn.execute("DELETE FROM accounts")
-        for account in accounts or []:
-            _upsert_account(conn, account)
+    with _accounts_write_lock:
+        sqlite_store.initialize(_db_path())
+        with sqlite_store.connect(_db_path()) as conn:
+            conn.execute("DELETE FROM accounts")
+            for account in accounts or []:
+                _upsert_account(conn, account)
 
 
 def find_account(accounts, email):
@@ -180,49 +188,138 @@ def find_account(accounts, email):
 
 def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNOWN, mail_provider=None):
     """添加新账号。seat_type 取值见 SEAT_CHATGPT / SEAT_CODEX / SEAT_UNKNOWN。"""
-    accounts = load_accounts()
-    existing = find_account(accounts, email)
-    if existing:
-        changed = False
-        # 已存在仍允许补写 seat_type/mail_provider,避免旧记录一直缺少注册邮箱来源。
-        if seat_type and seat_type != SEAT_UNKNOWN:
-            existing["seat_type"] = seat_type
-            changed = True
-        if mail_provider and not existing.get("mail_provider"):
-            existing["mail_provider"] = mail_provider
-            changed = True
-        if changed:
-            save_accounts(accounts)
-        return
+    with _accounts_write_lock:
+        accounts = load_accounts()
+        existing = find_account(accounts, email)
+        if existing:
+            changed = False
+            # 已存在仍允许补写注册来源信息。auth_session stub 由真实注册流程接管后恢复为 managed。
+            desired = {}
+            if password and not existing.get("password"):
+                desired["password"] = password
+            if cloudmail_account_id and not existing.get("cloudmail_account_id"):
+                desired["cloudmail_account_id"] = cloudmail_account_id
+            if seat_type and seat_type != SEAT_UNKNOWN:
+                desired["seat_type"] = seat_type
+            if mail_provider and not existing.get("mail_provider"):
+                desired["mail_provider"] = mail_provider
+            if existing.get("account_source") == ACCOUNT_SOURCE_AUTH_SESSION_STUB:
+                desired["account_source"] = ACCOUNT_SOURCE_MANAGED
+            for key, value in desired.items():
+                if existing.get(key) != value:
+                    existing[key] = value
+                    changed = True
+            if changed:
+                save_accounts(accounts)
+            return
 
-    accounts.append(
-        {
-            "email": email,
-            "password": password,
-            "cloudmail_account_id": cloudmail_account_id,
-            "mail_provider": mail_provider or None,
-            "status": STATUS_PENDING,
-            "account_type": ACCOUNT_TYPE_FREE,
-            "seat_type": seat_type or SEAT_UNKNOWN,
-            "auth_file": None,  # CPA 认证文件路径
-            "quota_exhausted_at": None,  # 额度用完的时间
-            "quota_resets_at": None,  # 额度恢复时间
-            "last_quota_check_at": None,  # 最近一次 wham/usage 探测时间戳,用于 standby 探测去重
-            "created_at": time.time(),
-            "last_active_at": None,
-            "last_bind_status": "",
-            "last_bind_at": None,
-            "last_checkout_url": "",
-            "last_card_id": "",
-            "last_proxy_label": "",
-            "last_bind_task_id": "",
-            "last_bind_message": "",
-            "last_bind_failure_stage": "",
-            "credentials_exported": False,
-            "credentials_exported_at": None,
-        }
-    )
-    save_accounts(accounts)
+        accounts.append(
+            {
+                "email": email,
+                "password": password,
+                "cloudmail_account_id": cloudmail_account_id,
+                "mail_provider": mail_provider or None,
+                "status": STATUS_PENDING,
+                "account_type": ACCOUNT_TYPE_FREE,
+                "seat_type": seat_type or SEAT_UNKNOWN,
+                "auth_file": None,  # CPA 认证文件路径
+                "quota_exhausted_at": None,  # 额度用完的时间
+                "quota_resets_at": None,  # 额度恢复时间
+                "last_quota_check_at": None,  # 最近一次 wham/usage 探测时间戳,用于 standby 探测去重
+                "created_at": time.time(),
+                "last_active_at": None,
+                "last_bind_status": "",
+                "last_bind_at": None,
+                "last_checkout_url": "",
+                "last_card_id": "",
+                "last_proxy_label": "",
+                "last_bind_task_id": "",
+                "last_bind_message": "",
+                "last_bind_failure_stage": "",
+                "credentials_exported": False,
+                "credentials_exported_at": None,
+                "account_source": ACCOUNT_SOURCE_MANAGED,
+            }
+        )
+        save_accounts(accounts)
+
+
+def ensure_session_only_account(email):
+    """把仅有 auth_session 的账号显式写入账号池，便于前端和清理逻辑统一处理。"""
+    normalized = _normalized_email(email)
+    if not normalized:
+        return None
+    with _accounts_write_lock:
+        accounts = load_accounts()
+        existing = find_account(accounts, normalized)
+        if existing:
+            if (
+                existing.get("account_source") == ACCOUNT_SOURCE_AUTH_SESSION_STUB
+                or existing.get("status") == STATUS_SESSION_ONLY
+            ):
+                # A stale stub marker must not downgrade an account that has
+                # already been upgraded or has a real CPA/Codex auth file.
+                account_type = str(existing.get("account_type") or "").strip().lower()
+                if account_type in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM} or existing.get("auth_file"):
+                    desired = {
+                        "status": STATUS_ACTIVE,
+                        "account_source": ACCOUNT_SOURCE_MANAGED,
+                    }
+                    changed = False
+                    for key, value in desired.items():
+                        if existing.get(key) != value:
+                            existing[key] = value
+                            changed = True
+                    if changed:
+                        save_accounts(accounts)
+                        existing = find_account(load_accounts(), normalized) or existing
+                    return existing
+                changed = False
+                desired = {
+                    "status": STATUS_ACTIVE,
+                    "account_type": ACCOUNT_TYPE_FREE,
+                    "seat_type": SEAT_CODEX,
+                    "account_source": ACCOUNT_SOURCE_AUTH_SESSION_STUB,
+                }
+                for key, value in desired.items():
+                    if existing.get(key) != value:
+                        existing[key] = value
+                        changed = True
+                if changed:
+                    save_accounts(accounts)
+                    existing = find_account(load_accounts(), normalized) or existing
+            return existing
+
+        accounts.append(
+            {
+                "email": normalized,
+                "password": "",
+                "cloudmail_account_id": None,
+                "mail_provider": None,
+                "status": STATUS_ACTIVE,
+                "account_type": ACCOUNT_TYPE_FREE,
+                "seat_type": SEAT_CODEX,
+                "auth_file": None,
+                "quota_exhausted_at": None,
+                "quota_resets_at": None,
+                "last_quota_check_at": None,
+                "created_at": time.time(),
+                "last_active_at": None,
+                "last_bind_status": "",
+                "last_bind_at": None,
+                "last_checkout_url": "",
+                "last_card_id": "",
+                "last_proxy_label": "",
+                "last_bind_task_id": "",
+                "last_bind_message": "",
+                "last_bind_failure_stage": "",
+                "credentials_exported": False,
+                "credentials_exported_at": None,
+                "account_source": ACCOUNT_SOURCE_AUTH_SESSION_STUB,
+            }
+        )
+        save_accounts(accounts)
+        return find_account(load_accounts(), normalized)
 
 
 def update_account(email, **kwargs):
@@ -247,16 +344,18 @@ def update_account(email, **kwargs):
         "quota_exhausted_at",
         "quota_resets_at",
         "last_quota_check_at",
+        "account_source",
     }
     if any(key in kwargs for key in hub_dirty_keys) and "account_hub_synced" not in kwargs:
         kwargs["account_hub_synced"] = False
         kwargs["account_hub_synced_at"] = None
-    accounts = load_accounts()
-    acc = find_account(accounts, email)
-    if acc:
-        acc.update(kwargs)
-        save_accounts(accounts)
-    return acc
+    with _accounts_write_lock:
+        accounts = load_accounts()
+        acc = find_account(accounts, email)
+        if acc:
+            acc.update(kwargs)
+            save_accounts(accounts)
+        return acc
 
 
 def delete_account(email):

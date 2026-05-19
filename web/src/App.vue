@@ -215,6 +215,8 @@ function taskStageLabel(stage) {
   return {
     gopay_binding: 'GoPay 绑定准备中',
     gopay_auto_register_next: '自动注册并绑定',
+    gopay_wallet_auto_signup_started: '自动注册 GoPay 钱包',
+    gopay_wallet_auto_signup_done: 'GoPay 钱包已就绪',
     gopay_pending_retry_wait: '等待重试',
     gopay_pending_retry_account: '正在重试账号',
     binding: '绑卡中',

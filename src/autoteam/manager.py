@@ -1806,7 +1806,7 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
     在已登录的 ChatGPT 页面里直接调用 /api/auth/session 提取 accessToken，
     并把完整 JSON 保存到 data/auth_session/<email>.json。
     """
-    from autoteam.accounts import SEAT_CODEX, STATUS_ACTIVE, add_account, update_account
+    from autoteam.accounts import ACCOUNT_SOURCE_MANAGED, SEAT_CODEX, STATUS_ACTIVE, add_account, update_account
     from autoteam.auth_session_store import save_auth_session
 
     def _record_outcome(status, **extra):
@@ -1847,7 +1847,8 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         email,
         status=STATUS_ACTIVE,
         seat_type=SEAT_CODEX,
-        auth_file=auth_file,
+        auth_file=None,
+        account_source=ACCOUNT_SOURCE_MANAGED,
         last_active_at=time.time(),
     )
     logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)

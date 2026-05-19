@@ -23,7 +23,7 @@ from typing import Any
 
 from curl_cffi import requests as curl_requests
 
-from autoteam.mail.base import MailProvider, html_to_visible_text, normalize_email_addr
+from autoteam.mail.base import MailProvider, html_to_visible_text, normalize_email_addr, parse_mime
 from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text
 
@@ -40,12 +40,16 @@ class OutlookAccount:
     password: str = ""
     client_id: str = ""
     refresh_token: str = ""
+    mailapi_url: str = ""
 
     def has_oauth(self) -> bool:
         return bool(self.client_id and self.refresh_token)
 
+    def has_mailapi(self) -> bool:
+        return bool(self.mailapi_url)
+
     def validate(self) -> bool:
-        return bool(self.email and (self.password or self.has_oauth()))
+        return bool(self.email and (self.password or self.has_oauth() or self.has_mailapi()))
 
 
 @dataclass
@@ -158,6 +162,8 @@ class OutlookMailProvider(MailProvider):
         if "@" not in email:
             return None
         password = parts[1] if len(parts) > 1 else ""
+        if OutlookMailProvider._looks_like_url(password):
+            return OutlookAccount(email=email, mailapi_url=password)
         client_id = parts[2] if len(parts) > 2 else ""
         refresh_token = parts[3] if len(parts) > 3 else ""
         if OutlookMailProvider._looks_like_refresh_token(client_id) and OutlookMailProvider._looks_like_client_id(refresh_token):
@@ -165,6 +171,10 @@ class OutlookMailProvider(MailProvider):
         if not client_id and refresh_token:
             client_id = _env("OUTLOOK_DEFAULT_CLIENT_ID", "24d9a0ed-8787-4584-883c-2fd79308940a")
         return OutlookAccount(email=email, password=password, client_id=client_id, refresh_token=refresh_token)
+
+    @staticmethod
+    def _looks_like_url(value: str) -> bool:
+        return bool(re.match(r"^https?://", str(value or "").strip(), re.IGNORECASE))
 
     @staticmethod
     def _looks_like_client_id(value: str) -> bool:
@@ -182,6 +192,7 @@ class OutlookMailProvider(MailProvider):
             raise RuntimeError(
                 "Outlook provider 未配置账号。请设置 OUTLOOK_ACCOUNTS_FILE 或 OUTLOOK_ACCOUNTS；"
                 "格式: email----mail_password、email----mail_password----client_id----refresh_token，"
+                "email----https://mailapi.icu/key?type=html&orderNo=xxx，"
                 "或 email|mail_password|refresh_token|client_id"
             )
         logger.info("[outlook] 已加载 %d 个 Outlook 账号", len(self.accounts))
@@ -220,6 +231,7 @@ class OutlookMailProvider(MailProvider):
                     "email": account.email,
                     "accountEmail": account.email,
                     "has_oauth": account.has_oauth(),
+                    "has_mailapi": account.has_mailapi(),
                     "provider": self.provider_name,
                 }
             )
@@ -280,6 +292,12 @@ class OutlookMailProvider(MailProvider):
     # ------------------------------------------------------------------ fetch
 
     def _fetch_recent_messages(self, account: OutlookAccount, *, count: int) -> list[OutlookMessage]:
+        if account.has_mailapi():
+            messages = self._fetch_mailapi_messages(account, count=count)
+            if messages:
+                logger.info("[outlook] %s 通过 mailapi 获取到 %d 封邮件", account.email, len(messages))
+            return messages
+
         errors: list[str] = []
         for provider in self.provider_priority:
             try:
@@ -302,6 +320,195 @@ class OutlookMailProvider(MailProvider):
         if errors:
             logger.debug("[outlook] %s 所有 provider 均失败: %s", account.email, "; ".join(errors))
         return []
+
+    def _fetch_mailapi_messages(self, account: OutlookAccount, *, count: int) -> list[OutlookMessage]:
+        resp = curl_requests.get(
+            account.mailapi_url,
+            headers={"Accept": "application/json,text/html,text/plain,*/*"},
+            proxies=self._proxies(),
+            timeout=30,
+            impersonate="chrome110",
+        )
+        if resp.status_code == 404:
+            logger.debug("[outlook] %s mailapi 暂无可用邮件: %s", account.email, str(resp.text or "")[:200])
+            return []
+        if resp.status_code < 200 or resp.status_code >= 300:
+            raise RuntimeError(f"mailapi HTTP {resp.status_code}: {str(resp.text or '')[:200]}")
+
+        text = str(resp.text or "")
+        payload: Any = None
+        try:
+            payload = resp.json()
+        except Exception:
+            stripped = text.strip()
+            if stripped.startswith(("{", "[")):
+                try:
+                    payload = json.loads(stripped)
+                except Exception:
+                    payload = None
+
+        if payload is not None:
+            messages = self._messages_from_mailapi_payload(account, payload)
+            if messages:
+                return messages[:count]
+            return []
+
+        if not text.strip():
+            return []
+        return [self._mailapi_item_to_message(account, text, index=0)]
+
+    @classmethod
+    def _messages_from_mailapi_payload(cls, account: OutlookAccount, payload: Any) -> list[OutlookMessage]:
+        return [
+            msg
+            for idx, item in enumerate(cls._mailapi_payload_items(payload))
+            if (msg := cls._mailapi_item_to_message(account, item, index=idx))
+        ]
+
+    @classmethod
+    def _mailapi_payload_items(cls, payload: Any) -> list[Any]:
+        if isinstance(payload, list):
+            return payload
+        if not isinstance(payload, dict):
+            return [payload] if str(payload or "").strip() else []
+
+        for key in ("mails", "emails", "messages", "items", "list"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+
+        data = payload.get("data")
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            nested = cls._mailapi_payload_items(data)
+            if nested:
+                return nested
+            if cls._mailapi_dict_has_message_content(data):
+                return [data]
+
+        for key in ("mail", "email", "message", "result"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                return [value]
+
+        if cls._mailapi_dict_has_message_content(payload):
+            return [payload]
+        return []
+
+    @staticmethod
+    def _mailapi_dict_has_message_content(value: dict[str, Any]) -> bool:
+        content_keys = {
+            "subject",
+            "title",
+            "html",
+            "text",
+            "content",
+            "body",
+            "message",
+            "mail",
+            "raw",
+            "source",
+            "verification_code",
+            "verify_code",
+            "otp",
+        }
+        if any(key in value and value.get(key) for key in content_keys):
+            return True
+        code = str(value.get("code") or "").strip()
+        return bool(re.fullmatch(r"\d{4,8}", code))
+
+    @classmethod
+    def _mailapi_item_to_message(cls, account: OutlookAccount, item: Any, *, index: int) -> OutlookMessage | None:
+        if isinstance(item, str):
+            item = {"content": item}
+        if not isinstance(item, dict):
+            item = {"content": str(item or "")}
+
+        raw_text = cls._first_text(item, "raw", "source", "eml", "mime")
+        if raw_text and ("Subject:" in raw_text[:500] or "Content-Type:" in raw_text[:500]):
+            subject, text, html, sender, to_addr, message_id = parse_mime(raw_text)
+            return OutlookMessage(
+                id=message_id or f"{account.email}:mailapi:{index}",
+                subject=subject,
+                sender=sender,
+                recipients=[to_addr or account.email],
+                text=text or html_to_visible_text(html),
+                html=html,
+                received_at=cls._mailapi_received_at(item),
+                raw=item,
+            )
+
+        subject = cls._first_text(item, "subject", "title", "mail_subject")
+        sender = cls._first_text(item, "from", "sender", "sendEmail", "from_email", "mail_from")
+        recipient = cls._first_text(item, "to", "recipient", "email", "email_address", "to_email") or account.email
+        html = cls._first_text(item, "html", "mail_html", "body_html", "mail_body_html")
+        text = cls._first_text(
+            item,
+            "text",
+            "plain",
+            "body_text",
+            "content",
+            "body",
+            "message",
+            "mail_body",
+            "mail_content",
+            "verification_code",
+            "verify_code",
+            "code",
+            "otp",
+        )
+        if not html and cls._looks_like_html(text):
+            html, text = text, html_to_visible_text(text)
+        if not (subject or text or html):
+            return None
+
+        return OutlookMessage(
+            id=cls._first_text(item, "id", "message_id", "mail_id") or f"{account.email}:mailapi:{index}",
+            subject=subject,
+            sender=sender,
+            recipients=[recipient],
+            text=text or html_to_visible_text(html),
+            html=html,
+            received_at=cls._mailapi_received_at(item),
+            raw=item,
+        )
+
+    @staticmethod
+    def _first_text(item: dict[str, Any], *keys: str) -> str:
+        for key in keys:
+            value = item.get(key)
+            if value is None:
+                continue
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _looks_like_html(value: str) -> bool:
+        return bool(re.search(r"<(?:html|body|div|p|span|table|br|strong|a)\b", str(value or ""), re.IGNORECASE))
+
+    @staticmethod
+    def _mailapi_received_at(item: dict[str, Any]) -> int:
+        for key in ("received_at", "receivedAt", "created_at", "createdAt", "date", "time", "timestamp"):
+            value = item.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                if isinstance(value, (int, float)) or str(value).strip().isdigit():
+                    number = float(value)
+                    return int(number / 1000) if number > 10_000_000_000 else int(number)
+                from datetime import datetime
+
+                return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+            except Exception:
+                continue
+        return int(time.time())
 
     def _fetch_imap_messages(self, account: OutlookAccount, *, host: str, provider: str, count: int) -> list[OutlookMessage]:
         conn: imaplib.IMAP4_SSL | None = None
@@ -555,4 +762,7 @@ class OutlookMailProvider(MailProvider):
 
 def _dump_accounts_for_debug(accounts: list[OutlookAccount]) -> str:
     """Small helper kept for tests and log debugging."""
-    return json.dumps([{"email": a.email, "has_oauth": a.has_oauth()} for a in accounts], ensure_ascii=False)
+    return json.dumps(
+        [{"email": a.email, "has_oauth": a.has_oauth(), "has_mailapi": a.has_mailapi()} for a in accounts],
+        ensure_ascii=False,
+    )

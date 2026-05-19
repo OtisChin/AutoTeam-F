@@ -54,7 +54,10 @@ export const api = {
   getAdminStatus: () => request('GET', '/admin/status'),
   getMainCodexStatus: () => request('GET', '/main-codex/status'),
   getManualAccountStatus: () => request('GET', '/manual-account/status'),
-  getAccounts: () => request('GET', '/accounts'),
+  getAccounts: (options = {}) => {
+    const includeSessionStubs = Boolean(options.includeSessionStubs || options.include_session_stubs)
+    return request('GET', `/accounts${includeSessionStubs ? '?include_session_stubs=true' : ''}`)
+  },
   getActiveAccounts: () => request('GET', '/accounts/active'),
   getStandbyAccounts: () => request('GET', '/accounts/standby'),
   deleteAccount: (email) => request('DELETE', `/accounts/${encodeURIComponent(email)}`),
@@ -63,6 +66,7 @@ export const api = {
   exportAccountCredentials: (emails, lineFormat) => request('POST', '/accounts/export-credentials', { emails, line_format: lineFormat }),
   exportAccountCpaAuths: (emails) => request('POST', '/accounts/export-cpa-auths', { emails }),
   exportAccountSubAuths: (emails) => request('POST', '/accounts/export-sub-auths', { emails }),
+  convertSessionCpaAuths: (emails) => request('POST', '/accounts/convert-session-cpa-auths', { emails }),
   updateAccountsExportStatus: (emails, exported) => request('POST', '/accounts/export-status', { emails, exported }),
   loginAccount: (email) => request('POST', '/accounts/login', { email }),
   loginAccountsBatch: (emails) => request('POST', '/accounts/login-batch', { emails }),
@@ -131,6 +135,13 @@ export const api = {
   setAutoRefreshQuotaConfig: (cfg) => request('PUT', '/config/auto-refresh-quota', cfg),
   getMailProviderConfig: () => request('GET', '/config/mail-provider'),
   saveMailProviderConfig: (cfg) => request('PUT', '/config/mail-provider', cfg),
+  importOutlookAccounts: (content, filename = '') => request('POST', '/config/outlook-accounts/import', { content, filename }),
+  getGoPayAutoSignupConfig: () => request('GET', '/config/gopay-auto-signup'),
+  saveGoPayAutoSignupConfig: (cfg) => request('PUT', '/config/gopay-auto-signup', cfg),
+  getRekberinajaConfig: () => request('GET', '/config/rekberinaja'),
+  saveRekberinajaConfig: (cfg) => request('PUT', '/config/rekberinaja', cfg),
+  exportConfig: () => request('GET', '/config/export'),
+  importConfig: (payload) => request('POST', '/config/import', payload),
 
   getRegisterDomain: () => request('GET', '/config/register-domain'),
   setRegisterDomain: (domain, verify = true) => request('PUT', '/config/register-domain', { domain, verify }),

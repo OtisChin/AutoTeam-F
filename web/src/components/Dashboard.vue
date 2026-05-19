@@ -63,6 +63,15 @@
             {{ cpaExporting ? '导出中...' : `导出CPA认证 (${cpaExportableAccounts.length})` }}
           </button>
           <button
+            @click="convertSessionCpaAuths"
+            :disabled="!sessionCpaConvertibleAccounts.length || sessionCpaConverting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="!sessionCpaConvertibleAccounts.length || sessionCpaConverting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-teal-600/10 text-teal-300 border-teal-500/30 hover:bg-teal-600/20'">
+            {{ sessionCpaConverting ? '转换中...' : `直接转换CPA认证 (${sessionCpaConvertibleAccounts.length})` }}
+          </button>
+          <button
             @click="exportSubAuths"
             :disabled="!cpaExportableAccounts.length || subExporting"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -667,6 +676,7 @@ const accountTypeSaving = ref(false)
 const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
 const cpaExporting = ref(false)
+const sessionCpaConverting = ref(false)
 const subExporting = ref(false)
 const exportStatusUpdating = ref(false)
 const batchLoggingIn = ref(false)
@@ -990,6 +1000,13 @@ const batchLoginableAccounts = computed(() => {
 const cpaExportableAccounts = computed(() => {
   return scopedAccounts.value.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
 })
+const sessionCpaConvertibleAccounts = computed(() => {
+  return scopedAccounts.value.filter(acc =>
+    !acc.is_main_account &&
+    !hasCodexAuthFile(acc) &&
+    Boolean(acc.auth_session_file)
+  )
+})
 const bindableFreeAccounts = computed(() =>
   allAccounts.value.filter(isBindableFreeAccount)
 )
@@ -1141,6 +1158,7 @@ function statusClass(s) {
     exhausted: 'bg-red-500/10 text-red-400',
     standby: 'bg-yellow-500/10 text-yellow-400',
     pending: 'bg-gray-500/10 text-gray-400',
+    session_only: 'bg-green-500/10 text-green-400',
     auth_invalid: 'bg-orange-500/10 text-orange-400',
     orphan: 'bg-amber-500/10 text-amber-300',
     fail: 'bg-red-500/10 text-red-300',
@@ -1153,6 +1171,7 @@ function dotClass(s) {
     exhausted: 'bg-red-400',
     standby: 'bg-yellow-400',
     pending: 'bg-gray-400',
+    session_only: 'bg-green-400',
     auth_invalid: 'bg-orange-400',
     orphan: 'bg-amber-300',
     fail: 'bg-red-300',
@@ -1165,6 +1184,7 @@ function statusLabel(s) {
     exhausted: 'Used up',
     standby: 'Standby',
     pending: 'Pending',
+    session_only: 'Active',
     auth_invalid: '认证失效',
     orphan: '孤立',
     fail: 'Fail/废弃',
@@ -1406,6 +1426,28 @@ async function exportCpaAuths() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     cpaExporting.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function convertSessionCpaAuths() {
+  const emails = sessionCpaConvertibleAccounts.value.map(acc => acc.email).filter(Boolean)
+  if (!emails.length) return
+
+  sessionCpaConverting.value = true
+  message.value = ''
+  try {
+    const result = await api.convertSessionCpaAuths(emails)
+    const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无 auth_session 账号` : ''
+    const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，${result.invalid.length} 个无法转换` : ''
+    message.value = `已直接转换 ${result.converted || 0} 个 CPA 认证${missing}${invalid}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    sessionCpaConverting.value = false
     setTimeout(() => { message.value = '' }, 8000)
   }
 }

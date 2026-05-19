@@ -635,6 +635,15 @@
                   />
                   批量绑定
                 </label>
+                <label class="inline-flex items-center gap-2 text-xs text-gray-300">
+                  <input
+                    v-model="gopayForm.gopayAutoSignup"
+                    type="checkbox"
+                    :disabled="gopaySubmitting || gopayTaskRunning"
+                    class="accent-emerald-500"
+                  />
+                  自动注册 GoPay
+                </label>
               </div>
             </div>
             <div v-if="gopayForm.autoRegister && !gopayForm.checkoutUrl" class="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-3">
@@ -717,6 +726,38 @@
             <div v-if="gopayForm.autoRegister && !gopayForm.checkoutUrl" class="mt-1 text-xs text-gray-500">
               自动注册模式会按数量循环执行：注册一个账号，立即绑定一个账号。
             </div>
+            <div v-if="gopayAutoSignupEnabled" class="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-3">
+              <div class="text-sm text-emerald-100">绑定前先自动注册 GoPay 钱包，并复用同一个短信服务商会话完成后续绑定 OTP。</div>
+              <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-xs text-emerald-200/80 mb-1">短信服务商</label>
+                  <select
+                    v-model="gopayForm.gopayAutoSignupSmsProvider"
+                    :disabled="gopaySubmitting || gopayTaskRunning"
+                    class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="smscloud">smscloud</option>
+                    <option value="hero_sms">hero-sms</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs text-emerald-200/80 mb-1">自动注册 GoPay PIN</label>
+                  <input
+                    v-model.trim="gopayForm.gopayPin"
+                    type="password"
+                    :disabled="gopaySubmitting || gopayTaskRunning"
+                    placeholder="自动注册后用于绑定与扣款的 GoPay PIN"
+                    class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div class="md:col-span-2 rounded-lg border px-3 py-2 text-xs break-words whitespace-normal" :class="gopayAutoSignupProviderConfigured ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-100' : 'border-amber-500/30 bg-amber-500/10 text-amber-100'">
+                  <div class="font-medium">{{ gopayAutoSignupConfigLoading ? '正在检查短信凭证配置...' : gopayAutoSignupProviderConfigured ? '短信凭证已配置' : '短信凭证未配置' }}</div>
+                  <div class="mt-1 opacity-80 leading-relaxed">
+                    {{ gopayAutoSignupProviderConfigured ? '将使用设置页或 .env 中保存的短信服务商密钥。' : gopayAutoSignupMissingMessage }}
+                  </div>
+                </div>
+              </div>
+            </div>
             <div v-if="gopayForm.checkoutUrl" class="mt-1 text-xs text-gray-500">
               已输入 checkout 链接，任务会固定使用当前账号。
             </div>
@@ -738,6 +779,9 @@
               />
               绑定成功后自动 OAuth 补登录
             </label>
+            <div class="mt-1 text-xs text-gray-500">
+              未勾选时，绑定成功后默认用当前 auth_session 直接生成 CPA 认证 JSON。
+            </div>
             <div class="mt-3 grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
               <div>
                 <label class="block text-xs text-gray-400 mb-1">待重试次数</label>
@@ -783,7 +827,7 @@
             </div>
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)] gap-3">
+          <div v-if="!gopayAutoSignupEnabled" class="grid grid-cols-1 md:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)] gap-3">
             <div>
               <label class="block text-sm text-gray-400 mb-1">国家区号</label>
               <input
@@ -795,7 +839,7 @@
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
-            <div>
+            <div v-if="!gopayAutoSignupEnabled">
               <label class="block text-sm text-gray-400 mb-1">GoPay 手机号</label>
               <input
                 v-model.trim="gopayForm.phoneNumber"
@@ -819,7 +863,7 @@
             </div>
           </div>
 
-          <div>
+          <div v-if="!gopayAutoSignupEnabled">
             <label class="block text-sm text-gray-400 mb-1">OTP 接收方式</label>
             <div class="grid grid-cols-2 gap-2">
               <label
@@ -887,7 +931,7 @@
             </div>
           </div>
 
-          <div v-if="!gopayUsingWhatsAppOtp">
+          <div v-if="!gopayAutoSignupEnabled && !gopayUsingWhatsAppOtp">
             <label class="block text-sm text-gray-400 mb-1">
               短信接口 Token / URL
             </label>
@@ -900,7 +944,7 @@
             />
           </div>
 
-          <div class="rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-3">
+          <div v-if="!gopayAutoSignupEnabled" class="rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-3">
             <div class="flex items-start justify-between gap-3">
               <label class="inline-flex items-center gap-2 text-sm text-gray-300">
                 <input
@@ -1386,10 +1430,24 @@ const bindSubmitting = ref(false)
 const bindCancelling = ref(false)
 const bindTask = ref(null)
 const bindLogEntries = ref([])
+const gopayAutoSignupConfig = ref(null)
+const gopayAutoSignupConfigLoading = ref(false)
 const gopayForm = ref({
   email: '',
   autoRegister: false,
   autoRegisterCount: 1,
+  gopayAutoSignup: true,
+  gopayAutoSignupSmsProvider: 'smscloud',
+  gopayAutoSignupHeroSmsApiKey: '',
+  gopayAutoSignupHeroSmsBaseUrl: 'https://hero-sms.com/stubs/handler_api.php',
+  gopayAutoSignupHeroSmsCountry: '6',
+  gopayAutoSignupHeroSmsService: 'ni',
+  gopayAutoSignupHeroSmsTimeout: 120,
+  gopayAutoSignupSmscloudBaseUrl: 'https://smscloud.sbs/api',
+  gopayAutoSignupSmscloudCountry: '6',
+  gopayAutoSignupSmscloudService: 'ni',
+  gopayAutoSignupSmscloudMaxPrice: '',
+  gopayAutoSignupSmscloudTimeout: 120,
   autoRegisterMailProvider: '',
   autoRegisterLuckmailEmailType: 'ms_graph',
   autoRegisterLuckmailPreferredDomain: '',
@@ -1626,6 +1684,25 @@ const gopayBatchActive = computed(() => {
   return Boolean(!gopayForm.value.autoRegister && gopayForm.value.batchMode && !gopayForm.value.checkoutUrl && gopaySelectedBatchEmails.value.length > 0)
 })
 
+const gopayAutoSignupEnabled = computed(() => Boolean(gopayForm.value.gopayAutoSignup))
+
+const gopayAutoSignupProvider = computed(() => {
+  return gopayForm.value.gopayAutoSignupSmsProvider === 'hero_sms' ? 'hero_sms' : 'smscloud'
+})
+
+const gopayAutoSignupProviderConfigured = computed(() => {
+  const cfg = gopayAutoSignupConfig.value || {}
+  return gopayAutoSignupProvider.value === 'hero_sms'
+    ? Boolean(cfg.hero_sms_api_key_present)
+    : Boolean(cfg.smscloud_xi_token_present)
+})
+
+const gopayAutoSignupMissingMessage = computed(() => {
+  return gopayAutoSignupProvider.value === 'hero_sms'
+    ? '请到设置页配置 hero-sms API Key，或在 .env 中配置 GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY。'
+    : '请到设置页配置 smscloud XI_TOKEN，或在 .env 中配置 GOPAY_AUTO_SIGNUP_SMSCLOUD_XI_TOKEN。'
+})
+
 const gopayOtpChannel = computed(() => {
   return gopayForm.value.otpChannel === 'whatsapp' ? 'whatsapp' : 'sms'
 })
@@ -1682,6 +1759,7 @@ const gopayActivePhoneAccounts = computed(() => {
 })
 
 const gopayPhonePoolSummary = computed(() => {
+  if (gopayAutoSignupEnabled.value) return '已切换为自动注册 GoPay 钱包，当前不使用手动手机号池。'
   if (!gopayForm.value.usePhonePool) return '未启用，当前使用上方单手机号。'
   if (!gopayPhoneAccounts.value.length) return '已启用，但还没有有效手机号，请先配置。'
   return `已启用 ${gopayPhoneAccounts.value.length} 个手机号，提交任务时按顺序轮换。`
@@ -1706,7 +1784,12 @@ const gopayCanSubmit = computed(() => {
   return Boolean(
     (gopayForm.value.autoRegister || gopayEffectiveEmail.value)
     && (!gopayForm.value.autoRegister || !gopayAutoRegisterUsesDomains.value || gopaySelectedAutoRegisterDomains.value.length)
-    && (gopayForm.value.usePhonePool ? gopayPhoneAccounts.value.length > 0 : gopaySinglePhoneComplete.value)
+    && gopayForm.value.gopayPin
+    && (!gopayAutoSignupEnabled.value || gopayAutoSignupProviderConfigured.value)
+    && (
+      gopayAutoSignupEnabled.value
+      || (gopayForm.value.usePhonePool ? gopayPhoneAccounts.value.length > 0 : gopaySinglePhoneComplete.value)
+    )
   )
 })
 
@@ -1726,6 +1809,23 @@ function normalizeGoPayPendingRetryAttempts(value) {
   const count = Number(value ?? 1)
   if (!Number.isFinite(count)) return 1
   return Math.max(0, Math.min(3, Math.floor(count)))
+}
+
+async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
+  gopayAutoSignupConfigLoading.value = true
+  try {
+    const cfg = await api.getGoPayAutoSignupConfig()
+    gopayAutoSignupConfig.value = cfg
+    if (applyDefaults) {
+      gopayForm.value.gopayAutoSignupSmsProvider = cfg.provider === 'hero_sms' ? 'hero_sms' : 'smscloud'
+      gopayForm.value.countryCode = '62'
+    }
+  } catch (e) {
+    gopayAutoSignupConfig.value = null
+    console.error('加载 GoPay 自动注册配置失败:', e)
+  } finally {
+    gopayAutoSignupConfigLoading.value = false
+  }
 }
 
 function splitGoPayPhoneInput(phoneValue, countryCodeValue, { forceLocal = false } = {}) {
@@ -1826,6 +1926,25 @@ watch(
 )
 
 watch(
+  () => gopayForm.value.gopayAutoSignup,
+  enabled => {
+    if (!enabled) return
+    gopayForm.value.usePhonePool = false
+    gopayForm.value.otpChannel = 'sms'
+    loadGoPayAutoSignupConfig()
+  }
+)
+
+watch(
+  () => gopayForm.value.gopayAutoSignupSmsProvider,
+  () => {
+    if (gopayAutoSignupEnabled.value) {
+      loadGoPayAutoSignupConfig()
+    }
+  }
+)
+
+watch(
   () => gopayForm.value.autoRegisterCount,
   count => {
     const normalized = normalizeGoPayAutoRegisterCount(count)
@@ -1918,6 +2037,34 @@ const gopayStageLabelMap = {
   gopay_auto_register_bind_wait: '注册后等待绑卡',
   gopay_auto_register_bind_failed: '注册成功但绑卡失败',
   gopay_auto_register_failed: '自动注册失败',
+  gopay_wallet_auto_signup_started: '自动注册 GoPay 钱包',
+  gopay_wallet_auto_signup_detail: 'GoPay 注册详情',
+  gopay_wallet_auto_signup_retry: 'GoPay 注册换号重试',
+  gopay_wallet_auto_signup_probe_failed: 'GoPay 探测异常',
+  gopay_wallet_auto_signup_done: 'GoPay 钱包已就绪',
+  gopay_wallet_reused: '复用 GoPay 钱包',
+  gopay_wallet_reuse_discarded: '丢弃不可用复用钱包',
+  gopay_wallet_preserved: '保留 GoPay 钱包',
+  gopay_wallet_funding_started: 'GoPay 钱包充值',
+  gopay_wallet_funding_skipped: '跳过 GoPay 钱包充值',
+  gopay_wallet_funding_done: 'GoPay 钱包充值完成',
+  gopay_wallet_funding_failed: 'GoPay 钱包充值失败',
+  gopay_wallet_balance_checked: '查询 GoPay 余额',
+  gopay_wallet_balance_ready: 'GoPay 余额已到账',
+  gopay_wallet_balance_wait: '等待 GoPay 余额',
+  gopay_wallet_balance_not_ready: 'GoPay 余额未到账',
+  gopay_wallet_balance_abandoned: '丢弃 GoPay 钱包',
+  gopay_wallet_balance_check_failed: 'GoPay 余额查询失败',
+  rekberinaja_login_started: 'Rekberinaja 登录',
+  rekberinaja_login_done: 'Rekberinaja 登录成功',
+  rekberinaja_balance_checked: 'Rekberinaja 余额检查',
+  rekberinaja_order_create_started: '创建 Rekberinaja 订单',
+  rekberinaja_order_created: 'Rekberinaja 订单已创建',
+  rekberinaja_saldo_pay_started: 'Rekberinaja 站内支付',
+  rekberinaja_saldo_pay_done: 'Rekberinaja 支付已提交',
+  rekberinaja_order_poll: '轮询 Rekberinaja 订单',
+  rekberinaja_order_completed: 'Rekberinaja 订单完成',
+  rekberinaja_order_failed: 'Rekberinaja 订单失败',
   register_email_creating: '创建注册邮箱',
   register_email_created: '注册邮箱已创建',
   register_attempt_started: '开始注册账号',
@@ -1935,6 +2082,9 @@ const gopayStageLabelMap = {
   gopay_oauth_login_done: 'OAuth 补登录成功',
   gopay_oauth_login_failed: 'OAuth 补登录失败',
   gopay_oauth_phone_required_removed: 'OAuth 需要手机验证，已删除账号',
+  gopay_session_cpa_convert_started: '直接转换 CPA 认证',
+  gopay_session_cpa_convert_done: 'CPA 认证转换成功',
+  gopay_session_cpa_convert_failed: 'CPA 认证转换失败',
   gopay_batch_completed: '批量绑定完成',
   gopay_account_skipped_cooldown: '跳过冷却中的 auth_session',
   gopay_pending_retry_queued: '加入待重试',
@@ -2383,6 +2533,8 @@ function getRememberedGoPayForm() {
     email: String(gopayForm.value.email || '').trim().toLowerCase(),
     autoRegister: Boolean(gopayForm.value.autoRegister),
     autoRegisterCount: normalizedGoPayAutoRegisterCount.value,
+    gopayAutoSignup: Boolean(gopayForm.value.gopayAutoSignup),
+    gopayAutoSignupSmsProvider: gopayAutoSignupProvider.value,
     autoRegisterMailProvider: String(gopayForm.value.autoRegisterMailProvider || ''),
     autoRegisterLuckmailEmailType: String(gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
     autoRegisterLuckmailPreferredDomain: String(gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
@@ -2420,6 +2572,18 @@ function loadGoPayFormState() {
       email: String(saved.email || '').trim().toLowerCase(),
       autoRegister: Boolean(saved.autoRegister),
       autoRegisterCount: normalizeGoPayAutoRegisterCount(saved.autoRegisterCount),
+      gopayAutoSignup: true,
+      gopayAutoSignupSmsProvider: saved.gopayAutoSignupSmsProvider === 'hero_sms' ? 'hero_sms' : 'smscloud',
+      gopayAutoSignupHeroSmsApiKey: '',
+      gopayAutoSignupHeroSmsBaseUrl: 'https://hero-sms.com/stubs/handler_api.php',
+      gopayAutoSignupHeroSmsCountry: '6',
+      gopayAutoSignupHeroSmsService: 'ni',
+      gopayAutoSignupHeroSmsTimeout: 120,
+      gopayAutoSignupSmscloudBaseUrl: 'https://smscloud.sbs/api',
+      gopayAutoSignupSmscloudCountry: '6',
+      gopayAutoSignupSmscloudService: 'ni',
+      gopayAutoSignupSmscloudMaxPrice: '',
+      gopayAutoSignupSmscloudTimeout: 120,
       autoRegisterMailProvider: String(saved.autoRegisterMailProvider || gopayForm.value.autoRegisterMailProvider || ''),
       autoRegisterLuckmailEmailType: String(saved.autoRegisterLuckmailEmailType || gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
       autoRegisterLuckmailPreferredDomain: String(saved.autoRegisterLuckmailPreferredDomain || gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
@@ -2463,7 +2627,7 @@ function saveGoPayFormState() {
 async function loadAccounts() {
   loadingAccounts.value = true
   try {
-    const accounts = await api.getAccounts()
+    const accounts = await api.getAccounts({ includeSessionStubs: true })
     accountOptions.value = (accounts || [])
       .filter(isBindableFreeAccount)
       .sort((a, b) => Number(b?.created_at || 0) - Number(a?.created_at || 0))
@@ -2488,7 +2652,9 @@ function isBindableFreeAccount(account) {
   if (String(account?.account_type || '').toLowerCase() !== 'free') return false
   if (!account?.auth_session_file) return false
   const status = String(account?.status || '').toLowerCase()
-  if (['fail', 'auth_invalid', 'orphan', 'exhausted', 'standby', 'pending'].includes(status)) return false
+  // Quota-exhausted free accounts can still be upgraded through GoPay; only
+  // exclude accounts that cannot provide a usable ChatGPT session.
+  if (['fail', 'auth_invalid', 'orphan', 'standby', 'pending'].includes(status)) return false
   return true
 }
 
@@ -2585,8 +2751,11 @@ function goPayProgressLogLevel(event) {
   const level = String(event?.level || '').trim()
   if (['info', 'success', 'warn', 'error'].includes(level)) return level
   const stage = String(event?.stage || '')
-  if (stage === 'completed' || stage === 'payment_completed' || stage === 'otp_received' || stage === 'gopay_oauth_login_done') return 'success'
+  if (stage === 'completed' || stage === 'payment_completed' || stage === 'otp_received' || stage === 'gopay_oauth_login_done' || stage === 'gopay_session_cpa_convert_done' || stage === 'gopay_wallet_balance_ready') return 'success'
   if (stage === 'gopay_oauth_login_failed') return 'error'
+  if (stage === 'gopay_session_cpa_convert_failed') return 'warn'
+  if (stage === 'gopay_wallet_balance_wait' || stage === 'gopay_wallet_balance_not_ready' || stage === 'gopay_wallet_balance_abandoned' || stage === 'gopay_wallet_balance_check_failed') return 'warn'
+  if (stage === 'gopay_wallet_auto_signup_probe_failed') return 'error'
   if (stage === 'gopay_oauth_phone_required_removed') return 'warn'
   if (stage.includes('not_approved') || stage.includes('blocked') || stage.includes('cooldown') || stage.includes('retry')) return 'warn'
   if (stage === 'failed' || stage.includes('all_accounts')) return 'error'
@@ -3098,22 +3267,40 @@ async function startGoPayBind() {
     'info'
   )
   try {
-    const effectiveOtpChannel = gopayOtpChannel.value
-    const effectiveSmsUrl = effectiveOtpChannel === 'whatsapp' ? '' : gopayForm.value.smsUrl
-    const effectivePhoneAccounts = gopayActivePhoneAccounts.value.map(account => ({
-      ...account,
-      otp_channel: effectiveOtpChannel,
-      sms_url: effectiveOtpChannel === 'whatsapp' ? '' : account.sms_url,
-    }))
-    if (gopayUsingWhatsAppOtp.value) {
+    const useAutoSignup = gopayAutoSignupEnabled.value
+    const effectiveOtpChannel = useAutoSignup ? 'sms' : gopayOtpChannel.value
+    const effectiveSmsUrl = useAutoSignup || effectiveOtpChannel === 'whatsapp' ? '' : gopayForm.value.smsUrl
+    const effectivePhoneAccounts = useAutoSignup
+      ? []
+      : gopayActivePhoneAccounts.value.map(account => ({
+        ...account,
+        otp_channel: effectiveOtpChannel,
+        sms_url: effectiveOtpChannel === 'whatsapp' ? '' : account.sms_url,
+      }))
+    if (!useAutoSignup && gopayUsingWhatsAppOtp.value) {
       await startWhatsAppOtpListener()
       pushGoPayLog('OTP 来源已切换为 WhatsApp，本次任务不会触发 GoPay SMS OTP', 'info')
+    }
+    if (useAutoSignup && !gopayAutoSignupProviderConfigured.value) {
+      throw new Error(gopayAutoSignupMissingMessage.value)
     }
     const task = await api.startGoPayBind({
       email: gopayEffectiveEmail.value,
       account_emails: gopayBatchActive.value ? gopaySelectedBatchEmails.value : [],
       auto_register: Boolean(gopayForm.value.autoRegister),
       auto_register_count: normalizedGoPayAutoRegisterCount.value,
+      gopay_auto_signup: useAutoSignup,
+      gopay_auto_signup_sms_provider: useAutoSignup ? gopayAutoSignupProvider.value : 'smscloud',
+      gopay_auto_signup_hero_sms_api_key: '',
+      gopay_auto_signup_hero_sms_base_url: '',
+      gopay_auto_signup_hero_sms_country: '',
+      gopay_auto_signup_hero_sms_service: '',
+      gopay_auto_signup_hero_sms_timeout: '',
+      gopay_auto_signup_smscloud_base_url: '',
+      gopay_auto_signup_smscloud_country: '',
+      gopay_auto_signup_smscloud_service: '',
+      gopay_auto_signup_smscloud_max_price: '',
+      gopay_auto_signup_smscloud_timeout: '',
       auto_register_mail_provider: gopayForm.value.autoRegisterMailProvider || null,
       auto_register_luckmail_email_type: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailEmailType : null,
       auto_register_luckmail_preferred_domain: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailPreferredDomain : null,
@@ -3124,8 +3311,8 @@ async function startGoPayBind() {
       auto_register_password: String(gopayForm.value.autoRegisterPassword || '').trim(),
       checkout_url: gopayForm.value.checkoutUrl || '',
       checkout_ui_mode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
-      country_code: gopayForm.value.countryCode || '',
-      phone_number: gopayForm.value.phoneNumber,
+      country_code: useAutoSignup ? '62' : (gopayForm.value.countryCode || ''),
+      phone_number: useAutoSignup ? '' : gopayForm.value.phoneNumber,
       phone_accounts: effectivePhoneAccounts,
       otp_channel: effectiveOtpChannel,
       sms_url: effectiveSmsUrl,
@@ -3217,6 +3404,7 @@ function openHistoryLink(link) {
 onMounted(() => {
   loadHistory()
   loadGoPayFormState()
+  loadGoPayAutoSignupConfig({ applyDefaults: true })
   if (gopayUsingWhatsAppOtp.value) {
     refreshWhatsAppOtpStatus()
   }

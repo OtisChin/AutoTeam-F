@@ -152,6 +152,19 @@ Plus 兼容旧参数：
 {
   "email": "user@example.com",
   "checkout_url": "",
+  "gopay_auto_signup": false,
+  "gopay_auto_signup_sms_provider": "smscloud",
+  "gopay_auto_signup_hero_sms_api_key": "",
+  "gopay_auto_signup_hero_sms_base_url": "https://hero-sms.com/stubs/handler_api.php",
+  "gopay_auto_signup_hero_sms_country": "6",
+  "gopay_auto_signup_hero_sms_service": "ni",
+  "gopay_auto_signup_hero_sms_timeout": "120",
+  "gopay_auto_signup_hero_sms_max_price": "0.045",
+  "gopay_auto_signup_smscloud_base_url": "https://smscloud.sbs/api",
+  "gopay_auto_signup_smscloud_country": "6",
+  "gopay_auto_signup_smscloud_service": "ni",
+  "gopay_auto_signup_smscloud_max_price": "",
+  "gopay_auto_signup_smscloud_timeout": "120",
   "phone_number": "+6287761973970",
   "sms_url": "https://it.tgflare.com/api/record?token=...",
   "gopay_pin": "558023",
@@ -165,6 +178,11 @@ Plus 兼容旧参数：
 
 - `email`：号池账号邮箱
 - `checkout_url`：可选，留空时后台会自动生成印尼区 Plus checkout 链接
+- `gopay_auto_signup`：可选。`true` 时先通过短信服务商自动注册 GoPay 钱包，再继续绑定；此时 `phone_number` / `sms_url` 可留空，但仍需提供 `gopay_pin`
+- `gopay_auto_signup_sms_provider`：可选。`smscloud`（默认）或 `hero_sms`
+- `gopay_auto_signup_hero_sms_*`：可选。本次任务使用的 hero-sms 配置；留空时回退到后端 `.env` 中的 `GOPAY_AUTO_SIGNUP_HERO_SMS_*`。`gopay_auto_signup_hero_sms_max_price` 会作为 `maxPrice` 传给 `getNumber`，例如 `0.045`
+- `gopay_auto_signup_smscloud_*`：可选。本次任务使用的 smscloud 配置；留空时回退到后端 `.env` 中的 `GOPAY_AUTO_SIGNUP_SMSCLOUD_*`。smscloud 取号接口实际需要网站登录后的 `XI_TOKEN`，建议配置 `GOPAY_AUTO_SIGNUP_SMSCLOUD_XI_TOKEN`
+- Rekberinaja 充值：可选。设置页或 `.env` 中启用 `REKBERINAJA_TRANSFER_ENABLED=1` 后，自动注册 GoPay 钱包完成后会先用 Rekberinaja 站内余额充值默认 `Go Pay 1.000`，到账后再进入绑定。默认关闭；关闭时注册/PIN 完成后会主动查询 GoPay 余额，默认在 30、60、120 秒后各查一次；任意一次查到余额 >= 1rp 就进入绑定，三次仍未到账会丢弃该 GoPay 钱包并重新注册新钱包。Rekberinaja 未提供公开开发者文档，当前集成使用其前端调用的 JSON 接口：登录、查站内余额、创建 GoPay 充值订单、`/transaction/{id}/pay` 扣余额、`/transaction/{id}/order-product` 轮询状态。
 - `phone_number`：GoPay 手机号
 - `sms_url`：短信验证码接口 URL
 - `gopay_pin`：用户提供的 GoPay PIN
