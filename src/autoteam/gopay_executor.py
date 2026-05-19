@@ -513,6 +513,7 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "stripe_zero_due_confirmed": "已确认 Stripe 应付金额为 0",
         "stripe_address_update": "正在通过协议提交 Stripe 账单地址",
         "stripe_address_update_done": "Stripe 账单地址协议提交完成",
+        "stripe_confirm_retry_terms": "Stripe 提示需接受条款，正在补充条款确认后重试",
         "stripe_protocol_form_failed_browser_fallback": "协议填表失败，切换到浏览器 checkout UI",
         "midtrans_load_transaction": "正在读取 Midtrans 交易",
         "midtrans_linking": "正在发起 GoPay 账户绑定",
@@ -1432,6 +1433,28 @@ def _chatgpt_checkout_headers(
 def _normalize_checkout_ui_mode(value: str = "") -> str:
     mode = str(value or "").strip().lower()
     return "hosted" if mode == "hosted" else "custom"
+
+
+def _normalize_checkout_form_mode(value: str = "") -> str:
+    mode = str(value or "").strip().lower().replace("_", "-")
+    if mode in {"protocol", "browser", "auto"}:
+        return mode
+    if "GOPAY_BROWSER_CHECKOUT_UI" in os.environ:
+        return "browser" if _env_enabled("GOPAY_BROWSER_CHECKOUT_UI", True) else "protocol"
+    return "auto"
+
+
+def _protocol_checkout_can_browser_fallback(exc: GoPayFlowError) -> bool:
+    return str(getattr(exc, "stage", "") or "") in {
+        "stripe_init",
+        "stripe_elements_session",
+        "stripe_address_update",
+        "stripe_payment_method",
+        "stripe_confirm",
+        "chatgpt_approve",
+        "resolve_midtrans_redirect",
+        "pm_redirect",
+    }
 
 
 def _chatgpt_checkout_payload(checkout_ui_mode: str = "custom") -> dict:
@@ -2677,6 +2700,53 @@ class GoPayHttpCharger:
         )
         return payload
 
+    def _stripe_update_payment_page_address(self, checkout_session_id: str, stripe_pk: str, init_ctx: dict) -> None:
+        self._progress("stripe_address_update")
+        billing = self.billing_info
+        base = {
+            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
+            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
+            "elements_session_client[elements_init_source]": "custom_checkout",
+            "elements_session_client[referrer_host]": "chatgpt.com",
+            "elements_session_client[session_id]": init_ctx.get("elements_session_id") or f"elements_session_{uuid.uuid4().hex[:11]}",
+            "elements_session_client[stripe_js_id]": init_ctx.get("stripe_js_id") or str(uuid.uuid4()),
+            "elements_session_client[locale]": init_ctx.get("locale") or "en",
+            "elements_session_client[is_aggregation_expected]": "false",
+            "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
+            "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
+            "key": stripe_pk,
+            "_stripe_version": STRIPE_VERSION_FULL,
+        }
+        base.update(init_ctx.get("elements_options_client") or self._elements_options_client_payload())
+        steps = [
+            ("country", {"tax_region[country]": str(billing.get("country") or "US").strip() or "US"}),
+            ("focus", {}),
+            ("line1", {"tax_region[line1]": str(billing.get("address1") or "3110 Sunset Boulevard").strip()}),
+            ("city", {"tax_region[city]": str(billing.get("city") or "Los Angeles").strip()}),
+            ("state", {"tax_region[state]": str(billing.get("state") or "CA").strip()}),
+            ("postal_code", {"tax_region[postal_code]": str(billing.get("zip") or "90026").strip()}),
+        ]
+        accumulated: dict[str, str] = {}
+        for index, (field, fields) in enumerate(steps, 1):
+            self._check_cancelled()
+            accumulated.update({key: value for key, value in fields.items() if value})
+            data = dict(base)
+            data.update(accumulated)
+            self._progress("stripe_address_update", field=field, attempt=index, total=len(steps))
+            resp = self._request(
+                "post",
+                f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}",
+                data=data,
+                stage="stripe_address_update",
+            )
+            if resp.status_code != 200:
+                raise GoPayFlowError(
+                    f"Stripe 地址提交失败: step={field} HTTP {resp.status_code} {(resp.text or '')[:300]}",
+                    stage="stripe_address_update",
+                )
+            self._sleep_with_cancel(random.uniform(0.2, 0.7))
+        self._progress("stripe_address_update_done")
+
     def _stripe_confirm(self, checkout_session_id: str, payment_method_id: str, stripe_pk: str, init_ctx: dict | None = None) -> dict:
         self._progress("stripe_confirm")
         init_ctx = init_ctx or self._stripe_init(checkout_session_id, stripe_pk)
@@ -2732,6 +2802,17 @@ class GoPayHttpCharger:
             "_stripe_version": STRIPE_VERSION_FULL,
             "key": stripe_pk,
         }
+        consent_collection = {}
+        raw_init = init_ctx.get("raw")
+        if isinstance(raw_init, dict):
+            raw_consent_collection = raw_init.get("consent_collection")
+            if isinstance(raw_consent_collection, dict):
+                consent_collection = raw_consent_collection
+        consent_behavior = init_ctx.get("include_terms_of_service_consent")
+        if consent_behavior is None:
+            consent_behavior = consent_collection.get("terms_of_service") not in (None, "", "none")
+        if consent_behavior:
+            data["consent[terms_of_service]"] = "accepted"
         data.update(init_ctx.get("elements_options_client") or {})
         if runtime.get("js_checksum"):
             data["js_checksum"] = runtime["js_checksum"]
@@ -2743,6 +2824,20 @@ class GoPayHttpCharger:
             data=data,
             stage="stripe_confirm",
         )
+        if (
+            resp.status_code == 400
+            and "consent[terms_of_service]" not in data
+            and "terms of service" in (resp.text or "").lower()
+        ):
+            self._progress("stripe_confirm_retry_terms")
+            data["consent[terms_of_service]"] = "accepted"
+            init_ctx["include_terms_of_service_consent"] = True
+            resp = self._request(
+                "post",
+                f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/confirm",
+                data=data,
+                stage="stripe_confirm",
+            )
         if resp.status_code != 200:
             hint = ""
             if not runtime.get("js_checksum") or not runtime.get("rv_timestamp"):
@@ -3354,6 +3449,7 @@ class GoPayHttpCharger:
         self.expected_due_currency = "stripe"
         self._guard_stripe_expected_due()
         self._stripe_elements_session(checkout_session_id, stripe_pk, init_ctx)
+        self._stripe_update_payment_page_address(checkout_session_id, stripe_pk, init_ctx)
         payment_method_id = self._stripe_create_payment_method(checkout_session_id, stripe_pk, init_ctx=init_ctx)
         confirm_payload = self._stripe_confirm(checkout_session_id, payment_method_id, stripe_pk, init_ctx=init_ctx)
         self._guard_stripe_expected_due()
@@ -5439,7 +5535,15 @@ def _run_gopay_bind_task_once(
         )
 
         direct_redirect_mode = _looks_like_pm_redirect_url(final_checkout_url)
-        browser_checkout_ui_mode = not direct_redirect_mode and _env_enabled("GOPAY_BROWSER_CHECKOUT_UI", True)
+        checkout_form_mode = _normalize_checkout_form_mode(os.environ.get("GOPAY_CHECKOUT_FORM_MODE", ""))
+        browser_checkout_ui_mode = not direct_redirect_mode and checkout_form_mode == "browser"
+        protocol_browser_fallback_enabled = not direct_redirect_mode and checkout_form_mode == "auto"
+        protocol_checkout_ui_mode = (
+            os.environ.get("GOPAY_PROTOCOL_CHECKOUT_UI_MODE")
+            or os.environ.get("GOPAY_HOSTED_PROTOCOL_CHECKOUT_UI_MODE")
+            or "hosted"
+        )
+        protocol_checkout_ui_mode = _normalize_checkout_ui_mode(protocol_checkout_ui_mode)
         if direct_redirect_mode:
             progress("checkout_ready", checkout_url=final_checkout_url, mode="redirect")
             logger.info("[gopay_executor] using direct redirect checkout: %s", _safe_url_summary(final_checkout_url))
@@ -5486,7 +5590,7 @@ def _run_gopay_bind_task_once(
                 generated_checkout_meta = _generate_id_checkout_http(
                     chatgpt_http,
                     access_token=access_token,
-                    checkout_ui_mode=checkout_ui_mode,
+                    checkout_ui_mode=protocol_checkout_ui_mode,
                     session_token=session_token,
                     cookie_header=cookie_header,
                     account_id=account_id,
@@ -5500,8 +5604,12 @@ def _run_gopay_bind_task_once(
             except Exception as exc:
                 raise GoPayFlowError(f"生成印尼区支付链接失败: {exc}", stage="generate_checkout") from exc
             final_checkout_url = str(generated_checkout_meta.get("url") or "").strip()
-            progress("checkout_ready", checkout_url=final_checkout_url)
-            logger.info("[gopay_executor] generated GoPay checkout session: %s", _safe_url_summary(final_checkout_url))
+            progress("checkout_ready", checkout_url=final_checkout_url, mode="protocol", checkout_ui_mode=protocol_checkout_ui_mode)
+            logger.info(
+                "[gopay_executor] generated GoPay checkout session for protocol form mode: checkout_ui_mode=%s url=%s",
+                protocol_checkout_ui_mode,
+                _safe_url_summary(final_checkout_url),
+            )
             raw_checkout = generated_checkout_meta.get("raw") if isinstance(generated_checkout_meta.get("raw"), dict) else {}
         else:
             progress("checkout_ready", checkout_url=final_checkout_url)
@@ -5526,10 +5634,11 @@ def _run_gopay_bind_task_once(
         )
         midtrans_client_id = os.environ.get("GOPAY_MIDTRANS_CLIENT_ID", "")
         logger.info(
-            "[gopay_executor] checkout identifiers ready: checkout_session_id=%s direct_redirect=%s browser_ui=%s processor_entity=%s midtrans_client_id_present=%s",
+            "[gopay_executor] checkout identifiers ready: checkout_session_id=%s direct_redirect=%s browser_ui=%s form_mode=%s processor_entity=%s midtrans_client_id_present=%s",
             _mask_log_value(checkout_session_id),
             direct_redirect_mode,
             browser_checkout_ui_mode,
+            checkout_form_mode,
             processor_entity or "<default>",
             bool(midtrans_client_id),
         )
@@ -5674,10 +5783,11 @@ def _run_gopay_bind_task_once(
 
         progress("gopay_http_flow", checkout_session_id=checkout_session_id)
         logger.info(
-            "[gopay_executor] GoPay flow started: checkout_session_id=%s direct_redirect=%s browser_ui=%s",
+            "[gopay_executor] GoPay flow started: checkout_session_id=%s direct_redirect=%s browser_ui=%s form_mode=%s",
             _mask_log_value(checkout_session_id),
             direct_redirect_mode,
             browser_checkout_ui_mode,
+            checkout_form_mode,
         )
 
         def run_browser_handoff_with_midtrans_retry(*, fallback_stage: str = "browser_checkout"):
@@ -5760,14 +5870,25 @@ def _run_gopay_bind_task_once(
             try:
                 flow_result = charger.run(checkout_session_id=checkout_session_id, stripe_pk=stripe_pk)
             except GoPayFlowError as exc:
-                if exc.stage != "chatgpt_approve" or not _env_enabled("GOPAY_BROWSER_CHECKOUT_FALLBACK", True):
+                if (
+                    not protocol_browser_fallback_enabled
+                    or not _env_enabled("GOPAY_BROWSER_CHECKOUT_FALLBACK", True)
+                    or not _protocol_checkout_can_browser_fallback(exc)
+                ):
                     raise
                 logger.info(
-                    "[gopay_executor] protocol checkout approve blocked, switching to full browser checkout handoff: checkout_session_id=%s error=%s",
+                    "[gopay_executor] protocol checkout failed before GoPay authorization, switching to full browser checkout handoff: checkout_session_id=%s stage=%s error=%s",
                     _mask_log_value(checkout_session_id),
+                    exc.stage,
                     _safe_error_summary(exc),
                 )
-                flow_result = run_browser_handoff_with_midtrans_retry(fallback_stage="chatgpt_approve")
+                progress(
+                    "stripe_protocol_form_failed_browser_fallback",
+                    checkout_session_id=checkout_session_id,
+                    reason=_safe_error_summary(exc),
+                    failure_stage=exc.stage,
+                )
+                flow_result = run_browser_handoff_with_midtrans_retry(fallback_stage=exc.stage or "protocol_checkout")
         logger.info(
             "[gopay_executor] GoPay HTTP flow finished: state=%s reference=%s charge_ref=%s snap_token=%s",
             flow_result.get("state", ""),

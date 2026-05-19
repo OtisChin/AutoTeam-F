@@ -19,34 +19,16 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _candidate_protocol_dirs() -> list[Path]:
-    raw = os.getenv("AUTOTEAM_PROTOCOL_REGISTER_DIR", "").strip()
-    candidates: list[Path] = []
-    if raw:
-        candidates.append(Path(raw))
-    candidates.extend(
-        [
-            Path(__file__).resolve().parents[2] / "protocol_register",
-            Path(__file__).resolve().parent / "protocol_register",
-        ]
-    )
-    return candidates
-
-
 def _load_protocol_classes():
-    protocol_dir = next((path for path in _candidate_protocol_dirs() if (path / "auth_flow.py").exists()), None)
-    if not protocol_dir:
-        searched = ", ".join(str(path) for path in _candidate_protocol_dirs())
-        raise RuntimeError(
-            "协议注册模块未找到，请设置 AUTOTEAM_PROTOCOL_REGISTER_DIR。"
-            f"已搜索: {searched}"
-        )
-
+    protocol_dir = Path(__file__).resolve().parent / "_protocol_register"
+    if not (protocol_dir / "auth_flow.py").exists():
+        raise RuntimeError(f"协议注册内置模块缺失: {protocol_dir}")
     protocol_dir_str = str(protocol_dir)
     if protocol_dir_str not in sys.path:
         sys.path.insert(0, protocol_dir_str)
     auth_flow = importlib.import_module("auth_flow")
     config_mod = importlib.import_module("config")
+    logging.getLogger(auth_flow.__name__).setLevel(logging.WARNING)
     return auth_flow.AuthFlow, config_mod.Config
 
 
@@ -109,6 +91,7 @@ class ProtocolMailAdapter:
         self.account_id = account_id
 
     def create_mailbox(self) -> str:
+        logger.info("[协议注册] 已锁定注册邮箱: %s", self.email)
         return self.email
 
     def wait_for_otp(self, email: str, timeout: int = 180, issued_after: float | None = None) -> str:
@@ -116,6 +99,8 @@ class ProtocolMailAdapter:
         deadline = time.time() + max(1, int(timeout or 180))
         issued_after_ts = float(issued_after or 0)
         last_seen = ""
+        next_wait_log_at = 0.0
+        logger.info("[协议注册] 等待邮箱验证码: email=%s timeout=%ss", target, int(timeout or 180))
         while time.time() < deadline:
             try:
                 try:
@@ -129,6 +114,10 @@ class ProtocolMailAdapter:
             except Exception as exc:
                 logger.warning("[协议注册] 查询邮箱验证码失败，稍后重试: %s", exc)
                 emails = []
+
+            if time.time() >= next_wait_log_at:
+                logger.info("[协议注册] 正在查询邮箱验证码: email=%s matched=%d", target, len(emails or []))
+                next_wait_log_at = time.time() + 15
 
             for item in emails or []:
                 if not isinstance(item, dict):
@@ -157,6 +146,53 @@ class ProtocolMailAdapter:
         if last_seen:
             detail += f"；最近邮件摘要: {last_seen}"
         raise TimeoutError(detail)
+
+
+def _wrap_flow_stage(flow, method_name: str, start_message: str, done_message: str | None = None):
+    method = getattr(flow, method_name, None)
+    if not callable(method):
+        return
+
+    def wrapped(*args, **kwargs):
+        logger.info("[协议注册] %s", start_message)
+        result = method(*args, **kwargs)
+        if done_message:
+            logger.info("[协议注册] %s", done_message)
+        return result
+
+    setattr(flow, method_name, wrapped)
+
+
+def _attach_flow_stage_logs(flow):
+    _wrap_flow_stage(flow, "register_password", "提交注册密码", "注册密码已提交")
+    _wrap_flow_stage(flow, "send_otp", "触发邮箱验证码", "邮箱验证码已触发")
+    _wrap_flow_stage(flow, "verify_otp", "提交邮箱验证码", "邮箱验证码校验通过")
+    _wrap_flow_stage(flow, "create_account", "提交账号资料", "账号资料已提交")
+    _wrap_flow_stage(flow, "get_auth_session", "获取 ChatGPT auth_session", "ChatGPT auth_session 已获取")
+
+    signup = getattr(flow, "signup", None)
+    if callable(signup):
+        def signup_wrapped(*args, **kwargs):
+            logger.info("[协议注册] 提交注册邮箱")
+            result = signup(*args, **kwargs)
+            logger.info("[协议注册] 邮箱提交完成，账号类型: %s", "新账号" if result else "已有账号")
+            return result
+
+        setattr(flow, "signup", signup_wrapped)
+
+    kickoff = getattr(flow, "kickoff_otp_delivery", None)
+    if callable(kickoff):
+        def kickoff_wrapped(*args, **kwargs):
+            reason = str(args[0] if args else kwargs.get("reason") or "").strip()
+            if reason:
+                logger.info("[协议注册] 触发/重发邮箱验证码: %s", reason)
+            else:
+                logger.info("[协议注册] 触发/重发邮箱验证码")
+            result = kickoff(*args, **kwargs)
+            logger.info("[协议注册] 邮箱验证码触发结果: %s", "成功" if result else "失败")
+            return result
+
+        setattr(flow, "kickoff_otp_delivery", kickoff_wrapped)
 
 
 def _session_data_from_auth_result(result) -> dict:
@@ -192,11 +228,19 @@ def register_once(mail_client, *, email: str, password: str, account_id: str | i
     cfg = Config()
     cfg.proxy = proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None
     flow = AuthFlow(cfg)
+    _attach_flow_stage_logs(flow)
     if password:
         flow._default_password_from_email = lambda _email: password  # type: ignore[attr-defined]
     adapter = ProtocolMailAdapter(mail_client, email=email, account_id=account_id)
-    logger.info("[协议注册] 开始协议注册: %s", email)
+    logger.info(
+        "[协议注册] 开始协议注册: email=%s mailbox_id_present=%s proxy=%s",
+        email,
+        bool(account_id),
+        "enabled" if cfg.proxy else "disabled",
+    )
     result = flow.run_register(adapter)
     if not result or not result.is_valid():
+        logger.error("[协议注册] 协议注册未返回有效 auth_session: %s", email)
         return False, {"status": 0, "data": {}, "raw": "协议注册未返回有效 auth_session"}
+    logger.info("[协议注册] 协议注册完成，已获取 auth_session: %s", email)
     return True, _session_data_from_auth_result(result)

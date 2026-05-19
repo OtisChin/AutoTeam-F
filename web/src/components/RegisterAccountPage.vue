@@ -79,6 +79,19 @@
             </div>
           </div>
 
+          <label class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
+            <input
+              v-model="registerForm.protocolRegister"
+              type="checkbox"
+              :disabled="registeringBusy"
+              class="mt-1 rounded border-gray-600 bg-gray-800"
+            />
+            <span>
+              <span class="text-gray-100">协议注册</span>
+              <span class="block text-xs text-gray-500">默认使用浏览器注册；勾选后使用协议注册流程。</span>
+            </span>
+          </label>
+
           <div>
             <label class="block text-sm text-gray-400 mb-1">邮件 Provider</label>
             <select
@@ -337,19 +350,6 @@
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
           </div>
-
-          <label class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
-            <input
-              v-model="registerForm.protocolRegister"
-              type="checkbox"
-              :disabled="registeringBusy"
-              class="mt-1 rounded border-gray-600 bg-gray-800"
-            />
-            <span>
-              <span class="text-gray-100">协议注册</span>
-              <span class="block text-xs text-gray-500">默认使用浏览器注册；勾选后使用协议注册流程。</span>
-            </span>
-          </label>
 
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
             <div>预览邮箱：<span class="font-mono text-gray-200">{{ registerPreviewEmail }}</span></div>

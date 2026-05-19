@@ -4076,7 +4076,18 @@ def _convert_account_auth_session_to_cpa_auth(
     force_account_type: str | None = None,
 ) -> dict:
     """把账号已有 auth_session 转成本地 CPA codex auth 文件，并写回账号池。"""
-    from autoteam.accounts import find_account, load_accounts, update_account
+    from autoteam.accounts import (
+        ACCOUNT_SOURCE_MANAGED,
+        ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+        ACCOUNT_TYPE_TEAM,
+        SEAT_CODEX,
+        STATUS_ACTIVE,
+        find_account,
+        load_accounts,
+        update_account,
+    )
     from autoteam.auth_session_store import load_auth_session
     from autoteam.session_cpa_converter import SessionConversionError, save_cpa_auth_from_session
 
@@ -4089,11 +4100,22 @@ def _convert_account_auth_session_to_cpa_auth(
     if not session:
         raise SessionConversionError(f"未找到 auth_session: {normalized_email}")
 
-    result = save_cpa_auth_from_session(session, source_name=normalized_email)
+    existing_account_type = str(account.get("account_type") or "").strip().lower()
+    force_plan_type = ""
+    if force_account_type:
+        force_plan_type = str(force_account_type or "").strip().lower()
+    elif existing_account_type in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM}:
+        force_plan_type = existing_account_type
+
+    result = save_cpa_auth_from_session(
+        session,
+        source_name=normalized_email,
+        force_plan_type=force_plan_type,
+    )
     converted_plan = str(result.get("plan_type") or "").strip().lower()
     next_account_type = (
         force_account_type
-        or (converted_plan if converted_plan in {"free", "plus", "pro", "team"} else None)
+        or (converted_plan if converted_plan in {ACCOUNT_TYPE_FREE, ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM} else None)
         or account.get("account_type")
     )
     saved = update_account(

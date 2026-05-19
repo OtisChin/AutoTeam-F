@@ -255,8 +255,17 @@ def _safe_auth_path(auth_data: dict[str, Any]) -> Path:
     return AUTH_DIR / f"codex-{email}-{plan_type}-{hash_id}.json"
 
 
-def save_cpa_auth_from_session(session: dict[str, Any], *, source_name: str = "") -> dict[str, Any]:
+def save_cpa_auth_from_session(
+    session: dict[str, Any],
+    *,
+    source_name: str = "",
+    force_plan_type: str = "",
+) -> dict[str, Any]:
     auth_data = convert_chatgpt_session_to_cpa_auth(session, source_name=source_name)
+    forced_plan = _clean(force_plan_type).lower()
+    if forced_plan:
+        auth_data["plan_type"] = forced_plan
+        auth_data["chatgpt_plan_type"] = forced_plan
     ensure_auth_dir()
     path = _safe_auth_path(auth_data)
     email = _clean(auth_data.get("email")).lower()
