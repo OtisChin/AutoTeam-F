@@ -82,6 +82,7 @@ STRIPE_VERSION_FULL = "2025-03-31.basil; checkout_server_update_beta=v1; checkou
 GOPAY_LINK_RETRY_LIMIT = 3
 GOPAY_LINK_RETRY_SLEEP_S = 30.0
 GOPAY_SMS_OTP_DELAY_S = 60.0
+GOPAY_SMS_CHANNEL_SWITCH_DELAY_S = 30.0
 GOPAY_SMS_OTP_RESEND_AFTER_S = 120.0
 GOPAY_APPROVE_BLOCKED_COOLDOWN_S = 1800.0
 HTTP_TIMEOUT_SECONDS = 60
@@ -91,12 +92,14 @@ TRANSIENT_RETRY_STAGES = {
     "stripe_payment_method",
     "stripe_init",
     "stripe_elements_session",
+    "stripe_address_update",
     "stripe_confirm",
     "resolve_midtrans_redirect",
     "pm_redirect",
     "midtrans_load_transaction",
     "gopay_validate_reference",
     "gopay_user_consent",
+    "gopay_sms_channel_switch",
     "trigger_sms_otp",
     "gopay_validate_otp",
     "gopay_tokenize_pin",
@@ -508,11 +511,17 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         "submit_clicked": "已点击订阅，等待 Stripe/Midtrans 跳转",
         "gopay_http_flow": "已进入 GoPay/Midtrans 接管流程",
         "stripe_zero_due_confirmed": "已确认 Stripe 应付金额为 0",
+        "stripe_address_update": "正在通过协议提交 Stripe 账单地址",
+        "stripe_address_update_done": "Stripe 账单地址协议提交完成",
+        "stripe_protocol_form_failed_browser_fallback": "协议填表失败，切换到浏览器 checkout UI",
         "midtrans_load_transaction": "正在读取 Midtrans 交易",
         "midtrans_linking": "正在发起 GoPay 账户绑定",
         "midtrans_linking_retry": "GoPay 账户绑定接口 429 限流，正在直接重试协议接口",
         "gopay_validate_reference": "正在校验 GoPay 绑定引用",
         "gopay_user_consent": "正在确认 GoPay 授权",
+        "gopay_sms_channel_switch": "正在尝试切换 GoPay SMS OTP",
+        "gopay_sms_channel_switched": "已切换 GoPay SMS OTP",
+        "gopay_sms_channel_switch_failed": "GoPay SMS OTP 切换失败，回退重发流程",
         "trigger_sms_otp": "正在触发 GoPay OTP",
         "sms_otp_triggered": "已触发 GoPay OTP",
         "sms_otp_resend_due": "1 分钟未收到 GoPay OTP，正在重新发送验证码",
@@ -577,6 +586,11 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
         return f"提交前校验通过：{field}"
     if stage == "wait_sms_otp_window" and wait_seconds is not None:
         return f"等待 {wait_seconds}s 后触发/拉取 GoPay SMS OTP"
+    if stage == "wait_sms_channel_switch_window" and wait_seconds is not None:
+        return f"等待 {wait_seconds}s 后尝试切换 GoPay SMS OTP"
+    if stage == "gopay_sms_channel_switch_failed":
+        reason = str(payload.get("reason") or "").strip()
+        return f"GoPay SMS OTP 切换失败，回退重发流程：{_compact_log_text(reason, limit=120)}" if reason else "GoPay SMS OTP 切换失败，回退重发流程"
     if stage == "sms_otp_resend_failed":
         reason = str(payload.get("reason") or "").strip()
         return f"GoPay SMS OTP 重新发送失败，继续等待接码接口：{_compact_log_text(reason, limit=120)}" if reason else "GoPay SMS OTP 重新发送失败，继续等待接码接口"
@@ -2396,8 +2410,8 @@ class GoPayHttpCharger:
     """Stripe -> Midtrans -> GoPay tokenization flow.
 
     ChatGPT/Stripe/Midtrans/GoPay calls are plain HTTP. The production GoPay
-    path does not open the GoPay authorize page; SMS OTP is triggered by the
-    same /v1/linking/resend-otp endpoint used by the web client.
+    path does not open the GoPay authorize page; SMS OTP is first switched via
+    /v1/linking/user-consent otp_channel=sms, then falls back to resend-otp.
     """
 
     def __init__(
@@ -3038,6 +3052,40 @@ class GoPayHttpCharger:
             raise GoPayFlowError(f"GoPay user-consent 失败: {payload}", stage="gopay_user_consent")
         logger.info("[gopay_executor] GoPay user-consent succeeded: reference=%s", _mask_log_value(reference_id))
 
+    def _gopay_switch_to_sms_otp(self, reference_id: str) -> bool:
+        self._progress("gopay_sms_channel_switch")
+        try:
+            resp = self._request(
+                "post",
+                "https://gwa.gopayapi.com/v1/linking/user-consent",
+                json={"reference_id": reference_id, "otp_channel": "sms"},
+                headers={
+                    "Origin": "https://merchants-gws-app.gopayapi.com",
+                    "Referer": "https://merchants-gws-app.gopayapi.com/",
+                    "x-user-locale": "en-US",
+                },
+                stage="gopay_sms_channel_switch",
+            )
+            _ensure_ok(resp, "gopay_sms_channel_switch")
+            payload = _response_json(resp, "gopay_sms_channel_switch")
+            if _looks_like_gopay_rate_limit_payload(payload):
+                self._progress("gopay_rate_limited")
+                logger.info("[gopay_executor] GoPay SMS channel switch returned rate-limit payload: %s", _safe_error_summary(payload))
+                raise GoPayRateLimited(_gopay_rate_limited_message(), stage="gopay_rate_limited")
+            if not payload.get("success"):
+                raise GoPayFlowError(f"GoPay SMS channel switch 失败: {payload}", stage="gopay_sms_channel_switch")
+        except GoPayRateLimited:
+            raise
+        except Exception as exc:
+            reason = _safe_error_summary(exc)
+            logger.info("[gopay_executor] GoPay SMS channel switch failed, falling back to resend-otp: %s", reason)
+            self._progress("gopay_sms_channel_switch_failed", reason=reason)
+            return False
+        self._progress("gopay_sms_channel_switched")
+        self._progress("sms_otp_triggered")
+        logger.info("[gopay_executor] GoPay OTP switched to SMS via user-consent: reference=%s", _mask_log_value(reference_id))
+        return True
+
     def _gopay_resend_otp(self, reference_id: str):
         self._progress("trigger_sms_otp")
         resp = self._request(
@@ -3081,6 +3129,30 @@ class GoPayHttpCharger:
     def _trigger_linking_otp_channel(self, reference_id: str):
         if self.otp_channel == "sms":
             wait_seconds = max(0.0, float(self.sms_resend_wait_seconds or 0))
+            switch_enabled = _env_enabled("GOPAY_SMS_CHANNEL_SWITCH_ENABLED", True)
+            switch_delay = max(
+                0.0,
+                _env_float(
+                    "GOPAY_SMS_CHANNEL_SWITCH_DELAY_SECONDS",
+                    min(GOPAY_SMS_CHANNEL_SWITCH_DELAY_S, wait_seconds),
+                ),
+            )
+            if switch_enabled and switch_delay < wait_seconds:
+                self._progress("wait_sms_channel_switch_window", wait_seconds=int(switch_delay))
+                logger.info(
+                    "[gopay_executor] waiting before GoPay SMS channel switch: reference=%s wait_seconds=%s",
+                    _mask_log_value(reference_id),
+                    int(switch_delay),
+                )
+                if switch_delay:
+                    self._sleep_with_cancel(switch_delay)
+                if self._trigger_sms_provider_resend_before_gopay_otp():
+                    delay = max(0.0, _env_float("GOPAY_SMS_PROVIDER_RESEND_DELAY_SECONDS", 2.0))
+                    if delay:
+                        self._sleep_with_cancel(delay)
+                if self._gopay_switch_to_sms_otp(reference_id):
+                    return
+                wait_seconds = max(0.0, wait_seconds - switch_delay)
             self._progress("wait_sms_otp_window", wait_seconds=int(wait_seconds))
             logger.info(
                 "[gopay_executor] waiting before protocol SMS OTP resend: reference=%s wait_seconds=%s",

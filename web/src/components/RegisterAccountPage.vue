@@ -338,6 +338,19 @@
             />
           </div>
 
+          <label class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
+            <input
+              v-model="registerForm.protocolRegister"
+              type="checkbox"
+              :disabled="registeringBusy"
+              class="mt-1 rounded border-gray-600 bg-gray-800"
+            />
+            <span>
+              <span class="text-gray-100">协议注册</span>
+              <span class="block text-xs text-gray-500">默认使用浏览器注册；勾选后使用协议注册流程。</span>
+            </span>
+          </label>
+
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
             <div>预览邮箱：<span class="font-mono text-gray-200">{{ registerPreviewEmail }}</span></div>
             <div v-if="isLuckMailProvider">LuckMail 购买：<span class="text-gray-200">{{ luckmailPurchaseLabel }}</span></div>
@@ -447,6 +460,7 @@ const registerForm = ref({
   luckmailPreferredDomains: [],
   prefix: '',
   password: '',
+  protocolRegister: false,
 })
 const mailProviderLoading = ref(false)
 const mailProviderOptions = ref([])
@@ -549,7 +563,9 @@ const luckmailPurchaseLabel = computed(() => {
   const domain = preferredDomain ? `@${preferredDomain}` : '自动分配'
   return `${emailType} / ${domain}`
 })
-const registerBehaviorLabel = computed(() => '只注册免费账号并保存 auth_session')
+const registerBehaviorLabel = computed(() => registerForm.value.protocolRegister
+  ? '协议注册免费账号并保存 auth_session'
+  : '浏览器注册免费账号并保存 auth_session')
 const outlookImportResultClass = computed(() => outlookImportResultOk.value
   ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
   : 'bg-red-500/10 text-red-300 border-red-500/20')
@@ -679,6 +695,7 @@ function loadSavedRegisterForm() {
       prefix: String(saved.prefix || ''),
       // 密码不持久化，避免明文留在本地存储
       password: '',
+      protocolRegister: Boolean(saved.protocolRegister),
     }
   } catch (e) {
     console.error('loadSavedRegisterForm', e)
@@ -700,10 +717,11 @@ function saveRegisterForm() {
         selectedDomains: selectedRegisterDomains.value,
         mailProvider: registerForm.value.mailProvider,
         luckmailEmailType: registerForm.value.luckmailEmailType,
-        luckmailPreferredDomain: registerForm.value.luckmailPreferredDomain,
-        luckmailPreferredDomains: registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
-        prefix: registerForm.value.prefix,
-      })
+      luckmailPreferredDomain: registerForm.value.luckmailPreferredDomain,
+      luckmailPreferredDomains: registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
+      prefix: registerForm.value.prefix,
+      protocolRegister: Boolean(registerForm.value.protocolRegister),
+    })
     )
   } catch (e) {
     console.error('saveRegisterForm', e)
@@ -856,6 +874,7 @@ async function submitManualRegister() {
       luckmail_preferred_domains: isLuckMailProvider.value && registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
       prefix: registerForm.value.prefix || null,
       password: registerForm.value.password || null,
+      protocol_register: Boolean(registerForm.value.protocolRegister),
     }
     const result = await api.startAdd(payload)
     setMessage(`注册任务已提交: ${result.task_id}`)

@@ -2988,6 +2988,7 @@ def create_account_direct(
     post_register_oauth=None,
     check_team_membership=True,
     progress_callback=None,
+    register_mode="browser",
 ):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
@@ -3013,6 +3014,8 @@ def create_account_direct(
         except Exception:
             logger.debug("[直接注册] progress_callback failed", exc_info=True)
 
+    register_mode = str(register_mode or "browser").strip().lower()
+    use_protocol_register = register_mode in {"protocol", "http", "api"}
     resolved_prefix = _with_random_suffix_prefix(email_prefix)
     _progress("register_email_creating", f"正在创建临时邮箱: domain=@{domain or '<default>'}")
     account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
@@ -3062,17 +3065,34 @@ def create_account_direct(
             duplicate_swaps=duplicate_swaps,
         )
         try:
-            result = _register_direct_once(
-                mail_client,
-                email,
-                password,
-                cloudmail_account_id=account_id,
-                return_session=not check_team_membership,
-            )
+            if use_protocol_register:
+                logger.info("[协议注册] 使用协议注册流程: %s", email)
+                _progress(
+                    "register_protocol_started",
+                    f"开始协议注册: {email}",
+                    email=email,
+                    register_mode="protocol",
+                )
+                from autoteam.protocol_register import register_once as _register_protocol_once
+
+                result = _register_protocol_once(
+                    mail_client,
+                    email=email,
+                    password=password,
+                    account_id=account_id,
+                )
+            else:
+                result = _register_direct_once(
+                    mail_client,
+                    email,
+                    password,
+                    cloudmail_account_id=account_id,
+                    return_session=not check_team_membership,
+                )
             if not check_team_membership:
                 success, session_data = result
             else:
-                success = result
+                success = result[0] if use_protocol_register and isinstance(result, tuple) else result
         except RegisterBlocked as blocked:
             logger.error("[直接注册] %s 被阻断: %s", email, blocked)
             _progress(
@@ -3158,7 +3178,7 @@ def create_account_direct(
             record_failure(
                 email,
                 "exception",
-                f"_register_direct_once 抛非 RegisterBlocked 异常: {exc}",
+                f"{'_register_protocol_once' if use_protocol_register else '_register_direct_once'} 抛非 RegisterBlocked 异常: {exc}",
                 register_attempts=register_attempts,
                 duplicate_swaps=duplicate_swaps,
             )
@@ -4002,6 +4022,7 @@ def cmd_register_accounts(
     luckmail_email_type=None,
     luckmail_preferred_domain=None,
     luckmail_preferred_domains=None,
+    register_mode="browser",
     progress_callback=None,
 ):
     """执行独立注册；成功后保存 auth_session，并复用注册会话尝试生成 Codex OAuth 文件。
@@ -4044,6 +4065,9 @@ def cmd_register_accounts(
         "running": 0,
     }
     post_register_oauth = bool(post_register_oauth)
+    register_mode = str(register_mode or "browser").strip().lower()
+    if register_mode not in {"browser", "protocol", "http", "api"}:
+        register_mode = "browser"
 
     def _emit_progress():
         if not progress_callback:
@@ -4118,6 +4142,7 @@ def cmd_register_accounts(
                     skip_post_register=not post_register_oauth,
                     post_register_oauth=post_register_oauth,
                     check_team_membership=False,
+                    register_mode=register_mode,
                 )
                 if isinstance(raw_result, str):
                     result = {"status": outcome.get("status") or "success", "email": raw_result, **outcome}

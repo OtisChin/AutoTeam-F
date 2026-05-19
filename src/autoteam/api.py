@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -68,6 +68,13 @@ def _gopay_auto_signup_no_transfer_retry_waits_seconds() -> list[float]:
         if seconds > 0:
             waits.append(seconds)
     return waits
+
+
+def _gopay_auto_signup_prefetch_wallets() -> int:
+    try:
+        return max(0, min(2, int(os.environ.get("GOPAY_AUTO_SIGNUP_PREFETCH_WALLETS", "1") or "1")))
+    except Exception:
+        return 1
 
 
 def _default_whatsapp_otp_url() -> str:
@@ -1945,6 +1952,7 @@ class GoPayBindTaskParams(BaseModel):
     account_emails: list[str] = []
     auto_register: bool = Field(False, validation_alias=AliasChoices("auto_register", "autoRegister"))
     auto_register_count: int = Field(1, validation_alias=AliasChoices("auto_register_count", "autoRegisterCount"))
+    auto_register_protocol: bool = Field(False, validation_alias=AliasChoices("auto_register_protocol", "autoRegisterProtocol"))
     gopay_auto_signup: bool = Field(False, validation_alias=AliasChoices("gopay_auto_signup", "gopayAutoSignup"))
     gopay_auto_signup_sms_provider: str = Field(
         "",
@@ -2126,6 +2134,7 @@ class ManualRegisterParams(BaseModel):
         validation_alias=AliasChoices("luckmail_preferred_domains", "luckmailPreferredDomains"),
     )
     post_register_oauth: bool = False
+    protocol_register: bool = Field(False, validation_alias=AliasChoices("protocol_register", "protocolRegister"))
 
 
 class DeleteBatchParams(BaseModel):
@@ -2907,12 +2916,21 @@ def _load_accounts_with_session_stubs(*, include_session_stubs: bool = True) -> 
     try:
         from autoteam.bind_audit import list_bind_audits
 
-        gopay_success_emails = {
-            _normalized_email(item.get("email") or item.get("requested_email"))
-            for item in list_bind_audits(limit=1000)
-            if str(item.get("flow") or "").lower() == "gopay"
-            and str(item.get("status") or "").lower() == "success"
-        }
+        gopay_success_emails = set()
+        for item in list_bind_audits(limit=1000):
+            if (
+                str(item.get("flow") or "").lower() != "gopay"
+                or str(item.get("status") or "").lower() != "success"
+            ):
+                continue
+            for value in [
+                item.get("email"),
+                item.get("requested_email"),
+                *(item.get("successful_emails") if isinstance(item.get("successful_emails"), list) else []),
+            ]:
+                normalized = _normalized_email(value)
+                if normalized:
+                    gopay_success_emails.add(normalized)
     except Exception:
         gopay_success_emails = set()
 
@@ -3915,7 +3933,7 @@ def export_account_cpa_auths(params: AccountEmailBatchParams):
 @app.post("/api/accounts/export-sub-auths")
 def export_account_sub_auths(params: AccountEmailBatchParams):
     """导出所选账号的 Sub2API 导入 JSON。"""
-    from autoteam.accounts import find_account, load_accounts, update_account
+    from autoteam.accounts import ACCOUNT_SOURCE_MANAGED, SEAT_CODEX, STATUS_ACTIVE, find_account, load_accounts, update_account
     from autoteam.sub2api_converter import ConversionError, ExportSettings, export_records, generate_default_filename, inspect_sources
 
     requested = []
@@ -6679,6 +6697,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     checkout_ui_mode = "hosted" if str(params.checkout_ui_mode or "").strip().lower() == "hosted" else "custom"
     auto_register_prefix = str(params.auto_register_prefix or "").strip()
     auto_register_password = str(params.auto_register_password or "").strip()
+    auto_register_mode = "protocol" if bool(params.auto_register_protocol) else "browser"
     from autoteam.setup_wizard import get_mail_provider
 
     auto_register_mail_provider = get_mail_provider(params.auto_register_mail_provider) if params.auto_register_mail_provider else ""
@@ -6821,6 +6840,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         retained_gopay_wallets = []
         funded_gopay_wallet_ids: set[int] = set()
         gopay_wallet_funding_attempted_ids: set[int] = set()
+        gopay_wallet_balance_ready_ids: set[int] = set()
         gopay_wallet_created_at: dict[int, float] = {}
 
         def _gopay_success_progress_fields() -> dict:
@@ -6834,45 +6854,40 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             success_email = _normalized_email(email_value)
             if not success_email:
                 return _gopay_success_progress_fields()
-            if success_email not in realtime_successful_emails:
+            marked_at = time.time()
+            success_fields = {
+                "last_bind_status": "success",
+                "last_bind_at": marked_at,
+                "last_checkout_url": success_checkout_url or checkout_url,
+                "last_proxy_label": params.proxy_label,
+                "last_bind_task_id": task_id,
+                "last_bind_message": message or "GoPay 绑定成功",
+                "last_bind_failure_stage": "",
+                "status": STATUS_ACTIVE,
+                "account_type": ACCOUNT_TYPE_PLUS,
+                "seat_type": SEAT_CODEX,
+                "account_source": ACCOUNT_SOURCE_MANAGED,
+                "plus_bound_at": marked_at,
+            }
+            updated_account = update_account(success_email, **success_fields)
+            account_exists_after_update = bool(updated_account) or bool(find_account(load_accounts(), success_email))
+            if not updated_account and not account_exists_after_update:
+                auth_session_file = get_auth_session_file(success_email)
+                add_account(success_email, "", seat_type=SEAT_CODEX)
+                if auth_session_file and Path(auth_session_file).exists():
+                    success_fields["auth_file"] = auth_session_file
+                updated_account = update_account(success_email, **success_fields)
+                account_exists_after_update = bool(updated_account) or bool(find_account(load_accounts(), success_email))
+            if updated_account or account_exists_after_update:
                 realtime_successful_emails.add(success_email)
-                marked_at = time.time()
-                updated_account = update_account(
-                    success_email,
-                    last_bind_status="success",
-                    last_bind_at=marked_at,
-                    last_checkout_url=success_checkout_url or checkout_url,
-                    last_proxy_label=params.proxy_label,
-                    last_bind_task_id=task_id,
-                    last_bind_message=message or "GoPay 绑定成功",
-                    last_bind_failure_stage="",
-                    status=STATUS_ACTIVE,
-                    account_type=ACCOUNT_TYPE_PLUS,
-                    seat_type=SEAT_CODEX,
-                    account_source=ACCOUNT_SOURCE_MANAGED,
-                    plus_bound_at=marked_at,
-                )
-                if not updated_account and not find_account(load_accounts(), success_email):
-                    auth_session_file = get_auth_session_file(success_email)
-                    add_account(success_email, "", seat_type=SEAT_CODEX)
-                    update_account(
-                        success_email,
-                        last_bind_status="success",
-                        last_bind_at=marked_at,
-                        last_checkout_url=success_checkout_url or checkout_url,
-                        last_proxy_label=params.proxy_label,
-                        last_bind_task_id=task_id,
-                        last_bind_message=message or "GoPay 绑定成功",
-                        last_bind_failure_stage="",
-                        status=STATUS_ACTIVE,
-                        account_type=ACCOUNT_TYPE_PLUS,
-                        seat_type=SEAT_CODEX,
-                        account_source=ACCOUNT_SOURCE_MANAGED,
-                        auth_file=auth_session_file if auth_session_file and Path(auth_session_file).exists() else None,
-                        plus_bound_at=marked_at,
-                    )
                 logger.info(
                     "[gopay-bind] marked account Plus immediately after GoPay success: task_id=%s email=%s",
+                    task_id[:8] or "<unknown>",
+                    _safe_email_summary(success_email),
+                )
+            else:
+                logger.warning(
+                    "[gopay-bind] GoPay success account was not persisted: task_id=%s email=%s",
                     task_id[:8] or "<unknown>",
                     _safe_email_summary(success_email),
                 )
@@ -7104,6 +7119,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             )
             return {"status": "failed", "message": message}
 
+        gopay_wallet_prefetch_context = {"prefetcher": None, "index": 0, "total": 0, "triggered": False}
+
         def _gopay_progress(progress: dict):
             if isinstance(progress, dict) and progress.get("stage") == "gopay_account_bound":
                 success_fields = _mark_gopay_success_account(
@@ -7113,6 +7130,21 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 )
                 progress = {**progress, **success_fields}
             _append_task_progress(task_id, progress)
+            if not isinstance(progress, dict):
+                return
+            if gopay_wallet_prefetch_context.get("triggered"):
+                return
+            stage = str(progress.get("stage") or "")
+            if stage not in {"gopay_validate_otp", "gopay_tokenize_pin", "gopay_validate_pin", "midtrans_create_charge"}:
+                return
+            prefetcher = gopay_wallet_prefetch_context.get("prefetcher")
+            if prefetcher is None:
+                return
+            gopay_wallet_prefetch_context["triggered"] = True
+            try:
+                prefetcher.ensure_ahead(int(gopay_wallet_prefetch_context.get("index") or 0))
+            except Exception:
+                logger.debug("[gopay-bind] schedule GoPay wallet prefetch failed", exc_info=True)
 
         def _append_unique(target: list, value: str):
             normalized = _normalized_email(value)
@@ -7370,6 +7402,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 
             if wallet is None or is_rekberinaja_enabled():
                 return
+            if id(wallet) in gopay_wallet_balance_ready_ids:
+                return
             access_token = str(getattr(wallet, "access_token", "") or "").strip()
             if access_token:
                 from autoteam.gopay_auto_register import query_gopay_balance
@@ -7449,6 +7483,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 "level": "success",
                             },
                         )
+                        gopay_wallet_balance_ready_ids.add(id(wallet))
                         return
                 message = "GoPay 余额三次查询仍未到账，舍弃该钱包并重新注册"
                 _append_task_progress(
@@ -7632,6 +7667,89 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     )
             raise last_exc or RuntimeError("GoPay 钱包准备失败")
 
+        class _GoPayWalletPrefetcher:
+            def __init__(self, *, total: int):
+                self.total = max(0, int(total or 0))
+                self.max_workers = _gopay_auto_signup_prefetch_wallets() if gopay_auto_signup and self.total > 1 else 0
+                self.executor = ThreadPoolExecutor(max_workers=self.max_workers) if self.max_workers > 0 else None
+                self.futures: list[tuple[Any, int]] = []
+                self.next_index = 1
+
+            def ensure_ahead(self, completed_index: int) -> None:
+                if self.executor is None or cancel_signal.is_cancelled():
+                    return
+                self.next_index = max(self.next_index, int(completed_index or 0) + 1)
+                while len(self.futures) < self.max_workers and self.next_index <= self.total:
+                    prefetch_index = self.next_index
+                    self.next_index += 1
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_wallet_prefetch_started",
+                            "current": prefetch_index,
+                            "total": self.total,
+                            "message": f"后台预注册 GoPay 钱包 ({prefetch_index}/{self.total})",
+                        },
+                    )
+                    future = self.executor.submit(
+                        _prepare_gopay_wallet_for_bind,
+                        None,
+                        index=prefetch_index,
+                        total=self.total,
+                    )
+                    self.futures.append((future, prefetch_index))
+
+            def take(self, *, index: int) -> Any | None:
+                if not self.futures:
+                    return None
+                done = [item for item in self.futures if item[0].done()]
+                if not done:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_wallet_prefetch_wait",
+                            "current": index,
+                            "total": self.total,
+                            "message": f"等待后台预注册 GoPay 钱包完成 ({index}/{self.total})",
+                        },
+                    )
+                    completed, _ = wait([future for future, _label in self.futures], return_when=FIRST_COMPLETED)
+                    done = [item for item in self.futures if item[0] in completed]
+                future, prefetch_index = done[0]
+                self.futures = [item for item in self.futures if item[0] is not future]
+                try:
+                    wallet = future.result()
+                except Exception as exc:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_wallet_prefetch_failed",
+                            "current": index,
+                            "total": self.total,
+                            "prefetch_index": prefetch_index,
+                            "message": f"后台预注册 GoPay 钱包失败，回退同步注册: {_compact_log_text(exc, limit=180)}",
+                            "level": "warn",
+                        },
+                    )
+                    return None
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_wallet_prefetch_used",
+                        "current": index,
+                        "total": self.total,
+                        "prefetch_index": prefetch_index,
+                        "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                        "message": f"使用后台预注册 GoPay 钱包 ({index}/{self.total})",
+                    },
+                )
+                return wallet
+
+            def close(self) -> None:
+                if self.executor is None:
+                    return
+                self.executor.shutdown(wait=True, cancel_futures=True)
+
         def _register_one_for_gopay(*, index: int = 1, total: int = 1) -> str:
             from autoteam.mail import TemporaryEmailClient
             from autoteam.manager import _temporary_mail_provider, create_account_direct, wrap_mail_client_with_auth_retry
@@ -7701,6 +7819,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 skip_post_register=True,
                 post_register_oauth=False,
                 check_team_membership=False,
+                register_mode=auto_register_mode,
                 progress_callback=_register_progress,
             )
             registered_email = _normalized_email(
@@ -7813,6 +7932,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             last_success_email = ""
             auto_register_attempted_count = 0
             reusable_auto_wallet = None
+            wallet_prefetcher = _GoPayWalletPrefetcher(total=auto_register_count)
 
             for index in range(1, auto_register_count + 1):
                 if cancel_signal.is_cancelled():
@@ -7861,10 +7981,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         time.sleep(delay_seconds)
                     try:
                         if gopay_auto_signup:
-                            auto_wallet = reusable_auto_wallet or _take_reusable_gopay_wallet_for_bind(
-                                index=index,
-                                total=auto_register_count,
-                            )
+                            auto_wallet = reusable_auto_wallet
+                            if auto_wallet is None:
+                                auto_wallet = wallet_prefetcher.take(index=index)
+                            if auto_wallet is None:
+                                auto_wallet = _take_reusable_gopay_wallet_for_bind(
+                                    index=index,
+                                    total=auto_register_count,
+                                )
                             if auto_wallet is None:
                                 auto_wallet = _register_gopay_wallet_for_bind(
                                     index=index,
@@ -7878,19 +8002,25 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 index=index,
                                 total=auto_register_count,
                             )
-                        single_result = dict(
-                            _run_one_gopay_bind(
-                                current_email,
-                                [],
-                                selected_phone_accounts=(
-                                    [auto_wallet.as_phone_account()]
-                                    if auto_wallet is not None
-                                    else _phone_accounts_for_attempt(index)
-                                ),
-                                pending_retry_override=0,
-                            )
-                            or {}
+                        gopay_wallet_prefetch_context.update(
+                            {"prefetcher": wallet_prefetcher, "index": index, "total": auto_register_count, "triggered": False}
                         )
+                        try:
+                            single_result = dict(
+                                _run_one_gopay_bind(
+                                    current_email,
+                                    [],
+                                    selected_phone_accounts=(
+                                        [auto_wallet.as_phone_account()]
+                                        if auto_wallet is not None
+                                        else _phone_accounts_for_attempt(index)
+                                    ),
+                                    pending_retry_override=0,
+                                )
+                                or {}
+                            )
+                        finally:
+                            gopay_wallet_prefetch_context.update({"prefetcher": None, "index": 0, "total": 0, "triggered": False})
                     except Exception as exc:
                         logger.exception(
                             "[gopay-bind] GoPay bind failed after auto-register success: index=%s/%s email=%s",
@@ -8208,8 +8338,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 "message": single_result.get("message") or "",
                                 "register_status": single_result.get("register_status") or "",
                                 "bind_status": single_result.get("bind_status") or "",
-                            }
-                        )
+                        }
+                    )
+
+            wallet_prefetcher.close()
 
             if not aggregate_results:
                 return {
@@ -8272,6 +8404,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             failed_emails: list[dict] = []
             last_result: dict = {}
             reusable_auto_wallet = None
+            wallet_prefetcher = _GoPayWalletPrefetcher(total=len(candidates))
 
             for index, candidate_email in enumerate(candidates, 1):
                 if cancel_signal.is_cancelled():
@@ -8295,6 +8428,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 try:
                     auto_wallet = reusable_auto_wallet
                     if auto_wallet is None:
+                        auto_wallet = wallet_prefetcher.take(index=index)
+                    if auto_wallet is None:
                         auto_wallet = _take_reusable_gopay_wallet_for_bind(index=index, total=len(candidates))
                     if auto_wallet is None:
                         auto_wallet = _register_gopay_wallet_for_bind(index=index, total=len(candidates))
@@ -8306,15 +8441,21 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         index=index,
                         total=len(candidates),
                     )
-                    single_result = dict(
-                        _run_one_gopay_bind(
-                            normalized_candidate,
-                            [],
-                            selected_phone_accounts=[auto_wallet.as_phone_account()],
-                            pending_retry_override=0,
-                        )
-                        or {}
+                    gopay_wallet_prefetch_context.update(
+                        {"prefetcher": wallet_prefetcher, "index": index, "total": len(candidates), "triggered": False}
                     )
+                    try:
+                        single_result = dict(
+                            _run_one_gopay_bind(
+                                normalized_candidate,
+                                [],
+                                selected_phone_accounts=[auto_wallet.as_phone_account()],
+                                pending_retry_override=0,
+                            )
+                            or {}
+                        )
+                    finally:
+                        gopay_wallet_prefetch_context.update({"prefetcher": None, "index": 0, "total": 0, "triggered": False})
                 except Exception as exc:
                     logger.exception(
                         "[gopay-bind] GoPay auto-signup bind failed: index=%s/%s email=%s",
@@ -8407,6 +8548,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     },
                 )
 
+            wallet_prefetcher.close()
+
             if not aggregate_results:
                 return {
                     "status": "cancelled" if cancel_signal.is_cancelled() else "failed",
@@ -8472,9 +8615,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 {
                     "stage": "gopay_binding",
                     "email": email,
-                    "auto_register": auto_register,
-                    "auto_register_count": auto_register_count,
-                    "gopay_auto_signup": gopay_auto_signup,
+                "auto_register": auto_register,
+                "auto_register_count": auto_register_count,
+                "auto_register_protocol": bool(params.auto_register_protocol),
+                "gopay_auto_signup": gopay_auto_signup,
                     "phone_number": phone_number,
                     "country_code": country_code,
                     "phone_account_count": len(phone_accounts),
@@ -8707,6 +8851,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 "phone_account_count": len(phone_accounts),
                 "billing_info": result.get("billing_info") or {},
                 "removed_pool_emails": result.get("removed_pool_emails") or [],
+                "successful_emails": result.get("successful_emails") or [],
             }
         )
 
@@ -8727,6 +8872,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 
     task_params = params.model_dump()
     task_params["auto_register_count"] = auto_register_count
+    task_params["auto_register_protocol"] = bool(params.auto_register_protocol)
     task_params["auto_register_domains"] = auto_register_domains
     task_params["auto_register_domain"] = auto_register_domains[0] if auto_register_domains else ""
     task_params["auto_register_mail_provider"] = auto_register_mail_provider or "<default>"
@@ -8870,6 +9016,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         luckmail_preferred_domains.append(cleaned)
     resolved_password = password or random_password()
     mode = (params.mode or "single").strip().lower()
+    register_mode = "protocol" if bool(params.protocol_register) else "browser"
     count = max(1, int(params.count or 1))
     concurrency = max(1, min(20, int(params.concurrency or 1)))
     interval_seconds = max(0.0, float(params.interval_seconds or 0.0))
@@ -8941,6 +9088,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         "luckmail_preferred_domain": luckmail_preferred_domain or "",
         "luckmail_preferred_domains": luckmail_preferred_domains,
         "post_register_oauth": bool(params.post_register_oauth),
+        "register_mode": register_mode,
     }
 
     def _run_register(task_id: str, **_ignored_kwargs):
@@ -8962,6 +9110,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             luckmail_preferred_domain=luckmail_preferred_domain,
             luckmail_preferred_domains=luckmail_preferred_domains,
             post_register_oauth=bool(params.post_register_oauth),
+            register_mode=register_mode,
             progress_callback=_register_progress,
         )
 

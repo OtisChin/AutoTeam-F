@@ -672,6 +672,18 @@
                   class="w-36 px-3 py-2 bg-gray-900 border border-blue-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
+              <label class="mt-3 flex items-start gap-2 text-sm text-blue-100">
+                <input
+                  v-model="gopayForm.autoRegisterProtocol"
+                  type="checkbox"
+                  :disabled="gopaySubmitting || gopayTaskRunning"
+                  class="mt-1 accent-blue-500"
+                />
+                <span>
+                  协议注册
+                  <span class="block text-xs text-gray-400">默认使用浏览器注册；勾选后自动注册账号走协议流程。</span>
+                </span>
+              </label>
             </div>
             <template v-else-if="!gopayForm.batchMode || gopayForm.checkoutUrl">
               <input
@@ -1436,6 +1448,7 @@ const gopayForm = ref({
   email: '',
   autoRegister: false,
   autoRegisterCount: 1,
+  autoRegisterProtocol: false,
   gopayAutoSignup: true,
   gopayAutoSignupSmsProvider: 'smscloud',
   gopayAutoSignupHeroSmsApiKey: '',
@@ -1638,13 +1651,14 @@ const gopaySelectedAutoRegisterDomainsLabel = computed(() => {
 const gopayAutoRegisterConfigSummary = computed(() => {
   const prefix = String(gopayForm.value.autoRegisterPrefix || '').trim()
   const password = String(gopayForm.value.autoRegisterPassword || '').trim()
+  const mode = gopayForm.value.autoRegisterProtocol ? '协议注册' : '浏览器注册'
   if (gopayAutoRegisterUsesLuckMail.value) {
-    return `${gopayAutoRegisterProviderLabel.value}，${gopayLuckmailPurchaseLabel.value}，密码 ${password ? '自定义' : '随机'}`
+    return `${mode}，${gopayAutoRegisterProviderLabel.value}，${gopayLuckmailPurchaseLabel.value}，密码 ${password ? '自定义' : '随机'}`
   }
   if (gopayAutoRegisterUsesOutlook.value) {
-    return `${gopayAutoRegisterProviderLabel.value}，Outlook账号池，密码 ${password ? '自定义' : '随机'}`
+    return `${mode}，${gopayAutoRegisterProviderLabel.value}，Outlook账号池，密码 ${password ? '自定义' : '随机'}`
   }
-  return `${gopaySelectedAutoRegisterDomainsLabel.value}，前缀 ${prefix || '随机'}，密码 ${password ? '自定义' : '随机'}`
+  return `${mode}，${gopaySelectedAutoRegisterDomainsLabel.value}，前缀 ${prefix || '随机'}，密码 ${password ? '自定义' : '随机'}`
 })
 
 const gopayAutoRegisterPreviewEmail = computed(() => {
@@ -2533,6 +2547,7 @@ function getRememberedGoPayForm() {
     email: String(gopayForm.value.email || '').trim().toLowerCase(),
     autoRegister: Boolean(gopayForm.value.autoRegister),
     autoRegisterCount: normalizedGoPayAutoRegisterCount.value,
+    autoRegisterProtocol: Boolean(gopayForm.value.autoRegisterProtocol),
     gopayAutoSignup: Boolean(gopayForm.value.gopayAutoSignup),
     gopayAutoSignupSmsProvider: gopayAutoSignupProvider.value,
     autoRegisterMailProvider: String(gopayForm.value.autoRegisterMailProvider || ''),
@@ -2572,6 +2587,7 @@ function loadGoPayFormState() {
       email: String(saved.email || '').trim().toLowerCase(),
       autoRegister: Boolean(saved.autoRegister),
       autoRegisterCount: normalizeGoPayAutoRegisterCount(saved.autoRegisterCount),
+      autoRegisterProtocol: Boolean(saved.autoRegisterProtocol),
       gopayAutoSignup: true,
       gopayAutoSignupSmsProvider: saved.gopayAutoSignupSmsProvider === 'hero_sms' ? 'hero_sms' : 'smscloud',
       gopayAutoSignupHeroSmsApiKey: '',
@@ -3289,6 +3305,7 @@ async function startGoPayBind() {
       account_emails: gopayBatchActive.value ? gopaySelectedBatchEmails.value : [],
       auto_register: Boolean(gopayForm.value.autoRegister),
       auto_register_count: normalizedGoPayAutoRegisterCount.value,
+      auto_register_protocol: Boolean(gopayForm.value.autoRegisterProtocol),
       gopay_auto_signup: useAutoSignup,
       gopay_auto_signup_sms_provider: useAutoSignup ? gopayAutoSignupProvider.value : 'smscloud',
       gopay_auto_signup_hero_sms_api_key: '',
