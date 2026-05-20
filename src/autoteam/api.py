@@ -7177,8 +7177,23 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             for raw_email in result_payload.get(key) or []:
                 _append_unique(target, raw_email)
 
+        def _is_gopay_wallet_bound_elsewhere_result(result_payload: dict | None) -> bool:
+            if not isinstance(result_payload, dict) or result_payload.get("status") == "success":
+                return False
+            stage = str(result_payload.get("failure_stage") or "")
+            text = json.dumps(result_payload, ensure_ascii=False).lower()
+            return (
+                stage in {"midtrans_already_linked", "midtrans_already_linked_failed"}
+                or "gopay_already_linked" in text
+                or "already linked" in text
+                or "已绑定其他账号" in text
+                or "绑定其他账号" in text
+            )
+
         def _is_unused_gopay_wallet_result(result_payload: dict | None) -> bool:
             if not isinstance(result_payload, dict) or result_payload.get("status") == "success":
+                return False
+            if _is_gopay_wallet_bound_elsewhere_result(result_payload):
                 return False
             stage = str(result_payload.get("failure_stage") or "")
             if stage in {"browser_charge_guard", "stripe_charge_guard", "midtrans_charge_guard", "gopay_wallet_funding"}:
@@ -7726,6 +7741,34 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 },
             )
 
+        def _discard_gopay_wallet_bound_elsewhere(wallet, *, index: int = 1, total: int = 1) -> None:
+            if wallet is None:
+                return
+            if wallet in reusable_gopay_wallets:
+                reusable_gopay_wallets.remove(wallet)
+            if wallet in active_gopay_wallets:
+                active_gopay_wallets.remove(wallet)
+            retained_gopay_wallets[:] = [item for item in retained_gopay_wallets if item is not wallet]
+            funded_gopay_wallet_ids.discard(id(wallet))
+            gopay_wallet_funding_attempted_ids.discard(id(wallet))
+            gopay_wallet_balance_ready_ids.discard(id(wallet))
+            gopay_wallet_created_at.pop(id(wallet), None)
+            try:
+                wallet.close(success=False)
+            except Exception:
+                logger.debug("[gopay-bind] close already-linked GoPay wallet failed", exc_info=True)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_wallet_already_linked_discarded",
+                    "current": index,
+                    "total": total,
+                    "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                    "message": "该 GoPay 手机号已绑定其他账号，已舍弃该钱包并重新注册",
+                    "level": "warn",
+                },
+            )
+
         def _prepare_gopay_wallet_for_bind(wallet=None, *, index: int = 1, total: int = 1):
             max_wallet_attempts = max(1, int(os.environ.get("GOPAY_AUTO_SIGNUP_WALLET_ATTEMPTS", "10") or "10"))
             last_exc: Exception | None = None
@@ -8005,6 +8048,97 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 progress_callback=_gopay_progress,
             )
 
+        def _take_or_register_gopay_wallet_for_bind(
+            *,
+            index: int,
+            total: int,
+            wallet_prefetcher=None,
+            reusable_wallet=None,
+        ):
+            auto_wallet = reusable_wallet
+            if auto_wallet is None and wallet_prefetcher is not None:
+                auto_wallet = wallet_prefetcher.take(index=index)
+            if auto_wallet is None:
+                auto_wallet = _take_reusable_gopay_wallet_for_bind(index=index, total=total)
+            if auto_wallet is None:
+                auto_wallet = _register_gopay_wallet_for_bind(index=index, total=total)
+            elif auto_wallet in reusable_gopay_wallets:
+                reusable_gopay_wallets.remove(auto_wallet)
+            return _prepare_gopay_wallet_for_bind(auto_wallet, index=index, total=total)
+
+        def _run_one_gopay_bind_with_wallet_retry(
+            bind_email: str,
+            bind_account_emails: list[str],
+            *,
+            index: int,
+            total: int,
+            wallet_prefetcher=None,
+            reusable_wallet=None,
+            exception_message_prefix: str,
+        ) -> tuple[dict, Any | None]:
+            max_wallet_attempts = max(1, int(os.environ.get("GOPAY_AUTO_SIGNUP_WALLET_ATTEMPTS", "10") or "10"))
+            auto_wallet = reusable_wallet
+            last_result: dict = {}
+            for wallet_attempt in range(1, max_wallet_attempts + 1):
+                try:
+                    auto_wallet = _take_or_register_gopay_wallet_for_bind(
+                        index=index,
+                        total=total,
+                        wallet_prefetcher=wallet_prefetcher,
+                        reusable_wallet=auto_wallet,
+                    )
+                    gopay_wallet_prefetch_context.update(
+                        {"prefetcher": wallet_prefetcher, "index": index, "total": total, "triggered": False}
+                    )
+                    try:
+                        single_result = dict(
+                            _run_one_gopay_bind(
+                                bind_email,
+                                bind_account_emails,
+                                selected_phone_accounts=[auto_wallet.as_phone_account()],
+                                pending_retry_override=0,
+                            )
+                            or {}
+                        )
+                    finally:
+                        gopay_wallet_prefetch_context.update({"prefetcher": None, "index": 0, "total": 0, "triggered": False})
+                except Exception as exc:
+                    logger.exception(
+                        "[gopay-bind] GoPay auto-signup bind failed: index=%s/%s email=%s",
+                        index,
+                        total,
+                        _safe_email_summary(bind_email),
+                    )
+                    single_result = {
+                        "status": "failed",
+                        "failure_stage": "gopay_wallet_funding" if "Rekberinaja" in str(exc) else "post_submit",
+                        "message": f"{exception_message_prefix}: {exc}",
+                        "screenshot_paths": [],
+                    }
+
+                last_result = single_result
+                if not _is_gopay_wallet_bound_elsewhere_result(single_result):
+                    return single_result, auto_wallet
+
+                _discard_gopay_wallet_bound_elsewhere(auto_wallet, index=index, total=total)
+                auto_wallet = None
+                if wallet_attempt >= max_wallet_attempts:
+                    break
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_wallet_already_linked_retry",
+                        "email": bind_email,
+                        "current": index,
+                        "total": total,
+                        "attempt": wallet_attempt + 1,
+                        "max_attempts": max_wallet_attempts,
+                        "message": "GoPay 手机号已绑定其他账号，正在重新注册 GoPay 钱包后重试当前账号",
+                        "level": "warn",
+                    },
+                )
+            return last_result, None
+
         def _run_auto_register_gopay_batch() -> dict:
             nonlocal email, account_emails
             aggregate_results: list[dict] = []
@@ -8069,63 +8203,43 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             },
                         )
                         time.sleep(delay_seconds)
-                    try:
-                        if gopay_auto_signup:
-                            auto_wallet = reusable_auto_wallet
-                            if auto_wallet is None:
-                                auto_wallet = wallet_prefetcher.take(index=index)
-                            if auto_wallet is None:
-                                auto_wallet = _take_reusable_gopay_wallet_for_bind(
-                                    index=index,
-                                    total=auto_register_count,
-                                )
-                            if auto_wallet is None:
-                                auto_wallet = _register_gopay_wallet_for_bind(
-                                    index=index,
-                                    total=auto_register_count,
-                                )
-                            if reusable_auto_wallet is not None and reusable_auto_wallet in reusable_gopay_wallets:
-                                reusable_gopay_wallets.remove(reusable_auto_wallet)
-                            reusable_auto_wallet = None
-                            auto_wallet = _prepare_gopay_wallet_for_bind(
-                                auto_wallet,
-                                index=index,
-                                total=auto_register_count,
-                            )
-                        gopay_wallet_prefetch_context.update(
-                            {"prefetcher": wallet_prefetcher, "index": index, "total": auto_register_count, "triggered": False}
+                    if gopay_auto_signup:
+                        single_result, auto_wallet = _run_one_gopay_bind_with_wallet_retry(
+                            current_email,
+                            [],
+                            index=index,
+                            total=auto_register_count,
+                            wallet_prefetcher=wallet_prefetcher,
+                            reusable_wallet=reusable_auto_wallet,
+                            exception_message_prefix="注册已成功，GoPay 绑定异常",
                         )
+                        reusable_auto_wallet = None
+                    else:
                         try:
                             single_result = dict(
                                 _run_one_gopay_bind(
                                     current_email,
                                     [],
-                                    selected_phone_accounts=(
-                                        [auto_wallet.as_phone_account()]
-                                        if auto_wallet is not None
-                                        else _phone_accounts_for_attempt(index)
-                                    ),
+                                    selected_phone_accounts=_phone_accounts_for_attempt(index),
                                     pending_retry_override=0,
                                 )
                                 or {}
                             )
-                        finally:
-                            gopay_wallet_prefetch_context.update({"prefetcher": None, "index": 0, "total": 0, "triggered": False})
-                    except Exception as exc:
-                        logger.exception(
-                            "[gopay-bind] GoPay bind failed after auto-register success: index=%s/%s email=%s",
-                            index,
-                            auto_register_count,
-                            _safe_email_summary(current_email),
-                        )
-                        single_result = {
-                            "status": "failed",
-                            "failure_stage": "gopay_wallet_funding" if "Rekberinaja" in str(exc) else "post_submit",
-                            "register_status": "success",
-                            "bind_status": "failed",
-                            "message": f"注册已成功，GoPay 绑定异常: {exc}",
-                            "screenshot_paths": [],
-                        }
+                        except Exception as exc:
+                            logger.exception(
+                                "[gopay-bind] GoPay bind failed after auto-register success: index=%s/%s email=%s",
+                                index,
+                                auto_register_count,
+                                _safe_email_summary(current_email),
+                            )
+                            single_result = {
+                                "status": "failed",
+                                "failure_stage": "post_submit",
+                                "register_status": "success",
+                                "bind_status": "failed",
+                                "message": f"注册已成功，GoPay 绑定异常: {exc}",
+                                "screenshot_paths": [],
+                            }
                 single_result.setdefault("status", "failed")
                 single_result.setdefault("failure_stage", "")
                 single_result.setdefault("message", "")
@@ -8151,7 +8265,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 single_result["auto_register_total"] = auto_register_count
                 aggregate_results.append(single_result)
                 last_result = single_result
-                retry_reason = _gopay_pending_retry_reason(single_result)
+                retry_reason = "" if _is_gopay_wallet_bound_elsewhere_result(single_result) else _gopay_pending_retry_reason(single_result)
                 if current_email and single_result.get("status") != "success" and retry_reason and pending_retry_attempts > 0:
                     source_stage = _gopay_pending_retry_source_stage(single_result, retry_reason)
                     single_result["bind_status"] = "retry_pending"
@@ -8515,51 +8629,16 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 )
 
                 auto_wallet = None
-                try:
-                    auto_wallet = reusable_auto_wallet
-                    if auto_wallet is None:
-                        auto_wallet = wallet_prefetcher.take(index=index)
-                    if auto_wallet is None:
-                        auto_wallet = _take_reusable_gopay_wallet_for_bind(index=index, total=len(candidates))
-                    if auto_wallet is None:
-                        auto_wallet = _register_gopay_wallet_for_bind(index=index, total=len(candidates))
-                    elif auto_wallet in reusable_gopay_wallets:
-                        reusable_gopay_wallets.remove(auto_wallet)
-                    reusable_auto_wallet = None
-                    auto_wallet = _prepare_gopay_wallet_for_bind(
-                        auto_wallet,
-                        index=index,
-                        total=len(candidates),
-                    )
-                    gopay_wallet_prefetch_context.update(
-                        {"prefetcher": wallet_prefetcher, "index": index, "total": len(candidates), "triggered": False}
-                    )
-                    try:
-                        single_result = dict(
-                            _run_one_gopay_bind(
-                                normalized_candidate,
-                                [],
-                                selected_phone_accounts=[auto_wallet.as_phone_account()],
-                                pending_retry_override=0,
-                            )
-                            or {}
-                        )
-                    finally:
-                        gopay_wallet_prefetch_context.update({"prefetcher": None, "index": 0, "total": 0, "triggered": False})
-                except Exception as exc:
-                    logger.exception(
-                        "[gopay-bind] GoPay auto-signup bind failed: index=%s/%s email=%s",
-                        index,
-                        len(candidates),
-                        _safe_email_summary(normalized_candidate),
-                    )
-                    single_result = {
-                        "status": "failed",
-                        "failure_stage": "gopay_wallet_funding" if "Rekberinaja" in str(exc) else "post_submit",
-                        "message": f"GoPay 自动注册后绑定异常: {exc}",
-                        "screenshot_paths": [],
-                    }
-                    reusable_auto_wallet = None
+                single_result, auto_wallet = _run_one_gopay_bind_with_wallet_retry(
+                    normalized_candidate,
+                    [],
+                    index=index,
+                    total=len(candidates),
+                    wallet_prefetcher=wallet_prefetcher,
+                    reusable_wallet=reusable_auto_wallet,
+                    exception_message_prefix="GoPay 自动注册后绑定异常",
+                )
+                reusable_auto_wallet = None
 
                 single_result.setdefault("status", "failed")
                 single_result.setdefault("failure_stage", "")
@@ -8733,12 +8812,15 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             else:
                 active_phone_accounts = phone_accounts
                 if gopay_auto_signup:
-                    auto_wallet = _take_reusable_gopay_wallet_for_bind(index=1, total=1)
-                    if auto_wallet is None:
-                        auto_wallet = _register_gopay_wallet_for_bind(index=1, total=1)
-                    auto_wallet = _prepare_gopay_wallet_for_bind(auto_wallet, index=1, total=1)
-                    active_phone_accounts = [auto_wallet.as_phone_account()]
-                result = _run_one_gopay_bind(email, account_emails, selected_phone_accounts=active_phone_accounts)
+                    result, auto_wallet = _run_one_gopay_bind_with_wallet_retry(
+                        email,
+                        account_emails,
+                        index=1,
+                        total=1,
+                        exception_message_prefix="GoPay 自动注册后绑定异常",
+                    )
+                else:
+                    result = _run_one_gopay_bind(email, account_emails, selected_phone_accounts=active_phone_accounts)
                 if gopay_auto_signup and auto_wallet is not None and _is_no_transfer_balance_pending_result(result):
                     _discard_gopay_wallet_for_balance_not_ready(auto_wallet, index=1, total=1)
         except Exception as exc:
@@ -8755,6 +8837,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         finally:
             for wallet in active_gopay_wallets:
                 try:
+                    if _is_gopay_wallet_bound_elsewhere_result(result):
+                        _discard_gopay_wallet_bound_elsewhere(wallet, index=1, total=1)
+                        continue
                     if (
                         wallet in reusable_gopay_wallets
                         or _is_unused_gopay_wallet_result(result)
