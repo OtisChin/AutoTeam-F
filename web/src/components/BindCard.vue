@@ -1508,6 +1508,7 @@ const gopayTask = ref(null)
 const gopayLogEntries = ref([])
 const gopayLogScrollRef = ref(null)
 const gopayLoggedProgressEventIds = ref(new Set())
+const gopayLoggedMessages = ref(new Set())
 const gopaySuccessNoticeVisible = ref(false)
 const gopaySuccessNoticeEmail = ref('')
 const whatsappOtpStatus = ref(null)
@@ -2054,6 +2055,8 @@ const gopayStageLabelMap = {
   gopay_wallet_auto_signup_started: '自动注册 GoPay 钱包',
   gopay_wallet_auto_signup_detail: 'GoPay 注册详情',
   gopay_wallet_auto_signup_retry: 'GoPay 注册换号重试',
+  gopay_wallet_auto_signup_rate_limited: 'GoPay 注册触发限流，任务中止',
+  gopay_wallet_auto_signup_network_error: 'GoPay 注册网络中断，任务中止',
   gopay_wallet_auto_signup_probe_failed: 'GoPay 探测异常',
   gopay_wallet_auto_signup_done: 'GoPay 钱包已就绪',
   gopay_wallet_reused: '复用 GoPay 钱包',
@@ -2145,6 +2148,8 @@ const gopayStageLabelMap = {
   midtrans_linking: '发起 GoPay 账户绑定',
   midtrans_already_linked: '手机号已绑定其他账号，等待解绑后重试',
   midtrans_already_linked_failed: '手机号仍绑定其他账号，已停止',
+  gopay_wallet_rate_limited: 'GoPay 注册触发限流，任务已中止',
+  gopay_wallet_network_error: 'GoPay 注册网络中断，任务已中止',
   gopay_validate_reference: '校验 GoPay 绑定引用',
   gopay_user_consent: '确认 GoPay 授权',
   gopay_rate_limited: 'GoPay 尝试过多，请稍后再试',
@@ -2733,6 +2738,10 @@ function scrollGoPayLogToBottom() {
 }
 
 function pushGoPayLog(message, level = 'info') {
+  const normalizedMessage = String(message || '').replace(/\s+/g, ' ').trim()
+  if (!normalizedMessage) return
+  if (gopayLoggedMessages.value.has(normalizedMessage)) return
+  gopayLoggedMessages.value.add(normalizedMessage)
   const levelMap = {
     info: { label: 'INFO', levelClass: 'text-blue-400' },
     success: { label: 'SUCCESS', levelClass: 'text-emerald-400' },
@@ -2743,7 +2752,7 @@ function pushGoPayLog(message, level = 'info') {
   gopayLogEntries.value.push({
     id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     time: formatDate(),
-    message,
+    message: normalizedMessage,
     label: meta.label,
     levelClass: meta.levelClass,
   })
@@ -2773,6 +2782,7 @@ function goPayProgressLogLevel(event) {
   if (stage === 'gopay_wallet_balance_wait' || stage === 'gopay_wallet_balance_not_ready' || stage === 'gopay_wallet_balance_abandoned' || stage === 'gopay_wallet_balance_check_failed') return 'warn'
   if (stage === 'gopay_wallet_auto_signup_probe_failed') return 'error'
   if (stage === 'gopay_oauth_phone_required_removed') return 'warn'
+  if (stage.includes('network_error')) return 'warn'
   if (stage.includes('not_approved') || stage.includes('blocked') || stage.includes('cooldown') || stage.includes('retry')) return 'warn'
   if (stage === 'failed' || stage.includes('all_accounts')) return 'error'
   return 'info'
@@ -3274,6 +3284,7 @@ async function startGoPayBind() {
   gopaySubmitting.value = true
   gopayLogEntries.value = []
   gopayLoggedProgressEventIds.value = new Set()
+  gopayLoggedMessages.value = new Set()
   pushGoPayLog(
     gopayForm.value.autoRegister
       ? `准备提交自动注册并 GoPay 绑定任务，共 ${normalizedGoPayAutoRegisterCount.value} 个账号`

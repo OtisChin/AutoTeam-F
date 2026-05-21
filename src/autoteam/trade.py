@@ -407,6 +407,11 @@ def inventory_summary() -> dict:
         _clear_unexported_trade_allocations(conn)
         allocated = _allocated_emails(conn)
     stock_sources = _eligible_plus_sources("cpa", allocated)
+    stock_sources_sub = _eligible_plus_sources("sub", allocated)
+    stock_sources_credentials = _eligible_plus_sources("credentials", allocated)
+    stock_sources_cpa_sub = _eligible_plus_bundle_sources(["cpa", "sub"], allocated)
+    stock_sources_cpa_credentials = _eligible_plus_bundle_sources(["cpa", "credentials"], allocated)
+    stock_sources_all_formats = _eligible_plus_bundle_sources(["cpa", "sub", "credentials"], allocated)
     cdks = list_cdks()
     main_email = str(get_admin_email() or "").strip().lower()
     plus_accounts = [account for account in load_accounts() if _is_plus_account(account, main_email)]
@@ -426,6 +431,12 @@ def inventory_summary() -> dict:
     )
     return {
         "stock_available": len(stock_sources),
+        "stock_available_cpa": len(stock_sources),
+        "stock_available_sub": len(stock_sources_sub),
+        "stock_available_credentials": len(stock_sources_credentials),
+        "stock_available_cpa_sub": len(stock_sources_cpa_sub),
+        "stock_available_cpa_credentials": len(stock_sources_cpa_credentials),
+        "stock_available_all_formats": len(stock_sources_all_formats),
         "stock_exported": exported_count,
         "stock_discarded": discarded_count,
         "stock_missing_credentials": missing_credentials_count,

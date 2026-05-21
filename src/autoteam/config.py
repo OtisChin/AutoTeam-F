@@ -185,6 +185,12 @@ def _parse_proxy_url(proxy_url: str):
 
     host = _format_proxy_host(parsed.hostname)
     scheme = "socks5" if parsed.scheme == "socks5h" else parsed.scheme
+    if scheme.startswith("socks") and (parsed.username or parsed.password):
+        # Chromium/Playwright cannot launch with authenticated SOCKS proxies.
+        # Many residential proxy endpoints expose HTTP and SOCKS on the same
+        # host:port, so use HTTP for browser traffic while keeping
+        # normalize_proxy_url unchanged for non-browser clients.
+        scheme = "http"
     server = f"{scheme}://{host}"
     if parsed.port:
         server = f"{server}:{parsed.port}"
@@ -202,16 +208,18 @@ def get_playwright_launch_options(
     proxy_bypass: str | None = None,
     *,
     headless: bool | None = None,
+    background: bool | None = None,
 ):
     """统一的 Playwright Chromium 启动参数。"""
     resolved_headless = False if headless is None else bool(headless)
+    resolved_background = PLAYWRIGHT_BACKGROUND if background is None else bool(background)
     args = [
         "--disable-blink-features=AutomationControlled",
         "--disable-quic",
         "--disable-features=UseDnsHttpsSvcb,UseDnsHttpsSvcbAlpn",
         "--no-sandbox",
     ]
-    if PLAYWRIGHT_BACKGROUND and not resolved_headless:
+    if resolved_background and not resolved_headless:
         args.extend(
             [
                 "--window-position=-32000,-32000",

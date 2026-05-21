@@ -295,6 +295,7 @@
               <th class="px-4 py-3 font-medium">邮箱</th>
               <th class="px-4 py-3 font-medium">账号类型</th>
               <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium">绑定渠道</th>
               <th class="px-4 py-3 font-medium">账密导出</th>
               <th class="px-4 py-3 font-medium">导出时间</th>
               <th class="px-4 py-3 font-medium">Hub同步</th>
@@ -307,7 +308,7 @@
           </thead>
           <tbody>
             <tr v-if="!filteredAccounts.length">
-              <td class="px-4 py-8 text-center text-gray-500" colspan="13">没有匹配的账号</td>
+              <td class="px-4 py-8 text-center text-gray-500" colspan="14">没有匹配的账号</td>
             </tr>
             <tr v-for="(acc, i) in filteredAccounts" :key="acc.email"
               class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
@@ -338,6 +339,12 @@
                   :class="statusClass(acc.status)">
                   <span class="w-1.5 h-1.5 rounded-full" :class="dotClass(acc.status)"></span>
                   {{ statusLabel(acc.status) }}
+                </span>
+              </td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="bindProviderClass(acc.last_bind_provider)">
+                  {{ bindProviderLabel(acc.last_bind_provider) }}
                 </span>
               </td>
               <td class="px-4 py-3">
@@ -1210,6 +1217,22 @@ function accountTypeLabel(type) {
   }[type] || type || '未知'
 }
 
+function bindProviderLabel(provider) {
+  return {
+    paypal: 'PayPal',
+    gopay: 'GoPay',
+    card: 'Card',
+  }[String(provider || '').toLowerCase()] || '-'
+}
+
+function bindProviderClass(provider) {
+  return {
+    paypal: 'bg-blue-500/10 text-blue-300',
+    gopay: 'bg-emerald-500/10 text-emerald-300',
+    card: 'bg-amber-500/10 text-amber-300',
+  }[String(provider || '').toLowerCase()] || 'bg-gray-500/10 text-gray-500'
+}
+
 function credentialExportLabel(acc) {
   return acc?.credentials_exported ? '已导出' : '未导出'
 }
@@ -1338,6 +1361,7 @@ function exportAccounts() {
       last_quota_check_at: acc.last_quota_check_at || null,
       last_bind_status: acc.last_bind_status || '',
       last_bind_at: acc.last_bind_at || null,
+      last_bind_provider: acc.last_bind_provider || '',
       last_checkout_url: acc.last_checkout_url || '',
       last_proxy_label: acc.last_proxy_label || '',
       last_bind_task_id: acc.last_bind_task_id || '',

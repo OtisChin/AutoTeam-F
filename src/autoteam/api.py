@@ -1300,7 +1300,6 @@ _TASK_LIST_PARAM_ALLOW_KEYS = {
     "link_type",
     "mode",
     "phone_country_code",
-    "project_path",
     "proxy_label",
     "task_id",
     "timeout",
@@ -2053,21 +2052,31 @@ class GoPayBindTaskParams(BaseModel):
 
 
 class PayPalTaskParams(BaseModel):
-    project_path: str = Field("", validation_alias=AliasChoices("project_path", "projectPath"))
-    config_path: str = Field("", validation_alias=AliasChoices("config_path", "configPath"))
-    python_executable: str = Field("", validation_alias=AliasChoices("python_executable", "pythonExecutable"))
-    mode: str = "single"
-    batch: int = 1
-    workers: int = 3
-    self_dealer: int = Field(1, validation_alias=AliasChoices("self_dealer", "selfDealer"))
-    count: int = 0
-    register_only: bool = Field(False, validation_alias=AliasChoices("register_only", "registerOnly"))
-    pay_only: bool = Field(False, validation_alias=AliasChoices("pay_only", "payOnly"))
-    rt_only: bool = Field(False, validation_alias=AliasChoices("rt_only", "rtOnly"))
-    register_mode: str = Field("browser", validation_alias=AliasChoices("register_mode", "registerMode"))
-    target_emails: list[str] = Field(default_factory=list, validation_alias=AliasChoices("target_emails", "targetEmails"))
-    extra_args: str = Field("", validation_alias=AliasChoices("extra_args", "extraArgs"))
-    use_xvfb: bool | None = Field(None, validation_alias=AliasChoices("use_xvfb", "useXvfb"))
+    runner_mode: str = Field("", validation_alias=AliasChoices("runner_mode", "runnerMode"))
+    email: str = ""
+    checkout_url: str = Field("", validation_alias=AliasChoices("checkout_url", "checkoutUrl"))
+    proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
+    proxy_label: str = Field("", validation_alias=AliasChoices("proxy_label", "proxyLabel"))
+    proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
+    manual_confirm: bool = Field(True, validation_alias=AliasChoices("manual_confirm", "manualConfirm"))
+    paypal_mode: str = Field("existing_account", validation_alias=AliasChoices("paypal_mode", "paypalMode"))
+    paypal_email: str = Field("", validation_alias=AliasChoices("paypal_email", "paypalEmail"))
+    paypal_password: str = Field("", validation_alias=AliasChoices("paypal_password", "paypalPassword"))
+    sms_url: str = Field("", validation_alias=AliasChoices("sms_url", "smsUrl"))
+    otp_channel: str = Field("sms", validation_alias=AliasChoices("otp_channel", "otpChannel"))
+    paypal_card_number: str = Field("", validation_alias=AliasChoices("paypal_card_number", "paypalCardNumber"))
+    paypal_card_expiry: str = Field("", validation_alias=AliasChoices("paypal_card_expiry", "paypalCardExpiry"))
+    paypal_card_cvv: str = Field("", validation_alias=AliasChoices("paypal_card_cvv", "paypalCardCvv"))
+    autofill_enabled: bool = Field(False, validation_alias=AliasChoices("autofill_enabled", "autofillEnabled"))
+    billing_name: str = Field("", validation_alias=AliasChoices("billing_name", "billingName"))
+    billing_email: str = Field("", validation_alias=AliasChoices("billing_email", "billingEmail"))
+    billing_phone: str = Field("", validation_alias=AliasChoices("billing_phone", "billingPhone"))
+    billing_country: str = Field("US", validation_alias=AliasChoices("billing_country", "billingCountry"))
+    billing_state: str = Field("", validation_alias=AliasChoices("billing_state", "billingState"))
+    billing_city: str = Field("", validation_alias=AliasChoices("billing_city", "billingCity"))
+    billing_zip: str = Field("", validation_alias=AliasChoices("billing_zip", "billingZip"))
+    billing_address1: str = Field("", validation_alias=AliasChoices("billing_address1", "billingAddress1"))
+    billing_address2: str = Field("", validation_alias=AliasChoices("billing_address2", "billingAddress2"))
     timeout_seconds: int = Field(0, validation_alias=AliasChoices("timeout_seconds", "timeoutSeconds"))
 
 
@@ -6525,6 +6534,7 @@ def post_bind_card_task(params: BindCardTaskParams):
             email,
             last_bind_status="cancelled" if task_status == "cancelled" else result.get("status") or "failed",
             last_bind_at=time.time(),
+            last_bind_provider="card",
             last_checkout_url=checkout_url,
             last_card_id=params.card_item_id,
             last_proxy_label=params.proxy_label,
@@ -6593,6 +6603,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     from autoteam.config import normalize_proxy_url
     from autoteam.gopay_executor import (
         _compact_log_text,
+        _looks_like_gopay_rate_limit_text,
         _gopay_pending_retry_reason,
         _gopay_pending_retry_source_stage,
         _safe_email_summary,
@@ -6646,6 +6657,55 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     otp_channel = str(params.otp_channel or "sms").strip().lower()
     if otp_channel not in {"sms", "whatsapp"}:
         raise HTTPException(status_code=400, detail="otp_channel 只支持 sms 或 whatsapp")
+
+    class _GoPayWalletSignupRateLimited(RuntimeError):
+        pass
+
+    class _GoPayWalletSignupNetworkError(RuntimeError):
+        pass
+
+    def _looks_like_gopay_wallet_signup_rate_limited(exc: Exception | str) -> bool:
+        text = _compact_log_text(exc, limit=400)
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return False
+        if any(
+            marker in normalized
+            for marker in (
+                "scp-cvs:error:ratelimit:init_verification",
+                "ratelimit:init_verification",
+                "rate_limited",
+                "rate limited",
+            )
+        ):
+            return True
+        return _looks_like_gopay_rate_limit_text(normalized)
+
+    def _looks_like_gopay_wallet_signup_network_error(exc: Exception | str) -> bool:
+        normalized = str(_compact_log_text(exc, limit=400) or "").strip().lower()
+        if not normalized or _looks_like_gopay_wallet_signup_rate_limited(normalized):
+            return False
+        return any(
+            marker in normalized
+            for marker in (
+                "recv failure",
+                "connection was reset",
+                "connection reset",
+                "could not resolve host",
+                "operation timed out",
+                "timed out",
+                "connection timed out",
+                "connection refused",
+                "connection aborted",
+                "network is unreachable",
+                "remote disconnected",
+                "curl: (6)",
+                "curl: (7)",
+                "curl: (28)",
+                "curl: (35)",
+                "curl: (56)",
+            )
+        )
     phone_accounts: list[dict] = []
     seen_phone_accounts: set[tuple[str, str, str]] = set()
     for raw_phone_account in params.phone_accounts or []:
@@ -6880,6 +6940,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             success_fields = {
                 "last_bind_status": "success",
                 "last_bind_at": marked_at,
+                "last_bind_provider": "gopay",
                 "last_checkout_url": success_checkout_url or checkout_url,
                 "last_proxy_label": params.proxy_label,
                 "last_bind_task_id": task_id,
@@ -7105,6 +7166,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 discarded_reason=reason,
                 last_bind_status="failed",
                 last_bind_at=time.time(),
+                last_bind_provider="gopay",
                 last_checkout_url=checkout_url,
                 last_proxy_label=params.proxy_label,
                 last_bind_task_id=task_id,
@@ -7686,6 +7748,36 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     raise
                 except Exception as exc:
                     last_exc = exc
+                    if _looks_like_gopay_wallet_signup_rate_limited(exc):
+                        message = f"GoPay 钱包自动注册触发 rate_limited，已停止任务: {_compact_log_text(exc, limit=220)}"
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_wallet_auto_signup_rate_limited",
+                                "current": index,
+                                "total": total,
+                                "attempt": wallet_attempt,
+                                "max_attempts": max_wallet_attempts,
+                                "message": message,
+                                "level": "error",
+                            },
+                        )
+                        raise _GoPayWalletSignupRateLimited(message) from exc
+                    if _looks_like_gopay_wallet_signup_network_error(exc):
+                        message = f"GoPay 钱包自动注册遇到网络中断，已停止继续换号: {_compact_log_text(exc, limit=220)}"
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_wallet_auto_signup_network_error",
+                                "current": index,
+                                "total": total,
+                                "attempt": wallet_attempt,
+                                "max_attempts": max_wallet_attempts,
+                                "message": message,
+                                "level": "warn",
+                            },
+                        )
+                        raise _GoPayWalletSignupNetworkError(message) from exc
                     if wallet_attempt >= max_wallet_attempts:
                         raise
                     _append_task_progress(
@@ -7852,6 +7944,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 self.futures = [item for item in self.futures if item[0] is not future]
                 try:
                     wallet = future.result()
+                except (_GoPayWalletSignupRateLimited, _GoPayWalletSignupNetworkError):
+                    raise
                 except Exception as exc:
                     _append_task_progress(
                         task_id,
@@ -8103,6 +8197,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     finally:
                         gopay_wallet_prefetch_context.update({"prefetcher": None, "index": 0, "total": 0, "triggered": False})
                 except Exception as exc:
+                    if isinstance(exc, (_GoPayWalletSignupRateLimited, _GoPayWalletSignupNetworkError)):
+                        raise
                     logger.exception(
                         "[gopay-bind] GoPay auto-signup bind failed: index=%s/%s email=%s",
                         index,
@@ -8204,15 +8300,80 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         )
                         time.sleep(delay_seconds)
                     if gopay_auto_signup:
-                        single_result, auto_wallet = _run_one_gopay_bind_with_wallet_retry(
-                            current_email,
-                            [],
-                            index=index,
-                            total=auto_register_count,
-                            wallet_prefetcher=wallet_prefetcher,
-                            reusable_wallet=reusable_auto_wallet,
-                            exception_message_prefix="注册已成功，GoPay 绑定异常",
-                        )
+                        try:
+                            single_result, auto_wallet = _run_one_gopay_bind_with_wallet_retry(
+                                current_email,
+                                [],
+                                index=index,
+                                total=auto_register_count,
+                                wallet_prefetcher=wallet_prefetcher,
+                                reusable_wallet=reusable_auto_wallet,
+                                exception_message_prefix="注册已成功，GoPay 绑定异常",
+                            )
+                        except _GoPayWalletSignupRateLimited as exc:
+                            wallet_prefetcher.close()
+                            failed_email = _normalized_email(current_email)
+                            failure_result = {
+                                "status": "failed",
+                                "failure_stage": "gopay_wallet_rate_limited",
+                                "register_status": "success" if failed_email else "failed",
+                                "bind_status": "failed" if failed_email else "not_started",
+                                "message": str(exc),
+                                "screenshot_paths": [],
+                                "auto_register_results": aggregate_results,
+                                "auto_register_count": auto_register_count,
+                                "auto_register_attempted": index,
+                                "registered_emails": registered_emails,
+                                "successful_emails": successful_emails,
+                                "failed_emails": failed_emails
+                                + (
+                                    [
+                                        {
+                                            "email": failed_email,
+                                            "failure_stage": "gopay_wallet_rate_limited",
+                                            "message": str(exc),
+                                            "register_status": "success",
+                                            "bind_status": "failed",
+                                        }
+                                    ]
+                                    if failed_email
+                                    else []
+                                ),
+                                "bind_failed_emails": bind_failed_emails
+                                + (
+                                    [
+                                        {
+                                            "email": failed_email,
+                                            "failure_stage": "gopay_wallet_rate_limited",
+                                            "message": str(exc),
+                                        }
+                                    ]
+                                    if failed_email
+                                    else []
+                                ),
+                                "pending_retry_emails": [item["email"] for item in pending_retry_items if item.get("email")],
+                                "retried_emails": retried_emails,
+                                "rejected_emails": rejected_emails,
+                                "payment_failed_emails": payment_failed_emails,
+                                "nonzero_blocked_emails": nonzero_blocked_emails,
+                                "blocked_emails": blocked_emails,
+                                "email_used": failed_email or last_success_email or _normalized_email(email),
+                            }
+                            if failed_email:
+                                failure_result["auto_register_results"] = aggregate_results + [
+                                    {
+                                        "status": "failed",
+                                        "failure_stage": "gopay_wallet_rate_limited",
+                                        "register_status": "success",
+                                        "bind_status": "failed",
+                                        "message": str(exc),
+                                        "screenshot_paths": [],
+                                        "email_used": failed_email,
+                                        "auto_register_index": index,
+                                        "auto_register_total": auto_register_count,
+                                    }
+                                ]
+                            return failure_result
                         reusable_auto_wallet = None
                     else:
                         try:
@@ -8629,15 +8790,50 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 )
 
                 auto_wallet = None
-                single_result, auto_wallet = _run_one_gopay_bind_with_wallet_retry(
-                    normalized_candidate,
-                    [],
-                    index=index,
-                    total=len(candidates),
-                    wallet_prefetcher=wallet_prefetcher,
-                    reusable_wallet=reusable_auto_wallet,
-                    exception_message_prefix="GoPay 自动注册后绑定异常",
-                )
+                try:
+                    single_result, auto_wallet = _run_one_gopay_bind_with_wallet_retry(
+                        normalized_candidate,
+                        [],
+                        index=index,
+                        total=len(candidates),
+                        wallet_prefetcher=wallet_prefetcher,
+                        reusable_wallet=reusable_auto_wallet,
+                        exception_message_prefix="GoPay 自动注册后绑定异常",
+                    )
+                except _GoPayWalletSignupRateLimited as exc:
+                    wallet_prefetcher.close()
+                    return {
+                        "status": "failed",
+                        "failure_stage": "gopay_wallet_rate_limited",
+                        "message": str(exc),
+                        "screenshot_paths": [],
+                        "auto_signup_account_results": aggregate_results
+                        + [
+                            {
+                                "status": "failed",
+                                "failure_stage": "gopay_wallet_rate_limited",
+                                "message": str(exc),
+                                "screenshot_paths": [],
+                                "email_used": normalized_candidate,
+                                "auto_signup_account_index": index,
+                                "auto_signup_account_total": len(candidates),
+                            }
+                        ],
+                        "attempted_emails": attempted_emails,
+                        "successful_emails": successful_emails,
+                        "rejected_emails": rejected_emails,
+                        "payment_failed_emails": payment_failed_emails,
+                        "nonzero_blocked_emails": nonzero_blocked_emails,
+                        "blocked_emails": blocked_emails,
+                        "failed_emails": failed_emails
+                        + [
+                            {
+                                "email": normalized_candidate,
+                                "failure_stage": "gopay_wallet_rate_limited",
+                                "message": str(exc),
+                            }
+                        ],
+                    }
                 reusable_auto_wallet = None
 
                 single_result.setdefault("status", "failed")
@@ -8826,6 +9022,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         except Exception as exc:
             logger.exception("[gopay-bind] unexpected error")
             failure_stage = "gopay_auto_register" if auto_register and not email else "post_submit"
+            if isinstance(exc, _GoPayWalletSignupRateLimited):
+                failure_stage = "gopay_wallet_rate_limited"
+            if isinstance(exc, _GoPayWalletSignupNetworkError):
+                failure_stage = "gopay_wallet_network_error"
             if "Rekberinaja" in str(exc):
                 failure_stage = "gopay_wallet_funding"
             result = {
@@ -8918,6 +9118,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         account_update = {
             "last_bind_status": "cancelled" if task_status == "cancelled" else result.get("status") or "failed",
             "last_bind_at": finished_at,
+            "last_bind_provider": "gopay",
             "last_checkout_url": checkout_url or result.get("checkout_url") or "",
             "last_proxy_label": params.proxy_label,
             "last_bind_task_id": task_id,
@@ -9081,37 +9282,228 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 
 @app.post("/api/tasks/paypal", status_code=202)
 def post_paypal_task(params: PayPalTaskParams):
-    mode = str(params.mode or "single").strip().lower()
-    if mode not in {"single", "batch", "self_dealer", "daemon", "free_register", "free_backfill_rt"}:
-        raise HTTPException(status_code=400, detail="不支持的 PayPal 运行模式")
-    if mode == "batch" and params.batch < 1:
-        raise HTTPException(status_code=400, detail="批量模式 batch 必须大于 0")
-    if mode == "self_dealer" and params.self_dealer < 1:
-        raise HTTPException(status_code=400, detail="self_dealer 模式成员数必须大于 0")
-    if mode == "free_register" and params.count < 0:
-        raise HTTPException(status_code=400, detail="注册数量不能为负数")
     if params.timeout_seconds < 0:
         raise HTTPException(status_code=400, detail="超时时间不能为负数")
 
-    payload = params.model_dump()
-    payload["mode"] = mode
-    payload["target_emails"] = [str(email).strip() for email in payload.get("target_emails") or [] if str(email).strip()]
+    runner_mode = str(params.runner_mode or "").strip().lower()
+    if runner_mode and runner_mode != "manual_checkout":
+        raise HTTPException(status_code=400, detail="不支持的 PayPal 运行模式")
+    paypal_mode = str(params.paypal_mode or "existing_account").strip().lower()
+    if paypal_mode in {"login", "existing", "existing-account"}:
+        paypal_mode = "existing_account"
+    elif paypal_mode in {"signup", "register", "create-account"}:
+        paypal_mode = "create_account"
+    elif paypal_mode not in {"existing_account", "create_account"}:
+        raise HTTPException(status_code=400, detail="paypal_mode 只支持 existing_account 或 create_account")
 
-    def _run(task_id: str):
-        from autoteam import cancel_signal
-        from autoteam.paypal_executor import run_paypal_pipeline
+    from autoteam import cancel_signal
+    from autoteam.accounts import ensure_session_only_account, find_account, load_accounts, update_account
+    from autoteam.auth_session_store import get_auth_session_file
+    from autoteam.bind_audit import record_bind_audit
+    from autoteam.paypal_bind_executor import run_paypal_bind_task
 
-        logger.info("[paypal] task submitted: mode=%s project=%s config=%s", mode, payload.get("project_path") or "<default>", payload.get("config_path") or "<default>")
-        return run_paypal_pipeline(
-            payload,
-            on_progress=lambda event: _append_task_progress(task_id, event),
-            is_cancelled=cancel_signal.is_cancelled,
+    email = _normalized_email(params.email)
+    checkout_url = str(params.checkout_url or "").strip()
+    sms_url = str(params.sms_url or "").strip()
+    otp_channel = str(params.otp_channel or "sms").strip().lower() or "sms"
+    if not email:
+        raise HTTPException(status_code=400, detail="email 不能为空")
+    if not checkout_url:
+        raise HTTPException(status_code=400, detail="checkout_url 不能为空")
+    if otp_channel not in {"sms", "whatsapp"}:
+        raise HTTPException(status_code=400, detail="otp_channel 只支持 sms 或 whatsapp")
+    if not params.manual_confirm:
+        if paypal_mode == "existing_account":
+            if not str(params.paypal_email or "").strip():
+                raise HTTPException(status_code=400, detail="已有账号模式需要 paypal_email")
+            if not str(params.paypal_password or "").strip():
+                raise HTTPException(status_code=400, detail="已有账号模式需要 paypal_password")
+        elif paypal_mode == "create_account":
+            if not str(params.billing_phone or "").strip():
+                raise HTTPException(status_code=400, detail="自动注册模式需要 billing_phone")
+            if otp_channel == "whatsapp":
+                sms_url = _default_whatsapp_otp_url()
+            if not sms_url:
+                raise HTTPException(status_code=400, detail="自动注册模式需要 sms_url")
+            if not bool(params.autofill_enabled):
+                if not str(params.paypal_card_number or "").strip():
+                    raise HTTPException(status_code=400, detail="自动注册模式需要 paypal_card_number")
+                if not str(params.paypal_card_expiry or "").strip():
+                    raise HTTPException(status_code=400, detail="自动注册模式需要 paypal_card_expiry")
+                if not str(params.paypal_card_cvv or "").strip():
+                    raise HTTPException(status_code=400, detail="自动注册模式需要 paypal_card_cvv")
+
+    accounts = load_accounts()
+    account = find_account(accounts, email)
+    if not account:
+        auth_session_file = get_auth_session_file(email)
+        if auth_session_file and Path(auth_session_file).exists():
+            account = ensure_session_only_account(email) or _session_only_account_stub(email)
+        else:
+            raise HTTPException(status_code=404, detail="账号不存在")
+    if not _resolve_status_auth_file(account):
+        raise HTTPException(status_code=400, detail="该账号缺少可用 auth_session/auth_file")
+
+    payload = {
+        "runner_mode": "manual_checkout",
+        "email": email,
+        "checkout_url": checkout_url,
+        "proxy_url": params.proxy_url,
+        "proxy_label": params.proxy_label,
+        "proxy_bypass": params.proxy_bypass,
+        "manual_confirm": bool(params.manual_confirm),
+        "paypal_mode": paypal_mode,
+        "paypal_email": params.paypal_email,
+        "sms_url_present": bool(sms_url),
+        "otp_channel": otp_channel,
+        "paypal_card_number_present": bool(str(params.paypal_card_number or "").strip()),
+        "paypal_card_expiry_present": bool(str(params.paypal_card_expiry or "").strip()),
+        "paypal_card_cvv_present": bool(str(params.paypal_card_cvv or "").strip()),
+        "paypal_auto_login": (not bool(params.manual_confirm)) and bool(str(params.paypal_password or "").strip()),
+        "autofill_enabled": bool(params.autofill_enabled),
+        "billing_name": params.billing_name,
+        "billing_email": params.billing_email,
+        "billing_phone": params.billing_phone,
+        "billing_country": params.billing_country,
+        "billing_state": params.billing_state,
+        "billing_city": params.billing_city,
+        "billing_zip": params.billing_zip,
+        "billing_address1": params.billing_address1,
+        "billing_address2": params.billing_address2,
+        "timeout_seconds": int(params.timeout_seconds or 900),
+    }
+    autofill_payload = {
+        "name": params.billing_name,
+        "email": params.billing_email or email,
+        "phone": params.billing_phone,
+        "country": params.billing_country,
+        "state": params.billing_state,
+        "city": params.billing_city,
+        "zip": params.billing_zip,
+        "address1": params.billing_address1,
+        "address2": params.billing_address2,
+        "card_number": params.paypal_card_number,
+        "card_expiry": params.paypal_card_expiry,
+        "card_cvv": params.paypal_card_cvv,
+    }
+
+    def _run():
+        task_id = _current_task_id_for_group() or ""
+        started_at = time.time()
+        result = None
+
+        try:
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "paypal_starting",
+                    "email": email,
+                    "proxy_label": params.proxy_label,
+                    "message": "PayPal 任务启动中",
+                },
+            )
+            result = run_paypal_bind_task(
+                email=email,
+                checkout_url=checkout_url,
+                proxy_url=params.proxy_url,
+                proxy_bypass=params.proxy_bypass,
+                manual_confirm=params.manual_confirm,
+                timeout_seconds=max(60, int(params.timeout_seconds or 900)),
+                is_cancelled=cancel_signal.is_cancelled,
+                on_progress=lambda event: _append_task_progress(task_id, event),
+                autofill_enabled=bool(params.autofill_enabled),
+                autofill_payload=autofill_payload,
+                paypal_mode=paypal_mode,
+                paypal_email=params.paypal_email,
+                paypal_password=params.paypal_password,
+                sms_url=sms_url,
+                otp_channel=otp_channel,
+                paypal_card_number=params.paypal_card_number,
+                paypal_card_expiry=params.paypal_card_expiry,
+                paypal_card_cvv=params.paypal_card_cvv,
+            )
+        except Exception as exc:
+            logger.exception("[paypal] unexpected error")
+            result = {
+                "status": "failed",
+                "failure_stage": "post_submit",
+                "message": f"PayPal 任务执行异常: {exc}",
+                "screenshot_paths": [],
+            }
+
+        result = dict(result or {})
+        result.setdefault("status", "failed")
+        result.setdefault("failure_stage", "")
+        result.setdefault("message", "")
+        result.setdefault("screenshot_paths", [])
+        result["email"] = email
+        result["checkout_url"] = checkout_url
+        result["proxy_label"] = params.proxy_label
+        result["manual_confirm"] = bool(params.manual_confirm)
+        result["paypal_mode"] = paypal_mode
+        result["paypal_auto_login"] = (not bool(params.manual_confirm)) and bool(str(params.paypal_password or "").strip())
+        result["autofill_enabled"] = bool(params.autofill_enabled)
+        result["provider"] = "paypal"
+
+        if cancel_signal.is_cancelled() and result.get("status") != "success":
+            task_status = "cancelled"
+        elif result.get("status") == "success":
+            task_status = "completed"
+        else:
+            task_status = "failed"
+        result["task_status"] = task_status
+
+        update_account(
+            email,
+            last_bind_status="cancelled" if task_status == "cancelled" else result.get("status") or "failed",
+            last_bind_at=time.time(),
+            last_bind_provider="paypal",
+            last_checkout_url=checkout_url,
+            last_proxy_label=params.proxy_label,
+            last_bind_task_id=task_id,
+            last_bind_message=result.get("message") or "",
+            last_bind_failure_stage=result.get("failure_stage") or "",
         )
 
-    task_params = dict(payload)
-    if task_params.get("python_executable"):
-        task_params["python_executable"] = task_params["python_executable"]
-    task = _start_task("paypal", _run, task_params, task_group=TASK_GROUP_PAYPAL, pass_task_id=True)
+        record_bind_audit(
+            {
+                "task_id": task_id,
+                "email": email,
+                "checkout_url": checkout_url,
+                "proxy_label": params.proxy_label,
+                "proxy_url": params.proxy_url or "",
+                "manual_confirm": bool(params.manual_confirm),
+                "paypal_mode": paypal_mode,
+                "paypal_auto_login": (not bool(params.manual_confirm)) and bool(str(params.paypal_password or "").strip()),
+                "autofill_enabled": bool(params.autofill_enabled),
+                "status": result.get("status") or "failed",
+                "task_status": task_status,
+                "failure_stage": result.get("failure_stage") or "",
+                "message": result.get("message") or "",
+                "started_at": started_at,
+                "finished_at": time.time(),
+                "screenshot_paths": result.get("screenshot_paths") or [],
+                "flow": f"paypal_{paypal_mode}",
+                "category": "paypal",
+                "provider": "paypal",
+            }
+        )
+
+        _append_task_progress(
+            task_id,
+            {
+                "stage": "paypal_completed" if result.get("status") == "success" else "paypal_finished",
+                "bind_status": result.get("status") or "failed",
+                "task_status": task_status,
+                "message": result.get("message") or "",
+            },
+        )
+
+        if result.get("status") != "success":
+            raise TaskResultError(result.get("message") or "PayPal 任务失败", task_result=result)
+        return result
+
+    task = _start_task("paypal", _run, payload, task_group=TASK_GROUP_PAYPAL)
     return task
 
 

@@ -110,6 +110,7 @@ Plus 兼容旧参数：
 | POST | `/api/tasks/cleanup` | 清理成员 `{"max_seats": null}` |
 | POST | `/api/tasks/bind-card` | 启动绑卡任务 |
 | POST | `/api/tasks/gopay-bind` | 启动 GoPay 自助绑卡任务 |
+| POST | `/api/tasks/paypal` | 启动 PayPal 绑定任务 |
 | GET | `/api/tasks` | 任务列表 |
 | GET | `/api/tasks/{task_id}` | 任务详情 |
 
@@ -129,6 +130,15 @@ Plus 兼容旧参数：
   "proxy_url": "socks5://user:pass@host:port",
   "proxy_label": "res-us-01",
   "manual_confirm": true,
+  "autofill_enabled": true,
+  "billing_name": "James Smith",
+  "billing_phone": "1234567890",
+  "billing_country": "US",
+  "billing_state": "NY",
+  "billing_city": "New York",
+  "billing_zip": "10001",
+  "billing_address1": "123 Main St",
+  "billing_address2": "",
   "timeout_seconds": 900
 }
 ```
@@ -187,6 +197,47 @@ Plus 兼容旧参数：
 - `sms_url`：短信验证码接口 URL
 - `gopay_pin`：用户提供的 GoPay PIN
 - `proxy_url` / `proxy_label`：可选，任务级代理覆盖
+- `timeout_seconds`：等待最终结果的超时时间，默认 900 秒
+
+### PayPal 绑定任务
+
+`POST /api/tasks/paypal`
+
+请求体：
+
+```json
+{
+  "runner_mode": "manual_checkout",
+  "email": "user@example.com",
+  "checkout_url": "https://pay.openai.com/...",
+  "proxy_url": "socks5://user:pass@host:port",
+  "proxy_label": "res-us-01",
+  "manual_confirm": false,
+  "paypal_mode": "create_account",
+  "paypal_email": "",
+  "paypal_password": "",
+  "sms_url": "https://sms.example.test/api/record?token=demo",
+  "otp_channel": "sms",
+  "paypal_card_number": "4111111111111111",
+  "paypal_card_expiry": "03/30",
+  "paypal_card_cvv": "996",
+  "timeout_seconds": 900
+}
+```
+
+说明：
+
+- `runner_mode`：可省略，若传入则仅支持 `manual_checkout`
+- `email`：号池账号邮箱，要求本地存在可用 `auth_session` 或 `auth_file`
+- `checkout_url`：由 `/api/bind/link` 生成，或手动提供的 checkout 链接；执行器会先注入该账号的 `auth_session`，再打开 checkout
+- `proxy_url` / `proxy_label`：可选，任务级代理覆盖
+- `manual_confirm`：`false` 时走自动模式，会自动填写 checkout 账单、切到 PayPal，并继续处理登录/注册/短信验证码/授权；`true` 时只打开页面并等待人工确认
+- `paypal_mode`：自动模式支持 `existing_account`（登录已有 PayPal 账号）或 `create_account`（按 PDF 教程自动注册新 PayPal 账号并完成授权）
+- `paypal_email` / `paypal_password`：`existing_account` 模式必填；`create_account` 模式可选，留空则自动生成。密码只用于本次执行，不会写入任务参数/审计日志
+- `sms_url` / `otp_channel`：`create_account` 模式使用的接码配置；`otp_channel` 支持 `sms` 或 `whatsapp`
+- `paypal_card_number` / `paypal_card_expiry` / `paypal_card_cvv`：`create_account` 模式必填，用于 PayPal 注册页的卡信息
+- `autofill_enabled`：可选。开启后会自动填写 OpenAI/Stripe checkout 的账单/联系字段；若 `billing_*` 未填完整，会自动调用与 GoPay 流程相同的美国随机地址服务补齐，再提交前做一次账单地址稳定性校验
+- `billing_*`：账单/联系字段；其中 `billing_phone` 在 `create_account` 模式下同时作为 PayPal 接码手机号使用
 - `timeout_seconds`：等待最终结果的超时时间，默认 900 秒
 
 任务完成后，通过 `GET /api/tasks/{task_id}` 读取结构化结果：

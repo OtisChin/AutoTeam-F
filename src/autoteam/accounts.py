@@ -79,6 +79,7 @@ def _normalize_account_record(account: dict) -> dict:
     acc.setdefault("last_active_at", None)
     acc.setdefault("last_bind_status", "")
     acc.setdefault("last_bind_at", None)
+    acc.setdefault("last_bind_provider", "")
     acc.setdefault("last_checkout_url", "")
     acc.setdefault("last_card_id", "")
     acc.setdefault("last_proxy_label", "")
@@ -243,6 +244,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                     "last_active_at": None,
                     "last_bind_status": "",
                     "last_bind_at": None,
+                    "last_bind_provider": "",
                     "last_checkout_url": "",
                     "last_card_id": "",
                     "last_proxy_label": "",
@@ -312,6 +314,7 @@ def ensure_session_only_account(email):
                 "last_active_at": None,
                 "last_bind_status": "",
                 "last_bind_at": None,
+                "last_bind_provider": "",
                 "last_checkout_url": "",
                 "last_card_id": "",
                 "last_proxy_label": "",
@@ -339,6 +342,7 @@ def update_account(email, **kwargs):
         "last_active_at",
         "last_bind_status",
         "last_bind_at",
+        "last_bind_provider",
         "last_checkout_url",
         "last_card_id",
         "last_proxy_label",

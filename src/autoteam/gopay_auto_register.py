@@ -365,6 +365,35 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _looks_like_transient_gopay_network_error(exc: Exception | str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(exc or "")).strip().lower()
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in ("ratelimit:", "rate_limited", "rate limited", "too many requests")):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "recv failure",
+            "connection was reset",
+            "connection reset",
+            "could not resolve host",
+            "operation timed out",
+            "timed out",
+            "connection timed out",
+            "connection refused",
+            "connection aborted",
+            "network is unreachable",
+            "remote disconnected",
+            "curl: (6)",
+            "curl: (7)",
+            "curl: (28)",
+            "curl: (35)",
+            "curl: (56)",
+        )
+    )
+
+
 def _hero_request(
     base_url: str,
     api_key: str,
@@ -1585,16 +1614,31 @@ def register_gopay_wallet(
     cancel_scheduled = False
     try:
         try:
-            account_result = auto_signup(
-                phone=phone,
-                country_code=resolved_country_code,
-                pin=resolved_pin,
-                otp_provider=otp_provider,
-                gopay_cfg=shared_cfg,
-                proxy_url=effective_proxy,
-                log=log,
-                pre_pin_otp_hook=reactivate_before_pin,
-            )
+            network_attempts = max(1, min(5, _env_int("GOPAY_AUTO_SIGNUP_CURRENT_NUMBER_NETWORK_ATTEMPTS", 3)))
+            for network_attempt in range(1, network_attempts + 1):
+                try:
+                    account_result = auto_signup(
+                        phone=phone,
+                        country_code=resolved_country_code,
+                        pin=resolved_pin,
+                        otp_provider=otp_provider,
+                        gopay_cfg=shared_cfg,
+                        proxy_url=effective_proxy,
+                        log=log,
+                        pre_pin_otp_hook=reactivate_before_pin,
+                    )
+                    break
+                except Exception as exc:
+                    if not _looks_like_transient_gopay_network_error(exc) or network_attempt >= network_attempts:
+                        raise
+                    delay = min(8.0, 1.5 * network_attempt)
+                    log(
+                        "GoPay 注册网络中断，使用当前号码重试: "
+                        f"attempt={network_attempt + 1}/{network_attempts} "
+                        f"phone={resolved_country_code}{phone[:2]}***{phone[-4:] if len(phone) >= 4 else phone} "
+                        f"error={str(exc)[:180]}"
+                    )
+                    time.sleep(delay)
         except GoPayNumberAlreadyRegistered as exc:
             _delayed_cancel_activation(activation, log=log, reason=str(exc))
             cancel_scheduled = True

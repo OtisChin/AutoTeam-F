@@ -288,7 +288,11 @@ def run_bind_task(
 
     try:
         payload = extract_card_payload(card_item)
-        api._launch_browser(proxy_url=proxy_url, proxy_bypass=proxy_bypass)
+        api._launch_browser(
+            proxy_url=proxy_url,
+            proxy_bypass=proxy_bypass,
+            background=False if manual_confirm else None,
+        )
 
         if callable(is_cancelled) and is_cancelled():
             return _build_result("failed", failure_stage="open_checkout", message="任务已取消")

@@ -170,6 +170,7 @@ def merge_account(base: dict | None, incoming: dict) -> dict:
             merged[key] = value
         elif key in {
             "last_bind_status",
+            "last_bind_provider",
             "last_bind_message",
             "last_bind_failure_stage",
             "last_checkout_url",

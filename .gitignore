@@ -14,6 +14,7 @@ test.py
 .env
 web/node_modules/
 .codex
+.codex_tmp
 .coverage
 data
 

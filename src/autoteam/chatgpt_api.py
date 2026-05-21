@@ -19,6 +19,7 @@ from autoteam.admin_state import (
 )
 from autoteam.config import get_playwright_launch_options
 from autoteam.paths import PROJECT_ROOT
+from autoteam.proxy_bridge import start_playwright_socks_bridge
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,7 @@ class ChatGPTTeamAPI:
         self.login_email = None
         self.login_password = None
         self.workspace_options_cache = []
+        self._proxy_bridge = None
 
     def _visible_locator_in_frames(self, selectors, timeout_ms=5000):
         selector = ", ".join(selectors)
@@ -112,18 +114,36 @@ class ChatGPTTeamAPI:
 
         return None
 
-    def _launch_browser(self, proxy_url: str | None = None, proxy_bypass: str | None = None):
+    def _launch_browser(
+        self,
+        proxy_url: str | None = None,
+        proxy_bypass: str | None = None,
+        *,
+        headless: bool | None = None,
+        background: bool | None = None,
+        locale: str = "zh-CN",
+        accept_language: str = "zh-CN,zh;q=0.9,en;q=0.8",
+    ):
         SCREENSHOT_DIR.mkdir(exist_ok=True)
+        effective_proxy_url = proxy_url
+        self._proxy_bridge = start_playwright_socks_bridge(proxy_url)
+        if self._proxy_bridge:
+            effective_proxy_url = self._proxy_bridge.proxy_url
         self.playwright = sync_playwright().start()
         self.browser = self.playwright.chromium.launch(
-            **get_playwright_launch_options(proxy_url=proxy_url, proxy_bypass=proxy_bypass)
+            **get_playwright_launch_options(
+                proxy_url=effective_proxy_url,
+                proxy_bypass=proxy_bypass,
+                headless=headless,
+                background=background,
+            )
         )
         self.context = self.browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-            locale="zh-CN",
+            locale=locale or "zh-CN",
             extra_http_headers={
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Accept-Language": accept_language or "zh-CN,zh;q=0.9,en;q=0.8",
             },
         )
         self.page = self.context.new_page()
@@ -1571,3 +1591,9 @@ class ChatGPTTeamAPI:
         self.context = None
         self.page = None
         self.playwright = None
+        try:
+            if self._proxy_bridge:
+                self._proxy_bridge.stop()
+        except Exception:
+            pass
+        self._proxy_bridge = None

@@ -3724,17 +3724,55 @@ def _split_address_lines(address1: str) -> tuple[str, str]:
     return line1, line2
 
 
+def _flatten_address_fields(value, prefix: str = "") -> dict[str, str]:
+    fields: dict[str, str] = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            next_key = f"{prefix}_{key}" if prefix else str(key)
+            fields.update(_flatten_address_fields(item, next_key))
+        return fields
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            fields.update(_flatten_address_fields(item, f"{prefix}_{index}"))
+        return fields
+    if prefix:
+        fields[prefix] = str(value or "").strip()
+    return fields
+
+
+def _address_field(address: dict, *names: str) -> str:
+    normalized = {
+        re.sub(r"[^a-z0-9]+", "", str(key or "").lower()): value
+        for key, value in _flatten_address_fields(address).items()
+    }
+    for name in names:
+        key = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+        value = str(normalized.get(key) or "").strip()
+        if value:
+            return value
+    for name in names:
+        key = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+        for candidate_key, value in normalized.items():
+            if candidate_key.endswith(key):
+                text = str(value or "").strip()
+                if text:
+                    return text
+    return ""
+
+
 def _fetch_random_billing_address() -> dict:
     try:
-        resp = requests.post(
-            "https://www.meiguodizhi.io/api/v1/ai-random-address",
+        http = _new_http_session(require_curl_cffi=False)
+        resp = http.post(
+            "https://www.meiguodizhi.com/api/v1/dz",
             json={"path": "/", "method": "address"},
             headers={
                 "Content-Type": "application/json",
                 "Origin": "http://localhost:5173",
-                "Referer": "https://www.meiguodizhi.io/",
+                "Referer": "https://www.meiguodizhi.com/",
             },
             timeout=30,
+            verify=False,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -3751,7 +3789,7 @@ def _fetch_random_billing_address() -> dict:
         logger.info("[gopay_executor] random billing address response incomplete, using fallback")
         return dict(DEFAULT_BILLING_ADDRESS)
     line1, line2 = _split_address_lines(address1)
-    return {
+    result = {
         "name": full_name,
         "country": "US",
         "state": state,
@@ -3762,6 +3800,44 @@ def _fetch_random_billing_address() -> dict:
         "phone_number": str(address.get("Telephone") or "").strip(),
         "raw": address,
     }
+    card_number = _address_field(
+        address,
+        "Card_Number",
+        "CardNumber",
+        "Credit_Card_Number",
+        "CreditCardNumber",
+        "Credit Card Number",
+        "CC Number",
+        "CCNumber",
+    )
+    card_expiry = _address_field(
+        address,
+        "Expiry",
+        "Expiry_Date",
+        "ExpiryDate",
+        "Exp_Date",
+        "ExpDate",
+        "Expires",
+        "Expiration",
+        "Expiration_Date",
+        "ExpirationDate",
+        "Credit_Card_Expiry",
+        "CreditCardExpiry",
+        "Credit Card Expiry",
+    )
+    if not card_expiry:
+        expiry_month = _address_field(address, "Expiry_Month", "Exp_Month", "Expiration_Month")
+        expiry_year = _address_field(address, "Expiry_Year", "Exp_Year", "Expiration_Year")
+        if expiry_month and expiry_year:
+            card_expiry = f"{expiry_month}/{expiry_year}"
+    card_cvv = _address_field(address, "CVV", "CVV2", "CVC", "Security_Code", "Credit_Card_CVV", "Credit Card CVV")
+    if card_number:
+        result["card_number"] = card_number
+    if card_expiry:
+        result["card_expiry"] = card_expiry
+    if card_cvv:
+        result["card_cvv"] = card_cvv
+    return result
 
 
 def _billing_address_for_tax_retry(attempt: int) -> dict:
@@ -4516,6 +4592,20 @@ def _dedupe_codes(codes: list[str]) -> list[str]:
     return result
 
 
+_SMS_CODE_PATTERN = re.compile(r"(?<!\d)(\d{5,8})(?!\d)")
+_SMS_DIRECT_CODE_PATTERN = re.compile(r"\s*#?(\d{5,8})\s*")
+_SMS_STATUS_CODE_PATTERN = re.compile(r"(?i)\b(?:SMS[-_\s]?OK|OK)\b\D{0,20}(\d{5,8})(?!\d)")
+_SMS_OTP_CONTEXT_PATTERN = re.compile(
+    r"(?i)(otp|one[-\s]?time|verification|verify|security|auth(?:entication)?|"
+    r"passcode|code|kode|验证码|驗證碼|认证码|認證碼|确认码|確認碼|校验码|驗證|验证|短信)"
+)
+_SMS_NON_OTP_NOTICE_PATTERN = re.compile(
+    r"(?i)(thanks for confirming|transaction alerts|log in or get the app|"
+    r"confirmed your phone|phone number has been confirmed)"
+)
+_SMS_URL_PATTERN = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
+
+
 def _extract_sms_codes(text: str) -> list[str]:
     raw = str(text or "").strip()
     if not raw:
@@ -4558,13 +4648,25 @@ def _extract_sms_codes(text: str) -> list[str]:
     }
 
     def codes_from_value(value: Any) -> list[str]:
-        matched = re.fullmatch(r"\D*(\d{6})\D*", str(value or "").strip())
+        matched = re.fullmatch(_SMS_DIRECT_CODE_PATTERN, str(value or "").strip())
         return [matched.group(1)] if matched else []
 
     def codes_from_text(value: Any) -> list[str]:
         # 接码接口有时会把旧短信和新短信一起返回。按出现顺序反转，优先取最新的验证码。
-        matches = re.findall(r"(?<!\d)(\d{6})(?!\d)", str(value or ""))
-        return _dedupe_codes(list(reversed(matches)))
+        raw_text = str(value or "").strip()
+        if not raw_text:
+            return []
+        status_codes = _SMS_STATUS_CODE_PATTERN.findall(raw_text)
+        cleaned = _SMS_URL_PATTERN.sub(" ", raw_text)
+        if _SMS_NON_OTP_NOTICE_PATTERN.search(cleaned) and not _SMS_OTP_CONTEXT_PATTERN.search(cleaned):
+            return _dedupe_codes(list(reversed(status_codes)))
+        matches: list[str] = []
+        for match in _SMS_CODE_PATTERN.finditer(cleaned):
+            start, end = match.span(1)
+            window = cleaned[max(0, start - 60): min(len(cleaned), end + 60)]
+            if _SMS_OTP_CONTEXT_PATTERN.search(window):
+                matches.append(match.group(1))
+        return _dedupe_codes(list(reversed([*status_codes, *matches])))
 
     try:
         payload = json.loads(raw)
