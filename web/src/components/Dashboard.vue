@@ -343,8 +343,8 @@
               </td>
               <td class="px-4 py-3">
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-                  :class="bindProviderClass(acc.last_bind_provider)">
-                  {{ bindProviderLabel(acc.last_bind_provider) }}
+                  :class="bindProviderClass(effectiveBindProvider(acc))">
+                  {{ bindProviderLabel(effectiveBindProvider(acc)) }}
                 </span>
               </td>
               <td class="px-4 py-3">
@@ -1223,6 +1223,12 @@ function bindProviderLabel(provider) {
     gopay: 'GoPay',
     card: 'Card',
   }[String(provider || '').toLowerCase()] || '-'
+}
+
+function effectiveBindProvider(acc) {
+  const accountType = String(acc?.account_type || '').toLowerCase()
+  if (!['plus', 'pro', 'team'].includes(accountType)) return ''
+  return acc?.last_bind_provider || ''
 }
 
 function bindProviderClass(provider) {

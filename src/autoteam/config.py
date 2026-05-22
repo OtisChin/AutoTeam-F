@@ -145,7 +145,22 @@ def normalize_proxy_url(proxy_url: str | None) -> str:
         parts = raw.split(":")
         if len(parts) == 4 and parts[1].isdigit():
             host, port, username, password = parts
-            raw = f"http://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+            scheme = "socks5h" if "1024proxy" in host.lower() else "http"
+            raw = f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+        elif "@" in raw:
+            left, right = raw.split("@", 1)
+            host_port = left.rsplit(":", 1)
+            username_password = right.split(":", 1)
+            if len(host_port) == 2 and host_port[1].isdigit() and len(username_password) == 2:
+                host, port = host_port
+                username, password = username_password
+                scheme = "socks5h" if "1024proxy" in host.lower() else "http"
+                raw = f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+            else:
+                raw = f"http://{raw}"
+                parsed = urlsplit(raw)
+                if parsed.hostname and "1024proxy" in parsed.hostname.lower():
+                    raw = f"socks5h://{raw[len('http://'):]}"
         else:
             raw = f"http://{raw}"
     else:

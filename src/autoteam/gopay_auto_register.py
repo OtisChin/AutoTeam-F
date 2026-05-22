@@ -50,6 +50,11 @@ CLIENT_SECRET = "raOUumeMRBNifqvZRFjvsgTnjAlaA9"
 SIGNUP_BASIC_AUTH = "Basic YmI2NDg0MTMtYjYzNy00NDNhLThlYmYtMTc2Y2Y5YjVkYzMy"
 DEFAULT_APP_VERSION = "2.8.0"
 
+_TLS_PROFILES = [
+    "chrome120", "chrome123", "chrome124", "chrome126", "chrome131", "chrome136",
+    "edge120", "edge126", "edge131",
+]
+
 PHONE_MODELS = [
     ("HONOR", "BVL-AN20"),
     ("Samsung", "SM-A546B"),
@@ -828,12 +833,14 @@ def _random_wifi_ssid() -> str:
     return f"{prefix}_{suffix}"
 
 
-def _random_x_m1() -> str:
+def _random_x_m1(make: str = "") -> str:
     import base64
 
-    ts = int(time.time() * 1000)
+    # 偏移过去 1~72 小时，模拟 app 已安装一段时间
+    ts = int((time.time() - random.uniform(3600, 259200)) * 1000)
     rand_id = random.randint(1000000000000000000, 9999999999999999999)
-    make, model = random.choice(PHONE_MODELS)
+    if not make:
+        make = random.choice(PHONE_MODELS)[0]
     fingerprint_hash = hashlib.sha256(os.urandom(32)).digest()
     fp_b64 = base64.b64encode(fingerprint_hash).decode().rstrip("=")
     return (
@@ -872,19 +879,19 @@ def sign_x_e1(headers: dict[str, str], method: str, host: str, path: str, body_t
 
 def build_gopay_app_headers(authorization: str = "Bearer ", gopay_cfg: Optional[dict[str, Any]] = None) -> dict[str, str]:
     cfg = gopay_cfg if gopay_cfg is not None else {}
-    app_version = str(cfg.get("app_version") or DEFAULT_APP_VERSION)
     if not cfg.get("_device_fingerprint_initialized"):
         make, model = random.choice(PHONE_MODELS)
         cfg.setdefault("_fp_device_os", random.choice(ANDROID_VERSIONS))
         cfg.setdefault("_fp_phone_make", make)
         cfg.setdefault("_fp_phone_model", f"{make}, {model}")
         cfg.setdefault("_fp_unique_id", _random_unique_id())
-        cfg.setdefault("_fp_x_m1", _random_x_m1())
+        cfg.setdefault("_fp_x_m1", _random_x_m1(make=make))
         cfg.setdefault("_fp_transaction_id", str(uuid.uuid4()))
         lat = round(-6.2 + random.uniform(-0.05, 0.05), 7)
         lng = round(106.8 + random.uniform(-0.05, 0.05), 7)
         cfg.setdefault("_fp_location", f"{lat},{lng}")
         cfg["_device_fingerprint_initialized"] = True
+    app_version = str(cfg.get("app_version") or DEFAULT_APP_VERSION)
     return {
         "accept-encoding": "gzip",
         "country-code": "ID",
@@ -893,7 +900,7 @@ def build_gopay_app_headers(authorization: str = "Bearer ", gopay_cfg: Optional[
         "x-appversion": app_version,
         "x-help-version": app_version,
         "x-location": str(cfg.get("x_location") or cfg["_fp_location"]),
-        "x-location-accuracy": f"0.0{random.randint(10, 99)}999999552965164",
+        "x-location-accuracy": f"{random.uniform(0.01, 0.1):.19f}",
         "x-uniqueid": str(cfg.get("unique_id") or cfg["_fp_unique_id"]),
         "x-phonemake": str(cfg.get("phone_make") or cfg["_fp_phone_make"]),
         "x-phonemodel": str(cfg.get("phone_model") or cfg["_fp_phone_model"]),
@@ -912,7 +919,7 @@ def build_gopay_app_headers(authorization: str = "Bearer ", gopay_cfg: Optional[
         "x-authsdk-version": "1.0.0",
         "x-cvsdk-version": "1.0.0",
         "authorization": authorization,
-        "x-request-id": str(uuid.uuid1()),
+        "x-request-id": str(uuid.uuid4()),
         "transaction-id": str(cfg.get("_fp_transaction_id") or uuid.uuid4()),
     }
 
@@ -968,10 +975,56 @@ def signed_get(
     return http.get(url, headers=headers, timeout=timeout)
 
 
+def _supported_tls_profiles() -> list[str]:
+    """探测当前 curl_cffi 版本实际支持的 impersonate profiles（缓存结果）。"""
+    if getattr(_supported_tls_profiles, "_cache", None) is not None:
+        return _supported_tls_profiles._cache  # type: ignore[attr-defined]
+    supported: list[str] = []
+    for profile in _TLS_PROFILES:
+        try:
+            s = CurlCffiSession(impersonate=profile)
+            # 用一个必然失败的本地地址触发 TLS 初始化，区分 ImpersonateError 和网络错误
+            s.head("https://127.0.0.1:1", timeout=0.1)
+        except Exception as exc:
+            if "impersonat" in type(exc).__name__.lower() or "impersonat" in str(exc).lower():
+                # ImpersonateError → 此 profile 不被支持
+                pass
+            else:
+                # 连接超时/拒绝等网络错误 → profile 本身是合法的
+                supported.append(profile)
+            try:
+                s.close()
+            except Exception:
+                pass
+    _supported_tls_profiles._cache = supported  # type: ignore[attr-defined]
+    if supported:
+        logger.info("curl_cffi supported TLS profiles: %s", supported)
+    else:
+        logger.warning("curl_cffi: no TLS profiles supported, will use requests.Session")
+    return supported
+
+
+def _rotate_proxy_session(proxy_url: str) -> str:
+    """为代理 URL 中的 session ID 生成随机值，使每次注册获得不同出口 IP。
+
+    支持格式: ...-sid-XXXXX-... → 替换 XXXXX 为随机字符串
+    如果 URL 中没有 sid 字段则原样返回。
+    """
+    return re.sub(r"(-sid-)[^-]+(-)", lambda m: f"{m.group(1)}{os.urandom(8).hex()}{m.group(2)}", proxy_url)
+
+
 def create_gopay_session(proxy_url: Optional[str] = None) -> Any:
-    normalized_proxy = normalize_proxy_url(proxy_url) if proxy_url else ""
+    raw_proxy = proxy_url or ""
+    # 每次创建 session 时轮换代理 session ID 以获得新的出口 IP
+    rotated_proxy = _rotate_proxy_session(raw_proxy) if raw_proxy else ""
+    normalized_proxy = normalize_proxy_url(rotated_proxy) if rotated_proxy else ""
     if CurlCffiSession is not None and normalized_proxy:
-        session = CurlCffiSession(impersonate="chrome136")
+        supported = _supported_tls_profiles()
+        if supported:
+            profile = random.choice(supported)
+            session = CurlCffiSession(impersonate=profile)
+        else:
+            session = requests.Session()
     else:
         session = requests.Session()
     try:
@@ -1315,6 +1368,94 @@ def auto_login(
     )
 
 
+def appium_auto_signup(
+    *,
+    phone: str,
+    country_code: str,
+    pin: str,
+    otp_provider: Callable[[str], str],
+    appium_config: Optional[dict[str, Any]] = None,
+    proxy_url: Optional[str] = None,
+    log: Callable[[str], None] = logger.info,
+    pre_pin_otp_hook: Callable[[], None] | None = None,
+) -> GoPayAccountResult:
+    """通过 Appium 自动化 GoPay APP 完成注册，再用 HTTP login 获取 token。
+
+    流程:
+    1. Appium 驱动真实 GoPay APP 完成注册 + PIN 设置
+       （APP 内部携带真实 F4 token + Play Integrity，绕过 cvs/v1/initiate 封锁）
+    2. 注册完成后，尝试从设备存储提取 token
+    3. 如果提取失败，通过 HTTP auto_login (login_1fa) 获取 token
+    """
+    try:
+        from autoteam.gopay_appium import GopayAppiumDriver, GopayAppiumError
+    except ImportError as exc:
+        raise GoPayAutoSignupError(
+            "Appium 模式需要安装依赖: pip install Appium-Python-Client"
+        ) from exc
+
+    phone = re.sub(r"\D", "", phone)
+    if not country_code.startswith("+"):
+        country_code = f"+{country_code}"
+
+    acfg = appium_config or {}
+    name = _random_name()
+
+    driver = GopayAppiumDriver(
+        appium_url=str(acfg.get("appium_url") or _env_str("GOPAY_APPIUM_URL", "http://127.0.0.1:4723")),
+        adb_serial=str(acfg.get("adb_serial") or ""),
+        apk_path=str(acfg.get("apk_path") or ""),
+        log=log,
+    )
+    try:
+        driver.start_session()
+        result = driver.signup(
+            phone=phone,
+            country_code=country_code,
+            name=name,
+            pin=pin,
+            otp_provider=otp_provider,
+            pre_pin_otp_hook=pre_pin_otp_hook,
+        )
+    except GopayAppiumError as exc:
+        if "手机号已注册" in str(exc):
+            raise GoPayNumberAlreadyRegistered(str(exc)) from exc
+        raise
+    except Exception as exc:
+        raise GoPayAutoSignupError(f"Appium 注册失败: {exc}") from exc
+    finally:
+        driver.close()
+
+    # 如果 Appium 成功提取了 token，直接返回
+    access_token = str(result.get("access_token") or "")
+    refresh_token = str(result.get("refresh_token") or "")
+    account_id = str(result.get("account_id") or "")
+
+    if access_token:
+        log("[gopay-appium] 从设备存储提取 token 成功，跳过 HTTP login")
+        return GoPayAccountResult(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            account_id=account_id,
+            phone=phone,
+            country_code=country_code,
+            pin=pin,
+        )
+
+    # Token 提取失败 → 通过 HTTP login_1fa 获取 token
+    log("[gopay-appium] 设备 token 提取失败，通过 HTTP login_1fa 获取 token...")
+    if pre_pin_otp_hook:
+        pre_pin_otp_hook()
+    return auto_login(
+        phone=phone,
+        country_code=country_code,
+        pin=pin,
+        otp_provider=otp_provider,
+        proxy_url=proxy_url,
+        log=log,
+    )
+
+
 def auto_signup(
     *,
     phone: str,
@@ -1376,23 +1517,39 @@ def auto_signup(
     methods_data = _safe_json(resp).get("data", {}) if resp.status_code < 500 else {}
     verification_id = str(methods_data.get("verification_id") or verification_id)
     time.sleep(random.uniform(1.0, 2.5))
-    resp = signed_post(
-        f"{BASE_URL}/cvs/v1/initiate",
-        {
-            "verification_id": verification_id,
-            "flow": "signup",
-            "verification_method": "otp_sms",
-            "country_code": country_code,
-            "email_address": None,
-            "client_id": CLIENT_ID,
-            "phone_number": phone,
-            "client_secret": CLIENT_SECRET,
-            "is_multiple_method": None,
-            "device_verification_token_id": None,
-        },
-        gopay_cfg=cfg,
-        session=session,
-    )
+
+    # cvs/v1/initiate — 带 rate limit 感知的重试
+    max_initiate_attempts = 3
+    for initiate_attempt in range(1, max_initiate_attempts + 1):
+        resp = signed_post(
+            f"{BASE_URL}/cvs/v1/initiate",
+            {
+                "verification_id": verification_id,
+                "flow": "signup",
+                "verification_method": "otp_sms",
+                "country_code": country_code,
+                "email_address": None,
+                "client_id": CLIENT_ID,
+                "phone_number": phone,
+                "client_secret": CLIENT_SECRET,
+                "is_multiple_method": None,
+                "device_verification_token_id": None,
+            },
+            gopay_cfg=cfg,
+            session=session,
+        )
+        if resp.status_code == 429 and initiate_attempt < max_initiate_attempts:
+            # 从响应头读取重置时间，等待后重试
+            reset_secs = int(resp.headers.get("ratelimit-reset") or "60")
+            wait_secs = min(reset_secs + random.randint(5, 15), 900)
+            log(
+                f"[gopay-signup] cvs/v1/initiate 触发 rate limit，"
+                f"等待 {wait_secs}s 后重试 (attempt {initiate_attempt}/{max_initiate_attempts})"
+            )
+            time.sleep(wait_secs)
+            continue
+        break
+
     init_data = _safe_json(resp).get("data", {}) if resp.status_code < 500 else {}
     otp_token = str(init_data.get("otp_token") or "")
     if not otp_token:
@@ -1494,6 +1651,7 @@ def register_gopay_wallet(
     sms_provider: str = "",
     hero_sms_config: dict[str, Any] | None = None,
     smscloud_config: dict[str, Any] | None = None,
+    appium_config: dict[str, Any] | None = None,
     public_base_url: str = "",
     log: Callable[[str], None] = logger.info,
 ) -> GoPayAutoRegistrationResult:
@@ -1611,34 +1769,57 @@ def register_gopay_wallet(
     def reactivate_before_pin() -> None:
         activation.resend()
 
+    signup_mode = str(
+        (appium_config or {}).get("signup_mode", "")
+        or _env_str("GOPAY_AUTO_SIGNUP_MODE")
+    ).strip().lower()
+    if signup_mode != "appium":
+        signup_mode = "http"
+    log(f"[gopay-signup] signup_mode resolved: request={(appium_config or {}).get('signup_mode', '')!r} final={signup_mode!r}")
+
     cancel_scheduled = False
     try:
         try:
-            network_attempts = max(1, min(5, _env_int("GOPAY_AUTO_SIGNUP_CURRENT_NUMBER_NETWORK_ATTEMPTS", 3)))
-            for network_attempt in range(1, network_attempts + 1):
-                try:
-                    account_result = auto_signup(
-                        phone=phone,
-                        country_code=resolved_country_code,
-                        pin=resolved_pin,
-                        otp_provider=otp_provider,
-                        gopay_cfg=shared_cfg,
-                        proxy_url=effective_proxy,
-                        log=log,
-                        pre_pin_otp_hook=reactivate_before_pin,
-                    )
-                    break
-                except Exception as exc:
-                    if not _looks_like_transient_gopay_network_error(exc) or network_attempt >= network_attempts:
-                        raise
-                    delay = min(8.0, 1.5 * network_attempt)
-                    log(
-                        "GoPay 注册网络中断，使用当前号码重试: "
-                        f"attempt={network_attempt + 1}/{network_attempts} "
-                        f"phone={resolved_country_code}{phone[:2]}***{phone[-4:] if len(phone) >= 4 else phone} "
-                        f"error={str(exc)[:180]}"
-                    )
-                    time.sleep(delay)
+            if signup_mode == "appium":
+                # Appium 模式：通过真实 APP 完成注册，绕过 cvs/v1/initiate 服务端封锁
+                log("[gopay-signup] 使用 Appium 模式注册")
+                account_result = appium_auto_signup(
+                    phone=phone,
+                    country_code=resolved_country_code,
+                    pin=resolved_pin,
+                    otp_provider=otp_provider,
+                    appium_config=appium_config,
+                    proxy_url=effective_proxy,
+                    log=log,
+                    pre_pin_otp_hook=reactivate_before_pin,
+                )
+            else:
+                # HTTP 模式（原有流程）
+                network_attempts = max(1, min(5, _env_int("GOPAY_AUTO_SIGNUP_CURRENT_NUMBER_NETWORK_ATTEMPTS", 3)))
+                for network_attempt in range(1, network_attempts + 1):
+                    try:
+                        account_result = auto_signup(
+                            phone=phone,
+                            country_code=resolved_country_code,
+                            pin=resolved_pin,
+                            otp_provider=otp_provider,
+                            gopay_cfg=shared_cfg,
+                            proxy_url=effective_proxy,
+                            log=log,
+                            pre_pin_otp_hook=reactivate_before_pin,
+                        )
+                        break
+                    except Exception as exc:
+                        if not _looks_like_transient_gopay_network_error(exc) or network_attempt >= network_attempts:
+                            raise
+                        delay = min(8.0, 1.5 * network_attempt)
+                        log(
+                            "GoPay 注册网络中断，使用当前号码重试: "
+                            f"attempt={network_attempt + 1}/{network_attempts} "
+                            f"phone={resolved_country_code}{phone[:2]}***{phone[-4:] if len(phone) >= 4 else phone} "
+                            f"error={str(exc)[:180]}"
+                        )
+                        time.sleep(delay)
         except GoPayNumberAlreadyRegistered as exc:
             _delayed_cancel_activation(activation, log=log, reason=str(exc))
             cancel_scheduled = True

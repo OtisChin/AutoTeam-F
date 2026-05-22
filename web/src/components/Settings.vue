@@ -91,8 +91,19 @@
           </select>
         </div>
         <div>
-          <label class="block text-sm text-gray-400 mb-1">
-            GoPay 注册/PIN 印尼代理
+          <label class="block text-sm text-gray-400 mb-1">注册模式</label>
+          <select
+            v-model="gopayAutoSignupForm.signup_mode"
+            :disabled="gopayAutoSignupLoading || gopayAutoSignupSaving"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          >
+            <option value="http">HTTP</option>
+            <option value="appium">Appium</option>
+          </select>
+          <p class="mt-1 text-xs text-gray-500">Appium 模式会走真实 GoPay APP 注册、主页补设 PIN，并复用同一短信会话收第二个 OTP。</p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">GoPay 注册/PIN 印尼代理
             <span v-if="gopayAutoSignupStatus.proxy_url_present" class="text-xs text-green-400 ml-1">已保存</span>
           </label>
           <input
@@ -103,6 +114,27 @@
             class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
           />
           <p class="mt-1 text-xs text-gray-500">只用于 GoPay 注册和设置 PIN 阶段；绑定 checkout/支付阶段仍按任务逻辑直连。</p>
+        </div>
+        <div v-if="gopayAutoSignupForm.signup_mode === 'appium'">
+          <label class="block text-sm text-gray-400 mb-1">Appium URL</label>
+          <input
+            v-model.trim="gopayAutoSignupForm.appium_url"
+            type="text"
+            autocomplete="off"
+            placeholder="http://127.0.0.1:4723"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div v-if="gopayAutoSignupForm.signup_mode === 'appium'">
+          <label class="block text-sm text-gray-400 mb-1">ADB Serial</label>
+          <input
+            v-model.trim="gopayAutoSignupForm.appium_adb_serial"
+            type="text"
+            autocomplete="off"
+            placeholder="emulator-5556"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+          <p class="mt-1 text-xs text-gray-500">例如 emulator-5556。留空时由后端按默认设备选择逻辑处理。</p>
         </div>
         <div v-if="gopayAutoSignupForm.provider === 'smscloud'">
           <label class="block text-sm text-gray-400 mb-1">
@@ -582,6 +614,9 @@ const gopayAutoSignupForm = ref({
   hero_sms_api_key: '',
   hero_sms_max_price: '',
   proxy_url: '',
+  signup_mode: 'http',
+  appium_url: 'http://127.0.0.1:4723',
+  appium_adb_serial: '',
 })
 const rekberinajaLoading = ref(false)
 const rekberinajaSaving = ref(false)
@@ -868,6 +903,9 @@ async function loadGoPayAutoSignupConfig() {
       hero_sms_api_key: '',
       hero_sms_max_price: cfg?.hero_sms_max_price || '',
       proxy_url: cfg?.proxy_url || '',
+      signup_mode: cfg?.signup_mode === 'appium' ? 'appium' : 'http',
+      appium_url: cfg?.appium_url || 'http://127.0.0.1:4723',
+      appium_adb_serial: cfg?.appium_adb_serial || '',
     }
   } catch (e) {
     setMessage(e.message || '加载 GoPay 自动注册配置失败', 'error')

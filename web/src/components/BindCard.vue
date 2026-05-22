@@ -9,46 +9,46 @@
       </div>
     </div>
 
-    <h2 class="text-xl font-bold text-white mb-2">{{ standalone ? 'GoPay' : '自动绑卡服务' }}</h2>
-    <p class="text-sm text-gray-400 mb-6">
-      {{ standalone
-        ? '走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。'
-        : '支持生成官方优惠链接，以及 ChatGPT、Kiro 绑卡流程。' }}
-    </p>
-
-    <div class="relative mb-6">
-      <div v-if="!standalone" class="flex flex-wrap gap-2">
-        <button
-          @click="activeTab = 'bind'"
-          class="px-4 py-2 rounded-lg text-sm border transition"
-          :class="activeTab === 'bind'
-            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-          ChatGPT
-        </button>
-        <button
-          @click="activeTab = 'kiro'"
-          class="px-4 py-2 rounded-lg text-sm border transition"
-          :class="activeTab === 'kiro'
-            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-          Kiro
-        </button>
-        <button
-          @click="activeTab = 'generate'"
-          class="px-4 py-2 rounded-lg text-sm border transition"
-          :class="activeTab === 'generate'
-            ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-            : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
-          生成支付链接
-        </button>
+    <div
+      class="mb-6 grid grid-cols-1 gap-4"
+      :class="activeTab === 'gopay' ? 'xl:grid-cols-[420px_minmax(0,1fr)] xl:items-start' : ''">
+      <div>
+        <h2 class="text-xl font-bold text-white mb-2">{{ standalone ? 'GoPay' : '自动绑卡服务' }}</h2>
+        <p class="text-sm text-gray-400" :class="!standalone ? 'mb-4' : ''">
+          {{ standalone
+            ? '走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。'
+            : '支持生成官方优惠链接，以及 ChatGPT、Kiro 绑卡流程。' }}
+        </p>
+        <div v-if="!standalone" class="flex flex-wrap gap-2">
+          <button
+            @click="activeTab = 'bind'"
+            class="px-4 py-2 rounded-lg text-sm border transition"
+            :class="activeTab === 'bind'
+              ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+              : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+            ChatGPT
+          </button>
+          <button
+            @click="activeTab = 'kiro'"
+            class="px-4 py-2 rounded-lg text-sm border transition"
+            :class="activeTab === 'kiro'
+              ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+              : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+            Kiro
+          </button>
+          <button
+            @click="activeTab = 'generate'"
+            class="px-4 py-2 rounded-lg text-sm border transition"
+            :class="activeTab === 'generate'
+              ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+              : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+            生成支付链接
+          </button>
+        </div>
       </div>
       <div
         v-if="activeTab === 'gopay'"
-        class="grid grid-cols-2 gap-3"
-        :class="standalone
-          ? 'xl:grid-cols-5'
-          : 'mt-4 xl:absolute xl:right-0 xl:-top-14 xl:mt-0 xl:w-[1180px] xl:grid-cols-5'">
+        class="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <div
           v-for="card in gopayTopCards"
           :key="card.label"
@@ -609,9 +609,35 @@
       </div>
     </div>
 
-    <div v-else-if="activeTab === 'gopay'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
-      <div class="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-4">
-        <div class="space-y-3">
+    <div v-else-if="activeTab === 'gopay'" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6 xl:h-[calc(100vh-150px)] xl:min-h-0 xl:flex xl:flex-col xl:overflow-hidden">
+      <div class="grid grid-cols-1 gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[480px_minmax(0,1fr)] xl:overflow-hidden">
+        <div class="flex flex-col gap-3 xl:min-h-0">
+          <div class="shrink-0 rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+            <div class="flex flex-col gap-3 sm:flex-row">
+              <button
+                @click="startGoPayBind"
+                :disabled="gopaySubmitting || gopayTaskRunning || !gopayCanSubmit"
+                class="w-full px-4 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50">
+                {{ gopaySubmitting ? '提交中...' : gopayTaskRunning ? '任务运行中...' : (gopayForm.autoRegister ? '自动注册并 GoPay 绑卡' : gopayBatchActive ? '开始批量 GoPay 绑卡' : '开始 GoPay 绑卡') }}
+              </button>
+              <button
+                v-if="gopayTaskRunning"
+                @click="skipGoPayCurrentAccount"
+                :disabled="gopaySkipping || !gopaySkipAvailable"
+                class="w-full px-4 py-2 rounded-lg text-sm border bg-amber-600/15 hover:bg-amber-600/25 text-amber-200 border-amber-500/30 transition disabled:opacity-50">
+                {{ gopaySkipping ? '跳过中...' : '跳过当前账号' }}
+              </button>
+              <button
+                v-if="gopayTaskRunning"
+                @click="cancelGoPayTask"
+                :disabled="gopayCancelling"
+                class="w-full px-4 py-2 rounded-lg text-sm border bg-red-600/15 hover:bg-red-600/25 text-red-300 border-red-500/30 transition disabled:opacity-50">
+                {{ gopayCancelling ? '取消中...' : '取消任务' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-3 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-2 xl:pb-2">
           <div>
             <div class="flex items-center justify-between gap-3 mb-1">
               <label class="block text-sm text-gray-400">号池账号</label>
@@ -742,6 +768,17 @@
               <div class="text-sm text-emerald-100">绑定前先自动注册 GoPay 钱包，并复用同一个短信服务商会话完成后续绑定 OTP。</div>
               <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
+                  <label class="block text-xs text-emerald-200/80 mb-1">注册模式</label>
+                  <select
+                    v-model="gopayForm.gopayAutoSignupMode"
+                    :disabled="gopaySubmitting || gopayTaskRunning"
+                    class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="http">HTTP</option>
+                    <option value="appium">Appium</option>
+                  </select>
+                </div>
+                <div>
                   <label class="block text-xs text-emerald-200/80 mb-1">短信服务商</label>
                   <select
                     v-model="gopayForm.gopayAutoSignupSmsProvider"
@@ -762,10 +799,31 @@
                     class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
                   />
                 </div>
+                <div v-if="gopayForm.gopayAutoSignupMode === 'appium'">
+                  <label class="block text-xs text-emerald-200/80 mb-1">Appium URL</label>
+                  <input
+                    :value="String(gopayAutoSignupConfig?.appium_url || 'http://127.0.0.1:4723')"
+                    type="text"
+                    readonly
+                    class="w-full px-3 py-2 bg-gray-950 border border-emerald-500/10 rounded-lg text-sm text-gray-300 focus:outline-none"
+                  />
+                </div>
+                <div v-if="gopayForm.gopayAutoSignupMode === 'appium'">
+                  <label class="block text-xs text-emerald-200/80 mb-1">ADB Serial</label>
+                  <input
+                    :value="String(gopayAutoSignupConfig?.appium_adb_serial || '')"
+                    type="text"
+                    readonly
+                    class="w-full px-3 py-2 bg-gray-950 border border-emerald-500/10 rounded-lg text-sm text-gray-300 focus:outline-none"
+                  />
+                </div>
                 <div class="md:col-span-2 rounded-lg border px-3 py-2 text-xs break-words whitespace-normal" :class="gopayAutoSignupProviderConfigured ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-100' : 'border-amber-500/30 bg-amber-500/10 text-amber-100'">
                   <div class="font-medium">{{ gopayAutoSignupConfigLoading ? '正在检查短信凭证配置...' : gopayAutoSignupProviderConfigured ? '短信凭证已配置' : '短信凭证未配置' }}</div>
                   <div class="mt-1 opacity-80 leading-relaxed">
                     {{ gopayAutoSignupProviderConfigured ? '将使用设置页或 .env 中保存的短信服务商密钥。' : gopayAutoSignupMissingMessage }}
+                  </div>
+                  <div v-if="gopayForm.gopayAutoSignupMode === 'appium'" class="mt-2 opacity-80 leading-relaxed">
+                    当前任务将走 Appium 真实 APP 注册；Appium URL / ADB Serial 请到“设置 → GoPay 自动注册”中修改。
                   </div>
                 </div>
               </div>
@@ -1005,29 +1063,10 @@
             </div>
           </div>
 
-          <button
-            @click="startGoPayBind"
-            :disabled="gopaySubmitting || gopayTaskRunning || !gopayCanSubmit"
-            class="w-full px-4 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50">
-            {{ gopaySubmitting ? '提交中...' : gopayTaskRunning ? '任务运行中...' : (gopayForm.autoRegister ? '自动注册并 GoPay 绑卡' : gopayBatchActive ? '开始批量 GoPay 绑卡' : '开始 GoPay 绑卡') }}
-          </button>
-          <button
-            v-if="gopayTaskRunning"
-            @click="skipGoPayCurrentAccount"
-            :disabled="gopaySkipping || !gopaySkipAvailable"
-            class="w-full px-4 py-2 rounded-lg text-sm border bg-amber-600/15 hover:bg-amber-600/25 text-amber-200 border-amber-500/30 transition disabled:opacity-50">
-            {{ gopaySkipping ? '跳过中...' : '跳过当前账号' }}
-          </button>
-          <button
-            v-if="gopayTaskRunning"
-            @click="cancelGoPayTask"
-            :disabled="gopayCancelling"
-            class="w-full px-4 py-2 rounded-lg text-sm border bg-red-600/15 hover:bg-red-600/25 text-red-300 border-red-500/30 transition disabled:opacity-50">
-            {{ gopayCancelling ? '取消中...' : '取消任务' }}
-          </button>
+          </div>
         </div>
 
-        <div class="border border-gray-800 rounded-xl bg-gray-950/60 p-4 min-w-0 flex flex-col h-[calc(100vh-220px)] min-h-[520px] max-h-[760px]">
+        <div class="border border-gray-800 rounded-xl bg-gray-950/60 p-4 min-w-0 flex flex-col h-[520px] xl:h-full min-h-0">
           <div class="flex items-center justify-between gap-3 mb-3">
             <div class="text-sm text-gray-400">实时 GoPay 日志</div>
             <div v-if="gopayTask" class="text-xs text-gray-500 font-mono">
@@ -1043,11 +1082,11 @@
               :key="entry.id"
               class="rounded-lg border border-gray-800 bg-gray-950/80 px-3 py-2"
             >
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-xs font-mono text-gray-500">{{ entry.time }}</span>
-                <span class="text-[11px] uppercase tracking-wide" :class="entry.levelClass">{{ entry.label }}</span>
+              <div class="grid grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2">
+                <span class="text-xs font-mono text-gray-500">{{ entry.time || '-' }}</span>
+                <span class="min-w-0 truncate text-sm text-gray-200" :title="entry.message">{{ entry.message }}</span>
+                <span class="shrink-0 text-[11px] uppercase tracking-wide" :class="entry.levelClass">{{ entry.label }}</span>
               </div>
-              <div class="mt-1 text-sm text-gray-200 break-all">{{ entry.message }}</div>
             </div>
           </div>
         </div>
@@ -1451,6 +1490,7 @@ const gopayForm = ref({
   autoRegisterProtocol: false,
   gopayAutoSignup: true,
   gopayAutoSignupSmsProvider: 'smscloud',
+  gopayAutoSignupMode: 'http',
   gopayAutoSignupHeroSmsApiKey: '',
   gopayAutoSignupHeroSmsBaseUrl: 'https://hero-sms.com/stubs/handler_api.php',
   gopayAutoSignupHeroSmsCountry: '6',
@@ -1833,6 +1873,7 @@ async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
     gopayAutoSignupConfig.value = cfg
     if (applyDefaults) {
       gopayForm.value.gopayAutoSignupSmsProvider = cfg.provider === 'hero_sms' ? 'hero_sms' : 'smscloud'
+      gopayForm.value.gopayAutoSignupMode = cfg.signup_mode === 'appium' ? 'appium' : 'http'
       gopayForm.value.countryCode = '62'
     }
   } catch (e) {
@@ -2232,7 +2273,7 @@ const gopayBoardView = computed(() => computeGoPayBoardView({
   selectedBatchEmails: gopaySelectedBatchEmails.value,
 }))
 
-const gopayTopCards = computed(() => gopayBoardView.value.cards)
+const gopayTopCards = computed(() => (gopayBoardView.value.cards || []).filter(card => card.label !== '当前账号'))
 
 const gopayBoardFailureCount = computed(() => {
   return gopayBoardView.value.failureCount
@@ -2555,6 +2596,7 @@ function getRememberedGoPayForm() {
     autoRegisterProtocol: Boolean(gopayForm.value.autoRegisterProtocol),
     gopayAutoSignup: Boolean(gopayForm.value.gopayAutoSignup),
     gopayAutoSignupSmsProvider: gopayAutoSignupProvider.value,
+    gopayAutoSignupMode: gopayForm.value.gopayAutoSignupMode === 'appium' ? 'appium' : 'http',
     autoRegisterMailProvider: String(gopayForm.value.autoRegisterMailProvider || ''),
     autoRegisterLuckmailEmailType: String(gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
     autoRegisterLuckmailPreferredDomain: String(gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
@@ -2595,6 +2637,7 @@ function loadGoPayFormState() {
       autoRegisterProtocol: Boolean(saved.autoRegisterProtocol),
       gopayAutoSignup: true,
       gopayAutoSignupSmsProvider: saved.gopayAutoSignupSmsProvider === 'hero_sms' ? 'hero_sms' : 'smscloud',
+      gopayAutoSignupMode: saved.gopayAutoSignupMode === 'appium' ? 'appium' : 'http',
       gopayAutoSignupHeroSmsApiKey: '',
       gopayAutoSignupHeroSmsBaseUrl: 'https://hero-sms.com/stubs/handler_api.php',
       gopayAutoSignupHeroSmsCountry: '6',
@@ -3311,6 +3354,12 @@ async function startGoPayBind() {
     if (useAutoSignup && !gopayAutoSignupProviderConfigured.value) {
       throw new Error(gopayAutoSignupMissingMessage.value)
     }
+    const autoSignupCfg = gopayAutoSignupConfig.value || {}
+    const autoSignupMode = useAutoSignup
+      ? (String(autoSignupCfg.signup_mode || 'http').trim().toLowerCase() === 'appium' ? 'appium' : 'http')
+      : 'http'
+    const appiumUrl = useAutoSignup ? String(autoSignupCfg.appium_url || '').trim() : ''
+    const appiumAdbSerial = useAutoSignup ? String(autoSignupCfg.appium_adb_serial || '').trim() : ''
     const task = await api.startGoPayBind({
       email: gopayEffectiveEmail.value,
       account_emails: gopayBatchActive.value ? gopaySelectedBatchEmails.value : [],
@@ -3319,6 +3368,9 @@ async function startGoPayBind() {
       auto_register_protocol: Boolean(gopayForm.value.autoRegisterProtocol),
       gopay_auto_signup: useAutoSignup,
       gopay_auto_signup_sms_provider: useAutoSignup ? gopayAutoSignupProvider.value : 'smscloud',
+      gopay_auto_signup_mode: autoSignupMode,
+      gopay_appium_url: appiumUrl,
+      gopay_appium_adb_serial: appiumAdbSerial,
       gopay_auto_signup_hero_sms_api_key: '',
       gopay_auto_signup_hero_sms_base_url: '',
       gopay_auto_signup_hero_sms_country: '',

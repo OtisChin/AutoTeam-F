@@ -817,6 +817,11 @@ def _normalize_gopay_auto_signup_sms_provider(raw: str | None = None) -> str:
     return "smscloud"
 
 
+def _normalize_gopay_auto_signup_mode(raw: str | None = None) -> str:
+    value = str(raw or "").strip().lower()
+    return "appium" if value == "appium" else "http"
+
+
 def _gopay_auto_signup_env() -> dict[str, str]:
     from autoteam.setup_wizard import _read_env
 
@@ -832,6 +837,9 @@ def _gopay_auto_signup_env() -> dict[str, str]:
         "hero_sms_max_price": pick("GOPAY_AUTO_SIGNUP_HERO_SMS_MAX_PRICE"),
         "proxy_url": pick("GOPAY_AUTO_SIGNUP_PROXY_URL"),
         "country_code": pick("GOPAY_AUTO_SIGNUP_COUNTRY_CODE", "+62"),
+        "signup_mode": _normalize_gopay_auto_signup_mode(pick("GOPAY_AUTO_SIGNUP_MODE", "http")),
+        "appium_url": pick("GOPAY_APPIUM_URL", "http://127.0.0.1:4723"),
+        "appium_adb_serial": pick("GOPAY_APPIUM_ADB_SERIAL"),
     }
 
 
@@ -980,6 +988,9 @@ def get_gopay_auto_signup_config():
         "hero_sms_max_price": cfg["hero_sms_max_price"],
         "proxy_url": cfg["proxy_url"],
         "proxy_url_present": bool(cfg["proxy_url"]),
+        "signup_mode": cfg.get("signup_mode") or "http",
+        "appium_url": cfg.get("appium_url") or "http://127.0.0.1:4723",
+        "appium_adb_serial": cfg.get("appium_adb_serial") or "",
     }
 
 
@@ -998,17 +1009,25 @@ async def save_gopay_auto_signup_config(request: Request):
     hero_sms_api_key = str(data.get("hero_sms_api_key") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY") or "").strip()
     hero_sms_max_price = str(data.get("hero_sms_max_price") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_MAX_PRICE") or "").strip()
     proxy_url = str(data.get("proxy_url") or data.get("GOPAY_AUTO_SIGNUP_PROXY_URL") or "").strip()
+    signup_mode = _normalize_gopay_auto_signup_mode(data.get("signup_mode") or data.get("GOPAY_AUTO_SIGNUP_MODE") or "http")
+    appium_url = str(data.get("appium_url") or data.get("GOPAY_APPIUM_URL") or "").strip()
+    appium_adb_serial = str(data.get("appium_adb_serial") or data.get("GOPAY_APPIUM_ADB_SERIAL") or "").strip()
 
     updates = {
         "GOPAY_AUTO_SIGNUP_SMS_PROVIDER": provider,
         "GOPAY_AUTO_SIGNUP_COUNTRY_CODE": country_code,
         "GOPAY_AUTO_SIGNUP_PROXY_URL": proxy_url,
+        "GOPAY_AUTO_SIGNUP_MODE": signup_mode,
     }
     if smscloud_xi_token:
         updates["GOPAY_AUTO_SIGNUP_SMSCLOUD_XI_TOKEN"] = smscloud_xi_token
     if hero_sms_api_key:
         updates["GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY"] = hero_sms_api_key
     updates["GOPAY_AUTO_SIGNUP_HERO_SMS_MAX_PRICE"] = hero_sms_max_price
+    if appium_url:
+        updates["GOPAY_APPIUM_URL"] = appium_url
+    if appium_adb_serial:
+        updates["GOPAY_APPIUM_ADB_SERIAL"] = appium_adb_serial
 
     for key, value in updates.items():
         _write_env(key, value)
@@ -2001,6 +2020,18 @@ class GoPayBindTaskParams(BaseModel):
         "",
         validation_alias=AliasChoices("gopay_auto_signup_smscloud_timeout", "gopayAutoSignupSmscloudTimeout"),
     )
+    gopay_auto_signup_mode: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_mode", "gopayAutoSignupMode"),
+    )
+    gopay_appium_url: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_appium_url", "gopayAppiumUrl"),
+    )
+    gopay_appium_adb_serial: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_appium_adb_serial", "gopayAppiumAdbSerial"),
+    )
     auto_register_mail_provider: str | None = Field(
         None,
         validation_alias=AliasChoices("auto_register_mail_provider", "autoRegisterMailProvider"),
@@ -2054,14 +2085,22 @@ class GoPayBindTaskParams(BaseModel):
 class PayPalTaskParams(BaseModel):
     runner_mode: str = Field("", validation_alias=AliasChoices("runner_mode", "runnerMode"))
     email: str = ""
+    account_emails: list[str] = Field(default_factory=list, validation_alias=AliasChoices("account_emails", "accountEmails"))
     checkout_url: str = Field("", validation_alias=AliasChoices("checkout_url", "checkoutUrl"))
+    bind_link_payload: dict = Field(default_factory=dict, validation_alias=AliasChoices("bind_link_payload", "bindLinkPayload"))
     proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
+    proxy_pool: list[str] = Field(default_factory=list, validation_alias=AliasChoices("proxy_pool", "proxyPool"))
+    proxy_pool_text: str = Field("", validation_alias=AliasChoices("proxy_pool_text", "proxyPoolText"))
     proxy_label: str = Field("", validation_alias=AliasChoices("proxy_label", "proxyLabel"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
     manual_confirm: bool = Field(True, validation_alias=AliasChoices("manual_confirm", "manualConfirm"))
     paypal_mode: str = Field("existing_account", validation_alias=AliasChoices("paypal_mode", "paypalMode"))
     paypal_email: str = Field("", validation_alias=AliasChoices("paypal_email", "paypalEmail"))
     paypal_password: str = Field("", validation_alias=AliasChoices("paypal_password", "paypalPassword"))
+    phone_accounts: list[GoPayPhoneAccountParams] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("phone_accounts", "phoneAccounts"),
+    )
     sms_url: str = Field("", validation_alias=AliasChoices("sms_url", "smsUrl"))
     otp_channel: str = Field("sms", validation_alias=AliasChoices("otp_channel", "otpChannel"))
     paypal_card_number: str = Field("", validation_alias=AliasChoices("paypal_card_number", "paypalCardNumber"))
@@ -2078,6 +2117,10 @@ class PayPalTaskParams(BaseModel):
     billing_address1: str = Field("", validation_alias=AliasChoices("billing_address1", "billingAddress1"))
     billing_address2: str = Field("", validation_alias=AliasChoices("billing_address2", "billingAddress2"))
     timeout_seconds: int = Field(0, validation_alias=AliasChoices("timeout_seconds", "timeoutSeconds"))
+    auto_oauth_after_success: bool = Field(
+        False,
+        validation_alias=AliasChoices("auto_oauth_after_success", "autoOauthAfterSuccess"),
+    )
 
 
 class CardPoolImportParams(BaseModel):
@@ -2614,6 +2657,48 @@ def _gopay_token_invalidated_pool_emails(result: dict, actual_email: str) -> lis
         if email and email not in seen:
             emails.append(email)
     return emails
+
+
+def _paypal_nonzero_blocked_pool_emails(result: dict, actual_email: str) -> list[str]:
+    seen = set()
+    emails = []
+    for raw_email in result.get("nonzero_blocked_emails") or []:
+        email = _normalized_email(raw_email)
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+    if str(result.get("failure_stage") or "") == "browser_charge_guard":
+        email = _normalized_email(actual_email)
+        if email and email not in seen:
+            emails.append(email)
+    return emails
+
+
+def _parse_proxy_pool_values(values: list[Any] | tuple[Any, ...] | None = None, text: str | None = None) -> list[str]:
+    candidates: list[str] = []
+    for raw_value in values or []:
+        candidates.append(str(raw_value or ""))
+    for raw_line in re.split(r"[\r\n,]+", str(text or "")):
+        candidates.append(raw_line)
+
+    proxies: list[str] = []
+    seen: set[str] = set()
+    for raw_proxy in candidates:
+        proxy = str(raw_proxy or "").strip()
+        if not proxy:
+            continue
+        if proxy.startswith("#"):
+            continue
+        if "#" in proxy:
+            proxy = proxy.split("#", 1)[0].strip()
+        if not proxy:
+            continue
+        normalized = proxy.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        proxies.append(proxy)
+    return proxies
 
 
 def _account_delete_audit_path() -> Path:
@@ -3684,6 +3769,620 @@ def get_codex_auth(email: str):
         "auth_file": auth_file,
         "hint": "将内容保存到 ~/.codex/auth.json（Linux/macOS）或 %APPDATA%\\codex\\auth.json（Windows）",
     }
+
+
+def _normalize_access_token(raw_value: str) -> str:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("{") and "accessToken" in raw:
+        try:
+            parsed = json.loads(raw)
+            token = parsed.get("accessToken")
+            if token:
+                raw = str(token).strip()
+        except Exception:
+            pass
+    raw = re.sub(r"^Bearer\s+", "", raw, flags=re.IGNORECASE).strip()
+    raw = re.sub(r"^[\"']+|[\"',;\\s]+$", "", raw).strip()
+    return raw
+
+
+def _extract_account_access_token(email: str) -> str:
+    from autoteam.accounts import find_account, load_accounts
+    from autoteam.auth_session_store import get_auth_session_file
+    from autoteam.codex_auth import get_saved_main_auth_file
+
+    normalized = _normalized_email(email)
+    if not normalized:
+        return ""
+
+    auth_file = ""
+    if _is_main_account_email(normalized):
+        auth_file = get_saved_main_auth_file() or ""
+    else:
+        acc = find_account(load_accounts(), normalized)
+        if acc:
+            auth_file = str(acc.get("auth_file") or "").strip()
+        if not auth_file:
+            auth_file = str(get_auth_session_file(normalized) or "").strip()
+    if not auth_file or not Path(auth_file).exists():
+        return ""
+
+    try:
+        auth_data = json.loads(Path(auth_file).read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return _normalize_access_token(auth_data.get("access_token") or auth_data.get("accessToken") or "")
+
+
+def _refresh_account_access_token(email: str) -> str:
+    from autoteam.auth_session_store import load_auth_session, save_auth_session
+    from autoteam.gopay_executor import _configure_chatgpt_http_session, _safe_email_summary
+
+    normalized = _normalized_email(email)
+    if not normalized:
+        return ""
+    session_data = load_auth_session(normalized)
+    session_token = str(session_data.get("sessionToken") or session_data.get("session_token") or "").strip()
+    cookie_header = str(session_data.get("cookie_header") or "").strip()
+    if not session_token and not cookie_header:
+        return ""
+    device_id = str(session_data.get("device_id") or session_data.get("oai_device_id") or "").strip()
+    user_agent = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/136.0.0.0 Safari/537.36"
+    )
+    http = requests.Session()
+    try:
+        _configure_chatgpt_http_session(
+            http,
+            access_token="",
+            session_token=session_token,
+            cookie_header=cookie_header,
+            device_id=device_id,
+            user_agent=user_agent,
+        )
+        response = http.get("https://chatgpt.com/api/auth/session", timeout=max(10.0, _env_float("CHECKOUT_HTTP_TIMEOUT_SECONDS", 30.0)))
+        if int(getattr(response, "status_code", 0) or 0) >= 400:
+            return ""
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return ""
+        access_token = _normalize_access_token(payload.get("accessToken") or payload.get("access_token") or "")
+        if not access_token:
+            return ""
+        refreshed = dict(session_data)
+        refreshed["accessToken"] = access_token
+        refreshed["access_token"] = access_token
+        if payload.get("user") and isinstance(payload.get("user"), dict):
+            refreshed["user"] = payload.get("user")
+        if str(getattr(http, "_chatgpt_cookie_header", "") or "").strip():
+            refreshed["cookie_header"] = str(getattr(http, "_chatgpt_cookie_header", "") or "").strip()
+        if str(getattr(http, "_oai_device_id", "") or "").strip():
+            refreshed["device_id"] = str(getattr(http, "_oai_device_id", "") or "").strip()
+            refreshed["oai_device_id"] = str(getattr(http, "_oai_device_id", "") or "").strip()
+        save_auth_session(normalized, refreshed)
+        return access_token
+    except Exception as exc:
+        logger.info("[paypal] refresh access token from session failed: email=%s error=%s", _safe_email_summary(normalized), exc)
+        return ""
+    finally:
+        try:
+            http.close()
+        except Exception:
+            pass
+
+
+def _looks_like_html_error(text: str) -> bool:
+    compact = str(text or "").strip().lower()
+    if not compact:
+        return False
+    return compact.startswith("<!doctype html") or compact.startswith("<html") or "<head" in compact[:200]
+
+
+def _friendly_checkout_error(detail: str, status: int | None = None) -> str:
+    text = str(detail or "").strip()
+    if not text:
+        return f"上游错误({status or 502})"
+    if _looks_like_html_error(text):
+        if status == 403:
+            return "生成 checkout 被上游 403 拦截，返回了 HTML 风控页；通常是账号 access_token 失效、Cloudflare 未通过，或当前 IP/环境被风控"
+        return f"生成 checkout 返回了 HTML 页面（HTTP {status or 502}），通常是会话未通过或遭遇风控"
+    lowered = text.lower()
+    if status == 403 and ("forbidden" in lowered or "denied" in lowered):
+        return "生成 checkout 被上游 403 拦截；通常是账号 access_token 失效、Cloudflare 未通过，或当前 IP/环境被风控"
+    return text
+
+
+def _looks_like_cloudflare_challenge(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return (
+        "_cf_chl_opt" in lowered
+        or "enable javascript and cookies to continue" in lowered
+        or "cf-chl" in lowered
+        or "verify you are human" in lowered
+    )
+
+
+def _parse_checkout_response_json(text: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(text or "{}")
+        return parsed if isinstance(parsed, dict) else {"data": parsed}
+    except json.JSONDecodeError:
+        return {"detail": text or "upstream returned non-json response"}
+
+
+def _find_hosted_checkout_url(payload: Any) -> str:
+    pay_openai_pattern = re.compile(r"^https://(?:pay\.openai\.com|checkout\.stripe\.com)/c/pay/", re.I)
+    stack = [payload]
+    while stack:
+        current = stack.pop(0)
+        if isinstance(current, list):
+            stack.extend(current)
+            continue
+        if not isinstance(current, dict):
+            continue
+        for value in current.values():
+            if isinstance(value, str) and pay_openai_pattern.match(value.strip()):
+                return value.strip()
+            if isinstance(value, (dict, list)):
+                stack.append(value)
+    return ""
+
+
+def _choose_checkout_error_status(upstream_status: int) -> int:
+    if upstream_status in (400, 401, 403, 404, 409, 422, 429):
+        return upstream_status
+    return 502
+
+
+def _normalize_checkout_payload_for_http(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    plan_name = str(normalized.get("plan_name") or "").strip().lower()
+    if not plan_name:
+        normalized["plan_name"] = "chatgptplusplan"
+        plan_name = "chatgptplusplan"
+    if plan_name == "chatgptplusplan":
+        normalized.setdefault("entry_point", "all_plans_pricing_modal")
+        normalized.setdefault(
+            "promo_campaign",
+            {
+                "promo_campaign_id": "plus-1-month-free",
+                "is_coupon_from_query_param": False,
+            },
+        )
+    billing_details = normalized.get("billing_details") if isinstance(normalized.get("billing_details"), dict) else {}
+    normalized["billing_details"] = {
+        "country": str(billing_details.get("country") or "US").strip().upper() or "US",
+        "currency": str(billing_details.get("currency") or "USD").strip().upper() or "USD",
+    }
+    checkout_ui_mode = str(normalized.get("checkout_ui_mode") or "").strip().lower()
+    if checkout_ui_mode:
+        normalized["checkout_ui_mode"] = "hosted" if checkout_ui_mode == "hosted" else "custom"
+    return normalized
+
+
+def _new_checkout_http_session(impersonate_browser: str):
+    try:
+        from curl_cffi.requests import Session as CurlCffiSession  # type: ignore
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="当前环境缺少 curl_cffi，无法使用 HTTP Hosted 生成器",
+        ) from exc
+    session = CurlCffiSession(impersonate=impersonate_browser)
+    try:
+        session._autoteam_transport = "curl_cffi"  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return session
+
+
+def _generate_checkout_link_via_http(access_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from autoteam.gopay_executor import _configure_chatgpt_http_session
+
+    normalized_access_token = _normalize_access_token(access_token)
+    if not normalized_access_token:
+        raise HTTPException(status_code=400, detail="请提供 access_token")
+
+    payload = _normalize_checkout_payload_for_http(payload)
+
+    primary_impersonate = str(os.environ.get("CHECKOUT_IMPERSONATE_BROWSER") or "chrome136").strip() or "chrome136"
+    fallback_impersonate = str(os.environ.get("CHECKOUT_FALLBACK_IMPERSONATE_BROWSER") or "chrome133a").strip() or "chrome133a"
+    user_agent = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/136.0.0.0 Safari/537.36"
+    )
+    request_timeout = max(10.0, _env_float("CHECKOUT_HTTP_TIMEOUT_SECONDS", 30.0))
+
+    def _post_once_requests() -> tuple[Any, str]:
+        http = requests.Session()
+        try:
+            _configure_chatgpt_http_session(
+                http,
+                access_token=normalized_access_token,
+                user_agent=user_agent,
+            )
+            http.headers.update(
+                {
+                    "Accept": "application/json",
+                    "Origin": "https://chatgpt.com",
+                    "Referer": "https://chatgpt.com/",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                }
+            )
+            resp = http.post(
+                "https://chatgpt.com/backend-api/payments/checkout",
+                json=payload,
+                timeout=request_timeout,
+            )
+            return resp, str(getattr(resp, "text", "") or "")
+        finally:
+            try:
+                http.close()
+            except Exception:
+                pass
+
+    def _post_once(impersonate_browser: str) -> tuple[Any, str]:
+        http = _new_checkout_http_session(impersonate_browser)
+        try:
+            _configure_chatgpt_http_session(
+                http,
+                access_token=normalized_access_token,
+                user_agent=user_agent,
+            )
+            http.headers.update(
+                {
+                    "Accept": "application/json",
+                    "Origin": "https://chatgpt.com",
+                    "Referer": "https://chatgpt.com/",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                }
+            )
+            resp = http.post(
+                "https://chatgpt.com/backend-api/payments/checkout",
+                json=payload,
+                timeout=request_timeout,
+            )
+            return resp, str(getattr(resp, "text", "") or "")
+        finally:
+            try:
+                http.close()
+            except Exception:
+                pass
+
+    response = None
+    raw_text = ""
+    request_errors: list[str] = []
+    try:
+        response, raw_text = _post_once_requests()
+    except Exception as exc:
+        request_errors.append(f"requests: {type(exc).__name__}: {exc}")
+        logger.warning("[bind/link] requests checkout path failed: %s", request_errors[-1])
+
+    if response is None or _looks_like_cloudflare_challenge(raw_text):
+        try:
+            response, raw_text = _post_once(primary_impersonate)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            request_errors.append(f"curl_cffi: {type(exc).__name__}: {exc}")
+            raise HTTPException(status_code=502, detail="upstream checkout request failed: " + " | ".join(request_errors)) from exc
+
+    if _looks_like_cloudflare_challenge(raw_text) and fallback_impersonate and fallback_impersonate != primary_impersonate:
+        logger.info(
+            "[bind/link] upstream returned Cloudflare challenge; retrying with fallback impersonate=%s",
+            fallback_impersonate,
+        )
+        try:
+            response, raw_text = _post_once(fallback_impersonate)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"upstream checkout retry failed: {type(exc).__name__}: {exc}") from exc
+
+    if _looks_like_cloudflare_challenge(raw_text):
+        raise HTTPException(status_code=502, detail="upstream blocked by Cloudflare challenge")
+
+    upstream_data = _parse_checkout_response_json(raw_text)
+    upstream_status = int(getattr(response, "status_code", 0) or 0)
+    checkout_session_id = str(upstream_data.get("checkout_session_id") or "").strip()
+    if upstream_status >= 400 or not checkout_session_id:
+        detail = (
+            upstream_data.get("detail")
+            or upstream_data.get("message")
+            or upstream_data.get("error")
+            or f"upstream returned HTTP {upstream_status or 502}"
+        )
+        raise HTTPException(status_code=_choose_checkout_error_status(upstream_status or 502), detail=detail)
+
+    processor_entity = str(upstream_data.get("processor_entity") or "openai_llc").strip() or "openai_llc"
+    hosted_checkout_url = _find_hosted_checkout_url(upstream_data)
+    chatgpt_checkout_url = f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}"
+    checkout_ui_mode = str(payload.get("checkout_ui_mode") or "").strip().lower()
+    preferred_checkout_url = hosted_checkout_url if checkout_ui_mode == "hosted" and hosted_checkout_url else chatgpt_checkout_url
+    return {
+        "url": preferred_checkout_url,
+        "checkout_session_id": checkout_session_id,
+        "processor_entity": processor_entity,
+        "hosted_checkout_url": hosted_checkout_url,
+        "chatgpt_checkout_url": chatgpt_checkout_url,
+        "upstream_status": upstream_status,
+        "attempt": "http",
+    }
+
+
+def _generate_checkout_link(access_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _generate_checkout_link_via_http(access_token, payload)
+
+
+def _generate_checkout_link_via_browser(
+    access_token: str,
+    payload: dict[str, Any],
+    *,
+    email: str = "",
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
+) -> dict[str, Any]:
+    from autoteam.auth_session_store import load_auth_session
+    from autoteam.chatgpt_api import ChatGPTTeamAPI
+    from autoteam.gopay_executor import _inject_chatgpt_browser_cookies
+
+    normalized_access_token = _normalize_access_token(access_token)
+    if not normalized_access_token:
+        raise HTTPException(status_code=400, detail="请提供 access_token")
+
+    def _friendly_goto_error(exc):
+        text = str(exc)
+        if "ERR_CONNECTION_CLOSED" in text:
+            return "打开 ChatGPT 首页失败：网络连接被关闭，可能是代理/IP/风控问题"
+        if "ERR_TIMED_OUT" in text or "Timeout" in text:
+            return "打开 ChatGPT 首页失败：请求超时，可能是网络波动、代理不稳定或风控问题"
+        if "ERR_CONNECTION_RESET" in text:
+            return "打开 ChatGPT 首页失败：网络连接被重置，可能是代理/IP/风控问题"
+        return f"打开 ChatGPT 首页失败：{text}"
+
+    api = ChatGPTTeamAPI()
+    try:
+        session_data: dict[str, Any] = {}
+        normalized_email = _normalized_email(email)
+        if normalized_email:
+            session_data = load_auth_session(normalized_email)
+        device_id = str(session_data.get("device_id") or session_data.get("oai_device_id") or "").strip()
+        api.oai_device_id = device_id or getattr(api, "oai_device_id", "")
+        api._launch_browser(proxy_url=proxy_url, proxy_bypass=proxy_bypass, headless=False, background=True)
+        if session_data:
+            user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else {}
+            account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
+            account_id = str(
+                session_data.get("account_id")
+                or session_data.get("accountId")
+                or user_data.get("account_id")
+                or user_data.get("accountId")
+                or account_data.get("id")
+                or account_data.get("account_id")
+                or ""
+            ).strip()
+            _inject_chatgpt_browser_cookies(
+                api,
+                session_token=str(session_data.get("sessionToken") or session_data.get("session_token") or "").strip(),
+                cookie_header=str(session_data.get("cookie_header") or "").strip(),
+                account_id=account_id,
+                device_id=device_id,
+            )
+        logger.info("[bind/link] open chatgpt.com to pass Cloudflare")
+        goto_ok = False
+        last_goto_exc = None
+        for attempt in range(3):
+            try:
+                api.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
+                goto_ok = True
+                break
+            except Exception as exc:
+                last_goto_exc = exc
+                logger.warning(
+                    "[bind/link] 打开 ChatGPT 首页失败，第 %d/3 次: %s",
+                    attempt + 1,
+                    _friendly_goto_error(exc),
+                )
+                if attempt < 2:
+                    time.sleep(3)
+        if not goto_ok:
+            raise RuntimeError(_friendly_goto_error(last_goto_exc))
+
+        time.sleep(5)
+        api._wait_for_cloudflare()
+        api.access_token = normalized_access_token
+
+        script = """async (args) => {
+                const accessToken = (args && args.accessToken) || "";
+                const payload = (args && args.payload) || {};
+                const fetchWithTimeout = async (url, init = {}, timeoutMs = 12000) => {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), timeoutMs);
+                    try {
+                        return await fetch(url, { ...init, signal: controller.signal });
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                };
+                let pageAccessToken = "";
+                let sessionStatus = 0;
+                let sessionDetail = "";
+                try {
+                    const sessionResp = await fetchWithTimeout("/api/auth/session", {
+                        method: "GET",
+                        credentials: "include",
+                        headers: { Accept: "application/json" }
+                    }, 12000);
+                    sessionStatus = sessionResp.status;
+                    const sessionText = await sessionResp.text();
+                    try {
+                        const sessionData = sessionText ? JSON.parse(sessionText) : {};
+                        pageAccessToken = (sessionData && sessionData.accessToken) || "";
+                    } catch (_) {
+                        sessionDetail = sessionText.slice(0, 300);
+                    }
+                } catch (e) {
+                    sessionDetail = String(e && e.message ? e.message : e);
+                }
+                const token = pageAccessToken || accessToken;
+                if (!token) {
+                    return { ok: false, status: sessionStatus || 0, detail: sessionDetail || "缺少 accessToken", raw: {}, attempt: "browser_session" };
+                }
+                const timezoneOffset = new Date().getTimezoneOffset();
+                const warmups = [
+                    [`/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=${timezoneOffset}`, { method: "GET" }],
+                    ["/backend-api/accounts/domain-density-eligibility", { method: "GET" }],
+                    ["/backend-api/checkout_pricing_config/countries", { method: "GET" }],
+                    ["/backend-api/checkout_pricing_config/configs/ID", { method: "GET" }]
+                ];
+                for (const [url, init] of warmups) {
+                    try {
+                        await fetchWithTimeout(url, {
+                            ...init,
+                            credentials: "include",
+                            headers: {
+                                Authorization: "Bearer " + token,
+                                Accept: "application/json",
+                                "x-openai-target-path": url.split("?")[0],
+                                "x-openai-target-route": url.split("?")[0]
+                            }
+                        }, 8000);
+                    } catch (_) {}
+                }
+                try {
+                    await fetchWithTimeout("/backend-api/sentinel/ping", {
+                        method: "POST",
+                        credentials: "include",
+                        headers: { "Content-Type": "application/json" },
+                        body: "{}"
+                    }, 8000);
+                } catch (_) {}
+
+                const attempts = [
+                    {
+                        label: "basic",
+                        headers: {
+                            Authorization: "Bearer " + token,
+                            "Content-Type": "application/json",
+                        }
+                    },
+                    {
+                        label: "target",
+                        headers: {
+                            Authorization: "Bearer " + token,
+                            "Content-Type": "application/json",
+                            Accept: "*/*",
+                            "oai-language": navigator.language || "en-US",
+                            "oai-session-id": crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+                            "x-openai-target-path": "/backend-api/payments/checkout",
+                            "x-openai-target-route": "/backend-api/payments/checkout"
+                        }
+                    }
+                ];
+
+                let last = { ok: false, status: 0, detail: "未执行 checkout 请求", raw: {} };
+                for (const attempt of attempts) {
+                    let resp;
+                    try {
+                        resp = await fetchWithTimeout("https://chatgpt.com/backend-api/payments/checkout", {
+                            method: "POST",
+                            credentials: "include",
+                            headers: attempt.headers,
+                            body: JSON.stringify(payload),
+                        }, 20000);
+                    } catch (e) {
+                        last = { ok: false, status: 0, detail: String(e && e.message ? e.message : e), raw: {}, attempt: attempt.label };
+                        continue;
+                    }
+                    const text = await resp.text();
+                    let data = {};
+                    try {
+                        data = text ? JSON.parse(text) : {};
+                    } catch (_) {
+                        data = { raw: text.slice(0, 500) };
+                    }
+                    if (resp.ok) {
+                        const checkoutSessionId = data.checkout_session_id || "";
+                        const processorEntity = data.processor_entity || "openai_llc";
+                        const url = data.url || (checkoutSessionId ? `https://chatgpt.com/checkout/${processorEntity}/${checkoutSessionId}` : "");
+                        return {
+                            ok: Boolean(url),
+                            status: resp.status,
+                            url,
+                            checkout_session_id: checkoutSessionId,
+                            processor_entity: processorEntity,
+                            raw: data,
+                            detail: url ? "" : "生成 checkout 返回缺少 url",
+                            attempt: "browser_" + attempt.label,
+                            session_status: sessionStatus,
+                            page_token_used: Boolean(pageAccessToken)
+                        };
+                    }
+                    last = {
+                        ok: false,
+                        status: resp.status,
+                        detail: data.detail || data.error || (data.raw ? String(data.raw).slice(0, 200) : `HTTP ${resp.status}`),
+                        raw: data,
+                        attempt: "browser_" + attempt.label,
+                        session_status: sessionStatus,
+                        page_token_used: Boolean(pageAccessToken)
+                    };
+                    if (resp.status !== 403) {
+                        break;
+                    }
+                }
+                return last;
+            }"""
+
+        result = None
+        last_result = None
+        for eval_attempt in range(3):
+            result = api.page.evaluate(
+                script,
+                {"accessToken": normalized_access_token, "payload": payload},
+            )
+            last_result = result
+            if result.get("ok"):
+                break
+            status = int(result.get("status") or 0)
+            detail = str(result.get("detail") or "").strip()
+            if status != 403 and not _looks_like_html_error(detail):
+                break
+            logger.warning(
+                "[bind/link] checkout blocked, retrying browser warmup: attempt=%s/3 status=%s detail=%s",
+                eval_attempt + 1,
+                status,
+                _friendly_checkout_error(detail, status),
+            )
+            if eval_attempt >= 2:
+                break
+            try:
+                api.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
+                time.sleep(3)
+                api._wait_for_cloudflare()
+            except Exception as exc:
+                logger.warning("[bind/link] retry warmup goto failed: %s", _friendly_goto_error(exc))
+                time.sleep(2)
+
+        if not result.get("ok"):
+            status = int((result or last_result or {}).get("status") or 0) or 502
+            detail = _friendly_checkout_error((result or last_result or {}).get("detail") or "", status)
+            raise HTTPException(status_code=status, detail=detail)
+
+        return {
+            "url": result.get("url") or "",
+            "checkout_session_id": result.get("checkout_session_id") or "",
+            "processor_entity": result.get("processor_entity") or "",
+            "attempt": result.get("attempt") or "",
+        }
+    finally:
+        try:
+            api.stop()
+        except Exception:
+            pass
 
 
 @app.get("/api/accounts/active")
@@ -5664,177 +6363,36 @@ def post_team_members_remove(params: TeamMemberRemoveParams):
 @app.post("/api/bind/link")
 def post_bind_link(params: BindLinkParams):
     """生成 ChatGPT 绑卡链接"""
-    def _normalize_access_token(raw_value: str) -> str:
-        raw = str(raw_value or "").strip()
-        if not raw:
-            return ""
-        if raw.startswith("{") and "accessToken" in raw:
-            try:
-                parsed = json.loads(raw)
-                token = parsed.get("accessToken")
-                if token:
-                    raw = str(token).strip()
-            except Exception:
-                pass
-        raw = re.sub(r"^Bearer\s+", "", raw, flags=re.IGNORECASE).strip()
-        raw = re.sub(r"^[\"']+|[\"',;\\s]+$", "", raw).strip()
-        return raw
-
     access_token = _normalize_access_token(params.access_token)
     if not access_token:
         raise HTTPException(status_code=400, detail="请提供 access_token")
-
-    def _do_generate_link():
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
-
-        def _friendly_goto_error(exc):
-            text = str(exc)
-            if "ERR_CONNECTION_CLOSED" in text:
-                return "打开 ChatGPT 首页失败：网络连接被关闭，可能是代理/IP/风控问题"
-            if "ERR_TIMED_OUT" in text or "Timeout" in text:
-                return "打开 ChatGPT 首页失败：请求超时，可能是网络波动、代理不稳定或风控问题"
-            if "ERR_CONNECTION_RESET" in text:
-                return "打开 ChatGPT 首页失败：网络连接被重置，可能是代理/IP/风控问题"
-            return f"打开 ChatGPT 首页失败：{text}"
-
-        payload = {
-            "plan_name": params.plan_name,
-            "billing_details": params.billing_details,
-            "checkout_ui_mode": params.checkout_ui_mode,
-        }
-        if params.entry_point:
-            payload["entry_point"] = params.entry_point
-        if params.promo_campaign:
-            payload["promo_campaign"] = params.promo_campaign
-        if params.promo_code:
-            payload["promo_code"] = params.promo_code
-        if params.cancel_url:
-            payload["cancel_url"] = params.cancel_url
-        if params.team_plan_data:
-            payload["team_plan_data"] = params.team_plan_data
-
-        api = ChatGPTTeamAPI()
-        try:
-            api._launch_browser()
-            logger.info("[bind/link] open chatgpt.com to pass Cloudflare")
-            goto_ok = False
-            last_goto_exc = None
-            for attempt in range(3):
-                try:
-                    api.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
-                    goto_ok = True
-                    break
-                except Exception as exc:
-                    last_goto_exc = exc
-                    logger.warning(
-                        "[bind/link] 打开 ChatGPT 首页失败，第 %d/3 次: %s",
-                        attempt + 1,
-                        _friendly_goto_error(exc),
-                    )
-                    if attempt < 2:
-                        time.sleep(3)
-            if not goto_ok:
-                raise RuntimeError(_friendly_goto_error(last_goto_exc))
-
-            time.sleep(5)
-            api._wait_for_cloudflare()
-            api.access_token = access_token
-
-            result = api.page.evaluate(
-                """async (payload) => {
-                    try {
-                        try {
-                            await fetch("/api/auth/session", { credentials: "include" });
-                        } catch (_) {}
-
-                        const resp = await fetch("https://chatgpt.com/backend-api/payments/checkout", {
-                            method: "POST",
-                            credentials: "include",
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Authorization": `Bearer ${payload.access_token}`
-                            },
-                            body: JSON.stringify(payload.body)
-                        });
-
-                        const text = await resp.text();
-                        let data = null;
-                        try {
-                            data = text ? JSON.parse(text) : {};
-                        } catch (err) {
-                            return {
-                                ok: false,
-                                status: resp.status,
-                                non_json: true,
-                                body: text.slice(0, 500)
-                            };
-                        }
-
-                        return {
-                            ok: resp.ok,
-                            status: resp.status,
-                            data
-                        };
-                    } catch (err) {
-                        return {
-                            ok: false,
-                            status: 0,
-                            fetch_error: String(err && err.message ? err.message : err)
-                        };
-                    }
-                }""",
-                {"access_token": access_token, "body": payload},
-            )
-
-            if result.get("fetch_error"):
-                raise HTTPException(status_code=502, detail=f"页面请求失败: {result['fetch_error']}")
-
-            if result.get("non_json"):
-                raise HTTPException(
-                    status_code=result.get("status") or 502,
-                    detail=f"上游错误({result.get('status')})，返回非 JSON 响应: {(result.get('body') or '')[:200]}",
-                )
-
-            data = result.get("data") or {}
-            if not result.get("ok"):
-                detail = data.get("detail") if isinstance(data, dict) else None
-                if isinstance(detail, dict):
-                    detail = detail.get("message") or json.dumps(detail, ensure_ascii=False)
-                raise HTTPException(
-                    status_code=result.get("status") or 502,
-                    detail=detail or f"上游错误({result.get('status')})",
-                )
-
-            if data.get("url") or data.get("checkout_session_id"):
-                result_payload = {}
-                if data.get("url"):
-                    result_payload["url"] = data["url"]
-                if data.get("checkout_session_id"):
-                    result_payload["checkout_session_id"] = data["checkout_session_id"]
-                return result_payload
-            return {"detail": data.get("detail") or str(data)}
-        finally:
-            try:
-                api.stop()
-            except Exception:
-                pass
-
-    if not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行"))
+    payload = {
+        "plan_name": params.plan_name,
+        "billing_details": params.billing_details,
+        "checkout_ui_mode": params.checkout_ui_mode,
+    }
+    if params.entry_point:
+        payload["entry_point"] = params.entry_point
+    if params.promo_campaign:
+        payload["promo_campaign"] = params.promo_campaign
+    if params.promo_code:
+        payload["promo_code"] = params.promo_code
+    if params.cancel_url:
+        payload["cancel_url"] = params.cancel_url
+    if params.team_plan_data:
+        payload["team_plan_data"] = params.team_plan_data
 
     try:
         try:
-            result = _pw_executor.run(_do_generate_link)
+            result = _generate_checkout_link(access_token, payload)
         except HTTPException:
             raise
         except Exception as exc:
             logger.exception("[bind/link] unexpected error")
             raise HTTPException(status_code=500, detail=f"生成绑卡链接失败: {exc}") from exc
-        if "detail" in result:
-            raise HTTPException(status_code=400, detail=result["detail"])
         return result
     finally:
-        _playwright_lock.release()
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -6418,7 +6976,17 @@ def _find_control_task(params: TaskControlParams | None, *, default_group: str |
 @app.post("/api/tasks/bind-card", status_code=202)
 def post_bind_card_task(params: BindCardTaskParams):
     from autoteam import cancel_signal
-    from autoteam.accounts import ensure_session_only_account, find_account, load_accounts, update_account
+    from autoteam.accounts import (
+        ACCOUNT_SOURCE_MANAGED,
+        ACCOUNT_TYPE_PLUS,
+        SEAT_CODEX,
+        STATUS_ACTIVE,
+        add_account,
+        ensure_session_only_account,
+        find_account,
+        load_accounts,
+        update_account,
+    )
     from autoteam.auth_session_store import get_auth_session_file
     from autoteam.bind_audit import record_bind_audit
     from autoteam.bind_executor import run_bind_task
@@ -6617,7 +7185,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     gopay_task_public_base_url = _request_public_base_url(request)
     auto_register = bool(params.auto_register)
     gopay_auto_signup = bool(params.gopay_auto_signup)
-    gopay_auto_signup_sms_provider = _normalize_gopay_auto_signup_sms_provider(params.gopay_auto_signup_sms_provider or "smscloud")
+    gopay_auto_signup_env_config = _gopay_auto_signup_env()
+    gopay_auto_signup_sms_provider = _normalize_gopay_auto_signup_sms_provider(
+        params.gopay_auto_signup_sms_provider
+        or gopay_auto_signup_env_config.get("provider")
+        or "smscloud"
+    )
     gopay_auto_signup_hero_sms_config = {
         "api_key": str(params.gopay_auto_signup_hero_sms_api_key or "").strip(),
         "base_url": str(params.gopay_auto_signup_hero_sms_base_url or "").strip(),
@@ -6632,6 +7205,24 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         "service": str(params.gopay_auto_signup_smscloud_service or "").strip(),
         "max_price": str(params.gopay_auto_signup_smscloud_max_price or "").strip(),
         "timeout_sec": str(params.gopay_auto_signup_smscloud_timeout or "").strip(),
+    }
+    requested_signup_mode = _normalize_gopay_auto_signup_mode(
+        getattr(params, "gopay_auto_signup_mode", "")
+        or gopay_auto_signup_env_config.get("signup_mode")
+        or "http"
+    )
+    gopay_auto_signup_appium_config = {
+        "signup_mode": requested_signup_mode,
+        "appium_url": str(
+            getattr(params, "gopay_appium_url", "")
+            or gopay_auto_signup_env_config.get("appium_url")
+            or ""
+        ).strip(),
+        "adb_serial": str(
+            getattr(params, "gopay_appium_adb_serial", "")
+            or gopay_auto_signup_env_config.get("appium_adb_serial")
+            or ""
+        ).strip(),
     }
     try:
         auto_register_count = max(1, min(100, int(params.auto_register_count or 1)))
@@ -6654,6 +7245,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     country_code = str(params.country_code or "").strip()
     sms_url = str(params.sms_url or "").strip()
     gopay_pin = str(params.gopay_pin or "").strip()
+    if gopay_auto_signup and requested_signup_mode == "appium":
+        if not gopay_pin:
+            raise HTTPException(status_code=400, detail="Appium 自动注册要求填写 gopay_pin")
+        if not re.fullmatch(r"\d{6}", gopay_pin):
+            raise HTTPException(status_code=400, detail="Appium 自动注册要求 gopay_pin 为 6 位数字")
+        if not gopay_auto_signup_appium_config["appium_url"]:
+            raise HTTPException(status_code=400, detail="Appium 自动注册缺少 gopay_appium_url")
     otp_channel = str(params.otp_channel or "sms").strip().lower()
     if otp_channel not in {"sms", "whatsapp"}:
         raise HTTPException(status_code=400, detail="otp_channel 只支持 sms 或 whatsapp")
@@ -6804,6 +7402,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         proxy_config_state = "invalid"
         proxy_config_error = _compact_log_text(exc, limit=160)
     bind_proxy_url = proxy_url
+
     if normalized_proxy_url.lower().startswith(("socks4://", "socks5://", "socks5h://")):
         # SOCKS proxies are only needed for GoPay wallet signup/PIN setup.
         bind_proxy_url = ""
@@ -7729,6 +8328,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         hero_sms_config=gopay_auto_signup_hero_sms_config,
                         smscloud_config=gopay_auto_signup_smscloud_config,
                         public_base_url=gopay_task_public_base_url,
+                        appium_config=gopay_auto_signup_appium_config,
                         log=_signup_log,
                     )
                     break
@@ -9258,6 +9858,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     task_params["auto_register_prefix"] = auto_register_prefix
     task_params["auto_register_password_present"] = bool(auto_register_password)
     task_params["gopay_auto_signup_sms_provider"] = gopay_auto_signup_sms_provider
+    task_params["gopay_auto_signup_mode"] = requested_signup_mode
+    task_params["gopay_appium_url"] = gopay_auto_signup_appium_config.get("appium_url") or ""
+    task_params["gopay_appium_adb_serial"] = gopay_auto_signup_appium_config.get("adb_serial") or ""
     task_params["gopay_task_public_base_url"] = gopay_task_public_base_url
     task_params["gopay_auto_signup_hero_sms_api_key_present"] = bool(gopay_auto_signup_hero_sms_config.get("api_key"))
     task_params["pending_retry_attempts"] = pending_retry_attempts
@@ -9297,21 +9900,120 @@ def post_paypal_task(params: PayPalTaskParams):
         raise HTTPException(status_code=400, detail="paypal_mode 只支持 existing_account 或 create_account")
 
     from autoteam import cancel_signal
-    from autoteam.accounts import ensure_session_only_account, find_account, load_accounts, update_account
+    from autoteam.accounts import (
+        ACCOUNT_SOURCE_MANAGED,
+        ACCOUNT_TYPE_PLUS,
+        SEAT_CODEX,
+        STATUS_ACTIVE,
+        add_account,
+        ensure_session_only_account,
+        find_account,
+        load_accounts,
+        update_account,
+    )
     from autoteam.auth_session_store import get_auth_session_file
     from autoteam.bind_audit import record_bind_audit
+    from autoteam.config import normalize_proxy_url
+    from autoteam.gopay_executor import _safe_email_summary, _safe_proxy_summary
     from autoteam.paypal_bind_executor import run_paypal_bind_task
 
     email = _normalized_email(params.email)
+    account_emails = []
+    seen_account_emails = set()
+    for raw_email in params.account_emails or []:
+        normalized = _normalized_email(raw_email)
+        if normalized and normalized not in seen_account_emails:
+            seen_account_emails.add(normalized)
+            account_emails.append(normalized)
     checkout_url = str(params.checkout_url or "").strip()
+    bind_link_payload = params.bind_link_payload if isinstance(params.bind_link_payload, dict) else {}
     sms_url = str(params.sms_url or "").strip()
     otp_channel = str(params.otp_channel or "sms").strip().lower() or "sms"
+    proxy_url = str(params.proxy_url or "").strip()
+    proxy_pool = _parse_proxy_pool_values(params.proxy_pool, params.proxy_pool_text)
+    phone_accounts: list[dict] = []
+    seen_phone_accounts: set[tuple[str, str, str]] = set()
+    for raw_phone_account in params.phone_accounts or []:
+        account_phone_number = str(raw_phone_account.phone_number or "").strip()
+        account_sms_url = str(raw_phone_account.sms_url or "").strip()
+        account_otp_channel = str(raw_phone_account.otp_channel or otp_channel or "sms").strip().lower()
+        if account_otp_channel not in {"sms", "whatsapp"}:
+            raise HTTPException(status_code=400, detail="phone_accounts otp_channel 只支持 sms 或 whatsapp")
+        if not account_phone_number and not account_sms_url:
+            continue
+        if not account_phone_number or not account_sms_url:
+            raise HTTPException(status_code=400, detail="phone_accounts 每项都必须填写 phone_number、sms_url")
+        phone_key = (account_phone_number, account_sms_url, account_otp_channel)
+        if phone_key in seen_phone_accounts:
+            continue
+        seen_phone_accounts.add(phone_key)
+        phone_accounts.append(
+            {
+                "phone_number": account_phone_number,
+                "sms_url": account_sms_url,
+                "otp_channel": account_otp_channel,
+            }
+        )
+    if phone_accounts:
+        sms_url = str(phone_accounts[0].get("sms_url") or "").strip()
+        otp_channel = str(phone_accounts[0].get("otp_channel") or otp_channel).strip().lower() or "sms"
+        if not str(params.billing_phone or "").strip():
+            params.billing_phone = str(phone_accounts[0].get("phone_number") or "").strip()
+    try:
+        normalized_proxy_url = normalize_proxy_url(proxy_url) if proxy_url else ""
+    except Exception:
+        normalized_proxy_url = ""
+    normalized_proxy_pool: list[str] = []
+    for raw_pool_proxy in proxy_pool:
+        try:
+            normalized = normalize_proxy_url(raw_pool_proxy)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"动态代理池格式错误: {raw_pool_proxy} ({exc})") from exc
+        if normalized and normalized not in normalized_proxy_pool:
+            normalized_proxy_pool.append(normalized)
+    bind_proxy_url = proxy_url
+
+    def _select_paypal_proxy() -> str:
+        if normalized_proxy_pool:
+            return random.choice(normalized_proxy_pool)
+        return bind_proxy_url
+
+    def _paypal_already_paid_text(value: Any) -> bool:
+        normalized = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+        return bool(normalized) and any(
+            marker in normalized
+            for marker in (
+                "user is paid",
+                "user already paid",
+                "user is already paid",
+                "already a paid user",
+                "already paid user",
+                "already subscribed",
+                "already has an active subscription",
+                "用户已付费",
+                "已是付费用户",
+                "已有有效订阅",
+            )
+        )
+
+    def _paypal_user_paid_success(candidate_email: str, message: str = "") -> dict:
+        return {
+            "status": "success",
+            "failure_stage": "",
+            "message": message or "ChatGPT 返回 User is already paid，账号已是付费用户，标记为 PayPal 绑定成功",
+            "screenshot_paths": [],
+            "email": candidate_email,
+            "user_paid_skip": True,
+        }
+
     if not email:
         raise HTTPException(status_code=400, detail="email 不能为空")
-    if not checkout_url:
-        raise HTTPException(status_code=400, detail="checkout_url 不能为空")
     if otp_channel not in {"sms", "whatsapp"}:
         raise HTTPException(status_code=400, detail="otp_channel 只支持 sms 或 whatsapp")
+    if account_emails and email not in account_emails:
+        account_emails.insert(0, email)
+    if not checkout_url and not bind_link_payload:
+        raise HTTPException(status_code=400, detail="checkout_url 不能为空，或提供 bind_link_payload 用于自动生成链接")
     if not params.manual_confirm:
         if paypal_mode == "existing_account":
             if not str(params.paypal_email or "").strip():
@@ -9326,6 +10028,18 @@ def post_paypal_task(params: PayPalTaskParams):
             if not sms_url:
                 raise HTTPException(status_code=400, detail="自动注册模式需要 sms_url")
             if not bool(params.autofill_enabled):
+                if not str(params.billing_name or "").strip():
+                    raise HTTPException(status_code=400, detail="手动账单信息模式需要 billing_name")
+                if not str(params.billing_country or "").strip():
+                    raise HTTPException(status_code=400, detail="手动账单信息模式需要 billing_country")
+                if not str(params.billing_state or "").strip():
+                    raise HTTPException(status_code=400, detail="手动账单信息模式需要 billing_state")
+                if not str(params.billing_city or "").strip():
+                    raise HTTPException(status_code=400, detail="手动账单信息模式需要 billing_city")
+                if not str(params.billing_zip or "").strip():
+                    raise HTTPException(status_code=400, detail="手动账单信息模式需要 billing_zip")
+                if not str(params.billing_address1 or "").strip():
+                    raise HTTPException(status_code=400, detail="手动账单信息模式需要 billing_address1")
                 if not str(params.paypal_card_number or "").strip():
                     raise HTTPException(status_code=400, detail="自动注册模式需要 paypal_card_number")
                 if not str(params.paypal_card_expiry or "").strip():
@@ -9343,12 +10057,28 @@ def post_paypal_task(params: PayPalTaskParams):
             raise HTTPException(status_code=404, detail="账号不存在")
     if not _resolve_status_auth_file(account):
         raise HTTPException(status_code=400, detail="该账号缺少可用 auth_session/auth_file")
+    for candidate_email in account_emails:
+        if candidate_email == email:
+            continue
+        candidate = find_account(accounts, candidate_email)
+        if not candidate:
+            auth_session_file = get_auth_session_file(candidate_email)
+            if auth_session_file and Path(auth_session_file).exists():
+                candidate = ensure_session_only_account(candidate_email) or _session_only_account_stub(candidate_email)
+                accounts = load_accounts()
+            else:
+                raise HTTPException(status_code=404, detail=f"批量账号不存在: {candidate_email}")
+        if not _resolve_status_auth_file(candidate):
+            raise HTTPException(status_code=400, detail=f"批量账号缺少可用 auth_session/auth_file: {candidate_email}")
 
     payload = {
         "runner_mode": "manual_checkout",
         "email": email,
+        "account_emails": account_emails,
         "checkout_url": checkout_url,
+        "bind_link_payload": bind_link_payload,
         "proxy_url": params.proxy_url,
+        "proxy_pool_count": len(normalized_proxy_pool),
         "proxy_label": params.proxy_label,
         "proxy_bypass": params.proxy_bypass,
         "manual_confirm": bool(params.manual_confirm),
@@ -9356,6 +10086,7 @@ def post_paypal_task(params: PayPalTaskParams):
         "paypal_email": params.paypal_email,
         "sms_url_present": bool(sms_url),
         "otp_channel": otp_channel,
+        "phone_account_count": len(phone_accounts),
         "paypal_card_number_present": bool(str(params.paypal_card_number or "").strip()),
         "paypal_card_expiry_present": bool(str(params.paypal_card_expiry or "").strip()),
         "paypal_card_cvv_present": bool(str(params.paypal_card_cvv or "").strip()),
@@ -9370,7 +10101,8 @@ def post_paypal_task(params: PayPalTaskParams):
         "billing_zip": params.billing_zip,
         "billing_address1": params.billing_address1,
         "billing_address2": params.billing_address2,
-        "timeout_seconds": int(params.timeout_seconds or 900),
+        "timeout_seconds": int(params.timeout_seconds or 60),
+        "auto_oauth_after_success": bool(params.auto_oauth_after_success),
     }
     autofill_payload = {
         "name": params.billing_name,
@@ -9387,41 +10119,480 @@ def post_paypal_task(params: PayPalTaskParams):
         "card_cvv": params.paypal_card_cvv,
     }
 
+    def _candidate_autofill_payload(candidate_email: str) -> dict:
+        payload = dict(autofill_payload)
+        payload["email"] = params.billing_email or candidate_email
+        return payload
+
     def _run():
         task_id = _current_task_id_for_group() or ""
         started_at = time.time()
         result = None
+        candidates = account_emails[:] if account_emails else [email]
+        successful_emails: list[str] = []
+        failed_emails: list[str] = []
+        nonzero_blocked_emails: list[str] = []
+        removed_pool_emails: list[str] = []
+        oauth_scheduled_emails: set[str] = set()
+        oauth_successful_emails: list[str] = []
+        oauth_failed_emails: list[dict] = []
+        session_cpa_scheduled_emails: set[str] = set()
+        session_cpa_converted_emails: list[str] = []
+        session_cpa_failed_auths: list[dict] = []
+        last_checkout_url = checkout_url
 
-        try:
+        def _paypal_success_progress_fields() -> dict:
+            return {
+                "successful": len(successful_emails),
+                "successful_emails": successful_emails[:],
+            }
+
+        def _handle_paypal_success_auth(success_email_value: str) -> None:
+            success_email = _normalized_email(success_email_value)
+            if not success_email:
+                return
+            if not params.auto_oauth_after_success:
+                if success_email in session_cpa_scheduled_emails:
+                    return
+                session_cpa_scheduled_emails.add(success_email)
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "paypal_session_cpa_convert_started",
+                        "email": success_email,
+                        **_paypal_success_progress_fields(),
+                        "message": f"PayPal 绑定成功，正在直接转换 CPA 认证: {success_email}",
+                    },
+                )
+                try:
+                    cpa_result = _convert_account_auth_session_to_cpa_auth(
+                        success_email,
+                        force_account_type=ACCOUNT_TYPE_PLUS,
+                    )
+                    session_cpa_converted_emails.append(success_email)
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "paypal_session_cpa_convert_done",
+                            "email": success_email,
+                            "auth_file": cpa_result.get("auth_file") or "",
+                            "filename": cpa_result.get("filename") or "",
+                            "id_token_synthetic": bool(cpa_result.get("id_token_synthetic")),
+                            **_paypal_success_progress_fields(),
+                            "message": f"CPA 认证已生成: {success_email}",
+                            "level": "success",
+                        },
+                    )
+                    logger.info(
+                        "[paypal] CPA auth converted from auth_session after PayPal success: task_id=%s email=%s auth_file=%s",
+                        task_id[:8] or "<unknown>",
+                        _safe_email_summary(success_email),
+                        cpa_result.get("auth_file") or "",
+                    )
+                except Exception as exc:
+                    session_cpa_failed_auths.append({"email": success_email, "error": str(exc)})
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "paypal_session_cpa_convert_failed",
+                            "email": success_email,
+                            **_paypal_success_progress_fields(),
+                            "message": f"CPA 认证转换失败，PayPal 绑定已成功: {success_email}: {exc}",
+                            "level": "warn",
+                        },
+                    )
+                    logger.warning(
+                        "[paypal] CPA auth conversion after PayPal success failed: task_id=%s email=%s error=%s",
+                        task_id[:8] or "<unknown>",
+                        _safe_email_summary(success_email),
+                        exc,
+                    )
+                return
+
+            if success_email in oauth_scheduled_emails:
+                return
+            oauth_scheduled_emails.add(success_email)
             _append_task_progress(
                 task_id,
                 {
-                    "stage": "paypal_starting",
-                    "email": email,
-                    "proxy_label": params.proxy_label,
-                    "message": "PayPal 任务启动中",
+                    "stage": "paypal_oauth_login_started",
+                    "email": success_email,
+                    **_paypal_success_progress_fields(),
+                    "message": f"PayPal 绑定成功，已在后台开始 OAuth 补登录: {success_email}",
                 },
             )
-            result = run_paypal_bind_task(
-                email=email,
-                checkout_url=checkout_url,
-                proxy_url=params.proxy_url,
-                proxy_bypass=params.proxy_bypass,
-                manual_confirm=params.manual_confirm,
-                timeout_seconds=max(60, int(params.timeout_seconds or 900)),
-                is_cancelled=cancel_signal.is_cancelled,
-                on_progress=lambda event: _append_task_progress(task_id, event),
-                autofill_enabled=bool(params.autofill_enabled),
-                autofill_payload=autofill_payload,
-                paypal_mode=paypal_mode,
-                paypal_email=params.paypal_email,
-                paypal_password=params.paypal_password,
-                sms_url=sms_url,
-                otp_channel=otp_channel,
-                paypal_card_number=params.paypal_card_number,
-                paypal_card_expiry=params.paypal_card_expiry,
-                paypal_card_cvv=params.paypal_card_cvv,
-            )
+
+            def _oauth_worker():
+                from autoteam.codex_auth import CodexOAuthPhoneRequired
+
+                max_attempts = 3
+                retry_delay_seconds = 3
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        latest_account = find_account(load_accounts(), success_email) or {"email": success_email}
+                        oauth_result = _run_account_codex_login_once(success_email, latest_account, headless=False)
+                        oauth_successful_emails.append(success_email)
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "paypal_oauth_login_done",
+                                "email": success_email,
+                                "auth_file": oauth_result.get("auth_file") or "",
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                **_paypal_success_progress_fields(),
+                                "message": f"OAuth 补登录成功: {success_email}",
+                                "level": "success",
+                            },
+                        )
+                        logger.info(
+                            "[paypal] OAuth login after PayPal success completed: task_id=%s email=%s auth_file=%s attempt=%d/%d",
+                            task_id[:8] or "<unknown>",
+                            _safe_email_summary(success_email),
+                            oauth_result.get("auth_file") or "",
+                            attempt,
+                            max_attempts,
+                        )
+                        return
+                    except CodexOAuthPhoneRequired as exc:
+                        result_payload = _oauth_phone_required_result(success_email, exc)
+                        oauth_failed_emails.append(
+                            {
+                                "email": success_email,
+                                "error": str(exc),
+                                "failure_stage": "oauth_phone_required",
+                                "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
+                            }
+                        )
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "paypal_oauth_phone_required_removed",
+                                "email": success_email,
+                                "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                **_paypal_success_progress_fields(),
+                                "message": result_payload["message"],
+                                "level": "warn",
+                            },
+                        )
+                        return
+                    except Exception as exc:
+                        if attempt < max_attempts:
+                            _append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "paypal_oauth_login_retrying",
+                                    "email": success_email,
+                                    "attempt": attempt,
+                                    "next_attempt": attempt + 1,
+                                    "max_attempts": max_attempts,
+                                    **_paypal_success_progress_fields(),
+                                    "message": f"OAuth 补登录失败，准备重试 {attempt + 1}/{max_attempts}: {success_email}: {exc}",
+                                    "level": "warn",
+                                },
+                            )
+                            logger.warning(
+                                "[paypal] OAuth login after PayPal success failed, retrying: task_id=%s email=%s attempt=%d/%d error=%s",
+                                task_id[:8] or "<unknown>",
+                                _safe_email_summary(success_email),
+                                attempt,
+                                max_attempts,
+                                exc,
+                            )
+                            time.sleep(retry_delay_seconds)
+                            continue
+                        oauth_failed_emails.append({"email": success_email, "error": str(exc), "attempts": max_attempts})
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "paypal_oauth_login_failed",
+                                "email": success_email,
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                **_paypal_success_progress_fields(),
+                                "message": f"OAuth 补登录失败: {success_email}: {exc}",
+                                "level": "error",
+                            },
+                        )
+                        logger.exception(
+                            "[paypal] OAuth login after PayPal success failed: task_id=%s email=%s attempts=%d",
+                            task_id[:8] or "<unknown>",
+                            _safe_email_summary(success_email),
+                            max_attempts,
+                        )
+                        return
+
+            threading.Thread(target=_oauth_worker, name=f"paypal-oauth-{success_email[:24]}", daemon=True).start()
+
+        try:
+            for index, candidate_email in enumerate(candidates, start=1):
+                if cancel_signal.is_cancelled():
+                    break
+                selected_proxy_url = _select_paypal_proxy()
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "paypal_starting",
+                        "email": candidate_email,
+                        "current": index,
+                        "total": len(candidates),
+                        "proxy_label": params.proxy_label,
+                        "message": len(candidates) > 1
+                            and f"PayPal 批量任务启动中 ({index}/{len(candidates)}): {candidate_email}"
+                            or "PayPal 任务启动中",
+                    },
+                )
+                if normalized_proxy_pool:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "paypal_proxy_selected",
+                            "email": candidate_email,
+                            "current": index,
+                            "total": len(candidates),
+                            "proxy_label": params.proxy_label,
+                            "proxy_pool_count": len(normalized_proxy_pool),
+                            "message": f"已从动态代理池随机选择代理: {_safe_proxy_summary(selected_proxy_url)}",
+                        },
+                    )
+                try:
+                    effective_checkout_url = checkout_url
+                    if not effective_checkout_url:
+                        access_token = _extract_account_access_token(candidate_email)
+                        if not access_token:
+                            single_result = {
+                                "status": "failed",
+                                "failure_stage": "generate_checkout",
+                                "message": f"账号缺少可用 access_token，无法自动生成 checkout 链接: {candidate_email}",
+                                "screenshot_paths": [],
+                                "email": candidate_email,
+                            }
+                        else:
+                            try:
+                                generated = _generate_checkout_link(access_token, bind_link_payload)
+                            except HTTPException as exc:
+                                checkout_exc = exc
+                                fallback_access_token = access_token
+                                if getattr(exc, "status_code", None) == 401:
+                                    refreshed_access_token = _refresh_account_access_token(candidate_email)
+                                    if refreshed_access_token and refreshed_access_token != access_token:
+                                        fallback_access_token = refreshed_access_token
+                                        _append_task_progress(
+                                            task_id,
+                                            {
+                                                "stage": "paypal_checkout_token_refreshed",
+                                                "email": candidate_email,
+                                                "current": index,
+                                                "total": len(candidates),
+                                                "message": f"生成 checkout 返回 401，已刷新 access_token 并重试: {candidate_email}",
+                                            },
+                                        )
+                                        try:
+                                            generated = _generate_checkout_link(refreshed_access_token, bind_link_payload)
+                                            checkout_exc = None
+                                        except HTTPException as retry_exc:
+                                            checkout_exc = retry_exc
+                                    elif refreshed_access_token:
+                                        checkout_exc = HTTPException(
+                                            status_code=401,
+                                            detail="生成 checkout 返回 401，session 刷新后 access_token 未变化；请重新登录/刷新该账号 auth_session 后再试",
+                                        )
+                                if checkout_exc is not None:
+                                    status_code = int(getattr(checkout_exc, "status_code", 0) or 0)
+                                    if status_code not in (401, 403, 429, 502, 503, 504):
+                                        raise checkout_exc
+                                    _append_task_progress(
+                                        task_id,
+                                        {
+                                            "stage": "paypal_checkout_browser_fallback",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "message": f"HTTP 生成 checkout 失败，改用浏览器登录态回退: {candidate_email}",
+                                            "level": "warn",
+                                        },
+                                    )
+                                    try:
+                                        generated = _generate_checkout_link_via_browser(
+                                            fallback_access_token,
+                                            bind_link_payload,
+                                            email=candidate_email,
+                                            proxy_url=selected_proxy_url,
+                                            proxy_bypass=params.proxy_bypass,
+                                        )
+                                    except HTTPException as browser_exc:
+                                        raise HTTPException(
+                                            status_code=getattr(browser_exc, "status_code", None) or status_code or 502,
+                                            detail=(
+                                                f"HTTP 生成 checkout 失败: {getattr(checkout_exc, 'detail', checkout_exc)}；"
+                                                f"浏览器回退失败: {getattr(browser_exc, 'detail', browser_exc)}"
+                                            ),
+                                        ) from browser_exc
+                                    _append_task_progress(
+                                        task_id,
+                                        {
+                                            "stage": "paypal_checkout_browser_generated",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "message": f"浏览器登录态已生成 checkout 链接 ({index}/{len(candidates)}): {candidate_email}",
+                                        },
+                                    )
+                            effective_checkout_url = str(generated.get("url") or "").strip()
+                            last_checkout_url = effective_checkout_url or last_checkout_url
+                            _append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "paypal_checkout_generated",
+                                    "email": candidate_email,
+                                    "current": index,
+                                    "total": len(candidates),
+                                    "checkout_url": effective_checkout_url,
+                                    "message": f"已生成 checkout 链接 ({index}/{len(candidates)}): {candidate_email}",
+                                },
+                            )
+                            single_result = None
+                    else:
+                        single_result = None
+                    if single_result is None:
+                        single_result = run_paypal_bind_task(
+                            email=candidate_email,
+                            checkout_url=effective_checkout_url,
+                            proxy_url=selected_proxy_url,
+                            proxy_bypass=params.proxy_bypass,
+                            manual_confirm=params.manual_confirm,
+                            timeout_seconds=max(60, int(params.timeout_seconds or 60)),
+                            is_cancelled=cancel_signal.is_cancelled,
+                            on_progress=lambda event: _append_task_progress(task_id, {**event, "email": candidate_email, "current": index, "total": len(candidates)}),
+                            autofill_enabled=bool(params.autofill_enabled),
+                            autofill_payload=_candidate_autofill_payload(candidate_email),
+                            paypal_mode=paypal_mode,
+                            paypal_email=params.paypal_email,
+                            paypal_password=params.paypal_password,
+                            sms_url=sms_url,
+                            otp_channel=otp_channel,
+                            phone_accounts=phone_accounts,
+                            paypal_card_number=params.paypal_card_number,
+                            paypal_card_expiry=params.paypal_card_expiry,
+                            paypal_card_cvv=params.paypal_card_cvv,
+                        )
+                except HTTPException as exc:
+                    exc_message = str(exc.detail) if getattr(exc, "detail", None) else str(exc)
+                    if _paypal_already_paid_text(exc_message):
+                        single_result = _paypal_user_paid_success(candidate_email, exc_message)
+                    else:
+                        single_result = {
+                            "status": "failed",
+                            "failure_stage": "generate_checkout",
+                            "message": exc_message,
+                            "screenshot_paths": [],
+                            "email": candidate_email,
+                        }
+                except Exception as exc:
+                    logger.exception("[paypal] candidate error: email=%s", candidate_email)
+                    single_result = {
+                        "status": "failed",
+                        "failure_stage": "post_submit",
+                        "message": f"PayPal 账号执行异常: {exc}",
+                        "screenshot_paths": [],
+                        "email": candidate_email,
+                    }
+                single_result = dict(single_result or {})
+                single_result["email"] = candidate_email
+                single_result["checkout_url"] = effective_checkout_url or single_result.get("checkout_url") or ""
+                last_checkout_url = single_result["checkout_url"] or last_checkout_url
+                result = single_result
+                update_fields = {
+                    "last_bind_status": "cancelled" if cancel_signal.is_cancelled() and single_result.get("status") != "success" else single_result.get("status") or "failed",
+                    "last_bind_at": time.time(),
+                    "last_checkout_url": single_result.get("checkout_url") or "",
+                    "last_proxy_label": params.proxy_label,
+                    "last_bind_task_id": task_id,
+                    "last_bind_message": single_result.get("message") or "",
+                    "last_bind_failure_stage": single_result.get("failure_stage") or "",
+                }
+                if single_result.get("status") == "success":
+                    update_fields.update(
+                        {
+                            "status": STATUS_ACTIVE,
+                            "account_type": ACCOUNT_TYPE_PLUS,
+                            "seat_type": SEAT_CODEX,
+                            "account_source": ACCOUNT_SOURCE_MANAGED,
+                            "last_bind_provider": "paypal",
+                            "plus_bound_at": update_fields["last_bind_at"],
+                        }
+                    )
+                updated_account = update_account(
+                    candidate_email,
+                    **update_fields,
+                )
+                if single_result.get("status") == "success" and not updated_account:
+                    add_account(candidate_email, "", seat_type=SEAT_CODEX)
+                    updated_account = update_account(
+                        candidate_email,
+                        **update_fields,
+                    )
+                if single_result.get("status") == "success" and not updated_account:
+                    logger.warning(
+                        "[paypal] PayPal success account was not persisted: task_id=%s email=%s",
+                        task_id[:8] or "<unknown>",
+                        _safe_email_summary(candidate_email),
+                    )
+                if single_result.get("status") == "success":
+                    if candidate_email not in successful_emails:
+                        successful_emails.append(candidate_email)
+                    _handle_paypal_success_auth(candidate_email)
+                else:
+                    if candidate_email not in failed_emails:
+                        failed_emails.append(candidate_email)
+                    if candidate_email in _paypal_nonzero_blocked_pool_emails(single_result, candidate_email):
+                        if candidate_email not in nonzero_blocked_emails:
+                            nonzero_blocked_emails.append(candidate_email)
+                        removed = _remove_pool_accounts_from_local_and_mail(
+                            [candidate_email],
+                            log_context="paypal-nonzero",
+                            reason="paypal_nonzero_amount_blocked",
+                            message="PayPal checkout 今日应付金额非 0，账号已从本地号池删除",
+                        )
+                        for removed_email in removed:
+                            if removed_email not in removed_pool_emails:
+                                removed_pool_emails.append(removed_email)
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "paypal_nonzero_amount_blocked_rotate",
+                                "email": candidate_email,
+                                "current": index,
+                                "total": len(candidates),
+                                "message": f"今日应付非 0，已删除并跳过账号: {candidate_email}",
+                                "level": "warn",
+                            },
+                        )
+                record_bind_audit(
+                    {
+                        "task_id": task_id,
+                        "email": candidate_email,
+                        "checkout_url": single_result.get("checkout_url") or "",
+                        "proxy_label": params.proxy_label,
+                        "proxy_url": selected_proxy_url or "",
+                        "manual_confirm": bool(params.manual_confirm),
+                        "paypal_mode": paypal_mode,
+                        "paypal_auto_login": (not bool(params.manual_confirm)) and bool(str(params.paypal_password or "").strip()),
+                        "autofill_enabled": bool(params.autofill_enabled),
+                        "status": single_result.get("status") or "failed",
+                        "task_status": "completed" if single_result.get("status") == "success" else "failed",
+                        "failure_stage": single_result.get("failure_stage") or "",
+                        "message": single_result.get("message") or "",
+                        "started_at": started_at,
+                        "finished_at": time.time(),
+                        "screenshot_paths": single_result.get("screenshot_paths") or [],
+                        "flow": f"paypal_{paypal_mode}",
+                        "category": "paypal",
+                        "provider": "paypal",
+                    }
+                )
         except Exception as exc:
             logger.exception("[paypal] unexpected error")
             result = {
@@ -9436,14 +10607,41 @@ def post_paypal_task(params: PayPalTaskParams):
         result.setdefault("failure_stage", "")
         result.setdefault("message", "")
         result.setdefault("screenshot_paths", [])
-        result["email"] = email
-        result["checkout_url"] = checkout_url
+        result["email"] = result.get("email") or email
+        result["checkout_url"] = result.get("checkout_url") or last_checkout_url or checkout_url
         result["proxy_label"] = params.proxy_label
         result["manual_confirm"] = bool(params.manual_confirm)
         result["paypal_mode"] = paypal_mode
         result["paypal_auto_login"] = (not bool(params.manual_confirm)) and bool(str(params.paypal_password or "").strip())
         result["autofill_enabled"] = bool(params.autofill_enabled)
         result["provider"] = "paypal"
+        result["account_emails"] = candidates
+        result["successful_emails"] = successful_emails
+        result["failed_emails"] = failed_emails
+        result["nonzero_blocked_emails"] = nonzero_blocked_emails
+        result["removed_pool_emails"] = removed_pool_emails
+        if oauth_scheduled_emails:
+            result["oauth_scheduled_emails"] = sorted(oauth_scheduled_emails)
+        if oauth_successful_emails:
+            result["oauth_successful_emails"] = oauth_successful_emails[:]
+        if oauth_failed_emails:
+            result["oauth_failed_emails"] = oauth_failed_emails[:]
+        if session_cpa_converted_emails:
+            result["session_cpa_converted_emails"] = session_cpa_converted_emails[:]
+        if session_cpa_failed_auths:
+            result["session_cpa_failed_auths"] = session_cpa_failed_auths[:]
+        if len(candidates) > 1:
+            if successful_emails:
+                result["status"] = "success"
+                result["failure_stage"] = ""
+                result["message"] = f"PayPal 批量绑定完成: 成功 {len(successful_emails)}/{len(candidates)} 个账号"
+            elif nonzero_blocked_emails and len(nonzero_blocked_emails) == len(candidates):
+                result["status"] = "failed"
+                result["failure_stage"] = "browser_charge_guard"
+                result["message"] = f"PayPal 批量绑定失败: {len(candidates)} 个账号今日应付均非 0"
+            else:
+                result["status"] = "failed"
+                result["message"] = result.get("message") or f"PayPal 批量绑定失败: 尝试 {len(candidates)} 个账号均未成功"
 
         if cancel_signal.is_cancelled() and result.get("status") != "success":
             task_status = "cancelled"
@@ -9453,48 +10651,15 @@ def post_paypal_task(params: PayPalTaskParams):
             task_status = "failed"
         result["task_status"] = task_status
 
-        update_account(
-            email,
-            last_bind_status="cancelled" if task_status == "cancelled" else result.get("status") or "failed",
-            last_bind_at=time.time(),
-            last_bind_provider="paypal",
-            last_checkout_url=checkout_url,
-            last_proxy_label=params.proxy_label,
-            last_bind_task_id=task_id,
-            last_bind_message=result.get("message") or "",
-            last_bind_failure_stage=result.get("failure_stage") or "",
-        )
-
-        record_bind_audit(
-            {
-                "task_id": task_id,
-                "email": email,
-                "checkout_url": checkout_url,
-                "proxy_label": params.proxy_label,
-                "proxy_url": params.proxy_url or "",
-                "manual_confirm": bool(params.manual_confirm),
-                "paypal_mode": paypal_mode,
-                "paypal_auto_login": (not bool(params.manual_confirm)) and bool(str(params.paypal_password or "").strip()),
-                "autofill_enabled": bool(params.autofill_enabled),
-                "status": result.get("status") or "failed",
-                "task_status": task_status,
-                "failure_stage": result.get("failure_stage") or "",
-                "message": result.get("message") or "",
-                "started_at": started_at,
-                "finished_at": time.time(),
-                "screenshot_paths": result.get("screenshot_paths") or [],
-                "flow": f"paypal_{paypal_mode}",
-                "category": "paypal",
-                "provider": "paypal",
-            }
-        )
-
         _append_task_progress(
             task_id,
             {
                 "stage": "paypal_completed" if result.get("status") == "success" else "paypal_finished",
                 "bind_status": result.get("status") or "failed",
                 "task_status": task_status,
+                "successful": len(successful_emails),
+                "failed": len(failed_emails),
+                "total": len(candidates),
                 "message": result.get("message") or "",
             },
         )
@@ -9908,16 +11073,20 @@ def _save_auto_refresh_quota_config() -> None:
 
 def _auto_refresh_quota_loop():
     """Periodically submit the refresh-quota task without blocking other task groups."""
+    logged_disabled = False
     while not _auto_refresh_quota_stop.is_set():
         cfg = _auto_refresh_quota_config.copy()
         enabled = bool(cfg.get("enabled"))
         interval = int(cfg.get("interval") or 0)
         if not enabled or interval <= 0:
             _auto_refresh_quota_restart.clear()
-            logger.info("[刷新凭证] 自动刷新已关闭，等待重新启用")
+            if not logged_disabled:
+                logger.info("[刷新凭证] 自动刷新已关闭，等待重新启用")
+                logged_disabled = True
             _auto_refresh_quota_restart.wait(60)
             continue
 
+        logged_disabled = False
         logger.info("[刷新凭证] 等待 %d 分钟后执行下一轮自动刷新", max(1, interval // 60))
         _auto_refresh_quota_restart.clear()
         if _auto_refresh_quota_stop.wait(interval):

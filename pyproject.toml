@@ -13,6 +13,9 @@ dependencies = [
     "xvfbwrapper>=0.2.9; sys_platform == 'linux'",
 ]
 
+[project.optional-dependencies]
+appium = ["Appium-Python-Client>=4.0.0"]
+
 [project.scripts]
 autoteam = "autoteam.manager:main"
 
