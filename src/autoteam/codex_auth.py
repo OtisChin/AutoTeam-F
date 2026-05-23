@@ -26,6 +26,13 @@ from autoteam.admin_state import (
 )
 from autoteam.auth_index import delete_codex_auth_file, upsert_codex_auth_file
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
+from autoteam.browser_fingerprint import (
+    apply_fingerprint_to_context,
+    cleanup_temp_user_data_dir,
+    create_temp_user_data_dir,
+    generate_fingerprint,
+    get_context_options,
+)
 from autoteam.config import get_playwright_launch_options
 from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import write_text
@@ -1409,11 +1416,14 @@ def _login_codex_via_browser_simple(
 
     logger.info("[Codex] 开始极简 OAuth 登录: %s", email)
     with sync_playwright() as p:
-        browser = p.chromium.launch(**get_playwright_launch_options(headless=headless))
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        fp = generate_fingerprint()
+        tmp_dir = create_temp_user_data_dir()
+        context = p.chromium.launch_persistent_context(
+            tmp_dir,
+            **get_playwright_launch_options(headless=headless),
+            **get_context_options(fp),
         )
+        apply_fingerprint_to_context(context, fp)
 
         def on_request(request):
             nonlocal auth_code
@@ -1458,7 +1468,8 @@ def _login_codex_via_browser_simple(
                 break
             deactivated_detail = _detect_account_deactivated(page)
             if deactivated_detail:
-                browser.close()
+                context.close()
+                cleanup_temp_user_data_dir(tmp_dir)
                 raise CodexOAuthAccountDeactivated(deactivated_detail)
 
             if _click_auth_retry_if_timed_out(page):
@@ -1583,7 +1594,8 @@ def _login_codex_via_browser_simple(
             except Exception:
                 logger.warning("[Codex] 极简 OAuth 刷新 auth_session 回调失败: %s", email, exc_info=True)
 
-        browser.close()
+        context.close()
+        cleanup_temp_user_data_dir(tmp_dir)
 
     if phone_required_url:
         raise CodexOAuthPhoneRequired(phone_required_url)
@@ -1663,11 +1675,14 @@ def login_codex_via_browser(
     final_oauth_url = ""
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**get_playwright_launch_options(headless=headless))
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        fp = generate_fingerprint()
+        tmp_dir = create_temp_user_data_dir()
+        context = p.chromium.launch_persistent_context(
+            tmp_dir,
+            **get_playwright_launch_options(headless=headless),
+            **get_context_options(fp),
         )
+        apply_fingerprint_to_context(context, fp)
 
         # === Step 0: 先登录 ChatGPT 并切换到 Team workspace ===
         # 仅 Team 模式需要:登录前注入 _account cookie 引导登录进入 Team workspace。
@@ -2311,7 +2326,8 @@ def login_codex_via_browser(
             else:
                 logger.warning("[Codex] 未获取到 auth code，当前 URL: %s", page.url)
 
-        browser.close()
+        context.close()
+        cleanup_temp_user_data_dir(tmp_dir)
 
     if phone_required_url:
         raise CodexOAuthPhoneRequired(phone_required_url)

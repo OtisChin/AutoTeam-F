@@ -468,9 +468,9 @@ class GopayAppiumDriver:
         time.sleep(SCREEN_TRANSITION_WAIT + 2)  # extra wait for server response
 
         # Lanjut 之后可能出现注册条款确认页面（"Signup Terms Summary"）
-        return self._accept_terms_if_present()
+        return self._accept_terms_if_present(phone_digits=phone_digits)
 
-    def _accept_terms_if_present(self) -> str:
+    def _accept_terms_if_present(self, phone_digits: str = "") -> str:
         """如果出现注册条款确认页面，点击同意继续。
 
         Returns all_text (lowercased content-desc) of the page after terms handling.
@@ -518,6 +518,37 @@ class GopayAppiumDriver:
                 if all_text.strip():
                     break
 
+        # After terms bottom-sheet closes, we may land back on phone input page.
+        # The phone number is cleared, so we must re-enter it and click Lanjut again.
+        if "country code" in all_text or "nomor hp" in all_text or "masukkan nomor" in all_text:
+            self.log("[gopay-appium] 条款确认后回到手机号页面，重新输入号码...")
+            time.sleep(2)
+            # Re-enter phone number if we have it
+            if phone_digits:
+                d = self._driver
+                edit_texts = d.find_elements("class name", "android.widget.EditText")
+                if edit_texts:
+                    edit_texts[0].click()
+                    time.sleep(0.8)
+                    for digit in phone_digits:
+                        if digit.isdigit():
+                            self._adb_shell(f"input keyevent {7 + int(digit)}")
+                            time.sleep(0.1)
+                    self.log(f"[gopay-appium] 重新输入手机号: {phone_digits[:3]}***")
+                    time.sleep(POST_ACTION_DELAY)
+                    try:
+                        d.hide_keyboard()
+                    except Exception:
+                        self._adb_shell("input keyevent 111")
+                    time.sleep(0.5)
+            # Click Lanjut to submit registration (this time terms already accepted)
+            try:
+                self._click_button_by_desc("Lanjut", timeout=5)
+            except Exception:
+                pass
+            time.sleep(SCREEN_TRANSITION_WAIT + 3)
+            all_text = self._dump_descs("After re-submit")
+
         return all_text
 
     def _wait_for_otp_screen(self) -> None:
@@ -550,9 +581,14 @@ class GopayAppiumDriver:
                 self._save_screenshot("cannot_continue")
                 raise GopayAppiumError("GoPay 拒绝继续注册：请联系 Customer Service")
 
-            otp_indicators = ["otp", "verifikasi", "verification", "kode", "code",
-                              "masukkan kode", "enter code", "pilih metode", "choose method",
-                              "select method"]
+            # False positive guard: "country code" on phone input page contains "code"
+            is_phone_input_page = "country code" in all_text or "nomor hp" in all_text or "masukkan nomor" in all_text
+            otp_indicators = ["masukkan kode", "enter code", "masukkan otp", "enter otp",
+                              "kode verifikasi", "verification code",
+                              "pilih metode", "choose method", "select method"]
+            # Only use short keywords ("otp", "verifikasi", "kode") when NOT on phone input page
+            if not is_phone_input_page:
+                otp_indicators.extend(["otp", "verifikasi", "verification", "kode"])
             if any(indicator in all_text for indicator in otp_indicators):
                 self.log("[gopay-appium] OTP 输入页面已出现")
                 self._switch_to_sms_otp(all_text)
@@ -588,7 +624,7 @@ class GopayAppiumDriver:
         d = self._driver
         self.log("[gopay-appium] 切换到 SMS OTP...")
 
-        all_text = current_page_text or self._dump_descs()
+        all_text = current_page_text or self._dump_descs("OTP page before SMS switch")
 
         # Check if already on method selection page (has "pilih metode" or "otp via sms")
         if "pilih metode" in all_text or "choose method" in all_text or "select method" in all_text or "otp via sms" in all_text:
@@ -1354,6 +1390,8 @@ class GopayAppiumDriver:
                 d = el.get_attribute("content-desc") or ""
             except Exception:
                 d = "<stale>"
+            if label and d.strip():
+                self.log(f"[gopay-appium]   [{i}] {d[:120]}")
             all_text += " " + d.lower()
         return all_text
 

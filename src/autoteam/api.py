@@ -2093,6 +2093,7 @@ class PayPalTaskParams(BaseModel):
     proxy_pool_text: str = Field("", validation_alias=AliasChoices("proxy_pool_text", "proxyPoolText"))
     proxy_label: str = Field("", validation_alias=AliasChoices("proxy_label", "proxyLabel"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
+    paypal_browser: str = Field("camoufox", validation_alias=AliasChoices("paypal_browser", "paypalBrowser"))
     manual_confirm: bool = Field(True, validation_alias=AliasChoices("manual_confirm", "manualConfirm"))
     paypal_mode: str = Field("existing_account", validation_alias=AliasChoices("paypal_mode", "paypalMode"))
     paypal_email: str = Field("", validation_alias=AliasChoices("paypal_email", "paypalEmail"))
@@ -10124,6 +10125,11 @@ def post_paypal_task(params: PayPalTaskParams):
         payload["email"] = params.billing_email or candidate_email
         return payload
 
+    def _normalize_paypal_phone_key(value: Any) -> str:
+        raw = str(value or "").strip()
+        digits = re.sub(r"\D+", "", raw)
+        return digits or raw.lower()
+
     def _run():
         task_id = _current_task_id_for_group() or ""
         started_at = time.time()
@@ -10140,6 +10146,16 @@ def post_paypal_task(params: PayPalTaskParams):
         session_cpa_converted_emails: list[str] = []
         session_cpa_failed_auths: list[dict] = []
         last_checkout_url = checkout_url
+        invalid_phone_numbers: set[str] = set()
+        invalid_phone_pool: list[str] = []
+
+        def _remember_invalid_phone(phone: Any) -> None:
+            raw_phone = str(phone or "").strip()
+            phone_key = _normalize_paypal_phone_key(raw_phone)
+            if not phone_key or phone_key in invalid_phone_numbers:
+                return
+            invalid_phone_numbers.add(phone_key)
+            invalid_phone_pool.append(raw_phone or phone_key)
 
         def _paypal_success_progress_fields() -> dict:
             return {
@@ -10330,6 +10346,8 @@ def post_paypal_task(params: PayPalTaskParams):
             for index, candidate_email in enumerate(candidates, start=1):
                 if cancel_signal.is_cancelled():
                     break
+                stop_after_current_candidate = False
+                current_candidate_phone = ""
                 selected_proxy_url = _select_paypal_proxy()
                 _append_task_progress(
                     task_id,
@@ -10457,27 +10475,83 @@ def post_paypal_task(params: PayPalTaskParams):
                     else:
                         single_result = None
                     if single_result is None:
-                        single_result = run_paypal_bind_task(
-                            email=candidate_email,
-                            checkout_url=effective_checkout_url,
-                            proxy_url=selected_proxy_url,
-                            proxy_bypass=params.proxy_bypass,
-                            manual_confirm=params.manual_confirm,
-                            timeout_seconds=max(60, int(params.timeout_seconds or 60)),
-                            is_cancelled=cancel_signal.is_cancelled,
-                            on_progress=lambda event: _append_task_progress(task_id, {**event, "email": candidate_email, "current": index, "total": len(candidates)}),
-                            autofill_enabled=bool(params.autofill_enabled),
-                            autofill_payload=_candidate_autofill_payload(candidate_email),
-                            paypal_mode=paypal_mode,
-                            paypal_email=params.paypal_email,
-                            paypal_password=params.paypal_password,
-                            sms_url=sms_url,
-                            otp_channel=otp_channel,
-                            phone_accounts=phone_accounts,
-                            paypal_card_number=params.paypal_card_number,
-                            paypal_card_expiry=params.paypal_card_expiry,
-                            paypal_card_cvv=params.paypal_card_cvv,
-                        )
+                        active_phone_accounts = phone_accounts
+                        current_sms_url = sms_url
+                        current_otp_channel = otp_channel
+                        current_autofill_payload = _candidate_autofill_payload(candidate_email)
+                        if phone_accounts:
+                            active_phone_accounts = [
+                                account_phone
+                                for account_phone in phone_accounts
+                                if _normalize_paypal_phone_key(account_phone.get("phone_number")) not in invalid_phone_numbers
+                            ]
+                            if not active_phone_accounts:
+                                _append_task_progress(
+                                    task_id,
+                                    {
+                                        "stage": "paypal_phone_pool_exhausted",
+                                        "email": candidate_email,
+                                        "current": index,
+                                        "total": len(candidates),
+                                        "message": "手机号池已无可用号码，停止后续 PayPal 绑定任务",
+                                        "level": "error",
+                                    },
+                                )
+                                single_result = {
+                                    "status": "failed",
+                                    "failure_stage": "paypal_phone_pool_exhausted",
+                                    "message": "手机号池已无可用号码",
+                                    "screenshot_paths": [],
+                                    "email": candidate_email,
+                                }
+                                stop_after_current_candidate = True
+                            else:
+                                first_active_phone = active_phone_accounts[0]
+                                current_sms_url = str(first_active_phone.get("sms_url") or "").strip()
+                                current_otp_channel = (
+                                    str(first_active_phone.get("otp_channel") or otp_channel or "sms").strip().lower()
+                                    or "sms"
+                                )
+                                current_billing_phone = str(first_active_phone.get("phone_number") or "").strip()
+                                if current_billing_phone:
+                                    current_candidate_phone = current_billing_phone
+                                    current_autofill_payload["phone"] = current_billing_phone
+                        if single_result is None:
+                            def _handle_paypal_progress(event: dict[str, Any]) -> None:
+                                stage = str(event.get("stage") or "").strip()
+                                if stage in {
+                                    "paypal_phone_rejected_waiting_dismiss",
+                                    "paypal_phone_rejected_rotate",
+                                    "paypal_phone_rejected_final",
+                                }:
+                                    _remember_invalid_phone(event.get("rejected_phone"))
+                                _append_task_progress(
+                                    task_id,
+                                    {**event, "email": candidate_email, "current": index, "total": len(candidates)},
+                                )
+
+                            single_result = run_paypal_bind_task(
+                                email=candidate_email,
+                                checkout_url=effective_checkout_url,
+                                proxy_url=selected_proxy_url,
+                                proxy_bypass=params.proxy_bypass,
+                                manual_confirm=params.manual_confirm,
+                                timeout_seconds=max(60, int(params.timeout_seconds or 60)),
+                                is_cancelled=cancel_signal.is_cancelled,
+                                on_progress=_handle_paypal_progress,
+                                autofill_enabled=bool(params.autofill_enabled),
+                                autofill_payload=current_autofill_payload,
+                                paypal_mode=paypal_mode,
+                                paypal_email=params.paypal_email,
+                                paypal_password=params.paypal_password,
+                                sms_url=current_sms_url,
+                                otp_channel=current_otp_channel,
+                                phone_accounts=active_phone_accounts,
+                                paypal_card_number=params.paypal_card_number,
+                                paypal_card_expiry=params.paypal_card_expiry,
+                                paypal_card_cvv=params.paypal_card_cvv,
+                                paypal_browser=params.paypal_browser,
+                            )
                 except HTTPException as exc:
                     exc_message = str(exc.detail) if getattr(exc, "detail", None) else str(exc)
                     if _paypal_already_paid_text(exc_message):
@@ -10502,6 +10576,9 @@ def post_paypal_task(params: PayPalTaskParams):
                 single_result = dict(single_result or {})
                 single_result["email"] = candidate_email
                 single_result["checkout_url"] = effective_checkout_url or single_result.get("checkout_url") or ""
+                if single_result.get("failure_stage") == "paypal_phone_rejected":
+                    _remember_invalid_phone(single_result.get("rejected_phone") or current_candidate_phone)
+                    single_result["invalid_phone_numbers"] = invalid_phone_pool[:]
                 last_checkout_url = single_result["checkout_url"] or last_checkout_url
                 result = single_result
                 update_fields = {
@@ -10593,6 +10670,8 @@ def post_paypal_task(params: PayPalTaskParams):
                         "provider": "paypal",
                     }
                 )
+                if stop_after_current_candidate:
+                    break
         except Exception as exc:
             logger.exception("[paypal] unexpected error")
             result = {
@@ -10620,6 +10699,8 @@ def post_paypal_task(params: PayPalTaskParams):
         result["failed_emails"] = failed_emails
         result["nonzero_blocked_emails"] = nonzero_blocked_emails
         result["removed_pool_emails"] = removed_pool_emails
+        if invalid_phone_pool:
+            result["invalid_phone_numbers"] = invalid_phone_pool[:]
         if oauth_scheduled_emails:
             result["oauth_scheduled_emails"] = sorted(oauth_scheduled_emails)
         if oauth_successful_emails:

@@ -30,6 +30,13 @@ from autoteam.accounts import (
     add_account,
     update_account,
 )
+from autoteam.browser_fingerprint import (
+    apply_fingerprint_to_context,
+    cleanup_temp_user_data_dir,
+    create_temp_user_data_dir,
+    generate_fingerprint,
+    get_context_options,
+)
 from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.mail import TemporaryEmailClient
 from autoteam.config import get_playwright_launch_options
@@ -541,17 +548,23 @@ def run():
         logger.info("[邀请] 开始注册 ChatGPT 账号")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(**get_playwright_launch_options())
-            context = browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-            )
-            page = context.new_page()
+            fp = generate_fingerprint()
+            tmp_dir = create_temp_user_data_dir()
+            try:
+                context = p.chromium.launch_persistent_context(
+                    tmp_dir,
+                    **get_playwright_launch_options(),
+                    **get_context_options(fp),
+                )
+                apply_fingerprint_to_context(context, fp)
+                page = context.pages[0] if context.pages else context.new_page()
 
-            result, pwd = register_with_invite(page, invite_link, email, mail_client)
+                result, pwd = register_with_invite(page, invite_link, email, mail_client)
 
-            screenshot(page, "final.png")
-            browser.close()
+                screenshot(page, "final.png")
+                context.close()
+            finally:
+                cleanup_temp_user_data_dir(tmp_dir)
 
         if result:
             logger.info("[邀请] %s 已注册并加入 ChatGPT Team", email)

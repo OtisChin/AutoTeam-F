@@ -17,6 +17,13 @@ from autoteam.admin_state import (
     get_chatgpt_workspace_name,
     update_admin_state,
 )
+from autoteam.browser_fingerprint import (
+    apply_fingerprint_to_context,
+    cleanup_temp_user_data_dir,
+    create_temp_user_data_dir,
+    generate_fingerprint,
+    get_context_options,
+)
 from autoteam.config import get_playwright_launch_options
 from autoteam.paths import PROJECT_ROOT
 from autoteam.proxy_bridge import start_playwright_socks_bridge
@@ -123,30 +130,163 @@ class ChatGPTTeamAPI:
         background: bool | None = None,
         locale: str = "zh-CN",
         accept_language: str = "zh-CN,zh;q=0.9,en;q=0.8",
+        randomize_fingerprint: bool = True,
+        use_camoufox: bool = False,
     ):
         SCREENSHOT_DIR.mkdir(exist_ok=True)
+
+        # 每次启动使用独立的临时 user_data_dir，避免设备级持久标识残留
+        self._temp_user_data_dir = create_temp_user_data_dir()
+
+        if use_camoufox:
+            # Firefox/Playwright 不支持 socks5 username/password，认证 SOCKS5 仍需要本地 HTTP bridge。
+            # 但 Camoufox geoip 必须关闭，否则它会用 requests 访问 bridge 做 IP 预检测并失败。
+            effective_proxy_url = proxy_url
+            self._proxy_bridge = start_playwright_socks_bridge(proxy_url)
+            if self._proxy_bridge:
+                effective_proxy_url = self._proxy_bridge.proxy_url
+            self._launch_browser_camoufox(
+                effective_proxy_url=effective_proxy_url,
+                headless=headless,
+                locale=locale,
+            )
+            return
+
         effective_proxy_url = proxy_url
         self._proxy_bridge = start_playwright_socks_bridge(proxy_url)
         if self._proxy_bridge:
             effective_proxy_url = self._proxy_bridge.proxy_url
+
         self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(
-            **get_playwright_launch_options(
-                proxy_url=effective_proxy_url,
-                proxy_bypass=proxy_bypass,
-                headless=headless,
-                background=background,
+
+        launch_opts = get_playwright_launch_options(
+            proxy_url=effective_proxy_url,
+            proxy_bypass=proxy_bypass,
+            headless=headless,
+            background=background,
+        )
+
+        if randomize_fingerprint:
+            # 生成随机指纹，但保留调用者指定的 locale / accept_language
+            fp = generate_fingerprint(
+                force_locale=locale or "zh-CN",
             )
+            # 覆盖 accept_language（调用者可能 pin 住了 en-US 等）
+            fp.accept_language = accept_language or "zh-CN,zh;q=0.9,en;q=0.8"
+            if "en" in (locale or ""):
+                fp.languages = ["en-US", "en"]
+            elif "zh" in (locale or ""):
+                fp.languages = ["zh-CN", "zh", "en"]
+
+            ctx_opts = get_context_options(fp)
+
+            # 使用 launch_persistent_context 将 user_data_dir 与 context 合并
+            # 这样既隔离了设备指纹，又能正常传 proxy
+            persistent_kwargs = {**launch_opts, **ctx_opts}
+            # launch_persistent_context 接受的 args 和 launch 一样
+            self.browser = None  # persistent context 模式下没有独立的 browser 对象
+            self.context = self.playwright.chromium.launch_persistent_context(
+                self._temp_user_data_dir,
+                **persistent_kwargs,
+            )
+            apply_fingerprint_to_context(self.context, fp)
+            self._browser_fingerprint = fp
+            logger.info(
+                "[ChatGPT] browser launched with fingerprint %s | UA=%s | viewport=%s | tz=%s",
+                fp.fingerprint_id,
+                fp.user_agent[:60],
+                fp.viewport,
+                fp.timezone_id,
+            )
+        else:
+            # 不随机化时也用 persistent context 隔离
+            persistent_kwargs = {
+                **launch_opts,
+                "viewport": {"width": 1280, "height": 800},
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+                "locale": locale or "zh-CN",
+                "extra_http_headers": {
+                    "Accept-Language": accept_language or "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            }
+            self.browser = None
+            self.context = self.playwright.chromium.launch_persistent_context(
+                self._temp_user_data_dir,
+                **persistent_kwargs,
+            )
+            self._browser_fingerprint = None
+
+        # persistent context 的第一个 page 已自动创建
+        if self.context.pages:
+            self.page = self.context.pages[0]
+        else:
+            self.page = self.context.new_page()
+
+    def _launch_browser_camoufox(
+        self,
+        effective_proxy_url: str | None = None,
+        headless: bool | None = None,
+        locale: str = "en-US",
+    ):
+        """使用 Camoufox (Firefox 反检测浏览器) 启动浏览器，用于 PayPal 等高风控场景。
+
+        Camoufox 基于 Firefox 内核，TLS/JA3 指纹与 Chromium 完全不同，
+        且内置引擎级别的指纹随机化（Canvas, WebGL, fonts, navigator 等），
+        无需额外的 JS init script 注入。
+        """
+        from camoufox.sync_api import Camoufox
+
+        from autoteam.config import normalize_proxy_url
+
+        # Camoufox/Playwright Firefox 代理格式：server/username/password 分开传。
+        # 注意：不能复用 Chromium 的 _parse_proxy_url()，它会把认证 socks5 改成 http。
+        proxy_dict = None
+        if effective_proxy_url:
+            from urllib.parse import unquote, urlsplit
+
+            normalized = normalize_proxy_url(effective_proxy_url)
+            parsed = urlsplit(normalized)
+            scheme = "socks5" if parsed.scheme == "socks5h" else parsed.scheme
+            host = parsed.hostname or ""
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            proxy_dict = {"server": f"{scheme}://{host}:{parsed.port}"}
+            if parsed.username:
+                proxy_dict["username"] = unquote(parsed.username)
+            if parsed.password:
+                proxy_dict["password"] = unquote(parsed.password)
+            logger.info("[ChatGPT] Camoufox proxy: %s", proxy_dict["server"])
+
+        # Camoufox persistent_context 模式返回 BrowserContext
+        # 手动调用 __enter__ 以便在 stop() 中调用 __exit__ 清理
+        self._camoufox_instance = Camoufox(
+            persistent_context=True,
+            user_data_dir=self._temp_user_data_dir,
+            proxy=proxy_dict,
+            headless=headless if headless is not None else False,
+            os="windows",
+            locale=locale,
+            humanize=0.2,
+            # 不使用 Camoufox geoip 预检测：部分代理浏览器可用，但 requests 查 IP 会失败，导致启动前直接中断。
+            geoip=False,
         )
-        self.context = self.browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-            locale=locale or "zh-CN",
-            extra_http_headers={
-                "Accept-Language": accept_language or "zh-CN,zh;q=0.9,en;q=0.8",
-            },
+        self.context = self._camoufox_instance.__enter__()
+        self.browser = None
+        self.playwright = None  # Camoufox 自己管理 Playwright 生命周期
+        self._browser_fingerprint = None  # Camoufox 内置指纹随机化
+
+        # persistent context 的第一个 page 已自动创建
+        if self.context.pages:
+            self.page = self.context.pages[0]
+        else:
+            self.page = self.context.new_page()
+
+        logger.info(
+            "[ChatGPT] Camoufox browser launched | locale=%s | proxy=%s | user_data_dir=%s",
+            locale,
+            "yes" if proxy_dict else "no",
+            self._temp_user_data_dir,
         )
-        self.page = self.context.new_page()
 
     def _log_login_state(self, label):
         try:
@@ -1577,23 +1717,48 @@ class ChatGPTTeamAPI:
             return result["body"]
 
     def stop(self):
-        try:
-            if self.browser:
-                self.browser.close()
-        except Exception:
-            pass
-        try:
-            if self.playwright:
-                self.playwright.stop()
-        except Exception:
-            pass
-        self.browser = None
-        self.context = None
-        self.page = None
-        self.playwright = None
+        # Camoufox 模式：通过 __exit__ 让 Camoufox 自行清理浏览器和 Playwright
+        camoufox_inst = getattr(self, "_camoufox_instance", None)
+        if camoufox_inst:
+            try:
+                camoufox_inst.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._camoufox_instance = None
+            self.context = None
+            self.page = None
+        else:
+            # Chromium (Playwright) 模式
+            try:
+                if self.context:
+                    self.context.close()
+            except Exception:
+                pass
+            try:
+                if self.browser:
+                    self.browser.close()
+            except Exception:
+                pass
+            try:
+                if self.playwright:
+                    self.playwright.stop()
+            except Exception:
+                pass
+            self.browser = None
+            self.context = None
+            self.page = None
+            self.playwright = None
         try:
             if self._proxy_bridge:
                 self._proxy_bridge.stop()
         except Exception:
             pass
         self._proxy_bridge = None
+        # 清理临时 user_data_dir（避免设备级持久标识残留）
+        try:
+            tmp_dir = getattr(self, "_temp_user_data_dir", None)
+            if tmp_dir:
+                cleanup_temp_user_data_dir(tmp_dir)
+                self._temp_user_data_dir = None
+        except Exception:
+            pass

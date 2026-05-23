@@ -77,6 +77,13 @@ from autoteam.codex_auth import (
     refresh_main_auth_file,
     save_auth_file,
 )
+from autoteam.browser_fingerprint import (
+    apply_fingerprint_to_context,
+    cleanup_temp_user_data_dir,
+    create_temp_user_data_dir,
+    generate_fingerprint,
+    get_context_options,
+)
 from autoteam.config import get_playwright_launch_options
 from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
 from autoteam.identity import random_age, random_birthday, random_full_name, random_password
@@ -2089,14 +2096,20 @@ def _complete_registration(email, password, invite_link, mail_client, *, leave_w
 
     logger.info("[注册] 开始注册 %s...", email)
     with sync_playwright() as p:
-        browser = p.chromium.launch(**get_playwright_launch_options())
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
-        page = context.new_page()
-        result, password = register_with_invite(page, invite_link, email, mail_client, password=password)
-        browser.close()
+        fp = generate_fingerprint()
+        tmp_dir = create_temp_user_data_dir()
+        try:
+            context = p.chromium.launch_persistent_context(
+                tmp_dir,
+                **get_playwright_launch_options(),
+                **get_context_options(fp),
+            )
+            apply_fingerprint_to_context(context, fp)
+            page = context.pages[0] if context.pages else context.new_page()
+            result, password = register_with_invite(page, invite_link, email, mail_client, password=password)
+            context.close()
+        finally:
+            cleanup_temp_user_data_dir(tmp_dir)
 
     if not result:
         logger.error("[注册] 注册 %s 失败", email)
@@ -2653,19 +2666,23 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         launch_kwargs = get_playwright_launch_options()
         if sys.platform.startswith("win"):
             launch_kwargs["slow_mo"] = 100
-        browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        fp = generate_fingerprint()
+        tmp_dir = create_temp_user_data_dir()
+        context = p.chromium.launch_persistent_context(
+            tmp_dir,
+            **launch_kwargs,
+            **get_context_options(fp),
         )
-        page = context.new_page()
+        apply_fingerprint_to_context(context, fp)
+        page = context.pages[0] if context.pages else context.new_page()
         auth_context_state = _new_auth_context_capture_state()
         page.on("request", lambda request: _capture_auth_context_request(request, auth_context_state))
         page.on("response", lambda response: _capture_auth_context_response(response, auth_context_state))
 
         def _finish(success, session_data=None):
             try:
-                browser.close()
+                context.close()
+                cleanup_temp_user_data_dir(tmp_dir)
             except Exception:
                 pass
             if return_session:

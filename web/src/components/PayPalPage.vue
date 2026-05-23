@@ -130,6 +130,16 @@
               </div>
 
               <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
+                <label class="flex items-center justify-between gap-3 text-sm text-gray-300">
+                  <span class="font-medium text-gray-200">浏览器引擎</span>
+                  <select v-model="form.paypalBrowser" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
+                    <option value="camoufox">Camoufox (Firefox)</option>
+                    <option value="chromium">Chromium</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
                 <div class="flex items-center justify-between gap-3">
                   <label class="inline-flex items-center gap-2 text-sm text-gray-300">
                     <input v-model="form.autofillEnabled" type="checkbox" class="accent-blue-500" :disabled="busy || running" />
@@ -232,7 +242,14 @@
                           :key="`${entry.phone_number}|${entry.sms_url}`"
                           class="flex items-center justify-between gap-3 border-b border-gray-900 px-3 py-2 last:border-b-0"
                         >
-                          <span class="font-mono text-xs text-gray-200">{{ entry.phone_number }}</span>
+                          <div class="flex min-w-0 items-center gap-2">
+                            <span
+                              class="h-2.5 w-2.5 shrink-0 rounded-full"
+                              :class="phonePoolStatusClass(entry.phone_number)"
+                              :title="phonePoolStatusText(entry.phone_number)"
+                            ></span>
+                            <span class="font-mono text-xs text-gray-200">{{ entry.phone_number }}</span>
+                          </div>
                           <span class="min-w-0 truncate text-xs text-gray-500">{{ entry.sms_url }}</span>
                         </div>
                       </div>
@@ -413,6 +430,7 @@
                 <th class="w-11 px-3 py-2 text-left">
                   <input type="checkbox" class="accent-blue-500" :checked="poolEditAllSelected" :disabled="!poolEditRows.length" @change="togglePoolEditAll" />
                 </th>
+                <th class="w-16 px-3 py-2 text-left font-medium">状态</th>
                 <th class="w-52 px-3 py-2 text-left font-medium">手机号</th>
                 <th class="px-3 py-2 text-left font-medium">接码 API</th>
                 <th class="w-24 px-3 py-2 text-right font-medium">操作</th>
@@ -420,11 +438,17 @@
             </thead>
             <tbody class="divide-y divide-gray-800 bg-gray-950/40">
               <tr v-if="!poolEditRows.length">
-                <td colspan="4" class="px-3 py-8 text-center text-sm text-gray-500">暂无手机号，点击“新增一行”添加。</td>
+                <td colspan="5" class="px-3 py-8 text-center text-sm text-gray-500">暂无手机号，点击“新增一行”添加。</td>
               </tr>
               <tr v-for="row in poolEditRows" :key="row.id" class="transition hover:bg-gray-900/70">
                 <td class="px-3 py-2 align-middle">
                   <input v-model="poolEditSelectedIds" type="checkbox" class="accent-blue-500" :value="row.id" />
+                </td>
+                <td class="px-3 py-2 align-middle">
+                  <div class="flex items-center gap-2">
+                    <span class="h-2.5 w-2.5 rounded-full" :class="phonePoolStatusClass(row.phone_number)"></span>
+                    <span class="text-xs text-gray-400">{{ phonePoolStatusText(row.phone_number) }}</span>
+                  </div>
                 </td>
                 <td class="px-3 py-2 align-middle">
                   <input
@@ -608,6 +632,7 @@ const currentLink = ref('')
 const restoredFormState = ref(false)
 const logsScrollRef = ref(null)
 const PAYPAL_FORM_STATE_KEY = 'autoteam_paypal_form_state_v2'
+const phonePoolStatusMap = ref({})
 
 const form = ref({
   batchMode: false,
@@ -628,6 +653,7 @@ const form = ref({
   paypalCardCvv: '',
   autofillEnabled: true,
   autoOauthAfterSuccess: false,
+  paypalBrowser: 'camoufox',
   billingName: '',
   billingPhone: '',
   billingCountry: 'US',
@@ -695,6 +721,7 @@ const running = computed(() => ['pending', 'running'].includes(String(lastTask.v
 const isCreateAccountMode = computed(() => form.value.paypalMode === 'create_account')
 const singleSelectedEmail = computed(() => String(selectedAccountEmail.value || '').trim().toLowerCase())
 const phonePoolEntries = computed(() => parsePayPalPhonePool(form.value.phonePoolText, { strict: false }))
+const availablePhonePoolEntries = computed(() => phonePoolEntries.value.filter(entry => phonePoolEntryAvailable(entry)))
 const proxyPoolEntries = computed(() => parseProxyPoolLines(form.value.proxyPoolText))
 const poolEditTitle = computed(() => poolEditTarget.value === 'phone' ? '编辑手机号池' : '编辑动态代理池')
 const poolEditHelp = computed(() => poolEditTarget.value === 'phone'
@@ -775,6 +802,75 @@ function normalizeBindDefaults() {
   bindForm.value.country = 'US'
   bindForm.value.currency = 'USD'
   bindForm.value.checkoutUiMode = 'hosted'
+}
+
+function normalizePhoneKey(phone) {
+  const digits = String(phone || '').replace(/\D/g, '')
+  return digits || String(phone || '').trim().toLowerCase()
+}
+
+function phonePoolStatusValue(phone) {
+  const key = normalizePhoneKey(phone)
+  if (!key) return 'available'
+  return phonePoolStatusMap.value[key] === 'invalid' ? 'invalid' : 'available'
+}
+
+function phonePoolEntryAvailable(entry) {
+  return phonePoolStatusValue(entry?.phone_number) !== 'invalid'
+}
+
+function phonePoolStatusClass(phone) {
+  return phonePoolStatusValue(phone) === 'invalid' ? 'bg-rose-500' : 'bg-emerald-500'
+}
+
+function phonePoolStatusText(phone) {
+  return phonePoolStatusValue(phone) === 'invalid' ? '失效' : '可用'
+}
+
+function markPhonePoolStatus(phone, status = 'invalid') {
+  const key = normalizePhoneKey(phone)
+  if (!key) return
+  phonePoolStatusMap.value = {
+    ...phonePoolStatusMap.value,
+    [key]: status === 'invalid' ? 'invalid' : 'available',
+  }
+}
+
+function prunePhonePoolStatuses(entries = phonePoolEntries.value) {
+  const validKeys = new Set((Array.isArray(entries) ? entries : []).map(entry => normalizePhoneKey(entry?.phone_number)).filter(Boolean))
+  const nextMap = {}
+  Object.entries(phonePoolStatusMap.value || {}).forEach(([key, value]) => {
+    if (validKeys.has(key)) nextMap[key] = value
+  })
+  phonePoolStatusMap.value = nextMap
+}
+
+function applyPhonePoolStatusFromTask(task) {
+  const events = Array.isArray(task?.progress_events) ? [...task.progress_events] : []
+  if (task?.progress && typeof task.progress === 'object') {
+    events.push(task.progress)
+  }
+  if (task?.result && typeof task.result === 'object') {
+    events.push(task.result)
+  }
+  events.forEach((event) => {
+    const stage = String(event?.stage || '').trim()
+    const failureStage = String(event?.failure_stage || '').trim()
+    const rejectedPhone = String(event?.rejected_phone || '').trim()
+    if (
+      rejectedPhone
+      && (
+        stage === 'paypal_phone_rejected_waiting_dismiss'
+        || stage === 'paypal_phone_rejected_rotate'
+        || stage === 'paypal_phone_rejected_final'
+        || failureStage === 'paypal_phone_rejected'
+      )
+    ) {
+      markPhonePoolStatus(rejectedPhone, 'invalid')
+    }
+    const invalidPhones = Array.isArray(event?.invalid_phone_numbers) ? event.invalid_phone_numbers : []
+    invalidPhones.forEach((phone) => markPhonePoolStatus(phone, 'invalid'))
+  })
 }
 
 function parseProxyPoolLines(text) {
@@ -924,6 +1020,7 @@ function confirmPoolEdit() {
       const deduped = dedupePhonePoolEntries(phonePoolEntriesFromEditRows(poolEditRows.value))
       form.value.phonePoolText = formatPhonePoolEntries(deduped)
       form.value.phonePoolEnabled = true
+      prunePhonePoolStatuses(deduped)
       setMessage(`手机号池已保存并去重：${deduped.length} 个`)
     } else {
       const rawText = poolEditRows.value
@@ -961,6 +1058,7 @@ function rememberedPayPalState() {
     selectedAccountEmail: selectedAccountEmail.value,
     accountSearchKeyword: accountSearchKeyword.value,
     currentLink: currentLink.value,
+    phonePoolStatusMap: phonePoolStatusMap.value,
     form: {
       ...form.value,
       accountEmails: selectedBatchEmails.value,
@@ -978,6 +1076,9 @@ function restorePayPalState() {
     if (!raw) return
     const saved = JSON.parse(raw)
     if (!saved || typeof saved !== 'object') return
+    if (saved.phonePoolStatusMap && typeof saved.phonePoolStatusMap === 'object') {
+      phonePoolStatusMap.value = { ...saved.phonePoolStatusMap }
+    }
     if (saved.form && typeof saved.form === 'object') {
       Object.assign(form.value, saved.form)
       form.value.paypalPassword = ''
@@ -997,6 +1098,7 @@ function restorePayPalState() {
     selectedAccountEmail.value = String(saved.selectedAccountEmail || '').trim().toLowerCase()
     accountSearchKeyword.value = String(saved.accountSearchKeyword || '')
     currentLink.value = String(saved.currentLink || '')
+    prunePhonePoolStatuses()
   } catch (error) {
     console.warn('PayPal 表单缓存读取失败:', error)
   }
@@ -1163,6 +1265,7 @@ async function refreshTask() {
     } catch (error) {
       console.warn(`PayPal 任务详情刷新失败: ${target.task_id}`, error)
     }
+    applyPhonePoolStatusFromTask(detail)
     selectedTask.value = detail
     lastTask.value = detail
     if (detail?.result?.checkout_url) {
@@ -1228,9 +1331,10 @@ function validateBeforeStart() {
   }
   if (!form.value.manualConfirm) {
     if (isCreateAccountMode.value) {
-      const phoneAccounts = form.value.phonePoolEnabled ? parsePayPalPhonePool(form.value.phonePoolText) : []
+      const phoneAccounts = form.value.phonePoolEnabled ? availablePhonePoolEntries.value : []
       if (form.value.phonePoolEnabled) {
-        if (!phoneAccounts.length) throw new Error('启用手机号池后需要先导入手机号')
+        if (!phonePoolEntries.value.length) throw new Error('启用手机号池后需要先导入手机号')
+        if (!phoneAccounts.length) throw new Error('手机号池中没有可用号码，请先更换或编辑已失效号码')
       } else {
         if (!String(form.value.billingPhone || '').trim()) throw new Error('自动注册模式需要填写 PayPal 注册手机号')
         if (!String(form.value.smsUrl || '').trim()) throw new Error('自动注册模式需要填写接码 API')
@@ -1259,7 +1363,7 @@ async function startTask() {
     validateBeforeStart()
     currentLink.value = ''
     const effectiveEmail = form.value.batchMode ? selectedBatchEmails.value[0] : singleSelectedEmail.value
-    const phoneAccounts = isCreateAccountMode.value && form.value.phonePoolEnabled ? parsePayPalPhonePool(form.value.phonePoolText) : []
+    const phoneAccounts = isCreateAccountMode.value && form.value.phonePoolEnabled ? availablePhonePoolEntries.value : []
     const firstPhoneAccount = phoneAccounts[0] || null
     const task = await api.startPayPal({
       runner_mode: 'manual_checkout',
@@ -1271,6 +1375,7 @@ async function startTask() {
       proxy_pool_text: form.value.proxyPoolEnabled ? (form.value.proxyPoolText || '') : '',
       proxy_label: form.value.proxyLabel,
       manual_confirm: Boolean(form.value.manualConfirm),
+      paypal_browser: form.value.paypalBrowser,
       paypal_mode: form.value.paypalMode,
       paypal_email: isCreateAccountMode.value ? '' : form.value.paypalEmail,
       paypal_password: isCreateAccountMode.value ? '' : form.value.paypalPassword,
@@ -1345,7 +1450,14 @@ watch(
 )
 
 watch(
-  [form, bindForm, selectedAccountEmail, accountSearchKeyword, currentLink],
+  () => form.value.phonePoolText,
+  () => {
+    prunePhonePoolStatuses()
+  }
+)
+
+watch(
+  [form, bindForm, selectedAccountEmail, accountSearchKeyword, currentLink, phonePoolStatusMap],
   savePayPalState,
   { deep: true }
 )
