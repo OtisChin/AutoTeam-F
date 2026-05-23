@@ -180,28 +180,22 @@ class ChatGPTTeamAPI:
 
             ctx_opts = get_context_options(fp)
 
-            # 使用 launch_persistent_context 将 user_data_dir 与 context 合并
-            # 这样既隔离了设备指纹，又能正常传 proxy
-            persistent_kwargs = {**launch_opts, **ctx_opts}
-            # launch_persistent_context 接受的 args 和 launch 一样
-            self.browser = None  # persistent context 模式下没有独立的 browser 对象
-            self.context = self.playwright.chromium.launch_persistent_context(
-                self._temp_user_data_dir,
-                **persistent_kwargs,
-            )
+            # 使用普通 browser + new_context。new_context 是无痕临时上下文，
+            # 不落盘复用 cookie/cache/localStorage，同时保留代理和指纹配置。
+            self.browser = self.playwright.chromium.launch(**launch_opts)
+            self.context = self.browser.new_context(**ctx_opts)
             apply_fingerprint_to_context(self.context, fp)
             self._browser_fingerprint = fp
             logger.info(
-                "[ChatGPT] browser launched with fingerprint %s | UA=%s | viewport=%s | tz=%s",
+                "[ChatGPT] incognito browser launched with fingerprint %s | UA=%s | viewport=%s | tz=%s",
                 fp.fingerprint_id,
                 fp.user_agent[:60],
                 fp.viewport,
                 fp.timezone_id,
             )
         else:
-            # 不随机化时也用 persistent context 隔离
-            persistent_kwargs = {
-                **launch_opts,
+            # 不随机化时同样使用无痕临时 context。
+            context_kwargs = {
                 "viewport": {"width": 1280, "height": 800},
                 "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
                 "locale": locale or "zh-CN",
@@ -209,14 +203,11 @@ class ChatGPTTeamAPI:
                     "Accept-Language": accept_language or "zh-CN,zh;q=0.9,en;q=0.8",
                 },
             }
-            self.browser = None
-            self.context = self.playwright.chromium.launch_persistent_context(
-                self._temp_user_data_dir,
-                **persistent_kwargs,
-            )
+            self.browser = self.playwright.chromium.launch(**launch_opts)
+            self.context = self.browser.new_context(**context_kwargs)
             self._browser_fingerprint = None
 
-        # persistent context 的第一个 page 已自动创建
+        # new_context 不会自动创建 page；Camoufox persistent context 仍可能自带 page。
         if self.context.pages:
             self.page = self.context.pages[0]
         else:

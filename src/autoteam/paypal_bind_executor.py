@@ -4416,7 +4416,7 @@ def _run_paypal_authorize_flow(
     card_retry_count = 0
     submitted_phone_keys: set[str] = set()
     otp_phone_lock_key = ""
-    ddc_checked = False
+    last_ddc_check_at = 0.0
     while time.time() < deadline:
         _sync_relevant_payment_page(api, prefer_paypal=True)
         active_phone_key = _normalize_paypal_phone(str(active_signup_profile.get("phone") or ""))
@@ -4432,22 +4432,30 @@ def _run_paypal_authorize_flow(
             return None
         _ensure_paypal_hosted_captcha_bypass(api)
 
-        # DataDome DDC 检测：首次进入 PayPal 页面时尝试自动通过
-        if not ddc_checked and _is_paypal_host(current_url):
-            ddc_checked = True
+        # DataDome DDC 检测：每轮都检查可见滑块，隐形 DDC iframe 做节流
+        if _is_paypal_host(current_url):
             page = getattr(api, "page", None)
-            if page and (_ddc_slider_visible(page) or _has_ddc_iframe(page)):
-                ddc_passed = _wait_ddc_pass(page, timeout_seconds=50, on_progress=on_progress)
-                if not ddc_passed:
-                    if otp_phone_lock_key:
-                        _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
-                        otp_phone_lock_key = ""
-                    return _build_result(
-                        "failed",
-                        failure_stage="paypal_datadome_blocked",
-                        message="DataDome 滑块/风控验证未通过",
-                        screenshot_paths=screenshot_paths,
-                    )
+            if page:
+                slider_visible = _ddc_slider_visible(page)
+                # 可见滑块立即处理；不可见时每 15 秒探测一次隐形 iframe
+                ddc_iframe_present = (
+                    (not slider_visible)
+                    and (time.time() - last_ddc_check_at > 15)
+                    and _has_ddc_iframe(page)
+                )
+                if slider_visible or ddc_iframe_present:
+                    last_ddc_check_at = time.time()
+                    ddc_passed = _wait_ddc_pass(page, timeout_seconds=50, on_progress=on_progress)
+                    if not ddc_passed:
+                        if otp_phone_lock_key:
+                            _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                            otp_phone_lock_key = ""
+                        return _build_result(
+                            "failed",
+                            failure_stage="paypal_datadome_blocked",
+                            message="DataDome 滑块/风控验证未通过",
+                            screenshot_paths=screenshot_paths,
+                        )
 
         if callable(is_cancelled) and is_cancelled():
             if otp_phone_lock_key:
@@ -4638,6 +4646,7 @@ def _wait_for_paypal_result(
         parts = urlsplit(str(url or ""))
         return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
+    last_ddc_check_at_result = 0.0
     while time.time() < deadline:
         _sync_relevant_payment_page(api, prefer_paypal=True)
         now = time.time()
@@ -4658,6 +4667,18 @@ def _wait_for_paypal_result(
         current_url = getattr(api.page, "url", "")
         if _is_paypal_host(current_url):
             _ensure_paypal_hosted_captcha_bypass(api)
+            # DataDome DDC 检测：等待结果阶段也可能弹出
+            page = getattr(api, "page", None)
+            if page:
+                slider_visible = _ddc_slider_visible(page)
+                ddc_iframe_present = (
+                    (not slider_visible)
+                    and (time.time() - last_ddc_check_at_result > 15)
+                    and _has_ddc_iframe(page)
+                )
+                if slider_visible or ddc_iframe_present:
+                    last_ddc_check_at_result = time.time()
+                    _wait_ddc_pass(page, timeout_seconds=50, on_progress=on_progress)
         should_autofill_checkout = (
             bool(autofill_payload)
             and _is_checkout_host(current_url)
