@@ -7,18 +7,21 @@ import json
 import re
 import secrets
 import string
+import threading
 import time
 import uuid
 from typing import Any, Callable
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import requests
 
 from autoteam.auth_session_store import load_auth_session
 from autoteam.bind_executor import _build_result, _capture_screenshot
 from autoteam.chatgpt_api import ChatGPTTeamAPI
+from autoteam.config import normalize_proxy_url
 from autoteam.gopay_executor import (
     DEFAULT_STRIPE_PK,
+    DEFAULT_STRIPE_RUNTIME_VERSION,
     GoPayOTPCancelled,
     STRIPE_API,
     STRIPE_VERSION_FULL,
@@ -30,11 +33,13 @@ from autoteam.gopay_executor import (
     _inject_chatgpt_browser_cookies,
     _new_http_session,
     _open_checkout_in_page,
+    _stripe_runtime_from_env,
     _poll_otp_from_sms_url,
     _safe_url_summary,
     _select_chatgpt_account_if_needed,
     _suppress_address_autocomplete_ui,
 )
+from autoteam.paypal_protocol_signup import run_paypal_no_card_protocol_signup
 
 logger = logging.getLogger(__name__)
 DEFAULT_PAYPAL_NAME = "James Smith"
@@ -113,6 +118,8 @@ PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 60
 PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = 420
 PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 180
 PAYPAL_STRIPE_STATE_POLL_INTERVAL_SECONDS = 5.0
+_PAYPAL_OTP_LOCK_GUARD = threading.Lock()
+_PAYPAL_OTP_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _is_tunnel_connection_error(value: Any) -> bool:
@@ -159,6 +166,45 @@ PAYPAL_CARD_REJECTED_HINTS = (
     "try a different card",
     "card is already linked",
     "card already linked",
+)
+PAYPAL_CARD_LINKED_HINTS = (
+    "this card has already been added to another paypal account",
+    "card has already been added to another paypal account",
+    "remove the card from the other account",
+    "cc_linked_to_full_account",
+    "card is already linked",
+    "card already linked",
+)
+PAYPAL_CARD_CANDIDATE_REJECTED_HINTS = (
+    "create_card_account_candidate_validation_error",
+    "create card account candidate validation error",
+    "candidate validation error",
+)
+PAYPAL_FUNDING_REJECTED_HINTS = (
+    "instrument_sharing_limit_exceeded",
+    "card_generic_error",
+    "issuer_decline",
+    "funding source was declined",
+    "payment source was declined",
+    "try a different way to pay",
+)
+PAYPAL_DATADOME_BLOCKED_HINTS = (
+    "datadome",
+    "captcha_failed",
+    "slider_timeout",
+    "event_name=slider_timeout",
+    "blocked by datadome",
+)
+PAYPAL_HUMAN_VERIFICATION_HINTS = (
+    "confirm you're human",
+    "confirm you’re human",
+    "move the slider all the way to the right",
+    "security challenge",
+    "security check",
+    "human verification",
+    "unusual activity",
+    "人机验证",
+    "安全验证",
 )
 PAYPAL_PHONE_REJECTED_SELECTORS = [
     '[role="dialog"]:has-text("Try a different phone number")',
@@ -326,7 +372,16 @@ PAYPAL_SIGNUP_EMAIL_SUBMIT_SELECTORS = [
     'button:has-text("Continue to Payment")',
     'button:has-text("Continue")',
     'button:has-text("Next")',
+    'button:has-text("Create Account")',
+    'button:has-text("Create an Account")',
+    'button:has-text("Sign Up")',
+    'button:has-text("注册")',
+    'button:has-text("创建账户")',
+    'button:has-text("建立账户")',
+    'button:has-text("建立帳戶")',
+    'input[type="submit"]',
     '#btnNext',
+    '#createAccount',
 ]
 PAYPAL_CREATE_ACCOUNT_SELECTORS = [
     '#createAccount',
@@ -552,6 +607,10 @@ PAYPAL_AUTO_STAGE_MESSAGES = {
     "paypal_fill_signup": "正在填写 PayPal 注册表单",
     "paypal_submit_signup": "正在提交 PayPal 注册信息",
     "paypal_wait_signup_otp": "正在等待 PayPal 短信验证码",
+    "paypal_otp_phone_lock_wait": "正在等待当前手机号验证码流程释放",
+    "paypal_otp_phone_lock_acquired": "已锁定当前手机号验证码流程",
+    "paypal_otp_phone_lock_released": "已释放当前手机号验证码流程",
+    "paypal_otp_phone_lock_timeout": "等待当前手机号验证码流程释放超时",
     "paypal_wait_sms_otp_window": "等待短信平台下发 PayPal 验证码",
     "paypal_fetch_otp": "正在从接码接口拉取 PayPal 验证码",
     "paypal_sms_otp_resend_due": "长时间未收到 PayPal 验证码，尝试重新拉取/重发",
@@ -568,6 +627,17 @@ PAYPAL_AUTO_STAGE_MESSAGES = {
     "paypal_approve_clicked": "已点击 PayPal 同意并继续",
     "paypal_wait_result": "PayPal 已授权，等待商户页面确认结果",
     "paypal_wait_manual": "等待人工完成 PayPal 支付流程",
+    "paypal_protocol_start": "协议模式：开始处理 PayPal checkout",
+    "paypal_protocol_init": "协议模式：已初始化 Stripe checkout",
+    "paypal_protocol_payment_method": "协议模式：已创建 PayPal payment_method",
+    "paypal_protocol_confirm": "协议模式：已确认 Stripe checkout",
+    "paypal_protocol_approve_url": "协议模式：已解析 PayPal 授权链接",
+    "paypal_protocol_wait_result": "协议模式：等待 Stripe checkout 结果",
+    "paypal_protocol_browser_fallback": "协议模式被 PayPal 风控拦截，正在降级到浏览器模式",
+    "paypal_browser_fallback_navigate": "浏览器已打开 PayPal 授权页面",
+    "paypal_browser_fallback_ddc_wait": "正在等待 DataDome 安全检查通过",
+    "paypal_ddc_slider_detected": "检测到 DataDome 滑块验证，正在自动解题",
+    "paypal_ddc_invisible_wait": "检测到 DataDome 隐形验证，等待自动通过",
 }
 
 
@@ -579,6 +649,16 @@ def classify_paypal_checkout_state(url: str, body_text: str):
     query_params = dict(parse_qsl(parsed_url.query, keep_blank_values=True))
     fragment_params = dict(parse_qsl(parsed_url.fragment, keep_blank_values=True))
     redirect_status = str(query_params.get("redirect_status") or fragment_params.get("redirect_status") or "").lower()
+    stripe_return_success = (
+        parsed_url.netloc.endswith("pm-redirects.stripe.com")
+        and "/return" in parsed_url.path
+        and (
+            redirect_status in {"succeeded", "success", "complete", "completed"}
+            or str(query_params.get("status") or fragment_params.get("status") or "").lower()
+            in {"succeeded", "success", "complete", "completed"}
+        )
+    )
+    chatgpt_success = parsed_url.netloc in {"chatgpt.com", "chat.openai.com"} and "/payments/success" in parsed_url.path
 
     if any(hint in haystack for hint in PAYPAL_ACCOUNT_LIMITED_HINTS):
         return {
@@ -594,6 +674,41 @@ def classify_paypal_checkout_state(url: str, body_text: str):
             "message": "PayPal 拒绝当前手机号，请更换手机号",
         }
 
+    if any(hint in haystack for hint in PAYPAL_CARD_LINKED_HINTS):
+        return {
+            "status": "failed",
+            "failure_stage": "paypal_card_linked",
+            "message": "当前卡片已绑定到其他 PayPal 账号，需要换卡/换身份信息",
+        }
+
+    if any(hint in haystack for hint in PAYPAL_CARD_CANDIDATE_REJECTED_HINTS):
+        return {
+            "status": "failed",
+            "failure_stage": "paypal_card_candidate_rejected",
+            "message": "PayPal 拒绝当前卡片/身份组合，需要换卡或账单身份信息",
+        }
+
+    if any(hint in haystack for hint in PAYPAL_DATADOME_BLOCKED_HINTS):
+        return {
+            "status": "failed",
+            "failure_stage": "paypal_datadome_blocked",
+            "message": "PayPal DataDome/风控验证阻断当前环境",
+        }
+
+    if any(hint in haystack for hint in PAYPAL_HUMAN_VERIFICATION_HINTS):
+        return {
+            "status": "needs_review",
+            "failure_stage": "paypal_human_verification",
+            "message": "PayPal 人机验证等待人工处理",
+        }
+
+    if any(hint in haystack for hint in PAYPAL_FUNDING_REJECTED_HINTS):
+        return {
+            "status": "failed",
+            "failure_stage": "paypal_funding_rejected",
+            "message": "PayPal 拒绝当前资金来源，需要换卡/换身份信息",
+        }
+
     if CANCEL_URL_RE.search(parsed_url.path) or any(hint in haystack for hint in CANCEL_HINTS):
         return {
             "status": "failed",
@@ -601,15 +716,10 @@ def classify_paypal_checkout_state(url: str, body_text: str):
             "message": "检测到 PayPal 支付已取消",
         }
 
-    if FAILURE_URL_RE.search(parsed_url.path) or any(hint in haystack for hint in FAILURE_HINTS):
-        return {
-            "status": "failed",
-            "failure_stage": "post_submit",
-            "message": "检测到 PayPal/支付失败提示",
-        }
-
     if (
-        redirect_status in {"succeeded", "success", "complete", "completed"}
+        stripe_return_success
+        or chatgpt_success
+        or redirect_status in {"succeeded", "success", "complete", "completed"}
         or "setup_intent=" in normalized_url and "redirect_pm_type=paypal" in normalized_url
         or SUCCESS_URL_RE.search(parsed_url.path)
         or any(hint in haystack for hint in SUCCESS_HINTS)
@@ -618,6 +728,13 @@ def classify_paypal_checkout_state(url: str, body_text: str):
             "status": "success",
             "failure_stage": "",
             "message": "检测到 PayPal/支付成功页面",
+        }
+
+    if FAILURE_URL_RE.search(parsed_url.path) or any(hint in haystack for hint in FAILURE_HINTS):
+        return {
+            "status": "failed",
+            "failure_stage": "post_submit",
+            "message": "检测到 PayPal/支付失败提示",
         }
 
     if any(hint in haystack for hint in PENDING_HINTS):
@@ -675,19 +792,6 @@ def _classify_paypal_stripe_payment_page(payload: dict[str, Any] | None):
         }
 
     if (
-        values["setup_intent"] in {"canceled", "cancelled", "requires_payment_method"}
-        or values["payment_intent"] in {"canceled", "cancelled", "requires_payment_method"}
-        or values["payment_status"] in {"failed", "unpaid", "canceled", "cancelled"}
-        or values["status"] in {"failed", "expired", "canceled", "cancelled"}
-        or values["submission_attempt"] in {"failed", "canceled", "cancelled"}
-    ):
-        return {
-            "status": "failed",
-            "failure_stage": "post_submit",
-            "message": f"Stripe checkout 状态已确认失败: {summary}",
-        }
-
-    if (
         values["setup_intent"] in {"processing", "requires_action", "requires_confirmation"}
         or values["payment_intent"] in {"processing", "requires_action", "requires_confirmation"}
         or values["payment_status"] in {"processing", "pending"}
@@ -698,6 +802,19 @@ def _classify_paypal_stripe_payment_page(payload: dict[str, Any] | None):
             "status": "needs_review",
             "failure_stage": "post_submit",
             "message": f"Stripe checkout 状态仍在处理中: {summary}",
+        }
+
+    if (
+        values["setup_intent"] in {"canceled", "cancelled", "requires_payment_method"}
+        or values["payment_intent"] in {"canceled", "cancelled", "requires_payment_method"}
+        or values["payment_status"] in {"failed", "unpaid", "canceled", "cancelled"}
+        or values["status"] in {"failed", "expired", "canceled", "cancelled"}
+        or values["submission_attempt"] in {"failed", "canceled", "cancelled"}
+    ):
+        return {
+            "status": "failed",
+            "failure_stage": "post_submit",
+            "message": f"Stripe checkout 状态已确认失败: {summary}",
         }
 
     return None
@@ -739,6 +856,623 @@ def _fetch_paypal_stripe_payment_page_state(checkout_url: str, *, http: Any | No
     except Exception:
         return None
     return _classify_paypal_stripe_payment_page(payload)
+
+
+def _protocol_http_json(resp: Any, stage: str) -> dict:
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise RuntimeError(
+            f"{stage} 返回非 JSON: HTTP {getattr(resp, 'status_code', '?')} "
+            f"{(getattr(resp, 'text', '') or '')[:300]}"
+        ) from exc
+    return payload if isinstance(payload, dict) else {"_raw": payload}
+
+
+def _protocol_ensure_ok(resp: Any, stage: str) -> dict:
+    status_code = int(getattr(resp, "status_code", 0) or 0)
+    if 200 <= status_code < 300:
+        return _protocol_http_json(resp, stage)
+    text = str(getattr(resp, "text", "") or "")
+    if any(hint in text.lower() for hint in PAYPAL_DATADOME_BLOCKED_HINTS + PAYPAL_HUMAN_VERIFICATION_HINTS):
+        raise RuntimeError(f"{stage} 被 PayPal/Stripe 风控拦截，需要切换浏览器模式或人工处理: HTTP {status_code}")
+    raise RuntimeError(f"{stage} 失败: HTTP {status_code} {text[:500]}")
+
+
+def _paypal_protocol_elements_options() -> dict[str, str]:
+    return {
+        "elements_options_client[stripe_js_locale]": "auto",
+        "elements_options_client[saved_payment_method][enable_save]": "never",
+        "elements_options_client[saved_payment_method][enable_redisplay]": "never",
+    }
+
+
+def _paypal_protocol_checkout_amount(payload: dict) -> str:
+    total_summary = payload.get("total_summary") if isinstance(payload.get("total_summary"), dict) else {}
+    invoice = payload.get("invoice") if isinstance(payload.get("invoice"), dict) else {}
+    if total_summary.get("due") is not None:
+        return str(total_summary["due"])
+    if invoice.get("amount_due") is not None:
+        return str(invoice["amount_due"])
+    line_items = payload.get("line_items") if isinstance(payload.get("line_items"), list) else []
+    if line_items:
+        try:
+            return str(sum(int(item.get("amount") or 0) for item in line_items if isinstance(item, dict)))
+        except Exception:
+            return "0"
+    return "0"
+
+
+def _paypal_protocol_amount_due(value: Any) -> int:
+    try:
+        return int(value)
+    except Exception:
+        digits = re.sub(r"\D+", "", str(value or ""))
+        return int(digits or "0")
+
+
+STRIPE_VERSION_BASE = "2025-03-31.basil"
+
+
+def _paypal_protocol_stripe_init(http: Any, checkout_session_id: str, stripe_pk: str) -> dict:
+    stripe_js_id = str(uuid.uuid4())
+    elements_session_id = f"elements_session_{uuid.uuid4().hex[:11]}"
+    elements_options = _paypal_protocol_elements_options()
+    url = f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/init"
+
+    # 先用基础版本（不带 beta/elements_options），失败再用完整版本降级
+    for version, include_betas in [
+        (STRIPE_VERSION_BASE, False),
+        (STRIPE_VERSION_FULL, True),
+    ]:
+        data = {
+            "browser_locale": "en-US",
+            "browser_timezone": "Asia/Shanghai",
+            "elements_session_client[elements_init_source]": "custom_checkout",
+            "elements_session_client[referrer_host]": "chatgpt.com",
+            "elements_session_client[stripe_js_id]": stripe_js_id,
+            "elements_session_client[locale]": "en",
+            "elements_session_client[is_aggregation_expected]": "false",
+            "_stripe_version": version,
+            "key": stripe_pk,
+        }
+        if include_betas:
+            data["elements_session_client[client_betas][0]"] = "custom_checkout_server_updates_1"
+            data["elements_session_client[client_betas][1]"] = "custom_checkout_manual_approval_1"
+            data.update(elements_options)
+
+        resp = http.post(url, data=data, timeout=30)
+        status_code = int(getattr(resp, "status_code", 0) or 0)
+        if status_code == 200:
+            payload = _protocol_http_json(resp, "paypal_protocol_stripe_init")
+            init_checksum = str(payload.get("init_checksum") or "")
+            if not init_checksum:
+                raise RuntimeError(f"paypal_protocol_stripe_init 未返回 init_checksum: {payload}")
+            return {
+                "raw": payload,
+                "init_checksum": init_checksum,
+                "stripe_js_id": stripe_js_id,
+                "elements_session_id": elements_session_id,
+                "elements_session_config_id": str(uuid.uuid4()),
+                "elements_options_client": elements_options if include_betas else {},
+                "config_id": str(payload.get("config_id") or ""),
+                "expected_amount": _paypal_protocol_checkout_amount(payload),
+                "currency": str(payload.get("currency") or "usd").lower(),
+                "return_url": str(payload.get("return_url") or ""),
+                "stripe_hosted_url": str(payload.get("stripe_hosted_url") or ""),
+                "locale": str(payload.get("locale") or "en"),
+                "stripe_version": version,
+            }
+        if status_code == 400 and "beta" in str(getattr(resp, "text", "") or "").lower():
+            logger.info("[paypal_protocol] init version=%s rejected (beta), trying next...", version[:30])
+            continue
+        if status_code == 400 and "parameter_unknown" in str(getattr(resp, "text", "") or "").lower():
+            logger.info("[paypal_protocol] init version=%s rejected (unknown param), trying next...", version[:30])
+            continue
+        # 非 400 降级场景，直接报错
+        _protocol_ensure_ok(resp, "paypal_protocol_stripe_init")
+
+    raise RuntimeError("paypal_protocol_stripe_init 失败: 所有 Stripe API 版本均不可用")
+
+
+def _paypal_protocol_elements_session(http: Any, checkout_session_id: str, stripe_pk: str, init_ctx: dict) -> None:
+    effective_version = init_ctx.get("stripe_version") or STRIPE_VERSION_FULL
+    params = {
+        "deferred_intent[mode]": "subscription",
+        "deferred_intent[amount]": str(int(re.sub(r"\D+", "", str(init_ctx.get("expected_amount") or "0")) or "0")),
+        "deferred_intent[currency]": str(init_ctx.get("currency") or "usd").lower(),
+        "deferred_intent[setup_future_usage]": "off_session",
+        "deferred_intent[payment_method_types][0]": "paypal",
+        "currency": str(init_ctx.get("currency") or "usd").lower(),
+        "key": stripe_pk,
+        "_stripe_version": effective_version,
+        "elements_init_source": "custom_checkout",
+        "referrer_host": "chatgpt.com",
+        "stripe_js_id": init_ctx["stripe_js_id"],
+        "locale": init_ctx.get("locale") or "en",
+        "type": "deferred_intent",
+        "checkout_session_id": checkout_session_id,
+    }
+    # 仅在完整版本时添加 client_betas
+    if "checkout_server_update_beta" in effective_version:
+        params["client_betas[0]"] = "custom_checkout_server_updates_1"
+        params["client_betas[1]"] = "custom_checkout_manual_approval_1"
+    try:
+        resp = http.get(f"{STRIPE_API}/v1/elements/sessions", params=params, timeout=30)
+        if resp.status_code != 200:
+            logger.info("[paypal_protocol] elements/sessions skipped: HTTP %s", resp.status_code)
+            return
+        payload = _protocol_http_json(resp, "paypal_protocol_elements_session")
+    except Exception as exc:
+        logger.info("[paypal_protocol] elements/sessions soft-failed: %s", exc)
+        return
+    real_session_id = str(payload.get("session_id") or payload.get("id") or "")
+    if real_session_id:
+        init_ctx["elements_session_id"] = real_session_id
+    if payload.get("config_id"):
+        init_ctx["config_id"] = str(payload.get("config_id") or "")
+    if payload.get("payment_method_checkout_config_id"):
+        init_ctx["payment_method_checkout_config_id"] = str(payload.get("payment_method_checkout_config_id") or "")
+    if payload.get("elements_session_config_id"):
+        init_ctx["elements_session_config_id"] = str(payload.get("elements_session_config_id") or "")
+
+
+def _paypal_protocol_update_payment_page_address(http: Any, checkout_session_id: str, stripe_pk: str, init_ctx: dict, billing: dict[str, str]) -> None:
+    effective_version = init_ctx.get("stripe_version") or STRIPE_VERSION_FULL
+    base = {
+        "elements_session_client[elements_init_source]": "custom_checkout",
+        "elements_session_client[referrer_host]": "chatgpt.com",
+        "elements_session_client[session_id]": init_ctx.get("elements_session_id") or f"elements_session_{uuid.uuid4().hex[:11]}",
+        "elements_session_client[stripe_js_id]": init_ctx.get("stripe_js_id") or str(uuid.uuid4()),
+        "elements_session_client[locale]": init_ctx.get("locale") or "en",
+        "elements_session_client[is_aggregation_expected]": "false",
+        "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
+        "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
+        "key": stripe_pk,
+        "_stripe_version": effective_version,
+    }
+    if "checkout_server_update_beta" in effective_version:
+        base["elements_session_client[client_betas][0]"] = "custom_checkout_server_updates_1"
+        base["elements_session_client[client_betas][1]"] = "custom_checkout_manual_approval_1"
+    base.update(init_ctx.get("elements_options_client") or {})
+    data = dict(base)
+    data.update(
+        {
+            "tax_region[country]": str(billing.get("country") or "US").strip() or "US",
+            "tax_region[line1]": str(billing.get("address1") or "").strip(),
+            "tax_region[city]": str(billing.get("city") or "").strip(),
+            "tax_region[state]": str(billing.get("state") or "").strip(),
+            "tax_region[postal_code]": str(billing.get("zip") or "").strip(),
+        }
+    )
+    try:
+        resp = http.post(f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}", data=data, timeout=30)
+        if resp.status_code >= 400:
+            logger.info("[paypal_protocol] address update soft-failed: HTTP %s %s", resp.status_code, (resp.text or "")[:180])
+    except Exception as exc:
+        logger.info("[paypal_protocol] address update soft-failed: %s", exc)
+
+
+def _paypal_protocol_create_payment_method(http: Any, checkout_session_id: str, stripe_pk: str, init_ctx: dict, billing: dict[str, str], email: str) -> str:
+    runtime = _stripe_runtime_from_env()
+    runtime_version = runtime.get("version") or DEFAULT_STRIPE_RUNTIME_VERSION
+    effective_version = init_ctx.get("stripe_version") or STRIPE_VERSION_FULL
+    data = {
+        "type": "paypal",
+        "billing_details[name]": billing.get("name") or DEFAULT_PAYPAL_NAME,
+        "billing_details[email]": email or billing.get("email") or "buyer@example.com",
+        "billing_details[address][country]": billing.get("country") or "US",
+        "billing_details[address][line1]": billing.get("address1") or "",
+        "billing_details[address][city]": billing.get("city") or "",
+        "billing_details[address][postal_code]": billing.get("zip") or "",
+        "billing_details[address][state]": billing.get("state") or "",
+        "payment_user_agent": f"stripe.js/{runtime_version}; stripe-js-v3/{runtime_version}; payment-element; deferred-intent",
+        "referrer": "https://chatgpt.com",
+        "time_on_page": str(25000 + secrets.randbelow(30001)),
+        "client_attribution_metadata[client_session_id]": init_ctx["stripe_js_id"],
+        "client_attribution_metadata[checkout_session_id]": checkout_session_id,
+        "client_attribution_metadata[checkout_config_id]": init_ctx.get("payment_method_checkout_config_id") or init_ctx.get("config_id") or "",
+        "client_attribution_metadata[elements_session_id]": init_ctx["elements_session_id"],
+        "client_attribution_metadata[elements_session_config_id]": init_ctx["elements_session_config_id"],
+        "client_attribution_metadata[merchant_integration_source]": "elements",
+        "client_attribution_metadata[merchant_integration_subtype]": "payment-element",
+        "client_attribution_metadata[merchant_integration_version]": "2021",
+        "client_attribution_metadata[payment_intent_creation_flow]": "deferred",
+        "client_attribution_metadata[payment_method_selection_flow]": "automatic",
+        "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
+        "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
+        "guid": init_ctx.get("guid") or uuid.uuid4().hex,
+        "muid": init_ctx.get("muid") or uuid.uuid4().hex,
+        "sid": init_ctx.get("sid") or uuid.uuid4().hex,
+        "_stripe_version": effective_version,
+        "key": stripe_pk,
+    }
+    resp = http.post(f"{STRIPE_API}/v1/payment_methods", data=data, timeout=30)
+    payload = _protocol_ensure_ok(resp, "paypal_protocol_payment_method")
+    payment_method_id = str(payload.get("id") or "")
+    if not payment_method_id.startswith("pm_"):
+        raise RuntimeError(f"paypal_protocol_payment_method 返回异常: {payload}")
+    return payment_method_id
+
+
+def _paypal_protocol_confirm_checkout(http: Any, checkout_url: str, checkout_session_id: str, stripe_pk: str, init_ctx: dict, payment_method_id: str) -> dict:
+    chatgpt_return = (
+        f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout_session_id}"
+        "&processor_entity=openai_llc&plan_type=plus"
+    )
+    return_url = (
+        f"https://checkout.stripe.com/c/pay/{checkout_session_id}"
+        f"?returned_from_redirect=true&ui_mode=custom&return_url={quote(chatgpt_return, safe='')}"
+    )
+    if init_ctx.get("stripe_hosted_url") and init_ctx.get("return_url"):
+        return_url = (
+            f"{init_ctx['stripe_hosted_url']}?returned_from_redirect=true"
+            f"&ui_mode=custom&return_url={quote(str(init_ctx['return_url']), safe='')}"
+        )
+    elif init_ctx.get("return_url"):
+        return_url = str(init_ctx["return_url"])
+    effective_version = init_ctx.get("stripe_version") or STRIPE_VERSION_FULL
+    runtime = _stripe_runtime_from_env()
+    data = {
+        "guid": init_ctx.get("guid") or uuid.uuid4().hex,
+        "muid": init_ctx.get("muid") or uuid.uuid4().hex,
+        "sid": init_ctx.get("sid") or uuid.uuid4().hex,
+        "payment_method": payment_method_id,
+        "init_checksum": init_ctx["init_checksum"],
+        "version": runtime.get("version") or DEFAULT_STRIPE_RUNTIME_VERSION,
+        "expected_amount": init_ctx.get("expected_amount") or "0",
+        "expected_payment_method_type": "paypal",
+        "return_url": return_url,
+        "elements_session_client[elements_init_source]": "custom_checkout",
+        "elements_session_client[referrer_host]": "chatgpt.com",
+        "elements_session_client[stripe_js_id]": init_ctx["stripe_js_id"],
+        "elements_session_client[locale]": init_ctx.get("locale") or "en",
+        "elements_session_client[is_aggregation_expected]": "false",
+        "elements_session_client[session_id]": init_ctx["elements_session_id"],
+        "client_attribution_metadata[client_session_id]": init_ctx["stripe_js_id"],
+        "client_attribution_metadata[checkout_session_id]": checkout_session_id,
+        "client_attribution_metadata[checkout_config_id]": init_ctx.get("config_id", ""),
+        "client_attribution_metadata[elements_session_id]": init_ctx["elements_session_id"],
+        "client_attribution_metadata[elements_session_config_id]": init_ctx["elements_session_config_id"],
+        "client_attribution_metadata[merchant_integration_source]": "checkout",
+        "client_attribution_metadata[merchant_integration_subtype]": "payment-element",
+        "client_attribution_metadata[merchant_integration_version]": "custom",
+        "client_attribution_metadata[payment_intent_creation_flow]": "deferred",
+        "client_attribution_metadata[payment_method_selection_flow]": "automatic",
+        "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
+        "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
+        "consent[terms_of_service]": "accepted",
+        "_stripe_version": effective_version,
+        "key": stripe_pk,
+    }
+    if "checkout_server_update_beta" in effective_version:
+        data["elements_session_client[client_betas][0]"] = "custom_checkout_server_updates_1"
+        data["elements_session_client[client_betas][1]"] = "custom_checkout_manual_approval_1"
+    data.update(init_ctx.get("elements_options_client") or {})
+    if runtime.get("js_checksum"):
+        data["js_checksum"] = runtime["js_checksum"]
+    if runtime.get("rv_timestamp"):
+        data["rv_timestamp"] = runtime["rv_timestamp"]
+    resp = http.post(f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/confirm", data=data, timeout=30)
+    return _protocol_ensure_ok(resp, "paypal_protocol_confirm")
+
+
+def _find_paypal_redirect_url(payload: Any) -> str:
+    seen: set[int] = set()
+
+    def walk(value: Any) -> str:
+        marker = id(value)
+        if marker in seen:
+            return ""
+        seen.add(marker)
+        if isinstance(value, str):
+            lowered = value.lower()
+            if "paypal.com" in lowered or "pm-redirects.stripe.com" in lowered:
+                return value
+            return ""
+        if isinstance(value, dict):
+            if value.get("type") == "redirect_to_url" and isinstance(value.get("redirect_to_url"), dict):
+                url = str((value.get("redirect_to_url") or {}).get("url") or "")
+                if url:
+                    return url
+            for key in ("url", "href", "return_url", "redirect_url"):
+                url = value.get(key)
+                if isinstance(url, str) and ("paypal.com" in url.lower() or "pm-redirects.stripe.com" in url.lower()):
+                    return url
+            for nested in value.values():
+                found = walk(nested)
+                if found:
+                    return found
+        if isinstance(value, list):
+            for item in value:
+                found = walk(item)
+                if found:
+                    return found
+        return ""
+
+    return walk(payload)
+
+
+def _paypal_protocol_resolve_approve_url(http: Any, redirect_url: str) -> tuple[str, str]:
+    current = str(redirect_url or "").strip()
+    ba_token = ""
+    for _ in range(8):
+        if not current:
+            break
+        parsed = urlsplit(current)
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        ba_token = str(params.get("ba_token") or params.get("baToken") or ba_token or "")
+        if _safe_host(current).endswith("paypal.com") and ("/agreements/approve" in parsed.path or "/checkoutweb/signup" in parsed.path):
+            return current, ba_token
+        try:
+            resp = http.get(current, allow_redirects=False, timeout=30)
+        except Exception as exc:
+            raise RuntimeError(f"解析 PayPal redirect 失败: {exc}") from exc
+        text = str(getattr(resp, "text", "") or "")
+        if any(hint in text.lower() for hint in PAYPAL_DATADOME_BLOCKED_HINTS + PAYPAL_HUMAN_VERIFICATION_HINTS):
+            raise RuntimeError("PayPal redirect 返回风控/人机验证页面，协议模式停止")
+        location = resp.headers.get("location") or resp.headers.get("Location") or ""
+        if location:
+            if location.startswith("/"):
+                current = f"{parsed.scheme}://{parsed.netloc}{location}"
+            else:
+                current = location
+            continue
+        match = re.search(r'https?://[^"\']*paypal\.com/[^"\']+', text, re.I)
+        if match:
+            current = match.group(0).replace("&amp;", "&")
+            continue
+        if 200 <= int(getattr(resp, "status_code", 0) or 0) < 300 and _safe_host(current).endswith("paypal.com"):
+            return current, ba_token
+        break
+    return current, ba_token
+
+
+def _paypal_protocol_wait_checkout_result(
+    http: Any,
+    *,
+    checkout_url: str,
+    return_url: str = "",
+    timeout_seconds: int,
+    on_progress=None,
+):
+    if return_url:
+        try:
+            http.get(return_url, timeout=30, allow_redirects=True)
+        except Exception as exc:
+            logger.info("[paypal_protocol] return_url follow soft-failed: %s", exc)
+    deadline = time.time() + max(30, min(int(timeout_seconds or 90), 180))
+    last_processing_message = ""
+    while time.time() < deadline:
+        state = _fetch_paypal_stripe_payment_page_state(checkout_url, http=http)
+        if state and state.get("status") in {"success", "failed"}:
+            return state
+        if state and state.get("status") == "needs_review":
+            last_processing_message = str(state.get("message") or "")
+        _emit_progress(on_progress, _progress_event("paypal_protocol_wait_result", checkout_url=checkout_url))
+        time.sleep(PAYPAL_STRIPE_STATE_POLL_INTERVAL_SECONDS)
+    return _build_result(
+        "needs_review",
+        failure_stage="post_submit",
+        message=last_processing_message or "协议模式已完成 PayPal authorize，但未在时限内确认最终支付状态",
+    )
+
+
+def _run_paypal_protocol_flow(
+    *,
+    email: str,
+    checkout_url: str,
+    proxy_url: str | None,
+    paypal_mode: str,
+    signup_profile: dict[str, str | bool] | None,
+    phone_accounts: list[dict] | None,
+    billing_payload: dict[str, str],
+    timeout_seconds: int,
+    is_cancelled=None,
+    on_progress=None,
+):
+    if callable(is_cancelled) and is_cancelled():
+        return _build_result("failed", failure_stage="paypal_protocol", message="任务已取消")
+    checkout_session_id = _extract_checkout_session_id(checkout_url)
+    if not checkout_session_id:
+        return _build_result("failed", failure_stage="paypal_protocol", message="协议模式无法识别 checkout session id")
+    if not _has_complete_billing_payload(billing_payload):
+        return _build_result("failed", failure_stage="paypal_protocol", message="协议模式账单地址缺少必要字段")
+
+    http = _new_http_session(proxy_url, require_curl_cffi=False)
+    _emit_progress(on_progress, _progress_event("paypal_protocol_start", checkout_session_id=checkout_session_id))
+    # 中间状态追踪，供浏览器降级使用
+    _approve_url = ""
+    _ba_token = ""
+    _payment_method_id = ""
+    try:
+        init_ctx = _paypal_protocol_stripe_init(http, checkout_session_id, DEFAULT_STRIPE_PK)
+        _emit_progress(
+            on_progress,
+            _progress_event(
+                "paypal_protocol_init",
+                checkout_session_id=checkout_session_id,
+                expected_amount=init_ctx.get("expected_amount"),
+            ),
+        )
+        if _paypal_protocol_amount_due(init_ctx.get("expected_amount")) != 0:
+            return _build_result(
+                "failed",
+                failure_stage="browser_charge_guard",
+                message=f"协议模式检测到 checkout 今日应付金额非 0 ({init_ctx.get('expected_amount')})，已跳过当前账号",
+            )
+        _paypal_protocol_elements_session(http, checkout_session_id, DEFAULT_STRIPE_PK, init_ctx)
+        _paypal_protocol_update_payment_page_address(http, checkout_session_id, DEFAULT_STRIPE_PK, init_ctx, billing_payload)
+        payment_method_id = _paypal_protocol_create_payment_method(
+            http,
+            checkout_session_id,
+            DEFAULT_STRIPE_PK,
+            init_ctx,
+            billing_payload,
+            email,
+        )
+        _emit_progress(on_progress, _progress_event("paypal_protocol_payment_method", payment_method_id=payment_method_id))
+        _payment_method_id = payment_method_id
+        confirm_payload = _paypal_protocol_confirm_checkout(
+            http,
+            checkout_url,
+            checkout_session_id,
+            DEFAULT_STRIPE_PK,
+            init_ctx,
+            payment_method_id,
+        )
+        _emit_progress(on_progress, _progress_event("paypal_protocol_confirm", checkout_session_id=checkout_session_id))
+        stripe_classified = _classify_paypal_stripe_payment_page(confirm_payload)
+        if stripe_classified and stripe_classified.get("status") in {"success", "failed"}:
+            return stripe_classified
+        redirect_url = _find_paypal_redirect_url(confirm_payload)
+        if not redirect_url:
+            return _build_result(
+                "needs_review",
+                failure_stage="paypal_protocol_redirect",
+                message="协议模式已确认 Stripe checkout，但未在响应中找到 PayPal 授权链接",
+            )
+        approve_url, ba_token = _paypal_protocol_resolve_approve_url(http, redirect_url)
+        _approve_url = approve_url
+        _ba_token = ba_token
+        _emit_progress(
+            on_progress,
+            _progress_event(
+                "paypal_protocol_approve_url",
+                paypal_approve_url=_safe_url_summary(approve_url),
+                ba_token=ba_token,
+            ),
+        )
+        if paypal_mode != "create_account":
+            result = _build_result(
+                "needs_review",
+                failure_stage="paypal_protocol_authorize",
+                message="协议模式已生成 PayPal 授权链接；已有账号登录授权暂未接管，请切回浏览器模式或人工完成授权",
+            )
+            result["paypal_approve_url"] = approve_url
+            result["ba_token"] = ba_token
+            result["payment_method_id"] = payment_method_id
+            return result
+
+        signup_profiles = _paypal_signup_profiles_for_phone_pool(signup_profile, phone_accounts)
+        if not signup_profiles:
+            signup_profiles = [dict(signup_profile or {})]
+        if not signup_profiles or not any(str(item.get("phone") or "").strip() and str(item.get("sms_url") or "").strip() for item in signup_profiles):
+            return _build_result(
+                "failed",
+                failure_stage="paypal_protocol",
+                message="协议模式自动注册需要可用手机号和接码 API",
+            )
+        last_result = _build_result("failed", failure_stage="paypal_protocol", message="协议模式缺少可用注册资料")
+        for signup_index, current_profile in enumerate(signup_profiles, start=1):
+            if callable(is_cancelled) and is_cancelled():
+                return _build_result("failed", failure_stage="paypal_protocol", message="任务已取消")
+            phone = str(current_profile.get("phone") or "")
+            sms_url = str(current_profile.get("sms_url") or "")
+            _emit_progress(
+                on_progress,
+                _progress_event(
+                    "paypal_create_account",
+                    f"协议模式：开始处理第 {signup_index}/{len(signup_profiles)} 个手机号",
+                    phone=phone,
+                    sms_url=_safe_url_summary(sms_url),
+                    phone_pool_index=signup_index,
+                    phone_pool_total=len(signup_profiles),
+                ),
+            )
+            protocol_signup_result = run_paypal_no_card_protocol_signup(
+                http,
+                ba_token=ba_token,
+                signup_profile=current_profile,
+                timeout_seconds=max(90, timeout_seconds),
+                is_cancelled=is_cancelled,
+                on_progress=on_progress,
+                locale_country=str(current_profile.get("country") or billing_payload.get("country") or "US").strip().upper() or "US",
+                locale_lang="en",
+            )
+            protocol_signup_result["paypal_approve_url"] = approve_url
+            protocol_signup_result["ba_token"] = protocol_signup_result.get("ba_token") or ba_token
+            protocol_signup_result["payment_method_id"] = payment_method_id
+            last_result = protocol_signup_result
+            if (
+                protocol_signup_result.get("failure_stage") == "paypal_phone_rejected"
+                and signup_index < len(signup_profiles)
+            ):
+                _emit_progress(
+                    on_progress,
+                    _progress_event(
+                        "paypal_phone_rejected_rotate",
+                        rejected_phone=protocol_signup_result.get("rejected_phone") or phone,
+                        next_phone=str(signup_profiles[signup_index].get("phone") or ""),
+                        phone_pool_index=signup_index + 1,
+                        phone_pool_total=len(signup_profiles),
+                        level="warn",
+                    ),
+                )
+                continue
+            if protocol_signup_result.get("failure_stage") == "paypal_phone_rejected":
+                _emit_progress(
+                    on_progress,
+                    _progress_event(
+                        "paypal_phone_rejected_final",
+                        rejected_phone=protocol_signup_result.get("rejected_phone") or phone,
+                        phone_pool_index=signup_index,
+                        phone_pool_total=len(signup_profiles),
+                        level="warn",
+                    ),
+                )
+            if protocol_signup_result.get("status") == "success":
+                wait_result = _paypal_protocol_wait_checkout_result(
+                    http,
+                    checkout_url=checkout_url,
+                    return_url=str(protocol_signup_result.get("return_url") or ""),
+                    timeout_seconds=max(60, min(timeout_seconds, 180)),
+                    on_progress=on_progress,
+                )
+                wait_result["paypal_approve_url"] = approve_url
+                wait_result["ba_token"] = protocol_signup_result.get("ba_token") or ba_token
+                wait_result["payment_method_id"] = payment_method_id
+                wait_result["return_url"] = protocol_signup_result.get("return_url") or ""
+                wait_result["paypal_user_id"] = protocol_signup_result.get("paypal_user_id") or ""
+                return wait_result
+            protocol_signup_result.setdefault("paypal_approve_url", approve_url)
+            protocol_signup_result.setdefault("ba_token", ba_token)
+            protocol_signup_result.setdefault("payment_method_id", payment_method_id)
+            return protocol_signup_result
+        last_result.setdefault("paypal_approve_url", approve_url)
+        last_result.setdefault("ba_token", ba_token)
+        last_result.setdefault("payment_method_id", payment_method_id)
+        return last_result
+    except Exception as exc:
+        logger.exception("[paypal_protocol] failed")
+        raw_message = str(exc)
+        failure_stage = "paypal_protocol"
+        if "paypal_human_verification" in raw_message:
+            failure_stage = "paypal_human_verification"
+        result = _build_result(
+            "failed" if failure_stage != "paypal_human_verification" else "needs_review",
+            failure_stage=failure_stage,
+            message=f"协议模式失败: {exc}",
+        )
+        # 附带中间状态供浏览器降级使用
+        if _approve_url:
+            result["paypal_approve_url"] = _approve_url
+        if _ba_token:
+            result["ba_token"] = _ba_token
+        if _payment_method_id:
+            result["payment_method_id"] = _payment_method_id
+        return result
+
+
+def _paypal_protocol_needs_browser_fallback(result: dict) -> bool:
+    """判断协议模式结果是否需要降级到浏览器。仅对风控/人机验证类失败降级。"""
+    if result.get("status") == "success":
+        return False
+    stage = str(result.get("failure_stage") or "")
+    if stage in {"paypal_human_verification", "paypal_protocol_authorize"}:
+        # 有 approve_url 才能降级
+        return bool(result.get("paypal_approve_url") or result.get("ba_token"))
+    return False
 
 
 def _safe_host(url: str) -> str:
@@ -1346,6 +2080,227 @@ def _ensure_paypal_hosted_captcha_bypass(api: ChatGPTTeamAPI) -> bool:
         return False
 
 
+# ──────── DataDome DDC 滑块检测与自动拖拽 ────────
+
+_DDC_SLIDER_KEYWORDS = (
+    "将滑块", "确认您是人类", "Slide the puzzle",
+    "move the slider", "Move the slider", "滑动到最右",
+    "Slide to continue", "slide to verify",
+)
+
+
+def _is_ddc_frame_url(url: str) -> bool:
+    """DataDome frame URL 判断。避免把普通 captcha/hCaptcha iframe 误判成 DDC。"""
+    lowered = str(url or "").lower()
+    return any(
+        hint in lowered
+        for hint in (
+            "datadome",
+            "captcha-delivery.com",
+            "geo.captcha-delivery.com",
+            "ddc.paypal.com",
+            "geo.ddc.paypal.com",
+        )
+    )
+
+
+def _ddc_slider_visible(page) -> bool:
+    """检测主文档 + DataDome iframe 中是否有滑块可见。"""
+    try:
+        pt = page.inner_text("body")[:2000]
+        if any(kw in pt for kw in _DDC_SLIDER_KEYWORDS):
+            return True
+    except Exception:
+        pass
+    for fr in page.frames:
+        u = fr.url or ""
+        if u == page.url:
+            continue
+        if not _is_ddc_frame_url(u):
+            continue
+        try:
+            txt = (fr.inner_text("body") or "")[:2000]
+        except Exception:
+            continue
+        if any(kw in txt for kw in _DDC_SLIDER_KEYWORDS):
+            return True
+    return False
+
+
+def _find_ddc_iframe(page):
+    """查找 DataDome 相关 iframe frame 对象。"""
+    for fr in page.frames:
+        if _is_ddc_frame_url(fr.url or ""):
+            return fr
+    return None
+
+
+def _has_ddc_iframe(page) -> bool:
+    """检测是否存在 DataDome iframe（可能是隐形挑战）。"""
+    return _find_ddc_iframe(page) is not None
+
+
+def _try_solve_ddc_slider(page, *, attempts: int = 2) -> bool:
+    """尝试通过拖拽方式解决 DataDome 可见滑块。成功返回 True。"""
+    import random as _random
+
+    for attempt in range(attempts):
+        fr = _find_ddc_iframe(page)
+        if not fr:
+            return False
+        # 定位 iframe 元素在主文档中的位置
+        iframe_el = None
+        for sel in ['iframe[src*="datadome"]', 'iframe[src*="captcha-delivery.com"]', 'iframe[src*="ddc.paypal.com"]']:
+            iframe_el = page.query_selector(sel)
+            if iframe_el:
+                break
+        if not iframe_el:
+            return False
+        try:
+            iframe_box = iframe_el.bounding_box()
+        except Exception:
+            iframe_box = None
+        if not iframe_box:
+            return False
+        # 查找滑块 handle
+        handle = None
+        for sel in [
+            '.slider', '[role="slider"]',
+            '.slider-handle', '.sliderIcon',
+            'div[class*="slider"]', 'button[class*="slider"]',
+            '#ddv1-captcha-container .slider',
+        ]:
+            try:
+                el = fr.query_selector(sel)
+            except Exception:
+                el = None
+            if el:
+                try:
+                    if el.is_visible():
+                        handle = el
+                        break
+                except Exception:
+                    pass
+        if not handle:
+            return False
+        try:
+            hb = handle.bounding_box()
+        except Exception:
+            hb = None
+        if not hb:
+            return False
+        # 绝对坐标
+        start_x = iframe_box["x"] + hb["x"] + hb["width"] / 2
+        start_y = iframe_box["y"] + hb["y"] + hb["height"] / 2
+        end_x = iframe_box["x"] + iframe_box["width"] - 10
+        end_y = start_y
+        logger.info(
+            "[paypal_ddc] drag attempt=%d start=(%.0f,%.0f) end=(%.0f,%.0f)",
+            attempt + 1, start_x, start_y, end_x, end_y,
+        )
+        # 人类化拖动 — 使用 Playwright 原生 steps 插值，轨迹平滑
+        try:
+            # 1. 移到滑块中心
+            page.mouse.move(start_x, start_y, steps=_random.randint(5, 8))
+            time.sleep(_random.uniform(0.15, 0.3))
+
+            # 2. 按下
+            page.mouse.down()
+            time.sleep(_random.uniform(0.05, 0.12))
+
+            # 3. 平滑拖到终点（几乎水平，极小 y 偏移）
+            # 分 2 段：加速段 + 减速段
+            mid_x = start_x + (end_x - start_x) * _random.uniform(0.55, 0.7)
+            mid_y = start_y + _random.uniform(-0.5, 0.5)
+
+            # 加速段：步数少，移动快
+            page.mouse.move(mid_x, mid_y, steps=_random.randint(12, 18))
+            time.sleep(_random.uniform(0.01, 0.03))
+
+            # 减速段：步数多，移动慢
+            final_y = start_y + _random.uniform(-0.3, 0.3)
+            page.mouse.move(end_x, final_y, steps=_random.randint(18, 28))
+            time.sleep(_random.uniform(0.05, 0.1))
+
+            # 4. 松开
+            page.mouse.up()
+        except Exception as exc:
+            logger.info("[paypal_ddc] drag exception: %s", exc)
+            continue
+        # 等待验证通过
+        for _ in range(8):
+            time.sleep(0.8)
+            if not _ddc_slider_visible(page):
+                logger.info("[paypal_ddc] slider passed (attempt %d)", attempt + 1)
+                return True
+            cur = page.url
+            if any(kw in cur for kw in ("/webapps/hermes", "checkoutweb", "/signin", "chatgpt.com")):
+                logger.info("[paypal_ddc] slider passed → %s", cur[:80])
+                return True
+        logger.info("[paypal_ddc] attempt %d failed, retrying...", attempt + 1)
+        time.sleep(_random.uniform(1.0, 2.0))
+    return False
+
+
+def _wait_ddc_pass(page, *, timeout_seconds: int = 50, on_progress=None) -> bool:
+    """等待 DataDome 自然通过或尝试解滑块。返回 True 表示通过。"""
+    import random as _random
+
+    # 先等 3 秒让 DDC JS 自行跑完
+    time.sleep(3)
+
+    # 检测可见滑块
+    if _ddc_slider_visible(page):
+        logger.info("[paypal_ddc] visible slider detected, attempting drag solver...")
+        _emit_progress(on_progress, _progress_event("paypal_ddc_slider_detected"))
+        if _try_solve_ddc_slider(page, attempts=2):
+            return True
+        logger.info("[paypal_ddc] drag solver failed")
+        return False
+
+    # 检测隐形 DDC iframe（JS 验证中，等待自动通过）
+    if _has_ddc_iframe(page):
+        logger.info("[paypal_ddc] invisible DDC challenge detected, waiting...")
+        _emit_progress(on_progress, _progress_event("paypal_ddc_invisible_wait"))
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            time.sleep(2)
+            cur = page.url
+            # 页面已跳转说明通过
+            if any(kw in cur for kw in ["/signin", "/authflow", "/webapps/hermes",
+                                         "/pay", "chatgpt.com", "/checkoutweb"]):
+                logger.info("[paypal_ddc] DDC passed → %s", cur[:80])
+                return True
+            # 检测到 PayPal 表单元素
+            if page.query_selector('input[name="login_email"]') or \
+               page.query_selector('#consentButton') or \
+               page.query_selector('[data-testid="email"]'):
+                logger.info("[paypal_ddc] DDC passed (page elements visible)")
+                return True
+            # 中途升级为可见滑块
+            if _ddc_slider_visible(page):
+                logger.info("[paypal_ddc] upgraded to visible slider during wait")
+                if _try_solve_ddc_slider(page, attempts=2):
+                    return True
+                return False
+            # 重试按钮
+            retry_btn = page.query_selector('button:has-text("重试")') or \
+                        page.query_selector('button:has-text("Retry")')
+            if retry_btn:
+                try:
+                    if retry_btn.is_visible():
+                        logger.info("[paypal_ddc] clicking retry button...")
+                        retry_btn.click()
+                        time.sleep(3)
+                except Exception:
+                    pass
+        logger.info("[paypal_ddc] DDC wait timeout (%ds)", timeout_seconds)
+        return False
+
+    # 没有 DDC iframe 也没有滑块 → 自然通过
+    return True
+
+
 def _visible_locator_in_frames(api: ChatGPTTeamAPI, selectors: list[str], timeout_ms: int = 1000):
     return api._visible_locator_in_frames(selectors, timeout_ms=timeout_ms)
 
@@ -1414,7 +2369,7 @@ def _type_locator_value(locator, value: str) -> bool:
     except Exception:
         pass
     try:
-        locator.type(str(value or ""), delay=25, timeout=6000)
+        locator.type(str(value or ""), delay=8, timeout=6000)
         return True
     except Exception:
         return False
@@ -1508,9 +2463,10 @@ def _set_verified_locator_value(locator, value: str, *, field: str = "") -> bool
         actual = _read_locator_value(locator)
         return _field_value_matches(value, actual, field=field)
 
-    for setter in (_set_locator_value, _type_locator_value, _dispatch_locator_value):
+    # 优先使用 dispatch（React-native setter），最快；其次 fill，最后逐字 type
+    for setter in (_dispatch_locator_value, _set_locator_value, _type_locator_value):
         if setter(locator, value):
-            time.sleep(0.2)
+            time.sleep(0.15)
             if matches():
                 return True
     return False
@@ -1536,6 +2492,13 @@ def _body_excerpt(api: ChatGPTTeamAPI, limit: int = 2000):
     return "\n".join(chunks)[:limit]
 
 
+def _compact_log_text(text: Any, *, limit: int = 220) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 3)] + "..."
+
+
 def _emit_progress(on_progress, event: dict):
     if callable(on_progress):
         on_progress(event)
@@ -1548,6 +2511,80 @@ def _progress_event(stage: str, message: str = "", **kwargs):
     }
     payload.update(kwargs)
     return payload
+
+
+def _paypal_otp_lock_key(phone: str) -> str:
+    return _normalize_paypal_phone(phone)
+
+
+def _acquire_paypal_otp_phone_lock(phone: str, *, on_progress=None, timeout_seconds: int = 900) -> str:
+    key = _paypal_otp_lock_key(phone)
+    if not key:
+        return ""
+    with _PAYPAL_OTP_LOCK_GUARD:
+        lock = _PAYPAL_OTP_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PAYPAL_OTP_LOCKS[key] = lock
+    _emit_progress(
+        on_progress,
+        _progress_event("paypal_otp_phone_lock_wait", phone=phone, phone_key=key),
+    )
+    acquired = lock.acquire(timeout=max(1, int(timeout_seconds)))
+    if not acquired:
+        _emit_progress(
+            on_progress,
+            _progress_event("paypal_otp_phone_lock_timeout", phone=phone, phone_key=key, level="warn"),
+        )
+        return ""
+    _emit_progress(
+        on_progress,
+        _progress_event("paypal_otp_phone_lock_acquired", phone=phone, phone_key=key),
+    )
+    return key
+
+
+def _release_paypal_otp_phone_lock(key: str, *, on_progress=None) -> None:
+    normalized_key = _paypal_otp_lock_key(key)
+    if not normalized_key:
+        return
+    lock = _PAYPAL_OTP_LOCKS.get(normalized_key)
+    if not lock:
+        return
+    try:
+        lock.release()
+    except RuntimeError:
+        return
+    _emit_progress(
+        on_progress,
+        _progress_event("paypal_otp_phone_lock_released", phone_key=normalized_key),
+    )
+
+
+def _release_paypal_signup_phone_lock(state: dict[str, Any], *, on_progress=None) -> None:
+    lock_key = str(state.get("otp_phone_lock_key") or "").strip()
+    if not lock_key:
+        return
+    _release_paypal_otp_phone_lock(lock_key, on_progress=on_progress)
+    state["otp_phone_lock_key"] = ""
+
+
+def _ensure_paypal_signup_phone_lock(
+    state: dict[str, Any],
+    *,
+    signup_profile: dict[str, str | bool],
+    on_progress=None,
+) -> tuple[bool, str]:
+    if state.get("otp_phone_lock_key"):
+        return True, ""
+    phone = str(signup_profile.get("phone") or "")
+    if not _paypal_otp_lock_key(phone):
+        return True, ""
+    key = _acquire_paypal_otp_phone_lock(phone, on_progress=on_progress)
+    if not key:
+        return False, "等待当前手机号验证码流程释放超时"
+    state["otp_phone_lock_key"] = key
+    return True, ""
 
 
 def _progress_adapter(on_progress):
@@ -2772,6 +3809,133 @@ def _click_paypal_create_account(api: ChatGPTTeamAPI, *, on_progress=None) -> bo
     return False
 
 
+def _is_paypal_pay_entry_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(str(url or ""))
+    except Exception:
+        return False
+    return _is_paypal_host(url) and parsed.path.rstrip("/").lower() == "/pay"
+
+
+def _paypal_signup_email_step_advanced(api: ChatGPTTeamAPI, before_url: str) -> bool:
+    """Return True once PayPal advances from the /pay email gate."""
+    _sync_relevant_payment_page(api, prefer_paypal=True)
+    current_url = str(getattr(api.page, "url", "") or "")
+    if current_url and current_url != before_url:
+        return True
+    if _is_paypal_pay_entry_url(before_url) and not _is_paypal_pay_entry_url(current_url):
+        return True
+    state = _inspect_paypal_page(api)
+    return bool(state.get("registration_ready") or state.get("registration_text_hint") or state.get("needs_otp"))
+
+
+def _wait_paypal_signup_email_step_advanced(api: ChatGPTTeamAPI, before_url: str, *, timeout_seconds: float = 8.0) -> bool:
+    deadline = time.time() + max(1.0, float(timeout_seconds))
+    while time.time() < deadline:
+        if _paypal_signup_email_step_advanced(api, before_url):
+            return True
+        try:
+            api.page.wait_for_timeout(400)
+        except Exception:
+            time.sleep(0.4)
+    return _paypal_signup_email_step_advanced(api, before_url)
+
+
+def _js_click_paypal_signup_email_submit(api: ChatGPTTeamAPI) -> bool:
+    script = r"""
+    () => {
+      const visible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const textOf = (node) => String(node.innerText || node.textContent || node.value || node.getAttribute?.('aria-label') || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const controls = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a, [role="button"]'))
+        .filter(visible);
+      const preferred = [
+        /continue to payment/i,
+        /^continue$/i,
+        /^next$/i,
+        /create (an )?account/i,
+        /sign up/i,
+        /注册|创建账户|建立账户|建立帳戶/,
+      ];
+      for (const pattern of preferred) {
+        const node = controls.find((candidate) => pattern.test(textOf(candidate)));
+        if (node) {
+          node.click();
+          return { clicked: true, text: textOf(node).slice(0, 120) };
+        }
+      }
+      const form = document.querySelector('form');
+      if (form) {
+        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+        else form.submit();
+        return { clicked: true, text: 'form-submit' };
+      }
+      return { clicked: false, text: '' };
+    }
+    """
+    for frame in _iter_page_frames(api):
+        try:
+            result = frame.evaluate(script)
+            if isinstance(result, dict) and result.get("clicked"):
+                logger.info("[paypal_signup] JS email submit clicked: %s", result.get("text"))
+                return True
+            if result is True:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _inspect_paypal_email_gate(api: ChatGPTTeamAPI) -> dict[str, Any]:
+    script = r"""
+    () => {
+      const visible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const textOf = (node) => String(node.innerText || node.textContent || node.value || node.getAttribute?.('aria-label') || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const controls = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a, [role="button"]'))
+        .filter(visible)
+        .slice(0, 20)
+        .map((node) => ({
+          tag: node.tagName,
+          id: node.id || '',
+          type: node.getAttribute('type') || '',
+          text: textOf(node).slice(0, 120),
+          disabled: Boolean(node.disabled || node.getAttribute('aria-disabled') === 'true'),
+        }));
+      const forms = Array.from(document.querySelectorAll('form')).slice(0, 5).map((form) => ({
+        id: form.id || '',
+        action: form.getAttribute('action') || '',
+        method: form.getAttribute('method') || '',
+      }));
+      const inputs = Array.from(document.querySelectorAll('input')).filter(visible).slice(0, 20).map((node) => ({
+        id: node.id || '',
+        name: node.name || '',
+        type: node.type || '',
+        valueLen: String(node.value || '').length,
+        autocomplete: node.autocomplete || '',
+      }));
+      return { controls, forms, inputs, title: document.title || '' };
+    }
+    """
+    try:
+        value = api.page.evaluate(script)
+        return value if isinstance(value, dict) else {}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 def _submit_paypal_signup_email_step(
     api: ChatGPTTeamAPI,
     *,
@@ -2788,13 +3952,33 @@ def _submit_paypal_signup_email_step(
     if not _set_locator_value(email_locator, email):
         return False, "填写 PayPal 注册邮箱失败"
     _emit_progress(on_progress, _progress_event("paypal_signup_email", url=getattr(api.page, "url", "")))
-    if not _click_first(api, PAYPAL_SIGNUP_EMAIL_SUBMIT_SELECTORS, timeout_ms=2500):
+    before_url = str(getattr(api.page, "url", "") or "")
+    if _click_first(api, PAYPAL_SIGNUP_EMAIL_SUBMIT_SELECTORS, timeout_ms=2500):
+        if _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=6.0):
+            return True, ""
+    else:
         try:
             email_locator.press("Enter", timeout=1200)
         except Exception:
-            return False, "未找到 PayPal 注册邮箱提交按钮"
-    time.sleep(2.0)
-    return True, ""
+            pass
+    if _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=4.0):
+        return True, ""
+    try:
+        email_locator.press("Enter", timeout=1200)
+    except Exception:
+        pass
+    if _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=4.0):
+        return True, ""
+    if _js_click_paypal_signup_email_submit(api) and _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=6.0):
+        return True, ""
+    logger.info(
+        "[paypal_signup] email submit did not advance: before=%s current=%s gate=%s body=%s",
+        _safe_url_summary(before_url),
+        _safe_url_summary(getattr(api.page, "url", "")),
+        _compact_log_text(_inspect_paypal_email_gate(api), limit=500),
+        _compact_log_text(_body_excerpt(api, 500), limit=220),
+    )
+    return False, "PayPal 注册邮箱提交后未跳转到注册表单"
 
 
 def _replace_paypal_signup_phone(
@@ -3013,6 +4197,7 @@ def _run_paypal_signup_flow(
 
     if signup_submitted:
         if state.get("card_rejected"):
+            _release_paypal_signup_phone_lock(state, on_progress=on_progress)
             if card_retry_count >= 5:
                 return False, "PayPal 连续拒绝卡片，已停止换卡重试", False
             ok, error = _replace_paypal_signup_card(api, signup_profile=signup_profile, on_progress=on_progress)
@@ -3026,7 +4211,15 @@ def _run_paypal_signup_flow(
                     phone=str(signup_profile.get("phone") or ""),
                 ),
             )
+            ok, error = _ensure_paypal_signup_phone_lock(
+                state,
+                signup_profile=signup_profile,
+                on_progress=on_progress,
+            )
+            if not ok:
+                return False, error, False
             if not _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=2500):
+                _release_paypal_signup_phone_lock(state, on_progress=on_progress)
                 return False, "未找到 PayPal 注册提交按钮", False
             state["signup_submitted"] = True
             state["signup_submitted_at"] = time.time()
@@ -3092,6 +4285,7 @@ def _run_paypal_signup_flow(
                 api.page.keyboard.press("Enter")
             except Exception:
                 return False, "未找到 PayPal 验证码提交按钮", False
+        _release_paypal_signup_phone_lock(state, on_progress=on_progress)
         time.sleep(2.0)
         return True, "", True
 
@@ -3107,7 +4301,15 @@ def _run_paypal_signup_flow(
                 phone=str(signup_profile.get("phone") or ""),
             ),
         )
+        ok, error = _ensure_paypal_signup_phone_lock(
+            state,
+            signup_profile=signup_profile,
+            on_progress=on_progress,
+        )
+        if not ok:
+            return False, error, False
         if not _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=2500):
+            _release_paypal_signup_phone_lock(state, on_progress=on_progress)
             return False, "未找到 PayPal 注册提交按钮", False
         state["signup_submitted"] = True
         state["signup_submitted_at"] = time.time()
@@ -3163,7 +4365,15 @@ def _run_paypal_signup_flow(
                 phone=str(signup_profile.get("phone") or ""),
             ),
         )
+        ok, error = _ensure_paypal_signup_phone_lock(
+            state,
+            signup_profile=signup_profile,
+            on_progress=on_progress,
+        )
+        if not ok:
+            return False, error, False
         if not _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=2500):
+            _release_paypal_signup_phone_lock(state, on_progress=on_progress)
             return False, "未找到 PayPal 注册提交按钮", False
         state["signup_submitted"] = True
         state["signup_submitted_at"] = time.time()
@@ -3205,6 +4415,8 @@ def _run_paypal_authorize_flow(
     phone_only_retry = False
     card_retry_count = 0
     submitted_phone_keys: set[str] = set()
+    otp_phone_lock_key = ""
+    ddc_checked = False
     while time.time() < deadline:
         _sync_relevant_payment_page(api, prefer_paypal=True)
         active_phone_key = _normalize_paypal_phone(str(active_signup_profile.get("phone") or ""))
@@ -3213,11 +4425,34 @@ def _run_paypal_authorize_flow(
             _force_paypal_us_locale(api)
         current_url = getattr(api.page, "url", "")
         if current_url and not _is_paypal_host(current_url):
+            if otp_phone_lock_key:
+                _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                otp_phone_lock_key = ""
             _emit_progress(on_progress, _progress_event("paypal_wait_result", url=current_url))
             return None
         _ensure_paypal_hosted_captcha_bypass(api)
 
+        # DataDome DDC 检测：首次进入 PayPal 页面时尝试自动通过
+        if not ddc_checked and _is_paypal_host(current_url):
+            ddc_checked = True
+            page = getattr(api, "page", None)
+            if page and (_ddc_slider_visible(page) or _has_ddc_iframe(page)):
+                ddc_passed = _wait_ddc_pass(page, timeout_seconds=50, on_progress=on_progress)
+                if not ddc_passed:
+                    if otp_phone_lock_key:
+                        _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                        otp_phone_lock_key = ""
+                    return _build_result(
+                        "failed",
+                        failure_stage="paypal_datadome_blocked",
+                        message="DataDome 滑块/风控验证未通过",
+                        screenshot_paths=screenshot_paths,
+                    )
+
         if callable(is_cancelled) and is_cancelled():
+            if otp_phone_lock_key:
+                _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                otp_phone_lock_key = ""
             _capture_screenshot(api, session_id, "paypal-cancelled", screenshot_paths)
             return _build_result("failed", failure_stage="post_submit", message="任务已取消", screenshot_paths=screenshot_paths)
 
@@ -3244,6 +4479,9 @@ def _run_paypal_authorize_flow(
             if not _dismiss_paypal_phone_rejected_prompt(api):
                 time.sleep(1.0)
                 continue
+            if otp_phone_lock_key:
+                _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                otp_phone_lock_key = ""
             signup_profile_index += 1
             active_signup_profile = signup_profiles[signup_profile_index]
             signup_form_submitted = False
@@ -3266,6 +4504,9 @@ def _run_paypal_authorize_flow(
             time.sleep(1.5)
             continue
         if classified and classified.get("status") == "failed":
+            if otp_phone_lock_key:
+                _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                otp_phone_lock_key = ""
             if (
                 paypal_mode == "create_account"
                 and classified.get("failure_stage") == "paypal_phone_rejected"
@@ -3284,6 +4525,13 @@ def _run_paypal_authorize_flow(
             _capture_screenshot(api, session_id, "paypal-authorize-failed", screenshot_paths)
             classified["screenshot_paths"] = screenshot_paths
             return classified
+        if classified and classified.get("status") == "needs_review" and classified.get("failure_stage") == "paypal_human_verification":
+            if otp_phone_lock_key:
+                _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                otp_phone_lock_key = ""
+            _capture_screenshot(api, session_id, "paypal-authorize-review", screenshot_paths)
+            classified["screenshot_paths"] = screenshot_paths
+            return classified
 
         if paypal_mode == "create_account":
             state["signup_email_submitted"] = signup_email_submitted
@@ -3293,6 +4541,7 @@ def _run_paypal_authorize_flow(
             state["submitted_phone_keys"] = submitted_phone_keys
             state["phone_only_retry"] = phone_only_retry
             state["card_retry_count"] = card_retry_count
+            state["otp_phone_lock_key"] = otp_phone_lock_key
             ok, error, handled = _run_paypal_signup_flow(
                 api,
                 signup_profile=active_signup_profile,
@@ -3310,7 +4559,11 @@ def _run_paypal_authorize_flow(
                 signup_submitted_at = float(state.get("signup_submitted_at") or signup_submitted_at)
             phone_only_retry = bool(state.get("phone_only_retry"))
             card_retry_count = int(state.get("card_retry_count") or card_retry_count)
+            otp_phone_lock_key = str(state.get("otp_phone_lock_key") or "")
             if not ok:
+                if otp_phone_lock_key:
+                    _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                    otp_phone_lock_key = ""
                 _capture_screenshot(api, session_id, "paypal-signup-failed", screenshot_paths)
                 return _build_result(
                     "failed",
@@ -3350,6 +4603,8 @@ def _run_paypal_authorize_flow(
 
         time.sleep(1.0)
 
+    if otp_phone_lock_key:
+        _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
     _capture_screenshot(api, session_id, "paypal-authorize-timeout", screenshot_paths)
     return _build_result(
         "needs_review",
@@ -3596,15 +4851,16 @@ def run_paypal_bind_task(
     paypal_card_number: str = "",
     paypal_card_expiry: str = "",
     paypal_card_cvv: str = "",
-    paypal_browser: str = "camoufox",
+    paypal_browser: str = "chromium",
 ):
     api = ChatGPTTeamAPI()
     session_id = uuid.uuid4().hex[:12]
     screenshot_paths: list[str] = []
     auto_mode = not bool(manual_confirm)
     paypal_mode = _normalize_paypal_mode(paypal_mode)
-    paypal_browser = str(paypal_browser or "camoufox").strip().lower()
-    use_camoufox = paypal_browser not in {"chromium", "chrome", "playwright"}
+    paypal_browser = str(paypal_browser or "chromium").strip().lower()
+    protocol_mode = paypal_browser in {"protocol", "http", "no_card", "no-card", "pure_protocol"}
+    use_camoufox = paypal_browser not in {"chromium", "chrome", "playwright", "protocol", "http", "no_card", "no-card", "pure_protocol"}
     launch_proxy_url = str(proxy_url or "").strip() or None
     launch_proxy_bypass = str(proxy_bypass or "").strip() or None
 
@@ -3619,6 +4875,106 @@ def run_paypal_bind_task(
         )
 
     try:
+        if protocol_mode:
+            billing_payload = _resolve_checkout_billing_payload(autofill_payload, auto_generate=bool(autofill_enabled))
+            protocol_result = _run_paypal_protocol_flow(
+                email=str(email or "").strip(),
+                checkout_url=checkout_url,
+                proxy_url=launch_proxy_url,
+                paypal_mode=paypal_mode,
+                signup_profile=_build_paypal_signup_profile(
+                    paypal_email=paypal_email,
+                    paypal_password=paypal_password,
+                    billing_payload=billing_payload,
+                    sms_url=sms_url,
+                    otp_channel=otp_channel,
+                    phone_accounts=phone_accounts,
+                    paypal_card_number=paypal_card_number,
+                    paypal_card_expiry=paypal_card_expiry,
+                    paypal_card_cvv=paypal_card_cvv,
+                ),
+                phone_accounts=phone_accounts,
+                billing_payload=billing_payload,
+                timeout_seconds=timeout_seconds,
+                is_cancelled=is_cancelled,
+                on_progress=on_progress,
+            )
+            if not _paypal_protocol_needs_browser_fallback(protocol_result):
+                return protocol_result
+
+            # ── 协议模式被风控拦截，降级到 Camoufox 浏览器 ──
+            fallback_approve_url = str(protocol_result.get("paypal_approve_url") or "")
+            fallback_ba_token = str(protocol_result.get("ba_token") or "")
+            _emit_progress(
+                on_progress,
+                _progress_event(
+                    "paypal_protocol_browser_fallback",
+                    "协议模式被 PayPal 风控拦截，正在降级到浏览器模式",
+                    paypal_approve_url=_safe_url_summary(fallback_approve_url),
+                    ba_token=fallback_ba_token,
+                ),
+            )
+            if not fallback_approve_url:
+                return protocol_result
+
+            api._launch_browser(
+                proxy_url=launch_proxy_url,
+                proxy_bypass=launch_proxy_bypass,
+                background=False,
+                locale="en-US",
+                accept_language="en-US,en;q=0.9",
+                use_camoufox=True,
+            )
+            page = api.page
+            _emit_progress(on_progress, _progress_event("paypal_browser_fallback_navigate"))
+            page.goto(fallback_approve_url, wait_until="domcontentloaded", timeout=60000)
+            # 等待 DataDome 自然通过或解滑块
+            _emit_progress(on_progress, _progress_event("paypal_browser_fallback_ddc_wait"))
+            ddc_passed = _wait_ddc_pass(page, timeout_seconds=50, on_progress=on_progress)
+            if not ddc_passed:
+                return _build_result(
+                    "failed",
+                    failure_stage="paypal_datadome_blocked",
+                    message="浏览器降级后 DataDome 滑块/风控仍未通过",
+                )
+
+            _ensure_paypal_hosted_captcha_bypass(api)
+            authorize_result = _run_paypal_authorize_flow(
+                api,
+                paypal_mode=paypal_mode,
+                credentials=_normalize_paypal_credentials(paypal_email, paypal_password),
+                signup_profile=_build_paypal_signup_profile(
+                    paypal_email=paypal_email,
+                    paypal_password=paypal_password,
+                    billing_payload=billing_payload,
+                    sms_url=sms_url,
+                    otp_channel=otp_channel,
+                    phone_accounts=phone_accounts,
+                    paypal_card_number=paypal_card_number,
+                    paypal_card_expiry=paypal_card_expiry,
+                    paypal_card_cvv=paypal_card_cvv,
+                ),
+                session_id=session_id,
+                screenshot_paths=screenshot_paths,
+                timeout_seconds=max(timeout_seconds - 120, 300),
+                is_cancelled=is_cancelled,
+                on_progress=on_progress,
+                phone_accounts=phone_accounts,
+            )
+            if authorize_result:
+                return authorize_result
+            return _wait_for_paypal_result(
+                api,
+                checkout_url=checkout_url,
+                session_id=session_id,
+                screenshot_paths=screenshot_paths,
+                timeout_seconds=min(timeout_seconds, PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS),
+                is_cancelled=is_cancelled,
+                on_progress=on_progress,
+                autofill_enabled=False,
+                autofill_payload=None,
+            )
+
         _launch_browser_for_checkout(launch_proxy_url, launch_proxy_bypass)
 
         if callable(is_cancelled) and is_cancelled():

@@ -15,23 +15,11 @@ import socketserver
 import struct
 import threading
 from dataclasses import dataclass
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 from autoteam.config import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
-
-
-def _looks_like_1024proxy_colon_url(raw: str) -> str:
-    if "://" in raw:
-        return ""
-    parts = raw.split(":")
-    if len(parts) != 4 or not parts[1].isdigit():
-        return ""
-    host, port, username, password = parts
-    if "1024proxy" not in host.lower():
-        return ""
-    return f"socks5h://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
 
 
 def _read_exact(sock: socket.socket, size: int) -> bytes:
@@ -200,12 +188,10 @@ def start_playwright_socks_bridge(proxy_url: str | None) -> SocksHttpBridge | No
     raw = str(proxy_url or "").strip()
     if not raw:
         return None
-    upstream = _looks_like_1024proxy_colon_url(raw)
-    if not upstream:
-        try:
-            upstream = normalize_proxy_url(raw)
-        except Exception:
-            return None
+    try:
+        upstream = normalize_proxy_url(raw)
+    except Exception:
+        return None
     parsed = urlsplit(upstream)
     if parsed.scheme not in {"socks5", "socks5h"} or not (parsed.username or parsed.password):
         return None

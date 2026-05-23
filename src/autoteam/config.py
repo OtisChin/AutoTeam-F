@@ -128,6 +128,7 @@ PLAYWRIGHT_PROXY_USERNAME = os.environ.get("PLAYWRIGHT_PROXY_USERNAME", "").stri
 PLAYWRIGHT_PROXY_PASSWORD = os.environ.get("PLAYWRIGHT_PROXY_PASSWORD", "").strip()
 PLAYWRIGHT_PROXY_BYPASS = os.environ.get("PLAYWRIGHT_PROXY_BYPASS", "").strip()
 PLAYWRIGHT_BACKGROUND = _get_bool_env("PLAYWRIGHT_BACKGROUND", True)
+PAYPAL_PROXY_DEFAULT_SCHEME = os.environ.get("PAYPAL_PROXY_DEFAULT_SCHEME", "socks5h").strip() or "socks5h"
 
 
 def _format_proxy_host(hostname: str) -> str:
@@ -136,17 +137,26 @@ def _format_proxy_host(hostname: str) -> str:
     return hostname
 
 
-def normalize_proxy_url(proxy_url: str | None) -> str:
+def _normalize_default_auth_proxy_scheme(default_auth_scheme: str | None) -> str:
+    scheme = str(default_auth_scheme or "http").strip().lower()
+    if scheme == "socks5":
+        return "socks5h"
+    if scheme in {"http", "https", "socks4", "socks5h"}:
+        return scheme
+    return "http"
+
+
+def normalize_proxy_url(proxy_url: str | None, *, default_auth_scheme: str | None = "http") -> str:
     raw = str(proxy_url or "").strip()
     if not raw:
         return ""
+    auth_default_scheme = _normalize_default_auth_proxy_scheme(default_auth_scheme)
 
     if "://" not in raw:
         parts = raw.split(":")
         if len(parts) == 4 and parts[1].isdigit():
             host, port, username, password = parts
-            scheme = "socks5h" if "1024proxy" in host.lower() else "http"
-            raw = f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+            raw = f"{auth_default_scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
         elif "@" in raw:
             left, right = raw.split("@", 1)
             host_port = left.rsplit(":", 1)
@@ -154,13 +164,9 @@ def normalize_proxy_url(proxy_url: str | None) -> str:
             if len(host_port) == 2 and host_port[1].isdigit() and len(username_password) == 2:
                 host, port = host_port
                 username, password = username_password
-                scheme = "socks5h" if "1024proxy" in host.lower() else "http"
-                raw = f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+                raw = f"{auth_default_scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
             else:
-                raw = f"http://{raw}"
-                parsed = urlsplit(raw)
-                if parsed.hostname and "1024proxy" in parsed.hostname.lower():
-                    raw = f"socks5h://{raw[len('http://'):]}"
+                raw = f"{auth_default_scheme}://{raw}"
         else:
             raw = f"http://{raw}"
     else:

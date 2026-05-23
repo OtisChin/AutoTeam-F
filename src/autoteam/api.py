@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, Field
 
-from autoteam.config import API_KEY
+from autoteam.config import API_KEY, PAYPAL_PROXY_DEFAULT_SCHEME
 from autoteam.textio import parse_env_line, read_text
 
 logger = logging.getLogger(__name__)
@@ -2093,7 +2093,7 @@ class PayPalTaskParams(BaseModel):
     proxy_pool_text: str = Field("", validation_alias=AliasChoices("proxy_pool_text", "proxyPoolText"))
     proxy_label: str = Field("", validation_alias=AliasChoices("proxy_label", "proxyLabel"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
-    paypal_browser: str = Field("camoufox", validation_alias=AliasChoices("paypal_browser", "paypalBrowser"))
+    paypal_browser: str = Field("chromium", validation_alias=AliasChoices("paypal_browser", "paypalBrowser"))
     manual_confirm: bool = Field(True, validation_alias=AliasChoices("manual_confirm", "manualConfirm"))
     paypal_mode: str = Field("existing_account", validation_alias=AliasChoices("paypal_mode", "paypalMode"))
     paypal_email: str = Field("", validation_alias=AliasChoices("paypal_email", "paypalEmail"))
@@ -9961,18 +9961,18 @@ def post_paypal_task(params: PayPalTaskParams):
         if not str(params.billing_phone or "").strip():
             params.billing_phone = str(phone_accounts[0].get("phone_number") or "").strip()
     try:
-        normalized_proxy_url = normalize_proxy_url(proxy_url) if proxy_url else ""
-    except Exception:
-        normalized_proxy_url = ""
+        normalized_proxy_url = normalize_proxy_url(proxy_url, default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME) if proxy_url else ""
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"代理格式错误: {proxy_url} ({exc})") from exc
     normalized_proxy_pool: list[str] = []
     for raw_pool_proxy in proxy_pool:
         try:
-            normalized = normalize_proxy_url(raw_pool_proxy)
+            normalized = normalize_proxy_url(raw_pool_proxy, default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"动态代理池格式错误: {raw_pool_proxy} ({exc})") from exc
         if normalized and normalized not in normalized_proxy_pool:
             normalized_proxy_pool.append(normalized)
-    bind_proxy_url = proxy_url
+    bind_proxy_url = normalized_proxy_url
 
     def _select_paypal_proxy() -> str:
         if normalized_proxy_pool:

@@ -172,6 +172,11 @@ def _new_http_session(proxy_url: str | None = None, *, require_curl_cffi: bool =
         }
     )
     normalized_proxy_url = normalize_proxy_url(proxy_url)
+    if normalized_proxy_url.lower().startswith("socks5://"):
+        # HTTP clients should resolve target DNS through authenticated SOCKS
+        # proxies. socks5:// can resolve locally and breaks some providers
+        # during TLS CONNECT; socks5h:// keeps browser/protocol traffic stable.
+        normalized_proxy_url = f"socks5h://{normalized_proxy_url[len('socks5://'):]}"
     if normalized_proxy_url:
         logger.info("[gopay_executor] HTTP session proxy enabled: %s", _safe_proxy_summary(normalized_proxy_url))
         try:
@@ -2615,40 +2620,59 @@ class GoPayHttpCharger:
         stripe_js_id = str(uuid.uuid4())
         elements_session_id = f"elements_session_{uuid.uuid4().hex[:11]}"
         elements_options = self._elements_options_client_payload()
-        data = {
-            "browser_locale": "en-US",
-            "browser_timezone": "Asia/Shanghai",
-            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
-            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
-            "elements_session_client[elements_init_source]": "custom_checkout",
-            "elements_session_client[referrer_host]": "chatgpt.com",
-            "elements_session_client[stripe_js_id]": stripe_js_id,
-            "elements_session_client[locale]": "en",
-            "elements_session_client[is_aggregation_expected]": "false",
-            "_stripe_version": STRIPE_VERSION_FULL,
-            "key": stripe_pk,
-        }
-        data.update(elements_options)
-        resp = self._request("post", f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/init", data=data, stage="stripe_init")
-        _ensure_ok(resp, "stripe_init")
-        payload = _response_json(resp, "stripe_init")
-        init_checksum = str(payload.get("init_checksum") or "")
-        if not init_checksum:
-            raise GoPayFlowError(f"Stripe init 未返回 init_checksum: {payload}", stage="stripe_init")
-        return {
-            "raw": payload,
-            "init_checksum": init_checksum,
-            "stripe_js_id": stripe_js_id,
-            "elements_session_id": elements_session_id,
-            "elements_session_config_id": str(uuid.uuid4()),
-            "elements_options_client": elements_options,
-            "config_id": str(payload.get("config_id") or ""),
-            "expected_amount": self._checkout_amount(payload),
-            "currency": str(payload.get("currency") or "idr").lower(),
-            "return_url": str(payload.get("return_url") or ""),
-            "stripe_hosted_url": str(payload.get("stripe_hosted_url") or ""),
-            "locale": str(payload.get("locale") or "en"),
-        }
+        url = f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/init"
+
+        STRIPE_VERSION_BASE = "2025-03-31.basil"
+        # 先用基础版本，失败再用完整版本
+        for version, include_betas in [
+            (STRIPE_VERSION_BASE, False),
+            (STRIPE_VERSION_FULL, True),
+        ]:
+            data = {
+                "browser_locale": "en-US",
+                "browser_timezone": "Asia/Shanghai",
+                "elements_session_client[elements_init_source]": "custom_checkout",
+                "elements_session_client[referrer_host]": "chatgpt.com",
+                "elements_session_client[stripe_js_id]": stripe_js_id,
+                "elements_session_client[locale]": "en",
+                "elements_session_client[is_aggregation_expected]": "false",
+                "_stripe_version": version,
+                "key": stripe_pk,
+            }
+            if include_betas:
+                data["elements_session_client[client_betas][0]"] = "custom_checkout_server_updates_1"
+                data["elements_session_client[client_betas][1]"] = "custom_checkout_manual_approval_1"
+                data.update(elements_options)
+
+            resp = self._request("post", url, data=data, stage="stripe_init")
+            status_code = int(getattr(resp, "status_code", 0) or 0)
+            if status_code == 200:
+                payload = _response_json(resp, "stripe_init")
+                init_checksum = str(payload.get("init_checksum") or "")
+                if not init_checksum:
+                    raise GoPayFlowError(f"Stripe init 未返回 init_checksum: {payload}", stage="stripe_init")
+                return {
+                    "raw": payload,
+                    "init_checksum": init_checksum,
+                    "stripe_js_id": stripe_js_id,
+                    "elements_session_id": elements_session_id,
+                    "elements_session_config_id": str(uuid.uuid4()),
+                    "elements_options_client": elements_options if include_betas else {},
+                    "config_id": str(payload.get("config_id") or ""),
+                    "expected_amount": self._checkout_amount(payload),
+                    "currency": str(payload.get("currency") or "idr").lower(),
+                    "return_url": str(payload.get("return_url") or ""),
+                    "stripe_hosted_url": str(payload.get("stripe_hosted_url") or ""),
+                    "stripe_version": version,
+                }
+            if status_code == 400:
+                text = str(getattr(resp, "text", "") or "").lower()
+                if "beta" in text or "parameter_unknown" in text:
+                    logger.info("[gopay] stripe_init version=%s rejected, trying next...", version[:30])
+                    continue
+            _ensure_ok(resp, "stripe_init")
+
+        raise GoPayFlowError("Stripe init 失败: 所有 API 版本均不可用", stage="stripe_init")
 
     def _stripe_elements_session(self, checkout_session_id: str, stripe_pk: str, init_ctx: dict) -> dict:
         self._progress("stripe_elements_session")
@@ -2657,9 +2681,8 @@ class GoPayHttpCharger:
             amount = "0"
         currency = str(init_ctx.get("currency") or "idr").lower()
         locale = str(init_ctx.get("locale") or "en")
+        effective_version = init_ctx.get("stripe_version") or STRIPE_VERSION_FULL
         params = {
-            "client_betas[0]": "custom_checkout_server_updates_1",
-            "client_betas[1]": "custom_checkout_manual_approval_1",
             "deferred_intent[mode]": "subscription",
             "deferred_intent[amount]": str(int(_parse_amount(amount) or 0)),
             "deferred_intent[currency]": currency,
@@ -2667,7 +2690,7 @@ class GoPayHttpCharger:
             "deferred_intent[payment_method_types][0]": "gopay",
             "currency": currency,
             "key": stripe_pk,
-            "_stripe_version": STRIPE_VERSION_FULL,
+            "_stripe_version": effective_version,
             "elements_init_source": "custom_checkout",
             "referrer_host": "chatgpt.com",
             "stripe_js_id": init_ctx["stripe_js_id"],
@@ -2675,6 +2698,9 @@ class GoPayHttpCharger:
             "type": "deferred_intent",
             "checkout_session_id": checkout_session_id,
         }
+        if "checkout_server_update_beta" in effective_version:
+            params["client_betas[0]"] = "custom_checkout_server_updates_1"
+            params["client_betas[1]"] = "custom_checkout_manual_approval_1"
         resp = self._request("get", f"{STRIPE_API}/v1/elements/sessions", params=params, stage="stripe_elements_session")
         if resp.status_code != 200:
             logger.info(
@@ -2703,9 +2729,8 @@ class GoPayHttpCharger:
     def _stripe_update_payment_page_address(self, checkout_session_id: str, stripe_pk: str, init_ctx: dict) -> None:
         self._progress("stripe_address_update")
         billing = self.billing_info
+        effective_version = init_ctx.get("stripe_version") or STRIPE_VERSION_FULL
         base = {
-            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
-            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
             "elements_session_client[elements_init_source]": "custom_checkout",
             "elements_session_client[referrer_host]": "chatgpt.com",
             "elements_session_client[session_id]": init_ctx.get("elements_session_id") or f"elements_session_{uuid.uuid4().hex[:11]}",
@@ -2715,9 +2740,12 @@ class GoPayHttpCharger:
             "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
             "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
             "key": stripe_pk,
-            "_stripe_version": STRIPE_VERSION_FULL,
+            "_stripe_version": effective_version,
         }
-        base.update(init_ctx.get("elements_options_client") or self._elements_options_client_payload())
+        if "checkout_server_update_beta" in effective_version:
+            base["elements_session_client[client_betas][0]"] = "custom_checkout_server_updates_1"
+            base["elements_session_client[client_betas][1]"] = "custom_checkout_manual_approval_1"
+        base.update(init_ctx.get("elements_options_client") or {})
         steps = [
             ("country", {"tax_region[country]": str(billing.get("country") or "US").strip() or "US"}),
             ("focus", {}),
@@ -2752,6 +2780,7 @@ class GoPayHttpCharger:
         init_ctx = init_ctx or self._stripe_init(checkout_session_id, stripe_pk)
         self.expected_due_amount = _parse_amount(init_ctx.get("expected_amount"))
         self.expected_due_currency = "stripe"
+        effective_version = init_ctx.get("stripe_version") or STRIPE_VERSION_FULL
         runtime = _stripe_runtime_from_env()
         runtime.update({k: v for k, v in self.runtime.items() if v})
         chatgpt_return = (
@@ -2785,8 +2814,6 @@ class GoPayHttpCharger:
             "elements_session_client[locale]": init_ctx.get("locale") or "en",
             "elements_session_client[is_aggregation_expected]": "false",
             "elements_session_client[session_id]": init_ctx["elements_session_id"],
-            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
-            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
             "client_attribution_metadata[client_session_id]": init_ctx["stripe_js_id"],
             "client_attribution_metadata[checkout_session_id]": checkout_session_id,
             "client_attribution_metadata[checkout_config_id]": init_ctx.get("config_id", ""),
@@ -2799,9 +2826,12 @@ class GoPayHttpCharger:
             "client_attribution_metadata[payment_method_selection_flow]": "automatic",
             "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
             "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
-            "_stripe_version": STRIPE_VERSION_FULL,
+            "_stripe_version": effective_version,
             "key": stripe_pk,
         }
+        if "checkout_server_update_beta" in effective_version:
+            data["elements_session_client[client_betas][0]"] = "custom_checkout_server_updates_1"
+            data["elements_session_client[client_betas][1]"] = "custom_checkout_manual_approval_1"
         consent_collection = {}
         raw_init = init_ctx.get("raw")
         if isinstance(raw_init, dict):
@@ -2908,19 +2938,14 @@ class GoPayHttpCharger:
     def _resolve_snap_token(self, checkout_session_id: str, stripe_pk: str) -> str:
         self._progress("resolve_midtrans_redirect")
         params = {
-            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
-            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
             "elements_session_client[elements_init_source]": "custom_checkout",
             "elements_session_client[referrer_host]": "chatgpt.com",
             "elements_session_client[session_id]": f"elements_session_{uuid.uuid4().hex[:11]}",
             "elements_session_client[stripe_js_id]": str(uuid.uuid4()),
             "elements_session_client[locale]": "en",
             "elements_session_client[is_aggregation_expected]": "false",
-            "elements_options_client[stripe_js_locale]": "auto",
-            "elements_options_client[saved_payment_method][enable_save]": "never",
-            "elements_options_client[saved_payment_method][enable_redisplay]": "never",
             "key": stripe_pk,
-            "_stripe_version": STRIPE_VERSION_FULL,
+            "_stripe_version": "2025-03-31.basil",
         }
         deadline = time.time() + 60
         last_error = ""

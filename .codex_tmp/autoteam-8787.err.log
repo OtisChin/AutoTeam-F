@@ -1,6 +1,0 @@
-warning: Ignoring dangling temporary directory: `d:\code\OpenSource\AutoTeam-F\.venv\Lib\site-packages\~utoteam-0.1.0.dist-info`
-warning: Ignoring dangling temporary directory: `d:\code\OpenSource\AutoTeam-F\.venv\Lib\site-packages\~utoteam-0.1.0.dist-info`
-INFO:     Started server process [35692]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8787 (Press CTRL+C to quit)
