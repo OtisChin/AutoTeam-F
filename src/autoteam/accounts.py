@@ -68,6 +68,7 @@ def _normalize_account_record(account: dict) -> dict:
     acc.setdefault("password", "")
     acc.setdefault("cloudmail_account_id", None)
     acc.setdefault("mail_provider", None)
+    acc.setdefault("mailapi_url", None)
     acc.setdefault("status", STATUS_PENDING)
     acc.setdefault("account_type", ACCOUNT_TYPE_FREE)
     acc.setdefault("seat_type", SEAT_UNKNOWN)
@@ -109,6 +110,7 @@ def _row_to_account(row) -> dict:
             "password": row["password"],
             "cloudmail_account_id": data.get("cloudmail_account_id", row["cloudmail_account_id"]),
             "mail_provider": data.get("mail_provider", row["mail_provider"]),
+            "mailapi_url": data.get("mailapi_url"),
             "auth_file": data.get("auth_file", row["auth_file"]),
             "credentials_exported": bool(row["credentials_exported"]),
             "created_at": row["created_at"],
@@ -195,7 +197,7 @@ def find_account(accounts, email):
     return None
 
 
-def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNOWN, mail_provider=None):
+def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNOWN, mail_provider=None, mailapi_url=None):
     """添加新账号。seat_type 取值见 SEAT_CHATGPT / SEAT_CODEX / SEAT_UNKNOWN。"""
     normalized = _normalized_email(email)
     if not normalized:
@@ -216,6 +218,8 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                     desired["seat_type"] = seat_type
                 if mail_provider and not existing.get("mail_provider"):
                     desired["mail_provider"] = mail_provider
+                if mailapi_url and not existing.get("mailapi_url"):
+                    desired["mailapi_url"] = mailapi_url
                 if existing.get("account_source") == ACCOUNT_SOURCE_AUTH_SESSION_STUB:
                     desired["account_source"] = ACCOUNT_SOURCE_MANAGED
                 for key, value in desired.items():
@@ -233,6 +237,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                     "password": password,
                     "cloudmail_account_id": cloudmail_account_id,
                     "mail_provider": mail_provider or None,
+                    "mailapi_url": mailapi_url or None,
                     "status": STATUS_PENDING,
                     "account_type": ACCOUNT_TYPE_FREE,
                     "seat_type": seat_type or SEAT_UNKNOWN,

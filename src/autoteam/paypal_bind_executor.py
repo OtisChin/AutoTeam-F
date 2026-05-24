@@ -117,7 +117,9 @@ PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 240
 PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 120
 PAYPAL_SIGNUP_EMAIL_STUCK_RECOVER_DELAY_SECONDS = 30
 PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = 420
-PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 180
+PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 600
+PAYPAL_APPROVE_RETURN_TIMEOUT_SECONDS = 120
+PAYPAL_APPROVE_RETURN_SETTLE_SECONDS = 1.0
 PAYPAL_STRIPE_STATE_POLL_INTERVAL_SECONDS = 5.0
 _PAYPAL_OTP_LOCK_GUARD = threading.Lock()
 _PAYPAL_OTP_LOCKS: dict[str, threading.Lock] = {}
@@ -647,6 +649,8 @@ PAYPAL_AUTO_STAGE_MESSAGES = {
     "paypal_ddc_blocked_final": "DataDome 封锁页面重试后仍未通过",
     "paypal_signup_email_reload": "邮箱提交后页面卡住，正在恢复重试",
     "paypal_agree_create_clicked": "已点击 PayPal 同意并创建账户",
+    "paypal_return_wait": "等待订阅回跳确认",
+    "paypal_return_confirmed": "订阅已回跳 ChatGPT/OpenAI 页面，确认绑定成功",
 }
 
 
@@ -1502,6 +1506,11 @@ def _is_checkout_host(url: str) -> bool:
     return host == "chatgpt.com" and "/checkout/" in str(url or "").lower()
 
 
+def _is_chatgpt_or_openai_return_url(url: str) -> bool:
+    host = _safe_host(url)
+    return host == "chatgpt.com" or host == "openai.com" or host.endswith(".openai.com")
+
+
 def _autofill_allowed(url: str) -> bool:
     host = _safe_host(url)
     if not host or host.endswith("paypal.com"):
@@ -2140,7 +2149,7 @@ def _ddc_slider_visible(page) -> bool:
             return True
     except Exception:
         pass
-    for fr in page.frames:
+    for fr in getattr(page, "frames", []) or []:
         u = fr.url or ""
         if u == page.url:
             continue
@@ -2157,7 +2166,7 @@ def _ddc_slider_visible(page) -> bool:
 
 def _find_ddc_iframe(page):
     """查找 DataDome 相关 iframe frame 对象。"""
-    for fr in page.frames:
+    for fr in getattr(page, "frames", []) or []:
         if _is_ddc_frame_url(fr.url or ""):
             return fr
     return None
@@ -2418,7 +2427,10 @@ def _wait_ddc_pass(page, *, timeout_seconds: int = 50, on_progress=None, max_blo
 
 
 def _visible_locator_in_frames(api: ChatGPTTeamAPI, selectors: list[str], timeout_ms: int = 1000):
-    return api._visible_locator_in_frames(selectors, timeout_ms=timeout_ms)
+    helper = getattr(api, "_visible_locator_in_frames", None)
+    if callable(helper):
+        return helper(selectors, timeout_ms=timeout_ms)
+    return None
 
 
 def _iter_page_frames(api: ChatGPTTeamAPI):
@@ -4460,6 +4472,68 @@ def _click_paypal_approve(api: ChatGPTTeamAPI, *, on_progress=None) -> bool:
     return False
 
 
+def _wait_for_paypal_subscription_return(
+    api: ChatGPTTeamAPI,
+    *,
+    session_id: str,
+    screenshot_paths: list[str],
+    timeout_seconds: int = PAYPAL_APPROVE_RETURN_TIMEOUT_SECONDS,
+    is_cancelled=None,
+    on_progress=None,
+):
+    deadline = time.time() + max(1, int(timeout_seconds or 0))
+    _emit_progress(
+        on_progress,
+        _progress_event(
+            "paypal_return_wait",
+            url=getattr(api.page, "url", ""),
+            timeout_seconds=int(timeout_seconds or 0),
+        ),
+    )
+    while time.time() < deadline:
+        if callable(is_cancelled) and is_cancelled():
+            _capture_screenshot(api, session_id, "paypal-cancelled", screenshot_paths)
+            return _build_result("failed", failure_stage="post_submit", message="任务已取消", screenshot_paths=screenshot_paths)
+
+        _sync_relevant_payment_page(api, prefer_paypal=False)
+        current_url = getattr(api.page, "url", "")
+        if _is_chatgpt_or_openai_return_url(current_url):
+            try:
+                remaining_ms = max(1000, int((deadline - time.time()) * 1000))
+                api.page.wait_for_load_state("load", timeout=min(remaining_ms, 10000))
+            except Exception:
+                time.sleep(1.0)
+                continue
+            time.sleep(PAYPAL_APPROVE_RETURN_SETTLE_SECONDS)
+            _emit_progress(
+                on_progress,
+                _progress_event("paypal_return_confirmed", url=current_url),
+            )
+            _capture_screenshot(api, session_id, "success", screenshot_paths)
+            return _build_result(
+                "success",
+                failure_stage="",
+                message="PayPal 授权后已回跳 ChatGPT/OpenAI 页面，确认绑定成功",
+                screenshot_paths=screenshot_paths,
+            )
+
+        if _is_paypal_host(current_url):
+            classified = classify_paypal_checkout_state(current_url, _body_excerpt(api))
+            if classified and classified.get("status") in {"failed", "needs_review"}:
+                _capture_screenshot(api, session_id, "paypal-authorize-failed", screenshot_paths)
+                classified["screenshot_paths"] = screenshot_paths
+                return classified
+        time.sleep(1.0)
+
+    _capture_screenshot(api, session_id, "paypal-return-timeout", screenshot_paths)
+    return _build_result(
+        "needs_review",
+        failure_stage="paypal_return_timeout",
+        message="PayPal 已授权，但 120 秒内未回跳 ChatGPT/OpenAI 页面，需要确认最终绑定状态",
+        screenshot_paths=screenshot_paths,
+    )
+
+
 def _run_paypal_signup_flow(
     api: ChatGPTTeamAPI,
     *,
@@ -5172,8 +5246,17 @@ def _run_paypal_authorize_flow(
             continue
 
         if state.get("approve_ready") and _click_paypal_approve(api, on_progress=on_progress):
-            time.sleep(2.0)
-            continue
+            if otp_phone_lock_key:
+                _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                otp_phone_lock_key = ""
+            return _wait_for_paypal_subscription_return(
+                api,
+                session_id=session_id,
+                screenshot_paths=screenshot_paths,
+                timeout_seconds=PAYPAL_APPROVE_RETURN_TIMEOUT_SECONDS,
+                is_cancelled=is_cancelled,
+                on_progress=on_progress,
+            )
 
         time.sleep(1.0)
 
@@ -5306,6 +5389,10 @@ def _wait_for_paypal_result(
     )
 
 
+def _paypal_result_timeout_seconds(timeout_seconds: int | None) -> int:
+    return max(PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS, int(timeout_seconds or 0))
+
+
 def _run_paypal_auto_flow(
     api: ChatGPTTeamAPI,
     *,
@@ -5329,7 +5416,7 @@ def _run_paypal_auto_flow(
     billing_payload = dict(billing_payload or _resolve_checkout_billing_payload(autofill_payload, auto_generate=bool(autofill_enabled)))
     progress = _progress_adapter(on_progress)
     authorize_timeout_seconds = max(PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS, int(timeout_seconds or 0))
-    result_timeout_seconds = max(PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS, int(timeout_seconds or 0))
+    result_timeout_seconds = _paypal_result_timeout_seconds(timeout_seconds)
 
     if _is_checkout_host(current_url):
         nonzero_hint = _browser_checkout_nonzero_amount_hint(api)
@@ -5478,6 +5565,7 @@ def run_paypal_bind_task(
             use_roxybrowser=use_roxybrowser,
             roxybrowser_workspace_id=roxybrowser_workspace_id,
             roxybrowser_profile_id=roxybrowser_profile_id,
+            on_progress=on_progress,
         )
 
     try:
@@ -5530,6 +5618,7 @@ def run_paypal_bind_task(
                 locale="en-US",
                 accept_language="en-US,en;q=0.9",
                 use_camoufox=True,
+                on_progress=on_progress,
             )
             page = api.page
             _emit_progress(on_progress, _progress_event("paypal_browser_fallback_navigate"))
@@ -5574,7 +5663,7 @@ def run_paypal_bind_task(
                 checkout_url=checkout_url,
                 session_id=session_id,
                 screenshot_paths=screenshot_paths,
-                timeout_seconds=min(timeout_seconds, PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS),
+                timeout_seconds=_paypal_result_timeout_seconds(timeout_seconds),
                 is_cancelled=is_cancelled,
                 on_progress=on_progress,
                 autofill_enabled=False,
@@ -5663,7 +5752,7 @@ def run_paypal_bind_task(
             proxy_url=launch_proxy_url,
             session_id=session_id,
             screenshot_paths=screenshot_paths,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=_paypal_result_timeout_seconds(timeout_seconds),
             is_cancelled=is_cancelled,
             on_progress=on_progress,
             autofill_enabled=autofill_enabled,

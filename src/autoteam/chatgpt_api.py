@@ -75,6 +75,12 @@ def _camoufox_effective_proxy_url(proxy_url: str | None):
     return proxy_url, None
 
 
+def _emit_browser_progress(on_progress, stage: str, message: str, **kwargs) -> None:
+    if callable(on_progress):
+        payload = {"stage": stage, "message": message, "level": kwargs.pop("level", "INFO"), **kwargs}
+        on_progress(payload)
+
+
 class ChatGPTTeamAPI:
     """通过浏览器内 fetch 调用 ChatGPT Team 内部 API。"""
 
@@ -179,6 +185,7 @@ class ChatGPTTeamAPI:
         use_roxybrowser: bool = False,
         roxybrowser_workspace_id: str | None = None,
         roxybrowser_profile_id: str | None = None,
+        on_progress=None,
     ):
         SCREENSHOT_DIR.mkdir(exist_ok=True)
 
@@ -190,6 +197,7 @@ class ChatGPTTeamAPI:
                 locale=locale,
                 workspace_id=roxybrowser_workspace_id,
                 profile_id=roxybrowser_profile_id,
+                on_progress=on_progress,
             )
             return
 
@@ -204,6 +212,7 @@ class ChatGPTTeamAPI:
                 effective_proxy_url=effective_proxy_url,
                 headless=headless,
                 locale=locale,
+                on_progress=on_progress,
             )
             return
 
@@ -267,12 +276,19 @@ class ChatGPTTeamAPI:
             self.page = self.context.pages[0]
         else:
             self.page = self.context.new_page()
-        self._clear_browser_runtime_data(reason="chromium launch")
+        self._clear_browser_runtime_data(reason="chromium launch", browser_label="Chromium", on_progress=on_progress)
 
-    def _clear_browser_runtime_data(self, *, reason: str) -> None:
+    def _clear_browser_runtime_data(self, *, reason: str, browser_label: str, on_progress=None) -> None:
         """Discard browser session data before an account starts using the context."""
         if not self.context:
             return
+        _emit_browser_progress(
+            on_progress,
+            "paypal_browser_data_clear_started",
+            f"{browser_label}：正在清空浏览器缓存、Cookie 和权限数据",
+            browser=browser_label,
+            reason=reason,
+        )
         cleared: list[str] = []
         for method_name, label in (("clear_cookies", "cookies"), ("clear_permissions", "permissions")):
             method = getattr(self.context, method_name, None)
@@ -297,12 +313,21 @@ class ChatGPTTeamAPI:
                 logger.debug("[ChatGPT] CDP browser cache clear skipped: %s", exc)
         if cleared:
             logger.info("[ChatGPT] browser runtime data cleared before account flow: %s reason=%s", ",".join(cleared), reason)
+        _emit_browser_progress(
+            on_progress,
+            "paypal_browser_data_clear_done",
+            f"{browser_label}：浏览器运行数据已清空 ({', '.join(cleared) if cleared else 'fresh context'})",
+            browser=browser_label,
+            reason=reason,
+            cleared=cleared,
+        )
 
     def _launch_browser_camoufox(
         self,
         effective_proxy_url: str | None = None,
         headless: bool | None = None,
         locale: str = "en-US",
+        on_progress=None,
     ):
         """使用 Camoufox (Firefox 反检测浏览器) 启动浏览器，用于 PayPal 等高风控场景。
 
@@ -358,7 +383,7 @@ class ChatGPTTeamAPI:
             self.page = self.context.pages[0]
         else:
             self.page = self.context.new_page()
-        self._clear_browser_runtime_data(reason="camoufox launch")
+        self._clear_browser_runtime_data(reason="camoufox launch", browser_label="Camoufox", on_progress=on_progress)
 
         logger.info(
             "[ChatGPT] Camoufox browser launched | locale=%s | proxy=%s | user_data_dir=%s",
@@ -377,6 +402,7 @@ class ChatGPTTeamAPI:
         accept_language: str = "en-US,en;q=0.9",
         workspace_id: str | None = None,
         profile_id: str | None = None,
+        on_progress=None,
     ) -> None:
         if headless:
             logger.info("[ChatGPT] RoxyBrowser ignores headless=True and will open a visible window")
@@ -388,6 +414,21 @@ class ChatGPTTeamAPI:
         resolved_profile_id = str(profile_id or "").strip() or None
         window_name = f"autoteam-chatgpt-{uuid.uuid4().hex[:8]}"
         client = RoxyBrowserClient(config["api_host"], config["api_token"])
+        if resolved_profile_id:
+            _emit_browser_progress(
+                on_progress,
+                "paypal_roxybrowser_cache_clear_started",
+                "RoxyBrowser：正在清空所选窗口的本地缓存和云端缓存",
+                browser="RoxyBrowser",
+                dir_id=resolved_profile_id,
+            )
+        else:
+            _emit_browser_progress(
+                on_progress,
+                "paypal_roxybrowser_fresh_profile",
+                "RoxyBrowser：未指定已有窗口，将使用新建窗口，避免复用旧缓存",
+                browser="RoxyBrowser",
+            )
         launch = client.launch(
             window_name=window_name,
             proxy_url=proxy_url,
@@ -395,6 +436,15 @@ class ChatGPTTeamAPI:
             dir_id=resolved_profile_id,
             clear_profile_data=True,
         )
+        if resolved_profile_id:
+            _emit_browser_progress(
+                on_progress,
+                "paypal_roxybrowser_cache_clear_done",
+                "RoxyBrowser：窗口本地缓存和云端缓存已清空",
+                browser="RoxyBrowser",
+                workspace_id=launch.workspace_id,
+                dir_id=launch.dir_id,
+            )
 
         self.playwright = sync_playwright().start()
         self._roxybrowser_client = client
@@ -449,7 +499,7 @@ class ChatGPTTeamAPI:
             self.page = self.context.pages[0]
         else:
             self.page = self.context.new_page()
-        self._clear_browser_runtime_data(reason="roxybrowser launch")
+        self._clear_browser_runtime_data(reason="roxybrowser launch", browser_label="RoxyBrowser", on_progress=on_progress)
         self._browser_fingerprint = None
         logger.info(
             "[ChatGPT] RoxyBrowser browser launched | workspace_id=%s | dir_id=%s | endpoint=%s | locale=%s | accept_language=%s",

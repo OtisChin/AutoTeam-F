@@ -682,6 +682,7 @@ const roxyBrowserProfilesError = ref('')
 const lastTask = ref(null)
 const selectedTask = ref(null)
 const pollTimer = ref(null)
+const lastAccountRefreshSignature = ref('')
 const currentLink = ref('')
 const restoredFormState = ref(false)
 const logsScrollRef = ref(null)
@@ -865,6 +866,7 @@ const visibleLogs = computed(() => {
   const events = Array.isArray(task.progress_events) ? task.progress_events : []
   return events.slice(-200).map(item => ({
     ...item,
+    ts: item.ts || item.updated_at || item.time || '',
     line: item.message || item.line || item.stage || '',
     level: item.level || item.stage || 'INFO',
     statusClass:
@@ -1305,6 +1307,48 @@ async function loadAccounts() {
   }
 }
 
+function taskRequiresAccountRefresh(task) {
+  const status = String(task?.status || '').toLowerCase()
+  const result = task?.result && typeof task.result === 'object' ? task.result : {}
+  const progress = task?.progress && typeof task.progress === 'object' ? task.progress : {}
+  const latestProgress = Array.isArray(task?.progress_events) && task.progress_events.length
+    ? task.progress_events[task.progress_events.length - 1]
+    : null
+  const stagesThatMutateAccounts = new Set([
+    'paypal_nonzero_amount_blocked_rotate',
+  ])
+  const arrays = [
+    result.successful_emails,
+    result.failed_emails,
+    result.removed_pool_emails,
+    result.nonzero_blocked_emails,
+    result.payment_failed_emails,
+  ]
+  const hasMutatingResult = arrays.some(value => Array.isArray(value) && value.length > 0)
+  const hasMutatingProgress = stagesThatMutateAccounts.has(String(progress.stage || '')) || stagesThatMutateAccounts.has(String(latestProgress?.stage || ''))
+  return ['completed', 'failed', 'cancelled'].includes(status) || hasMutatingResult || hasMutatingProgress
+}
+
+async function refreshAccountsIfNeeded(task) {
+  if (!task?.task_id) return
+  if (!taskRequiresAccountRefresh(task)) return
+  const result = task?.result && typeof task.result === 'object' ? task.result : {}
+  const signature = [
+    task.task_id,
+    String(task.status || ''),
+    String(task.updated_at || task.finished_at || task.started_at || task.created_at || ''),
+    String(result.status || ''),
+    String(result.finished_at || ''),
+    Array.isArray(result.successful_emails) ? result.successful_emails.length : 0,
+    Array.isArray(result.removed_pool_emails) ? result.removed_pool_emails.length : 0,
+    Array.isArray(result.nonzero_blocked_emails) ? result.nonzero_blocked_emails.length : 0,
+    Array.isArray(result.payment_failed_emails) ? result.payment_failed_emails.length : 0,
+  ].join('|')
+  if (lastAccountRefreshSignature.value === signature) return
+  lastAccountRefreshSignature.value = signature
+  await loadAccounts()
+}
+
 async function ensureAccessToken() {
   if (bindForm.value.accessToken) return bindForm.value.accessToken
   if (!singleSelectedEmail.value) {
@@ -1431,6 +1475,7 @@ async function refreshTask() {
     if (detail?.result?.checkout_url) {
       currentLink.value = detail.result.checkout_url
     }
+    await refreshAccountsIfNeeded(detail)
     scrollLogsToBottom()
   } catch (error) {
     console.warn('PayPal 任务刷新失败:', error)

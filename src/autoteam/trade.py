@@ -33,6 +33,8 @@ PASSWORD_ITERATIONS = 210_000
 PASSWORD_MIN_LEN = 6
 EXPORT_FORMATS = {"cpa", "sub", "credentials"}
 EXCLUDED_ACCOUNT_STATUSES = {STATUS_FAIL, STATUS_AUTH_INVALID, STATUS_ORPHAN}
+DOMAIN_CREDENTIAL_DELIVERY_URL = "https://gptcode.external.cc.cd/"
+OUTLOOK_TOKEN_DELIVERY_URL = "https://mail.cpacc.us.ci/"
 
 
 class TradeError(ValueError):
@@ -295,6 +297,46 @@ def credential_password_for_account(account: dict) -> str:
     return str(account.get("password") or "")
 
 
+def outlook_mailapi_urls_by_email() -> dict[str, str]:
+    """Return imported Outlook/Hotmail mailapi URLs keyed by mailbox email."""
+    try:
+        from autoteam.mail.outlook import OutlookMailProvider
+    except Exception:
+        return {}
+    try:
+        provider = OutlookMailProvider()
+    except Exception:
+        return {}
+    urls: dict[str, str] = {}
+    for account in getattr(provider, "accounts", []) or []:
+        email = str(getattr(account, "email", "") or "").strip().lower()
+        mailapi_url = str(getattr(account, "mailapi_url", "") or "").strip()
+        if email and mailapi_url:
+            urls[email] = mailapi_url
+    return urls
+
+
+def credential_export_line_for_account(
+    account: dict,
+    *,
+    outlook_mailapi_urls: dict[str, str] | None = None,
+) -> str:
+    """Render account credentials as: email-----secret-----mail access URL."""
+    email = str(account.get("email") or "").strip().lower()
+    password = str(account.get("password") or "")
+    credential_secret = credential_password_for_account(account)
+    mail_provider = str(account.get("mail_provider") or "").strip().lower()
+    cloudmail_token = str(account.get("cloudmail_account_id") or "").strip()
+    mailapi_urls = outlook_mailapi_urls if outlook_mailapi_urls is not None else outlook_mailapi_urls_by_email()
+    mailapi_url = str(account.get("mailapi_url") or mailapi_urls.get(email, "") or "").strip()
+
+    if mailapi_url:
+        return f"{email}-----{password}-----{mailapi_url}"
+    if mail_provider == "luckmail" or cloudmail_token.startswith("tok_"):
+        return f"{email}-----{credential_secret}-----{OUTLOOK_TOKEN_DELIVERY_URL}"
+    return f"{email}-----{password}-----{DOMAIN_CREDENTIAL_DELIVERY_URL}"
+
+
 def _source_for_account(account: dict, export_format: str) -> dict | None:
     email = str(account.get("email") or "").strip().lower()
     auth_file = _resolve_codex_auth_file(account)
@@ -305,14 +347,14 @@ def _source_for_account(account: dict, export_format: str) -> dict | None:
         content = read_text(path)
         json.loads(content)
         if export_format == "credentials":
-            password = credential_password_for_account(account)
-            if not password:
+            content = credential_export_line_for_account(account)
+            if not content:
                 return None
             return {
                 "email": email,
                 "filename": f"{email}.txt",
-                "content": f"{email}-----{password}",
-                "password": password,
+                "content": content,
+                "password": credential_password_for_account(account),
             }
         if export_format == "sub":
             records = inspect_sources([(path.name, content)])

@@ -4782,15 +4782,9 @@ def update_account_type(email: str, params: AccountTypeUpdateParams):
 
 @app.post("/api/accounts/export-credentials")
 def export_account_credentials(params: AccountCredentialExportParams):
-    """按自定义行格式导出本地账号池账密。"""
+    """导出本地账号池账密，固定格式: 邮箱-----密码/Token-----接码地址。"""
     from autoteam.accounts import ACCOUNT_SOURCE_AUTH_SESSION_STUB, load_accounts, update_account
-    from autoteam.trade import credential_password_for_account
-
-    line_format = (params.line_format or "{email}-----{password}").strip()
-    if not line_format:
-        raise HTTPException(status_code=400, detail="导出格式不能为空")
-    if len(line_format) > 500:
-        raise HTTPException(status_code=400, detail="导出格式过长")
+    from autoteam.trade import credential_export_line_for_account, outlook_mailapi_urls_by_email
 
     requested = []
     seen = set()
@@ -4822,17 +4816,10 @@ def export_account_credentials(params: AccountCredentialExportParams):
             continue
         export_rows.append(account)
 
-    def render_line(account: dict) -> str:
-        values = {
-            "email": str(account.get("email") or ""),
-            "password": credential_password_for_account(account),
-        }
-        line = line_format
-        for key, value in values.items():
-            line = line.replace("{" + key + "}", value)
-        return line
-
-    content = "\n".join(render_line(account) for account in export_rows)
+    outlook_mailapi_urls = outlook_mailapi_urls_by_email()
+    content = "\n".join(
+        credential_export_line_for_account(account, outlook_mailapi_urls=outlook_mailapi_urls) for account in export_rows
+    )
     exported_at = time.time()
     exported_emails = []
     for account in export_rows:
@@ -4853,7 +4840,7 @@ def export_account_credentials(params: AccountCredentialExportParams):
         "exported_emails": exported_emails,
         "exported_at": exported_at,
         "filename": "accounts-credentials.txt",
-        "format": line_format,
+        "format": "{email}-----{password_or_token}-----{mail_url}",
     }
 
 

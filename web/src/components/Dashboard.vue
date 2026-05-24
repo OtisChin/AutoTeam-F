@@ -564,19 +564,20 @@
             <button @click="closeCredentialExport" class="text-gray-400 hover:text-white text-lg">&times;</button>
           </div>
           <div class="p-4 space-y-4">
-            <div>
-              <label class="block text-xs text-gray-500 mb-2">每行格式</label>
-              <input
-                v-model="credentialLineFormat"
-                type="text"
-                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
-              <div class="text-xs text-gray-500 mt-2">
-                可用占位符：<code class="text-gray-300">{email}</code> <code class="text-gray-300">{password}</code>
+            <div class="grid gap-3 text-xs text-gray-300">
+              <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
+                <div class="font-semibold text-gray-100 mb-1">域名邮箱</div>
+                <div class="font-mono break-all">邮箱-----密码-----https://gptcode.external.cc.cd/</div>
               </div>
-            </div>
-            <div class="bg-gray-950 border border-gray-800 rounded-lg p-3">
-              <div class="text-xs text-gray-500 mb-2">预览</div>
-              <pre class="text-xs text-gray-300 font-mono whitespace-pre-wrap break-all">{{ credentialPreview }}</pre>
+              <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
+                <div class="font-semibold text-gray-100 mb-1">Outlook / LuckMail</div>
+                <div class="font-mono break-all">邮箱-----token-----https://mail.cpacc.us.ci/</div>
+              </div>
+              <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
+                <div class="font-semibold text-gray-100 mb-1">Hotmail / Outlook 邮箱</div>
+                <div class="font-mono break-all">邮箱-----密码-----https://mailapi.icu/key?type=html&orderNo=...</div>
+                <div class="mt-1 text-gray-500">每个 Hotmail 账号对应自己的接码地址。</div>
+              </div>
             </div>
           </div>
           <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
@@ -587,9 +588,9 @@
             </button>
             <button
               @click="downloadCredentials"
-              :disabled="credentialExporting || !credentialLineFormat.trim()"
+              :disabled="credentialExporting || !exportableAccounts.length"
               class="px-4 py-2 text-sm rounded-lg border transition"
-              :class="credentialExporting || !credentialLineFormat.trim()
+              :class="credentialExporting || !exportableAccounts.length
                 ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                 : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500'">
               {{ credentialExporting ? '导出中...' : '导出 txt' }}
@@ -689,7 +690,6 @@ const exportStatusUpdating = ref(false)
 const batchLoggingIn = ref(false)
 const quotaRefreshing = ref(false)
 const invalidDeleting = ref(false)
-const credentialLineFormat = ref('{email}-----{password}')
 
 // 批量删除选中态:按邮箱(小写)保存,便于跨刷新复用
 const selectedSet = ref(new Set())
@@ -1053,10 +1053,6 @@ const refreshQuotaButtonLabel = computed(() => {
     ? `刷新选中凭证 (${refreshableQuotaAccounts.value.length})`
     : `刷新筛选凭证 (${refreshableQuotaAccounts.value.length})`
 })
-const credentialPreview = computed(() => {
-  const sample = exportableAccounts.value[0] || { email: 'xxx@email.com', status: 'active', seat_type: 'unknown' }
-  return renderCredentialPreview(credentialLineFormat.value, sample, 'password')
-})
 const allSelectableChecked = computed(() =>
   selectableEmails.value.length > 0 && selectedEmails.value.length === selectableEmails.value.length
 )
@@ -1123,18 +1119,6 @@ function openCredentialExport() {
 function closeCredentialExport() {
   if (credentialExporting.value) return
   credentialExportOpen.value = false
-}
-
-function renderCredentialPreview(format, account, passwordValue = 'password') {
-  const values = {
-    email: String(account?.email || 'xxx@email.com'),
-    password: passwordValue,
-  }
-  let line = String(format || '')
-  for (const [key, value] of Object.entries(values)) {
-    line = line.replaceAll(`{${key}}`, value)
-  }
-  return line || '-'
 }
 
 const cards = computed(() => {
@@ -1396,12 +1380,12 @@ function exportAccounts() {
 
 async function downloadCredentials() {
   const emails = exportableAccounts.value.map(acc => acc.email).filter(Boolean)
-  if (!emails.length || !credentialLineFormat.value.trim()) return
+  if (!emails.length) return
 
   credentialExporting.value = true
   message.value = ''
   try {
-    const result = await api.exportAccountCredentials(emails, credentialLineFormat.value)
+    const result = await api.exportAccountCredentials(emails)
     const blob = new Blob([result.content || ''], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
