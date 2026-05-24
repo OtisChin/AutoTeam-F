@@ -650,7 +650,7 @@ PAYPAL_AUTO_STAGE_MESSAGES = {
     "paypal_signup_email_reload": "邮箱提交后页面卡住，正在恢复重试",
     "paypal_agree_create_clicked": "已点击 PayPal 同意并创建账户",
     "paypal_return_wait": "等待订阅回跳确认",
-    "paypal_return_confirmed": "订阅已回跳 ChatGPT/OpenAI 页面，确认绑定成功",
+    "paypal_return_confirmed": "订阅已回跳 ChatGPT/OpenAI 页面，绑定成功",
 }
 
 
@@ -4513,7 +4513,7 @@ def _wait_for_paypal_subscription_return(
             return _build_result(
                 "success",
                 failure_stage="",
-                message="PayPal 授权后已回跳 ChatGPT/OpenAI 页面，确认绑定成功",
+                message="PayPal 授权后已回跳 ChatGPT/OpenAI 页面，绑定成功",
                 screenshot_paths=screenshot_paths,
             )
 

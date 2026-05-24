@@ -2264,6 +2264,10 @@ class PayPalTaskParams(BaseModel):
         False,
         validation_alias=AliasChoices("auto_oauth_after_success", "autoOauthAfterSuccess"),
     )
+    pending_retry_attempts: int = Field(
+        1,
+        validation_alias=AliasChoices("pending_retry_attempts", "pendingRetryAttempts"),
+    )
 
 
 class CardPoolImportParams(BaseModel):
@@ -2815,6 +2819,96 @@ def _paypal_nonzero_blocked_pool_emails(result: dict, actual_email: str) -> list
         if email and email not in seen:
             emails.append(email)
     return emails
+
+
+def _paypal_pending_retry_reason(result: dict | None) -> str:
+    if not isinstance(result, dict) or result.get("status") == "success":
+        return ""
+    stage = str(result.get("failure_stage") or "").strip()
+    status = str(result.get("status") or "").strip().lower()
+    message = str(result.get("message") or "")
+    normalized_message = re.sub(r"\s+", " ", message).strip().lower()
+    non_retry_stages = {
+        "browser_charge_guard",
+        "paypal_nonzero_amount",
+        "paypal_funding_rejected",
+        "oauth_phone_required",
+        "cancelled",
+    }
+    if stage in non_retry_stages or status in {"cancelled", "canceled"}:
+        return ""
+    if any(
+        marker in normalized_message
+        for marker in (
+            "today due",
+            "total due today",
+            "今日应付",
+            "缺少可用 access_token",
+            "session 刷新后 access_token 未变化",
+            "请重新登录",
+            "请重新登录/刷新",
+            "already paid",
+            "already subscribed",
+        )
+    ):
+        return ""
+    retry_stages = {
+        "proxy_api",
+        "generate_checkout",
+        "open_checkout",
+        "open_checkout_proxy",
+        "checkout_browser_fallback",
+        "submit_checkout",
+        "fill_billing_info",
+        "paypal_datadome_blocked",
+        "paypal_human_verification",
+        "paypal_authorize",
+        "paypal_login",
+        "paypal_signup",
+        "paypal_signup_email",
+        "paypal_signup_form",
+        "paypal_otp",
+        "paypal_resend_otp",
+        "paypal_account_limited",
+        "paypal_phone_rejected",
+        "paypal_phone_pool_exhausted",
+        "paypal_card_linked",
+        "paypal_card_candidate_rejected",
+        "paypal_return_timeout",
+        "post_submit",
+    }
+    if stage in retry_stages:
+        return stage
+    if status == "needs_review":
+        return stage or "needs_review"
+    if any(
+        marker in normalized_message
+        for marker in (
+            "timeout",
+            "timed out",
+            "超时",
+            "net::",
+            "err_tunnel",
+            "err_ssl",
+            "err_proxy",
+            "connection",
+            "tls connect error",
+            "datadome",
+            "please enable js",
+            "disable any ad blocker",
+            "429",
+            "502",
+            "503",
+            "504",
+        )
+    ):
+        return stage or "transient_paypal_flow"
+    return ""
+
+
+def _paypal_pending_retry_source_stage(result: dict | None, reason: str) -> str:
+    stage = str((result or {}).get("failure_stage") or "").strip()
+    return stage or reason or "paypal_retryable_failure"
 
 
 def _parse_proxy_pool_values(values: list[Any] | tuple[Any, ...] | None = None, text: str | None = None) -> list[str]:
@@ -10179,6 +10273,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 def post_paypal_task(params: PayPalTaskParams):
     if params.timeout_seconds < 0:
         raise HTTPException(status_code=400, detail="超时时间不能为负数")
+    try:
+        pending_retry_attempts = max(
+            0,
+            min(3, int(params.pending_retry_attempts if params.pending_retry_attempts is not None else 1)),
+        )
+    except Exception:
+        pending_retry_attempts = 1
 
     runner_mode = str(params.runner_mode or "").strip().lower()
     if runner_mode and runner_mode != "manual_checkout":
@@ -10436,6 +10537,7 @@ def post_paypal_task(params: PayPalTaskParams):
         "billing_address2": params.billing_address2,
         "timeout_seconds": int(params.timeout_seconds or 60),
         "auto_oauth_after_success": bool(params.auto_oauth_after_success),
+        "pending_retry_attempts": pending_retry_attempts,
     }
     if proxy_api_provider:
         payload["proxy_api_provider"] = proxy_api_provider
@@ -10482,6 +10584,11 @@ def post_paypal_task(params: PayPalTaskParams):
         last_checkout_url = checkout_url
         invalid_phone_numbers: set[str] = set()
         invalid_phone_pool: list[str] = []
+        pending_retry_queue: list[dict[str, Any]] = []
+        pending_retry_emails: list[str] = []
+        retried_emails: list[str] = []
+        pending_retry_backoffs = [60.0, 180.0, 300.0]
+        retry_round_waited: set[int] = set()
 
         def _remember_invalid_phone(phone: Any) -> None:
             raw_phone = str(phone or "").strip()
@@ -10496,6 +10603,102 @@ def post_paypal_task(params: PayPalTaskParams):
                 "successful": len(successful_emails),
                 "successful_emails": successful_emails[:],
             }
+
+        def _append_unique(target: list[str], value: Any) -> None:
+            item = _normalized_email(value)
+            if item and item not in target:
+                target.append(item)
+
+        def _remove_email(target: list[str], value: Any) -> None:
+            item = _normalized_email(value)
+            if not item:
+                return
+            target[:] = [current for current in target if _normalized_email(current) != item]
+
+        def _queue_paypal_pending_retry(candidate_email: str, *, reason: str, result_payload: dict, retry_round: int, current_index: int, total_count: int) -> None:
+            _append_unique(pending_retry_emails, candidate_email)
+            pending_retry_queue.append(
+                {
+                    "email": candidate_email,
+                    "reason": reason,
+                    "retry_round": retry_round,
+                    "current": current_index,
+                    "total": total_count,
+                    "result": dict(result_payload or {}),
+                }
+            )
+            candidate_queue.append(
+                {
+                    "email": candidate_email,
+                    "current": current_index,
+                    "retry_round": retry_round,
+                }
+            )
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "paypal_pending_retry_queued",
+                    "email": candidate_email,
+                    "current": current_index,
+                    "total": total_count,
+                    "pending_retry": len(pending_retry_emails),
+                    "retry_round": retry_round,
+                    "max_retry_rounds": pending_retry_attempts,
+                    "reason": reason,
+                    "source_stage": _paypal_pending_retry_source_stage(result_payload, reason),
+                    "message": f"PayPal 账号进入待重试池: {candidate_email}",
+                },
+            )
+
+        def _maybe_wait_pending_retry_round(retry_round: int, pending_count: int) -> None:
+            if retry_round <= 0 or retry_round in retry_round_waited:
+                return
+            wait_seconds = pending_retry_backoffs[min(retry_round - 1, len(pending_retry_backoffs) - 1)]
+            retry_round_waited.add(retry_round)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "paypal_pending_retry_wait",
+                    "retry_round": retry_round,
+                    "max_retry_rounds": pending_retry_attempts,
+                    "pending_retry": pending_count,
+                    "wait_seconds": wait_seconds,
+                    "message": f"PayPal 待重试第 {retry_round}/{pending_retry_attempts} 轮将在 {wait_seconds:.0f}s 后开始",
+                },
+            )
+            time.sleep(wait_seconds)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "paypal_pending_retry_started",
+                    "retry_round": retry_round,
+                    "max_retry_rounds": pending_retry_attempts,
+                    "pending_retry": pending_count,
+                    "message": f"开始 PayPal 待重试第 {retry_round}/{pending_retry_attempts} 轮，共 {pending_count} 个账号",
+                },
+            )
+
+        def _remove_from_pending_retry(candidate_email: str) -> None:
+            _remove_email(pending_retry_emails, candidate_email)
+            pending_retry_queue[:] = [
+                item for item in pending_retry_queue
+                if _normalized_email(item.get("email")) != _normalized_email(candidate_email)
+            ]
+
+        def _paypal_retryable_result(result_payload: dict | None) -> str:
+            return _paypal_pending_retry_reason(result_payload)
+
+        def _paypal_candidate_retry_reason(result_payload: dict | None) -> str:
+            reason = _paypal_retryable_result(result_payload)
+            if reason not in {"paypal_phone_rejected", "paypal_phone_pool_exhausted"}:
+                return reason
+            if not phone_accounts:
+                return ""
+            has_available_phone = any(
+                _normalize_paypal_phone_key(phone_account.get("phone_number")) not in invalid_phone_numbers
+                for phone_account in phone_accounts
+            )
+            return reason if has_available_phone else ""
 
         def _handle_paypal_success_auth(success_email_value: str) -> None:
             success_email = _normalized_email(success_email_value)
@@ -10677,14 +10880,64 @@ def post_paypal_task(params: PayPalTaskParams):
             threading.Thread(target=_oauth_worker, name=f"paypal-oauth-{success_email[:24]}", daemon=True).start()
 
         try:
-            for index, candidate_email in enumerate(candidates, start=1):
+            candidate_queue: list[dict[str, Any]] = [
+                {"email": candidate_email, "current": index, "retry_round": 0}
+                for index, candidate_email in enumerate(candidates, start=1)
+            ]
+            queue_offset = 0
+            while queue_offset < len(candidate_queue):
                 if cancel_signal.is_cancelled():
                     break
+                queue_item = candidate_queue[queue_offset]
+                queue_offset += 1
+                candidate_email = _normalized_email(queue_item.get("email"))
+                if not candidate_email:
+                    continue
+                index = int(queue_item.get("current") or 0) or min(queue_offset, len(candidates))
+                retry_round = int(queue_item.get("retry_round") or 0)
+                if retry_round > 0:
+                    _maybe_wait_pending_retry_round(retry_round, len(pending_retry_emails) or 1)
+                    _remove_from_pending_retry(candidate_email)
+                    _append_unique(retried_emails, candidate_email)
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "paypal_pending_retry_account",
+                            "email": candidate_email,
+                            "current": index,
+                            "total": len(candidates),
+                            "retry_round": retry_round,
+                            "max_retry_rounds": pending_retry_attempts,
+                            "pending_retry": len(pending_retry_emails),
+                            "message": f"正在执行 PayPal 待重试第 {retry_round}/{pending_retry_attempts} 轮: {candidate_email}",
+                        },
+                    )
                 stop_after_current_candidate = False
                 current_candidate_phone = ""
+                selected_proxy_url = ""
+                effective_checkout_url = checkout_url
                 try:
                     selected_proxy_url = _select_paypal_proxy()
                 except Exception as exc:
+                    single_result = {
+                        "status": "failed",
+                        "failure_stage": "proxy_api",
+                        "message": f"动态代理 API 获取失败: {exc}",
+                        "screenshot_paths": [],
+                        "email": candidate_email,
+                    }
+                    retry_reason = _paypal_retryable_result(single_result)
+                    if retry_reason and retry_round < pending_retry_attempts:
+                        _queue_paypal_pending_retry(
+                            candidate_email,
+                            reason=retry_reason,
+                            result_payload=single_result,
+                            retry_round=retry_round + 1,
+                            current_index=index,
+                            total_count=len(candidates),
+                        )
+                        result = single_result
+                        continue
                     _append_task_progress(
                         task_id,
                         {
@@ -10698,14 +10951,8 @@ def post_paypal_task(params: PayPalTaskParams):
                             "level": "error",
                         },
                     )
-                    failed_emails.append(candidate_email)
-                    result = {
-                        "status": "failed",
-                        "failure_stage": "proxy_api",
-                        "message": f"动态代理 API 获取失败: {exc}",
-                        "screenshot_paths": [],
-                        "email": candidate_email,
-                    }
+                    _append_unique(failed_emails, candidate_email)
+                    result = single_result
                     continue
                 _append_task_progress(
                     task_id,
@@ -10961,6 +11208,17 @@ def post_paypal_task(params: PayPalTaskParams):
                     single_result["invalid_phone_numbers"] = invalid_phone_pool[:]
                 last_checkout_url = single_result["checkout_url"] or last_checkout_url
                 result = single_result
+                retry_reason = _paypal_candidate_retry_reason(single_result)
+                if single_result.get("status") != "success" and retry_reason and retry_round < pending_retry_attempts:
+                    _queue_paypal_pending_retry(
+                        candidate_email,
+                        reason=retry_reason,
+                        result_payload=single_result,
+                        retry_round=retry_round + 1,
+                        current_index=index,
+                        total_count=len(candidates),
+                    )
+                    continue
                 update_fields = {
                     "last_bind_status": "cancelled" if cancel_signal.is_cancelled() and single_result.get("status") != "success" else single_result.get("status") or "failed",
                     "last_bind_at": time.time(),
@@ -11077,6 +11335,10 @@ def post_paypal_task(params: PayPalTaskParams):
         result["account_emails"] = candidates
         result["successful_emails"] = successful_emails
         result["failed_emails"] = failed_emails
+        if pending_retry_emails:
+            result["pending_retry_emails"] = pending_retry_emails[:]
+        if retried_emails:
+            result["retried_emails"] = retried_emails[:]
         result["nonzero_blocked_emails"] = nonzero_blocked_emails
         result["removed_pool_emails"] = removed_pool_emails
         if invalid_phone_pool:

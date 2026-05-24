@@ -96,10 +96,13 @@ function latestEvent(events, stages) {
 function latestAccountEmail(events) {
   const event = latestEvent(events, [
     'gopay_pending_retry_account',
+    'paypal_pending_retry_account',
     'gopay_try_account',
     'gopay_rotate_account',
     'gopay_pending_retry_queued',
+    'paypal_pending_retry_queued',
     'gopay_pending_retry_failed',
+    'paypal_pending_retry_failed',
     'gopay_payment_process_failed_rotate',
     'gopay_account_failed_rotate',
     'checkout_not_approved_rotate',
@@ -156,16 +159,20 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
     'gopay_auto_register_bind_failed',
     'gopay_auto_register_failed',
     'gopay_account_failed_rotate',
+    'paypal_nonzero_amount_blocked_rotate',
+    'paypal_auto_register_bind_failed',
+    'paypal_auto_register_failed',
+    'paypal_account_failed_rotate',
   ])
   for (const event of events) {
     const stage = String(event?.stage || '')
     const email = normalizedEmail(event?.email)
     if (email) {
-      if (stage === 'gopay_pending_retry_queued') {
+      if (stage === 'gopay_pending_retry_queued' || stage === 'paypal_pending_retry_queued') {
         eventPendingEmails.add(email)
         eventFailedEmails.delete(email)
       }
-      if (stage === 'gopay_pending_retry_account') {
+      if (stage === 'gopay_pending_retry_account' || stage === 'paypal_pending_retry_account') {
         eventPendingEmails.delete(email)
       }
       if (stage === 'gopay_account_bound') {
@@ -180,14 +187,14 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
         eventPendingEmails.delete(email)
         if (!successful.has(email)) eventFailedEmails.add(email)
       }
-      if (stage === 'gopay_pending_retry_failed') {
+      if (stage === 'gopay_pending_retry_failed' || stage === 'paypal_pending_retry_failed') {
         eventPendingEmails.delete(email)
         if (!successful.has(email)) eventFailedEmails.add(email)
       }
       continue
     }
 
-    if (!terminalFailureStages.has(stage) && stage !== 'gopay_pending_retry_failed') continue
+    if (!terminalFailureStages.has(stage) && stage !== 'gopay_pending_retry_failed' && stage !== 'paypal_pending_retry_failed') continue
     const current = String(event?.current || event?.attempt || event?.event_id || '')
     if (current) eventFailureAttemptKeys.add(`attempt:${current}`)
   }
@@ -203,7 +210,7 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
       const normalized = normalizedEmail(email)
       return normalized && !successful.has(normalized)
     }).length
-  } else if (String(progress.stage || '') === 'gopay_pending_retry_account' && Number.isFinite(Number(progress.pending_retry))) {
+  } else if (['gopay_pending_retry_account', 'paypal_pending_retry_account'].includes(String(progress.stage || '')) && Number.isFinite(Number(progress.pending_retry))) {
     pendingRetry = Math.max(1, Number(progress.pending_retry || 0) + 1)
   } else {
     for (const email of successful) eventPendingEmails.delete(email)
@@ -214,12 +221,16 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
     }
   }
 
-  const retryAccountEvent = latestEvent(events, ['gopay_pending_retry_account'])
+  const retryAccountEvent = latestEvent(events, ['gopay_pending_retry_account', 'paypal_pending_retry_account'])
   const retryInfoEvent = latestEvent(events, [
     'gopay_pending_retry_account',
+    'paypal_pending_retry_account',
     'gopay_pending_retry_started',
+    'paypal_pending_retry_started',
     'gopay_pending_retry_wait',
+    'paypal_pending_retry_wait',
     'gopay_pending_retry_queued',
+    'paypal_pending_retry_queued',
   ])
   const retryRound = Number(progress.retry_round || retryInfoEvent?.retry_round || 0)
   const maxRetryRounds = Number(progress.max_retry_rounds || retryInfoEvent?.max_retry_rounds || 0)
@@ -227,8 +238,9 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
   let pendingRetryMeta = ''
   const currentStage = String(progress.stage || '')
   const activeRetryAccount = currentStage === 'gopay_pending_retry_account'
+    || currentStage === 'paypal_pending_retry_account'
     ? progress
-    : ['gopay_pending_retry_wait', 'gopay_pending_retry_started'].includes(currentStage)
+    : ['gopay_pending_retry_wait', 'gopay_pending_retry_started', 'paypal_pending_retry_wait', 'paypal_pending_retry_started'].includes(currentStage)
       ? null
       : retryAccountEvent
   if (activeRetryAccount) {
@@ -237,8 +249,8 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
     const retryText = attempt && total ? `重试第 ${attempt}/${total} 个账号` : '正在重试'
     pendingRetryMeta = [roundText, retryText].filter(Boolean).join(' · ')
   } else if (
-    ['gopay_pending_retry_wait', 'gopay_pending_retry_started'].includes(currentStage)
-    || ['gopay_pending_retry_wait', 'gopay_pending_retry_started', 'gopay_pending_retry_queued'].includes(String(retryInfoEvent?.stage || ''))
+    ['gopay_pending_retry_wait', 'gopay_pending_retry_started', 'paypal_pending_retry_wait', 'paypal_pending_retry_started'].includes(currentStage)
+    || ['gopay_pending_retry_wait', 'gopay_pending_retry_started', 'gopay_pending_retry_queued', 'paypal_pending_retry_wait', 'paypal_pending_retry_started', 'paypal_pending_retry_queued'].includes(String(retryInfoEvent?.stage || ''))
   ) {
     const pendingText = pendingRetry ? `${pendingRetry} 个待重试` : ''
     pendingRetryMeta = [roundText, pendingText].filter(Boolean).join(' · ')
@@ -264,7 +276,7 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
   const currentAccountAttempt = !isAutoRegister
     ? events.reduce((maxCurrent, event) => {
       const stage = String(event?.stage || '')
-      if (!['gopay_try_account', 'gopay_rotate_account', 'gopay_pending_retry_account'].includes(stage)) return maxCurrent
+      if (!['gopay_try_account', 'gopay_rotate_account', 'gopay_pending_retry_account', 'paypal_try_account', 'paypal_rotate_account', 'paypal_pending_retry_account'].includes(stage)) return maxCurrent
       const current = Number(event?.attempt || event?.current || 0)
       return Number.isFinite(current) ? Math.max(maxCurrent, current) : maxCurrent
     }, 0)
@@ -312,7 +324,7 @@ export function computeGoPayBoardView({ task, form = {}, batchActive = false, se
   const stats = metrics.progressStats
   const currentStage = String(progress.stage || '')
 
-  const waitingForRetry = ['gopay_pending_retry_wait', 'gopay_pending_retry_started'].includes(currentStage)
+  const waitingForRetry = ['gopay_pending_retry_wait', 'gopay_pending_retry_started', 'paypal_pending_retry_wait', 'paypal_pending_retry_started'].includes(currentStage)
   let currentAccount = progress.email || (waitingForRetry ? '' : latestAccountEmail(events)) || result.email || result.email_used || params.email || form.email || ''
   if (!currentAccount && params.auto_register) {
     const current = Number(progress.current || progress.attempt || 0)

@@ -198,6 +198,21 @@
               </div>
 
               <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
+                <label class="mb-1 block text-sm font-medium text-gray-200">待重试次数</label>
+                <input
+                  v-model.number="form.pendingRetryAttempts"
+                  type="number"
+                  min="0"
+                  max="3"
+                  class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                  :disabled="busy || running"
+                />
+                <div class="mt-2 text-xs text-gray-500">
+                  网络、代理、风控、手机号不可用、账号受限、卡占用和回跳超时会进入待重试池；金额非 0、登录态缺失等终态失败不重试。
+                </div>
+              </div>
+
+              <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
                 <div class="flex items-center justify-between gap-3">
                   <div class="text-sm font-medium text-gray-200">PaPal账号配置</div>
                   <div class="grid grid-cols-2 gap-2">
@@ -698,6 +713,7 @@ const form = ref({
   proxyApiProvider: '1024proxy',
   proxyPoolEnabled: false,
   proxyPoolText: '',
+  pendingRetryAttempts: 1,
   manualConfirm: false,
   paypalMode: 'create_account',
   paypalEmail: '',
@@ -1186,6 +1202,11 @@ function restorePayPalState() {
       if (saved.form.proxyApiEnabled === undefined) {
         form.value.proxyApiEnabled = false
       }
+      if (saved.form.pendingRetryAttempts === undefined) {
+        form.value.pendingRetryAttempts = 1
+      } else {
+        form.value.pendingRetryAttempts = Math.max(0, Math.min(3, Math.trunc(Number(form.value.pendingRetryAttempts) || 0)))
+      }
       if (!['1024proxy', 'cliproxy'].includes(String(form.value.proxyApiProvider || ''))) {
         form.value.proxyApiProvider = '1024proxy'
       }
@@ -1592,6 +1613,7 @@ async function startTask() {
       proxy_url: form.value.proxyUrl || null,
       proxy_pool_text: !form.value.proxyApiEnabled && form.value.proxyPoolEnabled ? (form.value.proxyPoolText || '') : '',
       proxy_api_provider: form.value.proxyApiEnabled ? form.value.proxyApiProvider : '',
+      pending_retry_attempts: Math.max(0, Math.min(3, Math.trunc(Number(form.value.pendingRetryAttempts) || 0))),
       proxy_label: form.value.proxyLabel,
       manual_confirm: Boolean(form.value.manualConfirm),
       paypal_browser: form.value.paypalBrowser,
