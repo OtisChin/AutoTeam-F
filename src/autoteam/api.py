@@ -4523,6 +4523,9 @@ def _generate_checkout_link_via_browser(
     email: str = "",
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
+    paypal_browser: str = "chromium",
+    roxybrowser_workspace_id: str = "",
+    roxybrowser_profile_id: str = "",
 ) -> dict[str, Any]:
     from autoteam.auth_session_store import load_auth_session
     from autoteam.chatgpt_api import ChatGPTTeamAPI
@@ -4544,13 +4547,28 @@ def _generate_checkout_link_via_browser(
 
     api = ChatGPTTeamAPI()
     try:
+        paypal_browser = str(paypal_browser or "chromium").strip().lower()
+        use_camoufox = paypal_browser in {"camoufox", "firefox"}
+        use_roxybrowser = paypal_browser in {"roxybrowser", "roxy-browser", "roxy"}
         session_data: dict[str, Any] = {}
         normalized_email = _normalized_email(email)
         if normalized_email:
             session_data = load_auth_session(normalized_email)
         device_id = str(session_data.get("device_id") or session_data.get("oai_device_id") or "").strip()
         api.oai_device_id = device_id or getattr(api, "oai_device_id", "")
-        api._launch_browser(proxy_url=proxy_url, proxy_bypass=proxy_bypass, headless=False, background=True)
+        api._launch_browser(
+            proxy_url=proxy_url,
+            proxy_bypass=proxy_bypass,
+            headless=False,
+            background=False,
+            locale="en-US",
+            accept_language="en-US,en;q=0.9",
+            randomize_fingerprint=False,
+            use_camoufox=use_camoufox,
+            use_roxybrowser=use_roxybrowser,
+            roxybrowser_workspace_id=roxybrowser_workspace_id,
+            roxybrowser_profile_id=roxybrowser_profile_id,
+        )
         if session_data:
             user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else {}
             account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
@@ -11064,6 +11082,9 @@ def post_paypal_task(params: PayPalTaskParams):
                                             email=candidate_email,
                                             proxy_url=selected_proxy_url,
                                             proxy_bypass=params.proxy_bypass,
+                                            paypal_browser=params.paypal_browser,
+                                            roxybrowser_workspace_id=roxybrowser_workspace_id,
+                                            roxybrowser_profile_id=roxybrowser_profile_id,
                                         )
                                     except HTTPException as browser_exc:
                                         raise HTTPException(
