@@ -7,6 +7,7 @@ import random
 import re
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -24,15 +25,54 @@ from autoteam.browser_fingerprint import (
     generate_fingerprint,
     get_context_options,
 )
-from autoteam.config import get_playwright_launch_options
+from autoteam.config import (
+    get_playwright_launch_options,
+    get_roxybrowser_config,
+    normalize_proxy_url,
+)
 from autoteam.paths import PROJECT_ROOT
 from autoteam.proxy_bridge import start_playwright_socks_bridge
+from autoteam.roxybrowser_client import RoxyBrowserClient
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = PROJECT_ROOT
 SCREENSHOT_DIR = PROJECT_ROOT / "screenshots"
+
+
+def _camoufox_effective_proxy_url(proxy_url: str | None):
+    """Return (effective_proxy_url, bridge) for Camoufox.
+
+    Camoufox can use unauthenticated SOCKS proxies directly. Keeping those direct
+    avoids routing PayPal traffic through our local HTTP CONNECT bridge.
+    """
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return None, None
+    try:
+        normalized = normalize_proxy_url(raw)
+    except Exception:
+        normalized = raw
+    try:
+        parsed = urlsplit(normalized)
+    except Exception:
+        parsed = None
+    if (
+        parsed
+        and parsed.scheme in {"socks5", "socks5h"}
+        and not parsed.username
+        and not parsed.password
+    ):
+        logger.info("[ChatGPT] Camoufox proxy mode: direct SOCKS")
+        return normalized, None
+
+    bridge = start_playwright_socks_bridge(proxy_url)
+    if bridge:
+        logger.info("[ChatGPT] Camoufox proxy mode: local HTTP bridge")
+        return bridge.proxy_url, bridge
+    logger.info("[ChatGPT] Camoufox proxy mode: direct HTTP")
+    return proxy_url, None
 
 
 class ChatGPTTeamAPI:
@@ -102,6 +142,10 @@ class ChatGPTTeamAPI:
         self.login_password = None
         self.workspace_options_cache = []
         self._proxy_bridge = None
+        self._roxybrowser_client = None
+        self._roxybrowser_dir_id = None
+        self._roxybrowser_workspace_id = None
+        self._roxybrowser_created_dir = False
 
     def _visible_locator_in_frames(self, selectors, timeout_ms=5000):
         selector = ", ".join(selectors)
@@ -132,8 +176,22 @@ class ChatGPTTeamAPI:
         accept_language: str = "zh-CN,zh;q=0.9,en;q=0.8",
         randomize_fingerprint: bool = True,
         use_camoufox: bool = False,
+        use_roxybrowser: bool = False,
+        roxybrowser_workspace_id: str | None = None,
+        roxybrowser_profile_id: str | None = None,
     ):
         SCREENSHOT_DIR.mkdir(exist_ok=True)
+
+        if use_roxybrowser:
+            self._launch_browser_roxybrowser(
+                proxy_url=proxy_url,
+                proxy_bypass=proxy_bypass,
+                headless=headless,
+                locale=locale,
+                workspace_id=roxybrowser_workspace_id,
+                profile_id=roxybrowser_profile_id,
+            )
+            return
 
         # 每次启动使用独立的临时 user_data_dir，避免设备级持久标识残留
         self._temp_user_data_dir = create_temp_user_data_dir()
@@ -141,10 +199,7 @@ class ChatGPTTeamAPI:
         if use_camoufox:
             # Firefox/Playwright 不支持 socks5 username/password，认证 SOCKS5 仍需要本地 HTTP bridge。
             # 但 Camoufox geoip 必须关闭，否则它会用 requests 访问 bridge 做 IP 预检测并失败。
-            effective_proxy_url = proxy_url
-            self._proxy_bridge = start_playwright_socks_bridge(proxy_url)
-            if self._proxy_bridge:
-                effective_proxy_url = self._proxy_bridge.proxy_url
+            effective_proxy_url, self._proxy_bridge = _camoufox_effective_proxy_url(proxy_url)
             self._launch_browser_camoufox(
                 effective_proxy_url=effective_proxy_url,
                 headless=headless,
@@ -212,6 +267,36 @@ class ChatGPTTeamAPI:
             self.page = self.context.pages[0]
         else:
             self.page = self.context.new_page()
+        self._clear_browser_runtime_data(reason="chromium launch")
+
+    def _clear_browser_runtime_data(self, *, reason: str) -> None:
+        """Discard browser session data before an account starts using the context."""
+        if not self.context:
+            return
+        cleared: list[str] = []
+        for method_name, label in (("clear_cookies", "cookies"), ("clear_permissions", "permissions")):
+            method = getattr(self.context, method_name, None)
+            if not method:
+                continue
+            try:
+                method()
+                cleared.append(label)
+            except Exception as exc:
+                logger.debug("[ChatGPT] clear %s skipped: %s", label, exc)
+
+        # CDP is supported by Chromium and connected RoxyBrowser contexts. Camoufox
+        # already uses a fresh temporary Firefox profile and may not expose CDP.
+        new_cdp_session = getattr(self.context, "new_cdp_session", None)
+        if new_cdp_session and self.page:
+            try:
+                cdp = new_cdp_session(self.page)
+                cdp.send("Network.clearBrowserCookies")
+                cdp.send("Network.clearBrowserCache")
+                cleared.append("http_cache")
+            except Exception as exc:
+                logger.debug("[ChatGPT] CDP browser cache clear skipped: %s", exc)
+        if cleared:
+            logger.info("[ChatGPT] browser runtime data cleared before account flow: %s reason=%s", ",".join(cleared), reason)
 
     def _launch_browser_camoufox(
         self,
@@ -226,8 +311,6 @@ class ChatGPTTeamAPI:
         无需额外的 JS init script 注入。
         """
         from camoufox.sync_api import Camoufox
-
-        from autoteam.config import normalize_proxy_url
 
         # Camoufox/Playwright Firefox 代理格式：server/username/password 分开传。
         # 注意：不能复用 Chromium 的 _parse_proxy_url()，它会把认证 socks5 改成 http。
@@ -257,9 +340,13 @@ class ChatGPTTeamAPI:
             headless=headless if headless is not None else False,
             os="windows",
             locale=locale,
+            window=(1280, 800),
             humanize=0.2,
-            # 不使用 Camoufox geoip 预检测：部分代理浏览器可用，但 requests 查 IP 会失败，导致启动前直接中断。
+            enable_cache=False,
+            # 不做 geoip 预探测；Camoufox 在 SOCKS/代理场景下会先请求公网 IP，
+            # 这会在浏览器启动前失败，直接中断任务。
             geoip=False,
+            i_know_what_im_doing=True,
         )
         self.context = self._camoufox_instance.__enter__()
         self.browser = None
@@ -271,12 +358,106 @@ class ChatGPTTeamAPI:
             self.page = self.context.pages[0]
         else:
             self.page = self.context.new_page()
+        self._clear_browser_runtime_data(reason="camoufox launch")
 
         logger.info(
             "[ChatGPT] Camoufox browser launched | locale=%s | proxy=%s | user_data_dir=%s",
             locale,
             "yes" if proxy_dict else "no",
             self._temp_user_data_dir,
+        )
+
+    def _launch_browser_roxybrowser(
+        self,
+        proxy_url: str | None = None,
+        proxy_bypass: str | None = None,
+        *,
+        headless: bool | None = None,
+        locale: str = "en-US",
+        accept_language: str = "en-US,en;q=0.9",
+        workspace_id: str | None = None,
+        profile_id: str | None = None,
+    ) -> None:
+        if headless:
+            logger.info("[ChatGPT] RoxyBrowser ignores headless=True and will open a visible window")
+        if proxy_bypass:
+            logger.info("[ChatGPT] RoxyBrowser ignores proxy_bypass=%s", proxy_bypass)
+
+        config = get_roxybrowser_config()
+        resolved_workspace_id = str(workspace_id or "").strip() or None
+        resolved_profile_id = str(profile_id or "").strip() or None
+        window_name = f"autoteam-chatgpt-{uuid.uuid4().hex[:8]}"
+        client = RoxyBrowserClient(config["api_host"], config["api_token"])
+        launch = client.launch(
+            window_name=window_name,
+            proxy_url=proxy_url,
+            workspace_id=resolved_workspace_id,
+            dir_id=resolved_profile_id,
+            clear_profile_data=True,
+        )
+
+        self.playwright = sync_playwright().start()
+        self._roxybrowser_client = client
+        self._roxybrowser_dir_id = launch.dir_id
+        self._roxybrowser_workspace_id = launch.workspace_id
+        self._roxybrowser_created_dir = launch.created_profile
+
+        endpoint_candidates: list[str] = []
+        for key in ("http", "ws", "webSocketDebuggerUrl"):
+            candidate = str(launch.connection.get(key) or "").strip()
+            if not candidate:
+                continue
+            if key == "http" and "://" not in candidate:
+                candidate = f"http://{candidate}"
+            if candidate not in endpoint_candidates:
+                endpoint_candidates.append(candidate)
+
+        if not endpoint_candidates:
+            raise RuntimeError("RoxyBrowser connection info 缺少可用的调试端点")
+
+        connect_error: Exception | None = None
+        for endpoint in endpoint_candidates:
+            try:
+                self.browser = self.playwright.chromium.connect_over_cdp(endpoint_url=endpoint)
+                connect_error = None
+                break
+            except Exception as exc:
+                connect_error = exc
+                logger.warning("[ChatGPT] RoxyBrowser connect_over_cdp failed for %s: %s", endpoint, exc)
+        if connect_error:
+            try:
+                client.browser_close(launch.dir_id)
+            except Exception:
+                pass
+            if launch.created_profile:
+                try:
+                    client.browser_delete(launch.workspace_id, [launch.dir_id])
+                except Exception:
+                    pass
+            try:
+                if self.playwright:
+                    self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
+            raise RuntimeError(f"RoxyBrowser 连接失败: {connect_error}") from connect_error
+
+        self.context = self.browser.contexts[0] if self.browser and self.browser.contexts else None
+        if not self.context:
+            raise RuntimeError("RoxyBrowser 未返回可用的浏览器上下文")
+        if self.context.pages:
+            self.page = self.context.pages[0]
+        else:
+            self.page = self.context.new_page()
+        self._clear_browser_runtime_data(reason="roxybrowser launch")
+        self._browser_fingerprint = None
+        logger.info(
+            "[ChatGPT] RoxyBrowser browser launched | workspace_id=%s | dir_id=%s | endpoint=%s | locale=%s | accept_language=%s",
+            self._roxybrowser_workspace_id,
+            self._roxybrowser_dir_id,
+            endpoint_candidates[0],
+            locale,
+            accept_language,
         )
 
     def _log_login_state(self, label):
@@ -1708,18 +1889,8 @@ class ChatGPTTeamAPI:
             return result["body"]
 
     def stop(self):
-        # Camoufox 模式：通过 __exit__ 让 Camoufox 自行清理浏览器和 Playwright
-        camoufox_inst = getattr(self, "_camoufox_instance", None)
-        if camoufox_inst:
-            try:
-                camoufox_inst.__exit__(None, None, None)
-            except Exception:
-                pass
-            self._camoufox_instance = None
-            self.context = None
-            self.page = None
-        else:
-            # Chromium (Playwright) 模式
+        roxybrowser_client = getattr(self, "_roxybrowser_client", None)
+        if roxybrowser_client:
             try:
                 if self.context:
                     self.context.close()
@@ -1731,6 +1902,16 @@ class ChatGPTTeamAPI:
             except Exception:
                 pass
             try:
+                if self._roxybrowser_dir_id:
+                    roxybrowser_client.browser_close(self._roxybrowser_dir_id)
+            except Exception:
+                pass
+            if self._roxybrowser_created_dir and self._roxybrowser_workspace_id and self._roxybrowser_dir_id:
+                try:
+                    roxybrowser_client.browser_delete(self._roxybrowser_workspace_id, [self._roxybrowser_dir_id])
+                except Exception:
+                    pass
+            try:
                 if self.playwright:
                     self.playwright.stop()
             except Exception:
@@ -1739,6 +1920,42 @@ class ChatGPTTeamAPI:
             self.context = None
             self.page = None
             self.playwright = None
+            self._roxybrowser_client = None
+            self._roxybrowser_dir_id = None
+            self._roxybrowser_workspace_id = None
+            self._roxybrowser_created_dir = False
+        else:
+            # Camoufox 模式：通过 __exit__ 让 Camoufox 自行清理浏览器和 Playwright
+            camoufox_inst = getattr(self, "_camoufox_instance", None)
+            if camoufox_inst:
+                try:
+                    camoufox_inst.__exit__(None, None, None)
+                except Exception:
+                    pass
+                self._camoufox_instance = None
+                self.context = None
+                self.page = None
+            else:
+                # Chromium (Playwright) 模式
+                try:
+                    if self.context:
+                        self.context.close()
+                except Exception:
+                    pass
+                try:
+                    if self.browser:
+                        self.browser.close()
+                except Exception:
+                    pass
+                try:
+                    if self.playwright:
+                        self.playwright.stop()
+                except Exception:
+                    pass
+                self.browser = None
+                self.context = None
+                self.page = None
+                self.playwright = None
         try:
             if self._proxy_bridge:
                 self._proxy_bridge.stop()

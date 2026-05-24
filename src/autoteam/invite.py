@@ -30,17 +30,11 @@ from autoteam.accounts import (
     add_account,
     update_account,
 )
-from autoteam.browser_fingerprint import (
-    apply_fingerprint_to_context,
-    cleanup_temp_user_data_dir,
-    create_temp_user_data_dir,
-    generate_fingerprint,
-    get_context_options,
-)
+from autoteam.auth_prompts import dismiss_passkey_prompt
 from autoteam.chatgpt_api import ChatGPTTeamAPI
-from autoteam.mail import TemporaryEmailClient
 from autoteam.config import get_playwright_launch_options
 from autoteam.identity import random_age, random_birthday, random_full_name, random_password
+from autoteam.mail import TemporaryEmailClient
 
 
 def _seat_label_from_raw(raw_seat: str) -> str:
@@ -201,6 +195,7 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
     page.goto(invite_link, wait_until="domcontentloaded", timeout=60000)
     time.sleep(5)
     wait_for_cloudflare(page)
+    dismiss_passkey_prompt(page)
     screenshot(page, "reg_01_invite_page.png")
     logger.info("[注册] 当前 URL: %s", page.url)
 
@@ -218,6 +213,7 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
         timeout=5000,
     )
     time.sleep(3)
+    dismiss_passkey_prompt(page)
     screenshot(page, "reg_02_signup.png")
 
     # 输入邮箱
@@ -250,6 +246,7 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
             "继续按钮",
         )
         time.sleep(5)
+        dismiss_passkey_prompt(page)
         screenshot(page, "reg_03_after_email.png")
         assert_not_blocked(page, "email_submit")
     else:
@@ -285,6 +282,7 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
             "继续按钮",
         )
         time.sleep(5)
+        dismiss_passkey_prompt(page)
         screenshot(page, "reg_04_after_password.png")
         assert_not_blocked(page, "password_submit")
 
@@ -366,6 +364,7 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
     )
 
     time.sleep(8)
+    dismiss_passkey_prompt(page)
     screenshot(page, "reg_06_after_code.png")
     logger.info("[注册] 当前 URL: %s", page.url)
     assert_not_blocked(page, "code_submit")
@@ -449,10 +448,12 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
             "完成按钮",
         )
         time.sleep(8)
+        dismiss_passkey_prompt(page)
         screenshot(page, "reg_07_after_profile.png")
         assert_not_blocked(page, "profile_submit")
 
     # 可能需要接受条款 / 加入 workspace
+    dismiss_passkey_prompt(page)
     find_and_click(
         page,
         [
@@ -548,23 +549,17 @@ def run():
         logger.info("[邀请] 开始注册 ChatGPT 账号")
 
         with sync_playwright() as p:
-            fp = generate_fingerprint()
-            tmp_dir = create_temp_user_data_dir()
-            try:
-                context = p.chromium.launch_persistent_context(
-                    tmp_dir,
-                    **get_playwright_launch_options(),
-                    **get_context_options(fp),
-                )
-                apply_fingerprint_to_context(context, fp)
-                page = context.pages[0] if context.pages else context.new_page()
+            browser = p.chromium.launch(**get_playwright_launch_options())
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            )
+            page = context.new_page()
 
-                result, pwd = register_with_invite(page, invite_link, email, mail_client)
+            result, pwd = register_with_invite(page, invite_link, email, mail_client)
 
-                screenshot(page, "final.png")
-                context.close()
-            finally:
-                cleanup_temp_user_data_dir(tmp_dir)
+            screenshot(page, "final.png")
+            browser.close()
 
         if result:
             logger.info("[邀请] %s 已注册并加入 ChatGPT Team", email)

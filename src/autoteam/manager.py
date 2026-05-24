@@ -18,8 +18,8 @@ Token自由管理系统
     python manager.py status    # 查看所有账号状态
 """
 
-import getpass
 import contextlib
+import getpass
 import json
 import logging
 import os
@@ -55,6 +55,7 @@ from autoteam.accounts import (
     update_account,
 )
 from autoteam.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
+from autoteam.auth_prompts import dismiss_passkey_prompt
 from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.codex_auth import (
     CodexOAuthPhoneRequired,
@@ -76,13 +77,6 @@ from autoteam.codex_auth import (
     refresh_access_token,
     refresh_main_auth_file,
     save_auth_file,
-)
-from autoteam.browser_fingerprint import (
-    apply_fingerprint_to_context,
-    cleanup_temp_user_data_dir,
-    create_temp_user_data_dir,
-    generate_fingerprint,
-    get_context_options,
 )
 from autoteam.config import get_playwright_launch_options
 from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
@@ -2096,20 +2090,14 @@ def _complete_registration(email, password, invite_link, mail_client, *, leave_w
 
     logger.info("[注册] 开始注册 %s...", email)
     with sync_playwright() as p:
-        fp = generate_fingerprint()
-        tmp_dir = create_temp_user_data_dir()
-        try:
-            context = p.chromium.launch_persistent_context(
-                tmp_dir,
-                **get_playwright_launch_options(),
-                **get_context_options(fp),
-            )
-            apply_fingerprint_to_context(context, fp)
-            page = context.pages[0] if context.pages else context.new_page()
-            result, password = register_with_invite(page, invite_link, email, mail_client, password=password)
-            context.close()
-        finally:
-            cleanup_temp_user_data_dir(tmp_dir)
+        browser = p.chromium.launch(**get_playwright_launch_options())
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        )
+        page = context.new_page()
+        result, password = register_with_invite(page, invite_link, email, mail_client, password=password)
+        browser.close()
 
     if not result:
         logger.error("[注册] 注册 %s 失败", email)
@@ -2461,6 +2449,9 @@ def _detect_direct_register_step(page):
     if _is_google_redirect(page):
         return "google"
 
+    if "create-account-enroll-passkey" in url or "enroll-passkey" in url:
+        return "passkey"
+
     if "email-verification" in url:
         return "code"
     if "about-you" in url:
@@ -2505,6 +2496,10 @@ def _wait_for_direct_register_step(page, allowed_steps, timeout=15):
     deadline = time.time() + timeout
     while time.time() < deadline:
         step = _detect_direct_register_step(page)
+        if step == "passkey":
+            if dismiss_passkey_prompt(page):
+                time.sleep(0.5)
+                continue
         if step in allowed_steps:
             return step
         time.sleep(0.5)
@@ -2515,6 +2510,10 @@ def _wait_for_direct_step_change(page, current_step, timeout=15):
     deadline = time.time() + timeout
     while time.time() < deadline:
         step = _detect_direct_register_step(page)
+        if step == "passkey":
+            if dismiss_passkey_prompt(page):
+                time.sleep(0.5)
+                continue
         if step != current_step:
             return step
         time.sleep(0.5)
@@ -2666,23 +2665,19 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         launch_kwargs = get_playwright_launch_options()
         if sys.platform.startswith("win"):
             launch_kwargs["slow_mo"] = 100
-        fp = generate_fingerprint()
-        tmp_dir = create_temp_user_data_dir()
-        context = p.chromium.launch_persistent_context(
-            tmp_dir,
-            **launch_kwargs,
-            **get_context_options(fp),
+        browser = p.chromium.launch(**launch_kwargs)
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
         )
-        apply_fingerprint_to_context(context, fp)
-        page = context.pages[0] if context.pages else context.new_page()
+        page = context.new_page()
         auth_context_state = _new_auth_context_capture_state()
         page.on("request", lambda request: _capture_auth_context_request(request, auth_context_state))
         page.on("response", lambda response: _capture_auth_context_response(response, auth_context_state))
 
         def _finish(success, session_data=None):
             try:
-                context.close()
-                cleanup_temp_user_data_dir(tmp_dir)
+                browser.close()
             except Exception:
                 pass
             if return_session:
@@ -2825,6 +2820,10 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         _safe_invite_screenshot(page, "direct_03_after_email.png")
         current_step = _detect_direct_register_step(page)
         logger.info("[直接注册] 邮箱步骤结束状态: %s | URL: %s", current_step, page.url)
+        if current_step == "passkey":
+            logger.info("[直接注册] 检测到通行密钥页，点击跳过")
+            if dismiss_passkey_prompt(page):
+                current_step = _wait_for_direct_step_change(page, "passkey", timeout=10)
         if current_step == "google":
             logger.warning("[直接注册] 邮箱步骤仍停留在 Google 登录页")
             return _finish(False)
@@ -2890,6 +2889,10 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
 
         _safe_invite_screenshot(page, "direct_04_after_password.png")
         current_step = _detect_direct_register_step(page)
+        if current_step == "passkey":
+            logger.info("[直接注册] 检测到通行密钥页，点击跳过")
+            if dismiss_passkey_prompt(page):
+                current_step = _wait_for_direct_step_change(page, "passkey", timeout=10)
         if current_step == "google":
             logger.warning("[直接注册] 密码步骤仍停留在 Google 登录页")
             return _finish(False)
@@ -2908,6 +2911,14 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             {"code", "profile", "completed", "google", "email", "password"},
             timeout=8,
         )
+        if code_step == "passkey":
+            logger.info("[直接注册] 检测到通行密钥页，点击跳过")
+            if dismiss_passkey_prompt(page):
+                code_step = _wait_for_direct_register_step(
+                    page,
+                    {"code", "profile", "completed", "google", "email", "password"},
+                    timeout=10,
+                )
         if code_step == "code":
             code_timeout = _direct_register_code_timeout(mail_client, email)
             provider_name = _mail_client_provider_name(mail_client)
@@ -2970,6 +2981,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         logger.info("[直接注册] 当前 URL: %s", page.url)
 
         try:
+            dismiss_passkey_prompt(page)
             join_btn = page.locator('button:has-text("Accept"), button:has-text("Join"), button:has-text("加入")').first
             if join_btn.is_visible(timeout=5000):
                 join_btn.click()

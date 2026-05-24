@@ -135,9 +135,36 @@
                   <select v-model="form.paypalBrowser" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
                     <option value="chromium">Chromium</option>
                     <option value="camoufox">Camoufox</option>
+                    <option value="roxybrowser">RoxyBrowser</option>
                     <option value="protocol">协议模式</option>
                   </select>
                 </label>
+                <div v-if="roxyBrowserConfigIssue" class="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                  {{ roxyBrowserConfigIssue }}
+                </div>
+                <div v-if="form.paypalBrowser === 'roxybrowser' && roxyBrowserConfigured" class="mt-3">
+                  <div class="mb-1 flex items-center justify-between gap-2">
+                    <label class="text-xs text-gray-400">RoxyBrowser 窗口 / Profile</label>
+                    <button
+                      type="button"
+                      class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-300 transition hover:bg-gray-800 disabled:opacity-50"
+                      :disabled="busy || running || roxyBrowserProfilesLoading"
+                      @click="loadRoxyBrowserProfiles"
+                    >
+                      {{ roxyBrowserProfilesLoading ? '读取中...' : '刷新' }}
+                    </button>
+                  </div>
+                  <select
+                    v-model="form.roxyBrowserProfileId"
+                    class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                    :disabled="busy || running || roxyBrowserProfilesLoading || !roxyBrowserProfiles.length"
+                  >
+                    <option value="">请选择窗口 / Profile</option>
+                    <option v-for="profile in roxyBrowserProfiles" :key="profile.id" :value="profile.id">
+                      {{ profile.name }} ({{ profile.id }})
+                    </option>
+                  </select>
+                </div>
               </div>
 
               <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
@@ -647,6 +674,11 @@ const poolEditImportOpen = ref(false)
 const poolEditImportText = ref('')
 const message = ref('')
 const messageClass = ref('bg-green-500/10 text-green-400 border-green-500/20')
+const roxyBrowserConfig = ref({})
+const roxyBrowserConfigLoading = ref(false)
+const roxyBrowserProfiles = ref([])
+const roxyBrowserProfilesLoading = ref(false)
+const roxyBrowserProfilesError = ref('')
 const lastTask = ref(null)
 const selectedTask = ref(null)
 const pollTimer = ref(null)
@@ -678,6 +710,7 @@ const form = ref({
   autofillEnabled: true,
   autoOauthAfterSuccess: false,
   paypalBrowser: 'chromium',
+  roxyBrowserProfileId: '',
   billingName: '',
   billingPhone: '',
   billingCountry: 'US',
@@ -758,6 +791,28 @@ const proxySettingSummary = computed(() => {
     return '已启用代理 API 轮换；每个账号流程开始前调用一次供应商 API。'
   }
   return `已配置 ${proxyPoolEntries.value.length} 条代理；每个账号流程开始时随机选一条，编辑弹窗内可导入、修改和删除。`
+})
+const roxyBrowserConfigured = computed(() => Boolean(roxyBrowserConfig.value.api_token_present && roxyBrowserConfig.value.api_host_valid !== false))
+const roxyBrowserConfigIssue = computed(() => {
+  if (form.value.paypalBrowser !== 'roxybrowser') return ''
+  if (roxyBrowserConfigLoading.value) return '正在检查 RoxyBrowser 配置...'
+  if (!roxyBrowserConfigured.value) {
+    if (roxyBrowserConfig.value.api_host_valid === false) {
+      return roxyBrowserConfig.value.api_host_error || 'RoxyBrowser API 地址无效'
+    }
+    if (!roxyBrowserConfig.value.api_token_present) {
+      return 'RoxyBrowser 未配置 API Token，请先到设置页保存后再使用'
+    }
+    return 'RoxyBrowser 配置未就绪，请先检查设置页参数'
+  }
+  if (roxyBrowserProfilesLoading.value) return '正在加载 RoxyBrowser 窗口列表...'
+  if (roxyBrowserProfilesError.value) return roxyBrowserProfilesError.value
+  if (!roxyBrowserProfiles.value.length) return '未找到可用的 RoxyBrowser 窗口，请先在 RoxyBrowser 客户端创建窗口'
+  if (!String(form.value.roxyBrowserProfileId || '').trim()) return '请选择 RoxyBrowser 窗口'
+  if (!roxyBrowserProfiles.value.some(item => item.id === form.value.roxyBrowserProfileId)) {
+    return '当前选择的 RoxyBrowser 窗口不可用，请刷新后重新选择'
+  }
+  return ''
 })
 const poolEditTitle = computed(() => poolEditTarget.value === 'phone' ? '编辑手机号池' : '编辑动态代理池')
 const poolEditHelp = computed(() => poolEditTarget.value === 'phone'
@@ -1117,6 +1172,7 @@ function restorePayPalState() {
     }
     if (saved.form && typeof saved.form === 'object') {
       Object.assign(form.value, saved.form)
+      delete form.value.roxyBrowserWorkspaceId
       form.value.paypalPassword = ''
       form.value.accountEmails = Array.isArray(saved.form.accountEmails) ? saved.form.accountEmails : []
       if (saved.form.phonePoolEnabled === undefined && String(saved.form.phonePoolText || '').trim()) {
@@ -1134,7 +1190,10 @@ function restorePayPalState() {
       if (String(form.value.paypalBrowser || '').toLowerCase() === 'chrome') {
         form.value.paypalBrowser = 'chromium'
       }
-      if (!['chromium', 'camoufox', 'protocol'].includes(String(form.value.paypalBrowser || '').toLowerCase())) {
+      if (['roxy', 'roxy-browser'].includes(String(form.value.paypalBrowser || '').toLowerCase())) {
+        form.value.paypalBrowser = 'roxybrowser'
+      }
+      if (!['chromium', 'camoufox', 'roxybrowser', 'protocol'].includes(String(form.value.paypalBrowser || '').toLowerCase())) {
         form.value.paypalBrowser = 'chromium'
       }
       if (form.value.proxyApiEnabled) {
@@ -1295,6 +1354,56 @@ async function generateLink() {
   }
 }
 
+async function loadRoxyBrowserConfig() {
+  roxyBrowserConfigLoading.value = true
+  try {
+    const result = await api.getRoxyBrowserConfig()
+    roxyBrowserConfig.value = result || {}
+  } catch (error) {
+    console.warn('RoxyBrowser 配置加载失败:', error)
+    roxyBrowserConfig.value = {
+      configured: false,
+      api_token_present: false,
+      api_host_valid: false,
+      api_host_error: error?.message || 'RoxyBrowser 配置加载失败',
+    }
+  } finally {
+    roxyBrowserConfigLoading.value = false
+  }
+}
+
+async function loadRoxyBrowserProfiles() {
+  roxyBrowserProfilesError.value = ''
+  if (!roxyBrowserConfigured.value) {
+    roxyBrowserProfiles.value = []
+    form.value.roxyBrowserProfileId = ''
+    return
+  }
+  roxyBrowserProfilesLoading.value = true
+  try {
+    const result = await api.getRoxyBrowserProfiles()
+    const profiles = Array.isArray(result?.profiles) ? result.profiles : []
+    roxyBrowserProfiles.value = profiles
+      .map(item => ({
+        id: String(item?.id || '').trim(),
+        name: String(item?.name || item?.id || '').trim(),
+        workspace_id: String(item?.workspace_id || '').trim(),
+        workspace_name: String(item?.workspace_name || '').trim(),
+      }))
+      .filter(item => item.id)
+    const selected = String(form.value.roxyBrowserProfileId || '').trim()
+    if (!roxyBrowserProfiles.value.some(item => item.id === selected)) {
+      form.value.roxyBrowserProfileId = roxyBrowserProfiles.value[0]?.id || ''
+    }
+  } catch (error) {
+    roxyBrowserProfiles.value = []
+    form.value.roxyBrowserProfileId = ''
+    roxyBrowserProfilesError.value = `读取 RoxyBrowser 窗口失败: ${error?.message || '未知错误'}`
+  } finally {
+    roxyBrowserProfilesLoading.value = false
+  }
+}
+
 async function refreshTask() {
   try {
     const tasks = await api.getTasks()
@@ -1377,6 +1486,9 @@ function validateBeforeStart() {
   if (form.value.batchMode && !selectedBatchEmails.value.length) {
     throw new Error('请先选择批量账号')
   }
+  if (form.value.paypalBrowser === 'roxybrowser' && roxyBrowserConfigIssue.value) {
+    throw new Error(roxyBrowserConfigIssue.value)
+  }
   if (form.value.proxyApiEnabled) {
     const provider = String(form.value.proxyApiProvider || '').trim()
     if (!['1024proxy', 'cliproxy'].includes(provider)) {
@@ -1417,6 +1529,10 @@ function validateBeforeStart() {
 async function startTask() {
   busy.value = true
   try {
+    if (form.value.paypalBrowser === 'roxybrowser') {
+      await loadRoxyBrowserConfig()
+      await loadRoxyBrowserProfiles()
+    }
     validateBeforeStart()
     currentLink.value = ''
     const effectiveEmail = form.value.batchMode ? selectedBatchEmails.value[0] : singleSelectedEmail.value
@@ -1445,6 +1561,7 @@ async function startTask() {
       paypal_card_cvv: form.value.paypalCardCvv,
       autofill_enabled: Boolean(form.value.autofillEnabled),
       auto_oauth_after_success: Boolean(form.value.autoOauthAfterSuccess),
+      roxybrowser_profile_id: form.value.roxyBrowserProfileId,
       billing_name: form.value.billingName,
       billing_email: effectiveEmail,
       billing_phone: firstPhoneAccount?.phone_number || form.value.billingPhone,
@@ -1524,6 +1641,16 @@ watch(
 )
 
 watch(
+  () => form.value.paypalBrowser,
+  async (browser) => {
+    if (String(browser || '').toLowerCase() === 'roxybrowser') {
+      await loadRoxyBrowserConfig()
+      await loadRoxyBrowserProfiles()
+    }
+  }
+)
+
+watch(
   [form, bindForm, selectedAccountEmail, accountSearchKeyword, currentLink, phonePoolStatusMap],
   savePayPalState,
   { deep: true }
@@ -1534,6 +1661,10 @@ onMounted(async () => {
   normalizeBindDefaults()
   restoredFormState.value = true
   savePayPalState()
+  await loadRoxyBrowserConfig()
+  if (String(form.value.paypalBrowser || '').toLowerCase() === 'roxybrowser') {
+    await loadRoxyBrowserProfiles()
+  }
   await loadAccounts()
   await refreshTask()
   pollTimer.value = setInterval(refreshTask, 3000)

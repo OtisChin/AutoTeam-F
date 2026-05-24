@@ -40,9 +40,13 @@ HUMAN_VERIFICATION_HINTS = (
 DATADOME_HINTS = (
     "datadome",
     "captcha_failed",
+    "ct.ddc.paypal.com",
+    "ddc.paypal.com",
     "geo.captcha-delivery.com",
+    "geo.ddc.paypal.com",
     "dd.js",
     "interstitial",
+    "please enable js and disable any ad blocker",
 )
 # captcha 单独作为 hint 误报率太高（很多正常 PayPal 页面包含这个词），移到更精确的检测
 DATADOME_RESPONSE_HINTS = DATADOME_HINTS + ("captcha",)
@@ -172,9 +176,13 @@ def _safe_json(resp: Any, stage: str) -> dict[str, Any]:
     try:
         payload = resp.json()
     except Exception as exc:
+        text = str(getattr(resp, "text", "") or "")
+        failure_stage, message = _classify_error_text(text)
+        if failure_stage != "paypal_protocol":
+            raise RuntimeError(f"{failure_stage}|{message}") from exc
         raise RuntimeError(
             f"{stage} 返回非 JSON: HTTP {getattr(resp, 'status_code', '?')} "
-            f"{(getattr(resp, 'text', '') or '')[:300]}"
+            f"{text[:300]}"
         ) from exc
     return payload if isinstance(payload, dict) else {"_raw": payload}
 
@@ -740,7 +748,16 @@ def run_paypal_no_card_protocol_signup(
             },
             timeout=timeout,
         )
-        auth_payload = auth_resp.json()[0]
+        try:
+            auth_json = auth_resp.json()
+        except Exception as exc:
+            stage, message = _classify_error_text(str(auth_resp.text or ""))
+            if stage != "paypal_protocol":
+                raise RuntimeError(f"{stage}|{message}") from exc
+            raise RuntimeError(
+                f"paypal_protocol|PayPal authorize 返回非 JSON: HTTP {auth_resp.status_code}"
+            ) from exc
+        auth_payload = auth_json[0] if isinstance(auth_json, list) and auth_json else {}
         authorize = ((auth_payload.get("data") or {}).get("billing") or {}).get("authorize") or {}
         return_url = str((authorize.get("returnURL") or {}).get("href") or "")
         if not return_url:

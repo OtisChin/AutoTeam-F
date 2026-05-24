@@ -418,6 +418,8 @@ def _env_config_keys() -> list[str]:
         "PLAYWRIGHT_PROXY_USERNAME",
         "PLAYWRIGHT_PROXY_PASSWORD",
         "AUTOTEAM_LOCAL_BASE_URL",
+        "ROXYBROWSER_API_HOST",
+        "ROXYBROWSER_API_TOKEN",
         "GOPAY_AUTO_REGISTER_BIND_DELAY_MIN",
         "GOPAY_AUTO_REGISTER_BIND_DELAY_MAX",
         "GOPAY_AUTO_SIGNUP_WALLET_ATTEMPTS",
@@ -880,6 +882,136 @@ def _mask_secret_for_config(value: str) -> str:
     if len(text) <= 8:
         return f"{text[:2]}******{text[-2:]}" if len(text) > 4 else "******"
     return f"{text[:4]}******{text[-4:]}"
+
+
+def _normalize_roxybrowser_api_host(api_host: str | None) -> str:
+    raw = str(api_host or "").strip().rstrip("/")
+    if not raw:
+        raw = "http://127.0.0.1:50000"
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.port is None:
+        raise ValueError("请使用 http://host:port，例如 http://127.0.0.1:50000")
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{parsed.scheme}://{host}:{parsed.port}"
+
+
+def _roxybrowser_env() -> dict[str, str]:
+    from autoteam.setup_wizard import _read_env
+
+    env = _read_env()
+
+    def pick(key: str, default: str = "") -> str:
+        return str(env.get(key, "") or os.environ.get(key, "") or default).strip()
+
+    return {
+        "api_host": pick("ROXYBROWSER_API_HOST", "http://127.0.0.1:50000").rstrip("/"),
+        "api_token": pick("ROXYBROWSER_API_TOKEN"),
+    }
+
+
+def _roxybrowser_config_response(message: str = "") -> dict[str, Any]:
+    cfg = _roxybrowser_env()
+    try:
+        api_host = _normalize_roxybrowser_api_host(cfg["api_host"])
+        host_valid = True
+        host_error = ""
+    except Exception as exc:
+        api_host = cfg["api_host"] or "http://127.0.0.1:50000"
+        host_valid = False
+        host_error = str(exc)
+    missing_keys = []
+    if not cfg["api_token"]:
+        missing_keys.append("ROXYBROWSER_API_TOKEN")
+    if not host_valid:
+        missing_keys.append("ROXYBROWSER_API_HOST")
+    return {
+        "message": message,
+        "api_host": api_host,
+        "api_host_valid": host_valid,
+        "api_host_error": host_error,
+        "api_token_present": bool(cfg["api_token"]),
+        "api_token_masked": _mask_secret_for_config(cfg["api_token"]),
+        "configured": bool(cfg["api_token"] and host_valid),
+        "missing_keys": missing_keys,
+    }
+
+
+def _roxybrowser_workspaces_response() -> dict[str, Any]:
+    cfg = _roxybrowser_env()
+    try:
+        from autoteam.roxybrowser_client import RoxyBrowserClient
+
+        client = RoxyBrowserClient(cfg["api_host"], cfg["api_token"])
+        workspaces = client.list_workspaces()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"读取 RoxyBrowser 工作空间失败: {exc}") from exc
+    return {"workspaces": workspaces, "count": len(workspaces)}
+
+
+def _roxybrowser_profiles_response() -> dict[str, Any]:
+    cfg = _roxybrowser_env()
+    try:
+        from autoteam.roxybrowser_client import RoxyBrowserClient
+
+        client = RoxyBrowserClient(cfg["api_host"], cfg["api_token"])
+        profiles = client.list_all_profiles()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"读取 RoxyBrowser 窗口失败: {exc}") from exc
+    return {"profiles": profiles, "count": len(profiles)}
+
+
+@app.get("/api/config/roxybrowser")
+def get_roxybrowser_config_api():
+    return _roxybrowser_config_response()
+
+
+@app.get("/api/config/roxybrowser/workspaces")
+def get_roxybrowser_workspaces_api():
+    return _roxybrowser_workspaces_response()
+
+
+@app.get("/api/config/roxybrowser/profiles")
+def get_roxybrowser_profiles_api():
+    return _roxybrowser_profiles_response()
+
+
+@app.put("/api/config/roxybrowser")
+async def save_roxybrowser_config_api(request: Request):
+    from autoteam.setup_wizard import _write_env
+
+    data = await request.json()
+    current = _roxybrowser_env()
+    raw_api_host = (
+        data.get("api_host")
+        or data.get("ROXYBROWSER_API_HOST")
+        or current["api_host"]
+        or "http://127.0.0.1:50000"
+    )
+    try:
+        api_host = _normalize_roxybrowser_api_host(raw_api_host)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"RoxyBrowser API 地址格式无效: {exc}") from exc
+
+    api_token = str(data.get("api_token") or data.get("ROXYBROWSER_API_TOKEN") or "").strip()
+    clear_api_token = bool(data.get("clear_api_token") or data.get("clearApiToken"))
+
+    updates = {
+        "ROXYBROWSER_API_HOST": api_host,
+    }
+    if clear_api_token:
+        updates["ROXYBROWSER_API_TOKEN"] = ""
+    elif api_token:
+        updates["ROXYBROWSER_API_TOKEN"] = api_token
+
+    for key, value in updates.items():
+        _write_env(key, value)
+        os.environ[key] = value
+
+    return _roxybrowser_config_response("RoxyBrowser 配置已保存")
 
 
 @app.get("/api/config/rekberinaja")
@@ -2096,6 +2228,14 @@ class PayPalTaskParams(BaseModel):
     proxy_label: str = Field("", validation_alias=AliasChoices("proxy_label", "proxyLabel"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
     paypal_browser: str = Field("chromium", validation_alias=AliasChoices("paypal_browser", "paypalBrowser"))
+    roxybrowser_workspace_id: str = Field(
+        "",
+        validation_alias=AliasChoices("roxybrowser_workspace_id", "roxybrowserWorkspaceId"),
+    )
+    roxybrowser_profile_id: str = Field(
+        "",
+        validation_alias=AliasChoices("roxybrowser_profile_id", "roxybrowserProfileId", "roxybrowser_dir_id", "roxybrowserDirId"),
+    )
     manual_confirm: bool = Field(True, validation_alias=AliasChoices("manual_confirm", "manualConfirm"))
     paypal_mode: str = Field("existing_account", validation_alias=AliasChoices("paypal_mode", "paypalMode"))
     paypal_email: str = Field("", validation_alias=AliasChoices("paypal_email", "paypalEmail"))
@@ -10092,6 +10232,8 @@ def post_paypal_task(params: PayPalTaskParams):
             account_emails.append(normalized)
     checkout_url = str(params.checkout_url or "").strip()
     bind_link_payload = params.bind_link_payload if isinstance(params.bind_link_payload, dict) else {}
+    roxybrowser_workspace_id = str(params.roxybrowser_workspace_id or "").strip()
+    roxybrowser_profile_id = str(params.roxybrowser_profile_id or "").strip()
     sms_url = str(params.sms_url or "").strip()
     otp_channel = str(params.otp_channel or "sms").strip().lower() or "sms"
     proxy_url = str(params.proxy_url or "").strip()
@@ -10138,23 +10280,23 @@ def post_paypal_task(params: PayPalTaskParams):
         if not str(params.billing_phone or "").strip():
             params.billing_phone = str(phone_accounts[0].get("phone_number") or "").strip()
     try:
-        normalized_proxy_url = normalize_proxy_url(proxy_url, default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME) if proxy_url else ""
+        # Imported account/password endpoints are provider HTTP(S) entries unless
+        # the user explicitly supplies a SOCKS scheme. Forcing them to SOCKS
+        # routes Camoufox through the local bridge and changes transport behavior.
+        normalized_proxy_url = normalize_proxy_url(proxy_url) if proxy_url else ""
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"代理格式错误: {proxy_url} ({exc})") from exc
     if not normalized_proxy_url and proxy_api_provider:
         default_proxy_entry = _default_proxy_entry(proxy_api_provider)
         if default_proxy_entry:
             try:
-                normalized_proxy_url = normalize_proxy_url(
-                    default_proxy_entry,
-                    default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME,
-                )
+                normalized_proxy_url = normalize_proxy_url(default_proxy_entry)
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"默认代理格式错误: {default_proxy_entry} ({exc})") from exc
     normalized_proxy_pool: list[str] = []
     for raw_pool_proxy in proxy_pool:
         try:
-            normalized = normalize_proxy_url(raw_pool_proxy, default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME)
+            normalized = normalize_proxy_url(raw_pool_proxy)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"动态代理池格式错误: {raw_pool_proxy} ({exc})") from exc
         if normalized and normalized not in normalized_proxy_pool:
@@ -10213,6 +10355,8 @@ def post_paypal_task(params: PayPalTaskParams):
         account_emails.insert(0, email)
     if not checkout_url and not bind_link_payload:
         raise HTTPException(status_code=400, detail="checkout_url 不能为空，或提供 bind_link_payload 用于自动生成链接")
+    if params.manual_confirm and params.autofill_enabled:
+        raise HTTPException(status_code=400, detail="手动确认模式与自动生成账单信息不能同时开启")
     if not params.manual_confirm:
         if paypal_mode == "existing_account":
             if not str(params.paypal_email or "").strip():
@@ -10281,6 +10425,8 @@ def post_paypal_task(params: PayPalTaskParams):
         "proxy_api_url_present": bool(proxy_api_url),
         "proxy_label": params.proxy_label,
         "proxy_bypass": params.proxy_bypass,
+        "roxybrowser_workspace_id": roxybrowser_workspace_id,
+        "roxybrowser_profile_id": roxybrowser_profile_id,
         "manual_confirm": bool(params.manual_confirm),
         "paypal_mode": paypal_mode,
         "paypal_email": params.paypal_email,
@@ -10796,6 +10942,8 @@ def post_paypal_task(params: PayPalTaskParams):
                                 paypal_card_expiry=params.paypal_card_expiry,
                                 paypal_card_cvv=params.paypal_card_cvv,
                                 paypal_browser=params.paypal_browser,
+                                roxybrowser_workspace_id=roxybrowser_workspace_id,
+                                roxybrowser_profile_id=roxybrowser_profile_id,
                             )
                 except HTTPException as exc:
                     exc_message = str(exc.detail) if getattr(exc, "detail", None) else str(exc)

@@ -1,5 +1,9 @@
 <template>
   <div class="mt-6 space-y-6">
+    <div v-if="message" class="rounded-lg border px-4 py-3 text-sm" :class="messageClass">
+      {{ message }}
+    </div>
+
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-start justify-between gap-4 mb-4">
         <div>
@@ -58,6 +62,72 @@
             {{ configImporting ? '导入中...' : '导入配置' }}
           </button>
         </div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold text-white">RoxyBrowser</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            配置 PayPal 任务使用 RoxyBrowser 模式时连接本机客户端所需的 API 参数。
+          </p>
+        </div>
+        <span
+          class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
+          :class="roxyBrowserConfigured
+            ? 'bg-green-500/10 text-green-400 border-green-500/20'
+            : 'bg-gray-800 text-gray-400 border-gray-700'">
+          {{ roxyBrowserConfigured ? '已配置' : '未配置' }}
+        </span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">API 地址</label>
+          <input
+            v-model.trim="roxyBrowserForm.api_host"
+            type="text"
+            autocomplete="off"
+            placeholder="http://127.0.0.1:50000"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">
+            API Token
+            <span v-if="roxyBrowserStatus.api_token_present" class="text-xs text-green-400 ml-1">已保存</span>
+          </label>
+          <input
+            v-model="roxyBrowserForm.api_token"
+            type="password"
+            autocomplete="off"
+            :placeholder="roxyBrowserStatus.api_token_masked || '请输入 RoxyBrowser API Token'"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+          <p class="mt-1 text-xs text-gray-500">已有 Token 时留空会保留原配置。</p>
+        </div>
+      </div>
+
+      <div v-if="!roxyBrowserConfigured" class="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+        PayPal 选择 RoxyBrowser 模式前，需要先保存 API Token。
+      </div>
+
+      <div class="mt-3 flex justify-end gap-3">
+        <button
+          @click="loadRoxyBrowserConfig"
+          :disabled="roxyBrowserLoading || roxyBrowserSaving"
+          class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+        >
+          {{ roxyBrowserLoading ? '刷新中...' : '刷新配置' }}
+        </button>
+        <button
+          @click="saveRoxyBrowserConfig"
+          :disabled="roxyBrowserSaving"
+          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+        >
+          {{ roxyBrowserSaving ? '保存中...' : '保存 RoxyBrowser 配置' }}
+        </button>
       </div>
     </div>
 
@@ -629,6 +699,13 @@ const rekberinajaForm = ref({
   poll_timeout: 180,
   invoice_email: '',
 })
+const roxyBrowserLoading = ref(false)
+const roxyBrowserSaving = ref(false)
+const roxyBrowserStatus = ref({})
+const roxyBrowserForm = ref({
+  api_host: 'http://127.0.0.1:50000',
+  api_token: '',
+})
 
 const accountHubBusy = computed(() => accountHubSaving.value || accountHubTesting.value)
 const configImportExportBusy = computed(() => configImporting.value || configExporting.value)
@@ -639,6 +716,7 @@ const gopayAutoSignupConfigured = computed(() => {
     : Boolean(gopayAutoSignupStatus.value.smscloud_xi_token_present)
 })
 const rekberinajaConfigured = computed(() => Boolean(rekberinajaStatus.value.configured))
+const roxyBrowserConfigured = computed(() => Boolean(roxyBrowserStatus.value.configured))
 const mailProviderFields = computed(() => mailProviderFieldGroups.value[mailProvider.value] || [])
 const mailProviderFieldTitle = computed(() =>
   mailProvider.value === 'cloud-mail'
@@ -683,6 +761,7 @@ onMounted(async () => {
   loadAccountHubConfig()
   loadGoPayAutoSignupConfig()
   loadRekberinajaConfig()
+  loadRoxyBrowserConfig()
   loadMailProviderConfig()
 })
 
@@ -735,6 +814,7 @@ async function importConfig() {
     await Promise.allSettled([
       loadGoPayAutoSignupConfig(),
       loadRekberinajaConfig(),
+      loadRoxyBrowserConfig(),
       loadMailProviderConfig(),
       loadRegisterDomains(),
       loadAccountHubConfig(),
@@ -962,6 +1042,40 @@ async function saveRekberinajaConfig() {
     setMessage(e.message || '保存 Rekberinaja 配置失败', 'error')
   } finally {
     rekberinajaSaving.value = false
+  }
+}
+
+async function loadRoxyBrowserConfig() {
+  roxyBrowserLoading.value = true
+  try {
+    const cfg = await api.getRoxyBrowserConfig()
+    roxyBrowserStatus.value = cfg || {}
+    roxyBrowserForm.value = {
+      api_host: cfg?.api_host || 'http://127.0.0.1:50000',
+      api_token: '',
+    }
+  } catch (e) {
+    setMessage(e.message || '加载 RoxyBrowser 配置失败', 'error')
+  } finally {
+    roxyBrowserLoading.value = false
+  }
+}
+
+async function saveRoxyBrowserConfig() {
+  roxyBrowserSaving.value = true
+  try {
+    const result = await api.saveRoxyBrowserConfig({
+      api_host: roxyBrowserForm.value.api_host,
+      api_token: roxyBrowserForm.value.api_token,
+    })
+    roxyBrowserStatus.value = result || {}
+    roxyBrowserForm.value.api_token = ''
+    setMessage(result.message || 'RoxyBrowser 配置已保存')
+    await loadRoxyBrowserConfig()
+  } catch (e) {
+    setMessage(e.message || '保存 RoxyBrowser 配置失败', 'error')
+  } finally {
+    roxyBrowserSaving.value = false
   }
 }
 

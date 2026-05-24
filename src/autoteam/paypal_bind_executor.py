@@ -115,6 +115,7 @@ US_STATE_NAME_TO_CODE = {
 US_STATE_CODE_TO_NAME = {code: name for name, code in US_STATE_NAME_TO_CODE.items()}
 PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 240
 PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 120
+PAYPAL_SIGNUP_EMAIL_STUCK_RECOVER_DELAY_SECONDS = 30
 PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = 420
 PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 180
 PAYPAL_STRIPE_STATE_POLL_INTERVAL_SECONDS = 5.0
@@ -3993,11 +3994,27 @@ def _js_click_paypal_signup_email_submit(api: ChatGPTTeamAPI) -> bool:
           return { clicked: true, text: textOf(node).slice(0, 120) };
         }
       }
-      const form = document.querySelector('form');
-      if (form) {
-        if (typeof form.requestSubmit === 'function') form.requestSubmit();
-        else form.submit();
-        return { clicked: true, text: 'form-submit' };
+
+      const emailInput = Array.from(document.querySelectorAll(
+        'input#email, input[name="email"], input[name="login_email"], input[type="email"], input[autocomplete="username"]'
+      )).find(visible);
+      const form = emailInput?.closest?.('form') || document.querySelector('form');
+      const formControls = form
+        ? Array.from(form.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]')).filter(visible)
+        : [];
+      const enabled = (node) => !(
+        node.disabled ||
+        node.getAttribute?.('disabled') !== null ||
+        node.getAttribute?.('aria-disabled') === 'true'
+      );
+      const fallbackButton = formControls.find((node) => enabled(node) && (
+        String(node.getAttribute?.('type') || '').toLowerCase() === 'submit' ||
+        node.tagName === 'BUTTON' ||
+        node.getAttribute?.('role') === 'button'
+      ));
+      if (fallbackButton) {
+        fallbackButton.click();
+        return { clicked: true, text: (textOf(fallbackButton).slice(0, 120) || 'form-button-click') };
       }
       return { clicked: false, text: '' };
     }
@@ -4595,11 +4612,22 @@ def _run_paypal_signup_flow(
         time.sleep(2.0)
         return True, "", True
 
-    if (
+    _is_email_step = (
         state.get("email_locator")
         and not state.get("registration_ready")
         and not state.get("registration_text_hint")
-    ):
+    )
+    # SPA 完全死锁：email_locator 消失但邮箱已提交且无任何表单元素
+    _is_blank_after_email = (
+        signup_email_submitted
+        and not state.get("email_locator")
+        and not state.get("registration_ready")
+        and not state.get("registration_text_hint")
+        and not state.get("needs_login")
+        and not state.get("needs_otp")
+        and not state.get("approve_ready")
+    )
+    if _is_email_step or _is_blank_after_email:
         if signup_email_submitted:
             submitted_at = float(state.get("signup_email_submitted_at") or 0)
             # ── 总超时判断（跨 reload 周期累计） ──
@@ -4622,7 +4650,10 @@ def _run_paypal_signup_flow(
             js_count = int(state.get("_email_stuck_recover_count") or 0)
             reload_cycles = int(state.get("_email_reload_cycle_count") or 0)
 
-            if elapsed > 8 and (js_count <= _MAX_JS_BEFORE_RELOAD or reload_cycles < _MAX_RELOAD_CYCLES):
+            if (
+                elapsed > PAYPAL_SIGNUP_EMAIL_STUCK_RECOVER_DELAY_SECONDS
+                and (js_count <= _MAX_JS_BEFORE_RELOAD or reload_cycles < _MAX_RELOAD_CYCLES)
+            ):
                 if js_count < _MAX_JS_BEFORE_RELOAD:
                     # ── JS 快速尝试 ──
                     state["_email_stuck_recover_count"] = js_count + 1
@@ -4651,6 +4682,7 @@ def _run_paypal_signup_flow(
                     state["_email_reload_cycle_count"] = reload_cycles
                     # 重置本周期计数器，下一周期允许新的 JS 尝试
                     state["_email_stuck_recover_count"] = 0
+                    state["_email_first_submitted_at"] = 0
                     state["signup_email_submitted"] = False
                     state["signup_email_submitted_at"] = 0
                     state["_fill_retry_count"] = 0
@@ -4678,6 +4710,10 @@ def _run_paypal_signup_flow(
                     email=str(signup_profile.get("email") or ""),
                 ),
             )
+            time.sleep(1.5)
+            return True, "", True
+        if _is_blank_after_email:
+            # 页面完全空白（email_locator 消失），无法提交邮箱，等待 reload 恢复
             time.sleep(1.5)
             return True, "", True
         ok, error = _submit_paypal_signup_email_step(
@@ -5061,7 +5097,10 @@ def _run_paypal_authorize_flow(
                 js_count = int(state.get("_email_stuck_recover_count") or 0)
                 reload_cycles = int(state.get("_email_reload_cycle_count") or 0)
 
-                if stuck_elapsed > 8 and (js_count <= _MAX_JS_BEFORE_RELOAD or reload_cycles < _MAX_RELOAD_CYCLES):
+                if (
+                    stuck_elapsed > PAYPAL_SIGNUP_EMAIL_STUCK_RECOVER_DELAY_SECONDS
+                    and (js_count <= _MAX_JS_BEFORE_RELOAD or reload_cycles < _MAX_RELOAD_CYCLES)
+                ):
                     if js_count < _MAX_JS_BEFORE_RELOAD:
                         # ── JS 快速尝试 ──
                         state["_email_stuck_recover_count"] = js_count + 1
@@ -5087,6 +5126,7 @@ def _run_paypal_authorize_flow(
                         reload_cycles += 1
                         state["_email_reload_cycle_count"] = reload_cycles
                         state["_email_stuck_recover_count"] = 0
+                        state["_email_first_submitted_at"] = 0
                         state["signup_email_submitted"] = False
                         state["signup_email_submitted_at"] = 0
                         state["_fill_retry_count"] = 0
@@ -5409,6 +5449,8 @@ def run_paypal_bind_task(
     paypal_card_expiry: str = "",
     paypal_card_cvv: str = "",
     paypal_browser: str = "chromium",
+    roxybrowser_workspace_id: str = "",
+    roxybrowser_profile_id: str = "",
 ):
     api = ChatGPTTeamAPI()
     session_id = uuid.uuid4().hex[:12]
@@ -5417,9 +5459,12 @@ def run_paypal_bind_task(
     paypal_mode = _normalize_paypal_mode(paypal_mode)
     paypal_browser = str(paypal_browser or "chromium").strip().lower()
     protocol_mode = paypal_browser in {"protocol", "http", "no_card", "no-card", "pure_protocol"}
-    use_camoufox = paypal_browser not in {"chromium", "chrome", "playwright", "protocol", "http", "no_card", "no-card", "pure_protocol"}
+    use_camoufox = paypal_browser in {"camoufox", "firefox"}
+    use_roxybrowser = paypal_browser in {"roxybrowser", "roxy-browser", "roxy"}
     launch_proxy_url = str(proxy_url or "").strip() or None
     launch_proxy_bypass = str(proxy_bypass or "").strip() or None
+    roxybrowser_workspace_id = str(roxybrowser_workspace_id or "").strip()
+    roxybrowser_profile_id = str(roxybrowser_profile_id or "").strip()
 
     def _launch_browser_for_checkout(current_proxy_url: str | None, current_proxy_bypass: str | None) -> None:
         api._launch_browser(
@@ -5428,7 +5473,11 @@ def run_paypal_bind_task(
             background=False,
             locale="en-US",
             accept_language="en-US,en;q=0.9",
+            randomize_fingerprint=False,
             use_camoufox=use_camoufox,
+            use_roxybrowser=use_roxybrowser,
+            roxybrowser_workspace_id=roxybrowser_workspace_id,
+            roxybrowser_profile_id=roxybrowser_profile_id,
         )
 
     try:

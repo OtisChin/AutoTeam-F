@@ -130,6 +130,23 @@ PLAYWRIGHT_PROXY_BYPASS = os.environ.get("PLAYWRIGHT_PROXY_BYPASS", "").strip()
 PLAYWRIGHT_BACKGROUND = _get_bool_env("PLAYWRIGHT_BACKGROUND", True)
 PAYPAL_PROXY_DEFAULT_SCHEME = os.environ.get("PAYPAL_PROXY_DEFAULT_SCHEME", "socks5h").strip() or "socks5h"
 
+# RoxyBrowser API 配置
+ROXYBROWSER_API_HOST = os.environ.get("ROXYBROWSER_API_HOST", "http://127.0.0.1:50000").strip().rstrip("/")
+ROXYBROWSER_API_TOKEN = os.environ.get("ROXYBROWSER_API_TOKEN", "").strip()
+
+
+def get_roxybrowser_config() -> dict[str, str]:
+    """Return current RoxyBrowser config from runtime env.
+
+    Settings can update os.environ without restarting the API process, so browser
+    launch code must not rely only on module-import constants.
+    """
+    api_host = str(os.environ.get("ROXYBROWSER_API_HOST", ROXYBROWSER_API_HOST) or "").strip().rstrip("/")
+    return {
+        "api_host": api_host or "http://127.0.0.1:50000",
+        "api_token": str(os.environ.get("ROXYBROWSER_API_TOKEN", ROXYBROWSER_API_TOKEN) or "").strip(),
+    }
+
 
 def _format_proxy_host(hostname: str) -> str:
     if ":" in hostname and not hostname.startswith("["):

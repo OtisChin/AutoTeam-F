@@ -140,6 +140,10 @@ export const api = {
   saveGoPayAutoSignupConfig: (cfg) => request('PUT', '/config/gopay-auto-signup', cfg),
   getRekberinajaConfig: () => request('GET', '/config/rekberinaja'),
   saveRekberinajaConfig: (cfg) => request('PUT', '/config/rekberinaja', cfg),
+  getRoxyBrowserConfig: () => request('GET', '/config/roxybrowser'),
+  getRoxyBrowserWorkspaces: () => request('GET', '/config/roxybrowser/workspaces'),
+  getRoxyBrowserProfiles: () => request('GET', '/config/roxybrowser/profiles'),
+  saveRoxyBrowserConfig: (cfg) => request('PUT', '/config/roxybrowser', cfg),
   exportConfig: () => request('GET', '/config/export'),
   importConfig: (payload) => request('POST', '/config/import', payload),
 

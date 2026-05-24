@@ -11,7 +11,9 @@ v2: 增加 AudioContext 噪声、Client Hints、Font 指纹扰动、
 from __future__ import annotations
 
 import hashlib
+import json
 import random
+import re
 import shutil
 import tempfile
 import time
@@ -23,7 +25,9 @@ from typing import Any
 # 指纹数据池
 # ---------------------------------------------------------------------------
 
-# 真实 Chrome User-Agent 列表（Windows / Mac, Chrome 120-126）
+# 真实 Chrome User-Agent 模板（Windows / Mac）。
+# Chrome 版本在 generate_fingerprint() 中用当前 Playwright Chromium 版本替换，
+# 避免 UA / Client Hints 和实际浏览器版本差距过大触发 Cloudflare 风控。
 _USER_AGENTS_WIN = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -184,9 +188,10 @@ def cleanup_all_temp_dirs() -> None:
 # 辅助：从 UA 提取 Chrome 版本
 # ---------------------------------------------------------------------------
 
-import re
-
 _CHROME_VER_RE = re.compile(r"Chrome/(\d+)\.(\d+)\.(\d+)\.(\d+)")
+_CHROME_VERSION_FULL_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+_CHROME_VERSION_FALLBACK_FULL = "145.0.0.0"
+_playwright_chromium_version_full: str | None = None
 
 
 def _extract_chrome_version(ua: str) -> tuple[str, str]:
@@ -194,7 +199,40 @@ def _extract_chrome_version(ua: str) -> tuple[str, str]:
     m = _CHROME_VER_RE.search(ua)
     if m:
         return m.group(1), f"{m.group(1)}.{m.group(2)}.{m.group(3)}.{m.group(4)}"
-    return "120", "120.0.0.0"
+    return _CHROME_VERSION_FALLBACK_FULL.split(".", 1)[0], _CHROME_VERSION_FALLBACK_FULL
+
+
+def _detect_playwright_chromium_version_full() -> str:
+    """读取 Playwright 自带 Chromium 的真实版本号。"""
+    global _playwright_chromium_version_full
+    if _playwright_chromium_version_full:
+        return _playwright_chromium_version_full
+
+    version = ""
+    try:
+        import playwright
+
+        browsers_json = Path(playwright.__file__).resolve().parent / "driver" / "package" / "browsers.json"
+        payload = json.loads(browsers_json.read_text(encoding="utf-8"))
+        for browser in payload.get("browsers", []):
+            if not isinstance(browser, dict):
+                continue
+            if browser.get("name") != "chromium":
+                continue
+            candidate = str(browser.get("browserVersion") or "").strip()
+            if _CHROME_VERSION_FULL_RE.fullmatch(candidate):
+                version = candidate
+                break
+    except Exception:
+        version = ""
+
+    _playwright_chromium_version_full = version or _CHROME_VERSION_FALLBACK_FULL
+    return _playwright_chromium_version_full
+
+
+def _with_current_chromium_version(user_agent: str) -> str:
+    version = _detect_playwright_chromium_version_full()
+    return _CHROME_VER_RE.sub(f"Chrome/{version}", user_agent, count=1)
 
 
 # ---------------------------------------------------------------------------
@@ -229,10 +267,10 @@ def generate_fingerprint(
 
     # UA
     if is_win:
-        user_agent = random.choice(_USER_AGENTS_WIN)
+        user_agent = _with_current_chromium_version(random.choice(_USER_AGENTS_WIN))
         platform = "Win32"
     else:
-        user_agent = random.choice(_USER_AGENTS_MAC)
+        user_agent = _with_current_chromium_version(random.choice(_USER_AGENTS_MAC))
         platform = "MacIntel"
 
     # Chrome version from UA
@@ -357,7 +395,6 @@ def get_stealth_init_script(fp: BrowserFingerprint) -> str:
     webgl_vendor_js = json.dumps(fp.webgl_vendor)
     webgl_renderer_js = json.dumps(fp.webgl_renderer)
     platform_js = json.dumps(fp.platform)
-    fonts_js = json.dumps(fp.font_families)
     sec_ch_ua_platform_js = json.dumps("Windows" if fp.platform == "Win32" else "macOS")
 
     script = f"""
