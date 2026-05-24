@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, Field
 
-from autoteam.config import API_KEY, PAYPAL_PROXY_DEFAULT_SCHEME
+from autoteam.config import API_KEY, PAYPAL_PROXY_DEFAULT_SCHEME, normalize_proxy_url
 from autoteam.textio import parse_env_line, read_text
 
 logger = logging.getLogger(__name__)
@@ -2091,6 +2091,8 @@ class PayPalTaskParams(BaseModel):
     proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
     proxy_pool: list[str] = Field(default_factory=list, validation_alias=AliasChoices("proxy_pool", "proxyPool"))
     proxy_pool_text: str = Field("", validation_alias=AliasChoices("proxy_pool_text", "proxyPoolText"))
+    proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
+    proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_label: str = Field("", validation_alias=AliasChoices("proxy_label", "proxyLabel"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
     paypal_browser: str = Field("chromium", validation_alias=AliasChoices("paypal_browser", "paypalBrowser"))
@@ -2700,6 +2702,168 @@ def _parse_proxy_pool_values(values: list[Any] | tuple[Any, ...] | None = None, 
         seen.add(normalized)
         proxies.append(proxy)
     return proxies
+
+
+def _is_proxy_api_url(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    path = str(parsed.path or "").lower()
+    return any(marker in path for marker in ("getporxy", "getproxy", "traffic"))
+
+
+def _normalize_proxy_api_provider(value: str) -> str:
+    provider = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+    if not provider:
+        return "1024proxy"
+    if provider in {"1024proxy", "1024"}:
+        return "1024proxy"
+    if provider in {"cliproxy", "cli"}:
+        return "cliproxy"
+    raise HTTPException(status_code=400, detail="代理 API 供应商暂只支持 1024proxy 或 cliproxy")
+
+
+def _default_proxy_api_url(provider: str, proxy_url: str = "") -> str:
+    normalized_provider = _normalize_proxy_api_provider(provider)
+    if normalized_provider == "1024proxy":
+        return "https://white.1024proxy.com/white/api?region=US&num=1&time=10&format=1&type=json"
+    return "https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json"
+
+
+def _random_proxy_sid() -> str:
+    return uuid.uuid4().hex[:10]
+
+
+def _default_proxy_entry(provider: str, *, rotate_session: bool = False) -> str:
+    return ""
+
+
+def _extract_proxy_candidate_from_api_payload(payload: Any) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return ""
+        try:
+            return _extract_proxy_candidate_from_api_payload(json.loads(text))
+        except Exception:
+            for raw_line in re.split(r"[\r\n,]+", text):
+                line = str(raw_line or "").strip()
+                if line:
+                    return line
+            return text
+    if isinstance(payload, list):
+        for item in payload:
+            candidate = _extract_proxy_candidate_from_api_payload(item)
+            if candidate:
+                return candidate
+        return ""
+    if isinstance(payload, dict):
+        for key in (
+            "proxy",
+            "Proxy",
+            "result",
+            "data",
+            "list",
+            "proxies",
+            "proxy_list",
+            "proxyList",
+            "host",
+            "ip",
+            "addr",
+            "address",
+        ):
+            if key not in payload:
+                continue
+            value = payload.get(key)
+            if key in {"host", "ip", "addr", "address"} and payload.get("port"):
+                return f"{value}:{payload.get('port')}"
+            candidate = _extract_proxy_candidate_from_api_payload(value)
+            if candidate:
+                return candidate
+        for value in payload.values():
+            candidate = _extract_proxy_candidate_from_api_payload(value)
+            if candidate:
+                return candidate
+    return ""
+
+
+def _fetch_proxy_from_api_url(api_url: str, *, default_auth_scheme: str, provider: str = "") -> str:
+    url = str(api_url or "").strip()
+    if not url:
+        return ""
+    normalized_provider = _normalize_proxy_api_provider(provider)
+    try:
+        resp = requests.get(url, timeout=30)
+    except Exception as exc:
+        raise RuntimeError(f"动态代理 API 请求失败: {exc}") from exc
+    if resp.status_code >= 400:
+        raise RuntimeError(f"动态代理 API 返回 HTTP {resp.status_code}: {str(resp.text or '')[:160]}")
+    content_type = str(resp.headers.get("content-type") or "").lower()
+    payload: Any
+    if "json" in content_type:
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = resp.text
+    else:
+        text = str(resp.text or "").strip()
+        if re.match(r"(?is)^\s*<!doctype\s+html\b|^\s*<html\b", text):
+            raise RuntimeError(f"动态代理 API 返回 HTML 页面，请检查 {normalized_provider} API 地址、登录态/Token、白名单或套餐是否有效")
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = text
+    candidate = _extract_proxy_candidate_from_api_payload(payload)
+    if not candidate:
+        if normalized_provider == "cliproxy":
+            return ""
+        raise RuntimeError("动态代理 API 未返回可识别的代理")
+    if "://" not in candidate and "@" not in candidate:
+        candidate = f"socks5h://{candidate}"
+    try:
+        return normalize_proxy_url(candidate, default_auth_scheme=default_auth_scheme)
+    except Exception as exc:
+        if normalized_provider == "cliproxy":
+            return ""
+        raise RuntimeError(f"动态代理 API 返回的代理格式无效: {candidate} ({exc})") from exc
+
+
+def _probe_proxy_exit_ip(proxy_url: str) -> str:
+    """探测代理出口 IP。
+
+    仅用于日志和问题定位，不影响主流程。失败时返回空字符串。
+    """
+    proxy = str(proxy_url or "").strip()
+    if not proxy:
+        return ""
+    try:
+        session = requests.Session()
+        session.trust_env = False
+        session.proxies = {"http": proxy, "https": proxy}
+        resp = session.get("https://api.ipify.org?format=json", timeout=12)
+        if resp.status_code >= 400:
+            return ""
+        try:
+            payload = resp.json()
+            ip = str(payload.get("ip") or "").strip()
+            if ip:
+                return ip
+        except Exception:
+            pass
+        text = str(resp.text or "").strip()
+        if text and len(text) < 64:
+            return text
+    except Exception:
+        return ""
+    return ""
 
 
 def _account_delete_audit_path() -> Path:
@@ -9931,7 +10095,20 @@ def post_paypal_task(params: PayPalTaskParams):
     sms_url = str(params.sms_url or "").strip()
     otp_channel = str(params.otp_channel or "sms").strip().lower() or "sms"
     proxy_url = str(params.proxy_url or "").strip()
+    proxy_api_url = str(params.proxy_api_url or "").strip()
+    proxy_api_provider = _normalize_proxy_api_provider(params.proxy_api_provider) if params.proxy_api_provider else ""
+    if proxy_api_provider and not proxy_api_url:
+        proxy_api_url = _default_proxy_api_url(proxy_api_provider, proxy_url)
     proxy_pool = _parse_proxy_pool_values(params.proxy_pool, params.proxy_pool_text)
+    static_proxy_pool: list[str] = []
+    for raw_proxy_entry in proxy_pool:
+        if _is_proxy_api_url(raw_proxy_entry):
+            if not proxy_api_url:
+                proxy_api_url = raw_proxy_entry
+                proxy_api_provider = _normalize_proxy_api_provider(params.proxy_api_provider or "1024proxy")
+            continue
+        static_proxy_pool.append(raw_proxy_entry)
+    proxy_pool = static_proxy_pool
     phone_accounts: list[dict] = []
     seen_phone_accounts: set[tuple[str, str, str]] = set()
     for raw_phone_account in params.phone_accounts or []:
@@ -9964,6 +10141,16 @@ def post_paypal_task(params: PayPalTaskParams):
         normalized_proxy_url = normalize_proxy_url(proxy_url, default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME) if proxy_url else ""
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"代理格式错误: {proxy_url} ({exc})") from exc
+    if not normalized_proxy_url and proxy_api_provider:
+        default_proxy_entry = _default_proxy_entry(proxy_api_provider)
+        if default_proxy_entry:
+            try:
+                normalized_proxy_url = normalize_proxy_url(
+                    default_proxy_entry,
+                    default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"默认代理格式错误: {default_proxy_entry} ({exc})") from exc
     normalized_proxy_pool: list[str] = []
     for raw_pool_proxy in proxy_pool:
         try:
@@ -9975,6 +10162,17 @@ def post_paypal_task(params: PayPalTaskParams):
     bind_proxy_url = normalized_proxy_url
 
     def _select_paypal_proxy() -> str:
+        if proxy_api_url:
+            fetched_proxy = _fetch_proxy_from_api_url(
+                proxy_api_url,
+                default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME,
+                provider=proxy_api_provider,
+            )
+            if fetched_proxy:
+                return fetched_proxy
+            if bind_proxy_url:
+                return bind_proxy_url
+            raise RuntimeError("Cliproxy API 已触发换 IP，但未返回代理；请同时填写代理 URL 作为连接入口")
         if normalized_proxy_pool:
             return random.choice(normalized_proxy_pool)
         return bind_proxy_url
@@ -10080,6 +10278,7 @@ def post_paypal_task(params: PayPalTaskParams):
         "bind_link_payload": bind_link_payload,
         "proxy_url": params.proxy_url,
         "proxy_pool_count": len(normalized_proxy_pool),
+        "proxy_api_url_present": bool(proxy_api_url),
         "proxy_label": params.proxy_label,
         "proxy_bypass": params.proxy_bypass,
         "manual_confirm": bool(params.manual_confirm),
@@ -10105,6 +10304,8 @@ def post_paypal_task(params: PayPalTaskParams):
         "timeout_seconds": int(params.timeout_seconds or 60),
         "auto_oauth_after_success": bool(params.auto_oauth_after_success),
     }
+    if proxy_api_provider:
+        payload["proxy_api_provider"] = proxy_api_provider
     autofill_payload = {
         "name": params.billing_name,
         "email": params.billing_email or email,
@@ -10348,7 +10549,31 @@ def post_paypal_task(params: PayPalTaskParams):
                     break
                 stop_after_current_candidate = False
                 current_candidate_phone = ""
-                selected_proxy_url = _select_paypal_proxy()
+                try:
+                    selected_proxy_url = _select_paypal_proxy()
+                except Exception as exc:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "paypal_proxy_api_failed",
+                            "email": candidate_email,
+                            "current": index,
+                            "total": len(candidates),
+                            "proxy_label": params.proxy_label,
+                            "proxy_api_provider": proxy_api_provider,
+                            "message": f"动态代理 API 获取失败: {exc}",
+                            "level": "error",
+                        },
+                    )
+                    failed_emails.append(candidate_email)
+                    result = {
+                        "status": "failed",
+                        "failure_stage": "proxy_api",
+                        "message": f"动态代理 API 获取失败: {exc}",
+                        "screenshot_paths": [],
+                        "email": candidate_email,
+                    }
+                    continue
                 _append_task_progress(
                     task_id,
                     {
@@ -10362,19 +10587,39 @@ def post_paypal_task(params: PayPalTaskParams):
                             or "PayPal 任务启动中",
                     },
                 )
-                if normalized_proxy_pool:
+                if proxy_api_provider or proxy_api_url or normalized_proxy_pool:
                     _append_task_progress(
                         task_id,
                         {
-                            "stage": "paypal_proxy_selected",
+                            "stage": "paypal_proxy_api_selected" if proxy_api_provider or proxy_api_url else "paypal_proxy_selected",
                             "email": candidate_email,
                             "current": index,
                             "total": len(candidates),
                             "proxy_label": params.proxy_label,
                             "proxy_pool_count": len(normalized_proxy_pool),
-                            "message": f"已从动态代理池随机选择代理: {_safe_proxy_summary(selected_proxy_url)}",
+                            "proxy_api_url_present": bool(proxy_api_url),
+                            "proxy_api_provider": proxy_api_provider,
+                            "message": (
+                                f"已通过 {proxy_api_provider} API 轮换代理: {_safe_proxy_summary(selected_proxy_url)}"
+                                if proxy_api_provider or proxy_api_url
+                                else f"已从动态代理池随机选择代理: {_safe_proxy_summary(selected_proxy_url)}"
+                            ),
                         },
                     )
+                    exit_ip = _probe_proxy_exit_ip(selected_proxy_url) if (proxy_api_provider or proxy_api_url) else ""
+                    if exit_ip:
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "paypal_proxy_api_probe",
+                                "email": candidate_email,
+                                "current": index,
+                                "total": len(candidates),
+                                "proxy_label": params.proxy_label,
+                                "proxy_api_provider": proxy_api_provider,
+                                "message": f"代理出口 IP 探测成功: {exit_ip}",
+                            },
+                        )
                 try:
                     effective_checkout_url = checkout_url
                     if not effective_checkout_url:

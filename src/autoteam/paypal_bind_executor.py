@@ -114,7 +114,7 @@ US_STATE_NAME_TO_CODE = {
 }
 US_STATE_CODE_TO_NAME = {code: name for name, code in US_STATE_NAME_TO_CODE.items()}
 PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 240
-PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 60
+PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 120
 PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = 420
 PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 180
 PAYPAL_STRIPE_STATE_POLL_INTERVAL_SECONDS = 5.0
@@ -194,6 +194,10 @@ PAYPAL_DATADOME_BLOCKED_HINTS = (
     "slider_timeout",
     "event_name=slider_timeout",
     "blocked by datadome",
+    "you have been blocked",
+    "have been blocked",
+    "your request has been blocked",
+    "access to this page has been denied",
 )
 PAYPAL_HUMAN_VERIFICATION_HINTS = (
     "confirm you're human",
@@ -638,6 +642,10 @@ PAYPAL_AUTO_STAGE_MESSAGES = {
     "paypal_browser_fallback_ddc_wait": "正在等待 DataDome 安全检查通过",
     "paypal_ddc_slider_detected": "检测到 DataDome 滑块验证，正在自动解题",
     "paypal_ddc_invisible_wait": "检测到 DataDome 隐形验证，等待自动通过",
+    "paypal_ddc_blocked_retry": "检测到 DataDome 封锁页面，正在刷新重试",
+    "paypal_ddc_blocked_final": "DataDome 封锁页面重试后仍未通过",
+    "paypal_signup_email_reload": "邮箱提交后页面卡住，正在恢复重试",
+    "paypal_agree_create_clicked": "已点击 PayPal 同意并创建账户",
 }
 
 
@@ -2088,6 +2096,25 @@ _DDC_SLIDER_KEYWORDS = (
     "Slide to continue", "slide to verify",
 )
 
+_DDC_BLOCKED_KEYWORDS = (
+    "You have been blocked",
+    "you have been blocked",
+    "Access denied",
+    "access denied",
+    "Your request has been blocked",
+    "请求已被拦截",
+    "您的访问已被阻止",
+)
+
+
+def _is_ddc_blocked_page(page) -> bool:
+    """检测 DataDome 'You have been blocked' 拦截页面。"""
+    try:
+        text = page.inner_text("body")[:3000]
+    except Exception:
+        return False
+    return any(kw in text for kw in _DDC_BLOCKED_KEYWORDS)
+
 
 def _is_ddc_frame_url(url: str) -> bool:
     """DataDome frame URL 判断。避免把普通 captcha/hCaptcha iframe 误判成 DDC。"""
@@ -2228,77 +2255,165 @@ def _try_solve_ddc_slider(page, *, attempts: int = 2) -> bool:
             logger.info("[paypal_ddc] drag exception: %s", exc)
             continue
         # 等待验证通过
+        slider_gone = False
         for _ in range(8):
             time.sleep(0.8)
+            if _is_ddc_blocked_page(page):
+                logger.info("[paypal_ddc] blocked page after slider drag (attempt %d)", attempt + 1)
+                slider_gone = True
+                break
             if not _ddc_slider_visible(page):
-                logger.info("[paypal_ddc] slider passed (attempt %d)", attempt + 1)
-                return True
+                slider_gone = True
+                break
             cur = page.url
             if any(kw in cur for kw in ("/webapps/hermes", "checkoutweb", "/signin", "chatgpt.com")):
                 logger.info("[paypal_ddc] slider passed → %s", cur[:80])
                 return True
-        logger.info("[paypal_ddc] attempt %d failed, retrying...", attempt + 1)
+
+        if slider_gone:
+            # 滑块消失后等待足够久让 blocked 页面充分渲染（DataDome blocked
+            # 页面渲染可能需要 5-8 秒，分多次检查而不是一次性等待）
+            for _check_i in range(4):
+                time.sleep(2.0)
+                if _is_ddc_blocked_page(page):
+                    logger.info("[paypal_ddc] confirmed blocked page after slider gone (%d, attempt %d)",
+                               _check_i + 1, attempt + 1)
+                    return False
+                cur = page.url
+                if any(kw in cur for kw in ("/webapps/hermes", "checkoutweb", "/signin", "chatgpt.com")):
+                    logger.info("[paypal_ddc] slider passed → %s", cur[:80])
+                    return True
+                if page.query_selector('input[name="login_email"]') or \
+                   page.query_selector('#consentButton') or \
+                   page.query_selector('[data-testid="email"]') or \
+                   page.query_selector('[data-testid="createAccount"]'):
+                    logger.info("[paypal_ddc] slider passed (page elements visible, attempt %d)", attempt + 1)
+                    return True
+            # 8 秒都没出现 blocked 也没出现表单 → 当做通过
+            logger.info("[paypal_ddc] slider passed (no blocked after 8s, attempt %d)", attempt + 1)
+            return True
+
+        logger.info("[paypal_ddc] attempt %d failed (slider still visible), retrying...", attempt + 1)
         time.sleep(_random.uniform(1.0, 2.0))
     return False
 
 
-def _wait_ddc_pass(page, *, timeout_seconds: int = 50, on_progress=None) -> bool:
-    """等待 DataDome 自然通过或尝试解滑块。返回 True 表示通过。"""
+def _wait_ddc_pass(page, *, timeout_seconds: int = 50, on_progress=None, max_blocked_retries: int = 4) -> bool:
+    """等待 DataDome 自然通过或尝试解滑块。返回 True 表示通过。
+
+    当滑块拖动后出现 blocked 页面或 invisible DDC 超时时，自动刷新重试
+    （最多 max_blocked_retries 次）。
+    """
     import random as _random
 
-    # 先等 3 秒让 DDC JS 自行跑完
-    time.sleep(3)
+    blocked_retries = 0
 
-    # 检测可见滑块
-    if _ddc_slider_visible(page):
-        logger.info("[paypal_ddc] visible slider detected, attempting drag solver...")
-        _emit_progress(on_progress, _progress_event("paypal_ddc_slider_detected"))
-        if _try_solve_ddc_slider(page, attempts=2):
-            return True
-        logger.info("[paypal_ddc] drag solver failed")
-        return False
+    def _attempt_once() -> bool | None:
+        """单次尝试。返回 True=通过, False=确认失败, None=blocked 需要重试。"""
+        # 先等 3 秒让 DDC JS 自行跑完
+        time.sleep(3)
 
-    # 检测隐形 DDC iframe（JS 验证中，等待自动通过）
-    if _has_ddc_iframe(page):
-        logger.info("[paypal_ddc] invisible DDC challenge detected, waiting...")
-        _emit_progress(on_progress, _progress_event("paypal_ddc_invisible_wait"))
-        deadline = time.time() + timeout_seconds
-        while time.time() < deadline:
-            time.sleep(2)
-            cur = page.url
-            # 页面已跳转说明通过
-            if any(kw in cur for kw in ["/signin", "/authflow", "/webapps/hermes",
-                                         "/pay", "chatgpt.com", "/checkoutweb"]):
-                logger.info("[paypal_ddc] DDC passed → %s", cur[:80])
+        # 检测 blocked 页面（可能上一轮刷新后立即进入 blocked）
+        if _is_ddc_blocked_page(page):
+            logger.info("[paypal_ddc] blocked page detected on entry")
+            return None
+
+        # 检测可见滑块
+        if _ddc_slider_visible(page):
+            logger.info("[paypal_ddc] visible slider detected, attempting drag solver...")
+            _emit_progress(on_progress, _progress_event("paypal_ddc_slider_detected"))
+            solved = _try_solve_ddc_slider(page, attempts=2)
+            if solved:
+                # 确认真正通过（非 blocked）
+                time.sleep(1)
+                if _is_ddc_blocked_page(page):
+                    logger.info("[paypal_ddc] slider solved but got blocked page")
+                    return None
                 return True
-            # 检测到 PayPal 表单元素
-            if page.query_selector('input[name="login_email"]') or \
-               page.query_selector('#consentButton') or \
-               page.query_selector('[data-testid="email"]'):
-                logger.info("[paypal_ddc] DDC passed (page elements visible)")
-                return True
-            # 中途升级为可见滑块
-            if _ddc_slider_visible(page):
-                logger.info("[paypal_ddc] upgraded to visible slider during wait")
-                if _try_solve_ddc_slider(page, attempts=2):
+            # 滑块没解开，检查是否是 blocked
+            if _is_ddc_blocked_page(page):
+                return None
+            logger.info("[paypal_ddc] drag solver failed")
+            return False
+
+        # 检测隐形 DDC iframe（JS 验证中，等待自动通过）
+        if _has_ddc_iframe(page):
+            logger.info("[paypal_ddc] invisible DDC challenge detected, waiting...")
+            _emit_progress(on_progress, _progress_event("paypal_ddc_invisible_wait"))
+            deadline = time.time() + min(timeout_seconds, 25)  # 隐形验证最多等 25 秒，不值得等太久
+            while time.time() < deadline:
+                time.sleep(2)
+                # blocked 检测
+                if _is_ddc_blocked_page(page):
+                    logger.info("[paypal_ddc] blocked page during invisible wait")
+                    return None
+                cur = page.url
+                # 页面已跳转说明通过
+                if any(kw in cur for kw in ["/signin", "/authflow", "/webapps/hermes",
+                                             "/pay", "chatgpt.com", "/checkoutweb"]):
+                    logger.info("[paypal_ddc] DDC passed → %s", cur[:80])
                     return True
-                return False
-            # 重试按钮
-            retry_btn = page.query_selector('button:has-text("重试")') or \
-                        page.query_selector('button:has-text("Retry")')
-            if retry_btn:
-                try:
-                    if retry_btn.is_visible():
-                        logger.info("[paypal_ddc] clicking retry button...")
-                        retry_btn.click()
-                        time.sleep(3)
-                except Exception:
-                    pass
-        logger.info("[paypal_ddc] DDC wait timeout (%ds)", timeout_seconds)
-        return False
+                # 检测到 PayPal 表单元素
+                if page.query_selector('input[name="login_email"]') or \
+                   page.query_selector('#consentButton') or \
+                   page.query_selector('[data-testid="email"]'):
+                    logger.info("[paypal_ddc] DDC passed (page elements visible)")
+                    return True
+                # 中途升级为可见滑块
+                if _ddc_slider_visible(page):
+                    logger.info("[paypal_ddc] upgraded to visible slider during wait")
+                    solved = _try_solve_ddc_slider(page, attempts=2)
+                    if solved:
+                        time.sleep(1)
+                        if _is_ddc_blocked_page(page):
+                            return None
+                        return True
+                    if _is_ddc_blocked_page(page):
+                        return None
+                    return False
+                # 重试按钮
+                retry_btn = page.query_selector('button:has-text("重试")') or \
+                            page.query_selector('button:has-text("Retry")')
+                if retry_btn:
+                    try:
+                        if retry_btn.is_visible():
+                            logger.info("[paypal_ddc] clicking retry button...")
+                            retry_btn.click()
+                            time.sleep(3)
+                    except Exception:
+                        pass
+            logger.info("[paypal_ddc] DDC wait timeout (%ds), will retry via refresh", timeout_seconds)
+            return None  # 超时 → 刷新重试（刷新后可能出现可拖的 slider）
 
-    # 没有 DDC iframe 也没有滑块 → 自然通过
-    return True
+        # 没有 DDC iframe 也没有滑块 → 自然通过
+        return True
+
+    # ── 主循环：blocked 时刷新重试 ──
+    while True:
+        result = _attempt_once()
+        if result is True:
+            return True
+        if result is False:
+            return False
+        # result is None → blocked，刷新重试
+        blocked_retries += 1
+        if blocked_retries > max_blocked_retries:
+            logger.info("[paypal_ddc] blocked page persists after %d retries, giving up", max_blocked_retries)
+            _emit_progress(on_progress, _progress_event(
+                "paypal_ddc_blocked_final",
+                f"DataDome blocked 页面重试 {max_blocked_retries} 次仍未通过",
+            ))
+            return False
+        logger.info("[paypal_ddc] blocked page detected, refreshing (retry %d/%d)...", blocked_retries, max_blocked_retries)
+        _emit_progress(on_progress, _progress_event(
+            "paypal_ddc_blocked_retry",
+            f"DataDome 封锁页面，正在刷新重试 ({blocked_retries}/{max_blocked_retries})",
+        ))
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=30000)
+        except Exception as exc:
+            logger.info("[paypal_ddc] reload failed: %s", exc)
+        time.sleep(_random.uniform(3.0, 5.0))
 
 
 def _visible_locator_in_frames(api: ChatGPTTeamAPI, selectors: list[str], timeout_ms: int = 1000):
@@ -3525,6 +3640,8 @@ def _fill_paypal_signup_form(
 ) -> tuple[bool, str]:
     _emit_progress(on_progress, _progress_event("paypal_fill_signup", url=getattr(api.page, "url", "")))
     _set_paypal_country(api, str(signup_profile.get("country") or "US"))
+    # email 在第一步可能已提交（输入框不再可见），标记为可选跳过
+    _OPTIONAL_SKIP_FIELDS = {"email"}
     required_fields = [
         ("email", PAYPAL_EMAIL_SELECTORS, str(signup_profile.get("email") or ""), "PayPal 注册邮箱"),
         ("phone", PAYPAL_PHONE_SELECTORS, str(signup_profile.get("phone") or ""), "PayPal 注册手机号"),
@@ -3538,9 +3655,15 @@ def _fill_paypal_signup_form(
     field_locators: dict[str, Any] = {}
     for key, selectors, value, label in required_fields:
         if not value:
+            if key in _OPTIONAL_SKIP_FIELDS:
+                continue
             return False, f"{label} 为空"
         ok, locator = _set_first_visible_value_with_locator(api, selectors, value)
         if not ok:
+            # 邮箱在第一步已填写，第二步不可见时跳过
+            if key in _OPTIONAL_SKIP_FIELDS:
+                logger.info("[paypal_signup] field '%s' not visible, skipping (likely already submitted)", key)
+                continue
             return False, f"未找到 {label} 输入框"
         if locator is not None and not _set_verified_locator_value(locator, value, field=key):
             actual = _read_locator_value(locator)
@@ -3892,6 +4015,139 @@ def _js_click_paypal_signup_email_submit(api: ChatGPTTeamAPI) -> bool:
     return False
 
 
+def _js_recover_paypal_email_spinner(api: ChatGPTTeamAPI, email: str) -> dict[str, Any]:
+    """在不刷新页面的情况下，用 JS 清除 PayPal SPA 的 spinner/loading 状态并重新提交邮箱。
+
+    PayPal SPA 在 Camoufox 下有时邮箱提交后卡在 spinner，但 DOM 仍然存在。
+    此函数尝试：
+    1. 移除所有 spinner/loading overlay 元素
+    2. 移除 disabled/aria-busy 属性
+    3. 重新填入邮箱（确保值没丢）
+    4. 重新点击 submit 按钮
+    5. 如果找不到 submit 按钮则直接提交 form
+
+    返回 dict: {recovered: bool, detail: str}
+    """
+    script = r"""
+    (email) => {
+      const result = {recovered: false, detail: '', spinners_removed: 0, submit_clicked: false};
+      try {
+        // Step 1: 移除所有 spinner/loading/overlay 元素
+        const spinnerSelectors = [
+          '.spinner', '.loading', '.loader', '[class*="spinner"]', '[class*="loading"]',
+          '[class*="Spinner"]', '[class*="Loading"]', '[class*="loader"]', '[class*="Loader"]',
+          '[data-testid*="spinner"]', '[data-testid*="loading"]',
+          '.vx_overlay', '[class*="overlay"]', '[class*="Overlay"]',
+          '[aria-label*="loading" i]', '[aria-label*="spinner" i]',
+          '[role="progressbar"]', '[role="status"][aria-busy="true"]',
+        ];
+        spinnerSelectors.forEach(sel => {
+          document.querySelectorAll(sel).forEach(node => {
+            try {
+              // 不移除 captcha overlay
+              if (node.id && /captcha/i.test(node.id)) return;
+              if (node.className && /captcha/i.test(String(node.className))) return;
+              node.remove();
+              result.spinners_removed++;
+            } catch(e) {}
+          });
+        });
+
+        // Step 2: 移除 disabled/aria-busy 属性
+        document.querySelectorAll('[disabled], [aria-disabled="true"], [aria-busy="true"]').forEach(node => {
+          try {
+            node.removeAttribute('disabled');
+            node.removeAttribute('aria-disabled');
+            node.removeAttribute('aria-busy');
+          } catch(e) {}
+        });
+
+        // Step 3: 找到邮箱输入框并确保值正确
+        const emailSelectors = ['input#email', 'input[name="email"]', 'input[type="email"]',
+          'input[autocomplete="email"]', 'input[id*="email" i]', 'input[name*="email" i]'];
+        let emailInput = null;
+        for (const sel of emailSelectors) {
+          const node = document.querySelector(sel);
+          if (node && node.offsetParent !== null) {
+            emailInput = node;
+            break;
+          }
+        }
+        if (emailInput) {
+          // 用 native setter 设置值，触发 React/Vue 的 onChange
+          const nativeSet = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+          )?.set;
+          if (nativeSet) {
+            nativeSet.call(emailInput, email);
+          } else {
+            emailInput.value = email;
+          }
+          emailInput.dispatchEvent(new Event('input', {bubbles: true}));
+          emailInput.dispatchEvent(new Event('change', {bubbles: true}));
+          result.detail += 'email_set;';
+        } else {
+          result.detail += 'no_email_input;';
+        }
+
+        // Step 4: 找到 submit 按钮并点击
+        const visible = (node) => {
+          if (!node) return false;
+          const style = window.getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const textOf = (node) => String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+        const controls = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]'))
+          .filter(visible);
+        const submitPatterns = [
+          /^next$/i, /^continue$/i, /continue to payment/i,
+          /create (an )?account/i, /sign up/i, /注册|创建账户|建立账户/,
+        ];
+        let submitBtn = null;
+        for (const pattern of submitPatterns) {
+          submitBtn = controls.find(n => pattern.test(textOf(n)));
+          if (submitBtn) break;
+        }
+        if (!submitBtn) {
+          // fallback: type=submit 的按钮
+          submitBtn = controls.find(n => n.getAttribute('type') === 'submit');
+        }
+        if (submitBtn) {
+          submitBtn.removeAttribute('disabled');
+          submitBtn.removeAttribute('aria-disabled');
+          submitBtn.click();
+          result.submit_clicked = true;
+          result.detail += 'btn_clicked:' + textOf(submitBtn).slice(0, 40) + ';';
+        } else {
+          // fallback: 直接 submit form
+          const form = document.querySelector('form');
+          if (form) {
+            if (typeof form.requestSubmit === 'function') form.requestSubmit();
+            else form.submit();
+            result.submit_clicked = true;
+            result.detail += 'form_submitted;';
+          } else {
+            result.detail += 'no_submit_target;';
+          }
+        }
+
+        result.recovered = result.submit_clicked;
+      } catch(e) {
+        result.detail += 'error:' + String(e).slice(0, 100);
+      }
+      return result;
+    }
+    """
+    try:
+        value = api.page.evaluate(script, email)
+        if isinstance(value, dict):
+            return value
+        return {"recovered": False, "detail": f"unexpected_return:{value}"}
+    except Exception as exc:
+        return {"recovered": False, "detail": f"evaluate_error:{exc}"}
+
+
 def _inspect_paypal_email_gate(api: ChatGPTTeamAPI) -> dict[str, Any]:
     script = r"""
     () => {
@@ -3953,23 +4209,39 @@ def _submit_paypal_signup_email_step(
         return False, "填写 PayPal 注册邮箱失败"
     _emit_progress(on_progress, _progress_event("paypal_signup_email", url=getattr(api.page, "url", "")))
     before_url = str(getattr(api.page, "url", "") or "")
+    submit_clicked = False
     if _click_first(api, PAYPAL_SIGNUP_EMAIL_SUBMIT_SELECTORS, timeout_ms=2500):
+        submit_clicked = True
         if _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=6.0):
             return True, ""
     else:
         try:
             email_locator.press("Enter", timeout=1200)
+            submit_clicked = True
         except Exception:
             pass
     if _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=4.0):
         return True, ""
     try:
         email_locator.press("Enter", timeout=1200)
+        submit_clicked = True
     except Exception:
         pass
     if _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=4.0):
         return True, ""
-    if _js_click_paypal_signup_email_submit(api) and _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=6.0):
+    if _js_click_paypal_signup_email_submit(api):
+        submit_clicked = True
+        if _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=6.0):
+            return True, ""
+    # 提交按钮已被点击但页面没有明显 advance（Camoufox SPA 可能卡住）
+    # → 仍然返回 True，让上层 stuck 检测 + reload/goto 机制来恢复
+    if submit_clicked:
+        logger.info(
+            "[paypal_signup] email submit clicked but page did not advance (SPA may be stuck), "
+            "treating as submitted to allow stuck-recovery: before=%s current=%s",
+            _safe_url_summary(before_url),
+            _safe_url_summary(getattr(api.page, "url", "")),
+        )
         return True, ""
     logger.info(
         "[paypal_signup] email submit did not advance: before=%s current=%s gate=%s body=%s",
@@ -4330,8 +4602,74 @@ def _run_paypal_signup_flow(
     ):
         if signup_email_submitted:
             submitted_at = float(state.get("signup_email_submitted_at") or 0)
-            if submitted_at > 0 and time.time() - submitted_at > PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS:
+            # ── 总超时判断（跨 reload 周期累计） ──
+            first_submitted_at = float(state.get("_email_first_submitted_at") or submitted_at)
+            if not state.get("_email_first_submitted_at") and submitted_at > 0:
+                state["_email_first_submitted_at"] = submitted_at
+            if first_submitted_at > 0 and time.time() - first_submitted_at > PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS:
                 return False, "等待 PayPal 注册表单加载超时", False
+
+            # ── SPA 卡住恢复策略 ──
+            # Camoufox 下 PayPal SPA 提交邮箱后可能出现内部状态死锁：
+            #   - 没有 spinner DOM 元素（spinners_removed=0）
+            #   - JS 注入重新提交表单无效（SPA 忽略）
+            # 策略：先做 1 次 JS 快速尝试（~8s），若无效立即 reload
+            # + 完整重置所有状态让流程从头走（email 输入→提交→等待表单）。
+            # 允许最多 3 次 reload 周期（_email_reload_cycle_count）。
+            _MAX_JS_BEFORE_RELOAD = 1   # 每个 reload 周期内最多 1 次 JS 尝试
+            _MAX_RELOAD_CYCLES = 3      # 最多 reload 3 次
+            elapsed = time.time() - submitted_at if submitted_at > 0 else 0
+            js_count = int(state.get("_email_stuck_recover_count") or 0)
+            reload_cycles = int(state.get("_email_reload_cycle_count") or 0)
+
+            if elapsed > 8 and (js_count <= _MAX_JS_BEFORE_RELOAD or reload_cycles < _MAX_RELOAD_CYCLES):
+                if js_count < _MAX_JS_BEFORE_RELOAD:
+                    # ── JS 快速尝试 ──
+                    state["_email_stuck_recover_count"] = js_count + 1
+                    recover_email = str(signup_profile.get("email") or "").strip()
+                    logger.info(
+                        "[paypal_signup] page stuck after email submit (%.0fs), JS recover attempt %d...",
+                        elapsed, js_count + 1,
+                    )
+                    _emit_progress(on_progress, _progress_event(
+                        "paypal_signup_email_reload",
+                        f"邮箱提交后页面卡住，正在 JS 恢复 ({js_count + 1}/{_MAX_JS_BEFORE_RELOAD})",
+                    ))
+                    recover_result = _js_recover_paypal_email_spinner(api, recover_email)
+                    logger.info("[paypal_signup] JS recover result: %s", recover_result)
+                    if not recover_result.get("recovered"):
+                        state["signup_email_submitted"] = False
+                        state["signup_email_submitted_at"] = 0
+                    time.sleep(2.0)
+                    return True, "", True
+
+                if reload_cycles < _MAX_RELOAD_CYCLES:
+                    # ── Reload + 完整状态重置 ──
+                    # JS 尝试用尽但 SPA 仍然死锁 → reload 让页面回到邮箱输入步骤，
+                    # 完整重置所有邮箱提交相关状态以便从头走流程。
+                    reload_cycles += 1
+                    state["_email_reload_cycle_count"] = reload_cycles
+                    # 重置本周期计数器，下一周期允许新的 JS 尝试
+                    state["_email_stuck_recover_count"] = 0
+                    state["signup_email_submitted"] = False
+                    state["signup_email_submitted_at"] = 0
+                    state["_fill_retry_count"] = 0
+                    logger.info(
+                        "[paypal_signup] SPA deadlocked after JS attempts, reload cycle %d/%d (%.0fs total)...",
+                        reload_cycles, _MAX_RELOAD_CYCLES,
+                        time.time() - first_submitted_at,
+                    )
+                    _emit_progress(on_progress, _progress_event(
+                        "paypal_signup_email_reload",
+                        f"邮箱提交后 SPA 死锁，正在刷新页面重试 (第 {reload_cycles}/{_MAX_RELOAD_CYCLES} 轮)",
+                    ))
+                    try:
+                        api.page.reload(wait_until="domcontentloaded", timeout=30000)
+                    except Exception:
+                        pass
+                    time.sleep(3.0)
+                    return True, "", True
+
             _emit_progress(
                 on_progress,
                 _progress_event(
@@ -4354,9 +4692,23 @@ def _run_paypal_signup_flow(
         return ok, error, True
 
     if state.get("registration_ready") or state.get("registration_text_hint"):
+        # 等待页面 DOM 完全渲染（邮箱提交后表单展开需要时间）
+        try:
+            api.page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        time.sleep(1.5)
         ok, error = _fill_paypal_signup_form(api, signup_profile=signup_profile, on_progress=on_progress)
         if not ok:
+            # 输入框可能还没渲染出来，允许重试（回到主循环等下一轮）
+            fill_retry_count = int(state.get("_fill_retry_count") or 0)
+            if fill_retry_count < 3:
+                state["_fill_retry_count"] = fill_retry_count + 1
+                logger.info("[paypal_signup] fill form failed (%s), will retry (%d/3)", error, fill_retry_count + 1)
+                time.sleep(3.0)
+                return True, "", True  # handled=True, 回到主循环下一轮重试
             return False, error, True
+        state["_fill_retry_count"] = 0
         _emit_progress(
             on_progress,
             _progress_event(
@@ -4417,6 +4769,9 @@ def _run_paypal_authorize_flow(
     submitted_phone_keys: set[str] = set()
     otp_phone_lock_key = ""
     last_ddc_check_at = 0.0
+    ddc_blocked_refresh_count = 0
+    state: dict[str, Any] = {}
+    _MAX_DDC_BLOCKED_REFRESHES = 3
     while time.time() < deadline:
         _sync_relevant_payment_page(api, prefer_paypal=True)
         active_phone_key = _normalize_paypal_phone(str(active_signup_profile.get("phone") or ""))
@@ -4432,10 +4787,36 @@ def _run_paypal_authorize_flow(
             return None
         _ensure_paypal_hosted_captcha_bypass(api)
 
-        # DataDome DDC 检测：每轮都检查可见滑块，隐形 DDC iframe 做节流
+        # DataDome DDC 检测：每轮都检查可见滑块 / blocked 页面，隐形 DDC iframe 做节流
         if _is_paypal_host(current_url):
             page = getattr(api, "page", None)
             if page:
+                # 先检测 blocked 页面（滑块验证失败后可能停在此页面）
+                if _is_ddc_blocked_page(page):
+                    ddc_blocked_refresh_count += 1
+                    if ddc_blocked_refresh_count > _MAX_DDC_BLOCKED_REFRESHES:
+                        if otp_phone_lock_key:
+                            _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
+                            otp_phone_lock_key = ""
+                        return _build_result(
+                            "failed",
+                            failure_stage="paypal_datadome_blocked",
+                            message=f"DataDome 封锁页面刷新 {_MAX_DDC_BLOCKED_REFRESHES} 次仍未恢复",
+                            screenshot_paths=screenshot_paths,
+                        )
+                    logger.info("[paypal_authorize] blocked page detected in main loop, refreshing (%d/%d)...",
+                               ddc_blocked_refresh_count, _MAX_DDC_BLOCKED_REFRESHES)
+                    _emit_progress(on_progress, _progress_event(
+                        "paypal_ddc_blocked_retry",
+                        f"检测到 DataDome 封锁页面，正在刷新重试 ({ddc_blocked_refresh_count}/{_MAX_DDC_BLOCKED_REFRESHES})",
+                    ))
+                    try:
+                        page.reload(wait_until="domcontentloaded", timeout=30000)
+                    except Exception:
+                        pass
+                    time.sleep(4)
+                    continue
+
                 slider_visible = _ddc_slider_visible(page)
                 # 可见滑块立即处理；不可见时每 15 秒探测一次隐形 iframe
                 ddc_iframe_present = (
@@ -4464,7 +4845,15 @@ def _run_paypal_authorize_flow(
             _capture_screenshot(api, session_id, "paypal-cancelled", screenshot_paths)
             return _build_result("failed", failure_stage="post_submit", message="任务已取消", screenshot_paths=screenshot_paths)
 
+        # 保留跨循环的恢复状态键（_inspect_paypal_page 每轮重建 state dict）
+        _prev_recover_keys = {
+            k: state[k] for k in (
+                "_email_stuck_recover_count", "_email_reload_cycle_count",
+                "_email_first_submitted_at", "_fill_retry_count",
+            ) if k in state
+        } if isinstance(state, dict) else {}
         state = _inspect_paypal_page(api)
+        state.update(_prev_recover_keys)
         classified = classify_paypal_checkout_state(current_url, state.get("body_text", ""))
         if (
             paypal_mode == "create_account"
@@ -4512,6 +4901,24 @@ def _run_paypal_authorize_flow(
             time.sleep(1.5)
             continue
         if classified and classified.get("status") == "failed":
+            # DataDome blocked → 刷新重试而不是直接退出（共用主循环计数器）
+            if classified.get("failure_stage") == "paypal_datadome_blocked":
+                ddc_blocked_refresh_count += 1
+                if ddc_blocked_refresh_count <= _MAX_DDC_BLOCKED_REFRESHES:
+                    page = getattr(api, "page", None)
+                    if page:
+                        logger.info("[paypal_authorize] classify detected datadome_blocked, refreshing (%d/%d)...",
+                                   ddc_blocked_refresh_count, _MAX_DDC_BLOCKED_REFRESHES)
+                        _emit_progress(on_progress, _progress_event(
+                            "paypal_ddc_blocked_retry",
+                            f"classify 检测到 DataDome 封锁，正在刷新重试 ({ddc_blocked_refresh_count}/{_MAX_DDC_BLOCKED_REFRESHES})",
+                        ))
+                        try:
+                            page.reload(wait_until="domcontentloaded", timeout=30000)
+                        except Exception:
+                            pass
+                        time.sleep(4)
+                        continue
             if otp_phone_lock_key:
                 _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
                 otp_phone_lock_key = ""
@@ -4534,6 +4941,23 @@ def _run_paypal_authorize_flow(
             classified["screenshot_paths"] = screenshot_paths
             return classified
         if classified and classified.get("status") == "needs_review" and classified.get("failure_stage") == "paypal_human_verification":
+            # 可能是 DataDome blocked 页面被泛匹配为 human_verification → 检查并刷新
+            page = getattr(api, "page", None)
+            if page and _is_ddc_blocked_page(page):
+                ddc_blocked_refresh_count += 1
+                if ddc_blocked_refresh_count <= _MAX_DDC_BLOCKED_REFRESHES:
+                    logger.info("[paypal_authorize] human_verification is actually a blocked page, refreshing (%d/%d)...",
+                               ddc_blocked_refresh_count, _MAX_DDC_BLOCKED_REFRESHES)
+                    _emit_progress(on_progress, _progress_event(
+                        "paypal_ddc_blocked_retry",
+                        f"DataDome 封锁页面被误判为人机验证，正在刷新重试 ({ddc_blocked_refresh_count}/{_MAX_DDC_BLOCKED_REFRESHES})",
+                    ))
+                    try:
+                        page.reload(wait_until="domcontentloaded", timeout=30000)
+                    except Exception:
+                        pass
+                    time.sleep(4)
+                    continue
             if otp_phone_lock_key:
                 _release_paypal_otp_phone_lock(otp_phone_lock_key, on_progress=on_progress)
                 otp_phone_lock_key = ""
@@ -4560,6 +4984,15 @@ def _run_paypal_authorize_flow(
             if bool(state.get("signup_email_submitted")) and not signup_email_submitted:
                 signup_email_submitted_at = float(state.get("signup_email_submitted_at") or time.time())
                 signup_email_submitted = True
+            elif bool(state.get("signup_email_submitted")) and signup_email_submitted:
+                # 同步回外层（JS 恢复/reload 可能更新了时间戳）
+                state_submitted_at = float(state.get("signup_email_submitted_at") or 0)
+                if state_submitted_at > 0:
+                    signup_email_submitted_at = state_submitted_at
+            elif not bool(state.get("signup_email_submitted")) and signup_email_submitted:
+                # Layer 1 的 reload 重置了状态 → 外层也要同步重置
+                signup_email_submitted = False
+                signup_email_submitted_at = 0.0
             if bool(state.get("signup_submitted")) and not signup_form_submitted:
                 signup_submitted_at = float(state.get("signup_submitted_at") or time.time())
                 signup_form_submitted = True
@@ -4581,6 +5014,99 @@ def _run_paypal_authorize_flow(
                 )
             if handled:
                 continue
+            # 诊断日志：signup_flow 返回 handled=False，检查页面状态
+            if signup_email_submitted:
+                logger.info(
+                    "[paypal_authorize] signup_flow returned handled=False, state: "
+                    "email_locator=%s needs_login=%s registration_ready=%s "
+                    "registration_text_hint=%s needs_otp=%s approve_ready=%s "
+                    "js_count=%s reload_cycles=%s elapsed=%.0f url=%s",
+                    bool(state.get("email_locator")),
+                    bool(state.get("needs_login")),
+                    bool(state.get("registration_ready")),
+                    bool(state.get("registration_text_hint")),
+                    bool(state.get("needs_otp")),
+                    bool(state.get("approve_ready")),
+                    state.get("_email_stuck_recover_count", 0),
+                    state.get("_email_reload_cycle_count", 0),
+                    time.time() - signup_email_submitted_at if signup_email_submitted_at > 0 else 0,
+                    _safe_url_summary(getattr(api.page, "url", "")),
+                )
+            # ── Layer 2: SPA 卡住恢复（与 Layer 1 共享计数器） ──
+            # 当 signup_flow 返回 handled=False 且邮箱已提交但无任何表单元素可见时，
+            # 说明 SPA 内部状态死锁。使用与 Layer 1 相同的策略：
+            #   1 次 JS 快速尝试 → reload + 完整重置 → 最多 3 次 reload 周期
+            if (
+                signup_email_submitted
+                and not state.get("needs_login")
+                and not state.get("email_locator")
+                and not state.get("registration_ready")
+                and not state.get("registration_text_hint")
+                and not state.get("needs_otp")
+                and not state.get("approve_ready")
+            ):
+                # 超时退出（使用首次提交时间）
+                first_submitted_at = float(state.get("_email_first_submitted_at") or signup_email_submitted_at)
+                if first_submitted_at > 0 and time.time() - first_submitted_at > PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS:
+                    _capture_screenshot(api, session_id, "paypal-signup-email-timeout", screenshot_paths)
+                    return _build_result(
+                        "failed",
+                        failure_stage="paypal_signup",
+                        message="等待 PayPal 注册表单加载超时",
+                        screenshot_paths=screenshot_paths,
+                    )
+                stuck_elapsed = time.time() - signup_email_submitted_at if signup_email_submitted_at > 0 else 0
+                _MAX_JS_BEFORE_RELOAD = 1
+                _MAX_RELOAD_CYCLES = 3
+                js_count = int(state.get("_email_stuck_recover_count") or 0)
+                reload_cycles = int(state.get("_email_reload_cycle_count") or 0)
+
+                if stuck_elapsed > 8 and (js_count <= _MAX_JS_BEFORE_RELOAD or reload_cycles < _MAX_RELOAD_CYCLES):
+                    if js_count < _MAX_JS_BEFORE_RELOAD:
+                        # ── JS 快速尝试 ──
+                        state["_email_stuck_recover_count"] = js_count + 1
+                        recover_email = str(active_signup_profile.get("email") or "").strip()
+                        logger.info(
+                            "[paypal_authorize] page stuck (%.0fs, %.0fs total), JS recover %d...",
+                            stuck_elapsed, time.time() - first_submitted_at, js_count + 1,
+                        )
+                        _emit_progress(on_progress, _progress_event(
+                            "paypal_signup_email_reload",
+                            f"邮箱提交后页面卡住（无表单元素），JS 恢复 ({js_count + 1}/{_MAX_JS_BEFORE_RELOAD})",
+                        ))
+                        recover_result = _js_recover_paypal_email_spinner(api, recover_email)
+                        logger.info("[paypal_authorize] JS recover result: %s", recover_result)
+                        if not recover_result.get("recovered"):
+                            signup_email_submitted = False
+                            signup_email_submitted_at = 0.0
+                        time.sleep(2.0)
+                        continue
+
+                    if reload_cycles < _MAX_RELOAD_CYCLES:
+                        # ── Reload + 完整状态重置 ──
+                        reload_cycles += 1
+                        state["_email_reload_cycle_count"] = reload_cycles
+                        state["_email_stuck_recover_count"] = 0
+                        state["signup_email_submitted"] = False
+                        state["signup_email_submitted_at"] = 0
+                        state["_fill_retry_count"] = 0
+                        signup_email_submitted = False
+                        signup_email_submitted_at = 0.0
+                        logger.info(
+                            "[paypal_authorize] SPA deadlocked, reload cycle %d/%d (%.0fs total)...",
+                            reload_cycles, _MAX_RELOAD_CYCLES,
+                            time.time() - first_submitted_at,
+                        )
+                        _emit_progress(on_progress, _progress_event(
+                            "paypal_signup_email_reload",
+                            f"SPA 死锁，正在刷新页面重试 (第 {reload_cycles}/{_MAX_RELOAD_CYCLES} 轮)",
+                        ))
+                        try:
+                            api.page.reload(wait_until="domcontentloaded", timeout=30000)
+                        except Exception:
+                            pass
+                        time.sleep(3.0)
+                        continue
             if state.get("needs_login") or state.get("email_locator") or state.get("registration_ready"):
                 time.sleep(1.5)
                 continue
@@ -4670,6 +5196,16 @@ def _wait_for_paypal_result(
             # DataDome DDC 检测：等待结果阶段也可能弹出
             page = getattr(api, "page", None)
             if page:
+                # 先检测 blocked 页面
+                if _is_ddc_blocked_page(page):
+                    logger.info("[paypal_result] blocked page detected, refreshing...")
+                    try:
+                        page.reload(wait_until="domcontentloaded", timeout=30000)
+                    except Exception:
+                        pass
+                    time.sleep(4)
+                    continue
+
                 slider_visible = _ddc_slider_visible(page)
                 ddc_iframe_present = (
                     (not slider_visible)

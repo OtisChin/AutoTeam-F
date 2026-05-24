@@ -131,10 +131,11 @@
 
               <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
                 <label class="flex items-center justify-between gap-3 text-sm text-gray-300">
-                  <span class="font-medium text-gray-200">浏览器引擎</span>
+                  <span class="font-medium text-gray-200">执行模式</span>
                   <select v-model="form.paypalBrowser" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
-                    <option value="camoufox">Camoufox (Firefox)</option>
                     <option value="chromium">Chromium</option>
+                    <option value="camoufox">Camoufox</option>
+                    <option value="protocol">协议模式</option>
                   </select>
                 </label>
               </div>
@@ -260,33 +261,54 @@
 
               <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
                 <div class="mb-3 text-sm font-medium text-gray-200">代理设置</div>
-                <div v-if="!form.proxyPoolEnabled" class="mb-3">
+                <div v-if="!form.proxyPoolEnabled && !form.proxyApiEnabled" class="mb-3">
                   <label class="block text-xs text-gray-400 mb-1">代理标签</label>
                   <input v-model.trim="form.proxyLabel" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running" />
                 </div>
-                <div v-if="!form.proxyPoolEnabled" class="mb-3">
+                <div v-if="!form.proxyPoolEnabled && !form.proxyApiEnabled" class="mb-3">
                   <label class="block text-xs text-gray-400 mb-1">代理 URL</label>
                   <input v-model.trim="form.proxyUrl" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" placeholder="socks5://user:pass@host:port" :disabled="busy || running || form.proxyPoolEnabled" />
-                  <div class="mt-1 text-xs text-gray-500">未启用动态代理池时使用这条固定代理。</div>
+                  <div class="mt-1 text-xs text-gray-500">未启用轮换时使用这条固定代理。</div>
                 </div>
-                <div class="flex items-center justify-between gap-3">
+                <div v-if="!form.proxyApiEnabled" class="mb-3 flex items-center justify-between gap-3">
                   <label class="inline-flex items-center gap-2 text-sm text-gray-300">
-                    <input v-model="form.proxyPoolEnabled" type="checkbox" class="accent-blue-500" :disabled="busy || running" />
+                    <input v-model="form.proxyPoolEnabled" type="checkbox" class="accent-blue-500" :disabled="busy || running || form.proxyApiEnabled" />
                     <span class="font-medium text-gray-200">启用动态代理池</span>
                   </label>
                   <button
+                    v-if="form.proxyPoolEnabled"
                     type="button"
                     class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 transition hover:bg-gray-700 disabled:opacity-50"
-                    :disabled="busy || running || !form.proxyPoolEnabled"
+                    :disabled="busy || running || form.proxyApiEnabled"
                     @click="openPoolEdit('proxy')"
                   >
                     编辑
                   </button>
                 </div>
-                <div class="mt-2 text-xs text-gray-500">
-                  已配置 {{ proxyPoolEntries.length }} 条代理；每个账号流程开始时随机选一条，编辑弹窗内可导入、修改和删除。
+                <div v-if="!form.proxyPoolEnabled" class="mb-3">
+                  <div class="flex items-center justify-between gap-3">
+                    <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                      <input v-model="form.proxyApiEnabled" type="checkbox" class="accent-blue-500" :disabled="busy || running || form.proxyPoolEnabled" />
+                      <span class="font-medium text-gray-200">启用代理 API 轮换</span>
+                    </label>
+                  </div>
+                  <div v-if="form.proxyApiEnabled" class="mt-3 space-y-3">
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">供应商</label>
+                      <select v-model="form.proxyApiProvider" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
+                        <option value="1024proxy">1024proxy</option>
+                        <option value="cliproxy">Cliproxy</option>
+                      </select>
+                    </div>
+                    <div class="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-100">
+                      {{ proxyApiProviderHelp }}
+                    </div>
+                  </div>
                 </div>
-                <div v-if="form.proxyPoolEnabled" class="mt-3 max-h-32 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70">
+                <div class="mt-2 text-xs text-gray-500">
+                  {{ proxySettingSummary }}
+                </div>
+                <div v-if="form.proxyPoolEnabled && !form.proxyApiEnabled" class="mt-3 max-h-32 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70">
                   <div v-if="!proxyPoolEntries.length" class="px-3 py-3 text-xs text-gray-500">尚未导入代理。</div>
                   <div
                     v-for="(proxy, index) in proxyPoolEntries"
@@ -639,6 +661,8 @@ const form = ref({
   accountEmails: [],
   proxyLabel: '',
   proxyUrl: '',
+  proxyApiEnabled: false,
+  proxyApiProvider: '1024proxy',
   proxyPoolEnabled: false,
   proxyPoolText: '',
   manualConfirm: false,
@@ -653,7 +677,7 @@ const form = ref({
   paypalCardCvv: '',
   autofillEnabled: true,
   autoOauthAfterSuccess: false,
-  paypalBrowser: 'camoufox',
+  paypalBrowser: 'chromium',
   billingName: '',
   billingPhone: '',
   billingCountry: 'US',
@@ -723,6 +747,18 @@ const singleSelectedEmail = computed(() => String(selectedAccountEmail.value || 
 const phonePoolEntries = computed(() => parsePayPalPhonePool(form.value.phonePoolText, { strict: false }))
 const availablePhonePoolEntries = computed(() => phonePoolEntries.value.filter(entry => phonePoolEntryAvailable(entry)))
 const proxyPoolEntries = computed(() => parseProxyPoolLines(form.value.proxyPoolText))
+const proxyApiProviderHelp = computed(() => {
+  if (form.value.proxyApiProvider === 'cliproxy') {
+    return '运行时每个账号都会重新提取并使用 Cliproxy 返回的代理。'
+  }
+  return '运行时每个账号都会重新提取并使用 1024proxy 返回的代理。'
+})
+const proxySettingSummary = computed(() => {
+  if (form.value.proxyApiEnabled) {
+    return '已启用代理 API 轮换；每个账号流程开始前调用一次供应商 API。'
+  }
+  return `已配置 ${proxyPoolEntries.value.length} 条代理；每个账号流程开始时随机选一条，编辑弹窗内可导入、修改和删除。`
+})
 const poolEditTitle = computed(() => poolEditTarget.value === 'phone' ? '编辑手机号池' : '编辑动态代理池')
 const poolEditHelp = computed(() => poolEditTarget.value === 'phone'
   ? '逐行编辑手机号和接码 API；空行保存时会被忽略。'
@@ -1089,6 +1125,21 @@ function restorePayPalState() {
       if (saved.form.proxyPoolEnabled === undefined && String(saved.form.proxyPoolText || '').trim()) {
         form.value.proxyPoolEnabled = true
       }
+      if (saved.form.proxyApiEnabled === undefined) {
+        form.value.proxyApiEnabled = false
+      }
+      if (!['1024proxy', 'cliproxy'].includes(String(form.value.proxyApiProvider || ''))) {
+        form.value.proxyApiProvider = '1024proxy'
+      }
+      if (String(form.value.paypalBrowser || '').toLowerCase() === 'chrome') {
+        form.value.paypalBrowser = 'chromium'
+      }
+      if (!['chromium', 'camoufox', 'protocol'].includes(String(form.value.paypalBrowser || '').toLowerCase())) {
+        form.value.paypalBrowser = 'chromium'
+      }
+      if (form.value.proxyApiEnabled) {
+        form.value.proxyPoolEnabled = false
+      }
     }
     if (saved.bindForm && typeof saved.bindForm === 'object') {
       Object.assign(bindForm.value, saved.bindForm)
@@ -1326,7 +1377,13 @@ function validateBeforeStart() {
   if (form.value.batchMode && !selectedBatchEmails.value.length) {
     throw new Error('请先选择批量账号')
   }
-  if (form.value.proxyPoolEnabled && !proxyPoolEntries.value.length) {
+  if (form.value.proxyApiEnabled) {
+    const provider = String(form.value.proxyApiProvider || '').trim()
+    if (!['1024proxy', 'cliproxy'].includes(provider)) {
+      throw new Error('代理 API 供应商暂只支持 1024proxy 或 Cliproxy')
+    }
+  }
+  if (!form.value.proxyApiEnabled && form.value.proxyPoolEnabled && !proxyPoolEntries.value.length) {
     throw new Error('启用动态代理池后需要先导入代理')
   }
   if (!form.value.manualConfirm) {
@@ -1372,7 +1429,8 @@ async function startTask() {
       checkout_url: '',
       bind_link_payload: buildBindLinkBody(),
       proxy_url: form.value.proxyUrl || null,
-      proxy_pool_text: form.value.proxyPoolEnabled ? (form.value.proxyPoolText || '') : '',
+      proxy_pool_text: !form.value.proxyApiEnabled && form.value.proxyPoolEnabled ? (form.value.proxyPoolText || '') : '',
+      proxy_api_provider: form.value.proxyApiEnabled ? form.value.proxyApiProvider : '',
       proxy_label: form.value.proxyLabel,
       manual_confirm: Boolean(form.value.manualConfirm),
       paypal_browser: form.value.paypalBrowser,
@@ -1453,6 +1511,15 @@ watch(
   () => form.value.phonePoolText,
   () => {
     prunePhonePoolStatuses()
+  }
+)
+
+watch(
+  () => form.value.proxyApiEnabled,
+  (enabled) => {
+    if (enabled) {
+      form.value.proxyPoolEnabled = false
+    }
   }
 )
 

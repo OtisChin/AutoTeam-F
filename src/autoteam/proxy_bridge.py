@@ -1,8 +1,7 @@
 """Small local HTTP proxy that forwards browser traffic through SOCKS5.
 
-Chromium supports unauthenticated SOCKS proxies, but Playwright cannot launch
-Chromium with username/password SOCKS authentication. This bridge gives
-Chromium a local HTTP proxy and performs authenticated SOCKS5 upstream
+Playwright Chromium can be fickle with direct SOCKS routing on some targets.
+This bridge gives Chromium a local HTTP proxy and performs SOCKS5 upstream
 connection itself.
 """
 
@@ -193,11 +192,11 @@ def start_playwright_socks_bridge(proxy_url: str | None) -> SocksHttpBridge | No
     except Exception:
         return None
     parsed = urlsplit(upstream)
-    if parsed.scheme not in {"socks5", "socks5h"} or not (parsed.username or parsed.password):
+    if parsed.scheme not in {"socks5", "socks5h"}:
         return None
     server = _ProxyServer(("127.0.0.1", 0), _ProxyHandler, upstream)
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="playwright-socks-http-bridge")
     thread.start()
     bridge = SocksHttpBridge(upstream_url=upstream, server=server, thread=thread)
-    logger.info("[proxy_bridge] started local HTTP bridge for authenticated SOCKS proxy at %s", bridge.proxy_url)
+    logger.info("[proxy_bridge] started local HTTP bridge for SOCKS proxy at %s", bridge.proxy_url)
     return bridge
