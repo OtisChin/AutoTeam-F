@@ -424,6 +424,12 @@ def _env_config_keys() -> list[str]:
         "GOPAY_AUTO_REGISTER_BIND_DELAY_MAX",
         "GOPAY_AUTO_SIGNUP_WALLET_ATTEMPTS",
         "GOPAY_AUTO_SIGNUP_WALLET_POOL_TTL_SECONDS",
+        "OAUTH_PHONE_SMS_PROVIDER",
+        "OAUTH_HERO_SMS_API_KEY",
+        "OAUTH_HERO_SMS_MAX_PRICE",
+        "OAUTH_HERO_SMS_BASE_URL",
+        "OAUTH_HERO_SMS_COUNTRY",
+        "OAUTH_HERO_SMS_SERVICE",
         "OUTLOOK_REGISTER_CODE_TIMEOUT",
     ]
     for key in extra_keys:
@@ -824,6 +830,27 @@ def _normalize_gopay_auto_signup_mode(raw: str | None = None) -> str:
     return "appium" if value == "appium" else "http"
 
 
+def _normalize_oauth_phone_sms_provider(raw: str | None = None) -> str:
+    value = str(raw or "").strip().lower().replace("-", "_")
+    if value in {"hero_sms", "herosms", "hero"}:
+        return "hero_sms"
+    return "phone_pool"
+
+
+def _normalize_oauth_hero_sms_service(raw: str | None = None) -> str:
+    value = str(raw or "").strip().lower().replace("-", "_")
+    if value in {"", "openai", "chatgpt", "chat_gpt", "gpt"}:
+        return "dr"
+    return value
+
+
+def _normalize_oauth_hero_sms_country(raw: str | None = None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"", "us", "usa", "united_states", "united states", "+1", "1", "12"}:
+        return "187"
+    return value
+
+
 def _gopay_auto_signup_env() -> dict[str, str]:
     from autoteam.setup_wizard import _read_env
 
@@ -842,6 +869,24 @@ def _gopay_auto_signup_env() -> dict[str, str]:
         "signup_mode": _normalize_gopay_auto_signup_mode(pick("GOPAY_AUTO_SIGNUP_MODE", "http")),
         "appium_url": pick("GOPAY_APPIUM_URL", "http://127.0.0.1:4723"),
         "appium_adb_serial": pick("GOPAY_APPIUM_ADB_SERIAL"),
+    }
+
+
+def _oauth_phone_sms_env() -> dict[str, str]:
+    from autoteam.setup_wizard import _read_env
+
+    env = _read_env()
+
+    def pick(key: str, default: str = "") -> str:
+        return str(env.get(key, "") or os.environ.get(key, "") or default).strip()
+
+    return {
+        "provider": _normalize_oauth_phone_sms_provider(pick("OAUTH_PHONE_SMS_PROVIDER", "phone_pool")),
+        "hero_sms_api_key": pick("OAUTH_HERO_SMS_API_KEY"),
+        "hero_sms_max_price": pick("OAUTH_HERO_SMS_MAX_PRICE"),
+        "hero_sms_base_url": pick("OAUTH_HERO_SMS_BASE_URL", "https://hero-sms.com/stubs/handler_api.php"),
+        "hero_sms_country": _normalize_oauth_hero_sms_country(pick("OAUTH_HERO_SMS_COUNTRY", "187")),
+        "hero_sms_service": _normalize_oauth_hero_sms_service(pick("OAUTH_HERO_SMS_SERVICE", "dr")),
     }
 
 
@@ -1178,6 +1223,75 @@ async def save_gopay_auto_signup_config(request: Request):
         "hero_sms_max_price": cfg["hero_sms_max_price"],
         "proxy_url": cfg["proxy_url"],
         "proxy_url_present": bool(cfg["proxy_url"]),
+    }
+
+
+@app.get("/api/config/oauth-phone-sms")
+def get_oauth_phone_sms_config():
+    cfg = _oauth_phone_sms_env()
+    provider = cfg["provider"]
+    return {
+        "provider": provider,
+        "providers": [
+            {
+                "value": "phone_pool",
+                "label": "手机号池",
+                "configured": True,
+            },
+            {
+                "value": "hero_sms",
+                "label": "hero-sms",
+                "configured": bool(cfg["hero_sms_api_key"]),
+                "secret_key": "OAUTH_HERO_SMS_API_KEY",
+            },
+        ],
+        "configured": provider == "phone_pool" or bool(cfg["hero_sms_api_key"]),
+        "hero_sms_api_key_present": bool(cfg["hero_sms_api_key"]),
+        "hero_sms_api_key_masked": _mask_secret_for_config(cfg["hero_sms_api_key"]),
+        "hero_sms_max_price": cfg["hero_sms_max_price"],
+        "hero_sms_country": cfg["hero_sms_country"] or "187",
+        "hero_sms_service": cfg["hero_sms_service"] or "dr",
+        "hero_sms_service_label": "OpenAI",
+    }
+
+
+@app.put("/api/config/oauth-phone-sms")
+async def save_oauth_phone_sms_config(request: Request):
+    from autoteam.setup_wizard import _write_env
+
+    data = await request.json()
+    current = _oauth_phone_sms_env()
+    provider = _normalize_oauth_phone_sms_provider(data.get("provider") or data.get("OAUTH_PHONE_SMS_PROVIDER"))
+    hero_sms_api_key = str(data.get("hero_sms_api_key") or data.get("OAUTH_HERO_SMS_API_KEY") or "").strip()
+    hero_sms_max_price = str(data.get("hero_sms_max_price") or data.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip()
+    if provider == "hero_sms" and not (hero_sms_api_key or current["hero_sms_api_key"]):
+        raise HTTPException(status_code=400, detail="启用 hero-sms 前需要配置 OAuth hero-sms API Key")
+
+    updates = {
+        "OAUTH_PHONE_SMS_PROVIDER": provider,
+        "OAUTH_HERO_SMS_MAX_PRICE": hero_sms_max_price,
+        "OAUTH_HERO_SMS_BASE_URL": "https://hero-sms.com/stubs/handler_api.php",
+        "OAUTH_HERO_SMS_COUNTRY": "187",
+        "OAUTH_HERO_SMS_SERVICE": "dr",
+    }
+    if hero_sms_api_key:
+        updates["OAUTH_HERO_SMS_API_KEY"] = hero_sms_api_key
+
+    for key, value in updates.items():
+        _write_env(key, value)
+        os.environ[key] = value
+
+    cfg = _oauth_phone_sms_env()
+    return {
+        "message": "OAuth 手机号接码配置已保存",
+        "provider": cfg["provider"],
+        "configured": cfg["provider"] == "phone_pool" or bool(cfg["hero_sms_api_key"]),
+        "hero_sms_api_key_present": bool(cfg["hero_sms_api_key"]),
+        "hero_sms_api_key_masked": _mask_secret_for_config(cfg["hero_sms_api_key"]),
+        "hero_sms_max_price": cfg["hero_sms_max_price"],
+        "hero_sms_country": cfg["hero_sms_country"] or "187",
+        "hero_sms_service": cfg["hero_sms_service"] or "dr",
+        "hero_sms_service_label": "OpenAI",
     }
 
 
@@ -2314,6 +2428,7 @@ class OAuthPhonePoolUpsertParams(BaseModel):
     bound_count: int = Field(0, validation_alias=AliasChoices("bound_count", "boundCount"))
     bound_emails: list[str] = Field(default_factory=list, validation_alias=AliasChoices("bound_emails", "boundEmails"))
     invalid_reason: str = Field("", validation_alias=AliasChoices("invalid_reason", "invalidReason"))
+    cooldown_until: float | None = Field(None, validation_alias=AliasChoices("cooldown_until", "cooldownUntil"))
     note: str = ""
 
 
@@ -2362,6 +2477,12 @@ class DeleteBatchParams(BaseModel):
 
 class AccountEmailBatchParams(BaseModel):
     emails: list[str]
+    proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
+    proxy_pool: list[str] = Field(default_factory=list, validation_alias=AliasChoices("proxy_pool", "proxyPool"))
+    proxy_pool_text: str = Field("", validation_alias=AliasChoices("proxy_pool_text", "proxyPoolText"))
+    proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
+    proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
+    proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
 
 
 class AccountTypeUpdateParams(BaseModel):
@@ -3110,6 +3231,65 @@ def _fetch_proxy_from_api_url(api_url: str, *, default_auth_scheme: str, provide
         if normalized_provider == "cliproxy":
             return ""
         raise RuntimeError(f"动态代理 API 返回的代理格式无效: {candidate} ({exc})") from exc
+
+
+def _build_oauth_proxy_selector(
+    *,
+    proxy_url: str | None = None,
+    proxy_pool: list[Any] | tuple[Any, ...] | None = None,
+    proxy_pool_text: str | None = None,
+    proxy_api_provider: str | None = None,
+    proxy_api_url: str | None = None,
+):
+    """Return a per-account OAuth proxy selector.
+
+    OAuth uses the same static proxy / proxy pool / provider API semantics as
+    PayPal, but keeps selection local so batch login can rotate per account.
+    """
+    raw_proxy_url = str(proxy_url or "").strip()
+    try:
+        normalized_proxy_url = normalize_proxy_url(raw_proxy_url) if raw_proxy_url else ""
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"OAuth 代理格式错误: {raw_proxy_url} ({exc})") from exc
+    provider = _normalize_proxy_api_provider(proxy_api_provider) if proxy_api_provider else ""
+    api_url = str(proxy_api_url or "").strip()
+    if provider and not api_url:
+        api_url = _default_proxy_api_url(provider, raw_proxy_url)
+
+    normalized_pool: list[str] = []
+    for raw_pool_proxy in _parse_proxy_pool_values(proxy_pool, proxy_pool_text):
+        if _is_proxy_api_url(raw_pool_proxy):
+            if not api_url:
+                api_url = raw_pool_proxy
+                provider = _normalize_proxy_api_provider(provider or "1024proxy")
+            continue
+        try:
+            normalized = normalize_proxy_url(raw_pool_proxy)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"OAuth 代理池格式错误: {raw_pool_proxy} ({exc})") from exc
+        if normalized and normalized not in normalized_pool:
+            normalized_pool.append(normalized)
+
+    def _select() -> str:
+        if api_url:
+            fetched_proxy = _fetch_proxy_from_api_url(
+                api_url,
+                default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME,
+                provider=provider or "1024proxy",
+            )
+            if fetched_proxy:
+                return fetched_proxy
+            return normalized_proxy_url
+        if normalized_pool:
+            return random.choice(normalized_pool)
+        return normalized_proxy_url
+
+    return _select, {
+        "proxy_url_present": bool(normalized_proxy_url),
+        "proxy_pool_count": len(normalized_pool),
+        "proxy_api_provider": provider,
+        "proxy_api_url_present": bool(api_url),
+    }
 
 
 def _probe_proxy_exit_ip(proxy_url: str) -> str:
@@ -5483,9 +5663,23 @@ def post_kick_account(email: str):
 
 class LoginAccountParams(BaseModel):
     email: str
+    proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
+    proxy_pool: list[str] = Field(default_factory=list, validation_alias=AliasChoices("proxy_pool", "proxyPool"))
+    proxy_pool_text: str = Field("", validation_alias=AliasChoices("proxy_pool_text", "proxyPoolText"))
+    proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
+    proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
+    proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
 
 
-def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = False, refresh_auth_session: bool = False) -> dict:
+def _run_account_codex_login_once(
+    email: str,
+    acc: dict,
+    *,
+    headless: bool = False,
+    refresh_auth_session: bool = False,
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
+) -> dict:
     from autoteam.accounts import (
         ACCOUNT_SOURCE_MANAGED,
         ACCOUNT_TYPE_FREE,
@@ -5556,12 +5750,16 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
             update_account(email, cloudmail_account_id=resolved_mail_id)
     bundle = None
     auth_session_data = load_auth_session(email)
-    use_protocol_oauth = (not refresh_auth_session) and str(os.environ.get("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL") or "").strip().lower() in {
+    oauth_proxy_url = str(proxy_url or "").strip()
+    oauth_proxy_bypass = str(proxy_bypass or "").strip() or None
+    use_protocol_oauth = (not refresh_auth_session) and not oauth_proxy_url and str(os.environ.get("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+    if oauth_proxy_url:
+        logger.info("[账号登录] OAuth 浏览器将使用代理: %s", email)
     if auth_session_data and use_protocol_oauth:
         try:
             logger.info("[账号登录] 优先复用 auth_session 协议 OAuth: %s", email)
@@ -5631,6 +5829,8 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
             "native_oauth": native_oauth,
             "headless": headless,
             "mail_account_id": acc.get("cloudmail_account_id"),
+            "proxy_url": oauth_proxy_url or None,
+            "proxy_bypass": oauth_proxy_bypass,
         }
         if refresh_auth_session:
             browser_login_kwargs["auth_session_callback"] = _capture_refreshed_auth_session
@@ -5747,6 +5947,13 @@ def post_account_login(params: LoginAccountParams):
     acc = find_account(accounts, email)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
+    oauth_proxy_selector, oauth_proxy_meta = _build_oauth_proxy_selector(
+        proxy_url=params.proxy_url,
+        proxy_pool=params.proxy_pool,
+        proxy_pool_text=params.proxy_pool_text,
+        proxy_api_provider=params.proxy_api_provider,
+        proxy_api_url=params.proxy_api_url,
+    )
 
     def _run(task_id: str = ""):
         from autoteam.codex_auth import (
@@ -5765,7 +5972,23 @@ def post_account_login(params: LoginAccountParams):
                     "message": f"正在补登录 {email}",
                 },
             )
-            return _run_account_codex_login_once(email, acc, headless=False)
+            selected_oauth_proxy = oauth_proxy_selector()
+            if selected_oauth_proxy:
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "account_login_proxy_selected",
+                        "email": email,
+                        **oauth_proxy_meta,
+                        "message": "OAuth 补登录已选择代理",
+                    },
+                )
+            login_kwargs: dict[str, Any] = {"headless": False}
+            if selected_oauth_proxy:
+                login_kwargs["proxy_url"] = selected_oauth_proxy
+            if params.proxy_bypass:
+                login_kwargs["proxy_bypass"] = params.proxy_bypass
+            return _run_account_codex_login_once(email, acc, **login_kwargs)
         except CodexOAuthPhoneRequired as exc:
             result = _oauth_phone_required_result(email, exc)
             _append_task_progress(
@@ -5849,6 +6072,13 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
         accounts_by_email[email] = acc
     if not accounts_by_email:
         raise HTTPException(status_code=404, detail="账号不存在")
+    oauth_proxy_selector, oauth_proxy_meta = _build_oauth_proxy_selector(
+        proxy_url=params.proxy_url,
+        proxy_pool=params.proxy_pool,
+        proxy_pool_text=params.proxy_pool_text,
+        proxy_api_provider=params.proxy_api_provider,
+        proxy_api_url=params.proxy_api_url,
+    )
 
     def _run(task_id: str = ""):
         from autoteam.codex_auth import (
@@ -5924,7 +6154,25 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                 }
             )
             try:
-                login_result = _run_account_codex_login_once(email, acc, headless=False)
+                selected_oauth_proxy = oauth_proxy_selector()
+                if selected_oauth_proxy:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_proxy_selected",
+                            "email": email,
+                            "current": index,
+                            "total": total,
+                            **oauth_proxy_meta,
+                            "message": "OAuth 补登录已选择代理",
+                        },
+                    )
+                login_kwargs: dict[str, Any] = {"headless": False}
+                if selected_oauth_proxy:
+                    login_kwargs["proxy_url"] = selected_oauth_proxy
+                if params.proxy_bypass:
+                    login_kwargs["proxy_bypass"] = params.proxy_bypass
+                login_result = _run_account_codex_login_once(email, acc, **login_kwargs)
                 logger.info(
                     "[账号登录] 批量 worker 成功: email=%s elapsed=%.1fs thread=%s",
                     email,
@@ -7116,6 +7364,7 @@ def get_oauth_phone_pool():
         "available_count": sum(1 for item in items if item.get("status") == "available"),
         "full_count": sum(1 for item in items if item.get("status") == "full"),
         "invalid_count": sum(1 for item in items if item.get("status") == "invalid"),
+        "cooldown_count": sum(1 for item in items if item.get("status") == "cooldown"),
         "disabled_count": sum(1 for item in items if item.get("status") == "disabled"),
     }
 
@@ -8163,7 +8412,23 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 for attempt in range(1, max_attempts + 1):
                     try:
                         latest_account = find_account(load_accounts(), success_email) or {"email": success_email}
-                        oauth_result = _run_account_codex_login_once(success_email, latest_account, headless=False)
+                        oauth_proxy_url = bind_proxy_url or normalized_proxy_url
+                        if oauth_proxy_url:
+                            _append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "gopay_oauth_proxy_selected",
+                                    "email": success_email,
+                                    "proxy_label": params.proxy_label,
+                                    "message": "GoPay 绑定成功后的 OAuth 补登录将复用当前代理",
+                                },
+                            )
+                        oauth_login_kwargs: dict[str, Any] = {"headless": False}
+                        if oauth_proxy_url:
+                            oauth_login_kwargs["proxy_url"] = oauth_proxy_url
+                        if params.proxy_bypass:
+                            oauth_login_kwargs["proxy_bypass"] = params.proxy_bypass
+                        oauth_result = _run_account_codex_login_once(success_email, latest_account, **oauth_login_kwargs)
                         oauth_successful_emails.append(success_email)
                         _append_task_progress(
                             task_id,
@@ -10872,7 +11137,24 @@ def post_paypal_task(params: PayPalTaskParams):
                 for attempt in range(1, max_attempts + 1):
                     try:
                         latest_account = find_account(load_accounts(), success_email) or {"email": success_email}
-                        oauth_result = _run_account_codex_login_once(success_email, latest_account, headless=False)
+                        oauth_proxy_url = selected_proxy_url or bind_proxy_url
+                        if oauth_proxy_url:
+                            _append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "paypal_oauth_proxy_selected",
+                                    "email": success_email,
+                                    "proxy_label": params.proxy_label,
+                                    "proxy_api_provider": proxy_api_provider,
+                                    "message": "PayPal 绑定成功后的 OAuth 补登录将复用当前代理",
+                                },
+                            )
+                        oauth_login_kwargs: dict[str, Any] = {"headless": False}
+                        if oauth_proxy_url:
+                            oauth_login_kwargs["proxy_url"] = oauth_proxy_url
+                        if params.proxy_bypass:
+                            oauth_login_kwargs["proxy_bypass"] = params.proxy_bypass
+                        oauth_result = _run_account_codex_login_once(success_email, latest_account, **oauth_login_kwargs)
                         oauth_successful_emails.append(success_email)
                         _append_task_progress(
                             task_id,

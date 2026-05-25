@@ -5,9 +5,10 @@
         <h2 class="text-xl font-bold text-white">OAuth 手机号</h2>
         <p class="mt-1 text-sm text-gray-400">用于 OAuth 登录遇到 add-phone 时自动绑定；每个手机号最多绑定 3 个 ChatGPT 账号。</p>
       </div>
-      <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-5">
         <StatCard label="可用" :value="summary.available_count" class-name="text-emerald-300" />
         <StatCard label="已满" :value="summary.full_count" class-name="text-blue-300" />
+        <StatCard label="冷却" :value="summary.cooldown_count" class-name="text-amber-300" />
         <StatCard label="失效" :value="summary.invalid_count" class-name="text-rose-300" />
         <StatCard label="总数" :value="summary.total" class-name="text-gray-100" />
       </div>
@@ -87,6 +88,7 @@
               <td class="px-3 py-3">
                 <select v-model="drafts[item.id].status" class="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-white outline-none focus:border-blue-500">
                   <option value="available">可用</option>
+                  <option value="cooldown">冷却</option>
                   <option value="invalid">失效</option>
                   <option value="disabled">停用</option>
                   <option value="full">已满</option>
@@ -94,6 +96,9 @@
                 <div class="mt-2 flex items-center gap-2 text-xs" :class="statusClass(item.status)">
                   <span class="h-2 w-2 rounded-full" :class="statusDotClass(item.status)"></span>
                   {{ statusLabel(item.status) }}
+                </div>
+                <div v-if="item.status === 'cooldown'" class="mt-1 text-[11px] text-amber-300/80">
+                  剩余 {{ formatCooldown(item.cooldown_remaining_seconds) }}
                 </div>
               </td>
               <td class="px-3 py-3">
@@ -132,7 +137,7 @@ import { computed, h, onMounted, reactive, ref } from 'vue'
 import { api } from '../api.js'
 
 const items = ref([])
-const summary = reactive({ total: 0, available_count: 0, full_count: 0, invalid_count: 0, disabled_count: 0 })
+const summary = reactive({ total: 0, available_count: 0, full_count: 0, cooldown_count: 0, invalid_count: 0, disabled_count: 0 })
 const drafts = reactive({})
 const loading = ref(false)
 const saving = ref(false)
@@ -178,6 +183,7 @@ function applyItems(payload) {
   summary.total = Number(payload?.total ?? nextItems.length)
   summary.available_count = Number(payload?.available_count ?? nextItems.filter((item) => item.status === 'available').length)
   summary.full_count = Number(payload?.full_count ?? nextItems.filter((item) => item.status === 'full').length)
+  summary.cooldown_count = Number(payload?.cooldown_count ?? nextItems.filter((item) => item.status === 'cooldown').length)
   summary.invalid_count = Number(payload?.invalid_count ?? nextItems.filter((item) => item.status === 'invalid').length)
   summary.disabled_count = Number(payload?.disabled_count ?? nextItems.filter((item) => item.status === 'disabled').length)
   for (const item of nextItems) {
@@ -189,6 +195,7 @@ function applyItems(payload) {
       bound_count: Number(item.bound_count || 0),
       bound_emails: item.bound_emails || [],
       invalid_reason: item.invalid_reason || '',
+      cooldown_until: item.cooldown_until || null,
       note: item.note || '',
     }
   }
@@ -278,13 +285,14 @@ function toggleAllVisible(event) {
 }
 
 function statusLabel(status) {
-  return { available: '可用', full: '已满', invalid: '失效', disabled: '停用' }[status] || status || '-'
+  return { available: '可用', full: '已满', cooldown: '冷却', invalid: '失效', disabled: '停用' }[status] || status || '-'
 }
 
 function statusClass(status) {
   return {
     available: 'text-emerald-300',
     full: 'text-blue-300',
+    cooldown: 'text-amber-300',
     invalid: 'text-rose-300',
     disabled: 'text-gray-400',
   }[status] || 'text-gray-400'
@@ -294,9 +302,20 @@ function statusDotClass(status) {
   return {
     available: 'bg-emerald-400',
     full: 'bg-blue-400',
+    cooldown: 'bg-amber-400',
     invalid: 'bg-rose-400',
     disabled: 'bg-gray-500',
   }[status] || 'bg-gray-500'
+}
+
+function formatCooldown(seconds) {
+  const total = Math.max(0, Number(seconds || 0))
+  if (!total) return '0 分钟'
+  const minutes = Math.ceil(total / 60)
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (hours > 0) return `${hours} 小时${rest ? ` ${rest} 分钟` : ''}`
+  return `${minutes} 分钟`
 }
 
 onMounted(loadItems)
