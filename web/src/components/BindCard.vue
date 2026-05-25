@@ -2140,6 +2140,7 @@ const gopayStageLabelMap = {
   gopay_oauth_login_done: 'OAuth 补登录成功',
   gopay_oauth_login_failed: 'OAuth 补登录失败',
   gopay_oauth_phone_required_removed: 'OAuth 需要手机验证，已删除账号',
+  gopay_oauth_phone_required: 'OAuth 需要手机验证，账号已保留',
   gopay_session_cpa_convert_started: '直接转换 CPA 认证',
   gopay_session_cpa_convert_done: 'CPA 认证转换成功',
   gopay_session_cpa_convert_failed: 'CPA 认证转换失败',
@@ -2824,7 +2825,7 @@ function goPayProgressLogLevel(event) {
   if (stage === 'gopay_session_cpa_convert_failed') return 'warn'
   if (stage === 'gopay_wallet_balance_wait' || stage === 'gopay_wallet_balance_not_ready' || stage === 'gopay_wallet_balance_abandoned' || stage === 'gopay_wallet_balance_check_failed') return 'warn'
   if (stage === 'gopay_wallet_auto_signup_probe_failed') return 'error'
-  if (stage === 'gopay_oauth_phone_required_removed') return 'warn'
+  if (stage === 'gopay_oauth_phone_required_removed' || stage === 'gopay_oauth_phone_required') return 'warn'
   if (stage.includes('network_error')) return 'warn'
   if (stage.includes('not_approved') || stage.includes('blocked') || stage.includes('cooldown') || stage.includes('retry')) return 'warn'
   if (stage === 'failed' || stage.includes('all_accounts')) return 'error'

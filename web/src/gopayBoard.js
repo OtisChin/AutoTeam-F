@@ -179,7 +179,7 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
         eventPendingEmails.delete(email)
         eventFailedEmails.delete(email)
       }
-      if (removed.has(email) || stage === 'gopay_oauth_phone_required_removed') {
+      if (removed.has(email) || stage === 'gopay_oauth_phone_required_removed' || stage === 'gopay_oauth_phone_required') {
         eventPendingEmails.delete(email)
         if (!successful.has(email)) eventFailedEmails.add(email)
       }

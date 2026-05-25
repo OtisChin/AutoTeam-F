@@ -2302,6 +2302,25 @@ class CardPoolFetchSmsParams(BaseModel):
     url: str
 
 
+class OAuthPhonePoolImportParams(BaseModel):
+    text: str
+
+
+class OAuthPhonePoolUpsertParams(BaseModel):
+    id: str = ""
+    phone_number: str = Field("", validation_alias=AliasChoices("phone_number", "phoneNumber"))
+    sms_url: str = Field("", validation_alias=AliasChoices("sms_url", "smsUrl"))
+    status: str = "available"
+    bound_count: int = Field(0, validation_alias=AliasChoices("bound_count", "boundCount"))
+    bound_emails: list[str] = Field(default_factory=list, validation_alias=AliasChoices("bound_emails", "boundEmails"))
+    invalid_reason: str = Field("", validation_alias=AliasChoices("invalid_reason", "invalidReason"))
+    note: str = ""
+
+
+class OAuthPhonePoolDeleteParams(BaseModel):
+    ids: list[str]
+
+
 class WhatsAppOtpStartParams(BaseModel):
     profile_dir: str = Field("", validation_alias=AliasChoices("profile_dir", "profileDir"))
     headless: bool = False
@@ -5538,8 +5557,17 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
                     email,
                 )
                 bundle = None
-        except CodexOAuthPhoneRequired:
-            raise
+        except CodexOAuthPhoneRequired as exc:
+            try:
+                from autoteam.oauth_phone_pool import list_phones
+
+                has_phone_pool = any(item.get("status") == "available" for item in list_phones())
+            except Exception:
+                has_phone_pool = False
+            if not has_phone_pool:
+                raise
+            logger.info("[账号登录] auth_session 协议 OAuth 命中 add-phone，改用浏览器流程绑定手机号: %s detail=%s", email, exc)
+            bundle = None
         except CodexOAuthAccountDeactivated:
             raise
         except CodexProtocolOAuthError as exc:
@@ -5640,14 +5668,13 @@ def _run_account_codex_login_once(email: str, acc: dict, *, headless: bool = Fal
 
 
 def _oauth_phone_required_result(email: str, exc: Exception) -> dict:
-    removed = _remove_oauth_phone_required_accounts_from_pool([email])
     return {
         "email": email,
         "status": "failed",
         "failure_stage": "oauth_phone_required",
-        "message": f"OAuth 需要手机验证，已从号池删除账号: {email}",
+        "message": f"OAuth 需要手机验证，但手机号绑定流程未完成，账号已保留: {email}",
         "error": str(exc),
-        "removed_pool_emails": removed,
+        "removed_pool_emails": [],
     }
 
 
@@ -5705,7 +5732,7 @@ def post_account_login(params: LoginAccountParams):
             _append_task_progress(
                 task_id,
                 {
-                    "stage": "account_login_phone_required_removed",
+                    "stage": "account_login_phone_required",
                     "email": email,
                     "removed_pool_emails": result["removed_pool_emails"],
                     "message": result["message"],
@@ -5909,7 +5936,7 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                     stage = {
                         "account_deactivated": "account_login_deactivated_removed",
                         "login_required": "account_login_required",
-                    }.get(item["kind"], "account_login_phone_required_removed")
+                    }.get(item["kind"], "account_login_phone_required")
                     _append_task_progress(
                         task_id,
                         {
@@ -7017,6 +7044,62 @@ def post_card_pool_fetch_sms(params: CardPoolFetchSmsParams):
     }
 
 
+@app.get("/api/oauth-phone-pool")
+def get_oauth_phone_pool():
+    from autoteam.oauth_phone_pool import list_phones
+
+    items = list_phones()
+    return {
+        "items": items,
+        "total": len(items),
+        "available_count": sum(1 for item in items if item.get("status") == "available"),
+        "full_count": sum(1 for item in items if item.get("status") == "full"),
+        "invalid_count": sum(1 for item in items if item.get("status") == "invalid"),
+        "disabled_count": sum(1 for item in items if item.get("status") == "disabled"),
+    }
+
+
+@app.post("/api/oauth-phone-pool/import")
+def post_oauth_phone_pool_import(params: OAuthPhonePoolImportParams):
+    from autoteam.oauth_phone_pool import import_phones
+
+    try:
+        return import_phones(params.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/oauth-phone-pool")
+def post_oauth_phone_pool_item(params: OAuthPhonePoolUpsertParams):
+    from autoteam.oauth_phone_pool import upsert_phone
+
+    try:
+        return upsert_phone(params.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/oauth-phone-pool/{item_id}")
+def put_oauth_phone_pool_item(item_id: str, params: OAuthPhonePoolUpsertParams):
+    from autoteam.oauth_phone_pool import update_phone
+
+    try:
+        return update_phone(item_id, params.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/oauth-phone-pool/delete")
+def post_oauth_phone_pool_delete(params: OAuthPhonePoolDeleteParams):
+    from autoteam.oauth_phone_pool import delete_phones, list_phones
+
+    deleted = delete_phones(params.ids)
+    items = list_phones()
+    return {"deleted": deleted, "items": items, "total": len(items)}
+
+
 @app.get("/api/whatsapp-otp/status")
 def get_whatsapp_otp_status():
     from autoteam.whatsapp_otp import get_default_listener
@@ -8098,7 +8181,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         _append_task_progress(
                             task_id,
                             {
-                                "stage": "gopay_oauth_phone_required_removed",
+                                "stage": "gopay_oauth_phone_required",
                                 "email": success_email,
                                 "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
                                 "attempt": attempt,
@@ -10838,7 +10921,7 @@ def post_paypal_task(params: PayPalTaskParams):
                         _append_task_progress(
                             task_id,
                             {
-                                "stage": "paypal_oauth_phone_required_removed",
+                                "stage": "paypal_oauth_phone_required",
                                 "email": success_email,
                                 "removed_pool_emails": result_payload.get("removed_pool_emails") or [],
                                 "attempt": attempt,

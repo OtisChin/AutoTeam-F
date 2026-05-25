@@ -164,4 +164,10 @@ export const api = {
   redeemCardPoolItem: (payload) => request('POST', '/card-pool/redeem', payload),
   redeemCardPoolItems: (payload) => request('POST', '/card-pool/redeem-batch', payload),
   fetchCardPoolSms: (url) => request('POST', '/card-pool/fetch-sms', { url }),
+  getOAuthPhonePool: () => request('GET', '/oauth-phone-pool'),
+  importOAuthPhonePool: (text) => request('POST', '/oauth-phone-pool/import', { text }),
+  saveOAuthPhonePoolItem: (item) => item?.id
+    ? request('PUT', `/oauth-phone-pool/${encodeURIComponent(item.id)}`, item)
+    : request('POST', '/oauth-phone-pool', item),
+  deleteOAuthPhonePoolItems: (ids) => request('POST', '/oauth-phone-pool/delete', { ids }),
 }

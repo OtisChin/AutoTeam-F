@@ -26,13 +26,6 @@ from autoteam.admin_state import (
 )
 from autoteam.auth_index import delete_codex_auth_file, upsert_codex_auth_file
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
-from autoteam.browser_fingerprint import (
-    apply_fingerprint_to_context,
-    cleanup_temp_user_data_dir,
-    create_temp_user_data_dir,
-    generate_fingerprint,
-    get_context_options,
-)
 from autoteam.config import get_playwright_launch_options
 from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import write_text
@@ -59,6 +52,35 @@ def _compact_log_text(value, *, limit=120) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)] + "..."
+
+
+def _launch_codex_oauth_chromium(playwright, *, headless: bool = False):
+    """Launch the stable Chromium context used by Codex OAuth.
+
+    Keep this path close to the original working flow: no random JS fingerprint
+    injection and no persistent profile. Randomized stealth patches are useful in
+    some scraping contexts, but OpenAI auth/Cloudflare is sensitive to incoherent
+    browser surfaces.
+    """
+    browser = playwright.chromium.launch(**get_playwright_launch_options(headless=headless))
+    context = browser.new_context(
+        viewport={"width": 1280, "height": 800},
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/146.0.0.0 Safari/537.36"
+        ),
+    )
+    return browser, context
+
+
+def _close_codex_oauth_chromium(browser, context) -> None:
+    for obj in (context, browser):
+        try:
+            if obj:
+                obj.close()
+        except Exception:
+            pass
 
 
 class CodexOAuthPhoneRequired(RuntimeError):
@@ -797,6 +819,30 @@ _OTP_INVALID_HINTS = (
     "验证码错误",
     "验证码已过期",
 )
+_PHONE_INPUT_SELECTORS = (
+    'input[type="tel"], input[name*="phone" i], input[id*="phone" i], '
+    'input[autocomplete="tel"], input[inputmode="tel"], input[placeholder*="phone" i], '
+    'input[aria-label*="phone" i], input[placeholder*="手机"], input[aria-label*="手机"]'
+)
+_PHONE_REJECT_HINTS = (
+    "invalid phone",
+    "not a valid phone",
+    "phone number is not valid",
+    "try a different phone",
+    "unsupported phone",
+    "unable to send",
+    "can't send",
+    "cannot send",
+    "too many attempts",
+    "too many requests",
+    "use a different phone",
+    "手机号无效",
+    "手机号码无效",
+    "换一个手机号",
+    "更换手机号",
+    "无法发送",
+    "尝试次数过多",
+)
 
 
 def _is_email_verification_page(page) -> bool:
@@ -961,7 +1007,14 @@ def _detect_account_deactivated(page):
 
 def _looks_like_operation_timed_out_text(text: str) -> bool:
     lower = (text or "").lower()
-    return "operation timed out" in lower or "操作超时" in lower or "糟糕，出错了" in lower
+    return (
+        "operation timed out" in lower
+        or "操作超时" in lower
+        or "糟糕，出错了" in lower
+        or "oops, an error occurred" in lower
+        or "not valid json" in lower
+        or "unexpected token '<'" in lower
+    )
 
 
 def _click_auth_retry_if_timed_out(page):
@@ -975,8 +1028,11 @@ def _click_auth_retry_if_timed_out(page):
         'button:has-text("重试")',
         'button:has-text("Retry")',
         'button:has-text("Try again")',
+        'button:has-text("再试一次")',
         '[role="button"]:has-text("重试")',
         '[role="button"]:has-text("Retry")',
+        '[role="button"]:has-text("Try again")',
+        'a:has-text("Try again")',
     ):
         try:
             btn = page.locator(selector).first
@@ -1085,6 +1141,566 @@ def _wait_for_otp_submit_result(page, timeout=12):
     if err:
         return "invalid", err
     return "pending", None
+
+
+def _is_add_phone_page(page) -> bool:
+    try:
+        url = (page.url or "").lower()
+        if "auth.openai.com/add-phone" in url or "/add-phone" in url:
+            return True
+    except Exception:
+        pass
+    try:
+        text = page.locator("body").inner_text(timeout=600).lower()
+        return any(
+            hint in text
+            for hint in (
+                "add phone",
+                "phone verification",
+                "phone number is required",
+                "continue adding your phone number",
+                "添加手机号",
+                "手机号验证",
+                "电话号码是必填项",
+                "电话号码",
+                "电话号",
+            )
+        )
+    except Exception:
+        return False
+
+
+def _phone_input_locator(page):
+    for selector in (
+        'input[type="tel"]',
+        'input#tel',
+        'input[name*="PhoneNumber" i]',
+        'input[name*="phone" i]',
+        'input[id*="phone" i]',
+        'input[autocomplete="tel"]',
+        'input[inputmode="tel"]',
+        'input[placeholder*="电话号码"]',
+        'input[placeholder*="phone" i]',
+    ):
+        try:
+            candidate = page.locator(selector).first
+            if candidate.is_visible(timeout=500):
+                return candidate
+        except Exception:
+            continue
+    try:
+        specific = page.locator(_PHONE_INPUT_SELECTORS).first
+        if specific.is_visible(timeout=500):
+            return specific
+    except Exception:
+        pass
+    try:
+        generic = page.locator(
+            'input:not([type="hidden"]):not([type="email"]):not([type="password"]):not([type="checkbox"]):not([name="code"]):not([autocomplete="one-time-code"])'
+        ).first
+        if generic.is_visible(timeout=500):
+            return generic
+    except Exception:
+        pass
+    return None
+
+
+def _visible_input_snapshots(page) -> list[dict]:
+    try:
+        return page.evaluate(
+            """() => {
+              const visible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                  && style.visibility !== 'hidden'
+                  && style.display !== 'none'
+                  && !el.disabled;
+              };
+              const labelText = (el) => {
+                const id = el.getAttribute('id');
+                const labels = [];
+                if (id) {
+                  const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                  if (label) labels.push(label.innerText || label.textContent || '');
+                }
+                let node = el;
+                for (let i = 0; i < 4 && node; i += 1, node = node.parentElement) {
+                  const text = (node.innerText || node.textContent || '').trim();
+                  if (text) labels.push(text);
+                }
+                return labels.join(' | ').replace(/\\s+/g, ' ').slice(0, 180);
+              };
+              return Array.from(document.querySelectorAll('input, textarea'))
+                .filter(visible)
+                .map((el, idx) => ({
+                  idx,
+                  tag: el.tagName.toLowerCase(),
+                  type: el.getAttribute('type') || '',
+                  name: el.getAttribute('name') || '',
+                  id: el.getAttribute('id') || '',
+                  autocomplete: el.getAttribute('autocomplete') || '',
+                  inputmode: el.getAttribute('inputmode') || '',
+                  placeholder: el.getAttribute('placeholder') || '',
+                  aria: el.getAttribute('aria-label') || '',
+                  value: el.value || '',
+                  label: labelText(el),
+                }));
+            }"""
+        )
+    except Exception:
+        return []
+
+
+def _compact_input_snapshots(page) -> str:
+    rows = []
+    for item in _visible_input_snapshots(page):
+        rows.append(
+            "idx={idx} type={type} name={name} id={id} placeholder={placeholder} aria={aria} value={value} label={label}".format(
+                idx=item.get("idx", ""),
+                type=item.get("type", ""),
+                name=_compact_log_text(item.get("name", ""), limit=32),
+                id=_compact_log_text(item.get("id", ""), limit=32),
+                placeholder=_compact_log_text(item.get("placeholder", ""), limit=32),
+                aria=_compact_log_text(item.get("aria", ""), limit=32),
+                value=_compact_log_text(item.get("value", ""), limit=32),
+                label=_compact_log_text(item.get("label", ""), limit=80),
+            )
+        )
+    return " || ".join(rows) or "<no visible inputs>"
+
+
+def _is_phone_otp_page(page) -> bool:
+    try:
+        text = page.locator("body").inner_text(timeout=700).lower()
+    except Exception:
+        text = ""
+    otp_hints = (
+        "verification code",
+        "enter code",
+        "enter the code",
+        "code we sent",
+        "验证码",
+        "输入代码",
+        "输入验证码",
+        "我们发送",
+    )
+    phone_entry_hints = (
+        "phone number is required",
+        "电话号码是必填项",
+        "继续添加电话号码",
+        "continue adding your phone number",
+    )
+    return any(hint in text for hint in otp_hints) and not any(hint in text for hint in phone_entry_hints)
+
+
+def _phone_otp_input_locator(page):
+    if not _is_phone_otp_page(page):
+        return None
+    try:
+        specific = page.locator(_OTP_INPUT_SELECTORS).first
+        if specific.is_visible(timeout=500):
+            return specific
+    except Exception:
+        pass
+    try:
+        generic = page.locator(
+            'input:not([type="hidden"]):not([type="email"]):not([type="password"]):not([type="tel"]):not([name="email"]):not([autocomplete="email"])'
+        ).first
+        if generic.is_visible(timeout=500):
+            return generic
+    except Exception:
+        pass
+    return None
+
+
+def _detect_phone_rejected(page) -> str:
+    try:
+        text = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return ""
+    lower = text.lower()
+    for hint in _PHONE_REJECT_HINTS:
+        if hint in lower:
+            return _compact_log_text(text, limit=260)
+    return ""
+
+
+def _click_phone_resend_if_present(page) -> bool:
+    for selector in (
+        'button:has-text("Resend")',
+        'button:has-text("Send again")',
+        'button:has-text("重新发送")',
+        'button:has-text("再次发送")',
+        '[role="button"]:has-text("Resend")',
+        'a:has-text("Resend")',
+    ):
+        try:
+            control = page.locator(selector).first
+            if control.is_visible(timeout=500) and control.is_enabled(timeout=500):
+                control.click()
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _format_oauth_phone_for_input(page, phone_input, phone: str) -> str:
+    raw = str(phone or "").strip()
+    digits = re.sub(r"\D+", "", raw)
+    if not digits:
+        return raw
+    try:
+        body = page.locator("body").inner_text(timeout=500)
+    except Exception:
+        body = ""
+    try:
+        existing = phone_input.input_value(timeout=500)
+    except Exception:
+        existing = ""
+    country_is_us = (
+        "(+1)" in body
+        or "美国 (+1)" in body
+        or "united states (+1)" in body.lower()
+        or str(existing or "").strip() in {"+1", "1"}
+    )
+    if country_is_us and digits.startswith("1") and len(digits) == 11:
+        return digits[1:]
+    return raw
+
+
+def _read_true_oauth_phone_value(page) -> dict:
+    try:
+        result = page.evaluate(
+            """() => {
+              const visible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                  && style.visibility !== 'hidden'
+                  && style.display !== 'none'
+                  && !el.disabled;
+              };
+              const scoreFor = (el) => {
+                const type = (el.getAttribute('type') || '').toLowerCase();
+                const name = (el.getAttribute('name') || '').toLowerCase();
+                const id = (el.getAttribute('id') || '').toLowerCase();
+                const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                const text = [
+                  type, name, id, placeholder, aria,
+                  el.parentElement ? (el.parentElement.innerText || el.parentElement.textContent || '') : '',
+                  el.parentElement && el.parentElement.parentElement
+                    ? (el.parentElement.parentElement.innerText || el.parentElement.parentElement.textContent || '')
+                    : '',
+                ].join(' ').replace(/\\s+/g, ' ').toLowerCase();
+                let score = 0;
+                if (type === 'tel') score += 200;
+                if (id === 'tel') score += 120;
+                if (name.includes('reservedforphonenumber')) score += 120;
+                if (name.includes('phone')) score += 100;
+                if (id.includes('phone')) score += 100;
+                if (placeholder.includes('电话号码') || placeholder.includes('phone')) score += 100;
+                if (aria.includes('电话号码') || aria.includes('phone')) score += 60;
+                if (text.includes('phone number') || text.includes('电话号码') || text.includes('手机号')) score += 40;
+                if ((el.value || '').trim() === '+1' || (el.value || '').trim() === '1') score -= 40;
+                if (text.includes('阿尔巴尼亚') || text.includes('阿富汗') || text.length > 900) score -= 120;
+                return score;
+              };
+              const candidates = Array.from(document.querySelectorAll('input, textarea'))
+                .filter(visible)
+                .filter((el) => {
+                  const type = (el.getAttribute('type') || '').toLowerCase();
+                  return !['hidden', 'email', 'password', 'checkbox', 'radio', 'submit', 'button'].includes(type);
+                })
+                .map((el, idx) => ({
+                  idx,
+                  score: scoreFor(el),
+                  type: el.getAttribute('type') || '',
+                  name: el.getAttribute('name') || '',
+                  id: el.getAttribute('id') || '',
+                  placeholder: el.getAttribute('placeholder') || '',
+                  aria: el.getAttribute('aria-label') || '',
+                  value: el.value || '',
+                }))
+                .sort((a, b) => b.score - a.score);
+              return candidates[0] || {};
+            }"""
+        )
+        return result if isinstance(result, dict) else {}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _true_oauth_phone_has_digits(page, expected_digits: str) -> tuple[bool, dict]:
+    true_field = _read_true_oauth_phone_value(page)
+    value_digits = re.sub(r"\D+", "", str(true_field.get("value") or ""))
+    ok = bool(expected_digits and expected_digits in value_digits and int(true_field.get("score") or 0) > 0)
+    return ok, true_field
+
+
+def _fill_oauth_phone_field(page, phone_input, phone_for_input: str) -> tuple[bool, str]:
+    expected_digits = re.sub(r"\D+", "", phone_for_input)
+    before = _compact_input_snapshots(page)
+    if _fill_text_field_like_user(page, phone_input, phone_for_input):
+        ok, true_field = _true_oauth_phone_has_digits(page, expected_digits)
+        if ok:
+            logger.info("[Codex] add-phone 手机号键盘写入成功: true_field=%s inputs=%s", true_field, _compact_input_snapshots(page))
+            return True, ""
+
+    try:
+        direct_result = phone_input.evaluate(
+            """(el, value) => {
+              const proto = Object.getPrototypeOf(el);
+              const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+              el.focus();
+              if (desc && desc.set) desc.set.call(el, value);
+              else el.value = value;
+              el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('blur', { bubbles: true }));
+              return el.value || '';
+            }""",
+            phone_for_input,
+        )
+        ok, true_field = _true_oauth_phone_has_digits(page, expected_digits)
+        if ok:
+            logger.info(
+                "[Codex] add-phone 手机号直接写入成功: value=%s true_field=%s inputs=%s",
+                direct_result,
+                true_field,
+                _compact_input_snapshots(page),
+            )
+            return True, ""
+    except Exception:
+        pass
+
+    try:
+        result = page.evaluate(
+            """(value) => {
+              const expectedDigits = String(value || '').replace(/\\D+/g, '');
+              const visible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                  && style.visibility !== 'hidden'
+                  && style.display !== 'none'
+                  && !el.disabled && !el.readOnly;
+              };
+              const textFor = (el) => {
+                const parts = [
+                  el.getAttribute('type') || '',
+                  el.getAttribute('name') || '',
+                  el.getAttribute('id') || '',
+                  el.getAttribute('autocomplete') || '',
+                  el.getAttribute('inputmode') || '',
+                  el.getAttribute('placeholder') || '',
+                  el.getAttribute('aria-label') || '',
+                ];
+                const id = el.getAttribute('id');
+                if (id) {
+                  const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                  if (label) parts.push(label.innerText || label.textContent || '');
+                }
+                let node = el;
+                for (let i = 0; i < 4 && node; i += 1, node = node.parentElement) {
+                  parts.push(node.innerText || node.textContent || '');
+                }
+                return parts.join(' ').replace(/\\s+/g, ' ').toLowerCase();
+              };
+              const candidates = Array.from(document.querySelectorAll('input, textarea'))
+                .filter(visible)
+                .filter((el) => {
+                  const type = (el.getAttribute('type') || '').toLowerCase();
+                  return !['hidden', 'email', 'password', 'checkbox', 'radio', 'submit', 'button'].includes(type);
+                })
+                .map((el, idx) => {
+                const text = textFor(el);
+                let score = 0;
+                  const type = (el.getAttribute('type') || '').toLowerCase();
+                  const name = (el.getAttribute('name') || '').toLowerCase();
+                  const id = (el.getAttribute('id') || '').toLowerCase();
+                  const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                  const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                  if (type === 'tel') score += 100;
+                  if (name.includes('phone') || id.includes('phone')) score += 80;
+                  if (id === 'tel' || name.includes('reservedforphonenumber')) score += 80;
+                  if (placeholder.includes('phone') || placeholder.includes('电话号码') || placeholder.includes('手机号')) score += 70;
+                  if (aria.includes('phone') || aria.includes('电话号码') || aria.includes('手机号')) score += 35;
+                  if (text.includes('phone number') || text.includes('电话号码') || text.includes('手机号')) score += 30;
+                  if ((el.value || '').trim() === '+1' || (el.value || '').trim() === '1') score -= 20;
+                  if (text.includes('country') || text.includes('国家/地区') || text.includes('国家地区')) score -= 50;
+                  if (text.includes('阿尔巴尼亚') || text.includes('阿富汗') || text.includes('united states (+1)')) score -= 80;
+                  if (text.length > 800) score -= 60;
+                  return { el, idx, score, text: text.slice(0, 120), before: el.value || '' };
+                })
+                .sort((a, b) => b.score - a.score);
+              const picked = candidates[0];
+              if (!picked || picked.score <= 0) {
+                return { ok: false, reason: 'no_candidate', candidates: candidates.slice(0, 5).map(({idx, score, text, before}) => ({idx, score, text, before})) };
+              }
+              const el = picked.el;
+              el.focus();
+              const proto = Object.getPrototypeOf(el);
+              const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+              if (desc && desc.set) desc.set.call(el, value);
+              else el.value = value;
+              el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('blur', { bubbles: true }));
+              const after = el.value || '';
+              return {
+                ok: expectedDigits ? after.replace(/\\D+/g, '').includes(expectedDigits) : !!after,
+                idx: picked.idx,
+                score: picked.score,
+                before: picked.before,
+                after,
+                text: picked.text,
+                candidates: candidates.slice(0, 5).map(({idx, score, text, before}) => ({idx, score, text, before})),
+              };
+            }""",
+            phone_for_input,
+        )
+    except Exception as exc:
+        return False, f"页面填写失败: JS 注入手机号异常: {exc}; before={before}"
+
+    after = _compact_input_snapshots(page)
+    ok, true_field = _true_oauth_phone_has_digits(page, expected_digits)
+    if isinstance(result, dict) and result.get("ok") and ok:
+        logger.info("[Codex] add-phone 手机号写入成功: result=%s true_field=%s inputs=%s", result, true_field, after)
+        return True, ""
+    logger.warning(
+        "[Codex] add-phone 手机号写入校验失败: result=%s true_field=%s before=%s after=%s",
+        result,
+        true_field,
+        before,
+        after,
+    )
+    return False, f"页面填写失败: 手机号未写入真实手机号输入框; result={result}; true_field={true_field}; inputs={after}"
+
+
+def _wait_for_phone_otp(sms_url: str) -> str:
+    from autoteam.gopay_executor import _poll_otp_from_sms_url
+
+    provider = _poll_otp_from_sms_url(
+        sms_url,
+        timeout_seconds=max(60, int(os.environ.get("CODEX_OAUTH_PHONE_OTP_TIMEOUT", "180") or "180")),
+        initial_delay_seconds=max(0.0, float(os.environ.get("CODEX_OAUTH_PHONE_OTP_INITIAL_DELAY", "5") or "5")),
+        resend_after_seconds=max(0.0, float(os.environ.get("CODEX_OAUTH_PHONE_OTP_RESEND_AFTER", "60") or "60")),
+        max_resend_attempts=1,
+        progress=lambda stage, **kwargs: logger.info("[Codex] add-phone 等待短信验证码: stage=%s detail=%s", stage, kwargs),
+    )
+    return provider()
+
+
+def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> tuple[bool, str]:
+    phone = str(phone_item.get("phone_number") or "").strip()
+    sms_url = str(phone_item.get("sms_url") or "").strip()
+    if not phone or not sms_url:
+        return False, "手机号或接码链接为空"
+    if not _is_add_phone_page(page):
+        return True, ""
+
+    logger.info("[Codex] add-phone 使用手机号池号码: email=%s phone=%s", email, phone)
+    phone_input = _phone_input_locator(page)
+    if not phone_input:
+        return False, "未找到 add-phone 手机号输入框"
+    phone_for_input = _format_oauth_phone_for_input(page, phone_input, phone)
+    ok, fill_error = _fill_oauth_phone_field(page, phone_input, phone_for_input)
+    if not ok:
+        return False, fill_error or "页面填写失败: 手机号输入框填写失败"
+    confirmed, true_field = _true_oauth_phone_has_digits(page, re.sub(r"\D+", "", phone_for_input))
+    if not confirmed:
+        return False, f"页面填写失败: 提交前真实手机号输入框校验失败; true_field={true_field}; inputs={_compact_input_snapshots(page)}"
+    _screenshot(page, "codex_add_phone_01_after_phone_fill.png")
+    if not _click_primary_auth_button(page, phone_input, ["Continue", "继续", "Send code", "发送验证码", "Verify"]):
+        return False, "手机号提交按钮点击失败"
+    time.sleep(1)
+    _screenshot(page, "codex_add_phone_02_after_phone_submit.png")
+
+    deadline = time.time() + 35
+    otp_input = None
+    while time.time() < deadline:
+        rejected = _detect_phone_rejected(page)
+        if rejected:
+            return False, rejected
+        otp_input = _phone_otp_input_locator(page)
+        if otp_input:
+            break
+        if not _is_add_phone_page(page) and "phone-verification" not in (page.url or "").lower():
+            break
+        time.sleep(1)
+    if not otp_input:
+        otp_input = _phone_otp_input_locator(page)
+    if not otp_input:
+        rejected = _detect_phone_rejected(page)
+        return False, rejected or f"页面填写失败: 手机号提交后未进入验证码输入页; inputs={_compact_input_snapshots(page)}"
+
+    try:
+        code = _wait_for_phone_otp(sms_url)
+    except Exception as exc:
+        if _click_phone_resend_if_present(page):
+            logger.info("[Codex] add-phone 首次等待验证码失败，已点击 resend: %s", exc)
+            try:
+                code = _wait_for_phone_otp(sms_url)
+            except Exception as retry_exc:
+                return False, f"等待手机验证码超时: {retry_exc}"
+        else:
+            return False, f"等待手机验证码超时: {exc}"
+    if not _fill_otp_input_and_verify(otp_input, code):
+        return False, "手机验证码输入框填写失败"
+    page.locator('button[type="submit"], button:has-text("Continue"), button:has-text("继续"), button:has-text("Verify")').first.click()
+    logger.info("[Codex] add-phone 已提交手机验证码: email=%s phone=%s", email, phone)
+
+    submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=20)
+    if submit_status == "invalid":
+        return False, f"手机验证码无效: {submit_detail or ''}".strip()
+    if submit_status == "pending" and _phone_otp_input_locator(page):
+        return False, "手机验证码提交后页面未前进"
+    return True, ""
+
+
+def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
+    if not _is_add_phone_page(page):
+        return False
+    try:
+        from autoteam.oauth_phone_pool import acquire_available_phone, mark_phone_bound, mark_phone_invalid
+    except Exception as exc:
+        logger.warning("[Codex] add-phone 手机号池不可用: %s", exc)
+        return False
+
+    attempted = 0
+    last_error = ""
+    while attempted < 10 and _is_add_phone_page(page):
+        phone_item = acquire_available_phone(email)
+        if not phone_item:
+            logger.warning("[Codex] add-phone 需要手机号，但手机号池没有可用号码: %s", email)
+            return False
+        attempted += 1
+        ok, error = _submit_oauth_add_phone_candidate(page, email=email, phone_item=phone_item)
+        if ok:
+            mark_phone_bound(str(phone_item.get("id") or ""), email)
+            logger.info("[Codex] add-phone 手机号绑定成功: email=%s phone=%s", email, phone_item.get("phone_number"))
+            return True
+        last_error = error or "手机号绑定失败"
+        if not last_error.startswith("页面填写失败:"):
+            mark_phone_invalid(str(phone_item.get("id") or ""), last_error)
+        logger.warning(
+            "[Codex] add-phone 手机号尝试失败%s: email=%s phone=%s reason=%s",
+            "" if last_error.startswith("页面填写失败:") else "，已标记失效并切换下一个",
+            email,
+            phone_item.get("phone_number"),
+            last_error,
+        )
+        if last_error.startswith("页面填写失败:"):
+            return False
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=30000)
+            time.sleep(2)
+        except Exception:
+            pass
+    logger.warning("[Codex] add-phone 手机号池尝试耗尽: email=%s last_error=%s", email, last_error)
+    return False
 
 
 def _fill_otp_input_and_verify(otp_input, otp: str) -> bool:
@@ -1416,14 +2032,7 @@ def _login_codex_via_browser_simple(
 
     logger.info("[Codex] 开始极简 OAuth 登录: %s", email)
     with sync_playwright() as p:
-        fp = generate_fingerprint()
-        tmp_dir = create_temp_user_data_dir()
-        context = p.chromium.launch_persistent_context(
-            tmp_dir,
-            **get_playwright_launch_options(headless=headless),
-            **get_context_options(fp),
-        )
-        apply_fingerprint_to_context(context, fp)
+        browser, context = _launch_codex_oauth_chromium(p, headless=headless)
 
         def on_request(request):
             nonlocal auth_code
@@ -1464,12 +2073,14 @@ def _login_codex_via_browser_simple(
 
             current_url = page.url or ""
             if "auth.openai.com/add-phone" in current_url:
+                if _handle_oauth_add_phone_if_present(page, email=email):
+                    time.sleep(2)
+                    continue
                 phone_required_url = current_url
                 break
             deactivated_detail = _detect_account_deactivated(page)
             if deactivated_detail:
-                context.close()
-                cleanup_temp_user_data_dir(tmp_dir)
+                _close_codex_oauth_chromium(browser, context)
                 raise CodexOAuthAccountDeactivated(deactivated_detail)
 
             if _click_auth_retry_if_timed_out(page):
@@ -1560,6 +2171,11 @@ def _login_codex_via_browser_simple(
                 _screenshot(page, "codex_simple_03_after_about_you.png")
                 continue
 
+            if _handle_oauth_add_phone_if_present(page, email=email):
+                _screenshot(page, "codex_simple_03b_after_add_phone.png")
+                time.sleep(2)
+                continue
+
             if _click_oauth_consent_if_present(page, timeout=1000):
                 logger.info("[Codex] 极简 OAuth 点击授权/继续按钮: %s", email)
                 time.sleep(3)
@@ -1594,8 +2210,7 @@ def _login_codex_via_browser_simple(
             except Exception:
                 logger.warning("[Codex] 极简 OAuth 刷新 auth_session 回调失败: %s", email, exc_info=True)
 
-        context.close()
-        cleanup_temp_user_data_dir(tmp_dir)
+        _close_codex_oauth_chromium(browser, context)
 
     if phone_required_url:
         raise CodexOAuthPhoneRequired(phone_required_url)
@@ -1675,14 +2290,7 @@ def login_codex_via_browser(
     final_oauth_url = ""
 
     with sync_playwright() as p:
-        fp = generate_fingerprint()
-        tmp_dir = create_temp_user_data_dir()
-        context = p.chromium.launch_persistent_context(
-            tmp_dir,
-            **get_playwright_launch_options(headless=headless),
-            **get_context_options(fp),
-        )
-        apply_fingerprint_to_context(context, fp)
+        browser, context = _launch_codex_oauth_chromium(p, headless=headless)
 
         # === Step 0: 先登录 ChatGPT 并切换到 Team workspace ===
         # 仅 Team 模式需要:登录前注入 _account cookie 引导登录进入 Team workspace。
@@ -2002,6 +2610,10 @@ def login_codex_via_browser(
             try:
                 current_url = page.url or ""
                 if "auth.openai.com/add-phone" in current_url:
+                    if _handle_oauth_add_phone_if_present(page, email=email):
+                        _screenshot(page, "codex_04_add_phone_handled.png")
+                        time.sleep(2)
+                        continue
                     _screenshot(page, "codex_04_add_phone_blocked.png")
                     logger.error("[Codex] OAuth 被 add-phone 阻断，当前 URL: %s", current_url)
                     phone_required_url = current_url
@@ -2317,8 +2929,26 @@ def login_codex_via_browser(
             _screenshot(page, "codex_05_no_callback.png")
             final_oauth_url = page.url or ""
             if "auth.openai.com/add-phone" in (page.url or ""):
-                logger.error("[Codex] OAuth 被 add-phone 阻断，未获取到 auth code，当前 URL: %s", page.url)
-                phone_required_url = page.url or phone_required_url
+                if _handle_oauth_add_phone_if_present(page, email=email):
+                    logger.info("[Codex] OAuth add-phone 已处理，继续等待回调: %s", email)
+                    for _ in range(30):
+                        if auth_code:
+                            break
+                        try:
+                            cur = page.url
+                            if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in cur:
+                                parsed = urllib.parse.urlparse(cur)
+                                qs = urllib.parse.parse_qs(parsed.query)
+                                auth_code = qs.get("code", [None])[0]
+                                if auth_code:
+                                    break
+                        except Exception:
+                            pass
+                        time.sleep(1)
+                    final_oauth_url = page.url or final_oauth_url
+                else:
+                    logger.error("[Codex] OAuth 被 add-phone 阻断，未获取到 auth code，当前 URL: %s", page.url)
+                    phone_required_url = page.url or phone_required_url
             elif _detect_account_deactivated(page):
                 raise CodexOAuthAccountDeactivated(_detect_account_deactivated(page))
             elif _is_auth_login_page(page):
@@ -2326,8 +2956,7 @@ def login_codex_via_browser(
             else:
                 logger.warning("[Codex] 未获取到 auth code，当前 URL: %s", page.url)
 
-        context.close()
-        cleanup_temp_user_data_dir(tmp_dir)
+        _close_codex_oauth_chromium(browser, context)
 
     if phone_required_url:
         raise CodexOAuthPhoneRequired(phone_required_url)
