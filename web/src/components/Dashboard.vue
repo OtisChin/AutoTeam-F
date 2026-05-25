@@ -87,7 +87,7 @@
             :class="loginDisabled || batchLoggingIn || !batchLoginableAccounts.length
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
-            {{ batchLoggingIn ? '提交中...' : `批量补登录 (${batchLoginableAccounts.length})` }}
+            {{ batchLoggingIn ? '提交中...' : `批量OAuth补登录 (${batchLoginableAccounts.length})` }}
           </button>
           <button
             @click="refreshAllQuota"
@@ -1002,7 +1002,7 @@ const scopedAccounts = computed(() => {
     : filteredAccounts.value
 })
 const batchLoginableAccounts = computed(() => {
-  return scopedAccounts.value.filter(acc => !acc.is_main_account && needsCodexLogin(acc))
+  return scopedAccounts.value.filter(acc => canLogin(acc))
 })
 const cpaExportableAccounts = computed(() => {
   return scopedAccounts.value.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
@@ -1657,18 +1657,13 @@ async function saveAccountType() {
 }
 
 function canLogin(acc) {
-  if (acc.is_main_account) return false
-  if (acc.needs_codex_login !== undefined) return !!acc.needs_codex_login
-  // 兼容旧后端：只有 data/auths 下的 Codex auth 文件才算已补登录。
-  if (hasCodexAuthFile(acc)) return false
-  if (acc.auth_session_file) return true
-  if (!acc.auth_file) return true
-  return true
+  return Boolean(acc && acc.email && !acc.is_main_account)
 }
 
 function loginLabel(acc) {
+  if (hasCodexAuthFile(acc) || acc.auth_file || acc.auth_session_file) return '重新补登录'
   if (needsCodexLogin(acc) || acc.status === 'auth_invalid' || acc.status === 'orphan') return '补登录'
-  return '登录'
+  return '补登录'
 }
 
 function hasCodexAuthFile(acc) {
