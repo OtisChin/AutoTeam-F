@@ -1657,11 +1657,14 @@ async function saveAccountType() {
 }
 
 function canLogin(acc) {
-  return Boolean(acc && acc.email && !acc.is_main_account)
+  if (!acc?.email || acc.is_main_account) return false
+  if (String(acc.status || '').toLowerCase() === 'auth_invalid' || String(acc.status || '').toLowerCase() === 'orphan') return true
+  if (Boolean(acc.codex_auth_synthetic)) return true
+  return needsCodexLogin(acc)
 }
 
 function loginLabel(acc) {
-  if (hasCodexAuthFile(acc) || acc.auth_file || acc.auth_session_file) return '重新补登录'
+  if (Boolean(acc.codex_auth_synthetic)) return '重新补登录'
   if (needsCodexLogin(acc) || acc.status === 'auth_invalid' || acc.status === 'orphan') return '补登录'
   return '补登录'
 }

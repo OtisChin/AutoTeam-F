@@ -41,13 +41,14 @@
       <div class="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h3 class="font-semibold text-white">批量导入</h3>
-          <p class="mt-1 text-xs text-gray-500">格式：手机号----接码链接；支持 4 个或更多横线分隔，导入时按手机号去重。</p>
+          <p class="mt-1 text-xs text-gray-500">格式：手机号----接码链接，或 12096968188|接码链接；纯数字会自动补 +，导入时按手机号去重。</p>
         </div>
         <button @click="importItems" :disabled="saving || !importText.trim()" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500 disabled:opacity-50">
           导入并去重
         </button>
       </div>
-      <textarea v-model="importText" rows="4" spellcheck="false" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-sm text-white outline-none focus:border-blue-500" placeholder="+17328582987-------https://www.8652abc.com/adminapi/jsscript/smsInfo/ABC_sms?key=..."></textarea>
+      <textarea v-model="importText" rows="4" spellcheck="false" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-sm text-white outline-none focus:border-blue-500" placeholder="+17328582987-------https://www.8652abc.com/adminapi/jsscript/smsInfo/ABC_sms?key=...
+12096968188|https://smscloud.sbs/api/system/get_sms/7ebf82030f3c461fbe75fbe0d1ae65b7"></textarea>
     </section>
 
     <section class="rounded-xl border border-gray-800 bg-gray-900 p-4">

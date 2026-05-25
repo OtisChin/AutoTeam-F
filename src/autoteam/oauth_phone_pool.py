@@ -188,14 +188,29 @@ def parse_import_lines(text: str) -> list[dict[str, str]]:
         line = raw.strip()
         if not line:
             continue
-        parts = re.split(r"\s*-{4,}\s*", line, maxsplit=1)
+        if "|" in line:
+            parts = re.split(r"\s*\|\s*", line, maxsplit=1)
+        else:
+            parts = re.split(r"\s*-{4,}\s*", line, maxsplit=1)
         if len(parts) != 2:
             raise ValueError(f"导入格式无效: {line[:80]}")
-        phone, sms_url = parts[0].strip(), parts[1].strip()
+        phone, sms_url = _normalize_import_phone(parts[0].strip()), parts[1].strip()
         if not phone or not sms_url:
             raise ValueError(f"导入格式无效: {line[:80]}")
         entries.append({"phone_number": phone, "sms_url": sms_url})
     return entries
+
+
+def _normalize_import_phone(phone: str) -> str:
+    value = str(phone or "").strip()
+    if not value:
+        return ""
+    if value.startswith("+"):
+        return value
+    digits = re.sub(r"\D+", "", value)
+    if digits and digits == value:
+        return f"+{digits}"
+    return value
 
 
 def import_phones(text: str) -> dict[str, Any]:

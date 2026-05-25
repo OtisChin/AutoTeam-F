@@ -2503,6 +2503,25 @@ def _resolve_codex_auth_file(acc: dict) -> str:
     return str(candidates[0]) if candidates else ""
 
 
+def _codex_auth_file_is_synthetic(auth_file: str) -> bool:
+    path_text = str(auth_file or "").strip()
+    if not path_text:
+        return False
+    try:
+        path = Path(path_text)
+        if not path.exists() or not path.is_file():
+            return False
+        data = json.loads(read_text(path))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if bool(data.get("id_token_synthetic")):
+        return True
+    id_token = str(data.get("id_token") or data.get("idToken") or "")
+    return ".synthetic" in id_token
+
+
 def _display_account_status(acc: dict, quota_snapshot: dict | None = None) -> str:
     status = acc.get("status", "")
     if status in ("personal", "plus"):
@@ -2603,7 +2622,11 @@ def _sanitize_account_with_indexes(
         codex_auth_file = _resolve_codex_auth_file(acc)
     sanitized["codex_auth_file"] = codex_auth_file
     sanitized["has_codex_auth_file"] = bool(codex_auth_file)
-    sanitized["needs_codex_login"] = not sanitized["is_main_account"] and not bool(codex_auth_file)
+    sanitized["codex_auth_synthetic"] = _codex_auth_file_is_synthetic(codex_auth_file)
+    sanitized["needs_codex_login"] = (
+        not sanitized["is_main_account"]
+        and (not bool(codex_auth_file) or bool(sanitized["codex_auth_synthetic"]))
+    )
     auth_session_file = auth_session_files.get(email, "")
     if not auth_session_file:
         try:
