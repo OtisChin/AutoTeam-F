@@ -94,6 +94,17 @@ class CodexOAuthPhoneRequired(RuntimeError):
         super().__init__(message)
 
 
+class CodexOAuthPhoneRateLimited(RuntimeError):
+    """OpenAI rejected add-phone because the GPT account requested phone verification too often."""
+
+    def __init__(self, detail: str = ""):
+        self.detail = detail or ""
+        message = "Codex OAuth 手机号验证请求次数过多，跳过当前账号"
+        if self.detail:
+            message = f"{message}: {self.detail}"
+        super().__init__(message)
+
+
 class CodexOAuthLoginRequired(RuntimeError):
     """Codex OAuth stopped on the OpenAI login page instead of reaching the callback."""
 
@@ -833,15 +844,25 @@ _PHONE_REJECT_HINTS = (
     "unable to send",
     "can't send",
     "cannot send",
-    "too many attempts",
-    "too many requests",
     "use a different phone",
     "手机号无效",
     "手机号码无效",
     "换一个手机号",
     "更换手机号",
     "无法发送",
-    "尝试次数过多",
+)
+_PHONE_RATE_LIMIT_HINTS = (
+    "too many phone verification",
+    "too many verification requests",
+    "too many requests to verify",
+    "requested phone verification too many",
+    "phone verification requests",
+    "too many attempts",
+    "too many requests",
+    "你请求手机验证的次数过多",
+    "请求手机验证的次数过多",
+    "手机验证的次数过多",
+    "请稍后再试",
 )
 
 
@@ -1320,7 +1341,21 @@ def _detect_phone_rejected(page) -> str:
     except Exception:
         return ""
     lower = text.lower()
+    if any(hint in lower for hint in _PHONE_RATE_LIMIT_HINTS):
+        return ""
     for hint in _PHONE_REJECT_HINTS:
+        if hint in lower:
+            return _compact_log_text(text, limit=260)
+    return ""
+
+
+def _detect_phone_rate_limited(page) -> str:
+    try:
+        text = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return ""
+    lower = text.lower()
+    for hint in _PHONE_RATE_LIMIT_HINTS:
         if hint in lower:
             return _compact_log_text(text, limit=260)
     return ""
@@ -1580,17 +1615,20 @@ def _fill_oauth_phone_field(page, phone_input, phone_for_input: str) -> tuple[bo
 
 
 def _wait_for_phone_otp(sms_url: str) -> str:
+    return _make_phone_otp_provider(sms_url)()
+
+
+def _make_phone_otp_provider(sms_url: str):
     from autoteam.gopay_executor import _poll_otp_from_sms_url
 
-    provider = _poll_otp_from_sms_url(
+    return _poll_otp_from_sms_url(
         sms_url,
-        timeout_seconds=max(60, int(os.environ.get("CODEX_OAUTH_PHONE_OTP_TIMEOUT", "180") or "180")),
+        timeout_seconds=max(60, int(os.environ.get("CODEX_OAUTH_PHONE_OTP_TIMEOUT", "120") or "120")),
         initial_delay_seconds=max(0.0, float(os.environ.get("CODEX_OAUTH_PHONE_OTP_INITIAL_DELAY", "5") or "5")),
         resend_after_seconds=max(0.0, float(os.environ.get("CODEX_OAUTH_PHONE_OTP_RESEND_AFTER", "60") or "60")),
-        max_resend_attempts=1,
+        max_resend_attempts=0,
         progress=lambda stage, **kwargs: logger.info("[Codex] add-phone 等待短信验证码: stage=%s detail=%s", stage, kwargs),
     )
-    return provider()
 
 
 def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> tuple[bool, str]:
@@ -1621,6 +1659,9 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
     deadline = time.time() + 35
     otp_input = None
     while time.time() < deadline:
+        rate_limited = _detect_phone_rate_limited(page)
+        if rate_limited:
+            raise CodexOAuthPhoneRateLimited(rate_limited)
         rejected = _detect_phone_rejected(page)
         if rejected:
             return False, rejected
@@ -1633,31 +1674,66 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
     if not otp_input:
         otp_input = _phone_otp_input_locator(page)
     if not otp_input:
+        rate_limited = _detect_phone_rate_limited(page)
+        if rate_limited:
+            raise CodexOAuthPhoneRateLimited(rate_limited)
         rejected = _detect_phone_rejected(page)
         return False, rejected or f"页面填写失败: 手机号提交后未进入验证码输入页; inputs={_compact_input_snapshots(page)}"
 
-    try:
-        code = _wait_for_phone_otp(sms_url)
-    except Exception as exc:
-        if _click_phone_resend_if_present(page):
-            logger.info("[Codex] add-phone 首次等待验证码失败，已点击 resend: %s", exc)
-            try:
-                code = _wait_for_phone_otp(sms_url)
-            except Exception as retry_exc:
-                return False, f"等待手机验证码超时: {retry_exc}"
-        else:
+    provider = _make_phone_otp_provider(sms_url)
+    ignored_codes: set[str] = set()
+    max_invalid_retries = max(1, int(os.environ.get("CODEX_OAUTH_PHONE_OTP_INVALID_RETRIES", "2") or "2"))
+    for code_attempt in range(1, max_invalid_retries + 2):
+        rate_limited = _detect_phone_rate_limited(page)
+        if rate_limited:
+            raise CodexOAuthPhoneRateLimited(rate_limited)
+        try:
+            setattr(provider, "_gopay_ignored_otps", ignored_codes)
+            code = provider()
+        except Exception as exc:
             return False, f"等待手机验证码超时: {exc}"
-    if not _fill_otp_input_and_verify(otp_input, code):
-        return False, "手机验证码输入框填写失败"
-    page.locator('button[type="submit"], button:has-text("Continue"), button:has-text("继续"), button:has-text("Verify")').first.click()
-    logger.info("[Codex] add-phone 已提交手机验证码: email=%s phone=%s", email, phone)
+        otp_input = _phone_otp_input_locator(page) or otp_input
+        if not _fill_otp_input_and_verify(otp_input, code):
+            return False, "手机验证码输入框填写失败"
+        page.locator('button[type="submit"], button:has-text("Continue"), button:has-text("继续"), button:has-text("Verify")').first.click()
+        logger.info("[Codex] add-phone 已提交手机验证码: email=%s phone=%s attempt=%s", email, phone, code_attempt)
 
-    submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=20)
-    if submit_status == "invalid":
-        return False, f"手机验证码无效: {submit_detail or ''}".strip()
-    if submit_status == "pending" and _phone_otp_input_locator(page):
-        return False, "手机验证码提交后页面未前进"
-    return True, ""
+        submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=20)
+        rate_limited = _detect_phone_rate_limited(page)
+        if rate_limited:
+            raise CodexOAuthPhoneRateLimited(rate_limited)
+        if submit_status != "invalid":
+            if submit_status == "pending" and _phone_otp_input_locator(page):
+                return False, "手机验证码提交后页面未前进"
+            return True, ""
+
+        ignored_codes.add(str(code or "").strip())
+        if code_attempt > max_invalid_retries:
+            return False, f"手机验证码无效，已重发 {max_invalid_retries} 次仍失败: {submit_detail or ''}".strip()
+        if not _click_phone_resend_if_present(page):
+            return False, f"手机验证码无效且未找到重新发送按钮: {submit_detail or ''}".strip()
+        logger.info(
+            "[Codex] add-phone 手机验证码无效，已点击重新发送并等待新验证码: email=%s phone=%s attempt=%s/%s",
+            email,
+            phone,
+            code_attempt,
+            max_invalid_retries,
+        )
+        time.sleep(max(1.0, float(os.environ.get("CODEX_OAUTH_PHONE_OTP_AFTER_INVALID_RESEND_DELAY", "2") or "2")))
+    return False, "手机验证码处理失败"
+
+
+def _should_invalidate_oauth_phone(error: str) -> bool:
+    text = str(error or "")
+    if not text:
+        return False
+    if text.startswith("页面填写失败:"):
+        return False
+    if text.startswith("手机验证码无效且未找到重新发送按钮"):
+        return False
+    if text.startswith("手机验证码提交后页面未前进"):
+        return False
+    return True
 
 
 def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
@@ -1684,6 +1760,14 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
         attempted += 1
         try:
             ok, error = _submit_oauth_add_phone_candidate(page, email=email, phone_item=phone_item)
+        except CodexOAuthPhoneRateLimited:
+            release_phone_reservation(str(phone_item.get("id") or ""), email)
+            logger.warning(
+                "[Codex] add-phone 当前账号手机验证请求次数过多，已释放手机号并跳过账号: email=%s phone=%s",
+                email,
+                phone_item.get("phone_number"),
+            )
+            raise
         except Exception as exc:
             release_phone_reservation(str(phone_item.get("id") or ""), email)
             logger.warning(
@@ -1698,18 +1782,18 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
             logger.info("[Codex] add-phone 手机号绑定成功: email=%s phone=%s", email, phone_item.get("phone_number"))
             return True
         last_error = error or "手机号绑定失败"
-        if not last_error.startswith("页面填写失败:"):
+        if _should_invalidate_oauth_phone(last_error):
             mark_phone_invalid(str(phone_item.get("id") or ""), last_error)
         else:
             release_phone_reservation(str(phone_item.get("id") or ""), email)
         logger.warning(
             "[Codex] add-phone 手机号尝试失败%s: email=%s phone=%s reason=%s",
-            "" if last_error.startswith("页面填写失败:") else "，已标记失效并切换下一个",
+            "" if not _should_invalidate_oauth_phone(last_error) else "，已标记失效并切换下一个",
             email,
             phone_item.get("phone_number"),
             last_error,
         )
-        if last_error.startswith("页面填写失败:"):
+        if not _should_invalidate_oauth_phone(last_error):
             return False
         try:
             page.reload(wait_until="domcontentloaded", timeout=30000)

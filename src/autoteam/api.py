@@ -5701,6 +5701,17 @@ def _oauth_phone_required_result(email: str, exc: Exception) -> dict:
     }
 
 
+def _oauth_phone_rate_limited_result(email: str, exc: Exception) -> dict:
+    return {
+        "email": email,
+        "status": "failed",
+        "failure_stage": "oauth_phone_rate_limited",
+        "message": f"OAuth 手机号验证请求次数过多，已跳过当前账号: {email}",
+        "error": str(exc),
+        "removed_pool_emails": [],
+    }
+
+
 def _oauth_login_required_result(email: str, exc: Exception) -> dict:
     return {
         "email": email,
@@ -5738,7 +5749,12 @@ def post_account_login(params: LoginAccountParams):
         raise HTTPException(status_code=404, detail="账号不存在")
 
     def _run(task_id: str = ""):
-        from autoteam.codex_auth import CodexOAuthAccountDeactivated, CodexOAuthLoginRequired, CodexOAuthPhoneRequired
+        from autoteam.codex_auth import (
+            CodexOAuthAccountDeactivated,
+            CodexOAuthLoginRequired,
+            CodexOAuthPhoneRateLimited,
+            CodexOAuthPhoneRequired,
+        )
 
         try:
             _append_task_progress(
@@ -5761,6 +5777,18 @@ def post_account_login(params: LoginAccountParams):
                     "message": result["message"],
                     "level": "warn",
                 }
+            )
+            raise TaskResultError(result["message"], task_result=result) from exc
+        except CodexOAuthPhoneRateLimited as exc:
+            result = _oauth_phone_rate_limited_result(email, exc)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "account_login_phone_rate_limited",
+                    "email": email,
+                    "message": result["message"],
+                    "level": "warn",
+                },
             )
             raise TaskResultError(result["message"], task_result=result) from exc
         except CodexOAuthLoginRequired as exc:
@@ -5823,7 +5851,12 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
         raise HTTPException(status_code=404, detail="账号不存在")
 
     def _run(task_id: str = ""):
-        from autoteam.codex_auth import CodexOAuthAccountDeactivated, CodexOAuthLoginRequired, CodexOAuthPhoneRequired
+        from autoteam.codex_auth import (
+            CodexOAuthAccountDeactivated,
+            CodexOAuthLoginRequired,
+            CodexOAuthPhoneRateLimited,
+            CodexOAuthPhoneRequired,
+        )
         from autoteam.accounts import update_account
 
         ok = []
@@ -5903,6 +5936,10 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                 result = _oauth_phone_required_result(email, exc)
                 logger.warning("[账号登录] 批量 worker 手机验证: email=%s elapsed=%.1fs", email, time.time() - started_at)
                 return {"kind": "phone_required", "email": email, "index": index, "result": result}
+            except CodexOAuthPhoneRateLimited as exc:
+                result = _oauth_phone_rate_limited_result(email, exc)
+                logger.warning("[账号登录] 批量 worker 手机验证请求次数过多，跳过账号: email=%s elapsed=%.1fs", email, time.time() - started_at)
+                return {"kind": "phone_rate_limited", "email": email, "index": index, "result": result}
             except CodexOAuthLoginRequired as exc:
                 result = _oauth_login_required_result(email, exc)
                 logger.warning("[账号登录] 批量 worker 停在登录页: email=%s elapsed=%.1fs", email, time.time() - started_at)
@@ -5932,7 +5969,7 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                 with result_lock:
                     if item["kind"] == "ok":
                         ok.append(item["result"])
-                    elif item["kind"] in {"phone_required", "login_required", "account_deactivated"}:
+                    elif item["kind"] in {"phone_required", "phone_rate_limited", "login_required", "account_deactivated"}:
                         if item["kind"] == "phone_required":
                             phone_required.append(item["result"])
                         failed.append(item["result"])
@@ -5955,10 +5992,11 @@ def post_accounts_login_batch(params: AccountEmailBatchParams):
                             "message": f"补登录成功: {item_email}",
                         },
                     )
-                elif item["kind"] in {"phone_required", "login_required", "account_deactivated"}:
+                elif item["kind"] in {"phone_required", "phone_rate_limited", "login_required", "account_deactivated"}:
                     stage = {
                         "account_deactivated": "account_login_deactivated_removed",
                         "login_required": "account_login_required",
+                        "phone_rate_limited": "account_login_phone_rate_limited",
                     }.get(item["kind"], "account_login_phone_required")
                     _append_task_progress(
                         task_id,
