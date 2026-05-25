@@ -11,6 +11,7 @@ from typing import Any
 from autoteam import sqlite_store
 
 MAX_BINDINGS_PER_PHONE = 3
+PHONE_RESERVATION_TTL_SECONDS = 15 * 60
 NAMESPACE = "oauth_phone_pool"
 KEY = "items"
 _LOCK = threading.RLock()
@@ -23,6 +24,19 @@ def normalize_phone_key(phone: str) -> str:
 
 def _now() -> float:
     return time.time()
+
+
+def _reservation_active(item: dict[str, Any], now: float | None = None) -> bool:
+    reserved_by = str(item.get("reserved_by") or "").strip()
+    if not reserved_by:
+        return False
+    try:
+        reserved_at = float(item.get("reserved_at") or 0)
+    except Exception:
+        reserved_at = 0
+    if reserved_at <= 0:
+        return False
+    return (now or _now()) - reserved_at < PHONE_RESERVATION_TTL_SECONDS
 
 
 def _raw_items() -> list[dict[str, Any]]:
@@ -77,6 +91,8 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
         "created_at": float(created_at or _now()),
         "updated_at": float(data.get("updated_at") or created_at or _now()),
         "last_used_at": data.get("last_used_at"),
+        "reserved_by": str(data.get("reserved_by") or data.get("reserved_by_email") or "").strip().lower(),
+        "reserved_at": data.get("reserved_at"),
     }
 
 
@@ -86,6 +102,7 @@ def _with_computed_status(item: dict[str, Any]) -> dict[str, Any]:
         data["status"] = "full" if int(data.get("bound_count") or 0) >= MAX_BINDINGS_PER_PHONE else "available"
     data["remaining"] = max(0, MAX_BINDINGS_PER_PHONE - int(data.get("bound_count") or 0))
     data["max_bindings"] = MAX_BINDINGS_PER_PHONE
+    data["reserved"] = _reservation_active(data)
     return data
 
 
@@ -211,13 +228,41 @@ def acquire_available_phone(email: str = "") -> dict[str, Any] | None:
     normalized_email = str(email or "").strip().lower()
     with _LOCK:
         items = _raw_items()
+        now = _now()
         for index, item in enumerate(items):
             data = _with_computed_status(item)
             if data["status"] != "available":
                 continue
+            if _reservation_active(data, now):
+                continue
             if normalized_email and normalized_email in set(data.get("bound_emails") or []):
                 continue
-            data["last_used_at"] = _now()
+            data["reserved_by"] = normalized_email or "unknown"
+            data["reserved_at"] = now
+            data["last_used_at"] = now
+            data["updated_at"] = now
+            items[index] = _normalize_item(data)
+            _save_items(items)
+            return _with_computed_status(data)
+    return None
+
+
+def release_phone_reservation(item_id: str, email: str = "") -> dict[str, Any] | None:
+    target = str(item_id or "").strip()
+    if not target:
+        return None
+    normalized_email = str(email or "").strip().lower()
+    with _LOCK:
+        items = _raw_items()
+        for index, item in enumerate(items):
+            if str(item.get("id") or "") != target:
+                continue
+            data = _normalize_item(item)
+            reserved_by = str(data.get("reserved_by") or "").strip().lower()
+            if normalized_email and reserved_by and reserved_by != normalized_email:
+                return _with_computed_status(data)
+            data["reserved_by"] = ""
+            data["reserved_at"] = None
             data["updated_at"] = _now()
             items[index] = _normalize_item(data)
             _save_items(items)
@@ -246,6 +291,8 @@ def mark_phone_bound(item_id: str, email: str = "") -> dict[str, Any] | None:
             data["bound_count"] = min(MAX_BINDINGS_PER_PHONE, max(next_count, len(data["bound_emails"])))
             data["last_used_at"] = _now()
             data["updated_at"] = _now()
+            data["reserved_by"] = ""
+            data["reserved_at"] = None
             if int(data["bound_count"]) >= MAX_BINDINGS_PER_PHONE and data["status"] not in {"invalid", "disabled"}:
                 data["status"] = "full"
             items[index] = _normalize_item(data)
@@ -266,6 +313,8 @@ def mark_phone_invalid(item_id: str, reason: str = "") -> dict[str, Any] | None:
             data = _normalize_item(item)
             data["status"] = "invalid"
             data["invalid_reason"] = str(reason or "不可用").strip()
+            data["reserved_by"] = ""
+            data["reserved_at"] = None
             data["updated_at"] = _now()
             items[index] = data
             _save_items(items)

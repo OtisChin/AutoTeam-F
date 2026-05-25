@@ -8067,54 +8067,18 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 _append_task_progress(
                     task_id,
                     {
-                        "stage": "gopay_session_cpa_convert_started",
+                        "stage": "gopay_oauth_login_skipped",
                         "email": success_email,
-                        "message": f"GoPay 绑定成功，正在直接转换 CPA 认证: {success_email}",
+                        **_gopay_success_progress_fields(),
+                        "message": f"GoPay 绑定成功；未启用 OAuth 补登录，已跳过 CPA 直接转换: {success_email}",
+                        "level": "success",
                     },
                 )
-                try:
-                    cpa_result = _convert_account_auth_session_to_cpa_auth(
-                        success_email,
-                        force_account_type=ACCOUNT_TYPE_PLUS,
-                    )
-                    session_cpa_converted_emails.append(success_email)
-                    _append_task_progress(
-                        task_id,
-                        {
-                            "stage": "gopay_session_cpa_convert_done",
-                            "email": success_email,
-                            "auth_file": cpa_result.get("auth_file") or "",
-                            "filename": cpa_result.get("filename") or "",
-                            "id_token_synthetic": bool(cpa_result.get("id_token_synthetic")),
-                            **_gopay_success_progress_fields(),
-                            "message": f"CPA 认证已生成: {success_email}",
-                            "level": "success",
-                        },
-                    )
-                    logger.info(
-                        "[gopay-bind] CPA auth converted from auth_session after GoPay success: task_id=%s email=%s auth_file=%s",
-                        task_id[:8] or "<unknown>",
-                        _safe_email_summary(success_email),
-                        cpa_result.get("auth_file") or "",
-                    )
-                except Exception as exc:
-                    session_cpa_failed_auths.append({"email": success_email, "error": str(exc)})
-                    _append_task_progress(
-                        task_id,
-                        {
-                            "stage": "gopay_session_cpa_convert_failed",
-                            "email": success_email,
-                            **_gopay_success_progress_fields(),
-                            "message": f"CPA 认证转换失败，GoPay 绑定已成功: {success_email}: {exc}",
-                            "level": "warn",
-                        },
-                    )
-                    logger.warning(
-                        "[gopay-bind] CPA auth conversion after GoPay success failed: task_id=%s email=%s error=%s",
-                        task_id[:8] or "<unknown>",
-                        _safe_email_summary(success_email),
-                        exc,
-                    )
+                logger.info(
+                    "[gopay-bind] skipped CPA conversion after GoPay success because OAuth login was not enabled: task_id=%s email=%s",
+                    task_id[:8] or "<unknown>",
+                    _safe_email_summary(success_email),
+                )
                 return _gopay_success_progress_fields()
 
             if success_email in oauth_scheduled_emails:
@@ -10812,55 +10776,18 @@ def post_paypal_task(params: PayPalTaskParams):
                 _append_task_progress(
                     task_id,
                     {
-                        "stage": "paypal_session_cpa_convert_started",
+                        "stage": "paypal_oauth_login_skipped",
                         "email": success_email,
                         **_paypal_success_progress_fields(),
-                        "message": f"PayPal 绑定成功，正在直接转换 CPA 认证: {success_email}",
+                        "message": f"PayPal 绑定成功；未启用 OAuth 补登录，已跳过 CPA 直接转换: {success_email}",
+                        "level": "success",
                     },
                 )
-                try:
-                    cpa_result = _convert_account_auth_session_to_cpa_auth(
-                        success_email,
-                        force_account_type=ACCOUNT_TYPE_PLUS,
-                    )
-                    session_cpa_converted_emails.append(success_email)
-                    _append_task_progress(
-                        task_id,
-                        {
-                            "stage": "paypal_session_cpa_convert_done",
-                            "email": success_email,
-                            "auth_file": cpa_result.get("auth_file") or "",
-                            "filename": cpa_result.get("filename") or "",
-                            "id_token_synthetic": bool(cpa_result.get("id_token_synthetic")),
-                            **_paypal_success_progress_fields(),
-                            "message": f"CPA 认证已生成: {success_email}",
-                            "level": "success",
-                        },
-                    )
-                    logger.info(
-                        "[paypal] CPA auth converted from auth_session after PayPal success: task_id=%s email=%s auth_file=%s",
-                        task_id[:8] or "<unknown>",
-                        _safe_email_summary(success_email),
-                        cpa_result.get("auth_file") or "",
-                    )
-                except Exception as exc:
-                    session_cpa_failed_auths.append({"email": success_email, "error": str(exc)})
-                    _append_task_progress(
-                        task_id,
-                        {
-                            "stage": "paypal_session_cpa_convert_failed",
-                            "email": success_email,
-                            **_paypal_success_progress_fields(),
-                            "message": f"CPA 认证转换失败，PayPal 绑定已成功: {success_email}: {exc}",
-                            "level": "warn",
-                        },
-                    )
-                    logger.warning(
-                        "[paypal] CPA auth conversion after PayPal success failed: task_id=%s email=%s error=%s",
-                        task_id[:8] or "<unknown>",
-                        _safe_email_summary(success_email),
-                        exc,
-                    )
+                logger.info(
+                    "[paypal] skipped CPA conversion after PayPal success because OAuth login was not enabled: task_id=%s email=%s",
+                    task_id[:8] or "<unknown>",
+                    _safe_email_summary(success_email),
+                )
                 return
 
             if success_email in oauth_scheduled_emails:

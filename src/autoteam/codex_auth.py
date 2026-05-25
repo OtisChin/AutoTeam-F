@@ -1664,7 +1664,12 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
     if not _is_add_phone_page(page):
         return False
     try:
-        from autoteam.oauth_phone_pool import acquire_available_phone, mark_phone_bound, mark_phone_invalid
+        from autoteam.oauth_phone_pool import (
+            acquire_available_phone,
+            mark_phone_bound,
+            mark_phone_invalid,
+            release_phone_reservation,
+        )
     except Exception as exc:
         logger.warning("[Codex] add-phone 手机号池不可用: %s", exc)
         return False
@@ -1677,7 +1682,17 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
             logger.warning("[Codex] add-phone 需要手机号，但手机号池没有可用号码: %s", email)
             return False
         attempted += 1
-        ok, error = _submit_oauth_add_phone_candidate(page, email=email, phone_item=phone_item)
+        try:
+            ok, error = _submit_oauth_add_phone_candidate(page, email=email, phone_item=phone_item)
+        except Exception as exc:
+            release_phone_reservation(str(phone_item.get("id") or ""), email)
+            logger.warning(
+                "[Codex] add-phone 手机号尝试异常，已释放占用: email=%s phone=%s error=%s",
+                email,
+                phone_item.get("phone_number"),
+                exc,
+            )
+            return False
         if ok:
             mark_phone_bound(str(phone_item.get("id") or ""), email)
             logger.info("[Codex] add-phone 手机号绑定成功: email=%s phone=%s", email, phone_item.get("phone_number"))
@@ -1685,6 +1700,8 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
         last_error = error or "手机号绑定失败"
         if not last_error.startswith("页面填写失败:"):
             mark_phone_invalid(str(phone_item.get("id") or ""), last_error)
+        else:
+            release_phone_reservation(str(phone_item.get("id") or ""), email)
         logger.warning(
             "[Codex] add-phone 手机号尝试失败%s: email=%s phone=%s reason=%s",
             "" if last_error.startswith("页面填写失败:") else "，已标记失效并切换下一个",
