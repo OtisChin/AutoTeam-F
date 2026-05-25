@@ -5,6 +5,89 @@
     </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold text-white">OAuth 手机号接码</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            OAuth 登录遇到 add-phone 时使用；hero-sms 固定服务 openai、国家美国。
+          </p>
+        </div>
+        <span
+          class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
+          :class="oauthPhoneSmsConfigured
+            ? 'bg-green-500/10 text-green-400 border-green-500/20'
+            : 'bg-gray-800 text-gray-400 border-gray-700'">
+          {{ oauthPhoneSmsConfigured ? '已配置' : '未配置' }}
+        </span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">手机号来源</label>
+          <select
+            v-model="oauthPhoneSmsForm.provider"
+            :disabled="oauthPhoneSmsLoading || oauthPhoneSmsSaving"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          >
+            <option value="phone_pool">OAuth 手机号池</option>
+            <option value="hero_sms">hero-sms</option>
+          </select>
+          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；hero-sms 会每次动态取美国 OpenAI 号码。</p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">固定参数</label>
+          <div class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300">
+            服务：OpenAI（Hero-SMS code: dr）/ 国家：美国
+          </div>
+        </div>
+        <template v-if="oauthPhoneSmsForm.provider === 'hero_sms'">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              hero-sms API Key
+              <span v-if="oauthPhoneSmsStatus.hero_sms_api_key_present" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <input
+              v-model="oauthPhoneSmsForm.hero_sms_api_key"
+              type="password"
+              autocomplete="off"
+              :placeholder="oauthPhoneSmsStatus.hero_sms_api_key_masked || '留空则保留现有配置'"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">hero-sms 最高价格</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.hero_sms_max_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.045，留空不限价"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">保存后作为 maxPrice 传给 Hero-SMS getNumber。</p>
+          </div>
+        </template>
+      </div>
+
+      <div class="mt-3 flex justify-end gap-3">
+        <button
+          @click="loadOAuthPhoneSmsConfig"
+          :disabled="oauthPhoneSmsLoading || oauthPhoneSmsSaving"
+          class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+        >
+          {{ oauthPhoneSmsLoading ? '刷新中...' : '刷新配置' }}
+        </button>
+        <button
+          @click="saveOAuthPhoneSmsConfig"
+          :disabled="oauthPhoneSmsSaving"
+          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+        >
+          {{ oauthPhoneSmsSaving ? '保存中...' : '保存 OAuth 接码配置' }}
+        </button>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-start justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">配置导入 / 导出</h2>
@@ -688,6 +771,14 @@ const gopayAutoSignupForm = ref({
   appium_url: 'http://127.0.0.1:4723',
   appium_adb_serial: '',
 })
+const oauthPhoneSmsLoading = ref(false)
+const oauthPhoneSmsSaving = ref(false)
+const oauthPhoneSmsStatus = ref({})
+const oauthPhoneSmsForm = ref({
+  provider: 'phone_pool',
+  hero_sms_api_key: '',
+  hero_sms_max_price: '',
+})
 const rekberinajaLoading = ref(false)
 const rekberinajaSaving = ref(false)
 const rekberinajaStatus = ref({})
@@ -714,6 +805,11 @@ const gopayAutoSignupConfigured = computed(() => {
   return gopayAutoSignupForm.value.provider === 'hero_sms'
     ? Boolean(gopayAutoSignupStatus.value.hero_sms_api_key_present)
     : Boolean(gopayAutoSignupStatus.value.smscloud_xi_token_present)
+})
+const oauthPhoneSmsConfigured = computed(() => {
+  return oauthPhoneSmsForm.value.provider === 'phone_pool'
+    ? true
+    : Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
 })
 const rekberinajaConfigured = computed(() => Boolean(rekberinajaStatus.value.configured))
 const roxyBrowserConfigured = computed(() => Boolean(roxyBrowserStatus.value.configured))
@@ -760,6 +856,7 @@ onMounted(async () => {
   loadRegisterDomains()
   loadAccountHubConfig()
   loadGoPayAutoSignupConfig()
+  loadOAuthPhoneSmsConfig()
   loadRekberinajaConfig()
   loadRoxyBrowserConfig()
   loadMailProviderConfig()
@@ -813,6 +910,7 @@ async function importConfig() {
     setMessage(result.message || '配置导入完成')
     await Promise.allSettled([
       loadGoPayAutoSignupConfig(),
+      loadOAuthPhoneSmsConfig(),
       loadRekberinajaConfig(),
       loadRoxyBrowserConfig(),
       loadMailProviderConfig(),
@@ -1007,6 +1105,38 @@ async function saveGoPayAutoSignupConfig() {
     setMessage(e.message || '保存 GoPay 自动注册配置失败', 'error')
   } finally {
     gopayAutoSignupSaving.value = false
+  }
+}
+
+async function loadOAuthPhoneSmsConfig() {
+  oauthPhoneSmsLoading.value = true
+  try {
+    const cfg = await api.getOAuthPhoneSmsConfig()
+    oauthPhoneSmsStatus.value = cfg || {}
+    oauthPhoneSmsForm.value = {
+      provider: cfg?.provider === 'hero_sms' ? 'hero_sms' : 'phone_pool',
+      hero_sms_api_key: '',
+      hero_sms_max_price: cfg?.hero_sms_max_price || '',
+    }
+  } catch (e) {
+    setMessage(e.message || '加载 OAuth 接码配置失败', 'error')
+  } finally {
+    oauthPhoneSmsLoading.value = false
+  }
+}
+
+async function saveOAuthPhoneSmsConfig() {
+  oauthPhoneSmsSaving.value = true
+  try {
+    const result = await api.saveOAuthPhoneSmsConfig(oauthPhoneSmsForm.value)
+    oauthPhoneSmsStatus.value = result || {}
+    oauthPhoneSmsForm.value.hero_sms_api_key = ''
+    setMessage(result.message || 'OAuth 接码配置已保存')
+    await loadOAuthPhoneSmsConfig()
+  } catch (e) {
+    setMessage(e.message || '保存 OAuth 接码配置失败', 'error')
+  } finally {
+    oauthPhoneSmsSaving.value = false
   }
 }
 

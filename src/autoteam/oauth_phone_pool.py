@@ -12,6 +12,7 @@ from autoteam import sqlite_store
 
 MAX_BINDINGS_PER_PHONE = 3
 PHONE_RESERVATION_TTL_SECONDS = 15 * 60
+PHONE_COOLDOWN_SECONDS = 2 * 60 * 60
 NAMESPACE = "oauth_phone_pool"
 KEY = "items"
 _LOCK = threading.RLock()
@@ -71,11 +72,18 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
     if len(deduped_emails) > bound_count:
         bound_count = min(MAX_BINDINGS_PER_PHONE, len(deduped_emails))
     status = str(data.get("status") or "available").strip().lower()
-    if status not in {"available", "invalid", "disabled", "full"}:
+    if status not in {"available", "invalid", "disabled", "full", "cooldown"}:
         status = "available"
+    try:
+        cooldown_until = float(data.get("cooldown_until") or 0)
+    except Exception:
+        cooldown_until = 0
+    if status == "cooldown" and cooldown_until and cooldown_until <= _now():
+        status = "available"
+        cooldown_until = 0
     if status == "full" and bound_count < MAX_BINDINGS_PER_PHONE:
         status = "available"
-    if bound_count >= MAX_BINDINGS_PER_PHONE and status not in {"invalid", "disabled"}:
+    if bound_count >= MAX_BINDINGS_PER_PHONE and status not in {"invalid", "disabled", "cooldown"}:
         status = "full"
     phone = str(data.get("phone_number") or data.get("phone") or "").strip()
     return {
@@ -87,6 +95,7 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
         "bound_count": bound_count,
         "bound_emails": deduped_emails[:MAX_BINDINGS_PER_PHONE],
         "invalid_reason": str(data.get("invalid_reason") or "").strip(),
+        "cooldown_until": cooldown_until or None,
         "note": str(data.get("note") or "").strip(),
         "created_at": float(created_at or _now()),
         "updated_at": float(data.get("updated_at") or created_at or _now()),
@@ -98,11 +107,13 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def _with_computed_status(item: dict[str, Any]) -> dict[str, Any]:
     data = _normalize_item(item)
-    if data["status"] not in {"invalid", "disabled"}:
+    if data["status"] not in {"invalid", "disabled", "cooldown"}:
         data["status"] = "full" if int(data.get("bound_count") or 0) >= MAX_BINDINGS_PER_PHONE else "available"
     data["remaining"] = max(0, MAX_BINDINGS_PER_PHONE - int(data.get("bound_count") or 0))
     data["max_bindings"] = MAX_BINDINGS_PER_PHONE
     data["reserved"] = _reservation_active(data)
+    cooldown_until = data.get("cooldown_until")
+    data["cooldown_remaining_seconds"] = max(0, int(float(cooldown_until or 0) - _now())) if cooldown_until else 0
     return data
 
 
@@ -328,6 +339,30 @@ def mark_phone_invalid(item_id: str, reason: str = "") -> dict[str, Any] | None:
             data = _normalize_item(item)
             data["status"] = "invalid"
             data["invalid_reason"] = str(reason or "不可用").strip()
+            data["cooldown_until"] = None
+            data["reserved_by"] = ""
+            data["reserved_at"] = None
+            data["updated_at"] = _now()
+            items[index] = data
+            _save_items(items)
+            return _with_computed_status(data)
+    return None
+
+
+def mark_phone_cooldown(item_id: str, reason: str = "", seconds: int = PHONE_COOLDOWN_SECONDS) -> dict[str, Any] | None:
+    target = str(item_id or "").strip()
+    if not target:
+        return None
+    duration = max(60, int(seconds or PHONE_COOLDOWN_SECONDS))
+    with _LOCK:
+        items = _raw_items()
+        for index, item in enumerate(items):
+            if str(item.get("id") or "") != target:
+                continue
+            data = _normalize_item(item)
+            data["status"] = "cooldown"
+            data["invalid_reason"] = str(reason or "冷却中").strip()
+            data["cooldown_until"] = _now() + duration
             data["reserved_by"] = ""
             data["reserved_at"] = None
             data["updated_at"] = _now()

@@ -90,6 +90,14 @@
             {{ batchLoggingIn ? '提交中...' : `批量OAuth补登录 (${batchLoginableAccounts.length})` }}
           </button>
           <button
+            @click="oauthProxyPanelOpen = !oauthProxyPanelOpen"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="oauthProxyEnabled
+              ? 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'
+              : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700 hover:text-white'">
+            OAuth代理{{ oauthProxyEnabled ? '已启用' : '配置' }}
+          </button>
+          <button
             @click="refreshAllQuota"
             :disabled="quotaRefreshing || refreshQuotaRunning || !refreshableQuotaAccounts.length"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -158,6 +166,80 @@
               : 'bg-violet-600/10 text-violet-300 border-violet-500/30 hover:bg-violet-600/20'">
             {{ hubSyncing ? '上传中...' : `同步到账号Hub (${selectedEmails.length})` }}
           </button>
+        </div>
+      </div>
+      <div
+        v-if="oauthProxyPanelOpen"
+        class="mx-4 mt-4 rounded-xl border border-cyan-500/20 bg-cyan-950/10 p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="text-sm font-semibold text-cyan-100">OAuth 补登录代理</div>
+            <div class="mt-1 text-xs text-gray-500">用于仪表盘单个补登录和批量 OAuth 补登录；不开启时保持直连。</div>
+          </div>
+          <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+            <input v-model="oauthProxyEnabled" type="checkbox" class="h-4 w-4 rounded border-gray-700 bg-gray-950 text-cyan-500 focus:ring-cyan-500/30" />
+            启用代理
+          </label>
+        </div>
+
+        <div v-if="oauthProxyEnabled" class="mt-4 grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
+          <div>
+            <label class="text-xs text-gray-500">代理模式</label>
+            <select
+              v-model="oauthProxyMode"
+              class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+              <option value="single">单条代理</option>
+              <option value="pool">动态代理池</option>
+              <option value="api">代理 API 轮换</option>
+            </select>
+          </div>
+
+          <div v-if="oauthProxyMode === 'single'">
+            <label class="text-xs text-gray-500">代理地址</label>
+            <input
+              v-model.trim="oauthProxyUrl"
+              type="text"
+              placeholder="hostname:port:username:password / socks5://user:pass@host:port"
+              class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
+          </div>
+
+          <div v-else-if="oauthProxyMode === 'pool'">
+            <label class="text-xs text-gray-500">代理池，一行一个</label>
+            <textarea
+              v-model.trim="oauthProxyPoolText"
+              rows="3"
+              placeholder="hostname:port:username:password&#10;socks5://user:pass@host:port"
+              class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60"></textarea>
+          </div>
+
+          <div v-else class="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+            <div>
+              <label class="text-xs text-gray-500">供应商</label>
+              <select
+                v-model="oauthProxyApiProvider"
+                class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                <option value="cliproxy">cliproxy</option>
+                <option value="1024proxy">1024proxy</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">连接入口代理，可选</label>
+              <input
+                v-model.trim="oauthProxyUrl"
+                type="text"
+                placeholder="API 未返回可直接连接地址时，用这里的代理入口"
+                class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
+            </div>
+          </div>
+
+          <div class="lg:col-span-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+            <span>{{ oauthProxySummary }}</span>
+            <button
+              @click="resetOauthProxyConfig"
+              class="px-2.5 py-1 rounded-md border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800 transition">
+              清空代理配置
+            </button>
+          </div>
         </div>
       </div>
       <div class="px-4 py-3 border-b border-gray-800 bg-gray-950/30 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -690,6 +772,12 @@ const exportStatusUpdating = ref(false)
 const batchLoggingIn = ref(false)
 const quotaRefreshing = ref(false)
 const invalidDeleting = ref(false)
+const oauthProxyPanelOpen = ref(false)
+const oauthProxyEnabled = ref(false)
+const oauthProxyMode = ref('single')
+const oauthProxyUrl = ref('')
+const oauthProxyPoolText = ref('')
+const oauthProxyApiProvider = ref('cliproxy')
 
 // 批量删除选中态:按邮箱(小写)保存,便于跨刷新复用
 const selectedSet = ref(new Set())
@@ -700,6 +788,67 @@ const batchProgress = ref('')
 const failuresItems = ref([])
 const failuresCounts = ref({})
 const failuresLoading = ref(false)
+
+const OAUTH_PROXY_STORAGE_KEY = 'autoteam.dashboard.oauthProxy'
+
+function loadOauthProxyConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OAUTH_PROXY_STORAGE_KEY) || '{}')
+    oauthProxyEnabled.value = Boolean(saved.enabled)
+    oauthProxyMode.value = ['single', 'pool', 'api'].includes(saved.mode) ? saved.mode : 'single'
+    oauthProxyUrl.value = saved.proxyUrl || ''
+    oauthProxyPoolText.value = saved.proxyPoolText || ''
+    oauthProxyApiProvider.value = saved.proxyApiProvider === '1024proxy' ? '1024proxy' : 'cliproxy'
+  } catch (_) {
+    // ignore broken local storage
+  }
+}
+
+function saveOauthProxyConfig() {
+  try {
+    localStorage.setItem(OAUTH_PROXY_STORAGE_KEY, JSON.stringify({
+      enabled: oauthProxyEnabled.value,
+      mode: oauthProxyMode.value,
+      proxyUrl: oauthProxyUrl.value,
+      proxyPoolText: oauthProxyPoolText.value,
+      proxyApiProvider: oauthProxyApiProvider.value,
+    }))
+  } catch (_) {
+    // ignore local storage write errors
+  }
+}
+
+function resetOauthProxyConfig() {
+  oauthProxyEnabled.value = false
+  oauthProxyMode.value = 'single'
+  oauthProxyUrl.value = ''
+  oauthProxyPoolText.value = ''
+  oauthProxyApiProvider.value = 'cliproxy'
+}
+
+function buildOauthProxyPayload() {
+  if (!oauthProxyEnabled.value) return {}
+  if (oauthProxyMode.value === 'single') {
+    return oauthProxyUrl.value ? { proxy_url: oauthProxyUrl.value } : {}
+  }
+  if (oauthProxyMode.value === 'pool') {
+    return oauthProxyPoolText.value ? { proxy_pool_text: oauthProxyPoolText.value } : {}
+  }
+  return {
+    proxy_api_provider: oauthProxyApiProvider.value || 'cliproxy',
+    ...(oauthProxyUrl.value ? { proxy_url: oauthProxyUrl.value } : {}),
+  }
+}
+
+const oauthProxySummary = computed(() => {
+  if (!oauthProxyEnabled.value) return 'OAuth 补登录当前直连。'
+  if (oauthProxyMode.value === 'single') return oauthProxyUrl.value ? '单个/批量补登录会使用这条代理。' : '请填写单条代理地址。'
+  if (oauthProxyMode.value === 'pool') {
+    const count = oauthProxyPoolText.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean).length
+    return count ? `批量补登录会从 ${count} 条代理中按账号随机选择。` : '请导入或粘贴代理池。'
+  }
+  return `补登录会通过 ${oauthProxyApiProvider.value} API 每个账号取一次代理。`
+})
 
 async function loadFailures() {
   failuresLoading.value = true
@@ -742,7 +891,14 @@ function fmtFailureExtra(f) {
   return parts.join(' ') || '-'
 }
 
-onMounted(loadFailures)
+onMounted(() => {
+  loadOauthProxyConfig()
+  loadFailures()
+})
+watch(
+  [oauthProxyEnabled, oauthProxyMode, oauthProxyUrl, oauthProxyPoolText, oauthProxyApiProvider],
+  saveOauthProxyConfig,
+)
 watch(() => props.runningTask, (cur, prev) => {
   // 有任务完成（从有到无）时自动刷新一次失败日志
   if (prev && !cur) loadFailures()
@@ -1518,8 +1674,10 @@ async function batchLoginAccounts() {
   batchLoggingIn.value = true
   message.value = ''
   try {
-    const result = await api.loginAccountsBatch(emails)
-    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个`
+    const proxyPayload = buildOauthProxyPayload()
+    const result = await api.loginAccountsBatch(emails, proxyPayload)
+    const proxyText = Object.keys(proxyPayload).length ? '，OAuth代理已启用' : ''
+    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
     emit('refresh')
@@ -1688,8 +1846,10 @@ async function loginAccount(email) {
   actionType.value = 'login'
   message.value = ''
   try {
-    const result = await api.loginAccount(email)
-    message.value = `已提交 ${email} 的登录任务: ${result.task_id}`
+    const proxyPayload = buildOauthProxyPayload()
+    const result = await api.loginAccount(email, proxyPayload)
+    const proxyText = Object.keys(proxyPayload).length ? '，OAuth代理已启用' : ''
+    message.value = `已提交 ${email} 的登录任务: ${result.task_id}${proxyText}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
     emit('refresh')

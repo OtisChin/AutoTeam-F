@@ -14,6 +14,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import sync_playwright
 
@@ -54,7 +55,13 @@ def _compact_log_text(value, *, limit=120) -> str:
     return text[: max(0, limit - 3)] + "..."
 
 
-def _launch_codex_oauth_chromium(playwright, *, headless: bool = False):
+def _launch_codex_oauth_chromium(
+    playwright,
+    *,
+    headless: bool = False,
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
+):
     """Launch the stable Chromium context used by Codex OAuth.
 
     Keep this path close to the original working flow: no random JS fingerprint
@@ -62,7 +69,14 @@ def _launch_codex_oauth_chromium(playwright, *, headless: bool = False):
     some scraping contexts, but OpenAI auth/Cloudflare is sensitive to incoherent
     browser surfaces.
     """
-    browser = playwright.chromium.launch(**get_playwright_launch_options(headless=headless))
+    launch_options = get_playwright_launch_options(
+        proxy_url=proxy_url,
+        proxy_bypass=proxy_bypass,
+        headless=headless,
+    )
+    if proxy_url:
+        logger.info("[Codex] OAuth browser proxy enabled")
+    browser = playwright.chromium.launch(**launch_options)
     context = browser.new_context(
         viewport={"width": 1280, "height": 800},
         user_agent=(
@@ -103,6 +117,10 @@ class CodexOAuthPhoneRateLimited(RuntimeError):
         if self.detail:
             message = f"{message}: {self.detail}"
         super().__init__(message)
+
+
+class CodexOAuthHeroSmsFirstCodeTimeout(RuntimeError):
+    """Hero-SMS did not receive the first OTP within the expected window."""
 
 
 class CodexOAuthLoginRequired(RuntimeError):
@@ -841,15 +859,26 @@ _PHONE_REJECT_HINTS = (
     "phone number is not valid",
     "try a different phone",
     "unsupported phone",
+    "maximum number of accounts",
+    "max number of accounts",
+    "associated with the maximum",
     "unable to send",
     "can't send",
     "cannot send",
+    "try again later",
+    "too many attempts",
+    "too many requests",
     "use a different phone",
     "手机号无效",
     "手机号码无效",
     "换一个手机号",
     "更换手机号",
     "无法发送",
+    "无法向此电话号码发送验证码",
+    "请求过多",
+    "请稍后重试",
+    "此电话号码已关联到可关联的最多账户",
+    "已关联到可关联的最多账户",
 )
 _PHONE_RATE_LIMIT_HINTS = (
     "too many phone verification",
@@ -857,12 +886,29 @@ _PHONE_RATE_LIMIT_HINTS = (
     "too many requests to verify",
     "requested phone verification too many",
     "phone verification requests",
-    "too many attempts",
-    "too many requests",
     "你请求手机验证的次数过多",
     "请求手机验证的次数过多",
     "手机验证的次数过多",
-    "请稍后再试",
+)
+_PHONE_FULL_HINTS = (
+    "maximum number of accounts",
+    "max number of accounts",
+    "associated with the maximum",
+    "此电话号码已关联到可关联的最多账户",
+    "已关联到可关联的最多账户",
+)
+_PHONE_COOLDOWN_HINTS = (
+    "unable to send",
+    "can't send",
+    "cannot send",
+    "try again later",
+    "too many attempts",
+    "too many requests",
+    "无法向此电话号码发送验证码",
+    "无法发送验证码",
+    "请求过多",
+    "请稍后重试",
+    "稍后再试",
 )
 
 
@@ -1380,7 +1426,7 @@ def _click_phone_resend_if_present(page) -> bool:
     return False
 
 
-def _format_oauth_phone_for_input(page, phone_input, phone: str) -> str:
+def _format_oauth_phone_for_input(page, phone_input, phone: str, *, force_us: bool = False) -> str:
     raw = str(phone or "").strip()
     digits = re.sub(r"\D+", "", raw)
     if not digits:
@@ -1394,7 +1440,8 @@ def _format_oauth_phone_for_input(page, phone_input, phone: str) -> str:
     except Exception:
         existing = ""
     country_is_us = (
-        "(+1)" in body
+        force_us
+        or "(+1)" in body
         or "美国 (+1)" in body
         or "united states (+1)" in body.lower()
         or str(existing or "").strip() in {"+1", "1"}
@@ -1618,6 +1665,290 @@ def _wait_for_phone_otp(sms_url: str) -> str:
     return _make_phone_otp_provider(sms_url)()
 
 
+def _normalize_oauth_phone_sms_provider(value: str | None = None) -> str:
+    normalized = str(value or os.environ.get("OAUTH_PHONE_SMS_PROVIDER") or "phone_pool").strip().lower().replace("-", "_")
+    if normalized in {"hero_sms", "herosms", "hero"}:
+        return "hero_sms"
+    return "phone_pool"
+
+
+def _normalize_oauth_hero_sms_service(value: str | None = None) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    # Hero-SMS uses SMS-Activate service codes. OpenAI / ChatGPT is "dr".
+    if text in {"", "openai", "chatgpt", "chat_gpt", "gpt"}:
+        return "dr"
+    return text
+
+
+def _normalize_oauth_hero_sms_country(value: str | None = None) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"", "us", "usa", "united_states", "united states", "+1", "1", "12"}:
+        return "187"
+    return text
+
+
+def _oauth_hero_sms_config() -> dict[str, str]:
+    return {
+        "base_url": str(
+            os.environ.get("OAUTH_HERO_SMS_BASE_URL")
+            or os.environ.get("GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL")
+            or "https://hero-sms.com/stubs/handler_api.php"
+        ).strip(),
+        "api_key": str(os.environ.get("OAUTH_HERO_SMS_API_KEY") or "").strip(),
+        "country": _normalize_oauth_hero_sms_country(os.environ.get("OAUTH_HERO_SMS_COUNTRY")),
+        "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_HERO_SMS_SERVICE")),
+        "max_price": str(os.environ.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip(),
+    }
+
+
+_OAUTH_HERO_SMS_REUSE_LOCK = threading.Lock()
+_OAUTH_HERO_SMS_REUSE: dict[str, Any] = {}
+
+
+def _oauth_hero_sms_ttl_seconds() -> int:
+    return max(60, int(float(os.environ.get("OAUTH_HERO_SMS_REUSE_TTL_SECONDS", "1200") or "1200")))
+
+
+def _oauth_hero_sms_max_binds() -> int:
+    return max(1, int(float(os.environ.get("OAUTH_HERO_SMS_MAX_BINDS", "3") or "3")))
+
+
+def _oauth_hero_sms_remaining_seconds(entry: dict[str, Any], *, now: float | None = None) -> int:
+    current = time.time() if now is None else float(now)
+    expires_at = float(entry.get("expires_at") or 0)
+    return max(0, int(expires_at - current))
+
+
+def _oauth_hero_sms_entry_reusable(entry: dict[str, Any], *, now: float | None = None) -> bool:
+    if not entry:
+        return False
+    if entry.get("reserved_by"):
+        return False
+    if int(entry.get("bound_count") or 0) >= _oauth_hero_sms_max_binds():
+        return False
+    # Keep a small safety window so we do not submit a phone that may expire
+    # while waiting for an OTP.
+    return _oauth_hero_sms_remaining_seconds(entry, now=now) > 90
+
+
+def _oauth_hero_sms_item_from_entry(entry: dict[str, Any], email: str = "") -> dict[str, Any]:
+    return {
+        "id": f"hero_sms:{entry.get('activation_id') or ''}",
+        "source": "hero_sms",
+        "phone_number": entry.get("phone_number") or "",
+        "sms_url": "",
+        "activation": entry.get("activation"),
+        "activation_id": entry.get("activation_id") or "",
+        "country_id": str(entry.get("country_id") or ""),
+        "hero_reuse": True,
+        "hero_remaining_seconds": _oauth_hero_sms_remaining_seconds(entry),
+        "hero_bound_count": int(entry.get("bound_count") or 0),
+    }
+
+
+def _oauth_hero_sms_finish_or_cancel(entry: dict[str, Any] | None, *, finish: bool = False, cancel: bool = False, reason: str = "") -> None:
+    if not entry:
+        return
+    activation = entry.get("activation")
+    if not activation:
+        return
+    try:
+        if finish:
+            activation.finish()
+            logger.info("[Codex] add-phone hero-sms 会话已完成: activation=%s reason=%s", entry.get("activation_id"), reason)
+        elif cancel:
+            activation.cancel()
+            logger.info("[Codex] add-phone hero-sms 会话已取消: activation=%s reason=%s", entry.get("activation_id"), reason)
+    except Exception as exc:
+        logger.info(
+            "[Codex] add-phone hero-sms 会话状态更新失败: activation=%s finish=%s cancel=%s reason=%s error=%s",
+            entry.get("activation_id"),
+            finish,
+            cancel,
+            reason,
+            exc,
+        )
+
+
+def _acquire_oauth_hero_sms_phone(email: str = "") -> tuple[dict | None, str]:
+    try:
+        from autoteam.gopay_auto_register import SmsActivation, _hero_get_number
+    except Exception as exc:
+        return None, f"hero-sms 模块不可用: {exc}"
+
+    cfg = _oauth_hero_sms_config()
+    if not cfg["api_key"]:
+        return None, "缺少 OAUTH_HERO_SMS_API_KEY 配置"
+    try:
+        country_id = int(float(cfg["country"] or "187"))
+    except Exception:
+        country_id = 187
+    now = time.time()
+    with _OAUTH_HERO_SMS_REUSE_LOCK:
+        cached = _OAUTH_HERO_SMS_REUSE.get("current")
+        if _oauth_hero_sms_entry_reusable(cached or {}, now=now):
+            cached["reserved_by"] = email
+            logger.info(
+                "[Codex] add-phone 复用 hero-sms 号码: email=%s activation=%s phone=%s bound=%s/%s remaining=%ss",
+                email,
+                cached.get("activation_id"),
+                cached.get("phone_number"),
+                cached.get("bound_count") or 0,
+                _oauth_hero_sms_max_binds(),
+                _oauth_hero_sms_remaining_seconds(cached, now=now),
+            )
+            return _oauth_hero_sms_item_from_entry(cached, email), ""
+        if cached and not _oauth_hero_sms_entry_reusable(cached, now=now):
+            _OAUTH_HERO_SMS_REUSE.pop("current", None)
+            finish_old = int(cached.get("bound_count") or 0) > 0
+        else:
+            cached = None
+            finish_old = False
+    if cached:
+        _oauth_hero_sms_finish_or_cancel(
+            cached,
+            finish=finish_old,
+            cancel=not finish_old,
+            reason="expired_or_full_before_new_acquire",
+        )
+
+    activation_id, phone, error = _hero_get_number(
+        service_code=cfg["service"] or "dr",
+        country_id=country_id,
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        max_price=cfg["max_price"],
+    )
+    if not activation_id or not phone:
+        return None, error or "hero-sms 未返回可用号码"
+    activation = SmsActivation(
+        activation_id=activation_id,
+        phone=phone,
+        country_id=country_id,
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        log=logger.info,
+    )
+    logger.info(
+        "[Codex] add-phone hero-sms 已取号: email=%s activation=%s service=%s country=%s max_price=%s",
+        email,
+        activation_id,
+        cfg["service"] or "openai",
+        country_id,
+        cfg["max_price"] or "-",
+    )
+    entry = {
+        "activation": activation,
+        "activation_id": activation_id,
+        "phone_number": phone,
+        "country_id": str(country_id),
+        "created_at": now,
+        "expires_at": now + _oauth_hero_sms_ttl_seconds(),
+        "bound_count": 0,
+        "reserved_by": email,
+    }
+    with _OAUTH_HERO_SMS_REUSE_LOCK:
+        _OAUTH_HERO_SMS_REUSE["current"] = entry
+    return _oauth_hero_sms_item_from_entry(entry, email), ""
+
+
+def _release_oauth_hero_sms_phone(phone_item: dict, *, email: str = "", finish: bool = False, cancel: bool = False, reason: str = "") -> None:
+    activation_id = str(phone_item.get("activation_id") or "").strip()
+    if not activation_id:
+        return
+    entry_to_close: dict[str, Any] | None = None
+    close_finish = False
+    close_cancel = False
+    with _OAUTH_HERO_SMS_REUSE_LOCK:
+        entry = _OAUTH_HERO_SMS_REUSE.get("current")
+        if entry and str(entry.get("activation_id") or "") == activation_id:
+            if finish or cancel:
+                entry_to_close = _OAUTH_HERO_SMS_REUSE.pop("current", None)
+                close_finish = finish
+                close_cancel = cancel
+            else:
+                if not email or str(entry.get("reserved_by") or "") == email:
+                    entry["reserved_by"] = ""
+                logger.info(
+                    "[Codex] add-phone hero-sms 号码已释放供复用: activation=%s phone=%s bound=%s/%s remaining=%ss reason=%s",
+                    activation_id,
+                    entry.get("phone_number"),
+                    entry.get("bound_count") or 0,
+                    _oauth_hero_sms_max_binds(),
+                    _oauth_hero_sms_remaining_seconds(entry),
+                    reason,
+                )
+                return
+    if entry_to_close:
+        _oauth_hero_sms_finish_or_cancel(entry_to_close, finish=close_finish, cancel=close_cancel, reason=reason)
+        return
+    # Fallback for entries that were not the current reusable session.
+    fallback = {
+        "activation": phone_item.get("activation"),
+        "activation_id": activation_id,
+    }
+    _oauth_hero_sms_finish_or_cancel(fallback, finish=finish, cancel=cancel, reason=reason)
+
+
+def _mark_oauth_hero_sms_bound(phone_item: dict, *, email: str = "") -> None:
+    activation_id = str(phone_item.get("activation_id") or "").strip()
+    if not activation_id:
+        return
+    entry_to_finish: dict[str, Any] | None = None
+    with _OAUTH_HERO_SMS_REUSE_LOCK:
+        entry = _OAUTH_HERO_SMS_REUSE.get("current")
+        if entry and str(entry.get("activation_id") or "") == activation_id:
+            entry["bound_count"] = int(entry.get("bound_count") or 0) + 1
+            entry["reserved_by"] = ""
+            remaining = _oauth_hero_sms_remaining_seconds(entry)
+            if entry["bound_count"] >= _oauth_hero_sms_max_binds() or remaining <= 90:
+                entry_to_finish = _OAUTH_HERO_SMS_REUSE.pop("current", None)
+            else:
+                logger.info(
+                    "[Codex] add-phone hero-sms 绑定成功后保留号码复用: email=%s activation=%s phone=%s bound=%s/%s remaining=%ss",
+                    email,
+                    activation_id,
+                    entry.get("phone_number"),
+                    entry["bound_count"],
+                    _oauth_hero_sms_max_binds(),
+                    remaining,
+                )
+                return
+    if entry_to_finish:
+        _oauth_hero_sms_finish_or_cancel(entry_to_finish, finish=True, reason="max_binds_or_expiring_after_success")
+        return
+    fallback = {"activation": phone_item.get("activation"), "activation_id": activation_id}
+    _oauth_hero_sms_finish_or_cancel(fallback, finish=True, reason="success_without_reusable_entry")
+
+
+def _make_phone_item_otp_provider(phone_item: dict):
+    if str(phone_item.get("source") or "").lower() == "hero_sms":
+        activation = phone_item.get("activation")
+        if not activation:
+            raise RuntimeError("hero-sms activation 为空")
+
+        def _provider() -> str:
+            ignored = getattr(_provider, "_gopay_ignored_otps", set())
+            try:
+                activation.used_codes.update({str(item or "").strip() for item in ignored if str(item or "").strip()})
+            except Exception:
+                pass
+            code = activation.wait_code(
+                timeout_sec=max(60, int(os.environ.get("CODEX_OAUTH_PHONE_OTP_TIMEOUT", "120") or "120")),
+                label="oauth-add-phone",
+                max_resends=0,
+            )
+            if not code:
+                if not getattr(_provider, "_hero_sms_first_code_received", False):
+                    raise CodexOAuthHeroSmsFirstCodeTimeout("hero-sms 120s 内未收到第一个验证码")
+                raise TimeoutError("hero-sms 120s 内未收到验证码")
+            setattr(_provider, "_hero_sms_first_code_received", True)
+            return code
+
+        return _provider
+    return _make_phone_otp_provider(str(phone_item.get("sms_url") or ""))
+
+
 def _make_phone_otp_provider(sms_url: str):
     from autoteam.gopay_executor import _poll_otp_from_sms_url
 
@@ -1634,16 +1965,27 @@ def _make_phone_otp_provider(sms_url: str):
 def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> tuple[bool, str]:
     phone = str(phone_item.get("phone_number") or "").strip()
     sms_url = str(phone_item.get("sms_url") or "").strip()
-    if not phone or not sms_url:
+    is_dynamic_hero_sms = str(phone_item.get("source") or "").lower() == "hero_sms"
+    if not phone or (not sms_url and not is_dynamic_hero_sms):
         return False, "手机号或接码链接为空"
     if not _is_add_phone_page(page):
         return True, ""
 
-    logger.info("[Codex] add-phone 使用手机号池号码: email=%s phone=%s", email, phone)
+    logger.info(
+        "[Codex] add-phone 使用%s号码: email=%s phone=%s",
+        "hero-sms 动态" if is_dynamic_hero_sms else "手机号池",
+        email,
+        phone,
+    )
     phone_input = _phone_input_locator(page)
     if not phone_input:
         return False, "未找到 add-phone 手机号输入框"
-    phone_for_input = _format_oauth_phone_for_input(page, phone_input, phone)
+    phone_for_input = _format_oauth_phone_for_input(
+        page,
+        phone_input,
+        phone,
+        force_us=is_dynamic_hero_sms and str(phone_item.get("country_id") or "") == "187",
+    )
     ok, fill_error = _fill_oauth_phone_field(page, phone_input, phone_for_input)
     if not ok:
         return False, fill_error or "页面填写失败: 手机号输入框填写失败"
@@ -1680,7 +2022,7 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         rejected = _detect_phone_rejected(page)
         return False, rejected or f"页面填写失败: 手机号提交后未进入验证码输入页; inputs={_compact_input_snapshots(page)}"
 
-    provider = _make_phone_otp_provider(sms_url)
+    provider = _make_phone_item_otp_provider(phone_item)
     ignored_codes: set[str] = set()
     max_invalid_retries = max(1, int(os.environ.get("CODEX_OAUTH_PHONE_OTP_INVALID_RETRIES", "2") or "2"))
     for code_attempt in range(1, max_invalid_retries + 2):
@@ -1690,6 +2032,8 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         try:
             setattr(provider, "_gopay_ignored_otps", ignored_codes)
             code = provider()
+        except CodexOAuthHeroSmsFirstCodeTimeout as exc:
+            return False, f"HERO_SMS_FIRST_CODE_TIMEOUT:{exc}"
         except Exception as exc:
             return False, f"等待手机验证码超时: {exc}"
         otp_input = _phone_otp_input_locator(page) or otp_input
@@ -1712,6 +2056,13 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
             return False, f"手机验证码无效，已重发 {max_invalid_retries} 次仍失败: {submit_detail or ''}".strip()
         if not _click_phone_resend_if_present(page):
             return False, f"手机验证码无效且未找到重新发送按钮: {submit_detail or ''}".strip()
+        if is_dynamic_hero_sms:
+            try:
+                activation = phone_item.get("activation")
+                if activation:
+                    activation.resend()
+            except Exception as exc:
+                logger.info("[Codex] add-phone hero-sms 标记重发失败: activation=%s error=%s", phone_item.get("activation_id"), exc)
         logger.info(
             "[Codex] add-phone 手机验证码无效，已点击重新发送并等待新验证码: email=%s phone=%s attempt=%s/%s",
             email,
@@ -1736,32 +2087,94 @@ def _should_invalidate_oauth_phone(error: str) -> bool:
     return True
 
 
+def _classify_oauth_phone_failure(error: str) -> str:
+    text = str(error or "").lower()
+    if not text:
+        return ""
+    if "hero_sms_first_code_timeout" in text:
+        return "hero_release"
+    if any(hint in text for hint in _PHONE_FULL_HINTS):
+        return "invalid"
+    if any(hint in text for hint in _PHONE_COOLDOWN_HINTS):
+        return "cooldown"
+    return "invalid" if _should_invalidate_oauth_phone(error) else ""
+
+
 def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
     if not _is_add_phone_page(page):
         return False
-    try:
-        from autoteam.oauth_phone_pool import (
-            acquire_available_phone,
-            mark_phone_bound,
-            mark_phone_invalid,
-            release_phone_reservation,
-        )
-    except Exception as exc:
-        logger.warning("[Codex] add-phone 手机号池不可用: %s", exc)
-        return False
+    provider_mode = _normalize_oauth_phone_sms_provider()
+    pool_api: dict[str, Any] = {}
+    if provider_mode == "phone_pool":
+        try:
+            from autoteam.oauth_phone_pool import (
+                acquire_available_phone,
+                mark_phone_cooldown,
+                mark_phone_bound,
+                mark_phone_invalid,
+                release_phone_reservation,
+            )
+
+            pool_api = {
+                "acquire": acquire_available_phone,
+                "cooldown": mark_phone_cooldown,
+                "bound": mark_phone_bound,
+                "invalid": mark_phone_invalid,
+                "release": release_phone_reservation,
+            }
+        except Exception as exc:
+            logger.warning("[Codex] add-phone 手机号池不可用: %s", exc)
+            return False
+
+    def acquire_phone_item() -> tuple[dict | None, str]:
+        if provider_mode == "hero_sms":
+            return _acquire_oauth_hero_sms_phone(email)
+        return pool_api["acquire"](email), ""
+
+    def release_phone_item(phone_item: dict, reason: str = "") -> None:
+        if str(phone_item.get("source") or "").lower() == "hero_sms":
+            _release_oauth_hero_sms_phone(phone_item, email=email, reason=reason)
+            return
+        pool_api["release"](str(phone_item.get("id") or ""), email)
+
+    def mark_phone_success(phone_item: dict) -> None:
+        if str(phone_item.get("source") or "").lower() == "hero_sms":
+            _mark_oauth_hero_sms_bound(phone_item, email=email)
+            return
+        pool_api["bound"](str(phone_item.get("id") or ""), email)
+
+    def mark_phone_failed(phone_item: dict, action: str, reason: str) -> None:
+        if str(phone_item.get("source") or "").lower() == "hero_sms":
+            if action == "hero_release":
+                _release_oauth_hero_sms_phone(phone_item, email=email, cancel=True, reason=reason)
+                return
+            if action in {"cooldown", "invalid"}:
+                _release_oauth_hero_sms_phone(phone_item, email=email, cancel=True, reason=reason)
+            else:
+                _release_oauth_hero_sms_phone(phone_item, email=email, reason=reason)
+            return
+        if action == "cooldown":
+            pool_api["cooldown"](str(phone_item.get("id") or ""), reason)
+        elif action == "invalid":
+            pool_api["invalid"](str(phone_item.get("id") or ""), reason)
+        else:
+            pool_api["release"](str(phone_item.get("id") or ""), email)
 
     attempted = 0
     last_error = ""
     while attempted < 10 and _is_add_phone_page(page):
-        phone_item = acquire_available_phone(email)
+        phone_item, acquire_error = acquire_phone_item()
         if not phone_item:
-            logger.warning("[Codex] add-phone 需要手机号，但手机号池没有可用号码: %s", email)
+            if provider_mode == "hero_sms":
+                logger.warning("[Codex] add-phone 需要手机号，但 hero-sms 取号失败: email=%s error=%s", email, acquire_error)
+            else:
+                logger.warning("[Codex] add-phone 需要手机号，但手机号池没有可用号码: %s", email)
             return False
         attempted += 1
         try:
             ok, error = _submit_oauth_add_phone_candidate(page, email=email, phone_item=phone_item)
         except CodexOAuthPhoneRateLimited:
-            release_phone_reservation(str(phone_item.get("id") or ""), email)
+            release_phone_item(phone_item, "account_phone_rate_limited")
             logger.warning(
                 "[Codex] add-phone 当前账号手机验证请求次数过多，已释放手机号并跳过账号: email=%s phone=%s",
                 email,
@@ -1769,7 +2182,7 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
             )
             raise
         except Exception as exc:
-            release_phone_reservation(str(phone_item.get("id") or ""), email)
+            release_phone_item(phone_item, str(exc))
             logger.warning(
                 "[Codex] add-phone 手机号尝试异常，已释放占用: email=%s phone=%s error=%s",
                 email,
@@ -1778,22 +2191,27 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
             )
             return False
         if ok:
-            mark_phone_bound(str(phone_item.get("id") or ""), email)
+            mark_phone_success(phone_item)
             logger.info("[Codex] add-phone 手机号绑定成功: email=%s phone=%s", email, phone_item.get("phone_number"))
             return True
         last_error = error or "手机号绑定失败"
-        if _should_invalidate_oauth_phone(last_error):
-            mark_phone_invalid(str(phone_item.get("id") or ""), last_error)
-        else:
-            release_phone_reservation(str(phone_item.get("id") or ""), email)
+        failure_action = _classify_oauth_phone_failure(last_error)
+        mark_phone_failed(phone_item, failure_action, last_error)
+        action_text = ""
+        if failure_action == "cooldown":
+            action_text = "，已标记冷却 2 小时并切换下一个"
+        elif failure_action == "invalid":
+            action_text = "，已标记失效并切换下一个"
+        elif failure_action == "hero_release":
+            action_text = "，2 分钟未收到首个验证码，已释放该 hero-sms 号码并切换下一个"
         logger.warning(
             "[Codex] add-phone 手机号尝试失败%s: email=%s phone=%s reason=%s",
-            "" if not _should_invalidate_oauth_phone(last_error) else "，已标记失效并切换下一个",
+            action_text,
             email,
             phone_item.get("phone_number"),
             last_error,
         )
-        if not _should_invalidate_oauth_phone(last_error):
+        if not failure_action:
             return False
         try:
             page.reload(wait_until="domcontentloaded", timeout=30000)
@@ -2083,6 +2501,8 @@ def _login_codex_via_browser_simple(
     headless=False,
     mail_account_id=None,
     auth_session_callback=None,
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
 ):
     """
     极简 OAuth 登录：输入邮箱 -> 邮箱验证码 -> 授权。
@@ -2133,7 +2553,12 @@ def _login_codex_via_browser_simple(
 
     logger.info("[Codex] 开始极简 OAuth 登录: %s", email)
     with sync_playwright() as p:
-        browser, context = _launch_codex_oauth_chromium(p, headless=headless)
+        browser, context = _launch_codex_oauth_chromium(
+            p,
+            headless=headless,
+            proxy_url=proxy_url,
+            proxy_bypass=proxy_bypass,
+        )
 
         def on_request(request):
             nonlocal auth_code
@@ -2342,6 +2767,8 @@ def login_codex_via_browser(
     headless=False,
     mail_account_id=None,
     auth_session_callback=None,
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
 ):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
@@ -2363,6 +2790,8 @@ def login_codex_via_browser(
             headless=headless,
             mail_account_id=mail_account_id,
             auth_session_callback=auth_session_callback,
+            proxy_url=proxy_url,
+            proxy_bypass=proxy_bypass,
         )
 
     code_verifier, code_challenge = _generate_pkce()
@@ -2391,7 +2820,12 @@ def login_codex_via_browser(
     final_oauth_url = ""
 
     with sync_playwright() as p:
-        browser, context = _launch_codex_oauth_chromium(p, headless=headless)
+        browser, context = _launch_codex_oauth_chromium(
+            p,
+            headless=headless,
+            proxy_url=proxy_url,
+            proxy_bypass=proxy_bypass,
+        )
 
         # === Step 0: 先登录 ChatGPT 并切换到 Team workspace ===
         # 仅 Team 模式需要:登录前注入 _account cookie 引导登录进入 Team workspace。
