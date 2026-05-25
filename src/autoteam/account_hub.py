@@ -229,8 +229,8 @@ def _is_luckmail_token_missing(acc: dict) -> bool:
     if token.startswith("tok_"):
         return False
     provider = str(acc.get("mail_provider") or "").strip().lower()
-    if provider == "luckmail":
-        return True
+    if provider:
+        return provider == "luckmail"
     domain = email.rsplit("@", 1)[-1]
     return domain.startswith("outlook.") or domain in {"outlook.com", "hotmail.com", "live.com"}
 
