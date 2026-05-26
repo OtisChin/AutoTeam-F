@@ -298,6 +298,8 @@ _AUTH_SKIP_PATHS = {
     "/api/account-hub/ingest",
     "/api/public/plus-extractor/redeem",
     "/api/public/plus-extractor/query",
+    "/api/public/plus-extractor/history",
+    "/api/public/plus-extractor/history/download",
     "/api/public/plus-extractor/cdk-status",
     "/api/public/plus-extractor/set-password",
 }
@@ -2548,6 +2550,12 @@ class TradeRedeemParams(BaseModel):
 class TradeQueryParams(BaseModel):
     code: str = ""
     password: str = ""
+
+
+class TradeHistoryDownloadParams(BaseModel):
+    code: str = ""
+    password: str = ""
+    batch_id: str = Field("", validation_alias=AliasChoices("batch_id", "batchId"))
 
 
 class TradeSetPasswordParams(BaseModel):
@@ -6974,6 +6982,26 @@ def post_public_plus_extractor_query(params: TradeQueryParams):
         _trade_http_error(exc)
 
 
+@app.post("/api/public/plus-extractor/history")
+def post_public_plus_extractor_history(params: TradeQueryParams):
+    from autoteam.trade import list_cdk_redemption_history
+
+    try:
+        return list_cdk_redemption_history(params.code, params.password)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
+@app.post("/api/public/plus-extractor/history/download")
+def post_public_plus_extractor_history_download(params: TradeHistoryDownloadParams):
+    from autoteam.trade import download_cdk_redemption_batch
+
+    try:
+        return download_cdk_redemption_batch(params.code, params.password, params.batch_id)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
 @app.post("/api/public/plus-extractor/set-password")
 def post_public_plus_extractor_set_password(params: TradeSetPasswordParams):
     from autoteam.trade import set_cdk_password
@@ -10857,10 +10885,27 @@ def post_paypal_task(params: PayPalTaskParams):
     proxy_pool = static_proxy_pool
     phone_accounts: list[dict] = []
     seen_phone_accounts: set[tuple[str, str, str]] = set()
+
+    def _phone_account_value(raw_phone_account: Any, *names: str) -> Any:
+        if isinstance(raw_phone_account, dict):
+            for name in names:
+                if name in raw_phone_account:
+                    return raw_phone_account.get(name)
+            return None
+        for name in names:
+            if hasattr(raw_phone_account, name):
+                return getattr(raw_phone_account, name)
+        return None
+
     for raw_phone_account in params.phone_accounts or []:
-        account_phone_number = str(raw_phone_account.phone_number or "").strip()
-        account_sms_url = str(raw_phone_account.sms_url or "").strip()
-        account_otp_channel = str(raw_phone_account.otp_channel or otp_channel or "sms").strip().lower()
+        account_phone_number = str(
+            _phone_account_value(raw_phone_account, "phone_number", "phoneNumber", "phone", "billing_phone", "billingPhone")
+            or ""
+        ).strip()
+        account_sms_url = str(_phone_account_value(raw_phone_account, "sms_url", "smsUrl") or "").strip()
+        account_otp_channel = str(
+            _phone_account_value(raw_phone_account, "otp_channel", "otpChannel") or otp_channel or "sms"
+        ).strip().lower()
         if account_otp_channel not in {"sms", "whatsapp"}:
             raise HTTPException(status_code=400, detail="phone_accounts otp_channel 只支持 sms 或 whatsapp")
         if not account_phone_number and not account_sms_url:
@@ -11082,6 +11127,26 @@ def post_paypal_task(params: PayPalTaskParams):
         digits = re.sub(r"\D+", "", raw)
         return digits or raw.lower()
 
+    def _paypal_phone_account_key(account: dict | None) -> str:
+        if not isinstance(account, dict):
+            return ""
+        return _normalize_paypal_phone_key(
+            account.get("phone_number")
+            or account.get("phone")
+            or account.get("phoneNumber")
+            or account.get("billing_phone")
+            or account.get("billingPhone")
+        )
+
+    def _paypal_phone_account_available(account: dict | None, invalid_keys: set[str]) -> bool:
+        phone_key = _paypal_phone_account_key(account)
+        if not phone_key:
+            return False
+        status = str((account or {}).get("status") or "").strip().lower()
+        if status in {"invalid", "disabled", "unavailable"}:
+            return False
+        return phone_key not in invalid_keys
+
     def _run():
         task_id = _current_task_id_for_group() or ""
         started_at = time.time()
@@ -11103,7 +11168,7 @@ def post_paypal_task(params: PayPalTaskParams):
         pending_retry_queue: list[dict[str, Any]] = []
         pending_retry_emails: list[str] = []
         retried_emails: list[str] = []
-        pending_retry_backoffs = [60.0, 180.0, 300.0]
+        pending_retry_backoffs = [60.0, 120.0]
         retry_round_waited: set[int] = set()
 
         def _remember_invalid_phone(phone: Any) -> None:
@@ -11211,7 +11276,7 @@ def post_paypal_task(params: PayPalTaskParams):
             if not phone_accounts:
                 return ""
             has_available_phone = any(
-                _normalize_paypal_phone_key(phone_account.get("phone_number")) not in invalid_phone_numbers
+                _paypal_phone_account_available(phone_account, invalid_phone_numbers)
                 for phone_account in phone_accounts
             )
             return reason if has_available_phone else ""
@@ -11607,7 +11672,7 @@ def post_paypal_task(params: PayPalTaskParams):
                             active_phone_accounts = [
                                 account_phone
                                 for account_phone in phone_accounts
-                                if _normalize_paypal_phone_key(account_phone.get("phone_number")) not in invalid_phone_numbers
+                                if _paypal_phone_account_available(account_phone, invalid_phone_numbers)
                             ]
                             if not active_phone_accounts:
                                 _append_task_progress(
@@ -11649,6 +11714,10 @@ def post_paypal_task(params: PayPalTaskParams):
                                     "paypal_phone_rejected_final",
                                 }:
                                     _remember_invalid_phone(event.get("rejected_phone"))
+                                    event = {
+                                        **event,
+                                        "invalid_phone_numbers": invalid_phone_pool[:],
+                                    }
                                 _append_task_progress(
                                     task_id,
                                     {**event, "email": candidate_email, "current": index, "total": len(candidates)},

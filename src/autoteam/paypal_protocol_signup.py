@@ -6,7 +6,8 @@ import random
 import re
 import time
 import urllib.parse
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from autoteam.gopay_executor import GoPayOTPCancelled, _poll_otp_from_sms_url
 
@@ -237,23 +238,42 @@ def _warmup_paypal_session(http: Any, *, timeout: int = 15) -> None:
         logger.info("[paypal_protocol_signup] warmup paypal.com soft-failed: %s", exc)
 
 
+_EC_RE = re.compile(r"\bEC-[A-Z0-9]{17,}\b")
+_ONBOARD_RE = re.compile(r'onboardingLink"\s*:\s*"([^"]*?/agreements/approve\?[^"]+)')
+_UL_ONBOARD_RE = re.compile(r'href=["\']([^"\']*?ulOnboardRedirect=true[^"\']*)["\']', re.I)
+
+
+def _unescape_url(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("&amp;", "&")
+        .replace("&#38;", "&")
+        .replace("&#x26;", "&")
+        .replace("\\u0026", "&")
+        .replace("\\/", "/")
+    )
+
+
+def _first_query_value(url: str, name: str) -> str:
+    try:
+        return (urllib.parse.parse_qs(urllib.parse.urlparse(url or "").query).get(name) or [""])[0]
+    except Exception:
+        return ""
+
+
 def _build_signup_url(ba_token: str, ec_token: str, locale_country: str, locale_lang: str, source_url: str = "") -> str:
     params: list[tuple[str, str]] = []
-    try:
-        source_qs = urllib.parse.parse_qs(urllib.parse.urlparse(source_url).query)
-        ssrt = (source_qs.get("ssrt") or [""])[0]
-        if ssrt:
-            params.append(("ssrt", ssrt))
-    except Exception:
-        pass
+    ssrt = _first_query_value(source_url, "ssrt")
+    if ssrt:
+        params.append(("ssrt", ssrt))
     params.extend(
         [
             ("ul", "1"),
+            ("country.x", locale_country),
+            ("locale.x", f"{locale_lang}_{locale_country}"),
             ("modxo_redirect_reason", "guest_user"),
             ("ba_token", ba_token),
             ("token", ec_token),
-            ("country.x", locale_country),
-            ("locale.x", f"{locale_lang}_{locale_country}"),
             ("rcache", "1"),
             ("cookieBannerVariant", "hidden"),
         ]
@@ -262,21 +282,104 @@ def _build_signup_url(ba_token: str, ec_token: str, locale_country: str, locale_
 
 
 def _build_onboard_url(ba_token: str, locale_country: str, locale_lang: str, source_url: str = "") -> str:
-    try:
-        parsed = urllib.parse.urlparse(source_url or "")
-        qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-        params = [(k, v) for k, values in qs.items() for v in values if k in {"ssrt", "ul"}]
-    except Exception:
-        params = []
+    params: list[tuple[str, str]] = []
+    ssrt = _first_query_value(source_url, "ssrt")
+    if ssrt:
+        params.append(("ssrt", ssrt))
     params.extend(
         [
+            ("ul", "1"),
             ("country.x", locale_country),
             ("locale.x", f"{locale_lang}_{locale_country}"),
             ("modxo_redirect_reason", "guest_user"),
+            ("ulOnboardRedirect", "true"),
             ("ba_token", ba_token),
         ]
     )
     return f"{PP_ORIGIN}/agreements/approve?{urllib.parse.urlencode(params)}"
+
+
+def _coerce_onboard_url(onboard_url: str, *, ba_token: str, locale_country: str, locale_lang: str) -> str:
+    """Keep PayPal signup GraphQL referers on /agreements/approve, not Hermes fallback URLs."""
+    url = _unescape_url(onboard_url)
+    if url.startswith("/"):
+        url = PP_ORIGIN + url
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        parsed = urllib.parse.urlparse("")
+    if parsed.netloc and "paypal.com" in parsed.netloc and parsed.path == "/agreements/approve":
+        params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        seen = {key for key, _ in params}
+
+        def set_param(name: str, value: str) -> None:
+            nonlocal params
+            params = [(key, current) for key, current in params if key != name]
+            params.append((name, value))
+
+        if "ul" not in seen:
+            params.append(("ul", "1"))
+        set_param("country.x", locale_country)
+        set_param("locale.x", f"{locale_lang}_{locale_country}")
+        if "modxo_redirect_reason" not in seen:
+            params.append(("modxo_redirect_reason", "guest_user"))
+        set_param("ulOnboardRedirect", "true")
+        set_param("ba_token", ba_token)
+        return f"{PP_ORIGIN}/agreements/approve?{urllib.parse.urlencode(params)}"
+    return _build_onboard_url(ba_token, locale_country, locale_lang, source_url=url)
+
+
+def _paypal_pay_url(ba_token: str, *, onboard_url: str = "") -> str:
+    ssrt = _first_query_value(onboard_url, "ssrt")
+    if ssrt:
+        return f"{PP_ORIGIN}/pay?ssrt={urllib.parse.quote(ssrt)}&token={urllib.parse.quote(ba_token)}&ul=1"
+    return f"{PP_ORIGIN}/pay?token={urllib.parse.quote(ba_token)}&ul=1"
+
+
+def _prime_checkout_signup(
+    http: Any,
+    *,
+    signup_url: str,
+    referer: str,
+    locale_country: str,
+    locale_lang: str,
+    timeout: int,
+) -> tuple[str, str]:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": f"{locale_lang}-{locale_country},{locale_lang};q=0.9,en;q=0.8",
+        "Referer": referer,
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-User": "?1",
+    }
+    try:
+        resp = http.get(signup_url, headers=headers, timeout=timeout, allow_redirects=False)
+    except Exception as exc:
+        logger.info("[paypal_protocol_signup] prime signup soft-failed: %s", exc)
+        return signup_url, ""
+    text = str(getattr(resp, "text", "") or "")
+    status = int(getattr(resp, "status_code", 0) or 0)
+    location = (getattr(resp, "headers", {}) or {}).get("location") or (getattr(resp, "headers", {}) or {}).get("Location") or ""
+    final_url = str(getattr(resp, "url", signup_url) or signup_url)
+    if _is_datadome_blocked(resp):
+        raise RuntimeError("paypal_human_verification|PayPal /checkoutweb/signup 被 DataDome 风控拦截")
+    if location:
+        location_abs = urllib.parse.urljoin(final_url, _unescape_url(location))
+        if "/checkoutweb/signup" in location_abs:
+            return location_abs, text
+        logger.info(
+            "[paypal_protocol_signup] signup prime redirected away: status=%s location=%s; keeping canonical signup referer",
+            status,
+            location_abs[:160],
+        )
+        return signup_url, text
+    if "/checkoutweb/signup" in final_url:
+        return final_url, text
+    return signup_url, text
 
 
 def _bootstrap(http: Any, ba_token: str, *, locale_country: str, locale_lang: str, timeout: int) -> tuple[str, str, str]:
@@ -318,27 +421,37 @@ def _bootstrap(http: Any, ba_token: str, *, locale_country: str, locale_lang: st
         raise RuntimeError(f"{stage}|{message}")
     if _is_datadome_blocked(resp):
         raise RuntimeError("paypal_human_verification|PayPal /agreements/approve 被 DataDome 风控拦截")
-    match_ec = re.search(r"\bEC-[A-Z0-9]+\b", html)
+    match_ec = _EC_RE.search(html)
     if not match_ec:
         raise RuntimeError("paypal_protocol|/agreements/approve 未返回 EC token")
     ec_token = match_ec.group(0)
-    onboarding_match = re.search(r'"(?:onboardingLink|ulOnboardRedirect)"\s*:\s*"([^"]+)"', html)
+    onboarding_match = _ONBOARD_RE.search(html) or _UL_ONBOARD_RE.search(html)
     onboard_url = _build_onboard_url(ba_token, locale_country, locale_lang, source_url=url)
     if onboarding_match:
-        onboard_url = onboarding_match.group(1).replace("\\/", "/")
+        onboard_url = _unescape_url(onboarding_match.group(1))
         if onboard_url.startswith("/"):
             onboard_url = PP_ORIGIN + onboard_url
-    resp2 = http.get(onboard_url, headers={**headers, "Referer": url, "Sec-Fetch-Site": "same-origin"}, timeout=timeout, allow_redirects=False)
+    onboard_url = _coerce_onboard_url(onboard_url, ba_token=ba_token, locale_country=locale_country, locale_lang=locale_lang)
+    resp2 = http.get(
+        onboard_url,
+        headers={**headers, "Referer": _paypal_pay_url(ba_token, onboard_url=onboard_url), "Sec-Fetch-Site": "same-origin"},
+        timeout=timeout,
+        allow_redirects=False,
+    )
+    if resp2.status_code not in {200, 301, 302, 303, 307, 308}:
+        raise RuntimeError(f"paypal_protocol|/checkoutweb/signup 跳转失败: HTTP {resp2.status_code}")
     location = resp2.headers.get("location") or resp2.headers.get("Location") or ""
-    location = location.replace("\\/", "/")
-    if location and location.startswith("/"):
-        location = urllib.parse.urljoin(str(resp2.url or onboard_url), location)
+    location = urllib.parse.urljoin(str(getattr(resp2, "url", onboard_url) or onboard_url), _unescape_url(location)) if location else ""
     signup_url = location if "/checkoutweb/signup" in location else _build_signup_url(ba_token, ec_token, locale_country, locale_lang, source_url=location or onboard_url)
-    resp3 = http.get(signup_url, headers={**headers, "Referer": onboard_url, "Sec-Fetch-Site": "same-origin"}, timeout=timeout, allow_redirects=True)
-    signup_html = str(resp3.text or "")
-    if _is_datadome_blocked(resp3):
-        raise RuntimeError("paypal_human_verification|PayPal /checkoutweb/signup 被 DataDome 风控拦截")
-    match_ec2 = re.search(r"\bEC-[A-Z0-9]+\b", f"{signup_url}\n{signup_html}")
+    signup_url, signup_html = _prime_checkout_signup(
+        http,
+        signup_url=signup_url,
+        referer=onboard_url,
+        locale_country=locale_country,
+        locale_lang=locale_lang,
+        timeout=timeout,
+    )
+    match_ec2 = _EC_RE.search(f"{signup_url}\n{signup_html}\n{getattr(resp2, 'text', '') or ''}")
     if match_ec2:
         ec_token = match_ec2.group(0)
         signup_url = _build_signup_url(ba_token, ec_token, locale_country, locale_lang, source_url=signup_url)

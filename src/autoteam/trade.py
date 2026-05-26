@@ -28,7 +28,8 @@ from autoteam.textio import read_text
 CDK_TTL_SECONDS = 24 * 60 * 60
 CDK_PREFIX = "PLUS-"
 CDK_BODY_LEN = 12
-CDK_RE = re.compile(r"^PLUS-[A-Z0-9]{12}$")
+CDK_RE = re.compile(r"^[1-9][0-9]*-[0-9]{8}-PLUS-[A-Z0-9]{12}$")
+LEGACY_CDK_RE = re.compile(r"^PLUS-[A-Z0-9]{12}$")
 PASSWORD_ITERATIONS = 210_000
 PASSWORD_MIN_LEN = 6
 EXPORT_FORMATS = {"cpa", "sub", "credentials"}
@@ -49,7 +50,7 @@ def normalize_code(value: str) -> str:
 
 def validate_code(value: str) -> str:
     code = normalize_code(value)
-    if not CDK_RE.match(code):
+    if not CDK_RE.match(code) and not LEGACY_CDK_RE.match(code):
         raise TradeError("CDK 格式无效")
     return code
 
@@ -58,9 +59,14 @@ def _now() -> float:
     return time.time()
 
 
-def _random_code() -> str:
+def _code_date(timestamp: float) -> str:
+    return time.strftime("%Y%m%d", time.localtime(timestamp))
+
+
+def _random_code(quota_total: int, created_at: float) -> str:
     alphabet = string.ascii_uppercase + string.digits
-    return CDK_PREFIX + "".join(secrets.choice(alphabet) for _ in range(CDK_BODY_LEN))
+    body = "".join(secrets.choice(alphabet) for _ in range(CDK_BODY_LEN))
+    return f"{int(quota_total)}-{_code_date(created_at)}-{CDK_PREFIX}{body}"
 
 
 def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
@@ -122,7 +128,7 @@ def create_cdk(quota_total: int, note: str = "") -> dict:
     sqlite_store.initialize()
     with sqlite_store.connect() as conn:
         for _ in range(20):
-            code = _random_code()
+            code = _random_code(quota, created_at)
             try:
                 conn.execute(
                     """
@@ -157,6 +163,40 @@ def _cdk_latest_redeemed_at(conn, code: str) -> float | None:
     row = conn.execute("SELECT MAX(redeemed_at) AS latest_redeemed_at FROM plus_cdk_redemptions WHERE code = ?", (code,)).fetchone()
     value = float(row["latest_redeemed_at"] or 0)
     return value or None
+
+
+def _formats_from_stored(value: str) -> list[str]:
+    formats = []
+    for item in str(value or "").split(","):
+        format_value = item.strip().lower()
+        if format_value and format_value not in formats:
+            formats.append(format_value)
+    if not formats:
+        formats = ["cpa"]
+    return _normalize_export_formats(formats)
+
+
+def _assert_history_access(row) -> None:
+    if str(row["status"] or "") == "revoked":
+        raise TradeError("CDK 已注销或不可用", status_code=410)
+    if _now() >= float(row["expires_at"] or 0):
+        raise TradeError("CDK 已过期", status_code=410)
+
+
+def _authenticated_cdk_row(conn, code: str, password: str):
+    code = validate_code(code)
+    password_value = str(password or "")
+    if not password_value:
+        raise TradeError("提取密码不能为空")
+    row = conn.execute("SELECT * FROM plus_cdks WHERE code = ?", (code,)).fetchone()
+    if not row:
+        raise TradeError("CDK 不存在", status_code=404)
+    _assert_history_access(row)
+    if not row["password_hash"]:
+        raise TradeError("CDK 尚未设置提取密码，请先完成首次提取", status_code=403)
+    if not _password_matches(password_value, row["password_salt"], row["password_hash"]):
+        raise TradeError("提取密码错误", status_code=403)
+    return row
 
 
 def list_cdks(limit: int = 200) -> list[dict]:
@@ -210,6 +250,61 @@ def get_cdk(code: str) -> dict:
             ).fetchall()
         ]
         return cdk
+
+
+def _history_batches(conn, code: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT batch_id, email, format, redeemed_at
+        FROM plus_cdk_redemptions
+        WHERE code = ?
+        ORDER BY redeemed_at DESC, id ASC
+        """,
+        (code,),
+    ).fetchall()
+    batches: dict[str, dict] = {}
+    order: list[str] = []
+    for row in rows:
+        batch_id = str(row["batch_id"] or "")
+        if not batch_id:
+            continue
+        if batch_id not in batches:
+            order.append(batch_id)
+            batches[batch_id] = {
+                "batch_id": batch_id,
+                "redeemed_at": float(row["redeemed_at"] or 0),
+                "formats": _formats_from_stored(row["format"]),
+                "emails": [],
+            }
+        email = str(row["email"] or "").strip().lower()
+        if email:
+            batches[batch_id]["emails"].append(email)
+    history = []
+    for batch_id in order:
+        item = batches[batch_id]
+        item["count"] = len(item["emails"])
+        history.append(item)
+    return history
+
+
+def list_cdk_redemption_history(code: str, password: str) -> dict:
+    code = validate_code(code)
+    sqlite_store.initialize()
+    with sqlite_store.connect() as conn:
+        row = _authenticated_cdk_row(conn, code, password)
+        used_count = _cdk_used_count(conn, code)
+        cdk = _row_to_cdk(row, used_count=used_count, latest_redeemed_at=_cdk_latest_redeemed_at(conn, code))
+        history = _history_batches(conn, code)
+    return {
+        "code": cdk["code"],
+        "quota_total": cdk["quota_total"],
+        "used_count": cdk["used_count"],
+        "remaining": cdk["remaining"],
+        "status": cdk["status"],
+        "active": cdk["active"],
+        "expires_at": cdk["expires_at"],
+        "history": history,
+    }
 
 
 def revoke_cdk(code: str) -> dict:
@@ -424,6 +519,38 @@ def _eligible_plus_bundle_sources(export_formats: list[str], allocated: set[str]
             exports[format_value] = source
         if exports:
             sources.append({"email": email, "exports": exports})
+    return sources
+
+
+def _bundle_sources_for_emails(emails: list[str], export_formats: list[str]) -> list[dict]:
+    from autoteam.accounts import load_accounts
+
+    by_email = {
+        str(account.get("email") or "").strip().lower(): account
+        for account in load_accounts()
+        if str(account.get("email") or "").strip()
+    }
+    sources = []
+    missing = []
+    for email in emails:
+        normalized = str(email or "").strip().lower()
+        account = by_email.get(normalized)
+        if not account:
+            missing.append(normalized)
+            continue
+        exports = {}
+        for format_value in export_formats:
+            source = _source_for_account(account, format_value)
+            if not source:
+                exports = {}
+                break
+            exports[format_value] = source
+        if not exports:
+            missing.append(normalized)
+            continue
+        sources.append({"email": normalized, "exports": exports})
+    if missing:
+        raise TradeError(f"提取历史中有 {len(missing)} 个账号文件已失效，请联系管理员")
     return sources
 
 
@@ -691,6 +818,56 @@ def _build_multi_export(exports: dict[str, dict]) -> dict:
     }
 
 
+def _export_payload_from_bundle_sources(sources: list[dict], export_formats: list[str]) -> dict:
+    exports = {
+        format_value: _export_payload_for_format(
+            format_value,
+            [source["exports"][format_value] for source in sources],
+        )
+        for format_value in export_formats
+    }
+    return next(iter(exports.values())) if len(exports) == 1 else _build_multi_export(exports)
+
+
+def download_cdk_redemption_batch(code: str, password: str, batch_id: str) -> dict:
+    code = validate_code(code)
+    batch_value = str(batch_id or "").strip()
+    if not batch_value:
+        raise TradeError("提取批次不能为空")
+    sqlite_store.initialize()
+    with sqlite_store.connect() as conn:
+        row = _authenticated_cdk_row(conn, code, password)
+        records = conn.execute(
+            """
+            SELECT email, format, redeemed_at
+            FROM plus_cdk_redemptions
+            WHERE code = ? AND batch_id = ?
+            ORDER BY id ASC
+            """,
+            (code, batch_value),
+        ).fetchall()
+        if not records:
+            raise TradeError("提取历史不存在", status_code=404)
+        export_formats = _formats_from_stored(records[0]["format"])
+        emails = [str(item["email"] or "").strip().lower() for item in records if str(item["email"] or "").strip()]
+        cdk = _row_to_cdk(row, used_count=_cdk_used_count(conn, code), latest_redeemed_at=_cdk_latest_redeemed_at(conn, code))
+
+    sources = _bundle_sources_for_emails(emails, export_formats)
+    payload = _export_payload_from_bundle_sources(sources, export_formats)
+    return {
+        "batch_id": batch_value,
+        "code": code,
+        "formats": export_formats,
+        "format": export_formats[0],
+        "count": len(sources),
+        "emails": [source["email"] for source in sources],
+        "redeemed_at": float(records[0]["redeemed_at"] or 0),
+        "remaining": cdk["remaining"],
+        "expires_at": cdk["expires_at"],
+        **payload,
+    }
+
+
 def redeem_cdk(code: str, password: str, count: int, export_format: str | list[str]) -> dict:
     code = validate_code(code)
     password_value = str(password or "")
@@ -769,14 +946,7 @@ def redeem_cdk(code: str, password: str, count: int, export_format: str | list[s
     for source in selected:
         update_account(source["email"], credentials_exported=True, credentials_exported_at=redeemed_at)
 
-    exports = {
-        format_value: _export_payload_for_format(
-            format_value,
-            [source["exports"][format_value] for source in selected],
-        )
-        for format_value in export_formats
-    }
-    export_payload = next(iter(exports.values())) if len(exports) == 1 else _build_multi_export(exports)
+    export_payload = _export_payload_from_bundle_sources(selected, export_formats)
     cdk = get_cdk(code)
     return {
         "batch_id": batch_id,

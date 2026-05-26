@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import re
 import secrets
 import string
 import threading
 import time
 import uuid
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import requests
@@ -18,25 +18,24 @@ import requests
 from autoteam.auth_session_store import load_auth_session
 from autoteam.bind_executor import _build_result, _capture_screenshot
 from autoteam.chatgpt_api import ChatGPTTeamAPI
-from autoteam.config import normalize_proxy_url
 from autoteam.gopay_executor import (
     DEFAULT_STRIPE_PK,
     DEFAULT_STRIPE_RUNTIME_VERSION,
-    GoPayOTPCancelled,
     STRIPE_API,
     STRIPE_VERSION_FULL,
+    GoPayOTPCancelled,
     _accept_checkout_terms_on_page,
     _browser_checkout_nonzero_amount_hint,
     _dismiss_address_autocomplete,
-    _extract_checkout_session_id,
     _extract_checkout_error,
+    _extract_checkout_session_id,
     _inject_chatgpt_browser_cookies,
     _new_http_session,
     _open_checkout_in_page,
-    _stripe_runtime_from_env,
     _poll_otp_from_sms_url,
     _safe_url_summary,
     _select_chatgpt_account_if_needed,
+    _stripe_runtime_from_env,
     _suppress_address_autocomplete_ui,
 )
 from autoteam.paypal_protocol_signup import run_paypal_no_card_protocol_signup
@@ -116,11 +115,14 @@ US_STATE_CODE_TO_NAME = {code: name for name, code in US_STATE_NAME_TO_CODE.item
 PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 240
 PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 120
 PAYPAL_SIGNUP_EMAIL_STUCK_RECOVER_DELAY_SECONDS = 30
-PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = 420
-PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 600
+PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = 180
+PAYPAL_AUTO_AUTHORIZE_MAX_TIMEOUT_SECONDS = 300
+PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 120
+PAYPAL_AUTO_RESULT_MAX_TIMEOUT_SECONDS = 180
 PAYPAL_APPROVE_RETURN_TIMEOUT_SECONDS = 120
 PAYPAL_APPROVE_RETURN_SETTLE_SECONDS = 1.0
 PAYPAL_STRIPE_STATE_POLL_INTERVAL_SECONDS = 5.0
+PAYPAL_OTP_PHONE_LOCK_TIMEOUT_SECONDS = 120
 _PAYPAL_OTP_LOCK_GUARD = threading.Lock()
 _PAYPAL_OTP_LOCKS: dict[str, threading.Lock] = {}
 
@@ -335,6 +337,52 @@ AUTOFILL_SELECTORS = {
         'select[autocomplete="country"]',
         'select[name*="country" i]',
         'select[id*="country" i]',
+    ],
+}
+AUTOFILL_FAST_SELECTORS = {
+    # 只放高确定性的 checkout 字段，避免 broad selector 写到错误输入框后误判成功。
+    "country": [
+        'select[autocomplete="billing country"]',
+        'select[autocomplete="country"]',
+    ],
+    "name": [
+        'input[autocomplete="name"]',
+        'input[autocomplete="cc-name"]',
+    ],
+    "email": [
+        'input[autocomplete="email"]',
+        'input[type="email"]',
+    ],
+    "phone": [
+        'input[autocomplete="tel"]',
+        'input[type="tel"]',
+    ],
+    "address1": [
+        'input[autocomplete="billing address-line1"]',
+        'input[autocomplete="address-line1"]',
+        '#billingAddressLine1',
+    ],
+    "address2": [
+        'input[autocomplete="billing address-line2"]',
+        'input[autocomplete="address-line2"]',
+        '#billingAddressLine2',
+    ],
+    "city": [
+        'input[autocomplete="billing address-level2"]',
+        'input[autocomplete="address-level2"]',
+        '#billingLocality',
+    ],
+    "state": [
+        'select[autocomplete="billing address-level1"]',
+        'input[autocomplete="billing address-level1"]',
+        'select[autocomplete="address-level1"]',
+        'input[autocomplete="address-level1"]',
+        '#billingAdministrativeArea',
+    ],
+    "postal_code": [
+        'input[autocomplete="billing postal-code"]',
+        'input[autocomplete="postal-code"]',
+        '#billingPostalCode',
     ],
 }
 
@@ -1170,6 +1218,48 @@ def _paypal_protocol_confirm_checkout(http: Any, checkout_url: str, checkout_ses
     return _protocol_ensure_ok(resp, "paypal_protocol_confirm")
 
 
+def _paypal_protocol_unescape_url(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("&amp;", "&")
+        .replace("&#38;", "&")
+        .replace("&#x26;", "&")
+        .replace("\\u0026", "&")
+        .replace("\\/", "/")
+    )
+
+
+def _paypal_protocol_extract_url_from_text(value: str) -> str:
+    text = _paypal_protocol_unescape_url(value).strip()
+    if not text:
+        return ""
+    if text.startswith("http") and (
+        "paypal.com" in text.lower() or "pm-redirects.stripe.com" in text.lower()
+    ):
+        return text.strip("\"'<> ")
+    for match in re.finditer(r"https?://[^\s\"'<>\\]+", text, re.I):
+        url = match.group(0).rstrip("),.;")
+        lowered = url.lower()
+        if "paypal.com" in lowered or "pm-redirects.stripe.com" in lowered:
+            return url
+    return ""
+
+
+def _paypal_protocol_extract_ba_token(url: str, fallback: str = "") -> str:
+    try:
+        params = dict(parse_qsl(urlsplit(str(url or "")).query, keep_blank_values=True))
+    except Exception:
+        params = {}
+    for name in ("ba_token", "baToken", "billingAgreementId", "billing_agreement_id", "token"):
+        value = str(params.get(name) or "").strip()
+        if value.upper().startswith("BA-"):
+            return value
+    match = re.search(r"\bBA-[A-Z0-9-]{6,}\b", str(url or ""), re.I)
+    if match:
+        return match.group(0)
+    return fallback
+
+
 def _find_paypal_redirect_url(payload: Any) -> str:
     seen: set[int] = set()
 
@@ -1179,18 +1269,18 @@ def _find_paypal_redirect_url(payload: Any) -> str:
             return ""
         seen.add(marker)
         if isinstance(value, str):
-            lowered = value.lower()
-            if "paypal.com" in lowered or "pm-redirects.stripe.com" in lowered:
-                return value
+            found = _paypal_protocol_extract_url_from_text(value)
+            if found:
+                return found
             return ""
         if isinstance(value, dict):
             if value.get("type") == "redirect_to_url" and isinstance(value.get("redirect_to_url"), dict):
-                url = str((value.get("redirect_to_url") or {}).get("url") or "")
+                url = _paypal_protocol_extract_url_from_text(str((value.get("redirect_to_url") or {}).get("url") or ""))
                 if url:
                     return url
             for key in ("url", "href", "return_url", "redirect_url"):
-                url = value.get(key)
-                if isinstance(url, str) and ("paypal.com" in url.lower() or "pm-redirects.stripe.com" in url.lower()):
+                url = _paypal_protocol_extract_url_from_text(str(value.get(key) or ""))
+                if url:
                     return url
             for nested in value.values():
                 found = walk(nested)
@@ -1212,10 +1302,14 @@ def _paypal_protocol_resolve_approve_url(http: Any, redirect_url: str) -> tuple[
     for _ in range(8):
         if not current:
             break
+        current = _paypal_protocol_unescape_url(current)
         parsed = urlsplit(current)
-        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        ba_token = str(params.get("ba_token") or params.get("baToken") or ba_token or "")
-        if _safe_host(current).endswith("paypal.com") and ("/agreements/approve" in parsed.path or "/checkoutweb/signup" in parsed.path):
+        ba_token = _paypal_protocol_extract_ba_token(current, ba_token)
+        if _safe_host(current).endswith("paypal.com") and (
+            "/agreements/approve" in parsed.path
+            or "/checkoutweb/signup" in parsed.path
+            or (parsed.path == "/pay" and ba_token)
+        ):
             return current, ba_token
         try:
             resp = http.get(current, allow_redirects=False, timeout=30)
@@ -1226,14 +1320,15 @@ def _paypal_protocol_resolve_approve_url(http: Any, redirect_url: str) -> tuple[
             raise RuntimeError("PayPal redirect 返回风控/人机验证页面，协议模式停止")
         location = resp.headers.get("location") or resp.headers.get("Location") or ""
         if location:
+            location = _paypal_protocol_unescape_url(location)
             if location.startswith("/"):
                 current = f"{parsed.scheme}://{parsed.netloc}{location}"
             else:
                 current = location
             continue
-        match = re.search(r'https?://[^"\']*paypal\.com/[^"\']+', text, re.I)
-        if match:
-            current = match.group(0).replace("&amp;", "&")
+        found_url = _paypal_protocol_extract_url_from_text(text)
+        if found_url:
+            current = found_url
             continue
         if 200 <= int(getattr(resp, "status_code", 0) or 0) < 300 and _safe_host(current).endswith("paypal.com"):
             return current, ba_token
@@ -2475,6 +2570,8 @@ def _set_locator_value(locator, value: str) -> bool:
             except Exception:
                 continue
         return False
+    if _dispatch_locator_value(locator, value):
+        return True
     try:
         locator.click(timeout=1200)
     except Exception:
@@ -2645,7 +2742,12 @@ def _paypal_otp_lock_key(phone: str) -> str:
     return _normalize_paypal_phone(phone)
 
 
-def _acquire_paypal_otp_phone_lock(phone: str, *, on_progress=None, timeout_seconds: int = 900) -> str:
+def _acquire_paypal_otp_phone_lock(
+    phone: str,
+    *,
+    on_progress=None,
+    timeout_seconds: int = PAYPAL_OTP_PHONE_LOCK_TIMEOUT_SECONDS,
+) -> str:
     key = _paypal_otp_lock_key(phone)
     if not key:
         return ""
@@ -2792,6 +2894,72 @@ def infer_paypal_stage(url: str, body_text: str):
     return "paypal_wait_manual", "等待人工完成 PayPal 支付流程"
 
 
+def _fast_autofill_checkout_fields(api: ChatGPTTeamAPI, fields: dict[str, str]) -> list[str]:
+    fast_fields = {
+        key: str(value or "")
+        for key, value in (fields or {}).items()
+        if key != "country" and key in AUTOFILL_FAST_SELECTORS and str(value or "").strip()
+    }
+    if not fast_fields:
+        return []
+    script = """({ fields, selectors }) => {
+      const filled = [];
+      const isVisible = (node) => Boolean(node && (node.offsetParent || node.getClientRects?.().length));
+      const setValue = (el, value) => {
+        if (!el || el.disabled || el.readOnly || !isVisible(el)) return false;
+        const tag = String(el.tagName || '').toLowerCase();
+        if (tag === 'select') {
+          const expected = String(value || '').trim().toLowerCase();
+          const option = Array.from(el.options || []).find((opt) => {
+            const optValue = String(opt.value || '').trim().toLowerCase();
+            const optLabel = String(opt.textContent || opt.label || '').trim().toLowerCase();
+            return optValue === expected || optLabel === expected || optLabel.includes(expected);
+          });
+          if (!option) return false;
+          el.value = option.value;
+        } else {
+          el.focus();
+          const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          if (setter) setter.call(el, String(value));
+          else el.value = String(value);
+        }
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: String(value || '') }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
+      };
+      for (const [key, value] of Object.entries(fields || {})) {
+        for (const selector of selectors[key] || []) {
+          let node = null;
+          try {
+            node = document.querySelector(selector);
+          } catch {
+            node = null;
+          }
+          if (setValue(node, value)) {
+            filled.push(key);
+            break;
+          }
+        }
+      }
+      return filled;
+    }"""
+    filled: set[str] = set()
+    for frame in _iter_page_frames(api):
+        missing = {key: value for key, value in fast_fields.items() if key not in filled}
+        if not missing:
+            break
+        try:
+            result = frame.evaluate(script, {"fields": missing, "selectors": AUTOFILL_FAST_SELECTORS})
+        except Exception:
+            continue
+        for key in result or []:
+            if str(key) in missing:
+                filled.add(str(key))
+    return list(filled)
+
+
 def autofill_checkout_fields(api: ChatGPTTeamAPI, payload: dict | None, *, on_progress=None) -> dict:
     fields = normalize_autofill_payload(payload)
     current_url = getattr(api.page, "url", "")
@@ -2815,7 +2983,16 @@ def autofill_checkout_fields(api: ChatGPTTeamAPI, payload: dict | None, *, on_pr
     ordered_fields = [(key, fields[key]) for key in ordered_keys if key in fields]
     ordered_fields.extend((key, value) for key, value in fields.items() if key not in ordered_keys)
     address1_locator = None
+    fast_attempted = set(_fast_autofill_checkout_fields(api, dict(ordered_fields)))
+    fast_verified = {
+        key
+        for key in fast_attempted
+        if _checkout_value_matches(key, str(fields.get(key) or ""), _read_checkout_field_value(api, key))
+    }
     for key, value in ordered_fields:
+        if key in fast_verified:
+            filled.append(key)
+            continue
         selectors = AUTOFILL_SELECTORS.get(key) or []
         if not selectors:
             skipped.append(key)
@@ -2906,7 +3083,7 @@ def _fill_paypal_checkout_billing_form(
     for attempt in range(1, 9):
         _suppress_address_autocomplete_ui(api)
         autofill_checkout_fields(api, billing_payload, on_progress=on_progress)
-        time.sleep(0.5)
+        time.sleep(0.25)
         last_values = {key: _read_checkout_field_value(api, key) for key in required}
         missing = [
             key
@@ -2922,7 +3099,7 @@ def _fill_paypal_checkout_billing_form(
             last_values,
             required,
         )
-        time.sleep(0.8)
+        time.sleep(0.25)
 
     _capture_screenshot(api, session_id, "paypal-billing-address-failed", screenshot_paths)
     return False, f"地址字段校验失败: 期望={required!r}, 实际={last_values!r}"
@@ -3050,6 +3227,11 @@ def _click_first(api: ChatGPTTeamAPI, selectors: list[str], *, timeout_ms: int =
     locator = _visible_locator_in_frames(api, selectors, timeout_ms=timeout_ms)
     if not locator:
         return False
+    try:
+        if locator.is_disabled(timeout=300):
+            return False
+    except Exception:
+        pass
     try:
         locator.scroll_into_view_if_needed(timeout=1500)
     except Exception:
@@ -3272,15 +3454,15 @@ def _submit_checkout_to_paypal(
             return _build_result("failed", failure_stage="submit_checkout", message="任务已取消", screenshot_paths=screenshot_paths)
 
         attempts += 1
-        if _click_first(api, CHECKOUT_SUBMIT_SELECTORS, timeout_ms=5000):
+        if _click_first(api, CHECKOUT_SUBMIT_SELECTORS, timeout_ms=1200):
             _emit_progress(
                 on_progress,
                 _progress_event("paypal_wait_redirect", attempt=attempts, url=current_url),
             )
-            time.sleep(2.0)
+            time.sleep(1.0)
             _select_chatgpt_account_if_needed(api, email=email)
         else:
-            time.sleep(1.0)
+            time.sleep(0.35)
 
     _capture_screenshot(api, session_id, "paypal-submit-timeout", screenshot_paths)
     return _build_result(
@@ -3537,6 +3719,24 @@ def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[s
       const isVisible = (node) => Boolean(node && (node.offsetParent || node.getClientRects?.().length));
       const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const digits = (value) => String(value || '').replace(/\D+/g, '');
+      const usStates = {
+        alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO',
+        connecticut: 'CT', delaware: 'DE', florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID',
+        illinois: 'IL', indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY', louisiana: 'LA',
+        maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN',
+        mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV',
+        'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY',
+        'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH', oklahoma: 'OK', oregon: 'OR',
+        pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC', 'south dakota': 'SD',
+        tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT', virginia: 'VA',
+        washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY',
+      };
+      const normalizeState = (value) => {
+        const text = normalize(value);
+        if (!text) return '';
+        const upper = text.toUpperCase();
+        return /^[A-Z]{2}$/.test(upper) ? upper : (usStates[text] || upper);
+      };
       const textAround = (el) => {
         const parts = [
           el.id,
@@ -3612,6 +3812,9 @@ def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[s
           const expectedDigits = digits(expected).slice(-4);
           return Boolean(expectedDigits) && actualDigits === expectedDigits;
         }
+        if (field === 'state') {
+          return normalizeState(actual) === normalizeState(expected);
+        }
         return normalize(actual) === normalize(expected);
       };
       const order = ['country', 'email', 'phone', 'card_number', 'card_expiry', 'card_cvv', 'first_name', 'last_name', 'address1', 'city', 'state', 'zip', 'password'];
@@ -3671,18 +3874,17 @@ def _fill_paypal_signup_form(
             if key in _OPTIONAL_SKIP_FIELDS:
                 continue
             return False, f"{label} 为空"
-        ok, locator = _set_first_visible_value_with_locator(api, selectors, value)
-        if not ok:
+        locator = _visible_locator_in_frames(api, selectors, timeout_ms=1200)
+        if locator is None:
             # 邮箱在第一步已填写，第二步不可见时跳过
             if key in _OPTIONAL_SKIP_FIELDS:
                 logger.info("[paypal_signup] field '%s' not visible, skipping (likely already submitted)", key)
                 continue
             return False, f"未找到 {label} 输入框"
-        if locator is not None and not _set_verified_locator_value(locator, value, field=key):
+        if not _set_verified_locator_value(locator, value, field=key):
             actual = _read_locator_value(locator)
             return False, f"{label} 填写后校验失败: 期望={value!r}, 实际={actual!r}"
-        if locator is not None:
-            field_locators[label] = locator
+        field_locators[label] = locator
 
     _suppress_address_autocomplete_ui(api)
     address_fields = [
@@ -3694,13 +3896,16 @@ def _fill_paypal_signup_form(
     for key, selectors, value, label in address_fields:
         if not value:
             return False, f"{label} 为空"
-        ok, locator = _set_first_visible_value_with_locator(api, selectors, value)
-        if not ok or locator is None:
+        locator = _visible_locator_in_frames(api, selectors, timeout_ms=1200)
+        if locator is None:
             return False, f"未找到 {label} 输入框"
+        if not _set_verified_locator_value(locator, value, field=key):
+            actual = _read_locator_value(locator)
+            return False, f"{label} 填写后校验失败: 期望={value!r}, 实际={actual!r}"
         field_locators[key] = locator
         if key == "address1":
             _dismiss_address_autocomplete(api, locator)
-            time.sleep(0.3)
+            time.sleep(0.15)
 
     _dismiss_address_autocomplete(api, field_locators.get("address1"))
     for key, selectors, expected, label in address_fields:
@@ -3712,12 +3917,12 @@ def _fill_paypal_signup_form(
             return False, f"{label} 自动补全后被改写，且重写失败"
         if key == "address1":
             _dismiss_address_autocomplete(api, locator)
-        time.sleep(0.3)
+        time.sleep(0.15)
         actual = _read_locator_value(locator)
         if not _field_value_matches(expected, actual, field=key):
             return False, f"{label} 自动补全后校验失败: 期望={expected!r}, 实际={actual!r}"
     dom_result = _fill_paypal_signup_visible_form(api, signup_profile)
-    still_missing = [str(item) for item in dom_result.get("stillMissing") or [] if str(item)]
+    still_missing = [str(item) for item in dom_result.get("stillMissing") or [] if str(item) and str(item) not in _OPTIONAL_SKIP_FIELDS]
     if still_missing:
         logger.info(
             "[paypal_bind_executor] PayPal signup DOM validation could not confirm fields: %s",
@@ -4243,6 +4448,13 @@ def _submit_paypal_signup_email_step(
         submit_clicked = True
         if _wait_paypal_signup_email_step_advanced(api, before_url, timeout_seconds=6.0):
             return True, ""
+        logger.info(
+            "[paypal_signup] email submit clicked but page did not advance (SPA may be stuck), "
+            "treating as submitted to allow stuck-recovery: before=%s current=%s",
+            _safe_url_summary(before_url),
+            _safe_url_summary(getattr(api.page, "url", "")),
+        )
+        return True, ""
     else:
         try:
             email_locator.press("Enter", timeout=1200)
@@ -4513,7 +4725,7 @@ def _wait_for_paypal_subscription_return(
             return _build_result(
                 "success",
                 failure_stage="",
-                message="PayPal 授权后已回跳 ChatGPT/OpenAI 页面，绑定成功",
+                message="PayPal 授权后已回跳 ChatGPT/OpenAI 页面，确认绑定成功",
                 screenshot_paths=screenshot_paths,
             )
 
@@ -5389,8 +5601,27 @@ def _wait_for_paypal_result(
     )
 
 
+def _bounded_timeout_seconds(value: int | None, *, minimum: int, maximum: int) -> int:
+    requested = int(value or 0)
+    if requested <= 0:
+        return minimum
+    return max(minimum, min(requested, maximum))
+
+
+def _paypal_authorize_timeout_seconds(timeout_seconds: int | None) -> int:
+    return _bounded_timeout_seconds(
+        timeout_seconds,
+        minimum=PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS,
+        maximum=PAYPAL_AUTO_AUTHORIZE_MAX_TIMEOUT_SECONDS,
+    )
+
+
 def _paypal_result_timeout_seconds(timeout_seconds: int | None) -> int:
-    return max(PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS, int(timeout_seconds or 0))
+    return _bounded_timeout_seconds(
+        timeout_seconds,
+        minimum=PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS,
+        maximum=PAYPAL_AUTO_RESULT_MAX_TIMEOUT_SECONDS,
+    )
 
 
 def _run_paypal_auto_flow(
@@ -5415,7 +5646,7 @@ def _run_paypal_auto_flow(
     current_url = getattr(api.page, "url", "")
     billing_payload = dict(billing_payload or _resolve_checkout_billing_payload(autofill_payload, auto_generate=bool(autofill_enabled)))
     progress = _progress_adapter(on_progress)
-    authorize_timeout_seconds = max(PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS, int(timeout_seconds or 0))
+    authorize_timeout_seconds = _paypal_authorize_timeout_seconds(timeout_seconds)
     result_timeout_seconds = _paypal_result_timeout_seconds(timeout_seconds)
 
     if _is_checkout_host(current_url):
@@ -5467,12 +5698,13 @@ def _run_paypal_auto_flow(
                     message=f"自动填写 checkout 账单地址失败: {error}",
                     screenshot_paths=screenshot_paths,
                 )
-            autofill_checkout_fields(api, billing_payload, on_progress=on_progress)
+            _accept_checkout_terms_on_page(api, progress=progress)
             _emit_progress(
                 on_progress,
                 _progress_event("paypal_billing_fill_done", url=getattr(api.page, "url", "")),
             )
-        _accept_checkout_terms_on_page(api, progress=progress)
+        else:
+            _accept_checkout_terms_on_page(api, progress=progress)
         handoff_result = _submit_checkout_to_paypal(
             api,
             email=email,
@@ -5651,7 +5883,7 @@ def run_paypal_bind_task(
                 ),
                 session_id=session_id,
                 screenshot_paths=screenshot_paths,
-                timeout_seconds=max(timeout_seconds - 120, 300),
+                timeout_seconds=_paypal_authorize_timeout_seconds(timeout_seconds),
                 is_cancelled=is_cancelled,
                 on_progress=on_progress,
                 phone_accounts=phone_accounts,
