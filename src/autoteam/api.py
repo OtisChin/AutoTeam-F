@@ -2503,6 +2503,17 @@ class AccountSessionCpaConvertParams(BaseModel):
     emails: list[str] = []
 
 
+class AccountCpaAuthImportSource(BaseModel):
+    filename: str = "pasted.json"
+    content: str = ""
+    content_base64: str = Field("", validation_alias=AliasChoices("content_base64", "contentBase64"))
+
+
+class AccountCpaAuthImportParams(BaseModel):
+    pasted_text: str = Field("", validation_alias=AliasChoices("pasted_text", "pastedText"))
+    files: list[AccountCpaAuthImportSource] = []
+
+
 class AccountHubConfigParams(BaseModel):
     url: str = ""
     token: str = ""
@@ -5264,6 +5275,118 @@ def export_account_cpa_auths(params: AccountEmailBatchParams):
     }
 
 
+def _decode_cpa_import_content(source: AccountCpaAuthImportSource) -> bytes:
+    if source.content_base64:
+        raw = str(source.content_base64).strip()
+        if "," in raw and raw.lower().startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        return base64.b64decode(raw)
+    return str(source.content or "").encode("utf-8")
+
+
+def _iter_cpa_import_json_items(value, filename: str):
+    if isinstance(value, list):
+        for index, item in enumerate(value, start=1):
+            yield from _iter_cpa_import_json_items(item, f"{filename}#{index}")
+        return
+    if isinstance(value, dict):
+        if isinstance(value.get("auth_data"), dict):
+            yield {"name": filename, "auth_data": value.get("auth_data")}
+            return
+        if isinstance(value.get("codex_auth"), dict):
+            yield {"name": filename, "auth_data": value.get("codex_auth")}
+            return
+        if isinstance(value.get("auths"), list):
+            for index, item in enumerate(value.get("auths") or [], start=1):
+                item_name = str((item or {}).get("filename") or (item or {}).get("name") or f"{filename}#auth{index}")
+                item_data = (item or {}).get("data") if isinstance(item, dict) else item
+                if isinstance(item_data, str):
+                    try:
+                        item_data = json.loads(item_data)
+                    except Exception:
+                        item_data = None
+                yield from _iter_cpa_import_json_items(item_data, item_name)
+            return
+        yield {"name": filename, "auth_data": value}
+
+
+def _parse_cpa_import_text(text: str, filename: str):
+    stripped = str(text or "").strip()
+    if not stripped:
+        return [], []
+    try:
+        value = json.loads(stripped)
+    except Exception as exc:
+        return [], [{"filename": filename, "error": f"JSON 解析失败: {exc}"}]
+    return list(_iter_cpa_import_json_items(value, filename)), []
+
+
+def _collect_cpa_auth_import_sources(params: AccountCpaAuthImportParams):
+    sources = []
+    invalid = []
+
+    pasted_sources, pasted_invalid = _parse_cpa_import_text(params.pasted_text, "pasted.json")
+    sources.extend(pasted_sources)
+    invalid.extend(pasted_invalid)
+
+    for item in params.files or []:
+        filename = str(item.filename or "auth.json").strip() or "auth.json"
+        try:
+            raw = _decode_cpa_import_content(item)
+        except Exception as exc:
+            invalid.append({"filename": filename, "error": f"内容解码失败: {exc}"})
+            continue
+        if not raw:
+            continue
+
+        is_zip = filename.lower().endswith(".zip") or raw[:4] == b"PK\x03\x04"
+        if is_zip:
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                    for entry in archive.infolist():
+                        if entry.is_dir() or not entry.filename.lower().endswith(".json"):
+                            continue
+                        if entry.file_size > 5 * 1024 * 1024:
+                            invalid.append({"filename": entry.filename, "error": "文件超过 5MB，已跳过"})
+                            continue
+                        try:
+                            text = archive.read(entry).decode("utf-8-sig")
+                        except UnicodeDecodeError:
+                            text = archive.read(entry).decode("utf-8", errors="replace")
+                        parsed, parse_invalid = _parse_cpa_import_text(text, entry.filename)
+                        sources.extend(parsed)
+                        invalid.extend(parse_invalid)
+            except Exception as exc:
+                invalid.append({"filename": filename, "error": f"ZIP 解析失败: {exc}"})
+            continue
+
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+        parsed, parse_invalid = _parse_cpa_import_text(text, filename)
+        sources.extend(parsed)
+        invalid.extend(parse_invalid)
+
+    return sources, invalid
+
+
+@app.post("/api/accounts/import-cpa-auths")
+def import_account_cpa_auths(params: AccountCpaAuthImportParams):
+    """导入本地 CPA/Codex auth JSON，支持粘贴、多个 JSON 文件和 ZIP。"""
+    from autoteam.cpa_sync import import_local_cpa_auth_sources
+
+    sources, parse_invalid = _collect_cpa_auth_import_sources(params)
+    if not sources and not parse_invalid:
+        raise HTTPException(status_code=400, detail="请粘贴 CPA JSON，或选择 JSON/ZIP 文件")
+
+    result = import_local_cpa_auth_sources(sources)
+    result["invalid"] = parse_invalid + list(result.get("invalid") or [])
+    if not result.get("files") and result.get("invalid"):
+        raise HTTPException(status_code=400, detail={"message": "未导入任何有效 CPA 认证文件", "invalid": result["invalid"]})
+    return result
+
+
 @app.post("/api/accounts/export-sub-auths")
 def export_account_sub_auths(params: AccountEmailBatchParams):
     """导出所选账号的 Sub2API 导入 JSON。"""
@@ -5829,9 +5952,11 @@ def _run_account_codex_login_once(
             "native_oauth": native_oauth,
             "headless": headless,
             "mail_account_id": acc.get("cloudmail_account_id"),
-            "proxy_url": oauth_proxy_url or None,
-            "proxy_bypass": oauth_proxy_bypass,
         }
+        if oauth_proxy_url:
+            browser_login_kwargs["proxy_url"] = oauth_proxy_url
+            if oauth_proxy_bypass:
+                browser_login_kwargs["proxy_bypass"] = oauth_proxy_bypass
         if refresh_auth_session:
             browser_login_kwargs["auth_session_callback"] = _capture_refreshed_auth_session
         bundle = login_codex_via_browser(

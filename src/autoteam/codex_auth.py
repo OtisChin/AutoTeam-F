@@ -19,6 +19,7 @@ from typing import Any
 from playwright.sync_api import sync_playwright
 
 import autoteam.display  # noqa: F401
+from autoteam import sqlite_store
 from autoteam.admin_state import (
     get_admin_email,
     get_admin_session_token,
@@ -1703,6 +1704,8 @@ def _oauth_hero_sms_config() -> dict[str, str]:
 
 _OAUTH_HERO_SMS_REUSE_LOCK = threading.Lock()
 _OAUTH_HERO_SMS_REUSE: dict[str, Any] = {}
+_OAUTH_HERO_SMS_REUSE_NAMESPACE = "oauth_hero_sms"
+_OAUTH_HERO_SMS_REUSE_KEY = "current"
 
 
 def _oauth_hero_sms_ttl_seconds() -> int:
@@ -1729,6 +1732,105 @@ def _oauth_hero_sms_entry_reusable(entry: dict[str, Any], *, now: float | None =
     # Keep a small safety window so we do not submit a phone that may expire
     # while waiting for an OTP.
     return _oauth_hero_sms_remaining_seconds(entry, now=now) > 90
+
+
+def _oauth_hero_sms_activation_used_codes(entry: dict[str, Any]) -> list[str]:
+    activation = (entry or {}).get("activation")
+    used_codes = getattr(activation, "used_codes", set()) if activation else (entry or {}).get("used_codes", [])
+    return sorted({str(code or "").strip() for code in (used_codes or []) if str(code or "").strip()})
+
+
+def _oauth_hero_sms_config_fingerprint(cfg: dict[str, str] | None = None) -> str:
+    data = cfg or _oauth_hero_sms_config()
+    raw = "|".join(
+        str(data.get(key) or "")
+        for key in ("base_url", "api_key", "country", "service", "max_price")
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _oauth_hero_sms_persist_entry(entry: dict[str, Any] | None) -> None:
+    if not entry:
+        sqlite_store.set_json(_OAUTH_HERO_SMS_REUSE_NAMESPACE, _OAUTH_HERO_SMS_REUSE_KEY, {})
+        return
+    payload = {
+        "activation_id": str(entry.get("activation_id") or "").strip(),
+        "phone_number": str(entry.get("phone_number") or "").strip(),
+        "country_id": str(entry.get("country_id") or "").strip(),
+        "created_at": float(entry.get("created_at") or time.time()),
+        "expires_at": float(entry.get("expires_at") or 0),
+        "bound_count": int(entry.get("bound_count") or 0),
+        "used_codes": _oauth_hero_sms_activation_used_codes(entry),
+        "config_fingerprint": _oauth_hero_sms_config_fingerprint(),
+        "updated_at": time.time(),
+    }
+    if payload["activation_id"] and payload["phone_number"]:
+        sqlite_store.set_json(_OAUTH_HERO_SMS_REUSE_NAMESPACE, _OAUTH_HERO_SMS_REUSE_KEY, payload)
+    else:
+        sqlite_store.set_json(_OAUTH_HERO_SMS_REUSE_NAMESPACE, _OAUTH_HERO_SMS_REUSE_KEY, {})
+
+
+def _oauth_hero_sms_persist_used_codes(activation_id: str) -> None:
+    target = str(activation_id or "").strip()
+    if not target:
+        return
+    with _OAUTH_HERO_SMS_REUSE_LOCK:
+        entry = _OAUTH_HERO_SMS_REUSE.get("current")
+        if entry and str(entry.get("activation_id") or "").strip() == target:
+            _oauth_hero_sms_persist_entry(entry)
+
+
+def _oauth_hero_sms_restore_entry(cfg: dict[str, str], activation_cls) -> dict[str, Any] | None:
+    payload = sqlite_store.get_json(_OAUTH_HERO_SMS_REUSE_NAMESPACE, _OAUTH_HERO_SMS_REUSE_KEY, default={})
+    if not isinstance(payload, dict) or not payload.get("activation_id") or not payload.get("phone_number"):
+        return None
+    if str(payload.get("config_fingerprint") or "") != _oauth_hero_sms_config_fingerprint(cfg):
+        _oauth_hero_sms_persist_entry(None)
+        return None
+    try:
+        country_id = int(float(payload.get("country_id") or cfg.get("country") or "187"))
+    except Exception:
+        country_id = 187
+    activation = activation_cls(
+        activation_id=str(payload.get("activation_id") or "").strip(),
+        phone=str(payload.get("phone_number") or "").strip(),
+        country_id=country_id,
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        log=logger.info,
+    )
+    try:
+        activation.used_codes.update({str(code or "").strip() for code in (payload.get("used_codes") or []) if str(code or "").strip()})
+    except Exception:
+        pass
+    entry = {
+        "activation": activation,
+        "activation_id": str(payload.get("activation_id") or "").strip(),
+        "phone_number": str(payload.get("phone_number") or "").strip(),
+        "country_id": str(country_id),
+        "created_at": float(payload.get("created_at") or time.time()),
+        "expires_at": float(payload.get("expires_at") or 0),
+        "bound_count": int(payload.get("bound_count") or 0),
+        "reserved_by": "",
+    }
+    if not _oauth_hero_sms_entry_reusable(entry):
+        _oauth_hero_sms_persist_entry(None)
+        _oauth_hero_sms_finish_or_cancel(
+            entry,
+            finish=int(entry.get("bound_count") or 0) > 0,
+            cancel=int(entry.get("bound_count") or 0) <= 0,
+            reason="expired_or_full_after_restore",
+        )
+        return None
+    logger.info(
+        "[Codex] add-phone 已恢复 hero-sms 可复用号码: activation=%s phone=%s bound=%s/%s remaining=%ss",
+        entry.get("activation_id"),
+        entry.get("phone_number"),
+        entry.get("bound_count") or 0,
+        _oauth_hero_sms_max_binds(),
+        _oauth_hero_sms_remaining_seconds(entry),
+    )
+    return entry
 
 
 def _oauth_hero_sms_item_from_entry(entry: dict[str, Any], email: str = "") -> dict[str, Any]:
@@ -1786,6 +1888,10 @@ def _acquire_oauth_hero_sms_phone(email: str = "") -> tuple[dict | None, str]:
     now = time.time()
     with _OAUTH_HERO_SMS_REUSE_LOCK:
         cached = _OAUTH_HERO_SMS_REUSE.get("current")
+        if not cached:
+            cached = _oauth_hero_sms_restore_entry(cfg, SmsActivation)
+            if cached:
+                _OAUTH_HERO_SMS_REUSE["current"] = cached
         if _oauth_hero_sms_entry_reusable(cached or {}, now=now):
             cached["reserved_by"] = email
             logger.info(
@@ -1800,6 +1906,7 @@ def _acquire_oauth_hero_sms_phone(email: str = "") -> tuple[dict | None, str]:
             return _oauth_hero_sms_item_from_entry(cached, email), ""
         if cached and not _oauth_hero_sms_entry_reusable(cached, now=now):
             _OAUTH_HERO_SMS_REUSE.pop("current", None)
+            _oauth_hero_sms_persist_entry(None)
             finish_old = int(cached.get("bound_count") or 0) > 0
         else:
             cached = None
@@ -1849,6 +1956,7 @@ def _acquire_oauth_hero_sms_phone(email: str = "") -> tuple[dict | None, str]:
     }
     with _OAUTH_HERO_SMS_REUSE_LOCK:
         _OAUTH_HERO_SMS_REUSE["current"] = entry
+        _oauth_hero_sms_persist_entry(entry)
     return _oauth_hero_sms_item_from_entry(entry, email), ""
 
 
@@ -1864,11 +1972,13 @@ def _release_oauth_hero_sms_phone(phone_item: dict, *, email: str = "", finish: 
         if entry and str(entry.get("activation_id") or "") == activation_id:
             if finish or cancel:
                 entry_to_close = _OAUTH_HERO_SMS_REUSE.pop("current", None)
+                _oauth_hero_sms_persist_entry(None)
                 close_finish = finish
                 close_cancel = cancel
             else:
                 if not email or str(entry.get("reserved_by") or "") == email:
                     entry["reserved_by"] = ""
+                _oauth_hero_sms_persist_entry(entry)
                 logger.info(
                     "[Codex] add-phone hero-sms 号码已释放供复用: activation=%s phone=%s bound=%s/%s remaining=%ss reason=%s",
                     activation_id,
@@ -1903,7 +2013,9 @@ def _mark_oauth_hero_sms_bound(phone_item: dict, *, email: str = "") -> None:
             remaining = _oauth_hero_sms_remaining_seconds(entry)
             if entry["bound_count"] >= _oauth_hero_sms_max_binds() or remaining <= 90:
                 entry_to_finish = _OAUTH_HERO_SMS_REUSE.pop("current", None)
+                _oauth_hero_sms_persist_entry(None)
             else:
+                _oauth_hero_sms_persist_entry(entry)
                 logger.info(
                     "[Codex] add-phone hero-sms 绑定成功后保留号码复用: email=%s activation=%s phone=%s bound=%s/%s remaining=%ss",
                     email,
@@ -1938,6 +2050,7 @@ def _make_phone_item_otp_provider(phone_item: dict):
                 label="oauth-add-phone",
                 max_resends=0,
             )
+            _oauth_hero_sms_persist_used_codes(str(phone_item.get("activation_id") or ""))
             if not code:
                 if not getattr(_provider, "_hero_sms_first_code_received", False):
                     raise CodexOAuthHeroSmsFirstCodeTimeout("hero-sms 120s 内未收到第一个验证码")
@@ -2100,6 +2213,16 @@ def _classify_oauth_phone_failure(error: str) -> str:
     return "invalid" if _should_invalidate_oauth_phone(error) else ""
 
 
+def _classify_oauth_phone_rate_limit_exception(error: str) -> str:
+    """Separate GPT-account add-phone throttling from phone-number throttling."""
+    text = str(error or "").lower()
+    if not text:
+        return ""
+    if any(hint in text for hint in _PHONE_RATE_LIMIT_HINTS):
+        return "account_rate_limited"
+    return _classify_oauth_phone_failure(error)
+
+
 def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
     if not _is_add_phone_page(page):
         return False
@@ -2173,7 +2296,20 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
         attempted += 1
         try:
             ok, error = _submit_oauth_add_phone_candidate(page, email=email, phone_item=phone_item)
-        except CodexOAuthPhoneRateLimited:
+        except CodexOAuthPhoneRateLimited as exc:
+            rate_limit_detail = str(getattr(exc, "detail", "") or exc)
+            rate_limit_action = _classify_oauth_phone_rate_limit_exception(rate_limit_detail)
+            if rate_limit_action in {"cooldown", "invalid", "hero_release"}:
+                mark_phone_failed(phone_item, rate_limit_action, rate_limit_detail)
+                logger.warning(
+                    "[Codex] add-phone 手机号请求受限，已处理号码并切换下一个: action=%s email=%s phone=%s reason=%s",
+                    rate_limit_action,
+                    email,
+                    phone_item.get("phone_number"),
+                    rate_limit_detail,
+                )
+                last_error = rate_limit_detail
+                continue
             release_phone_item(phone_item, "account_phone_rate_limited")
             logger.warning(
                 "[Codex] add-phone 当前账号手机验证请求次数过多，已释放手机号并跳过账号: email=%s phone=%s",

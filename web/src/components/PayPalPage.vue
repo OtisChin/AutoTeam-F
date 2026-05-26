@@ -1157,9 +1157,21 @@ function setMessage(text, ok = true) {
 function isUsableFreeAccount(account) {
   if (!account?.email || account?.is_main_account) return false
   if (String(account?.account_type || '').toLowerCase() !== 'free') return false
-  if (!account?.auth_session_file) return false
+  if (!hasUsableAccountAuth(account)) return false
   const status = String(account?.status || '').toLowerCase()
-  return !['fail', 'auth_invalid', 'orphan', 'standby', 'pending'].includes(status)
+  if (['fail', 'auth_invalid', 'orphan', 'pending'].includes(status)) return false
+  if (status === 'standby' && !hasUsableCodexAuth(account)) return false
+  return true
+}
+
+function hasUsableAccountAuth(account) {
+  if (account?.auth_session_file) return true
+  return hasUsableCodexAuth(account)
+}
+
+function hasUsableCodexAuth(account) {
+  if (account?.has_codex_auth_file !== undefined) return Boolean(account.has_codex_auth_file)
+  return Boolean(account?.codex_auth_file || account?.auth_file)
 }
 
 function rememberedPayPalState() {

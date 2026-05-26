@@ -2715,12 +2715,23 @@ async function loadAccounts() {
 function isBindableFreeAccount(account) {
   if (!account?.email || account?.is_main_account) return false
   if (String(account?.account_type || '').toLowerCase() !== 'free') return false
-  if (!account?.auth_session_file) return false
+  if (!hasBindableAccountAuth(account)) return false
   const status = String(account?.status || '').toLowerCase()
-  // Quota-exhausted free accounts can still be upgraded through GoPay; only
-  // exclude accounts that cannot provide a usable ChatGPT session.
-  if (['fail', 'auth_invalid', 'orphan', 'standby', 'pending'].includes(status)) return false
+  // Quota-exhausted free accounts can still be upgraded through GoPay. Keep
+  // standby excluded unless it is a CPA/Codex-auth import with a usable auth file.
+  if (['fail', 'auth_invalid', 'orphan', 'pending'].includes(status)) return false
+  if (status === 'standby' && !hasBindableCodexAuth(account)) return false
   return true
+}
+
+function hasBindableAccountAuth(account) {
+  if (account?.auth_session_file) return true
+  return hasBindableCodexAuth(account)
+}
+
+function hasBindableCodexAuth(account) {
+  if (account?.has_codex_auth_file !== undefined) return Boolean(account.has_codex_auth_file)
+  return Boolean(account?.codex_auth_file || account?.auth_file)
 }
 
 async function loadCards() {
@@ -3357,7 +3368,7 @@ async function startGoPayBind() {
     }
     const autoSignupCfg = gopayAutoSignupConfig.value || {}
     const autoSignupMode = useAutoSignup
-      ? (String(autoSignupCfg.signup_mode || 'http').trim().toLowerCase() === 'appium' ? 'appium' : 'http')
+      ? (String(gopayForm.value.gopayAutoSignupMode || 'http').trim().toLowerCase() === 'appium' ? 'appium' : 'http')
       : 'http'
     const appiumUrl = useAutoSignup ? String(autoSignupCfg.appium_url || '').trim() : ''
     const appiumAdbSerial = useAutoSignup ? String(autoSignupCfg.appium_adb_serial || '').trim() : ''

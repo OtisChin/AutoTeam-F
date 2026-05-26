@@ -54,6 +54,15 @@
             {{ selectedEmails.length ? `导出账密 (${selectedEmails.length})` : `导出账密 (${filteredAccounts.length})` }}
           </button>
           <button
+            @click="openCpaImport"
+            :disabled="cpaImporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="cpaImporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-purple-600/10 text-purple-300 border-purple-500/30 hover:bg-purple-600/20'">
+            {{ cpaImporting ? '导入中...' : '导入CPA认证' }}
+          </button>
+          <button
             @click="exportCpaAuths"
             :disabled="!cpaExportableAccounts.length || cpaExporting"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -546,6 +555,82 @@
         </div>
       </div>
 
+      <!-- CPA 认证导入弹窗 -->
+      <div v-if="cpaImportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeCpaImport">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-3xl max-h-[86vh] flex flex-col">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <div>
+              <h3 class="text-white font-semibold">导入 CPA 认证</h3>
+              <div class="text-xs text-gray-500 mt-0.5">支持粘贴 JSON、选择多个 JSON/ZIP 文件，或选择文件夹批量导入。</div>
+            </div>
+            <button @click="closeCpaImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+          </div>
+          <div class="p-4 space-y-4 overflow-y-auto flex-1">
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">直接粘贴 CPA JSON</label>
+              <textarea
+                v-model="cpaImportText"
+                rows="8"
+                placeholder='{"type":"codex","email":"...","access_token":"...","id_token":"...","refresh_token":"..."}'
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/60"></textarea>
+            </div>
+
+            <div class="grid gap-3 md:grid-cols-2">
+              <label class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 cursor-pointer hover:border-purple-500/40 transition">
+                <input type="file" multiple accept=".json,.zip,application/json,application/zip" class="hidden" @change="handleCpaImportFiles" />
+                <div class="text-sm font-semibold text-gray-100">选择文件</div>
+                <div class="mt-1 text-xs text-gray-500">可一次选择多个 .json 或 .zip。</div>
+              </label>
+              <label class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 cursor-pointer hover:border-purple-500/40 transition">
+                <input type="file" multiple webkitdirectory directory class="hidden" @change="handleCpaImportFiles" />
+                <div class="text-sm font-semibold text-gray-100">选择文件夹</div>
+                <div class="mt-1 text-xs text-gray-500">会递归读取文件夹中的 .json/.zip。</div>
+              </label>
+            </div>
+
+            <div v-if="cpaImportFiles.length" class="rounded-xl border border-gray-800 bg-gray-950/60 overflow-hidden">
+              <div class="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
+                <div class="text-xs text-gray-400">待导入文件：{{ cpaImportFiles.length }}</div>
+                <button @click="cpaImportFiles = []" class="text-xs text-gray-500 hover:text-gray-200">清空</button>
+              </div>
+              <div class="max-h-36 overflow-y-auto divide-y divide-gray-800/60">
+                <div v-for="file in cpaImportFiles" :key="file.name + file.size + file.lastModified" class="px-3 py-2 text-xs text-gray-300 font-mono truncate">
+                  {{ file.webkitRelativePath || file.name }}
+                </div>
+              </div>
+            </div>
+
+            <div v-if="cpaImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
+              <div class="text-gray-200">
+                导入 {{ cpaImportResult.imported || 0 }}，更新 {{ cpaImportResult.updated || 0 }}，新增账号 {{ cpaImportResult.accounts_added || 0 }}，更新账号 {{ cpaImportResult.accounts_updated || 0 }}，重复 {{ cpaImportResult.duplicates || 0 }}
+              </div>
+              <div v-if="cpaImportResult.invalid?.length" class="mt-2 text-amber-300">
+                跳过 {{ cpaImportResult.invalid.length }} 条无效来源；前 3 条：
+                <div v-for="item in cpaImportResult.invalid.slice(0, 3)" :key="item.filename + item.error" class="mt-1 text-amber-200/80 font-mono break-all">
+                  {{ item.filename }}: {{ item.error }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
+            <button
+              @click="closeCpaImport"
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              关闭
+            </button>
+            <button
+              @click="submitCpaImport"
+              :disabled="cpaImporting || (!cpaImportText.trim() && !cpaImportFiles.length)"
+              class="px-4 py-2 text-sm rounded-lg border transition"
+              :class="cpaImporting || (!cpaImportText.trim() && !cpaImportFiles.length)
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                : 'bg-purple-600 hover:bg-purple-500 text-white border-purple-500'">
+              {{ cpaImporting ? '导入中...' : '开始导入' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Codex 认证导出弹窗 -->
       <div v-if="exportData" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="exportData = null">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
@@ -765,6 +850,11 @@ const accountTypeEditValue = ref('')
 const accountTypeSaving = ref(false)
 const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
+const cpaImportOpen = ref(false)
+const cpaImportText = ref('')
+const cpaImportFiles = ref([])
+const cpaImporting = ref(false)
+const cpaImportResult = ref(null)
 const cpaExporting = ref(false)
 const sessionCpaConverting = ref(false)
 const subExporting = ref(false)
@@ -1275,6 +1365,76 @@ function openCredentialExport() {
 function closeCredentialExport() {
   if (credentialExporting.value) return
   credentialExportOpen.value = false
+}
+
+function openCpaImport() {
+  cpaImportOpen.value = true
+  cpaImportResult.value = null
+}
+
+function closeCpaImport() {
+  if (cpaImporting.value) return
+  cpaImportOpen.value = false
+}
+
+function handleCpaImportFiles(event) {
+  const files = Array.from(event.target.files || [])
+    .filter(file => /\.(json|zip)$/i.test(file.name || file.webkitRelativePath || ''))
+  const seen = new Set(cpaImportFiles.value.map(file => `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`))
+  const next = [...cpaImportFiles.value]
+  for (const file of files) {
+    const key = `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    next.push(file)
+  }
+  cpaImportFiles.value = next
+  event.target.value = ''
+}
+
+function readFileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const value = String(reader.result || '')
+      resolve(value.includes(',') ? value.split(',', 2)[1] : value)
+    }
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+async function submitCpaImport() {
+  if (cpaImporting.value || (!cpaImportText.value.trim() && !cpaImportFiles.value.length)) return
+  cpaImporting.value = true
+  cpaImportResult.value = null
+  message.value = ''
+  try {
+    const files = []
+    for (const file of cpaImportFiles.value) {
+      files.push({
+        filename: file.webkitRelativePath || file.name,
+        content_base64: await readFileBase64(file),
+      })
+    }
+    const result = await api.importAccountCpaAuths({
+      pasted_text: cpaImportText.value,
+      files,
+    })
+    cpaImportResult.value = result
+    const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，跳过 ${result.invalid.length} 条无效` : ''
+    message.value = `CPA 认证导入完成：导入 ${result.imported || 0}，更新 ${result.updated || 0}，新增账号 ${result.accounts_added || 0}，更新账号 ${result.accounts_updated || 0}${invalid}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    cpaImportText.value = ''
+    cpaImportFiles.value = []
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    cpaImporting.value = false
+    setTimeout(() => { message.value = '' }, 10000)
+  }
 }
 
 const cards = computed(() => {

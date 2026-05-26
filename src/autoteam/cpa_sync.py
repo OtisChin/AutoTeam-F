@@ -646,6 +646,136 @@ def sync_from_cpa():
     }
 
 
+def import_local_cpa_auth_sources(sources):
+    """Import local CPA/Codex auth JSON payloads into data/auths and accounts."""
+    from autoteam.accounts import ACCOUNT_SOURCE_MANAGED, ACCOUNT_TYPE_FREE, SEAT_CODEX, STATUS_STANDBY, find_account, load_accounts, save_accounts
+
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
+
+    accounts = load_accounts()
+    changed_accounts = False
+    imported_files = 0
+    updated_files = 0
+    added_accounts = 0
+    updated_accounts = 0
+    invalid = []
+    duplicate_sources = 0
+    imported = []
+    seen_identities = set()
+
+    for source in sources or []:
+        name = str((source or {}).get("name") or "pasted.json").strip() or "pasted.json"
+        auth_data = (source or {}).get("auth_data")
+        if isinstance(auth_data, dict) and isinstance(auth_data.get("codex_auth"), dict):
+            auth_data = auth_data.get("codex_auth")
+        if not isinstance(auth_data, dict):
+            invalid.append({"filename": name, "error": "不是有效的 JSON 对象"})
+            continue
+        if auth_data.get("type") and auth_data.get("type") != "codex":
+            invalid.append({"filename": name, "error": "不是 Codex CPA 认证文件"})
+            continue
+
+        bundle = _bundle_from_auth_data(auth_data, fallback_name=name)
+        missing = [
+            key
+            for key in ("access_token", "id_token", "refresh_token", "email", "account_id")
+            if not str(bundle.get(key) or "").strip()
+        ]
+        if missing:
+            invalid.append({"filename": name, "error": f"缺少字段: {', '.join(missing)}"})
+            continue
+
+        main = name.startswith("codex-main-") or bool(auth_data.get("main") or auth_data.get("is_main"))
+        identity = _auth_identity(bundle, main=main)
+        if identity in seen_identities:
+            duplicate_sources += 1
+            continue
+        seen_identities.add(identity)
+
+        normalized_path = _normalized_auth_path(bundle, main=main)
+        existed = normalized_path.exists()
+        previous = None
+        if existed:
+            try:
+                previous = normalized_path.read_text(encoding="utf-8")
+            except Exception:
+                previous = None
+
+        normalized_path = Path(_save_normalized_auth_file(bundle, main=main))
+        current = normalized_path.read_text(encoding="utf-8")
+        if not existed:
+            imported_files += 1
+        elif previous != current:
+            updated_files += 1
+
+        email = str(bundle.get("email") or "").strip().lower()
+        resolved_path = str(normalized_path.resolve())
+        imported.append(
+            {
+                "email": email,
+                "filename": normalized_path.name,
+                "auth_file": resolved_path,
+                "plan_type": bundle.get("plan_type") or "unknown",
+                "main": main,
+            }
+        )
+
+        if main:
+            continue
+
+        acc = find_account(accounts, email)
+        if acc:
+            changed = False
+            updates = {
+                "auth_file": resolved_path,
+                "account_source": ACCOUNT_SOURCE_MANAGED,
+            }
+            if not acc.get("account_type"):
+                updates["account_type"] = ACCOUNT_TYPE_FREE
+            if not acc.get("seat_type"):
+                updates["seat_type"] = SEAT_CODEX
+            for key, value in updates.items():
+                if acc.get(key) != value:
+                    acc[key] = value
+                    changed = True
+            if changed:
+                changed_accounts = True
+                updated_accounts += 1
+        else:
+            accounts.append(
+                {
+                    "email": email,
+                    "password": "",
+                    "cloudmail_account_id": None,
+                    "status": STATUS_STANDBY,
+                    "account_type": ACCOUNT_TYPE_FREE,
+                    "seat_type": SEAT_CODEX,
+                    "auth_file": resolved_path,
+                    "quota_exhausted_at": None,
+                    "quota_resets_at": None,
+                    "created_at": time.time(),
+                    "last_active_at": None,
+                    "account_source": ACCOUNT_SOURCE_MANAGED,
+                }
+            )
+            changed_accounts = True
+            added_accounts += 1
+
+    if changed_accounts:
+        save_accounts(accounts)
+
+    return {
+        "imported": imported_files,
+        "updated": updated_files,
+        "accounts_added": added_accounts,
+        "accounts_updated": updated_accounts,
+        "duplicates": duplicate_sources,
+        "invalid": invalid,
+        "files": imported,
+        "total": len(sources or []),
+    }
+
+
 def sync_to_cpa():
     """
     同步本地认证文件到 CPA。同步范围：STATUS_ACTIVE（Team 席位）+ STATUS_PERSONAL（免费号）+ STATUS_PLUS（GoPay Plus）。
