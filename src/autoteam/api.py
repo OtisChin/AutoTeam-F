@@ -11125,6 +11125,8 @@ def post_paypal_task(params: PayPalTaskParams):
     def _normalize_paypal_phone_key(value: Any) -> str:
         raw = str(value or "").strip()
         digits = re.sub(r"\D+", "", raw)
+        if len(digits) == 11 and digits.startswith("1"):
+            digits = digits[1:]
         return digits or raw.lower()
 
     def _paypal_phone_account_key(account: dict | None) -> str:

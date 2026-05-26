@@ -156,6 +156,8 @@ def _bundle_from_auth_data(auth_data, fallback_name=""):
             or (auth_data.get("account") or {}).get("id")
             or auth_claims.get("chatgpt_account_id")
             or access_auth_claims.get("chatgpt_account_id")
+            or next((o.get("id") for o in (auth_claims.get("organizations") or access_auth_claims.get("organizations") or []) if isinstance(o, dict) and o.get("is_default")), None)
+            or next((o.get("id") for o in (auth_claims.get("organizations") or access_auth_claims.get("organizations") or []) if isinstance(o, dict)), None)
             or ""
         ),
         "email": (
