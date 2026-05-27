@@ -426,7 +426,7 @@ class ChatGPTTeamAPI:
             _emit_browser_progress(
                 on_progress,
                 "paypal_roxybrowser_fresh_profile",
-                "RoxyBrowser：未指定已有窗口，将使用新建窗口，避免复用旧缓存",
+                "RoxyBrowser：未指定窗口，将优先复用空闲窗口，没有空闲窗口时再新建",
                 browser="RoxyBrowser",
             )
         launch = client.launch(
@@ -436,6 +436,15 @@ class ChatGPTTeamAPI:
             dir_id=resolved_profile_id,
             clear_profile_data=True,
         )
+        if getattr(launch, "reused_existing_profile", False):
+            _emit_browser_progress(
+                on_progress,
+                "paypal_roxybrowser_reused_idle_profile",
+                "RoxyBrowser：已自动复用空闲窗口并清空缓存",
+                browser="RoxyBrowser",
+                workspace_id=launch.workspace_id,
+                dir_id=launch.dir_id,
+            )
         if resolved_profile_id:
             _emit_browser_progress(
                 on_progress,

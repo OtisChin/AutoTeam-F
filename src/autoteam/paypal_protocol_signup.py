@@ -14,6 +14,9 @@ from autoteam.gopay_executor import GoPayOTPCancelled, _poll_otp_from_sms_url
 logger = logging.getLogger(__name__)
 
 PP_ORIGIN = "https://www.paypal.com"
+PAYPAL_PROTOCOL_OTP_TIMEOUT_SECONDS = 120
+PAYPAL_PROTOCOL_OTP_RESEND_AFTER_SECONDS = 60
+PAYPAL_PROTOCOL_OTP_MAX_RESEND_ATTEMPTS = 1
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
@@ -737,9 +740,10 @@ def run_paypal_no_card_protocol_signup(
 
         otp_provider = _poll_otp_from_sms_url(
             str(signup_profile.get("sms_url") or ""),
-            timeout_seconds=max(60, timeout),
-            resend_after_seconds=60,
-            max_resend_attempts=1,
+            timeout_seconds=PAYPAL_PROTOCOL_OTP_TIMEOUT_SECONDS,
+            initial_delay_seconds=0,
+            resend_after_seconds=PAYPAL_PROTOCOL_OTP_RESEND_AFTER_SECONDS,
+            max_resend_attempts=PAYPAL_PROTOCOL_OTP_MAX_RESEND_ATTEMPTS,
             is_cancelled=is_cancelled,
             progress=_otp_progress,
         )

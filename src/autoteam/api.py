@@ -2352,6 +2352,10 @@ class PayPalTaskParams(BaseModel):
         "",
         validation_alias=AliasChoices("roxybrowser_profile_id", "roxybrowserProfileId", "roxybrowser_dir_id", "roxybrowserDirId"),
     )
+    roxybrowser_auto_create_profile: bool = Field(
+        False,
+        validation_alias=AliasChoices("roxybrowser_auto_create_profile", "roxybrowserAutoCreateProfile"),
+    )
     manual_confirm: bool = Field(True, validation_alias=AliasChoices("manual_confirm", "manualConfirm"))
     paypal_mode: str = Field("existing_account", validation_alias=AliasChoices("paypal_mode", "paypalMode"))
     paypal_email: str = Field("", validation_alias=AliasChoices("paypal_email", "paypalEmail"))
@@ -2383,6 +2387,10 @@ class PayPalTaskParams(BaseModel):
     pending_retry_attempts: int = Field(
         1,
         validation_alias=AliasChoices("pending_retry_attempts", "pendingRetryAttempts"),
+    )
+    paypal_concurrency: int = Field(
+        1,
+        validation_alias=AliasChoices("paypal_concurrency", "paypalConcurrency"),
     )
 
 
@@ -3056,6 +3064,7 @@ def _paypal_pending_retry_reason(result: dict | None) -> str:
         "paypal_phone_pool_exhausted",
         "paypal_card_linked",
         "paypal_card_candidate_rejected",
+        "paypal_ssl_protocol_error",
         "paypal_return_timeout",
         "post_submit",
     }
@@ -10824,6 +10833,10 @@ def post_paypal_task(params: PayPalTaskParams):
         )
     except Exception:
         pending_retry_attempts = 1
+    try:
+        paypal_concurrency = max(1, min(3, int(params.paypal_concurrency or 1)))
+    except Exception:
+        paypal_concurrency = 1
 
     runner_mode = str(params.runner_mode or "").strip().lower()
     if runner_mode and runner_mode != "manual_checkout":
@@ -10866,6 +10879,9 @@ def post_paypal_task(params: PayPalTaskParams):
     bind_link_payload = params.bind_link_payload if isinstance(params.bind_link_payload, dict) else {}
     roxybrowser_workspace_id = str(params.roxybrowser_workspace_id or "").strip()
     roxybrowser_profile_id = str(params.roxybrowser_profile_id or "").strip()
+    roxybrowser_auto_create_profile = bool(params.roxybrowser_auto_create_profile)
+    if str(params.paypal_browser or "").strip().lower() == "roxybrowser" and roxybrowser_auto_create_profile:
+        roxybrowser_profile_id = ""
     sms_url = str(params.sms_url or "").strip()
     otp_channel = str(params.otp_channel or "sms").strip().lower() or "sms"
     proxy_url = str(params.proxy_url or "").strip()
@@ -11076,6 +11092,7 @@ def post_paypal_task(params: PayPalTaskParams):
         "proxy_bypass": params.proxy_bypass,
         "roxybrowser_workspace_id": roxybrowser_workspace_id,
         "roxybrowser_profile_id": roxybrowser_profile_id,
+        "roxybrowser_auto_create_profile": roxybrowser_auto_create_profile,
         "manual_confirm": bool(params.manual_confirm),
         "paypal_mode": paypal_mode,
         "paypal_email": params.paypal_email,
@@ -11099,6 +11116,7 @@ def post_paypal_task(params: PayPalTaskParams):
         "timeout_seconds": int(params.timeout_seconds or 60),
         "auto_oauth_after_success": bool(params.auto_oauth_after_success),
         "pending_retry_attempts": pending_retry_attempts,
+        "paypal_concurrency": paypal_concurrency,
     }
     if proxy_api_provider:
         payload["proxy_api_provider"] = proxy_api_provider
@@ -11172,6 +11190,41 @@ def post_paypal_task(params: PayPalTaskParams):
         retried_emails: list[str] = []
         pending_retry_backoffs = [60.0, 120.0]
         retry_round_waited: set[int] = set()
+        state_lock = threading.Lock()
+        phone_lock = threading.Lock()
+        reserved_phone_keys: set[str] = set()
+        effective_paypal_concurrency = paypal_concurrency
+        if paypal_mode == "create_account":
+            safe_phone_concurrency = len(phone_accounts) if phone_accounts else 1
+            if effective_paypal_concurrency > safe_phone_concurrency:
+                effective_paypal_concurrency = max(1, safe_phone_concurrency)
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "paypal_concurrency_limited",
+                        "requested_concurrency": paypal_concurrency,
+                        "concurrency": effective_paypal_concurrency,
+                        "message": "PayPal 自动注册并发已按可独占的手机号数量限制",
+                        "level": "warn",
+                    },
+                )
+        if (
+            str(params.paypal_browser or "").strip().lower() == "roxybrowser"
+            and roxybrowser_profile_id
+            and not roxybrowser_auto_create_profile
+            and paypal_concurrency > 1
+        ):
+            effective_paypal_concurrency = 1
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "paypal_concurrency_limited",
+                    "requested_concurrency": paypal_concurrency,
+                    "concurrency": effective_paypal_concurrency,
+                    "message": "RoxyBrowser 单 Profile 不能并发复用，PayPal 并发已降为 1",
+                    "level": "warn",
+                },
+            )
 
         def _remember_invalid_phone(phone: Any) -> None:
             raw_phone = str(phone or "").strip()
@@ -11180,6 +11233,85 @@ def post_paypal_task(params: PayPalTaskParams):
                 return
             invalid_phone_numbers.add(phone_key)
             invalid_phone_pool.append(raw_phone or phone_key)
+
+        def _remember_invalid_phone_threadsafe(phone: Any) -> None:
+            with phone_lock:
+                _remember_invalid_phone(phone)
+
+        def _lease_paypal_phone_accounts() -> tuple[list[dict], str, str, str]:
+            if not phone_accounts:
+                return phone_accounts, sms_url, otp_channel, ""
+            with phone_lock:
+                for account_phone in phone_accounts:
+                    if not _paypal_phone_account_available(account_phone, invalid_phone_numbers):
+                        continue
+                    phone_key = _paypal_phone_account_key(account_phone)
+                    if phone_key in reserved_phone_keys:
+                        continue
+                    reserved_phone_keys.add(phone_key)
+                    current_sms_url = str(account_phone.get("sms_url") or "").strip()
+                    current_otp_channel = (
+                        str(account_phone.get("otp_channel") or otp_channel or "sms").strip().lower()
+                        or "sms"
+                    )
+                    current_billing_phone = str(account_phone.get("phone_number") or "").strip()
+                    return [account_phone], current_sms_url, current_otp_channel, current_billing_phone
+            return [], "", otp_channel, ""
+
+        def _lease_paypal_phone_accounts_for_item(queue_item: dict[str, Any]) -> tuple[list[dict], str, str, str]:
+            assigned_accounts = queue_item.get("phone_accounts")
+            if not assigned_accounts:
+                return _lease_paypal_phone_accounts()
+            if not isinstance(assigned_accounts, list):
+                assigned_accounts = [assigned_accounts]
+            with phone_lock:
+                for account_phone in assigned_accounts:
+                    if not isinstance(account_phone, dict):
+                        continue
+                    if not _paypal_phone_account_available(account_phone, invalid_phone_numbers):
+                        continue
+                    phone_key = _paypal_phone_account_key(account_phone)
+                    if phone_key in reserved_phone_keys:
+                        continue
+                    reserved_phone_keys.add(phone_key)
+                    current_sms_url = str(account_phone.get("sms_url") or "").strip()
+                    current_otp_channel = (
+                        str(account_phone.get("otp_channel") or otp_channel or "sms").strip().lower()
+                        or "sms"
+                    )
+                    current_billing_phone = str(account_phone.get("phone_number") or "").strip()
+                    return [account_phone], current_sms_url, current_otp_channel, current_billing_phone
+            return [], "", otp_channel, ""
+
+        def _assign_paypal_phone_accounts_to_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            if paypal_mode != "create_account" or not phone_accounts or not items:
+                return items
+            with phone_lock:
+                available = [
+                    account_phone
+                    for account_phone in phone_accounts
+                    if _paypal_phone_account_available(account_phone, invalid_phone_numbers)
+                ]
+            assigned: list[dict[str, Any]] = []
+            for index, item in enumerate(items):
+                next_item = dict(item)
+                if index < len(available):
+                    next_item["phone_accounts"] = [available[index]]
+                assigned.append(next_item)
+            return assigned
+
+        def _release_paypal_phone_accounts(active_phone_accounts: list[dict]) -> None:
+            if not active_phone_accounts:
+                return
+            with phone_lock:
+                for account_phone in active_phone_accounts:
+                    phone_key = _paypal_phone_account_key(account_phone)
+                    if phone_key:
+                        reserved_phone_keys.discard(phone_key)
+
+        def _append_task_progress_threadsafe(progress: dict[str, Any]) -> None:
+            with state_lock:
+                _append_task_progress(task_id, progress)
 
         def _paypal_success_progress_fields() -> dict:
             return {
@@ -11277,13 +11409,26 @@ def post_paypal_task(params: PayPalTaskParams):
                 return reason
             if not phone_accounts:
                 return ""
-            has_available_phone = any(
-                _paypal_phone_account_available(phone_account, invalid_phone_numbers)
-                for phone_account in phone_accounts
-            )
+            with phone_lock:
+                has_available_phone = any(
+                    _paypal_phone_account_available(phone_account, invalid_phone_numbers)
+                    for phone_account in phone_accounts
+                )
             return reason if has_available_phone else ""
 
-        def _handle_paypal_success_auth(success_email_value: str) -> None:
+        def _paypal_retry_round_concurrency(round_items: list[dict[str, Any]]) -> int:
+            concurrency = max(1, min(effective_paypal_concurrency, len(round_items) or 1))
+            if paypal_mode != "create_account" or not phone_accounts:
+                return concurrency
+            with phone_lock:
+                available_phone_count = sum(
+                    1
+                    for phone_account in phone_accounts
+                    if _paypal_phone_account_available(phone_account, invalid_phone_numbers)
+                )
+            return max(1, min(concurrency, available_phone_count or 1))
+
+        def _handle_paypal_success_auth(success_email_value: str, oauth_proxy_url_for_account: str = "") -> None:
             success_email = _normalized_email(success_email_value)
             if not success_email:
                 return
@@ -11329,7 +11474,7 @@ def post_paypal_task(params: PayPalTaskParams):
                 for attempt in range(1, max_attempts + 1):
                     try:
                         latest_account = find_account(load_accounts(), success_email) or {"email": success_email}
-                        oauth_proxy_url = selected_proxy_url or bind_proxy_url
+                        oauth_proxy_url = oauth_proxy_url_for_account or bind_proxy_url
                         if oauth_proxy_url:
                             _append_task_progress(
                                 task_id,
@@ -11442,11 +11587,482 @@ def post_paypal_task(params: PayPalTaskParams):
 
             threading.Thread(target=_oauth_worker, name=f"paypal-oauth-{success_email[:24]}", daemon=True).start()
 
+        def _run_paypal_candidate_worker(queue_item: dict[str, Any]) -> dict[str, Any]:
+            candidate_email = _normalized_email(queue_item.get("email"))
+            index = int(queue_item.get("current") or 0) or 1
+            retry_round = int(queue_item.get("retry_round") or 0)
+            selected_proxy_url = ""
+            effective_checkout_url = checkout_url
+            current_candidate_phone = ""
+            active_phone_accounts: list[dict] = []
+            single_result = None
+            try:
+                selected_proxy_url = _select_paypal_proxy()
+            except Exception as exc:
+                return {
+                    "email": candidate_email,
+                    "index": index,
+                    "retry_round": retry_round,
+                    "selected_proxy_url": "",
+                    "current_candidate_phone": "",
+                    "result": {
+                        "status": "failed",
+                        "failure_stage": "proxy_api",
+                        "message": f"动态代理 API 获取失败: {exc}",
+                        "screenshot_paths": [],
+                        "email": candidate_email,
+                    },
+                }
+
+            _append_task_progress_threadsafe(
+                {
+                    "stage": "paypal_starting",
+                    "email": candidate_email,
+                    "current": index,
+                    "total": len(candidates),
+                    "retry_round": retry_round,
+                    "concurrency": effective_paypal_concurrency,
+                    "proxy_label": params.proxy_label,
+                    "message": len(candidates) > 1
+                        and f"PayPal 批量任务启动中 ({index}/{len(candidates)}): {candidate_email}"
+                        or "PayPal 任务启动中",
+                }
+            )
+            if proxy_api_provider or proxy_api_url or normalized_proxy_pool:
+                _append_task_progress_threadsafe(
+                    {
+                        "stage": "paypal_proxy_api_selected" if proxy_api_provider or proxy_api_url else "paypal_proxy_selected",
+                        "email": candidate_email,
+                        "current": index,
+                        "total": len(candidates),
+                        "retry_round": retry_round,
+                        "proxy_label": params.proxy_label,
+                        "proxy_pool_count": len(normalized_proxy_pool),
+                        "proxy_api_url_present": bool(proxy_api_url),
+                        "proxy_api_provider": proxy_api_provider,
+                        "message": (
+                            f"已通过 {proxy_api_provider} API 轮换代理: {_safe_proxy_summary(selected_proxy_url)}"
+                            if proxy_api_provider or proxy_api_url
+                            else f"已从动态代理池随机选择代理: {_safe_proxy_summary(selected_proxy_url)}"
+                        ),
+                    }
+                )
+
+            try:
+                if not effective_checkout_url:
+                    access_token = _extract_account_access_token(candidate_email)
+                    if not access_token:
+                        single_result = {
+                            "status": "failed",
+                            "failure_stage": "generate_checkout",
+                            "message": f"账号缺少可用 access_token，无法自动生成 checkout 链接: {candidate_email}",
+                            "screenshot_paths": [],
+                            "email": candidate_email,
+                        }
+                    else:
+                        try:
+                            generated = _generate_checkout_link(access_token, bind_link_payload)
+                        except HTTPException as exc:
+                            checkout_exc = exc
+                            fallback_access_token = access_token
+                            if getattr(exc, "status_code", None) == 401:
+                                refreshed_access_token = _refresh_account_access_token(candidate_email)
+                                if refreshed_access_token and refreshed_access_token != access_token:
+                                    fallback_access_token = refreshed_access_token
+                                    try:
+                                        generated = _generate_checkout_link(refreshed_access_token, bind_link_payload)
+                                        checkout_exc = None
+                                    except HTTPException as retry_exc:
+                                        checkout_exc = retry_exc
+                            if checkout_exc is not None:
+                                status_code = int(getattr(checkout_exc, "status_code", 0) or 0)
+                                if status_code not in (401, 403, 429, 502, 503, 504):
+                                    raise checkout_exc
+                                _append_task_progress_threadsafe(
+                                    {
+                                        "stage": "paypal_checkout_browser_fallback",
+                                        "email": candidate_email,
+                                        "current": index,
+                                        "total": len(candidates),
+                                        "retry_round": retry_round,
+                                        "message": f"HTTP 生成 checkout 失败，改用浏览器登录态回退: {candidate_email}",
+                                        "level": "warn",
+                                    }
+                                )
+                                generated = _generate_checkout_link_via_browser(
+                                    fallback_access_token,
+                                    bind_link_payload,
+                                    email=candidate_email,
+                                    proxy_url=selected_proxy_url,
+                                    proxy_bypass=params.proxy_bypass,
+                                    paypal_browser=params.paypal_browser,
+                                    roxybrowser_workspace_id=roxybrowser_workspace_id,
+                                    roxybrowser_profile_id=roxybrowser_profile_id,
+                                )
+                        effective_checkout_url = str(generated.get("url") or "").strip()
+                        _append_task_progress_threadsafe(
+                            {
+                                "stage": "paypal_checkout_generated",
+                                "email": candidate_email,
+                                "current": index,
+                                "total": len(candidates),
+                                "retry_round": retry_round,
+                                "checkout_url": effective_checkout_url,
+                                "message": f"已生成 checkout 链接 ({index}/{len(candidates)}): {candidate_email}",
+                            }
+                        )
+                        single_result = None
+                else:
+                    single_result = None
+
+                if single_result is None:
+                    active_phone_accounts, current_sms_url, current_otp_channel, current_candidate_phone = _lease_paypal_phone_accounts_for_item(queue_item)
+                    if phone_accounts and not active_phone_accounts:
+                        with phone_lock:
+                            reserved_count = len(reserved_phone_keys)
+                            invalid_count = len(invalid_phone_numbers)
+                        _append_task_progress_threadsafe(
+                            {
+                                "stage": "paypal_phone_pool_exhausted",
+                                "email": candidate_email,
+                                "current": index,
+                                "total": len(candidates),
+                                "retry_round": retry_round,
+                                "reserved_phone_count": reserved_count,
+                                "invalid_phone_count": invalid_count,
+                                "message": (
+                                    "手机号池没有未占用的可用号码，当前账号不会启动浏览器"
+                                    f"（本任务已占用 {reserved_count} 个，已失效 {invalid_count} 个）"
+                                ),
+                                "level": "warn",
+                            }
+                        )
+                        single_result = {
+                            "status": "failed",
+                            "failure_stage": "paypal_phone_pool_exhausted",
+                            "message": "手机号池没有未占用的可用号码，当前账号未启动浏览器",
+                            "screenshot_paths": [],
+                            "email": candidate_email,
+                        }
+                    else:
+                        current_autofill_payload = _candidate_autofill_payload(candidate_email)
+                        if current_candidate_phone:
+                            current_autofill_payload["phone"] = current_candidate_phone
+
+                        def _handle_paypal_progress(event: dict[str, Any]) -> None:
+                            stage = str(event.get("stage") or "").strip()
+                            if stage in {
+                                "paypal_phone_rejected_waiting_dismiss",
+                                "paypal_phone_rejected_rotate",
+                                "paypal_phone_rejected_final",
+                            }:
+                                _remember_invalid_phone_threadsafe(event.get("rejected_phone"))
+                                with phone_lock:
+                                    event = {**event, "invalid_phone_numbers": invalid_phone_pool[:]}
+                            _append_task_progress_threadsafe(
+                                {**event, "email": candidate_email, "current": index, "total": len(candidates)}
+                            )
+
+                        single_result = run_paypal_bind_task(
+                            email=candidate_email,
+                            checkout_url=effective_checkout_url,
+                            proxy_url=selected_proxy_url,
+                            proxy_bypass=params.proxy_bypass,
+                            manual_confirm=params.manual_confirm,
+                            timeout_seconds=max(60, int(params.timeout_seconds or 60)),
+                            is_cancelled=cancel_signal.is_cancelled,
+                            on_progress=_handle_paypal_progress,
+                            autofill_enabled=bool(params.autofill_enabled),
+                            autofill_payload=current_autofill_payload,
+                            paypal_mode=paypal_mode,
+                            paypal_email=params.paypal_email,
+                            paypal_password=params.paypal_password,
+                            sms_url=current_sms_url,
+                            otp_channel=current_otp_channel,
+                            phone_accounts=active_phone_accounts,
+                            paypal_card_number=params.paypal_card_number,
+                            paypal_card_expiry=params.paypal_card_expiry,
+                            paypal_card_cvv=params.paypal_card_cvv,
+                            paypal_browser=params.paypal_browser,
+                            roxybrowser_workspace_id=roxybrowser_workspace_id,
+                            roxybrowser_profile_id=roxybrowser_profile_id,
+                        )
+            except HTTPException as exc:
+                exc_message = str(exc.detail) if getattr(exc, "detail", None) else str(exc)
+                single_result = (
+                    _paypal_user_paid_success(candidate_email, exc_message)
+                    if _paypal_already_paid_text(exc_message)
+                    else {
+                        "status": "failed",
+                        "failure_stage": "generate_checkout",
+                        "message": exc_message,
+                        "screenshot_paths": [],
+                        "email": candidate_email,
+                    }
+                )
+            except Exception as exc:
+                logger.exception("[paypal] candidate error: email=%s", candidate_email)
+                single_result = {
+                    "status": "failed",
+                    "failure_stage": "post_submit",
+                    "message": f"PayPal 账号执行异常: {exc}",
+                    "screenshot_paths": [],
+                    "email": candidate_email,
+                }
+            finally:
+                if isinstance(single_result, dict) and single_result.get("failure_stage") == "paypal_phone_rejected":
+                    _remember_invalid_phone_threadsafe(single_result.get("rejected_phone") or current_candidate_phone)
+                _release_paypal_phone_accounts(active_phone_accounts)
+
+            single_result = dict(single_result or {})
+            single_result["email"] = candidate_email
+            single_result["checkout_url"] = effective_checkout_url or single_result.get("checkout_url") or ""
+            if single_result.get("failure_stage") == "paypal_phone_rejected":
+                _remember_invalid_phone_threadsafe(single_result.get("rejected_phone") or current_candidate_phone)
+                with phone_lock:
+                    single_result["invalid_phone_numbers"] = invalid_phone_pool[:]
+            return {
+                "email": candidate_email,
+                "index": index,
+                "retry_round": retry_round,
+                "selected_proxy_url": selected_proxy_url,
+                "current_candidate_phone": current_candidate_phone,
+                "result": single_result,
+            }
+
+        def _apply_paypal_candidate_outcome(item: dict[str, Any]) -> None:
+            nonlocal result, last_checkout_url
+            candidate_email = _normalized_email(item.get("email"))
+            index = int(item.get("index") or 0) or 1
+            selected_proxy_url = str(item.get("selected_proxy_url") or "")
+            single_result = dict(item.get("result") or {})
+            if not candidate_email:
+                return
+            last_checkout_url = single_result.get("checkout_url") or last_checkout_url
+            result = single_result
+            update_fields = {
+                "last_bind_status": "cancelled" if cancel_signal.is_cancelled() and single_result.get("status") != "success" else single_result.get("status") or "failed",
+                "last_bind_at": time.time(),
+                "last_checkout_url": single_result.get("checkout_url") or "",
+                "last_proxy_label": params.proxy_label,
+                "last_bind_task_id": task_id,
+                "last_bind_message": single_result.get("message") or "",
+                "last_bind_failure_stage": single_result.get("failure_stage") or "",
+            }
+            if single_result.get("status") == "success":
+                update_fields.update(
+                    {
+                        "status": STATUS_ACTIVE,
+                        "account_type": ACCOUNT_TYPE_PLUS,
+                        "seat_type": SEAT_CODEX,
+                        "account_source": ACCOUNT_SOURCE_MANAGED,
+                        "last_bind_provider": "paypal",
+                        "plus_bound_at": update_fields["last_bind_at"],
+                    }
+                )
+            updated_account = update_account(candidate_email, **update_fields)
+            if single_result.get("status") == "success" and not updated_account:
+                add_account(candidate_email, "", seat_type=SEAT_CODEX)
+                updated_account = update_account(candidate_email, **update_fields)
+            if single_result.get("status") == "success":
+                _append_unique(successful_emails, candidate_email)
+                _handle_paypal_success_auth(candidate_email, selected_proxy_url)
+            else:
+                _append_unique(failed_emails, candidate_email)
+                if candidate_email in _paypal_nonzero_blocked_pool_emails(single_result, candidate_email):
+                    _append_unique(nonzero_blocked_emails, candidate_email)
+                    removed = _remove_pool_accounts_from_local_and_mail(
+                        [candidate_email],
+                        log_context="paypal-nonzero",
+                        reason="paypal_nonzero_amount_blocked",
+                        message="PayPal checkout 今日应付金额非 0，账号已从本地号池删除",
+                    )
+                    for removed_email in removed:
+                        _append_unique(removed_pool_emails, removed_email)
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "paypal_nonzero_amount_blocked_rotate",
+                            "email": candidate_email,
+                            "current": index,
+                            "total": len(candidates),
+                            "message": f"今日应付非 0，已删除并跳过账号: {candidate_email}",
+                            "level": "warn",
+                        },
+                    )
+            record_bind_audit(
+                {
+                    "task_id": task_id,
+                    "email": candidate_email,
+                    "checkout_url": single_result.get("checkout_url") or "",
+                    "proxy_label": params.proxy_label,
+                    "proxy_url": selected_proxy_url,
+                    "manual_confirm": bool(params.manual_confirm),
+                    "paypal_mode": paypal_mode,
+                    "paypal_auto_login": (not bool(params.manual_confirm)) and bool(str(params.paypal_password or "").strip()),
+                    "autofill_enabled": bool(params.autofill_enabled),
+                    "status": single_result.get("status") or "failed",
+                    "task_status": "completed" if single_result.get("status") == "success" else "failed",
+                    "failure_stage": single_result.get("failure_stage") or "",
+                    "message": single_result.get("message") or "",
+                    "started_at": started_at,
+                    "finished_at": time.time(),
+                    "screenshot_paths": single_result.get("screenshot_paths") or [],
+                    "flow": f"paypal_{paypal_mode}",
+                    "category": "paypal",
+                    "provider": "paypal",
+                }
+            )
+
+        parallel_completed = False
+        parallel_retry_items: list[dict[str, Any]] = []
+        if effective_paypal_concurrency > 1 and len(candidates) > 1:
+            parallel_completed = True
+            initial_items = [
+                {"email": candidate_email, "current": index, "retry_round": 0}
+                for index, candidate_email in enumerate(candidates, start=1)
+            ]
+            initial_items = _assign_paypal_phone_accounts_to_items(initial_items)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "paypal_parallel_started",
+                    "total": len(candidates),
+                    "concurrency": effective_paypal_concurrency,
+                    "message": f"开始并发 PayPal 绑定：{len(candidates)} 个账号，并发 {effective_paypal_concurrency}",
+                },
+            )
+            with ThreadPoolExecutor(max_workers=effective_paypal_concurrency, thread_name_prefix="paypal-bind") as executor:
+                future_map = {executor.submit(_run_paypal_candidate_worker, item): item for item in initial_items}
+                for future in as_completed(future_map):
+                    item = future.result()
+                    single_result = dict(item.get("result") or {})
+                    retry_reason = _paypal_candidate_retry_reason(single_result)
+                    if single_result.get("status") != "success" and retry_reason and pending_retry_attempts > 0:
+                        candidate_email = _normalized_email(item.get("email"))
+                        _append_unique(pending_retry_emails, candidate_email)
+                        parallel_retry_items.append(
+                            {
+                                "email": candidate_email,
+                                "current": int(item.get("index") or 0) or 1,
+                                "retry_round": 1,
+                            }
+                        )
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "paypal_pending_retry_queued",
+                                "email": candidate_email,
+                                "current": int(item.get("index") or 0) or 1,
+                                "total": len(candidates),
+                                "retry_round": 1,
+                                "max_retry_rounds": pending_retry_attempts,
+                                "reason": retry_reason,
+                                "message": f"PayPal 并发首轮失败，已加入待重试池: {candidate_email}",
+                                "level": "warn",
+                            },
+                        )
+                    else:
+                        _apply_paypal_candidate_outcome(item)
+
+        def _run_paypal_parallel_retry_rounds(items: list[dict[str, Any]]) -> None:
+            current_items = list(items or [])
+            while current_items and not cancel_signal.is_cancelled():
+                retry_round = min(max(1, int(item.get("retry_round") or 1)) for item in current_items)
+                round_items = [
+                    item for item in current_items
+                    if int(item.get("retry_round") or 1) == retry_round
+                ]
+                current_items = [
+                    item for item in current_items
+                    if int(item.get("retry_round") or 1) != retry_round
+                ]
+                if not round_items:
+                    continue
+                round_items = _assign_paypal_phone_accounts_to_items(round_items)
+                round_concurrency = _paypal_retry_round_concurrency(round_items)
+                _maybe_wait_pending_retry_round(retry_round, len(round_items))
+                for round_item in round_items:
+                    candidate_email = _normalized_email(round_item.get("email"))
+                    if not candidate_email:
+                        continue
+                    _remove_from_pending_retry(candidate_email)
+                    _append_unique(retried_emails, candidate_email)
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "paypal_pending_retry_account",
+                            "email": candidate_email,
+                            "current": int(round_item.get("current") or 0) or 1,
+                            "total": len(candidates),
+                            "retry_round": retry_round,
+                            "max_retry_rounds": pending_retry_attempts,
+                            "pending_retry": len(pending_retry_emails),
+                            "concurrency": round_concurrency,
+                            "message": f"正在并发执行 PayPal 待重试第 {retry_round}/{pending_retry_attempts} 轮: {candidate_email}",
+                        },
+                    )
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "paypal_pending_retry_started",
+                        "retry_round": retry_round,
+                        "max_retry_rounds": pending_retry_attempts,
+                        "pending_retry": len(round_items),
+                        "concurrency": round_concurrency,
+                        "message": f"开始并发 PayPal 待重试第 {retry_round}/{pending_retry_attempts} 轮，共 {len(round_items)} 个账号，并发 {round_concurrency}",
+                    },
+                )
+                next_round_items: list[dict[str, Any]] = []
+                with ThreadPoolExecutor(max_workers=round_concurrency, thread_name_prefix=f"paypal-retry-{retry_round}") as executor:
+                    future_map = {executor.submit(_run_paypal_candidate_worker, item): item for item in round_items}
+                    for future in as_completed(future_map):
+                        item = future.result()
+                        single_result = dict(item.get("result") or {})
+                        candidate_email = _normalized_email(item.get("email"))
+                        index = int(item.get("index") or 0) or 1
+                        retry_reason = _paypal_candidate_retry_reason(single_result)
+                        if (
+                            candidate_email
+                            and single_result.get("status") != "success"
+                            and retry_reason
+                            and retry_round < pending_retry_attempts
+                        ):
+                            _append_unique(pending_retry_emails, candidate_email)
+                            next_item = {
+                                "email": candidate_email,
+                                "current": index,
+                                "retry_round": retry_round + 1,
+                            }
+                            next_round_items.append(next_item)
+                            _append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "paypal_pending_retry_queued",
+                                    "email": candidate_email,
+                                    "current": index,
+                                    "total": len(candidates),
+                                    "retry_round": retry_round + 1,
+                                    "max_retry_rounds": pending_retry_attempts,
+                                    "pending_retry": len(pending_retry_emails),
+                                    "reason": retry_reason,
+                                    "source_stage": _paypal_pending_retry_source_stage(single_result, retry_reason),
+                                    "message": f"PayPal 待重试第 {retry_round}/{pending_retry_attempts} 轮失败，已加入下一轮待重试池: {candidate_email}",
+                                    "level": "warn",
+                                },
+                            )
+                        else:
+                            _apply_paypal_candidate_outcome(item)
+                current_items.extend(next_round_items)
+
         try:
             candidate_queue: list[dict[str, Any]] = [
                 {"email": candidate_email, "current": index, "retry_round": 0}
                 for index, candidate_email in enumerate(candidates, start=1)
             ]
+            if parallel_completed:
+                _run_paypal_parallel_retry_rounds(parallel_retry_items)
+                candidate_queue = []
             queue_offset = 0
             while queue_offset < len(candidate_queue):
                 if cancel_signal.is_cancelled():
@@ -11828,7 +12444,7 @@ def post_paypal_task(params: PayPalTaskParams):
                 if single_result.get("status") == "success":
                     if candidate_email not in successful_emails:
                         successful_emails.append(candidate_email)
-                    _handle_paypal_success_auth(candidate_email)
+                    _handle_paypal_success_auth(candidate_email, selected_proxy_url)
                 else:
                     if candidate_email not in failed_emails:
                         failed_emails.append(candidate_email)
@@ -11902,6 +12518,7 @@ def post_paypal_task(params: PayPalTaskParams):
         result["paypal_auto_login"] = (not bool(params.manual_confirm)) and bool(str(params.paypal_password or "").strip())
         result["autofill_enabled"] = bool(params.autofill_enabled)
         result["provider"] = "paypal"
+        result["concurrency"] = effective_paypal_concurrency
         result["account_emails"] = candidates
         result["successful_emails"] = successful_emails
         result["failed_emails"] = failed_emails

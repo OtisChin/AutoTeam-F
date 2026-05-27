@@ -112,7 +112,10 @@ US_STATE_NAME_TO_CODE = {
     "wyoming": "WY",
 }
 US_STATE_CODE_TO_NAME = {code: name for name, code in US_STATE_NAME_TO_CODE.items()}
-PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 240
+PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 120
+PAYPAL_SIGNUP_OTP_POLL_TIMEOUT_SECONDS = 120
+PAYPAL_SIGNUP_OTP_RESEND_AFTER_SECONDS = 60
+PAYPAL_SIGNUP_OTP_MAX_RESEND_ATTEMPTS = 1
 PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 120
 PAYPAL_SIGNUP_EMAIL_STUCK_RECOVER_DELAY_SECONDS = 30
 PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = 180
@@ -123,6 +126,8 @@ PAYPAL_APPROVE_RETURN_TIMEOUT_SECONDS = 120
 PAYPAL_APPROVE_RETURN_SETTLE_SECONDS = 1.0
 PAYPAL_STRIPE_STATE_POLL_INTERVAL_SECONDS = 5.0
 PAYPAL_OTP_PHONE_LOCK_TIMEOUT_SECONDS = 120
+PAYPAL_SSL_PROTOCOL_ERROR_REFRESH_INTERVAL_SECONDS = 10
+PAYPAL_SSL_PROTOCOL_ERROR_MAX_REFRESHES = 2
 _PAYPAL_OTP_LOCK_GUARD = threading.Lock()
 _PAYPAL_OTP_LOCKS: dict[str, threading.Lock] = {}
 
@@ -653,6 +658,8 @@ PAYPAL_AUTO_STAGE_MESSAGES = {
     "paypal_checkout_terms_ready": "checkout 条款已确认，准备提交",
     "paypal_submit_checkout": "正在提交 checkout 并跳转 PayPal",
     "paypal_wait_redirect": "已提交 checkout，等待跳转到 PayPal",
+    "paypal_ssl_protocol_error_refresh": "PayPal SSL 连接错误，等待刷新重试",
+    "paypal_ssl_protocol_error_retry_queued": "PayPal SSL 连接错误刷新后仍未恢复，加入待重试池",
     "paypal_authorize": "已进入 PayPal 页面，开始自动登录/授权",
     "paypal_login_email": "正在填写 PayPal 邮箱",
     "paypal_login_password": "正在填写 PayPal 密码",
@@ -1592,6 +1599,19 @@ def _safe_host(url: str) -> str:
 
 def _is_paypal_host(url: str) -> bool:
     return _safe_host(url).endswith("paypal.com")
+
+
+def _is_paypal_ssl_protocol_error_page(url: str, body_text: str = "") -> bool:
+    text = f"{url}\n{body_text}".lower()
+    if not _is_paypal_host(url) and "paypal.com" not in text:
+        return False
+    return (
+        "err_ssl_protocol_error" in text
+        or "sent an invalid response" in text
+        or "can't provide a secure connection" in text
+        or "cannot provide a secure connection" in text
+        or ("this site" in text and "secure connection" in text and "paypal.com" in text)
+    )
 
 
 def _is_checkout_host(url: str) -> bool:
@@ -3423,16 +3443,54 @@ def _submit_checkout_to_paypal(
     _emit_progress(on_progress, _progress_event("paypal_submit_checkout", url=getattr(api.page, "url", "")))
     deadline = time.time() + max(15, timeout_seconds)
     attempts = 0
+    ssl_protocol_error_refreshes = 0
     while time.time() < deadline:
         _sync_relevant_payment_page(api, prefer_paypal=True)
         current_url = getattr(api.page, "url", "")
+        body_text = _body_excerpt(api)
+        if _is_paypal_ssl_protocol_error_page(current_url, body_text):
+            if ssl_protocol_error_refreshes >= PAYPAL_SSL_PROTOCOL_ERROR_MAX_REFRESHES:
+                _capture_screenshot(api, session_id, "paypal-ssl-protocol-error", screenshot_paths)
+                _emit_progress(
+                    on_progress,
+                    _progress_event(
+                        "paypal_ssl_protocol_error_retry_queued",
+                        refreshes=ssl_protocol_error_refreshes,
+                        url=current_url,
+                        level="warn",
+                    ),
+                )
+                return _build_result(
+                    "failed",
+                    failure_stage="paypal_ssl_protocol_error",
+                    message="已提交 checkout，但 PayPal SSL_PROTOCOL_ERROR 刷新 2 次后仍无法进入 PayPal 页，加入待重试池",
+                    screenshot_paths=screenshot_paths,
+                )
+            ssl_protocol_error_refreshes += 1
+            _emit_progress(
+                on_progress,
+                _progress_event(
+                    "paypal_ssl_protocol_error_refresh",
+                    refresh=ssl_protocol_error_refreshes,
+                    max_refreshes=PAYPAL_SSL_PROTOCOL_ERROR_MAX_REFRESHES,
+                    wait_seconds=PAYPAL_SSL_PROTOCOL_ERROR_REFRESH_INTERVAL_SECONDS,
+                    url=current_url,
+                    level="warn",
+                ),
+            )
+            time.sleep(PAYPAL_SSL_PROTOCOL_ERROR_REFRESH_INTERVAL_SECONDS)
+            try:
+                api.page.reload(wait_until="domcontentloaded", timeout=30000)
+            except Exception as exc:
+                logger.info("[paypal_bind_executor] PayPal SSL error page reload failed: %s", exc)
+            time.sleep(1.0)
+            continue
         if _is_paypal_host(current_url):
             if _force_paypal_us_locale(api):
                 current_url = getattr(api.page, "url", "")
             _emit_progress(on_progress, _progress_event("paypal_authorize", url=current_url))
             return None
 
-        body_text = _body_excerpt(api)
         classified = classify_paypal_checkout_state(current_url, body_text)
         if classified and classified.get("status") != "needs_review":
             _capture_screenshot(api, session_id, classified["status"], screenshot_paths)
@@ -4614,10 +4672,10 @@ def _poll_paypal_signup_otp(
     )
     provider = _poll_otp_from_sms_url(
         sms_url,
-        timeout_seconds=max(60, timeout_seconds),
-        initial_delay_seconds=8,
-        resend_after_seconds=60,
-        max_resend_attempts=2,
+        timeout_seconds=min(PAYPAL_SIGNUP_OTP_POLL_TIMEOUT_SECONDS, max(60, int(timeout_seconds or PAYPAL_SIGNUP_OTP_POLL_TIMEOUT_SECONDS))),
+        initial_delay_seconds=0,
+        resend_after_seconds=PAYPAL_SIGNUP_OTP_RESEND_AFTER_SECONDS,
+        max_resend_attempts=PAYPAL_SIGNUP_OTP_MAX_RESEND_ATTEMPTS,
         is_cancelled=is_cancelled,
         progress=_progress_adapter(on_progress),
     )
@@ -4846,7 +4904,7 @@ def _run_paypal_signup_flow(
             otp = _poll_paypal_signup_otp(
                 api=api,
                 signup_profile=signup_profile,
-                timeout_seconds=180,
+                timeout_seconds=PAYPAL_SIGNUP_OTP_POLL_TIMEOUT_SECONDS,
                 is_cancelled=is_cancelled,
                 on_progress=on_progress,
             )
@@ -4865,8 +4923,16 @@ def _run_paypal_signup_flow(
         return True, "", True
 
     if phone_only_retry and (state.get("registration_ready") or state.get("registration_text_hint")):
+        ok, error = _ensure_paypal_signup_phone_lock(
+            state,
+            signup_profile=signup_profile,
+            on_progress=on_progress,
+        )
+        if not ok:
+            return False, error, False
         ok, error = _replace_paypal_signup_phone(api, signup_profile=signup_profile, on_progress=on_progress)
         if not ok:
+            _release_paypal_signup_phone_lock(state, on_progress=on_progress)
             return False, error, True
         _emit_progress(
             on_progress,
@@ -4876,13 +4942,6 @@ def _run_paypal_signup_flow(
                 phone=str(signup_profile.get("phone") or ""),
             ),
         )
-        ok, error = _ensure_paypal_signup_phone_lock(
-            state,
-            signup_profile=signup_profile,
-            on_progress=on_progress,
-        )
-        if not ok:
-            return False, error, False
         if not _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=2500):
             _release_paypal_signup_phone_lock(state, on_progress=on_progress)
             return False, "未找到 PayPal 注册提交按钮", False
@@ -5020,8 +5079,16 @@ def _run_paypal_signup_flow(
         except Exception:
             pass
         time.sleep(1.5)
+        ok, error = _ensure_paypal_signup_phone_lock(
+            state,
+            signup_profile=signup_profile,
+            on_progress=on_progress,
+        )
+        if not ok:
+            return False, error, False
         ok, error = _fill_paypal_signup_form(api, signup_profile=signup_profile, on_progress=on_progress)
         if not ok:
+            _release_paypal_signup_phone_lock(state, on_progress=on_progress)
             # 输入框可能还没渲染出来，允许重试（回到主循环等下一轮）
             fill_retry_count = int(state.get("_fill_retry_count") or 0)
             if fill_retry_count < 3:
@@ -5039,13 +5106,6 @@ def _run_paypal_signup_flow(
                 phone=str(signup_profile.get("phone") or ""),
             ),
         )
-        ok, error = _ensure_paypal_signup_phone_lock(
-            state,
-            signup_profile=signup_profile,
-            on_progress=on_progress,
-        )
-        if not ok:
-            return False, error, False
         if not _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=2500):
             _release_paypal_signup_phone_lock(state, on_progress=on_progress)
             return False, "未找到 PayPal 注册提交按钮", False

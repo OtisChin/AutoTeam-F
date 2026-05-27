@@ -4035,9 +4035,11 @@ def _dismiss_address_autocomplete(api: ChatGPTTeamAPI, address1_locator=None):
                 pass
         api.page.keyboard.press("Escape")
         time.sleep(0.2)
-        logger.info("[gopay_executor] 已关闭地址自动推荐，改为手动填写城市/州/邮编")
+        if not getattr(api, "_address_autocomplete_dismiss_logged", False):
+            logger.info("[gopay_executor] 已关闭地址自动推荐，改为手动填写城市/州/邮编")
+            setattr(api, "_address_autocomplete_dismiss_logged", True)
     except Exception as exc:
-        logger.info("[gopay_executor] 关闭地址自动推荐失败: %s", exc)
+        logger.debug("[gopay_executor] 关闭地址自动推荐失败: %s", exc)
 
 
 def _suppress_address_autocomplete_ui(api: ChatGPTTeamAPI):

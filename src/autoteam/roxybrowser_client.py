@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -14,6 +15,9 @@ import requests
 from autoteam.config import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+
+_RESERVED_PROFILE_LOCK = threading.RLock()
+_RESERVED_PROFILE_IDS: set[str] = set()
 
 
 def _normalize_api_host(api_host: str | None) -> str:
@@ -135,6 +139,44 @@ def _extract_connection_mapping(payload: Any) -> dict[str, Any] | None:
     )
 
 
+def _roxybrowser_window_quota_insufficient(exc: BaseException) -> bool:
+    text = str(exc or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "窗口额度不足",
+            "window quota",
+            "profile quota",
+            "insufficient quota",
+            "quota insufficient",
+            "limit exceeded",
+        )
+    )
+
+
+def _row_open_status(row: dict[str, Any]) -> bool:
+    for key in ("openStatus", "open_status", "isOpen", "opened", "running"):
+        if key not in row:
+            continue
+        value = row.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value or "").strip().lower()
+        if text in {"1", "true", "yes", "open", "opened", "running", "run"}:
+            return True
+        if text in {"0", "false", "no", "close", "closed", "stop", "stopped"}:
+            return False
+    for key in ("status", "browserStatus", "browser_status"):
+        text = str(row.get(key) or "").strip().lower()
+        if text in {"open", "opened", "running", "run"}:
+            return True
+        if text in {"close", "closed", "stop", "stopped"}:
+            return False
+    return False
+
+
 def _normalize_proxy_info(proxy_url: str | None) -> dict[str, Any] | None:
     raw = str(proxy_url or "").strip()
     if not raw:
@@ -183,6 +225,7 @@ class RoxyBrowserLaunchResult:
     dir_id: str
     connection: dict[str, Any]
     created_profile: bool
+    reused_existing_profile: bool = False
 
 
 class RoxyBrowserClient:
@@ -300,7 +343,7 @@ class RoxyBrowserClient:
             workspaces.append({"id": workspace_id, "name": name})
         return workspaces
 
-    def list_profiles(self, workspace_id: str | int | None = None) -> list[dict[str, str]]:
+    def list_profiles(self, workspace_id: str | int | None = None) -> list[dict[str, Any]]:
         resolved_workspace_id = str(workspace_id or "").strip()
         if not resolved_workspace_id:
             raise RuntimeError("列出窗口需要 workspace_id")
@@ -324,7 +367,7 @@ class RoxyBrowserClient:
             if len(page_rows) < page_size:
                 break
             page_index += 1
-        profiles: list[dict[str, str]] = []
+        profiles: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         for row in rows:
             dir_id = next(
@@ -357,11 +400,18 @@ class RoxyBrowserClient:
             label = f"{name}"
             if workspace_label and workspace_label not in name:
                 label = f"{name} · {workspace_label}"
-            profiles.append({"id": dir_id, "name": label, "workspace_id": resolved_workspace_id})
+            profiles.append(
+                {
+                    "id": dir_id,
+                    "name": label,
+                    "workspace_id": resolved_workspace_id,
+                    "open_status": _row_open_status(row),
+                }
+            )
         return profiles
 
-    def list_all_profiles(self) -> list[dict[str, str]]:
-        profiles: list[dict[str, str]] = []
+    def list_all_profiles(self) -> list[dict[str, Any]]:
+        profiles: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         for workspace in self.list_workspaces():
             workspace_id = workspace["id"]
@@ -379,6 +429,28 @@ class RoxyBrowserClient:
                     }
                 )
         return profiles
+
+    def reserve_available_profile(self, workspace_id: str | int) -> dict[str, Any] | None:
+        resolved_workspace_id = str(workspace_id or "").strip()
+        if not resolved_workspace_id:
+            return None
+        with _RESERVED_PROFILE_LOCK:
+            for profile in self.list_profiles(resolved_workspace_id):
+                profile_id = str(profile.get("id") or "").strip()
+                if not profile_id or profile_id in _RESERVED_PROFILE_IDS:
+                    continue
+                if bool(profile.get("open_status")):
+                    continue
+                _RESERVED_PROFILE_IDS.add(profile_id)
+                return profile
+        return None
+
+    def release_profile_reservation(self, dir_id: str | None) -> None:
+        profile_id = str(dir_id or "").strip()
+        if not profile_id:
+            return
+        with _RESERVED_PROFILE_LOCK:
+            _RESERVED_PROFILE_IDS.discard(profile_id)
 
     def resolve_workspace_id(self, workspace_id: str | int | None = None) -> str:
         explicit = str(workspace_id or "").strip()
@@ -464,8 +536,12 @@ class RoxyBrowserClient:
             payload["workspaceId"] = _coerce_workspace_id(workspace_id)
         return self._request("POST", "/browser/open", json_body=payload)
 
-    def browser_close(self, dir_id: str) -> dict[str, Any]:
-        return self._request("POST", "/browser/close", json_body={"dirId": dir_id})
+    def browser_close(self, dir_id: str, *, release_reservation: bool = True) -> dict[str, Any]:
+        try:
+            return self._request("POST", "/browser/close", json_body={"dirId": dir_id})
+        finally:
+            if release_reservation:
+                self.release_profile_reservation(dir_id)
 
     def browser_clear_local_cache(self, dir_ids: list[str]) -> dict[str, Any]:
         clean_dir_ids = [str(dir_id).strip() for dir_id in dir_ids if str(dir_id).strip()]
@@ -519,11 +595,13 @@ class RoxyBrowserClient:
         clear_profile_data: bool = False,
     ) -> RoxyBrowserLaunchResult:
         resolved_dir_id = str(dir_id or "").strip()
+        reserved_profile_id = ""
         if resolved_dir_id:
             resolved_workspace_id = self.resolve_profile(resolved_dir_id, workspace_id)[0]
         else:
             resolved_workspace_id = self.resolve_workspace_id(workspace_id)
         created_profile = False
+        reused_existing_profile = False
         launch_name = window_name or f"autoteam-{uuid.uuid4().hex[:8]}"
         try:
             if resolved_dir_id:
@@ -540,15 +618,48 @@ class RoxyBrowserClient:
                         proxy_url=proxy_url,
                     )
             else:
-                created = self.browser_create(
-                    workspace_id=resolved_workspace_id,
-                    window_name=launch_name,
-                    proxy_url=proxy_url,
-                )
-                resolved_dir_id = _extract_dir_id(created)
-                if not resolved_dir_id:
-                    raise RuntimeError("RoxyBrowser browser_create 未返回 dirId")
-                created_profile = True
+                with _RESERVED_PROFILE_LOCK:
+                    reusable_profile = self.reserve_available_profile(resolved_workspace_id)
+                    if reusable_profile:
+                        resolved_dir_id = str(reusable_profile.get("id") or "").strip()
+                        reserved_profile_id = resolved_dir_id
+                        reused_existing_profile = True
+                        logger.info(
+                            "RoxyBrowser reusing idle profile before creating new one: workspace_id=%s dir_id=%s",
+                            resolved_workspace_id,
+                            resolved_dir_id,
+                        )
+                        if clear_profile_data:
+                            try:
+                                self.browser_close(resolved_dir_id, release_reservation=False)
+                            except Exception:
+                                pass
+                            self.clear_profile_cache(resolved_workspace_id, [resolved_dir_id])
+                        if str(proxy_url or "").strip():
+                            self.browser_mdf(
+                                workspace_id=resolved_workspace_id,
+                                dir_id=resolved_dir_id,
+                                proxy_url=proxy_url,
+                            )
+                    else:
+                        try:
+                            created = self.browser_create(
+                                workspace_id=resolved_workspace_id,
+                                window_name=launch_name,
+                                proxy_url=proxy_url,
+                            )
+                            resolved_dir_id = _extract_dir_id(created)
+                            if not resolved_dir_id:
+                                raise RuntimeError("RoxyBrowser browser_create 未返回 dirId")
+                            created_profile = True
+                            reserved_profile_id = resolved_dir_id
+                            _RESERVED_PROFILE_IDS.add(resolved_dir_id)
+                        except Exception as exc:
+                            if not _roxybrowser_window_quota_insufficient(exc):
+                                raise
+                            raise RuntimeError(
+                                "RoxyBrowser 没有可复用的空闲窗口，且新建窗口额度不足；请关闭空闲窗口、提高窗口额度，或改用指定窗口"
+                            ) from exc
 
             open_result = self.browser_open(resolved_dir_id, workspace_id=resolved_workspace_id, args=args or [])
             connection = _extract_connection_mapping(open_result) or {}
@@ -567,8 +678,11 @@ class RoxyBrowserClient:
                 dir_id=resolved_dir_id,
                 connection=connection,
                 created_profile=created_profile,
+                reused_existing_profile=reused_existing_profile,
             )
         except Exception:
+            if reserved_profile_id:
+                self.release_profile_reservation(reserved_profile_id)
             if created_profile and resolved_workspace_id and resolved_dir_id:
                 try:
                     self.browser_close(resolved_dir_id)
