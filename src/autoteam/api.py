@@ -2135,8 +2135,19 @@ def _append_task_progress(task_id: str | None, progress: dict):
     if not task:
         return
     now = time.time()
+    progress_data = dict(progress or {})
+    worker_label = str(getattr(_task_context, "gopay_worker_label", "") or "").strip()
+    if worker_label:
+        worker_index = int(getattr(_task_context, "gopay_worker_index", 0) or 0)
+        progress_data.setdefault("worker", worker_label)
+        progress_data.setdefault("worker_label", worker_label)
+        if worker_index > 0:
+            progress_data.setdefault("worker_index", worker_index)
+        message = str(progress_data.get("message") or "").strip()
+        if message and not re.match(r"^\[worker-\d+\]\s", message):
+            progress_data["message"] = f"[{worker_label}] {message}"
     event = {
-        **dict(progress or {}),
+        **progress_data,
         "event_id": uuid.uuid4().hex[:12],
         "updated_at": now,
     }
@@ -10849,6 +10860,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 if worker_label:
                     gopay_worker_context.label = worker_label
                     gopay_worker_context.index = worker_index
+                    _task_context.gopay_worker_label = worker_label
+                    _task_context.gopay_worker_index = worker_index
                 normalized_candidate = _normalized_email(candidate_email)
                 try:
                     if not normalized_candidate:
@@ -10886,6 +10899,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     if worker_label:
                         gopay_worker_context.label = ""
                         gopay_worker_context.index = 0
+                        _task_context.gopay_worker_label = ""
+                        _task_context.gopay_worker_index = 0
                     worker_slots.put(worker_index)
 
             def _record_parallel_result(
@@ -11089,8 +11104,19 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         "message": f"GoPay 并发待重试第 {retry_round}/{pending_retry_attempts} 轮将在 {wait_seconds:.0f}s 后开始",
                     },
                 )
-                if cancel_signal.wait(wait_seconds):
-                    break
+                cancel_event = _task_cancel_signals.get(task_id)
+                if cancel_event is not None:
+                    if cancel_event.wait(wait_seconds):
+                        break
+                elif wait_seconds > 0:
+                    # Fallback for unexpected task context loss: keep the task cancellable.
+                    deadline = time.time() + wait_seconds
+                    while time.time() < deadline:
+                        if cancel_signal.is_cancelled():
+                            break
+                        time.sleep(min(1.0, max(0.0, deadline - time.time())))
+                    if cancel_signal.is_cancelled():
+                        break
                 _append_task_progress(
                     task_id,
                     {
