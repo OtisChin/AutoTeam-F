@@ -87,6 +87,46 @@ function cards(task, options = {}) {
 
 {
   const task = {
+    task_id: 'task-gopay-parallel-running',
+    status: 'running',
+    params: {
+      account_emails: ['one@example.com', 'two@example.com', 'three@example.com', 'four@example.com'],
+      gopay_auto_signup: true,
+      gopay_concurrency: 3,
+    },
+    progress: {
+      stage: 'gopay_auto_signup_account_failed',
+      email: 'two@example.com',
+      attempt: 2,
+      total: 4,
+      retry_round: 0,
+      max_retry_rounds: 3,
+    },
+    progress_events: [
+      { stage: 'gopay_parallel_started', total: 4, concurrency: 3 },
+      { stage: 'gopay_parallel_account', email: 'one@example.com', attempt: 1, total: 4 },
+      { stage: 'gopay_parallel_account', email: 'two@example.com', attempt: 2, total: 4 },
+      { stage: 'gopay_auto_signup_account_success', email: 'one@example.com', attempt: 1, total: 4, successful: 1 },
+      { stage: 'gopay_pending_retry_queued', email: 'two@example.com', retry_round: 0, max_retry_rounds: 3, pending_retry: 1 },
+      { stage: 'gopay_auto_signup_account_failed', email: 'two@example.com', attempt: 2, total: 4, retry_round: 0 },
+    ],
+  }
+  const result = metrics(task)
+  assert.equal(result.progressStats.total, 4)
+  assert.equal(result.progressStats.attempted, 2)
+  assert.equal(result.progressStats.successful, 1)
+  assert.equal(result.pendingRetry, 1)
+  assert.equal(result.failureCount, 0)
+  const cardMap = cards(task)
+  assert.equal(cardMap['当前账号'].value, 'two@example.com')
+  assert.equal(cardMap['任务进度'].value, '2/4')
+  assert.equal(cardMap['绑卡成功'].value, '1')
+  assert.equal(cardMap['待重试'].value, '1')
+  assert.equal(cardMap['绑卡失败'].value, '0')
+}
+
+{
+  const task = {
     task_id: 'task-wait',
     status: 'running',
     params: { account_emails: Array.from({ length: 19 }, (_, index) => `u${index}@example.com`) },

@@ -1576,11 +1576,23 @@ def _generate_id_checkout_http(
         oai_client_build_number=oai_client_build_number,
     )
 
+    normalized_checkout_ui_mode = _normalize_checkout_ui_mode(checkout_ui_mode)
     resp = http.post(
         "https://chatgpt.com/backend-api/payments/checkout",
-        json=_chatgpt_checkout_payload(checkout_ui_mode),
+        json=_chatgpt_checkout_payload(normalized_checkout_ui_mode),
         timeout=HTTP_TIMEOUT_SECONDS,
     )
+    if (
+        resp.status_code == 400
+        and normalized_checkout_ui_mode == "hosted"
+        and "checkout ui mode is not supported" in str(resp.text or "").lower()
+    ):
+        logger.info("[gopay_executor] hosted checkout ui mode unsupported, retrying checkout generation with custom mode")
+        resp = http.post(
+            "https://chatgpt.com/backend-api/payments/checkout",
+            json=_chatgpt_checkout_payload("custom"),
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
     if resp.status_code != 200:
         raise GoPayFlowError(
             f"HTTP checkout 生成失败: HTTP {resp.status_code} {(resp.text or '')[:500]}",

@@ -241,6 +241,7 @@
           >
             <option value="smscloud">smscloud</option>
             <option value="hero_sms">hero-sms</option>
+            <option value="smscode">smscode.gg</option>
           </select>
         </div>
         <div>
@@ -303,7 +304,7 @@
           />
           <p class="mt-1 text-xs text-gray-500">填写 smscloud 登录后浏览器 localStorage 里的 XI_TOKEN，不是资料页 API密钥。</p>
         </div>
-        <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 md:col-span-2">
+        <div v-else-if="gopayAutoSignupForm.provider === 'hero_sms'" class="grid grid-cols-1 gap-4 md:grid-cols-2 md:col-span-2">
           <div>
           <label class="block text-sm text-gray-400 mb-1">
             hero-sms API Key
@@ -318,6 +319,17 @@
           />
           </div>
           <div>
+            <label class="block text-sm text-gray-400 mb-1">hero-sms 最低购买价</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.hero_sms_min_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.06，留空不限下限"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
             <label class="block text-sm text-gray-400 mb-1">hero-sms 最高价格</label>
             <input
               v-model.trim="gopayAutoSignupForm.hero_sms_max_price"
@@ -328,6 +340,105 @@
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
             <p class="mt-1 text-xs text-gray-500">会作为 maxPrice 传给取号接口，超过该价格的号码不会购买。</p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">hero-sms 指定档位</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.hero_sms_preferred_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.09，留空按价格从低到高"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">指定档位必须在最低价/最高价区间内，否则会被忽略。</p>
+          </div>
+        </div>
+        <div v-else-if="gopayAutoSignupForm.provider === 'smscode'" class="grid grid-cols-1 gap-4 md:grid-cols-2 md:col-span-2">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              SMSCode API Token
+              <span v-if="gopayAutoSignupStatus.smscode_api_token_present" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <input
+              v-model="gopayAutoSignupForm.smscode_api_token"
+              type="password"
+              autocomplete="off"
+              :placeholder="gopayAutoSignupStatus.smscode_api_token_masked || '留空则保留现有配置'"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">SMSCode API 地址</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smscode_base_url"
+              type="text"
+              autocomplete="off"
+              placeholder="https://api.smscode.gg/v1"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">国家 ID</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smscode_country_id"
+              type="text"
+              autocomplete="off"
+              placeholder="6"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">平台关键词</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smscode_platform_query"
+              type="text"
+              autocomplete="off"
+              placeholder="gopay"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">平台 ID（可选）</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smscode_platform_id"
+              type="text"
+              autocomplete="off"
+              placeholder="留空则按关键词查询"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">产品 ID（可选）</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smscode_product_id"
+              type="text"
+              autocomplete="off"
+              placeholder="留空则按价格筛选最低可用产品"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">最低购买价</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smscode_min_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="留空不限下限"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">最高价格</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smscode_max_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="留空不限价"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
           </div>
         </div>
       </div>
@@ -765,7 +876,17 @@ const gopayAutoSignupForm = ref({
   country_code: '+62',
   smscloud_xi_token: '',
   hero_sms_api_key: '',
+  hero_sms_min_price: '',
   hero_sms_max_price: '',
+  hero_sms_preferred_price: '',
+  smscode_api_token: '',
+  smscode_base_url: 'https://api.smscode.gg/v1',
+  smscode_country_id: '6',
+  smscode_platform_id: '',
+  smscode_platform_query: 'gopay',
+  smscode_product_id: '',
+  smscode_min_price: '',
+  smscode_max_price: '',
   proxy_url: '',
   signup_mode: 'http',
   appium_url: 'http://127.0.0.1:4723',
@@ -802,9 +923,9 @@ const accountHubBusy = computed(() => accountHubSaving.value || accountHubTestin
 const configImportExportBusy = computed(() => configImporting.value || configExporting.value)
 const accountHubConfigured = computed(() => Boolean(accountHubForm.value.token || accountHubForm.value.url))
 const gopayAutoSignupConfigured = computed(() => {
-  return gopayAutoSignupForm.value.provider === 'hero_sms'
-    ? Boolean(gopayAutoSignupStatus.value.hero_sms_api_key_present)
-    : Boolean(gopayAutoSignupStatus.value.smscloud_xi_token_present)
+  if (gopayAutoSignupForm.value.provider === 'hero_sms') return Boolean(gopayAutoSignupStatus.value.hero_sms_api_key_present)
+  if (gopayAutoSignupForm.value.provider === 'smscode') return Boolean(gopayAutoSignupStatus.value.smscode_api_token_present)
+  return Boolean(gopayAutoSignupStatus.value.smscloud_xi_token_present)
 })
 const oauthPhoneSmsConfigured = computed(() => {
   return oauthPhoneSmsForm.value.provider === 'phone_pool'
@@ -1075,11 +1196,21 @@ async function loadGoPayAutoSignupConfig() {
     const cfg = await api.getGoPayAutoSignupConfig()
     gopayAutoSignupStatus.value = cfg || {}
     gopayAutoSignupForm.value = {
-      provider: cfg?.provider === 'hero_sms' ? 'hero_sms' : 'smscloud',
+      provider: ['hero_sms', 'smscode'].includes(cfg?.provider) ? cfg.provider : 'smscloud',
       country_code: '+62',
       smscloud_xi_token: '',
       hero_sms_api_key: '',
+      hero_sms_min_price: cfg?.hero_sms_min_price || '',
       hero_sms_max_price: cfg?.hero_sms_max_price || '',
+      hero_sms_preferred_price: cfg?.hero_sms_preferred_price || '',
+      smscode_api_token: '',
+      smscode_base_url: cfg?.smscode_base_url || 'https://api.smscode.gg/v1',
+      smscode_country_id: cfg?.smscode_country_id || '6',
+      smscode_platform_id: cfg?.smscode_platform_id || '',
+      smscode_platform_query: cfg?.smscode_platform_query || 'gopay',
+      smscode_product_id: cfg?.smscode_product_id || '',
+      smscode_min_price: cfg?.smscode_min_price || '',
+      smscode_max_price: cfg?.smscode_max_price || '',
       proxy_url: cfg?.proxy_url || '',
       signup_mode: cfg?.signup_mode === 'appium' ? 'appium' : 'http',
       appium_url: cfg?.appium_url || 'http://127.0.0.1:4723',
@@ -1099,6 +1230,7 @@ async function saveGoPayAutoSignupConfig() {
     gopayAutoSignupStatus.value = result || {}
     gopayAutoSignupForm.value.smscloud_xi_token = ''
     gopayAutoSignupForm.value.hero_sms_api_key = ''
+    gopayAutoSignupForm.value.smscode_api_token = ''
     setMessage(result.message || 'GoPay 自动注册配置已保存')
     await loadGoPayAutoSignupConfig()
   } catch (e) {

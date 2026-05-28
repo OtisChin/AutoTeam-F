@@ -139,6 +139,8 @@ export const api = {
   importOutlookAccounts: (content, filename = '') => request('POST', '/config/outlook-accounts/import', { content, filename }),
   getGoPayAutoSignupConfig: () => request('GET', '/config/gopay-auto-signup'),
   saveGoPayAutoSignupConfig: (cfg) => request('PUT', '/config/gopay-auto-signup', cfg),
+  queryGoPayHeroSmsPrices: (cfg) => request('POST', '/config/gopay-auto-signup/hero-sms/prices', cfg),
+  queryGoPaySmscodePrices: (cfg) => request('POST', '/config/gopay-auto-signup/smscode/prices', cfg),
   getOAuthPhoneSmsConfig: () => request('GET', '/config/oauth-phone-sms'),
   saveOAuthPhoneSmsConfig: (cfg) => request('PUT', '/config/oauth-phone-sms', cfg),
   getRekberinajaConfig: () => request('GET', '/config/rekberinaja'),

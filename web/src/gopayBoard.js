@@ -39,7 +39,7 @@ function successfulEmailSet(task) {
         if (normalized) successful.add(normalized)
       }
     }
-    if (String(event?.stage || '') !== 'gopay_account_bound') continue
+    if (!['gopay_account_bound', 'gopay_auto_signup_account_success'].includes(String(event?.stage || ''))) continue
     const normalized = normalizedEmail(event?.email)
     if (normalized) successful.add(normalized)
   }
@@ -95,6 +95,9 @@ function latestEvent(events, stages) {
 
 function latestAccountEmail(events) {
   const event = latestEvent(events, [
+    'gopay_parallel_account',
+    'gopay_auto_signup_account_success',
+    'gopay_auto_signup_account_failed',
     'gopay_pending_retry_account',
     'paypal_pending_retry_account',
     'gopay_try_account',
@@ -175,7 +178,7 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
       if (stage === 'gopay_pending_retry_account' || stage === 'paypal_pending_retry_account') {
         eventPendingEmails.delete(email)
       }
-      if (stage === 'gopay_account_bound') {
+      if (stage === 'gopay_account_bound' || stage === 'gopay_auto_signup_account_success') {
         eventPendingEmails.delete(email)
         eventFailedEmails.delete(email)
       }
@@ -191,10 +194,13 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
         eventPendingEmails.delete(email)
         if (!successful.has(email)) eventFailedEmails.add(email)
       }
+      if (stage === 'gopay_auto_signup_account_failed' && !eventPendingEmails.has(email) && !successful.has(email)) {
+        eventFailedEmails.add(email)
+      }
       continue
     }
 
-    if (!terminalFailureStages.has(stage) && stage !== 'gopay_pending_retry_failed' && stage !== 'paypal_pending_retry_failed') continue
+    if (!terminalFailureStages.has(stage) && stage !== 'gopay_pending_retry_failed' && stage !== 'paypal_pending_retry_failed' && stage !== 'gopay_auto_signup_account_failed') continue
     const current = String(event?.current || event?.attempt || event?.event_id || '')
     if (current) eventFailureAttemptKeys.add(`attempt:${current}`)
   }
@@ -276,9 +282,38 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
   const currentAccountAttempt = !isAutoRegister
     ? events.reduce((maxCurrent, event) => {
       const stage = String(event?.stage || '')
-      if (!['gopay_try_account', 'gopay_rotate_account', 'gopay_pending_retry_account', 'paypal_try_account', 'paypal_rotate_account', 'paypal_pending_retry_account'].includes(stage)) return maxCurrent
+      if (![
+        'gopay_parallel_account',
+        'gopay_auto_signup_account_success',
+        'gopay_auto_signup_account_failed',
+        'gopay_try_account',
+        'gopay_rotate_account',
+        'gopay_pending_retry_account',
+        'paypal_try_account',
+        'paypal_rotate_account',
+        'paypal_pending_retry_account',
+      ].includes(stage)) return maxCurrent
       const current = Number(event?.attempt || event?.current || 0)
       return Number.isFinite(current) ? Math.max(maxCurrent, current) : maxCurrent
+    }, 0)
+    : 0
+  const batchEventTotal = !isAutoRegister
+    ? events.reduce((maxTotal, event) => {
+      const stage = String(event?.stage || '')
+      if (![
+        'gopay_parallel_started',
+        'gopay_parallel_account',
+        'gopay_auto_signup_account_success',
+        'gopay_auto_signup_account_failed',
+        'gopay_try_account',
+        'gopay_rotate_account',
+        'gopay_pending_retry_account',
+        'paypal_try_account',
+        'paypal_rotate_account',
+        'paypal_pending_retry_account',
+      ].includes(stage)) return maxTotal
+      const total = Number(event?.total || 0)
+      return Number.isFinite(total) ? Math.max(maxTotal, total) : maxTotal
     }, 0)
     : 0
   const progressSuccessful = Number.isFinite(Number(progress.successful)) ? Math.max(0, Number(progress.successful || 0)) : 0
@@ -288,7 +323,7 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
   const knownSuccessfulCount = Math.max(successful.size, adjustedProgressSuccessful, adjustedResultSuccessful)
   const baseTotal = isAutoRegister
     ? Math.max(autoRegisterCount, knownSuccessfulCount, Number(result.auto_register_attempted || 0), autoRegisterEventAttempted)
-    : Number(accounts.length || (batchActive ? selectedBatchEmails.length : 0) || (params.email ? 1 : 0) || progress.total || (task?.task_id ? 1 : 0))
+    : Number(accounts.length || (batchActive ? selectedBatchEmails.length : 0) || batchEventTotal || (params.email ? 1 : 0) || progress.total || (task?.task_id ? 1 : 0))
   const attempted = isAutoRegister
     ? Math.max(Number(result.auto_register_attempted || 0), Number(progress.attempted || progress.attempt || 0), autoRegisterEventAttempted)
     : Array.isArray(result.attempted_emails)

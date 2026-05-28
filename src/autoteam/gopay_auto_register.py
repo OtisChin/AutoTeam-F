@@ -39,6 +39,7 @@ DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC = 120
 STATUS_CANCEL = -1
 STATUS_RESEND = 3
 STATUS_FINISH = 6
+DEFAULT_SMSCODE_BASE_URL = "https://api.smscode.gg/v1"
 
 HMAC_KEY = "4&G6DbV&j8QZs~{)(Ila_w_|v@aqJq]E-;*(J9PanZ8sm01kTi{X<iG``]d7P&L"
 DEFAULT_X_E2 = "ED9A2B38749FBDE9ACA61D6A685B7"
@@ -113,6 +114,20 @@ class GoPaySmsBridge:
     def latest_response(self) -> dict[str, Any]:
         if self.closed:
             return {"ok": False, "data": {"status": "closed"}}
+        if self.provider == "smscode":
+            ok, code, message = _smscode_latest_code(
+                self.base_url,
+                self.api_key,
+                self.activation_id,
+                ignored_codes=self.ignored_codes,
+            )
+            if ok and code:
+                return {"ok": True, "data": {"otp": code, "activation_id": self.activation_id}}
+            if message == "stale":
+                return {"ok": False, "data": {"status": "stale"}}
+            if message == "pending":
+                return {"ok": False, "data": {"status": "pending"}}
+            return {"ok": False, "data": {"status": "error", "message": message or "smscode error"}}
         if self.provider == "smscloud":
             ok, code, message = _smscloud_latest_code(
                 self.base_url,
@@ -152,7 +167,9 @@ class GoPaySmsBridge:
 
     def finish(self) -> None:
         if not self.closed:
-            if self.provider == "smscloud":
+            if self.provider == "smscode":
+                _smscode_finish(self.base_url, self.api_key, self.activation_id)
+            elif self.provider == "smscloud":
                 _smscloud_finish(self.base_url, self.api_key, self.activation_id)
             else:
                 _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_FINISH)
@@ -160,7 +177,9 @@ class GoPaySmsBridge:
 
     def cancel(self) -> None:
         if not self.closed:
-            if self.provider == "smscloud":
+            if self.provider == "smscode":
+                _smscode_cancel(self.base_url, self.api_key, self.activation_id)
+            elif self.provider == "smscloud":
                 _smscloud_cancel(self.base_url, self.api_key, self.activation_id)
             else:
                 _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_CANCEL)
@@ -169,7 +188,9 @@ class GoPaySmsBridge:
     def resend(self) -> None:
         if self.closed:
             return
-        if self.provider == "smscloud":
+        if self.provider == "smscode":
+            _smscode_resend(self.base_url, self.api_key, self.activation_id)
+        elif self.provider == "smscloud":
             _smscloud_resend(self.base_url, self.api_key, self.activation_id)
         else:
             _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_RESEND)
@@ -177,6 +198,17 @@ class GoPaySmsBridge:
     def reusable_status(self) -> tuple[bool, str]:
         if self.closed:
             return False, "closed"
+        if self.provider == "smscode":
+            ok, data, message = _smscode_get_order(self.base_url, self.api_key, self.activation_id)
+            if not ok:
+                return False, message or "smscode_status_error"
+            order = _smscode_find_order(data, self.activation_id)
+            if not order:
+                return False, "smscode_order_missing"
+            status_text = str(order.get("status") or "").strip().lower()
+            if status_text in {"completed", "canceled", "cancelled", "expired", "failed"}:
+                return False, status_text or "smscode_terminal"
+            return True, status_text or "smscode_active"
         if self.provider == "smscloud":
             ok, data, message = _smscloud_request(self.base_url, self.api_key, "get", "/system/app/sms/myNumber", timeout=20)
             if not ok:
@@ -321,7 +353,7 @@ class SmsActivation:
 
 
 def _delayed_cancel_activation(
-    activation: SmsActivation | SmsCloudActivation,
+    activation: SmsActivation | SmsCloudActivation | SmsCodeActivation,
     *,
     delay_seconds: int = DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC,
     log: Callable[[str], None] = logger.info,
@@ -387,6 +419,11 @@ def _looks_like_transient_gopay_network_error(exc: Exception | str) -> bool:
             "connection aborted",
             "network is unreachable",
             "remote disconnected",
+            "waf block page",
+            "domain-config-1256704386",
+            "cos.accelerate.myqcloud",
+            "<title>waf block page</title>",
+            "blocked by waf",
             "curl: (6)",
             "curl: (7)",
             "curl: (28)",
@@ -436,6 +473,340 @@ def _hero_request(
     return True, text, data
 
 
+def _normalize_hero_price(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    text = re.sub(r"^[^\d.]+", "", text.replace(",", ""))
+    try:
+        number = float(text)
+    except Exception:
+        return None
+    if not (number > 0):
+        return None
+    return round(number, 4)
+
+
+def _resolve_hero_stock_state(payload: Any) -> tuple[bool, int]:
+    if not isinstance(payload, dict):
+        return False, 0
+    candidates: list[float] = []
+    for key in (
+        "count",
+        "quantity",
+        "qty",
+        "stock",
+        "total",
+        "available",
+        "availability",
+        "free",
+        "phones",
+        "numbers",
+    ):
+        if key not in payload:
+            continue
+        try:
+            candidates.append(float(payload.get(key)))
+        except Exception:
+            continue
+    if not candidates:
+        return False, 0
+    return True, int(max(candidates))
+
+
+def _collect_hero_price_candidates(payload: Any, candidates: list[float] | None = None) -> list[float]:
+    candidates = candidates if candidates is not None else []
+    if isinstance(payload, list):
+        for item in payload:
+            _collect_hero_price_candidates(item, candidates)
+        return candidates
+    if not isinstance(payload, dict):
+        return candidates
+
+    cost = _normalize_hero_price(payload.get("cost") or payload.get("price"))
+    if cost is not None:
+        has_stock, stock_count = _resolve_hero_stock_state(payload)
+        if not has_stock or stock_count > 0:
+            candidates.append(cost)
+
+    for key, value in payload.items():
+        keyed_price = _normalize_hero_price(key)
+        if keyed_price is not None:
+            if isinstance(value, dict):
+                has_stock, stock_count = _resolve_hero_stock_state(value)
+                if has_stock and stock_count > 0:
+                    candidates.append(keyed_price)
+            else:
+                try:
+                    if float(value) > 0:
+                        candidates.append(keyed_price)
+                except Exception:
+                    pass
+        _collect_hero_price_candidates(value, candidates)
+    return candidates
+
+
+def _collect_hero_price_tiers(payload: Any, tiers: dict[float, int] | None = None) -> dict[float, int]:
+    tiers = tiers if tiers is not None else {}
+    if isinstance(payload, list):
+        for item in payload:
+            _collect_hero_price_tiers(item, tiers)
+        return tiers
+    if not isinstance(payload, dict):
+        return tiers
+
+    cost = _normalize_hero_price(payload.get("cost") or payload.get("price") or payload.get("Price"))
+    if cost is not None:
+        count = payload.get("physicalCount", payload.get("count", payload.get("qty", payload.get("Qty", 0))))
+        try:
+            stock_count = max(0, int(float(count)))
+        except Exception:
+            stock_count = 0
+        tiers[cost] = max(tiers.get(cost, 0), stock_count)
+
+    def push_tier_map(tier_map: Any) -> None:
+        if not isinstance(tier_map, dict):
+            return
+        for price_key, count_raw in tier_map.items():
+            price = _normalize_hero_price(price_key)
+            if price is None:
+                continue
+            try:
+                stock_count = max(0, int(float(count_raw)))
+            except Exception:
+                stock_count = 0
+            tiers[price] = max(tiers.get(price, 0), stock_count)
+
+    push_tier_map(payload.get("freePriceMap"))
+    push_tier_map(payload.get("priceMap"))
+
+    for key, value in payload.items():
+        keyed_price = _normalize_hero_price(key)
+        if keyed_price is not None:
+            if isinstance(value, dict):
+                stock_candidates = []
+                for stock_key in ("physicalCount", "count", "stock", "available", "quantity", "qty", "left", "free"):
+                    try:
+                        stock_candidates.append(float(value.get(stock_key)))
+                    except Exception:
+                        pass
+                if stock_candidates:
+                    tiers[keyed_price] = max(tiers.get(keyed_price, 0), max(0, int(max(stock_candidates))))
+            else:
+                try:
+                    tiers[keyed_price] = max(tiers.get(keyed_price, 0), max(0, int(float(value))))
+                except Exception:
+                    pass
+        _collect_hero_price_tiers(value, tiers)
+    return tiers
+
+
+def _collect_hero_top_country_price_tiers(payload: Any, country_id: int) -> dict[float, int]:
+    if not isinstance(payload, dict):
+        return {}
+    tiers: dict[float, int] = {}
+    normalized_country = int(country_id)
+    for entry in payload.values():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            entry_country = int(float(entry.get("country") or entry.get("countryId") or entry.get("country_id") or entry.get("id") or 0))
+        except Exception:
+            entry_country = 0
+        if entry_country != normalized_country:
+            continue
+        _collect_hero_price_tiers(entry, tiers)
+    return tiers
+
+
+def _sorted_unique_hero_prices(values: list[float]) -> list[float]:
+    return sorted({round(float(value), 4) for value in values if _normalize_hero_price(value) is not None})[:20]
+
+
+def _filter_hero_prices(
+    prices: list[float],
+    *,
+    min_price: str = "",
+    max_price: str = "",
+    preferred_price: str = "",
+) -> tuple[list[float], str]:
+    min_limit = _normalize_hero_price(min_price)
+    max_limit = _normalize_hero_price(max_price)
+    preferred = _normalize_hero_price(preferred_price)
+    if min_limit is not None and max_limit is not None and min_limit > max_limit:
+        return [], f"HeroSMS 价格区间无效：最低购买价 {min_limit} 高于价格上限 {max_limit}"
+
+    filtered = []
+    for price in _sorted_unique_hero_prices(prices):
+        if min_limit is not None and price < min_limit:
+            continue
+        if max_limit is not None and price > max_limit:
+            continue
+        # HeroSMS getNumber maxPrice is a ceiling. Once a preferred ceiling is
+        # used, lower buckets are already covered by that request.
+        if preferred is not None and price < preferred:
+            continue
+        filtered.append(price)
+    if preferred is not None:
+        if min_limit is not None and preferred < min_limit:
+            return filtered, ""
+        if max_limit is not None and preferred > max_limit:
+            return filtered, ""
+        if preferred not in filtered:
+            filtered.append(preferred)
+        filtered = [preferred, *[price for price in filtered if price != preferred]]
+    return filtered, ""
+
+
+def _filter_hero_tiers(
+    tiers: dict[float, int],
+    *,
+    min_price: str = "",
+    max_price: str = "",
+    preferred_price: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    min_limit = _normalize_hero_price(min_price)
+    max_limit = _normalize_hero_price(max_price)
+    preferred = _normalize_hero_price(preferred_price)
+    if min_limit is not None and max_limit is not None and min_limit > max_limit:
+        return [], f"HeroSMS 价格区间无效：最低购买价 {min_limit} 高于价格上限 {max_limit}"
+
+    entries = []
+    for price in sorted(tiers):
+        if min_limit is not None and price < min_limit:
+            continue
+        if max_limit is not None and price > max_limit:
+            continue
+        # maxPrice is a ceiling, so lower tiers are included when requesting the
+        # preferred tier and should not be shown/retried separately.
+        if preferred is not None and price < preferred:
+            continue
+        entries.append({"price": round(float(price), 4), "count": max(0, int(tiers.get(price, 0)))})
+    if preferred is not None:
+        if min_limit is None or preferred >= min_limit:
+            if max_limit is None or preferred <= max_limit:
+                if not any(entry["price"] == preferred for entry in entries):
+                    entries.append({"price": preferred, "count": 0})
+                entries = [
+                    *[entry for entry in entries if entry["price"] == preferred],
+                    *[entry for entry in entries if entry["price"] != preferred],
+                ]
+    return entries, ""
+
+
+def query_hero_sms_price_tiers(
+    *,
+    service_code: str,
+    country_id: int,
+    base_url: str,
+    api_key: str,
+    min_price: str = "",
+    max_price: str = "",
+    preferred_price: str = "",
+) -> dict[str, Any]:
+    payloads: list[Any] = []
+    top_country_payloads: list[Any] = []
+    errors: list[str] = []
+    for action, extra_params in (
+        ("getPricesExtended", {"freePrice": "true"}),
+        ("getPrices", {}),
+        ("getPricesForVerification", {}),
+    ):
+        try:
+            ok, text, data = _hero_request(
+                base_url,
+                api_key,
+                action,
+                {"service": service_code, "country": country_id, **extra_params},
+                timeout=30,
+            )
+        except Exception as exc:
+            ok, text, data = False, str(exc), None
+        payload: Any = data if data is not None else text
+        if ok:
+            payloads.append(payload)
+        else:
+            errors.append(f"{action}: {text or 'failed'}")
+    try:
+        ok, text, data = _hero_request(
+            base_url,
+            api_key,
+            "getTopCountriesByService",
+            {"service": service_code, "freePrice": "true"},
+            timeout=30,
+        )
+    except Exception as exc:
+        ok, text, data = False, str(exc), None
+    top_payload: Any = data if data is not None else text
+    if ok:
+        top_country_payloads.append(top_payload)
+    else:
+        errors.append(f"getTopCountriesByService: {text or 'failed'}")
+
+    try:
+        ok, text, data = _hero_request(
+            base_url,
+            api_key,
+            "getPricesVerification",
+            {"service": service_code, "country": country_id},
+            timeout=30,
+        )
+    except Exception as exc:
+        ok, text, data = False, str(exc), None
+    verification_payload: Any = data if data is not None else text
+    if ok:
+        payloads.append(verification_payload)
+    else:
+        errors.append(f"getPricesVerification: {text or 'failed'}")
+    if not payloads and not top_country_payloads:
+        return {
+            "ok": False,
+            "error": "；".join(errors) or "HeroSMS 价格档位查询失败",
+            "raw": [],
+            "prices": [],
+            "filtered_prices": [],
+        }
+    tier_map: dict[float, int] = {}
+    for payload in payloads:
+        for price, count in _collect_hero_price_tiers(payload).items():
+            tier_map[price] = max(tier_map.get(price, 0), count)
+    for payload in top_country_payloads:
+        for price, count in _collect_hero_top_country_price_tiers(payload, country_id).items():
+            tier_map[price] = max(tier_map.get(price, 0), count)
+    prices = _sorted_unique_hero_prices(
+        list(tier_map.keys()) or [price for payload in payloads for price in _collect_hero_price_candidates(payload)]
+    )
+    filtered, error = _filter_hero_prices(
+        prices,
+        min_price=min_price,
+        max_price=max_price,
+        preferred_price=preferred_price,
+    )
+    if error:
+        return {"ok": False, "error": error, "raw": payloads, "prices": prices, "filtered_prices": []}
+    filtered_tiers, error = _filter_hero_tiers(
+        tier_map,
+        min_price=min_price,
+        max_price=max_price,
+        preferred_price=preferred_price,
+    )
+    if error:
+        return {"ok": False, "error": error, "raw": payloads, "prices": prices, "filtered_prices": []}
+    tiers = [{"price": price, "count": max(0, int(tier_map.get(price, 0)))} for price in prices]
+    return {
+        "ok": True,
+        "error": "",
+        "raw": [*payloads, *top_country_payloads],
+        "prices": prices,
+        "filtered_prices": filtered,
+        "tiers": tiers,
+        "filtered_tiers": filtered_tiers,
+        "count": len(filtered),
+    }
+
+
 def _hero_get_number(
     *,
     service_code: str,
@@ -443,30 +814,69 @@ def _hero_get_number(
     base_url: str,
     api_key: str,
     max_price: str = "",
+    min_price: str = "",
+    preferred_price: str = "",
 ) -> tuple[str, str, str]:
+    price_plan = None
+    if str(min_price or "").strip() or str(max_price or "").strip() or str(preferred_price or "").strip():
+        price_plan = query_hero_sms_price_tiers(
+            service_code=service_code,
+            country_id=country_id,
+            base_url=base_url,
+            api_key=api_key,
+            min_price=min_price,
+            max_price=max_price,
+            preferred_price=preferred_price,
+        )
+        if not price_plan.get("ok"):
+            return "", "", str(price_plan.get("error") or "HeroSMS 价格档位查询失败")
+        if not price_plan.get("filtered_prices"):
+            return "", "", "HeroSMS 当前价格区间内没有可用号码"
+
     params = {"service": service_code, "country": country_id}
     if str(max_price or "").strip():
         params["maxPrice"] = str(max_price or "").strip()
-    ok, text, data = _hero_request(
-        base_url,
-        api_key,
-        "getNumber",
-        params,
-        timeout=30,
-    )
-    if not ok:
-        return "", "", str(text or "getNumber failed")
-    line = str(text or "").strip()
-    if line.upper().startswith("ACCESS_NUMBER:"):
-        parts = line.split(":", 2)
-        if len(parts) >= 3:
-            return parts[1].strip(), parts[2].strip(), ""
-    if isinstance(data, dict):
-        activation_id = str(data.get("activationId") or data.get("id") or "")
-        phone = str(data.get("phoneNumber") or data.get("phone") or "")
-        if activation_id and phone:
-            return activation_id, phone, ""
-    return "", "", line or "无法解析号码"
+    candidate_params = [params]
+    use_fixed_price_candidates = bool(str(min_price or "").strip() or str(preferred_price or "").strip())
+    if use_fixed_price_candidates and price_plan and price_plan.get("filtered_prices"):
+        candidate_params = []
+        for price in price_plan["filtered_prices"]:
+            candidate = {
+                "service": service_code,
+                "country": country_id,
+                "maxPrice": str(price),
+                "fixedPrice": "true",
+            }
+            candidate_params.append(candidate)
+    last_error = ""
+    for candidate in candidate_params:
+        ok, text, data = _hero_request(
+            base_url,
+            api_key,
+            "getNumber",
+            candidate,
+            timeout=30,
+        )
+        if not ok:
+            last_error = str(text or "getNumber failed")
+            if re.search(r"\b(?:NO_NUMBERS|WRONG_MAX_PRICE)\b", last_error, re.I):
+                continue
+            return "", "", last_error
+        line = str(text or "").strip()
+        if line.upper().startswith("ACCESS_NUMBER:"):
+            parts = line.split(":", 2)
+            if len(parts) >= 3:
+                return parts[1].strip(), parts[2].strip(), ""
+        if isinstance(data, dict):
+            activation_id = str(data.get("activationId") or data.get("id") or "")
+            phone = str(data.get("phoneNumber") or data.get("phone") or "")
+            if activation_id and phone:
+                return activation_id, phone, ""
+        last_error = line or "无法解析号码"
+        if re.search(r"\b(?:NO_NUMBERS|WRONG_MAX_PRICE)\b", last_error, re.I):
+            continue
+        return "", "", last_error
+    return "", "", last_error or "HeroSMS 无可用号码"
 
 
 def _hero_set_status(base_url: str, api_key: str, activation_id: str, status: int) -> str:
@@ -486,7 +896,380 @@ def _normalize_sms_provider(value: str) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_")
     if normalized in {"smscloud", "sms_cloud", "xi_sms", "xisms"}:
         return "smscloud"
+    if normalized in {"smscode", "sms_code", "smscode_gg"}:
+        return "smscode"
     return "hero_sms"
+
+
+def _smscode_base_url(base_url: str) -> str:
+    resolved = str(base_url or DEFAULT_SMSCODE_BASE_URL).strip().rstrip("/")
+    return resolved or DEFAULT_SMSCODE_BASE_URL
+
+
+def _smscode_request(
+    base_url: str,
+    api_token: str,
+    method: str,
+    path: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    data: Optional[dict[str, Any]] = None,
+    headers: Optional[dict[str, str]] = None,
+    timeout: int = 25,
+) -> tuple[bool, Any, str]:
+    token = str(api_token or "").strip()
+    if not token:
+        return False, None, "NO_TOKEN"
+    url = f"{_smscode_base_url(base_url)}/{str(path or '').lstrip('/')}"
+    request_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    request_headers.update(headers or {})
+    try:
+        if curl_requests is not None:
+            resp = curl_requests.request(
+                method.upper(),
+                url,
+                params=params,
+                json=data,
+                headers=request_headers,
+                timeout=timeout,
+                impersonate="chrome131",
+            )
+        else:
+            resp = requests.request(method.upper(), url, params=params, json=data, headers=request_headers, timeout=timeout)
+    except Exception as exc:
+        return False, None, f"REQUEST_ERROR:{exc}"
+    text = str(resp.text or "").strip()
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = text
+    if not (200 <= resp.status_code < 300):
+        return False, payload, _smscode_error_message(payload) or text or f"HTTP {resp.status_code}"
+    if isinstance(payload, dict) and payload.get("success") is False:
+        return False, payload, _smscode_error_message(payload) or text or "SMSCode request failed"
+    if isinstance(payload, dict) and "data" in payload:
+        return True, payload.get("data"), ""
+    return True, payload, ""
+
+
+def _smscode_error_message(payload: Any) -> str:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            code = str(error.get("code") or "").strip()
+            message = str(error.get("message") or "").strip()
+            return f"{code}: {message}".strip(": ")
+        message = str(payload.get("message") or payload.get("msg") or "").strip()
+        if message:
+            return message
+    return ""
+
+
+def _smscode_collection(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "rows", "records", "orders", "products", "list", "data"):
+        value = payload.get(key)
+        if value is payload:
+            continue
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        nested = _smscode_collection(value)
+        if nested:
+            return nested
+    return [payload]
+
+
+def _smscode_find_order(payload: Any, activation_id: str = "") -> dict[str, Any]:
+    activation_id = str(activation_id or "").strip()
+    for item in _smscode_collection(payload):
+        item_id = str(item.get("id") or item.get("order_id") or item.get("orderId") or "").strip()
+        if not activation_id or item_id == activation_id:
+            return item
+    return {}
+
+
+def _smscode_extract_code(order: dict[str, Any], ignored_codes: set[str] | None = None) -> str:
+    ignored = {str(item or "").strip() for item in (ignored_codes or set()) if str(item or "").strip()}
+
+    def valid_code(value: Any) -> str:
+        code = str(value or "").strip()
+        return code if re.fullmatch(r"\d{4,8}", code) and code not in ignored else ""
+
+    for key in ("code", "otp", "otp_code", "sms_code", "verification_code"):
+        code = valid_code(order.get(key))
+        if code:
+            return code
+    for key in ("message", "sms", "text", "otp_message", "sms_text", "content"):
+        text = str(order.get(key) or "")
+        for match in re.finditer(r"(?<!\d)(\d{4,8})(?!\d)", text):
+            code = valid_code(match.group(1))
+            if code:
+                return code
+    messages = order.get("messages") or order.get("sms_messages") or order.get("smsList") or []
+    if isinstance(messages, dict):
+        messages = [messages]
+    if isinstance(messages, list):
+        for message in reversed([item for item in messages if isinstance(item, dict)]):
+            code = _smscode_extract_code(message, ignored_codes=ignored)
+            if code:
+                return code
+    return ""
+
+
+def _smscode_product_id(product: dict[str, Any]) -> str:
+    return str(product.get("id") or product.get("product_id") or product.get("productId") or "").strip()
+
+
+def _smscode_product_price(product: dict[str, Any]) -> float | None:
+    for key in ("price", "cost", "amount"):
+        price = _normalize_hero_price(product.get(key))
+        if price is not None:
+            return price
+    return None
+
+
+def _smscode_product_stock(product: dict[str, Any]) -> int:
+    for key in ("available", "stock", "quantity", "qty", "count", "numbers_count"):
+        if key not in product:
+            continue
+        try:
+            return max(0, int(float(product.get(key))))
+        except Exception:
+            pass
+    return 1
+
+
+def _smscode_resolve_platform_id(
+    *,
+    base_url: str,
+    api_token: str,
+    country_id: str,
+    platform_id: str = "",
+    platform_query: str = "gopay",
+) -> tuple[str, str]:
+    platform_id = str(platform_id or "").strip()
+    if platform_id:
+        return platform_id, ""
+    query = str(platform_query or "gopay").strip().lower()
+    ok, data, message = _smscode_request(
+        base_url,
+        api_token,
+        "get",
+        "/catalog/services",
+        params={"country_id": country_id},
+        timeout=30,
+    )
+    if not ok:
+        return "", message or "services query failed"
+    services = _smscode_collection(data)
+    for service in services:
+        haystack = " ".join(
+            str(service.get(key) or "").strip().lower()
+            for key in ("name", "code", "slug", "platform", "service")
+        )
+        if query and query in haystack:
+            resolved = str(service.get("id") or service.get("platform_id") or service.get("platformId") or "").strip()
+            if resolved:
+                return resolved, ""
+    return "", f"SMSCode 未找到平台: {platform_query or 'gopay'}"
+
+
+def _filter_smscode_products(
+    products: list[dict[str, Any]],
+    *,
+    min_price: str = "",
+    max_price: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    min_value = _normalize_hero_price(min_price)
+    max_value = _normalize_hero_price(max_price)
+    if min_value is not None and max_value is not None and min_value > max_value:
+        return [], "SMSCode 价格区间无效：最低价不能大于最高价"
+    filtered: list[dict[str, Any]] = []
+    for product in products:
+        product_id = _smscode_product_id(product)
+        price = _smscode_product_price(product)
+        if not product_id or price is None:
+            continue
+        if _smscode_product_stock(product) <= 0:
+            continue
+        if min_value is not None and price < min_value:
+            continue
+        if max_value is not None and price > max_value:
+            continue
+        filtered.append(product)
+    filtered.sort(key=lambda item: (_smscode_product_price(item) or 999999, _smscode_product_id(item)))
+    return filtered, ""
+
+
+def query_smscode_products(
+    *,
+    base_url: str,
+    api_token: str,
+    country_id: str = "6",
+    platform_id: str = "",
+    platform_query: str = "gopay",
+    min_price: str = "",
+    max_price: str = "",
+) -> dict[str, Any]:
+    resolved_platform_id, error = _smscode_resolve_platform_id(
+        base_url=base_url,
+        api_token=api_token,
+        country_id=country_id,
+        platform_id=platform_id,
+        platform_query=platform_query,
+    )
+    if error:
+        return {"ok": False, "error": error, "products": [], "filtered_products": []}
+    ok, data, message = _smscode_request(
+        base_url,
+        api_token,
+        "get",
+        "/catalog/products",
+        params={"country_id": country_id, "platform_id": resolved_platform_id},
+        timeout=30,
+    )
+    if not ok:
+        return {"ok": False, "error": message or "SMSCode 产品查询失败", "products": [], "filtered_products": []}
+    products = _smscode_collection(data)
+    normalized_products = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        product_id = _smscode_product_id(product)
+        price = _smscode_product_price(product)
+        stock = _smscode_product_stock(product)
+        if product_id and price is not None:
+            normalized_products.append({**product, "id": product_id, "price": price, "count": stock})
+    filtered, filter_error = _filter_smscode_products(normalized_products, min_price=min_price, max_price=max_price)
+    if filter_error:
+        return {"ok": False, "error": filter_error, "products": normalized_products, "filtered_products": []}
+    return {
+        "ok": True,
+        "error": "",
+        "platform_id": resolved_platform_id,
+        "products": normalized_products,
+        "filtered_products": filtered,
+        "count": len(filtered),
+    }
+
+
+def _smscode_get_number(
+    *,
+    base_url: str,
+    api_token: str,
+    country_id: str = "6",
+    platform_id: str = "",
+    platform_query: str = "gopay",
+    product_id: str = "",
+    min_price: str = "",
+    max_price: str = "",
+) -> tuple[str, str, str]:
+    selected_product_id = str(product_id or "").strip()
+    if not selected_product_id:
+        plan = query_smscode_products(
+            base_url=base_url,
+            api_token=api_token,
+            country_id=country_id,
+            platform_id=platform_id,
+            platform_query=platform_query,
+            min_price=min_price,
+            max_price=max_price,
+        )
+        if not plan.get("ok"):
+            return "", "", str(plan.get("error") or "SMSCode 产品查询失败")
+        products = plan.get("filtered_products") or []
+        if not products:
+            return "", "", "SMSCode 当前价格区间内没有可用号码"
+        selected_product_id = _smscode_product_id(products[0])
+    ok, data, message = _smscode_request(
+        base_url,
+        api_token,
+        "post",
+        "/orders/create",
+        data={"product_id": selected_product_id, "quantity": 1},
+        headers={"Idempotency-Key": uuid.uuid4().hex},
+        timeout=30,
+    )
+    if not ok:
+        return "", "", message or "orders/create failed"
+    order = _smscode_find_order(data)
+    activation_id = str(order.get("id") or order.get("order_id") or order.get("orderId") or "").strip()
+    phone = str(order.get("phone_number") or order.get("phone") or order.get("number") or "").strip()
+    if activation_id and phone:
+        return activation_id, phone, ""
+    if activation_id:
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            ok, latest_data, latest_message = _smscode_get_order(base_url, api_token, activation_id)
+            if not ok:
+                return "", "", latest_message or "order query failed"
+            latest_order = _smscode_find_order(latest_data, activation_id)
+            phone = str(latest_order.get("phone_number") or latest_order.get("phone") or latest_order.get("number") or "").strip()
+            if phone:
+                return activation_id, phone, ""
+            time.sleep(1)
+    return "", "", f"无法解析 SMSCode 号码: {data!r}"
+
+
+def _smscode_get_order(base_url: str, api_token: str, activation_id: str) -> tuple[bool, Any, str]:
+    if not activation_id:
+        return False, None, "NO_ORDER_ID"
+    return _smscode_request(base_url, api_token, "get", f"/orders/{activation_id}", timeout=20)
+
+
+def _smscode_latest_code(
+    base_url: str,
+    api_token: str,
+    activation_id: str,
+    *,
+    ignored_codes: set[str] | None = None,
+) -> tuple[bool, str, str]:
+    ok, data, message = _smscode_get_order(base_url, api_token, activation_id)
+    if not ok:
+        return False, "", message or "order query failed"
+    order = _smscode_find_order(data, activation_id)
+    if not order:
+        return False, "", "pending"
+    code = _smscode_extract_code(order, ignored_codes=ignored_codes)
+    if not code:
+        return False, "", "pending"
+    if code in (ignored_codes or set()):
+        return False, "", "stale"
+    return True, code, ""
+
+
+def _smscode_order_action(base_url: str, api_token: str, activation_id: str, action: str) -> None:
+    if not activation_id:
+        return
+    ok, _data, message = _smscode_request(
+        base_url,
+        api_token,
+        "post",
+        f"/orders/{action}",
+        data={"id": activation_id},
+        timeout=20,
+    )
+    if not ok and action != "cancel":
+        raise HeroSmsError(message or f"SMSCode {action} failed")
+
+
+def _smscode_resend(base_url: str, api_token: str, activation_id: str) -> None:
+    _smscode_order_action(base_url, api_token, activation_id, "resend")
+
+
+def _smscode_finish(base_url: str, api_token: str, activation_id: str) -> None:
+    _smscode_order_action(base_url, api_token, activation_id, "finish")
+
+
+def _smscode_cancel(base_url: str, api_token: str, activation_id: str) -> None:
+    _smscode_order_action(base_url, api_token, activation_id, "cancel")
 
 
 def _smscloud_base_url(base_url: str) -> str:
@@ -772,7 +1555,65 @@ class SmsCloudActivation:
         _smscloud_resend(self.base_url, self.api_key, self.activation_id)
 
 
-def create_sms_bridge(activation: SmsActivation | SmsCloudActivation) -> GoPaySmsBridge:
+class SmsCodeActivation:
+    provider = "smscode"
+
+    def __init__(
+        self,
+        *,
+        activation_id: str,
+        phone: str,
+        country_id: str,
+        base_url: str,
+        api_token: str,
+        log: Callable[[str], None] = logger.info,
+    ):
+        self.activation_id = activation_id
+        self.phone = phone
+        self.country_id = country_id
+        self.base_url = _smscode_base_url(base_url)
+        self.api_key = api_token
+        self.log = log
+        self.used_codes: set[str] = set()
+
+    def wait_code(self, *, timeout_sec: int = 300, label: str = "", max_resends: int = 3) -> str:
+        start = time.time()
+        last_resend = start
+        resend_count = 0
+        resend_intervals = [30, 60, 120]
+        while time.time() - start < timeout_sec:
+            ok, code, _ = _smscode_latest_code(
+                self.base_url,
+                self.api_key,
+                self.activation_id,
+                ignored_codes=self.used_codes,
+            )
+            if ok and code:
+                self.used_codes.add(code)
+                return code
+
+            elapsed = time.time() - last_resend
+            if resend_count < max_resends:
+                wait_time = resend_intervals[min(resend_count, len(resend_intervals) - 1)]
+                if elapsed > wait_time:
+                    resend_count += 1
+                    self.log(f"[{label}] 超过 {wait_time}s 未收到新码，请求 SMSCode 第 {resend_count} 次重发")
+                    self.resend()
+                    last_resend = time.time()
+            time.sleep(POLL_INTERVAL_SEC)
+        return ""
+
+    def cancel(self) -> None:
+        _smscode_cancel(self.base_url, self.api_key, self.activation_id)
+
+    def finish(self) -> None:
+        _smscode_finish(self.base_url, self.api_key, self.activation_id)
+
+    def resend(self) -> None:
+        _smscode_resend(self.base_url, self.api_key, self.activation_id)
+
+
+def create_sms_bridge(activation: SmsActivation | SmsCloudActivation | SmsCodeActivation) -> GoPaySmsBridge:
     bridge = GoPaySmsBridge(
         token=uuid.uuid4().hex,
         activation_id=activation.activation_id,
@@ -1131,12 +1972,14 @@ def _setup_pin(
     log: Callable[[str], None],
     pre_otp_hook: Callable[[], None] | None = None,
 ) -> None:
+    log("[gopay-signup] 校验 PIN 是否可设置...")
     _ensure_pin_allowed(
         access_token=access_token,
         pin=pin,
         gopay_cfg=gopay_cfg,
         session=session,
     )
+    log("[gopay-signup] 请求 PIN 设置验证方式...")
     resp = signed_post(
         f"{BASE_URL}/cvs/v1/methods",
         {
@@ -1160,6 +2003,7 @@ def _setup_pin(
     if pre_otp_hook:
         pre_otp_hook()
     time.sleep(random.uniform(1.0, 2.5))
+    log("[gopay-signup] 触发 PIN 设置 SMS OTP...")
     resp = signed_post(
         f"{BASE_URL}/cvs/v1/initiate",
         {
@@ -1187,6 +2031,7 @@ def _setup_pin(
     pin_otp = otp_provider("gopay_pin_setup")
     if not pin_otp:
         raise GoPayAutoSignupError("PIN OTP 未提供")
+    log("[gopay-signup] 已收到 PIN 设置 SMS OTP，开始校验...")
     resp = signed_post(
         f"{BASE_URL}/cvs/v1/verify",
         {
@@ -1206,6 +2051,7 @@ def _setup_pin(
     pin_verification_token = str(verify_data.get("verification_token") or "")
     if not pin_verification_token:
         raise GoPayAutoSignupError(f"PIN verify 失败: {resp.text[:300]}")
+    log("[gopay-signup] PIN OTP 校验成功，提交 PIN 设置...")
     headers = build_gopay_app_headers(f"Bearer {access_token}", gopay_cfg)
     headers["verification-token"] = f"Bearer {pin_verification_token}"
     headers["is-token-required"] = "false"
@@ -1218,6 +2064,7 @@ def _setup_pin(
     resp = session.post(f"{CUSTOMER_URL}{path}", data=body_text, headers=headers, timeout=30)
     if resp.status_code >= 400:
         raise GoPayAutoSignupError(f"PIN setup 失败 ({resp.status_code}): {resp.text[:300]}")
+    log("[gopay-signup] PIN 设置完成")
 
 
 def auto_login(
@@ -1486,6 +2333,7 @@ def auto_signup(
     session = create_gopay_session(proxy_url)
     cfg = gopay_cfg if gopay_cfg is not None else {}
     name = _random_name()
+    log(f"[gopay-signup] 探测手机号是否已注册: {country_code}{phone}")
     resp = signed_post(
         f"{BASE_URL}/goto-auth/login/methods",
         {
@@ -1511,6 +2359,7 @@ def auto_signup(
                 f"methods={methods or []} {summary}"
             )
         raise GoPaySignupProbeError(f"GoPay 注册前探测异常: phone={country_code}{phone} {summary}")
+    log("[gopay-signup] 手机号未注册，准备获取注册 verification_id")
     time.sleep(random.uniform(1.5, 3.0))
     verification_id = str(uuid.uuid4())
     resp = signed_post(
@@ -1531,6 +2380,7 @@ def auto_signup(
     )
     methods_data = _safe_json(resp).get("data", {}) if resp.status_code < 500 else {}
     verification_id = str(methods_data.get("verification_id") or verification_id)
+    log("[gopay-signup] 已获取注册 verification_id，触发注册 SMS OTP")
     time.sleep(random.uniform(1.0, 2.5))
     resp = signed_post(
         f"{BASE_URL}/cvs/v1/initiate",
@@ -1557,9 +2407,11 @@ def auto_signup(
     otp_token = str(init_data.get("otp_token") or "")
     if not otp_token:
         raise GoPayAutoSignupError(f"signup initiate 未返回 otp_token: {resp.text[:300]}")
+    log("[gopay-signup] 等待注册 SMS OTP...")
     otp = otp_provider("gopay_signup")
     if not otp:
         raise GoPayAutoSignupError("注册 OTP 未提供")
+    log("[gopay-signup] 已收到注册 SMS OTP，开始校验...")
     resp = signed_post(
         f"{BASE_URL}/cvs/v1/verify",
         {
@@ -1577,6 +2429,7 @@ def auto_signup(
     verification_token = str(verify_data.get("verification_token") or "")
     if not verification_token:
         raise GoPayAutoSignupError("signup verify 失败")
+    log("[gopay-signup] 注册 OTP 校验成功，创建 GoPay customer...")
     resp = signed_post(
         f"{API_URL}/v7/customers/signup",
         {
@@ -1602,6 +2455,7 @@ def auto_signup(
     account_id = str(signup_data.get("resource_owner_id") or (signup_data.get("customer") or {}).get("id") or "")
     if not signup_access:
         raise GoPayAutoSignupError("signup 失败")
+    log("[gopay-signup] GoPay customer 创建成功，刷新访问 token...")
     resp = signed_post(
         f"{BASE_URL}/goto-auth/token",
         {
@@ -1618,11 +2472,13 @@ def auto_signup(
     token_data = _safe_json(resp).get("data") or {} if resp.status_code < 500 else {}
     access_token = str(token_data.get("access_token") or signup_access)
     refresh_token = str(token_data.get("refresh_token") or signup_refresh)
+    log("[gopay-signup] GoPay token 已就绪，接受必要授权...")
     _accept_signup_consents(
         access_token=access_token,
         gopay_cfg=cfg,
         session=session,
     )
+    log("[gopay-signup] 授权已接受，开始设置 PIN...")
     _setup_pin(
         access_token=access_token,
         pin=pin,
@@ -1632,6 +2488,7 @@ def auto_signup(
         log=log,
         pre_otp_hook=pre_pin_otp_hook,
     )
+    log("[gopay-signup] GoPay 钱包注册流程完成")
     return GoPayAccountResult(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -1652,28 +2509,42 @@ def register_gopay_wallet(
     *,
     pin: str,
     proxy_url: str | None = None,
+    network_retry_proxy_provider: Callable[[], str | None] | None = None,
     country_code: str = "",
     sms_provider: str = "",
     hero_sms_config: dict[str, Any] | None = None,
     smscloud_config: dict[str, Any] | None = None,
+    smscode_config: dict[str, Any] | None = None,
     appium_config: dict[str, Any] | None = None,
     public_base_url: str = "",
     log: Callable[[str], None] = logger.info,
 ) -> GoPayAutoRegistrationResult:
     hero_sms_config = hero_sms_config or {}
     smscloud_config = smscloud_config or {}
+    smscode_config = smscode_config or {}
     provider = _normalize_sms_provider(
         sms_provider
         or str(hero_sms_config.get("provider") or "")
         or str(smscloud_config.get("provider") or "")
+        or str(smscode_config.get("provider") or "")
         or _env_str("GOPAY_AUTO_SIGNUP_SMS_PROVIDER", "smscloud")
     )
     resolved_country_code = country_code or _env_str("GOPAY_AUTO_SIGNUP_COUNTRY_CODE", "+62")
     resolved_pin = str(pin or _env_str("GOPAY_AUTO_SIGNUP_DEFAULT_PIN", "558023")).strip()
     effective_proxy = str(proxy_url or _env_str("GOPAY_AUTO_SIGNUP_PROXY_URL")).strip() or None
+    require_proxy = _env_str("GOPAY_AUTO_SIGNUP_REQUIRE_PROXY", "1").lower() not in {"0", "false", "no", "off"}
 
     if not re.fullmatch(r"\d{6}", resolved_pin):
         raise GoPayAutoSignupError("GoPay 自动注册 PIN 必须是 6 位数字")
+    if require_proxy and not effective_proxy:
+        raise GoPayAutoSignupError(
+            "GoPay 自动注册需要配置印尼代理，已停止取号；请在 GoPay 自动注册配置中填写 GOPAY_AUTO_SIGNUP_PROXY_URL，"
+            "或传入任务 proxy_url。若确认当前机器就是印尼出口，可设置 GOPAY_AUTO_SIGNUP_REQUIRE_PROXY=0"
+        )
+    log(
+        "[gopay-signup] 准备注册 GoPay 钱包: "
+        f"provider={provider} country={resolved_country_code} proxy={'enabled' if effective_proxy else 'disabled'}"
+    )
 
     if provider == "smscloud":
         smscloud_auth = str(
@@ -1711,12 +2582,59 @@ def register_gopay_wallet(
                     "请配置 GOPAY_AUTO_SIGNUP_SMSCLOUD_XI_TOKEN，不是个人资料里的 API密钥"
                 )
             raise GoPayAutoSignupError(f"smscloud 取号失败: {error}")
-        activation: SmsActivation | SmsCloudActivation = SmsCloudActivation(
+        log(f"[gopay-signup] smscloud 取号成功: +{resolved_country_code.strip('+')}***{str(phone_raw)[-4:]}")
+        activation: SmsActivation | SmsCloudActivation | SmsCodeActivation = SmsCloudActivation(
             activation_id=activation_id,
             phone=phone_raw,
             country_id=sms_country_value,
             base_url=smscloud_base_url,
             token=smscloud_auth,
+            log=log,
+        )
+    elif provider == "smscode":
+        smscode_token = str(smscode_config.get("api_token") or _env_str("GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN")).strip()
+        smscode_base_url = _smscode_base_url(
+            str(smscode_config.get("base_url") or _env_str("GOPAY_AUTO_SIGNUP_SMSCODE_BASE_URL", DEFAULT_SMSCODE_BASE_URL))
+        )
+        sms_country_value = str(smscode_config.get("country_id") or _env_str("GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID", "6")).strip() or "6"
+        smscode_platform_id = str(smscode_config.get("platform_id") or _env_str("GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_ID")).strip()
+        smscode_platform_query = str(
+            smscode_config.get("platform_query")
+            or _env_str("GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_QUERY", "gopay")
+        ).strip() or "gopay"
+        smscode_product_id = str(smscode_config.get("product_id") or _env_str("GOPAY_AUTO_SIGNUP_SMSCODE_PRODUCT_ID")).strip()
+        smscode_min_price = str(smscode_config.get("min_price") or _env_str("GOPAY_AUTO_SIGNUP_SMSCODE_MIN_PRICE")).strip()
+        smscode_max_price = str(smscode_config.get("max_price") or _env_str("GOPAY_AUTO_SIGNUP_SMSCODE_MAX_PRICE")).strip()
+        try:
+            sms_timeout = int(
+                float(
+                    smscode_config.get("timeout_sec")
+                    or _env_int("GOPAY_AUTO_SIGNUP_SMSCODE_TIMEOUT", DEFAULT_AUTO_SIGNUP_OTP_TIMEOUT_SEC)
+                )
+            )
+        except Exception:
+            sms_timeout = DEFAULT_AUTO_SIGNUP_OTP_TIMEOUT_SEC
+        if not smscode_token:
+            raise GoPayAutoSignupError("缺少 GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN 配置")
+        activation_id, phone_raw, error = _smscode_get_number(
+            base_url=smscode_base_url,
+            api_token=smscode_token,
+            country_id=sms_country_value,
+            platform_id=smscode_platform_id,
+            platform_query=smscode_platform_query,
+            product_id=smscode_product_id,
+            min_price=smscode_min_price,
+            max_price=smscode_max_price,
+        )
+        if not activation_id:
+            raise GoPayAutoSignupError(f"SMSCode 取号失败: {error}")
+        log(f"[gopay-signup] SMSCode 取号成功: +{resolved_country_code.strip('+')}***{str(phone_raw)[-4:]}")
+        activation = SmsCodeActivation(
+            activation_id=activation_id,
+            phone=phone_raw,
+            country_id=sms_country_value,
+            base_url=smscode_base_url,
+            api_token=smscode_token,
             log=log,
         )
     else:
@@ -1732,6 +2650,14 @@ def register_gopay_wallet(
         sms_service = str(hero_sms_config.get("service") or _env_str("GOPAY_AUTO_SIGNUP_HERO_SMS_SERVICE", "ni")).strip()
         hero_max_price = str(
             hero_sms_config.get("max_price") or _env_str("GOPAY_AUTO_SIGNUP_HERO_SMS_MAX_PRICE")
+        ).strip()
+        hero_min_price = str(
+            hero_sms_config.get("min_price") or _env_str("GOPAY_AUTO_SIGNUP_HERO_SMS_MIN_PRICE")
+        ).strip()
+        hero_preferred_price = str(
+            hero_sms_config.get("preferred_price")
+            or hero_sms_config.get("price_tier")
+            or _env_str("GOPAY_AUTO_SIGNUP_HERO_SMS_PREFERRED_PRICE")
         ).strip()
         try:
             sms_timeout = int(
@@ -1750,9 +2676,12 @@ def register_gopay_wallet(
             base_url=hero_base_url,
             api_key=hero_api_key,
             max_price=hero_max_price,
+            min_price=hero_min_price,
+            preferred_price=hero_preferred_price,
         )
         if not activation_id:
             raise GoPayAutoSignupError(f"hero-sms 取号失败: {error}")
+        log(f"[gopay-signup] hero-sms 取号成功: +{resolved_country_code.strip('+')}***{str(phone_raw)[-4:]}")
         activation = SmsActivation(
             activation_id=activation_id,
             phone=phone_raw,
@@ -1817,10 +2746,25 @@ def register_gopay_wallet(
                     except Exception as exc:
                         if not _looks_like_transient_gopay_network_error(exc) or network_attempt >= network_attempts:
                             raise
+                        selected_retry_proxy = ""
+                        if network_retry_proxy_provider is not None:
+                            try:
+                                selected_retry_proxy = str(network_retry_proxy_provider() or "").strip()
+                            except Exception as proxy_exc:
+                                log(
+                                    "GoPay 注册网络中断，切换代理失败，将继续使用当前代理重试: "
+                                    f"error={str(proxy_exc)[:180]}"
+                                )
+                        if selected_retry_proxy:
+                            effective_proxy = selected_retry_proxy
                         delay = min(8.0, 1.5 * network_attempt)
                         log(
-                            "GoPay 注册网络中断，使用当前号码重试: "
-                            f"attempt={network_attempt + 1}/{network_attempts} "
+                            (
+                                "GoPay 注册网络中断，已切换代理并使用当前号码重试: "
+                                if selected_retry_proxy
+                                else "GoPay 注册网络中断，使用当前号码重试: "
+                            )
+                            + f"attempt={network_attempt + 1}/{network_attempts} "
                             f"phone={resolved_country_code}{phone[:2]}***{phone[-4:] if len(phone) >= 4 else phone} "
                             f"error={str(exc)[:180]}"
                         )

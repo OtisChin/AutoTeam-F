@@ -787,6 +787,7 @@
                   >
                     <option value="smscloud">smscloud</option>
                     <option value="hero_sms">hero-sms</option>
+                    <option value="smscode">smscode.gg</option>
                   </select>
                 </div>
                 <div>
@@ -817,13 +818,182 @@
                     class="w-full px-3 py-2 bg-gray-950 border border-emerald-500/10 rounded-lg text-sm text-gray-300 focus:outline-none"
                   />
                 </div>
+                <label
+                  class="md:col-span-2 inline-flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
+                  :class="rekberinajaTransferEnabled
+                    ? 'border-gray-800 bg-gray-950/40 text-gray-500'
+                    : 'border-emerald-500/20 bg-gray-950/50 text-emerald-100'"
+                >
+                  <input
+                    v-model="gopayForm.gopayBalanceWaitFallbackTransfer"
+                    type="checkbox"
+                    class="mt-0.5 accent-blue-500"
+                    :disabled="gopaySubmitting || gopayTaskRunning || rekberinajaTransferEnabled"
+                  />
+                  <span>
+                    GoPay 余额等待 120s 仍未到账时回退 Rekberinaja 转账
+                    <span class="block mt-1 text-gray-500">
+                      {{ rekberinajaTransferEnabled ? '设置中已开启 Rekberinaja 转账，本任务会维持原转账流程。' : '仅在设置中 Rekberinaja 转账关闭时可选；需已保存 Rekberinaja 账号凭证。' }}
+                    </span>
+                  </span>
+                </label>
                 <div class="md:col-span-2 rounded-lg border px-3 py-2 text-xs break-words whitespace-normal" :class="gopayAutoSignupProviderConfigured ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-100' : 'border-amber-500/30 bg-amber-500/10 text-amber-100'">
-                  <div class="font-medium">{{ gopayAutoSignupConfigLoading ? '正在检查短信凭证配置...' : gopayAutoSignupProviderConfigured ? '短信凭证已配置' : '短信凭证未配置' }}</div>
-                  <div class="mt-1 opacity-80 leading-relaxed">
-                    {{ gopayAutoSignupProviderConfigured ? '将使用设置页或 .env 中保存的短信服务商密钥。' : gopayAutoSignupMissingMessage }}
+                  <div class="font-medium">{{ gopayAutoSignupConfigLoading ? '正在检查短信凭证配置...' : gopayAutoSignupProviderConfigured ? gopayAutoSignupConfiguredMessage : '短信凭证未配置' }}</div>
+                  <div v-if="!gopayAutoSignupProviderConfigured" class="mt-1 opacity-80 leading-relaxed">
+                    {{ gopayAutoSignupMissingMessage }}
                   </div>
                   <div v-if="gopayForm.gopayAutoSignupMode === 'appium'" class="mt-2 opacity-80 leading-relaxed">
                     当前任务将走 Appium 真实 APP 注册；Appium URL / ADB Serial 请到“设置 → GoPay 自动注册”中修改。
+                  </div>
+                </div>
+                <div v-if="gopayAutoSignupProvider === 'hero_sms'" class="md:col-span-2 rounded-lg border border-emerald-500/20 bg-gray-950/50 px-3 py-3">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <div class="text-sm font-medium text-emerald-100">Hero-SMS 实时价格</div>
+                      <div class="mt-1 text-xs text-gray-500">先按最低价/上限过滤，再优先尝试指定档位。</div>
+                    </div>
+                    <button
+                      type="button"
+                      @click="queryGoPayHeroSmsPrices"
+                      :disabled="gopayHeroSmsPriceQueryLoading || !gopayAutoSignupProviderConfigured"
+                      class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-blue-600/15 hover:bg-blue-600/25 text-blue-200 border-blue-500/30 transition disabled:opacity-50">
+                      {{ gopayHeroSmsPriceQueryLoading ? '查询中...' : '查询价格' }}
+                    </button>
+                  </div>
+                  <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label class="block text-xs text-emerald-200/80 mb-1">最低购买价</label>
+                      <input
+                        v-model.trim="gopayForm.gopayAutoSignupHeroSmsMinPrice"
+                        type="text"
+                        placeholder="例如 0.06"
+                        :disabled="gopaySubmitting || gopayTaskRunning"
+                        class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs text-emerald-200/80 mb-1">价格上限</label>
+                      <input
+                        v-model.trim="gopayForm.gopayAutoSignupHeroSmsMaxPrice"
+                        type="text"
+                        placeholder="例如 0.12"
+                        :disabled="gopaySubmitting || gopayTaskRunning"
+                        class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs text-emerald-200/80 mb-1">指定档位</label>
+                      <input
+                        v-model.trim="gopayForm.gopayAutoSignupHeroSmsPreferredPrice"
+                        type="text"
+                        placeholder="例如 0.09"
+                        :disabled="gopaySubmitting || gopayTaskRunning"
+                        class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+                  <div
+                    v-if="gopayHeroSmsPriceQueryResult"
+                    class="mt-3 rounded-lg border border-gray-800 bg-gray-900/80 px-3 py-2 text-xs text-gray-300 space-y-2">
+                    <div class="flex gap-2">
+                      <span class="shrink-0 text-gray-500">全部档位</span>
+                      <div class="flex flex-wrap gap-1.5">
+                        <span
+                          v-for="tier in gopayHeroSmsAllTierBadges"
+                          :key="`all-${tier.key}`"
+                          class="rounded-full border border-gray-700 bg-gray-950 px-2 py-0.5 text-gray-300">
+                          <span class="font-medium text-gray-100">{{ tier.price }}</span>
+                          <span class="ml-1 text-gray-500">x{{ tier.count }}</span>
+                        </span>
+                        <span v-if="!gopayHeroSmsAllTierBadges.length" class="text-gray-500">无</span>
+                      </div>
+                    </div>
+                    <div class="flex gap-2">
+                      <span class="shrink-0 text-emerald-400">区间可用</span>
+                      <div class="flex flex-wrap gap-1.5">
+                        <span
+                          v-for="tier in gopayHeroSmsFilteredTierBadges"
+                          :key="`filtered-${tier.key}`"
+                          :class="[
+                            'rounded-full border px-2 py-0.5',
+                            tier.preferred
+                              ? 'border-amber-400/40 bg-amber-500/15 text-amber-100'
+                              : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                          ]">
+                          <span class="font-semibold">{{ tier.price }}</span>
+                          <span class="ml-1 opacity-70">x{{ tier.count }}</span>
+                          <span v-if="tier.preferred" class="ml-1 text-amber-300">指定</span>
+                        </span>
+                        <span v-if="!gopayHeroSmsFilteredTierBadges.length" class="text-gray-500">无</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="gopayAutoSignupProvider === 'smscode'" class="md:col-span-2 rounded-lg border border-emerald-500/20 bg-gray-950/50 px-3 py-3">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <div class="text-sm font-medium text-emerald-100">SMSCode 实时产品</div>
+                      <div class="mt-1 text-xs text-gray-500">默认国家 ID 6（印尼），平台关键词 gopay；也可在设置页固定平台 ID 或产品 ID。</div>
+                    </div>
+                    <button
+                      type="button"
+                      @click="queryGoPaySmscodePrices"
+                      :disabled="gopaySmscodePriceQueryLoading || !gopayAutoSignupProviderConfigured"
+                      class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-blue-600/15 hover:bg-blue-600/25 text-blue-200 border-blue-500/30 transition disabled:opacity-50">
+                      {{ gopaySmscodePriceQueryLoading ? '查询中...' : '查询价格' }}
+                    </button>
+                  </div>
+                  <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label class="block text-xs text-emerald-200/80 mb-1">最低购买价</label>
+                      <input
+                        v-model.trim="gopayForm.gopayAutoSignupSmscodeMinPrice"
+                        type="text"
+                        placeholder="留空不限下限"
+                        :disabled="gopaySubmitting || gopayTaskRunning"
+                        class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs text-emerald-200/80 mb-1">价格上限</label>
+                      <input
+                        v-model.trim="gopayForm.gopayAutoSignupSmscodeMaxPrice"
+                        type="text"
+                        placeholder="留空不限价"
+                        :disabled="gopaySubmitting || gopayTaskRunning"
+                        class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+                  <div
+                    v-if="gopaySmscodePriceQueryResult"
+                    class="mt-3 rounded-lg border border-gray-800 bg-gray-900/80 px-3 py-2 text-xs text-gray-300 space-y-2">
+                    <div class="flex gap-2">
+                      <span class="shrink-0 text-gray-500">全部产品</span>
+                      <div class="flex flex-wrap gap-1.5">
+                        <span
+                          v-for="product in gopaySmscodeAllProductBadges"
+                          :key="`smscode-all-${product.key}`"
+                          class="rounded-full border border-gray-700 bg-gray-950 px-2 py-0.5 text-gray-300">
+                          <span class="font-medium text-gray-100">{{ product.price }}</span>
+                          <span class="ml-1 text-gray-500">x{{ product.count }}</span>
+                        </span>
+                        <span v-if="!gopaySmscodeAllProductBadges.length" class="text-gray-500">无</span>
+                      </div>
+                    </div>
+                    <div class="flex gap-2">
+                      <span class="shrink-0 text-emerald-400">区间可用</span>
+                      <div class="flex flex-wrap gap-1.5">
+                        <span
+                          v-for="product in gopaySmscodeFilteredProductBadges"
+                          :key="`smscode-filtered-${product.key}`"
+                          class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-100">
+                          <span class="font-semibold">{{ product.price }}</span>
+                          <span class="ml-1 opacity-70">x{{ product.count }}</span>
+                        </span>
+                        <span v-if="!gopaySmscodeFilteredProductBadges.length" class="text-gray-500">无</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -852,7 +1022,7 @@
             <div class="mt-1 text-xs text-gray-500">
               未勾选时，绑定成功后默认用当前 auth_session 直接生成 CPA 认证 JSON。
             </div>
-            <div class="mt-3 grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
+            <div class="mt-3 grid grid-cols-1 sm:grid-cols-[120px_120px_minmax(0,1fr)] items-center gap-3">
               <div>
                 <label class="block text-xs text-gray-400 mb-1">待重试次数</label>
                 <input
@@ -865,8 +1035,20 @@
                   class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
+              <div>
+                <label class="block text-xs text-gray-400 mb-1">并发数</label>
+                <input
+                  v-model.number="gopayForm.gopayConcurrency"
+                  type="number"
+                  min="1"
+                  max="3"
+                  step="1"
+                  :disabled="gopaySubmitting || gopayTaskRunning || gopayForm.autoRegister || Boolean(gopayForm.checkoutUrl)"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
               <div class="text-xs text-gray-500">
-                只重试未明确失败账号；0 表示不重试，最多 3 轮，退避 60s / 180s / 300s。
+                待重试最多 3 轮，退避 60s / 120s；并发仅用于批量账号绑定，自动注册 ChatGPT 账号保持顺序。
               </div>
             </div>
           </div>
@@ -1040,26 +1222,90 @@
             </div>
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label class="block text-sm text-gray-400 mb-1">代理标签</label>
-              <input
-                v-model.trim="gopayForm.proxyLabel"
-                type="text"
+          <div class="rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-3">
+            <div class="mb-3 text-sm font-medium text-gray-200">GoPay 注册代理</div>
+            <template v-if="!gopayForm.proxyPoolEnabled && !gopayForm.proxyApiEnabled">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-sm text-gray-400 mb-1">代理标签</label>
+                  <input
+                    v-model.trim="gopayForm.proxyLabel"
+                    type="text"
+                    :disabled="gopaySubmitting || gopayTaskRunning"
+                    placeholder="例如 res-id-01"
+                    class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-400 mb-1">代理 URL</label>
+                  <input
+                    v-model.trim="gopayForm.proxyUrl"
+                    type="text"
+                    :disabled="gopaySubmitting || gopayTaskRunning"
+                    placeholder="socks5://user:pass@host:port"
+                    class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            </template>
+
+            <div v-if="!gopayForm.proxyApiEnabled" class="mt-3 flex items-center justify-between gap-3">
+              <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  v-model="gopayForm.proxyPoolEnabled"
+                  type="checkbox"
+                  :disabled="gopaySubmitting || gopayTaskRunning || gopayForm.proxyApiEnabled"
+                  class="accent-blue-500"
+                />
+                启用动态代理池
+              </label>
+              <button
+                v-if="gopayForm.proxyPoolEnabled"
+                type="button"
+                @click="openGoPayProxyPoolConfig"
                 :disabled="gopaySubmitting || gopayTaskRunning"
-                placeholder="例如 res-id-01"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-              />
+                class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-blue-600/15 hover:bg-blue-600/25 text-blue-200 border-blue-500/30 transition disabled:opacity-50">
+                配置
+              </button>
             </div>
-            <div>
-              <label class="block text-sm text-gray-400 mb-1">代理 URL</label>
-              <input
-                v-model.trim="gopayForm.proxyUrl"
-                type="text"
-                :disabled="gopaySubmitting || gopayTaskRunning"
-                placeholder="socks5://user:pass@host:port"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-              />
+
+            <div v-if="!gopayForm.proxyPoolEnabled" class="mt-3">
+              <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  v-model="gopayForm.proxyApiEnabled"
+                  type="checkbox"
+                  :disabled="gopaySubmitting || gopayTaskRunning || gopayForm.proxyPoolEnabled"
+                  class="accent-blue-500"
+                />
+                启用代理 API 轮换
+              </label>
+              <div v-if="gopayForm.proxyApiEnabled" class="mt-3">
+                <label class="block text-sm text-gray-400 mb-1">供应商</label>
+                <select
+                  v-model="gopayForm.proxyApiProvider"
+                  :disabled="gopaySubmitting || gopayTaskRunning"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="cliproxy">Cliproxy</option>
+                  <option value="1024proxy">1024proxy</option>
+                </select>
+                <div class="mt-2 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-100">
+                  {{ gopayProxyApiHelp }}
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-3 text-xs text-gray-500">{{ gopayProxySummary }}</div>
+            <div v-if="gopayForm.proxyPoolEnabled && !gopayForm.proxyApiEnabled" class="mt-3 max-h-32 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70">
+              <div v-if="!gopayProxyPoolEntries.length" class="px-3 py-3 text-xs text-gray-500">尚未导入代理。</div>
+              <div
+                v-for="(proxy, index) in gopayProxyPoolEntries"
+                :key="proxy"
+                class="flex items-center justify-between gap-3 border-b border-gray-900 px-3 py-2 last:border-b-0"
+              >
+                <span class="shrink-0 text-xs text-gray-500">代理 {{ index + 1 }}</span>
+                <span class="min-w-0 truncate font-mono text-xs text-gray-200">{{ proxy }}</span>
+              </div>
             </div>
           </div>
 
@@ -1341,6 +1587,60 @@
     </div>
 
     <div
+      v-if="activeTab === 'gopay' && gopayProxyPoolConfigOpen"
+      class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      @click.self="closeGoPayProxyPoolConfig"
+    >
+      <div class="w-full max-w-2xl max-h-[82vh] rounded-xl border border-gray-800 bg-gray-900 shadow-2xl flex flex-col">
+        <div class="flex items-center justify-between gap-4 px-5 py-4 border-b border-gray-800">
+          <div>
+            <h4 class="text-lg font-semibold text-white">动态代理池配置</h4>
+            <div class="text-xs text-gray-500 mt-1">每行一个代理，保存时会自动去重；GoPay 钱包注册前随机选择。</div>
+          </div>
+          <button
+            type="button"
+            @click="closeGoPayProxyPoolConfig"
+            class="px-3 py-1.5 rounded-lg text-sm border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition">
+            关闭
+          </button>
+        </div>
+
+        <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">代理池</label>
+            <textarea
+              v-model="gopayForm.proxyPoolText"
+              rows="9"
+              placeholder="每行一条代理，例如：&#10;socks5://user:pass@host:port&#10;host:port:user:pass"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
+            ></textarea>
+          </div>
+
+          <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
+            <div>有效代理：<span class="text-gray-200">{{ gopayProxyPoolEntries.length }}</span></div>
+            <div>轮换方式：<span class="text-gray-200">每次注册 GoPay 钱包前随机选择一条。</span></div>
+            <div>支持格式与 PayPal 页面一致：协议 URL、host:port:user:pass、user:pass@host:port 等。</div>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <button
+            type="button"
+            @click="closeGoPayProxyPoolConfig"
+            class="px-4 py-2 rounded-lg text-sm border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition">
+            取消
+          </button>
+          <button
+            type="button"
+            @click="confirmGoPayProxyPoolConfig"
+            class="px-5 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition">
+            确认
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
       v-if="gopayAccountPickerOpen"
       class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
       @click.self="closeGoPayAccountPicker"
@@ -1483,6 +1783,11 @@ const bindTask = ref(null)
 const bindLogEntries = ref([])
 const gopayAutoSignupConfig = ref(null)
 const gopayAutoSignupConfigLoading = ref(false)
+const gopayRekberinajaConfig = ref(null)
+const gopayHeroSmsPriceQueryLoading = ref(false)
+const gopayHeroSmsPriceQueryResult = ref(null)
+const gopaySmscodePriceQueryLoading = ref(false)
+const gopaySmscodePriceQueryResult = ref(null)
 const gopayForm = ref({
   email: '',
   autoRegister: false,
@@ -1496,11 +1801,24 @@ const gopayForm = ref({
   gopayAutoSignupHeroSmsCountry: '6',
   gopayAutoSignupHeroSmsService: 'ni',
   gopayAutoSignupHeroSmsTimeout: 120,
+  gopayAutoSignupHeroSmsMinPrice: '',
+  gopayAutoSignupHeroSmsMaxPrice: '',
+  gopayAutoSignupHeroSmsPreferredPrice: '',
   gopayAutoSignupSmscloudBaseUrl: 'https://smscloud.sbs/api',
   gopayAutoSignupSmscloudCountry: '6',
   gopayAutoSignupSmscloudService: 'ni',
   gopayAutoSignupSmscloudMaxPrice: '',
   gopayAutoSignupSmscloudTimeout: 120,
+  gopayAutoSignupSmscodeApiToken: '',
+  gopayAutoSignupSmscodeBaseUrl: 'https://api.smscode.gg/v1',
+  gopayAutoSignupSmscodeCountryId: '6',
+  gopayAutoSignupSmscodePlatformId: '',
+  gopayAutoSignupSmscodePlatformQuery: 'gopay',
+  gopayAutoSignupSmscodeProductId: '',
+  gopayAutoSignupSmscodeMinPrice: '',
+  gopayAutoSignupSmscodeMaxPrice: '',
+  gopayAutoSignupSmscodeTimeout: 120,
+  gopayBalanceWaitFallbackTransfer: false,
   autoRegisterMailProvider: '',
   autoRegisterLuckmailEmailType: 'ms_graph',
   autoRegisterLuckmailPreferredDomain: '',
@@ -1529,14 +1847,20 @@ const gopayForm = ref({
   billingAddress2: '',
   proxyLabel: '',
   proxyUrl: '',
+  proxyPoolEnabled: false,
+  proxyPoolText: '',
+  proxyApiEnabled: false,
+  proxyApiProvider: 'cliproxy',
   deleteRejectedAccounts: false,
   autoOauthAfterSuccess: false,
   pendingRetryAttempts: 1,
+  gopayConcurrency: 1,
 })
 const gopayAccountSearchKeyword = ref('')
 const gopayAccountPickerOpen = ref(false)
 const gopayAutoRegisterConfigOpen = ref(false)
 const gopayPhonePoolConfigOpen = ref(false)
+const gopayProxyPoolConfigOpen = ref(false)
 const gopayMailProviderLoading = ref(false)
 const gopayMailProviderOptions = ref([])
 const gopayRegisterDomainOptions = ref([])
@@ -1649,6 +1973,10 @@ const normalizedGoPayPendingRetryAttempts = computed(() => {
   return normalizeGoPayPendingRetryAttempts(gopayForm.value.pendingRetryAttempts)
 })
 
+const normalizedGoPayConcurrency = computed(() => {
+  return normalizeGoPayConcurrency(gopayForm.value.gopayConcurrency)
+})
+
 const gopayAutoRegisterUsesLuckMail = computed(() => gopayForm.value.autoRegisterMailProvider === 'luckmail')
 const gopayAutoRegisterUsesOutlook = computed(() => gopayForm.value.autoRegisterMailProvider === 'outlook')
 const gopayAutoRegisterUsesDomains = computed(() => !gopayAutoRegisterUsesLuckMail.value && !gopayAutoRegisterUsesOutlook.value)
@@ -1742,20 +2070,134 @@ const gopayBatchActive = computed(() => {
 const gopayAutoSignupEnabled = computed(() => Boolean(gopayForm.value.gopayAutoSignup))
 
 const gopayAutoSignupProvider = computed(() => {
-  return gopayForm.value.gopayAutoSignupSmsProvider === 'hero_sms' ? 'hero_sms' : 'smscloud'
+  const provider = String(gopayForm.value.gopayAutoSignupSmsProvider || '').trim()
+  return provider === 'hero_sms' || provider === 'smscode' ? provider : 'smscloud'
 })
 
 const gopayAutoSignupProviderConfigured = computed(() => {
   const cfg = gopayAutoSignupConfig.value || {}
-  return gopayAutoSignupProvider.value === 'hero_sms'
-    ? Boolean(cfg.hero_sms_api_key_present)
-    : Boolean(cfg.smscloud_xi_token_present)
+  if (gopayAutoSignupProvider.value === 'hero_sms') return Boolean(cfg.hero_sms_api_key_present)
+  if (gopayAutoSignupProvider.value === 'smscode') return Boolean(cfg.smscode_api_token_present)
+  return Boolean(cfg.smscloud_xi_token_present)
+})
+
+const gopayAutoSignupConfiguredMessage = computed(() => {
+  if (gopayAutoSignupProvider.value === 'hero_sms') return 'Hero-SMS 密钥已配置'
+  if (gopayAutoSignupProvider.value === 'smscode') return 'SMSCode 密钥已配置'
+  return 'SMSCloud 凭证已配置'
 })
 
 const gopayAutoSignupMissingMessage = computed(() => {
-  return gopayAutoSignupProvider.value === 'hero_sms'
-    ? '请到设置页配置 hero-sms API Key，或在 .env 中配置 GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY。'
-    : '请到设置页配置 smscloud XI_TOKEN，或在 .env 中配置 GOPAY_AUTO_SIGNUP_SMSCLOUD_XI_TOKEN。'
+  if (gopayAutoSignupProvider.value === 'hero_sms') {
+    return '请到设置页配置 hero-sms API Key，或在 .env 中配置 GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY。'
+  }
+  if (gopayAutoSignupProvider.value === 'smscode') {
+    return '请到设置页配置 SMSCode API Token，或在 .env 中配置 GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN。'
+  }
+  return '请到设置页配置 smscloud XI_TOKEN，或在 .env 中配置 GOPAY_AUTO_SIGNUP_SMSCLOUD_XI_TOKEN。'
+})
+
+const rekberinajaTransferEnabled = computed(() => Boolean(
+  gopayRekberinajaConfig.value?.transfer_enabled
+    ?? gopayRekberinajaConfig.value?.enabled
+))
+
+function normalizeGoPayHeroSmsTierBadges(tiers, fallbackPrices, preferredPrice) {
+  const preferred = Number(String(preferredPrice || '').trim())
+  if (Array.isArray(tiers) && tiers.length) {
+    return tiers
+      .map((tier, index) => {
+        const price = Number(tier?.price ?? tier?.cost)
+        if (!Number.isFinite(price) || price <= 0) return null
+        const count = Number(tier?.count)
+        const normalizedPrice = Math.round(price * 10000) / 10000
+        return {
+          key: `${normalizedPrice}-${index}`,
+          price: String(normalizedPrice).replace(/\.?0+$/, ''),
+          count: Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0,
+          preferred: Number.isFinite(preferred) && Math.abs(normalizedPrice - preferred) < 0.00001,
+        }
+      })
+      .filter(Boolean)
+  }
+  return (Array.isArray(fallbackPrices) ? fallbackPrices : [])
+    .map((price, index) => {
+      const normalizedPrice = Number(price)
+      if (!Number.isFinite(normalizedPrice) || normalizedPrice <= 0) return null
+      return {
+        key: `${normalizedPrice}-${index}`,
+        price: String(Math.round(normalizedPrice * 10000) / 10000).replace(/\.?0+$/, ''),
+        count: 0,
+        preferred: Number.isFinite(preferred) && Math.abs(normalizedPrice - preferred) < 0.00001,
+      }
+    })
+    .filter(Boolean)
+}
+
+const gopayHeroSmsAllTierBadges = computed(() => {
+  const result = gopayHeroSmsPriceQueryResult.value || {}
+  return normalizeGoPayHeroSmsTierBadges(
+    result.tiers,
+    result.prices,
+    gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice,
+  )
+})
+
+const gopayHeroSmsFilteredTierBadges = computed(() => {
+  const result = gopayHeroSmsPriceQueryResult.value || {}
+  return normalizeGoPayHeroSmsTierBadges(
+    result.filtered_tiers,
+    result.filtered_prices,
+    gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice,
+  )
+})
+
+const gopayHeroSmsPriceQuerySummary = computed(() => {
+  const result = gopayHeroSmsPriceQueryResult.value
+  if (!result) return ''
+  const formatTiers = (tiers, fallbackPrices) => {
+    if (Array.isArray(tiers) && tiers.length) {
+      return tiers
+        .map(tier => {
+          const price = tier?.price ?? tier?.cost
+          const count = Number(tier?.count)
+          return Number.isFinite(count) ? `${price}(x${Math.max(0, Math.floor(count))})` : String(price)
+        })
+        .join(', ')
+    }
+    return Array.isArray(fallbackPrices) && fallbackPrices.length ? fallbackPrices.join(', ') : '无'
+  }
+  const prices = Array.isArray(result.prices) ? result.prices : []
+  const filtered = Array.isArray(result.filtered_prices) ? result.filtered_prices : []
+  const allText = formatTiers(result.tiers, prices)
+  const filteredText = formatTiers(result.filtered_tiers, filtered)
+  return `全部档位：${allText}；区间内可用：${filteredText}`
+})
+
+function normalizeGoPaySmscodeProductBadges(products) {
+  return (Array.isArray(products) ? products : [])
+    .map((product, index) => {
+      const price = Number(product?.price ?? product?.cost)
+      if (!Number.isFinite(price) || price <= 0) return null
+      const count = Number(product?.count ?? product?.available ?? product?.stock ?? product?.quantity)
+      const id = String(product?.id ?? product?.product_id ?? product?.productId ?? index)
+      return {
+        key: `${id}-${index}`,
+        price: String(Math.round(price * 10000) / 10000).replace(/\.?0+$/, ''),
+        count: Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0,
+      }
+    })
+    .filter(Boolean)
+}
+
+const gopaySmscodeAllProductBadges = computed(() => {
+  const result = gopaySmscodePriceQueryResult.value || {}
+  return normalizeGoPaySmscodeProductBadges(result.products)
+})
+
+const gopaySmscodeFilteredProductBadges = computed(() => {
+  const result = gopaySmscodePriceQueryResult.value || {}
+  return normalizeGoPaySmscodeProductBadges(result.filtered_products)
 })
 
 const gopayOtpChannel = computed(() => {
@@ -1827,6 +2269,23 @@ const gopayPhonePoolPlaceholder = computed(() => {
   return '每行：国家区号|手机号|短信接口URL|GoPay PIN\n62|81997420107|https://it.tgflare.com/api/record?token=...|558023'
 })
 
+const gopayProxyPoolEntries = computed(() => parseGoPayProxyPoolLines(gopayForm.value.proxyPoolText))
+const gopayProxyApiHelp = computed(() => {
+  if (gopayForm.value.proxyApiProvider === '1024proxy') {
+    return '运行时使用 1024proxy 印尼代理 API，每次注册 GoPay 钱包前提取一条。'
+  }
+  return '运行时使用 Cliproxy 印尼代理 API：region=ID&num=1&time=10&format=n&type=txt。'
+})
+const gopayProxySummary = computed(() => {
+  if (gopayForm.value.proxyApiEnabled) {
+    return '已启用代理 API 轮换；每次注册 GoPay 钱包前调用一次供应商 API。'
+  }
+  if (gopayForm.value.proxyPoolEnabled) {
+    return `已配置 ${gopayProxyPoolEntries.value.length} 条代理；每次注册 GoPay 钱包前随机选一条。`
+  }
+  return gopayForm.value.proxyUrl ? '已配置单条代理；所有 GoPay 钱包注册使用这条代理。' : '未配置代理；GoPay 自动注册会在取号前阻断，避免触发 429。'
+})
+
 const gopaySinglePhoneComplete = computed(() => {
   return Boolean(
     gopayForm.value.phoneNumber
@@ -1854,6 +2313,24 @@ function digitsOnly(value) {
   return String(value || '').replace(/\D/g, '')
 }
 
+function parseGoPayProxyPoolLines(text) {
+  const seen = new Set()
+  return String(text || '')
+    .split(/\r?\n|,/)
+    .map(line => String(line || '').split('#')[0].trim())
+    .filter(line => {
+      if (!line) return false
+      const key = line.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+function mergeGoPayProxyPoolText(...texts) {
+  return parseGoPayProxyPoolLines(texts.join('\n')).join('\n')
+}
+
 function normalizeGoPayAutoRegisterCount(value) {
   const count = Number(value || 1)
   if (!Number.isFinite(count)) return 1
@@ -1866,21 +2343,93 @@ function normalizeGoPayPendingRetryAttempts(value) {
   return Math.max(0, Math.min(3, Math.floor(count)))
 }
 
+function normalizeGoPayConcurrency(value) {
+  const count = Number(value ?? 1)
+  if (!Number.isFinite(count)) return 1
+  return Math.max(1, Math.min(3, Math.floor(count)))
+}
+
 async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
   gopayAutoSignupConfigLoading.value = true
   try {
     const cfg = await api.getGoPayAutoSignupConfig()
     gopayAutoSignupConfig.value = cfg
     if (applyDefaults) {
-      gopayForm.value.gopayAutoSignupSmsProvider = cfg.provider === 'hero_sms' ? 'hero_sms' : 'smscloud'
+      gopayForm.value.gopayAutoSignupSmsProvider = ['hero_sms', 'smscode'].includes(cfg.provider) ? cfg.provider : 'smscloud'
       gopayForm.value.gopayAutoSignupMode = 'http'
       gopayForm.value.countryCode = '62'
+      gopayForm.value.gopayAutoSignupHeroSmsMinPrice = String(cfg.hero_sms_min_price || '').trim()
+      gopayForm.value.gopayAutoSignupHeroSmsMaxPrice = String(cfg.hero_sms_max_price || '').trim()
+      gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice = String(cfg.hero_sms_preferred_price || '').trim()
+      gopayForm.value.gopayAutoSignupSmscodeBaseUrl = String(cfg.smscode_base_url || 'https://api.smscode.gg/v1').trim()
+      gopayForm.value.gopayAutoSignupSmscodeCountryId = String(cfg.smscode_country_id || '6').trim()
+      gopayForm.value.gopayAutoSignupSmscodePlatformId = String(cfg.smscode_platform_id || '').trim()
+      gopayForm.value.gopayAutoSignupSmscodePlatformQuery = String(cfg.smscode_platform_query || 'gopay').trim()
+      gopayForm.value.gopayAutoSignupSmscodeProductId = String(cfg.smscode_product_id || '').trim()
+      gopayForm.value.gopayAutoSignupSmscodeMinPrice = String(cfg.smscode_min_price || '').trim()
+      gopayForm.value.gopayAutoSignupSmscodeMaxPrice = String(cfg.smscode_max_price || '').trim()
     }
   } catch (e) {
     gopayAutoSignupConfig.value = null
     console.error('加载 GoPay 自动注册配置失败:', e)
   } finally {
     gopayAutoSignupConfigLoading.value = false
+  }
+}
+
+async function loadGoPayRekberinajaConfig() {
+  try {
+    const cfg = await api.getRekberinajaConfig()
+    gopayRekberinajaConfig.value = cfg || {}
+    if (Boolean(cfg?.transfer_enabled ?? cfg?.enabled)) {
+      gopayForm.value.gopayBalanceWaitFallbackTransfer = false
+    }
+  } catch (e) {
+    gopayRekberinajaConfig.value = null
+    console.error('加载 Rekberinaja 配置失败:', e)
+  }
+}
+
+async function queryGoPayHeroSmsPrices() {
+  gopayHeroSmsPriceQueryLoading.value = true
+  gopayHeroSmsPriceQueryResult.value = null
+  try {
+    const result = await api.queryGoPayHeroSmsPrices({
+      hero_sms_base_url: gopayForm.value.gopayAutoSignupHeroSmsBaseUrl,
+      hero_sms_country: gopayForm.value.gopayAutoSignupHeroSmsCountry,
+      hero_sms_service: gopayForm.value.gopayAutoSignupHeroSmsService,
+      hero_sms_min_price: gopayForm.value.gopayAutoSignupHeroSmsMinPrice,
+      hero_sms_max_price: gopayForm.value.gopayAutoSignupHeroSmsMaxPrice,
+      hero_sms_preferred_price: gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice,
+    })
+    gopayHeroSmsPriceQueryResult.value = result
+  } catch (e) {
+    message.value = e?.message || 'hero-sms 查询失败'
+    messageClass.value = 'bg-red-500/10 text-red-300 border border-red-500/30'
+  } finally {
+    gopayHeroSmsPriceQueryLoading.value = false
+  }
+}
+
+async function queryGoPaySmscodePrices() {
+  gopaySmscodePriceQueryLoading.value = true
+  gopaySmscodePriceQueryResult.value = null
+  try {
+    const cfg = gopayAutoSignupConfig.value || {}
+    const result = await api.queryGoPaySmscodePrices({
+      smscode_base_url: gopayForm.value.gopayAutoSignupSmscodeBaseUrl || cfg.smscode_base_url || 'https://api.smscode.gg/v1',
+      smscode_country_id: gopayForm.value.gopayAutoSignupSmscodeCountryId || cfg.smscode_country_id || '6',
+      smscode_platform_id: gopayForm.value.gopayAutoSignupSmscodePlatformId || cfg.smscode_platform_id || '',
+      smscode_platform_query: gopayForm.value.gopayAutoSignupSmscodePlatformQuery || cfg.smscode_platform_query || 'gopay',
+      smscode_min_price: gopayForm.value.gopayAutoSignupSmscodeMinPrice,
+      smscode_max_price: gopayForm.value.gopayAutoSignupSmscodeMaxPrice,
+    })
+    gopaySmscodePriceQueryResult.value = result
+  } catch (e) {
+    message.value = e?.message || 'SMSCode 查询失败'
+    messageClass.value = 'bg-red-500/10 text-red-300 border border-red-500/30'
+  } finally {
+    gopaySmscodePriceQueryLoading.value = false
   }
 }
 
@@ -2001,6 +2550,15 @@ watch(
 )
 
 watch(
+  () => rekberinajaTransferEnabled.value,
+  enabled => {
+    if (enabled) {
+      gopayForm.value.gopayBalanceWaitFallbackTransfer = false
+    }
+  }
+)
+
+watch(
   () => gopayForm.value.autoRegisterCount,
   count => {
     const normalized = normalizeGoPayAutoRegisterCount(count)
@@ -2016,6 +2574,37 @@ watch(
     const normalized = normalizeGoPayPendingRetryAttempts(count)
     if (normalized !== count) {
       gopayForm.value.pendingRetryAttempts = normalized
+    }
+  }
+)
+
+watch(
+  () => gopayForm.value.gopayConcurrency,
+  count => {
+    const normalized = normalizeGoPayConcurrency(count)
+    if (normalized !== count) {
+      gopayForm.value.gopayConcurrency = normalized
+    }
+  }
+)
+
+watch(
+  () => gopayForm.value.proxyPoolEnabled,
+  enabled => {
+    if (enabled) {
+      gopayForm.value.proxyApiEnabled = false
+    }
+  }
+)
+
+watch(
+  () => gopayForm.value.proxyApiEnabled,
+  enabled => {
+    if (enabled) {
+      gopayForm.value.proxyPoolEnabled = false
+      gopayForm.value.proxyApiProvider = ['1024proxy', 'cliproxy'].includes(String(gopayForm.value.proxyApiProvider || ''))
+        ? gopayForm.value.proxyApiProvider
+        : 'cliproxy'
     }
   }
 )
@@ -2097,9 +2686,12 @@ const gopayStageLabelMap = {
   gopay_wallet_auto_signup_detail: 'GoPay 注册详情',
   gopay_wallet_auto_signup_retry: 'GoPay 注册换号重试',
   gopay_wallet_auto_signup_rate_limited: 'GoPay 注册触发限流，任务中止',
+  gopay_wallet_auto_signup_provider_error: 'GoPay 短信供应商不可用',
   gopay_wallet_auto_signup_network_error: 'GoPay 注册网络中断，任务中止',
   gopay_wallet_auto_signup_probe_failed: 'GoPay 探测异常',
   gopay_wallet_auto_signup_done: 'GoPay 钱包已就绪',
+  gopay_proxy_selected: '已选择 GoPay 代理',
+  gopay_proxy_api_selected: '已通过 API 获取 GoPay 代理',
   gopay_wallet_reused: '复用 GoPay 钱包',
   gopay_wallet_reuse_discarded: '丢弃不可用复用钱包',
   gopay_wallet_preserved: '保留 GoPay 钱包',
@@ -2111,6 +2703,7 @@ const gopayStageLabelMap = {
   gopay_wallet_balance_ready: 'GoPay 余额已到账',
   gopay_wallet_balance_wait: '等待 GoPay 余额',
   gopay_wallet_balance_not_ready: 'GoPay 余额未到账',
+  gopay_wallet_balance_fallback_transfer: 'GoPay 余额回退转账',
   gopay_wallet_balance_abandoned: '丢弃 GoPay 钱包',
   gopay_wallet_balance_check_failed: 'GoPay 余额查询失败',
   rekberinaja_login_started: 'Rekberinaja 登录',
@@ -2148,6 +2741,9 @@ const gopayStageLabelMap = {
   gopay_account_skipped_cooldown: '跳过冷却中的 auth_session',
   gopay_pending_retry_queued: '加入待重试',
   gopay_pending_retry_wait: '待重试退避等待',
+  gopay_parallel_started: 'GoPay 并发开始',
+  gopay_parallel_account: 'GoPay 并发账号',
+  gopay_concurrency_limited: 'GoPay 并发受限',
   gopay_pending_retry_started: '开始重试待重试账号',
   gopay_pending_retry_account: '重试待重试账号',
   gopay_pending_retry_failed: '待重试账号失败',
@@ -2529,6 +3125,25 @@ function confirmGoPayPhonePoolConfig() {
   closeGoPayPhonePoolConfig()
 }
 
+function openGoPayProxyPoolConfig() {
+  gopayProxyPoolConfigOpen.value = true
+}
+
+function closeGoPayProxyPoolConfig() {
+  gopayProxyPoolConfigOpen.value = false
+}
+
+function confirmGoPayProxyPoolConfig() {
+  const merged = mergeGoPayProxyPoolText(gopayForm.value.proxyPoolText)
+  if (!merged) {
+    setMessage('请至少配置一条有效代理', false)
+    return
+  }
+  gopayForm.value.proxyPoolText = merged
+  gopayForm.value.proxyPoolEnabled = true
+  closeGoPayProxyPoolConfig()
+}
+
 async function refreshWhatsAppOtpStatus() {
   try {
     whatsappOtpStatus.value = await api.getWhatsAppOtpStatus()
@@ -2598,6 +3213,12 @@ function getRememberedGoPayForm() {
     gopayAutoSignup: Boolean(gopayForm.value.gopayAutoSignup),
     gopayAutoSignupSmsProvider: gopayAutoSignupProvider.value,
     gopayAutoSignupMode: gopayForm.value.gopayAutoSignupMode === 'appium' ? 'appium' : 'http',
+    gopayAutoSignupHeroSmsMinPrice: String(gopayForm.value.gopayAutoSignupHeroSmsMinPrice || '').trim(),
+    gopayAutoSignupHeroSmsMaxPrice: String(gopayForm.value.gopayAutoSignupHeroSmsMaxPrice || '').trim(),
+    gopayAutoSignupHeroSmsPreferredPrice: String(gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice || '').trim(),
+    gopayAutoSignupSmscodeMinPrice: String(gopayForm.value.gopayAutoSignupSmscodeMinPrice || '').trim(),
+    gopayAutoSignupSmscodeMaxPrice: String(gopayForm.value.gopayAutoSignupSmscodeMaxPrice || '').trim(),
+    gopayBalanceWaitFallbackTransfer: Boolean(gopayForm.value.gopayBalanceWaitFallbackTransfer),
     autoRegisterMailProvider: String(gopayForm.value.autoRegisterMailProvider || ''),
     autoRegisterLuckmailEmailType: String(gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
     autoRegisterLuckmailPreferredDomain: String(gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
@@ -2608,6 +3229,8 @@ function getRememberedGoPayForm() {
     autoRegisterPrefix: String(gopayForm.value.autoRegisterPrefix || '').trim(),
     batchMode: Boolean(gopayForm.value.batchMode),
     accountEmails: normalizeEmailList(gopayForm.value.accountEmails),
+    checkoutUrl: String(gopayForm.value.checkoutUrl || '').trim(),
+    gopayPin: String(gopayForm.value.gopayPin || '').trim(),
     countryCode: digitsOnly(gopayForm.value.countryCode) || '62',
     phoneNumber: String(gopayForm.value.phoneNumber || '').trim(),
     usePhonePool: Boolean(gopayForm.value.usePhonePool),
@@ -2617,38 +3240,56 @@ function getRememberedGoPayForm() {
     smsUrl: String(gopayForm.value.smsUrl || '').trim(),
     proxyLabel: String(gopayForm.value.proxyLabel || '').trim(),
     proxyUrl: String(gopayForm.value.proxyUrl || '').trim(),
+    proxyPoolEnabled: Boolean(gopayForm.value.proxyPoolEnabled),
+    proxyPoolText: String(gopayForm.value.proxyPoolText || '').trim(),
+    proxyApiEnabled: Boolean(gopayForm.value.proxyApiEnabled),
+    proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(gopayForm.value.proxyApiProvider || '')) ? gopayForm.value.proxyApiProvider : 'cliproxy',
     checkoutUiMode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
     deleteRejectedAccounts: Boolean(gopayForm.value.deleteRejectedAccounts),
     autoOauthAfterSuccess: Boolean(gopayForm.value.autoOauthAfterSuccess),
     pendingRetryAttempts: normalizedGoPayPendingRetryAttempts.value,
+    gopayConcurrency: normalizedGoPayConcurrency.value,
   }
 }
 
 function loadGoPayFormState() {
   try {
     const raw = localStorage.getItem(GOPAY_FORM_STATE_KEY)
-    if (!raw) return
+    if (!raw) return false
     const saved = JSON.parse(raw)
-    if (!saved || typeof saved !== 'object') return
+    if (!saved || typeof saved !== 'object') return false
     gopayForm.value = {
       ...gopayForm.value,
       email: String(saved.email || '').trim().toLowerCase(),
       autoRegister: Boolean(saved.autoRegister),
       autoRegisterCount: normalizeGoPayAutoRegisterCount(saved.autoRegisterCount),
       autoRegisterProtocol: Boolean(saved.autoRegisterProtocol),
-      gopayAutoSignup: true,
-      gopayAutoSignupSmsProvider: saved.gopayAutoSignupSmsProvider === 'hero_sms' ? 'hero_sms' : 'smscloud',
-      gopayAutoSignupMode: 'http',
+      gopayAutoSignup: saved.gopayAutoSignup === undefined ? true : Boolean(saved.gopayAutoSignup),
+      gopayAutoSignupSmsProvider: ['hero_sms', 'smscode'].includes(saved.gopayAutoSignupSmsProvider) ? saved.gopayAutoSignupSmsProvider : 'smscloud',
+      gopayAutoSignupMode: saved.gopayAutoSignupMode === 'appium' ? 'appium' : 'http',
       gopayAutoSignupHeroSmsApiKey: '',
       gopayAutoSignupHeroSmsBaseUrl: 'https://hero-sms.com/stubs/handler_api.php',
       gopayAutoSignupHeroSmsCountry: '6',
       gopayAutoSignupHeroSmsService: 'ni',
       gopayAutoSignupHeroSmsTimeout: 120,
+      gopayAutoSignupHeroSmsMinPrice: String(saved.gopayAutoSignupHeroSmsMinPrice || '').trim(),
+      gopayAutoSignupHeroSmsMaxPrice: String(saved.gopayAutoSignupHeroSmsMaxPrice || '').trim(),
+      gopayAutoSignupHeroSmsPreferredPrice: String(saved.gopayAutoSignupHeroSmsPreferredPrice || '').trim(),
       gopayAutoSignupSmscloudBaseUrl: 'https://smscloud.sbs/api',
       gopayAutoSignupSmscloudCountry: '6',
       gopayAutoSignupSmscloudService: 'ni',
       gopayAutoSignupSmscloudMaxPrice: '',
       gopayAutoSignupSmscloudTimeout: 120,
+      gopayAutoSignupSmscodeApiToken: '',
+      gopayAutoSignupSmscodeBaseUrl: 'https://api.smscode.gg/v1',
+      gopayAutoSignupSmscodeCountryId: '6',
+      gopayAutoSignupSmscodePlatformId: '',
+      gopayAutoSignupSmscodePlatformQuery: 'gopay',
+      gopayAutoSignupSmscodeProductId: '',
+      gopayAutoSignupSmscodeMinPrice: String(saved.gopayAutoSignupSmscodeMinPrice || '').trim(),
+      gopayAutoSignupSmscodeMaxPrice: String(saved.gopayAutoSignupSmscodeMaxPrice || '').trim(),
+      gopayAutoSignupSmscodeTimeout: 120,
+      gopayBalanceWaitFallbackTransfer: Boolean(saved.gopayBalanceWaitFallbackTransfer),
       autoRegisterMailProvider: String(saved.autoRegisterMailProvider || gopayForm.value.autoRegisterMailProvider || ''),
       autoRegisterLuckmailEmailType: String(saved.autoRegisterLuckmailEmailType || gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
       autoRegisterLuckmailPreferredDomain: String(saved.autoRegisterLuckmailPreferredDomain || gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
@@ -2662,6 +3303,8 @@ function loadGoPayFormState() {
       autoRegisterPassword: '',
       batchMode: Boolean(saved.batchMode),
       accountEmails: normalizeEmailList(saved.accountEmails),
+      checkoutUrl: String(saved.checkoutUrl || '').trim(),
+      gopayPin: String(saved.gopayPin || '').trim(),
       countryCode: digitsOnly(saved.countryCode) || '62',
       phoneNumber: String(saved.phoneNumber || '').trim(),
       usePhonePool: Boolean(saved.usePhonePool),
@@ -2671,13 +3314,20 @@ function loadGoPayFormState() {
       smsUrl: String(saved.smsUrl || '').trim(),
       proxyLabel: String(saved.proxyLabel || '').trim(),
       proxyUrl: String(saved.proxyUrl || '').trim(),
+      proxyPoolEnabled: Boolean(saved.proxyPoolEnabled),
+      proxyPoolText: String(saved.proxyPoolText || '').trim(),
+      proxyApiEnabled: Boolean(saved.proxyApiEnabled),
+      proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || '')) ? saved.proxyApiProvider : 'cliproxy',
       checkoutUiMode: saved.checkoutUiMode === 'custom' ? 'custom' : 'hosted',
       deleteRejectedAccounts: Boolean(saved.deleteRejectedAccounts),
       autoOauthAfterSuccess: Boolean(saved.autoOauthAfterSuccess),
       pendingRetryAttempts: normalizeGoPayPendingRetryAttempts(saved.pendingRetryAttempts),
+      gopayConcurrency: normalizeGoPayConcurrency(saved.gopayConcurrency),
     }
+    return true
   } catch (e) {
     console.error('loadGoPayFormState', e)
+    return false
   }
 }
 
@@ -2834,13 +3484,30 @@ function goPayProgressLogLevel(event) {
   if (stage === 'completed' || stage === 'payment_completed' || stage === 'otp_received' || stage === 'gopay_oauth_login_done' || stage === 'gopay_session_cpa_convert_done' || stage === 'gopay_wallet_balance_ready') return 'success'
   if (stage === 'gopay_oauth_login_failed') return 'error'
   if (stage === 'gopay_session_cpa_convert_failed') return 'warn'
-  if (stage === 'gopay_wallet_balance_wait' || stage === 'gopay_wallet_balance_not_ready' || stage === 'gopay_wallet_balance_abandoned' || stage === 'gopay_wallet_balance_check_failed') return 'warn'
+  if (stage === 'gopay_wallet_balance_wait' || stage === 'gopay_wallet_balance_not_ready' || stage === 'gopay_wallet_balance_fallback_transfer' || stage === 'gopay_wallet_balance_abandoned' || stage === 'gopay_wallet_balance_check_failed') return 'warn'
   if (stage === 'gopay_wallet_auto_signup_probe_failed') return 'error'
   if (stage === 'gopay_oauth_phone_required_removed' || stage === 'gopay_oauth_phone_required') return 'warn'
   if (stage.includes('network_error')) return 'warn'
   if (stage.includes('not_approved') || stage.includes('blocked') || stage.includes('cooldown') || stage.includes('retry')) return 'warn'
   if (stage === 'failed' || stage.includes('all_accounts')) return 'error'
   return 'info'
+}
+
+function goPayProgressWorkerPrefix(event) {
+  const rawLabel = String(event?.worker_label || event?.worker || '').trim()
+  if (rawLabel) return `[${rawLabel}] `
+  const workerIndex = Number(event?.worker_index || 0)
+  if (Number.isFinite(workerIndex) && workerIndex > 0) {
+    return `[worker-${workerIndex}] `
+  }
+  return ''
+}
+
+function formatGoPayProgressMessage(event) {
+  const message = String(event?.message || '').trim()
+  if (!message) return ''
+  if (/^\[worker-\d+\]\s/.test(message)) return message
+  return `${goPayProgressWorkerPrefix(event)}${message}`
 }
 
 function processGoPayProgressEvents(task) {
@@ -2856,7 +3523,7 @@ function processGoPayProgressEvents(task) {
     if (event?.stage === 'gopay_account_bound') {
       showGoPaySuccessNotice(event?.email || '')
     }
-    const message = String(event?.message || '').trim()
+    const message = formatGoPayProgressMessage(event)
     if (!message) continue
     pushGoPayLog(message, goPayProgressLogLevel(event))
     printed += 1
@@ -2877,7 +3544,7 @@ function hydrateGoPayTaskLog(task, restoreMessage = '') {
   }
   const printed = processGoPayProgressEvents(task)
   if (!printed && task.progress?.message) {
-    pushGoPayLog(task.progress.message, goPayProgressLogLevel(task.progress))
+    pushGoPayLog(formatGoPayProgressMessage(task.progress), goPayProgressLogLevel(task.progress))
   }
   if (!isTaskActive(task)) {
     const statusLabel = bindStatusText(task)
@@ -3039,8 +3706,8 @@ async function pollGoPayTask(taskId) {
     }
     const printedProgressEvents = processGoPayProgressEvents(task)
     if (['pending', 'running'].includes(task.status)) {
-      const previousProgressMessage = previous?.progress?.message || ''
-      const nextProgressMessage = task?.progress?.message || ''
+      const previousProgressMessage = formatGoPayProgressMessage(previous?.progress || {})
+      const nextProgressMessage = formatGoPayProgressMessage(task?.progress || {})
       if (!printedProgressEvents && nextProgressMessage && nextProgressMessage !== previousProgressMessage) {
         pushGoPayLog(nextProgressMessage, nextStage === 'checkout_not_approved_rotate' ? 'warn' : 'info')
       }
@@ -3344,7 +4011,7 @@ async function startGoPayBind() {
     gopayForm.value.autoRegister
       ? `准备提交自动注册并 GoPay 绑定任务，共 ${normalizedGoPayAutoRegisterCount.value} 个账号`
       : gopayBatchActive.value
-        ? `准备提交批量 GoPay 任务，共 ${gopaySelectedBatchEmails.value.length} 个账号`
+        ? `准备提交批量 GoPay 任务，共 ${gopaySelectedBatchEmails.value.length} 个账号，并发 ${normalizedGoPayConcurrency.value}`
         : '准备提交 GoPay 任务',
     'info'
   )
@@ -3365,6 +4032,12 @@ async function startGoPayBind() {
     }
     if (useAutoSignup && !gopayAutoSignupProviderConfigured.value) {
       throw new Error(gopayAutoSignupMissingMessage.value)
+    }
+    if (gopayForm.value.proxyPoolEnabled && !gopayProxyPoolEntries.value.length) {
+      throw new Error('启用动态代理池后需要先配置代理')
+    }
+    if (gopayForm.value.proxyApiEnabled && !['1024proxy', 'cliproxy'].includes(String(gopayForm.value.proxyApiProvider || ''))) {
+      throw new Error('代理 API 供应商暂只支持 1024proxy 或 Cliproxy')
     }
     const autoSignupCfg = gopayAutoSignupConfig.value || {}
     const autoSignupMode = useAutoSignup
@@ -3388,11 +4061,46 @@ async function startGoPayBind() {
       gopay_auto_signup_hero_sms_country: '',
       gopay_auto_signup_hero_sms_service: '',
       gopay_auto_signup_hero_sms_timeout: '',
+      gopay_auto_signup_hero_sms_min_price: useAutoSignup && gopayAutoSignupProvider.value === 'hero_sms'
+        ? String(gopayForm.value.gopayAutoSignupHeroSmsMinPrice || '').trim()
+        : '',
+      gopay_auto_signup_hero_sms_max_price: useAutoSignup && gopayAutoSignupProvider.value === 'hero_sms'
+        ? String(gopayForm.value.gopayAutoSignupHeroSmsMaxPrice || '').trim()
+        : '',
+      gopay_auto_signup_hero_sms_preferred_price: useAutoSignup && gopayAutoSignupProvider.value === 'hero_sms'
+        ? String(gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice || '').trim()
+        : '',
       gopay_auto_signup_smscloud_base_url: '',
       gopay_auto_signup_smscloud_country: '',
       gopay_auto_signup_smscloud_service: '',
       gopay_auto_signup_smscloud_max_price: '',
       gopay_auto_signup_smscloud_timeout: '',
+      gopay_auto_signup_smscode_api_token: '',
+      gopay_auto_signup_smscode_base_url: useAutoSignup && gopayAutoSignupProvider.value === 'smscode'
+        ? String(gopayForm.value.gopayAutoSignupSmscodeBaseUrl || autoSignupCfg.smscode_base_url || '').trim()
+        : '',
+      gopay_auto_signup_smscode_country_id: useAutoSignup && gopayAutoSignupProvider.value === 'smscode'
+        ? String(gopayForm.value.gopayAutoSignupSmscodeCountryId || autoSignupCfg.smscode_country_id || '').trim()
+        : '',
+      gopay_auto_signup_smscode_platform_id: useAutoSignup && gopayAutoSignupProvider.value === 'smscode'
+        ? String(gopayForm.value.gopayAutoSignupSmscodePlatformId || autoSignupCfg.smscode_platform_id || '').trim()
+        : '',
+      gopay_auto_signup_smscode_platform_query: useAutoSignup && gopayAutoSignupProvider.value === 'smscode'
+        ? String(gopayForm.value.gopayAutoSignupSmscodePlatformQuery || autoSignupCfg.smscode_platform_query || '').trim()
+        : '',
+      gopay_auto_signup_smscode_product_id: useAutoSignup && gopayAutoSignupProvider.value === 'smscode'
+        ? String(gopayForm.value.gopayAutoSignupSmscodeProductId || autoSignupCfg.smscode_product_id || '').trim()
+        : '',
+      gopay_auto_signup_smscode_min_price: useAutoSignup && gopayAutoSignupProvider.value === 'smscode'
+        ? String(gopayForm.value.gopayAutoSignupSmscodeMinPrice || autoSignupCfg.smscode_min_price || '').trim()
+        : '',
+      gopay_auto_signup_smscode_max_price: useAutoSignup && gopayAutoSignupProvider.value === 'smscode'
+        ? String(gopayForm.value.gopayAutoSignupSmscodeMaxPrice || autoSignupCfg.smscode_max_price || '').trim()
+        : '',
+      gopay_auto_signup_smscode_timeout: '',
+      gopay_balance_wait_fallback_transfer: useAutoSignup
+        && !rekberinajaTransferEnabled.value
+        && Boolean(gopayForm.value.gopayBalanceWaitFallbackTransfer),
       auto_register_mail_provider: gopayForm.value.autoRegisterMailProvider || null,
       auto_register_luckmail_email_type: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailEmailType : null,
       auto_register_luckmail_preferred_domain: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailPreferredDomain : null,
@@ -3409,11 +4117,17 @@ async function startGoPayBind() {
       otp_channel: effectiveOtpChannel,
       sms_url: effectiveSmsUrl,
       gopay_pin: gopayForm.value.gopayPin,
-      proxy_url: gopayForm.value.proxyUrl || null,
+      proxy_url: (!gopayForm.value.proxyPoolEnabled && !gopayForm.value.proxyApiEnabled) ? (gopayForm.value.proxyUrl || null) : null,
+      proxy_pool_text: gopayForm.value.proxyPoolEnabled && !gopayForm.value.proxyApiEnabled ? gopayForm.value.proxyPoolText : '',
+      proxy_api_provider: gopayForm.value.proxyApiEnabled ? gopayForm.value.proxyApiProvider : '',
+      proxy_api_url: gopayForm.value.proxyApiEnabled && gopayForm.value.proxyApiProvider === 'cliproxy'
+        ? 'https://api.cliproxy.io/white/api?region=ID&num=1&time=10&format=n&type=txt'
+        : '',
       proxy_label: gopayForm.value.proxyLabel,
       delete_rejected_accounts: Boolean(gopayForm.value.deleteRejectedAccounts),
       auto_oauth_after_success: Boolean(gopayForm.value.autoOauthAfterSuccess),
       pending_retry_attempts: normalizedGoPayPendingRetryAttempts.value,
+      gopay_concurrency: normalizedGoPayConcurrency.value,
     })
     gopayTask.value = task
     rememberGoPayTaskId(task.task_id)
@@ -3495,8 +4209,9 @@ function openHistoryLink(link) {
 
 onMounted(() => {
   loadHistory()
-  loadGoPayFormState()
-  loadGoPayAutoSignupConfig({ applyDefaults: true })
+  const restoredGoPayForm = loadGoPayFormState()
+  loadGoPayAutoSignupConfig({ applyDefaults: !restoredGoPayForm })
+  loadGoPayRekberinajaConfig()
   if (gopayUsingWhatsAppOtp.value) {
     refreshWhatsAppOtpStatus()
   }
