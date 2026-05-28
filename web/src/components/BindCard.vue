@@ -774,7 +774,7 @@
                     :disabled="gopaySubmitting || gopayTaskRunning"
                     class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
                   >
-                    <option value="http">HTTP</option>
+                    <option value="http">协议绑定</option>
                     <option value="appium">Appium</option>
                   </select>
                 </div>
@@ -1873,7 +1873,7 @@ async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
     gopayAutoSignupConfig.value = cfg
     if (applyDefaults) {
       gopayForm.value.gopayAutoSignupSmsProvider = cfg.provider === 'hero_sms' ? 'hero_sms' : 'smscloud'
-      gopayForm.value.gopayAutoSignupMode = cfg.signup_mode === 'appium' ? 'appium' : 'http'
+      gopayForm.value.gopayAutoSignupMode = 'http'
       gopayForm.value.countryCode = '62'
     }
   } catch (e) {
@@ -2164,7 +2164,7 @@ const gopayStageLabelMap = {
   checkout_opened: '已进入支付页',
   checkout_context_warmup: '预热 ChatGPT checkout 上下文',
   chatgpt_http_session_ready: 'ChatGPT HTTP 会话已准备',
-  gopay_http_flow: '进入 GoPay HTTP 支付流程',
+  gopay_http_flow: '进入 GoPay 协议绑定流程',
   stripe_create_payment_method: '创建 Stripe GoPay 支付方式',
   stripe_init: '初始化 Stripe 支付页',
   stripe_confirm: '确认 Stripe GoPay 支付方式',
@@ -2638,7 +2638,7 @@ function loadGoPayFormState() {
       autoRegisterProtocol: Boolean(saved.autoRegisterProtocol),
       gopayAutoSignup: true,
       gopayAutoSignupSmsProvider: saved.gopayAutoSignupSmsProvider === 'hero_sms' ? 'hero_sms' : 'smscloud',
-      gopayAutoSignupMode: saved.gopayAutoSignupMode === 'appium' ? 'appium' : 'http',
+      gopayAutoSignupMode: 'http',
       gopayAutoSignupHeroSmsApiKey: '',
       gopayAutoSignupHeroSmsBaseUrl: 'https://hero-sms.com/stubs/handler_api.php',
       gopayAutoSignupHeroSmsCountry: '6',

@@ -51,6 +51,7 @@ SIGNUP_BASIC_AUTH = "Basic YmI2NDg0MTMtYjYzNy00NDNhLThlYmYtMTc2Y2Y5YjVkYzMy"
 DEFAULT_APP_VERSION = "2.8.0"
 
 PHONE_MODELS = [
+    ("Xiaomi", "MI 9"),
     ("HONOR", "BVL-AN20"),
     ("Samsung", "SM-A546B"),
     ("Samsung", "SM-G991B"),
@@ -65,6 +66,7 @@ PHONE_MODELS = [
 SCREEN_RESOLUTIONS = ["1080x2400", "1080x2340", "1440x2560", "1080x1920", "1080x2412"]
 ANDROID_VERSIONS = ["Android, 11", "Android, 12", "Android, 13", "Android, 14"]
 WIFI_PREFIXES = ["TP-Link", "Belkin", "ASUS", "Netgear", "Linksys", "Xiaomi", "Huawei"]
+CHIPSET_PROFILES = ["msmnile|1785|8", "kona|1804|8", "lahaina|1804|8", "taro|1804|8"]
 
 _BRIDGE_LOCK = threading.Lock()
 _SMS_BRIDGES: dict[str, "GoPaySmsBridge"] = {}
@@ -833,19 +835,24 @@ def _random_x_m1() -> str:
 
     ts = int(time.time() * 1000)
     rand_id = random.randint(1000000000000000000, 9999999999999999999)
-    make, model = random.choice(PHONE_MODELS)
     fingerprint_hash = hashlib.sha256(os.urandom(32)).digest()
     fp_b64 = base64.b64encode(fingerprint_hash).decode().rstrip("=")
+    chipset = random.choice(CHIPSET_PROFILES)
     return (
-        f"3:{ts}-{rand_id},4:{random.randint(100000, 999999)},5:{make}|3200|2,"
-        f"6:{_random_mac()},7:{_random_wifi_ssid()},8:{random.choice(SCREEN_RESOLUTIONS)},"
-        f"9:passive,network,fused,gps,10:1,11:{fp_b64},"
+        f"3:{ts}-{rand_id},4:{random.randint(100000, 999999)},5:{chipset},"
+        f"6:02:00:00:00:00:00,7:<unknown ssid>,8:{random.choice(SCREEN_RESOLUTIONS)},"
+        f"10:1,11:{fp_b64},"
         f"15:{os.urandom(16).hex()},16:{uuid.uuid4()}"
     )
 
 
 def _random_unique_id() -> str:
     return os.urandom(8).hex()
+
+
+def _random_device_token() -> str:
+    token_body = "".join(random.choices(string.ascii_letters + string.digits + "-_", k=140))
+    return f"f-{uuid.uuid4().hex[:22]}:APA91b{token_body}"
 
 
 def sign_x_e1(headers: dict[str, str], method: str, host: str, path: str, body_text: str = "") -> str:
@@ -874,26 +881,26 @@ def build_gopay_app_headers(authorization: str = "Bearer ", gopay_cfg: Optional[
     cfg = gopay_cfg if gopay_cfg is not None else {}
     app_version = str(cfg.get("app_version") or DEFAULT_APP_VERSION)
     if not cfg.get("_device_fingerprint_initialized"):
-        make, model = random.choice(PHONE_MODELS)
-        cfg.setdefault("_fp_device_os", random.choice(ANDROID_VERSIONS))
+        make, model = PHONE_MODELS[0]
+        cfg.setdefault("_fp_device_os", ANDROID_VERSIONS[0])
         cfg.setdefault("_fp_phone_make", make)
         cfg.setdefault("_fp_phone_model", f"{make}, {model}")
         cfg.setdefault("_fp_unique_id", _random_unique_id())
         cfg.setdefault("_fp_x_m1", _random_x_m1())
+        cfg.setdefault("_fp_device_token", _random_device_token())
         cfg.setdefault("_fp_transaction_id", str(uuid.uuid4()))
         lat = round(-6.2 + random.uniform(-0.05, 0.05), 7)
         lng = round(106.8 + random.uniform(-0.05, 0.05), 7)
         cfg.setdefault("_fp_location", f"{lat},{lng}")
         cfg["_device_fingerprint_initialized"] = True
+    cfg.setdefault("_fp_device_token", _random_device_token())
     return {
-        "accept-encoding": "gzip",
+        "accept-encoding": "gzip, deflate, br",
         "country-code": "ID",
         "gojek-country-code": "ID",
         "gojek-service-area": "1",
         "x-appversion": app_version,
         "x-help-version": app_version,
-        "x-location": str(cfg.get("x_location") or cfg["_fp_location"]),
-        "x-location-accuracy": f"0.0{random.randint(10, 99)}999999552965164",
         "x-uniqueid": str(cfg.get("unique_id") or cfg["_fp_unique_id"]),
         "x-phonemake": str(cfg.get("phone_make") or cfg["_fp_phone_make"]),
         "x-phonemodel": str(cfg.get("phone_model") or cfg["_fp_phone_model"]),
@@ -905,6 +912,7 @@ def build_gopay_app_headers(authorization: str = "Bearer ", gopay_cfg: Optional[
         "x-user-locale": "en_ID",
         "accept-language": "en-ID",
         "x-platform": "Android",
+        "x-devicetoken": str(cfg.get("device_token") or cfg["_fp_device_token"]),
         "user-agent": f"GoPay/{app_version} (com.gojek.gopay; build:{app_version.replace('.', '')}; {cfg.get('device_os') or cfg['_fp_device_os']})",
         "content-type": "application/json",
         "x-m1": str(cfg.get("x_m1") or cfg["_fp_x_m1"]),
@@ -1066,6 +1074,53 @@ def _probe_response_summary(resp: Any, data: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _accept_signup_consents(
+    *,
+    access_token: str,
+    gopay_cfg: dict[str, Any],
+    session: Any,
+) -> None:
+    resp = signed_post(
+        f"{CUSTOMER_URL}/api/v2/consents/accept",
+        {
+            "consents": [
+                {"consent_name": "gopay_app_tnc", "user_type": "CUSTOMER", "flow": "signUp"},
+                {"consent_name": "gopay_app_privacy_note", "user_type": "CUSTOMER", "flow": "signUp"},
+                {"consent_name": "gojek_app_tnc", "user_type": "CUSTOMER", "flow": "signUp"},
+                {"consent_name": "gojek_app_privacy_note", "user_type": "CUSTOMER", "flow": "signUp"},
+            ]
+        },
+        authorization=f"Bearer {access_token}",
+        keep_auth=True,
+        extra_headers={"key": "value"},
+        gopay_cfg=gopay_cfg,
+        session=session,
+    )
+    data = _safe_json(resp) if resp.status_code < 500 else {}
+    if resp.status_code >= 400 or data.get("success") is False:
+        raise GoPayAutoSignupError(f"consent accept 失败 ({resp.status_code}): {resp.text[:300]}")
+
+
+def _ensure_pin_allowed(
+    *,
+    access_token: str,
+    pin: str,
+    gopay_cfg: dict[str, Any],
+    session: Any,
+) -> None:
+    resp = signed_post(
+        f"{CUSTOMER_URL}/api/v1/users/pins/allowed",
+        {"pin": pin},
+        authorization=f"Bearer {access_token}",
+        keep_auth=True,
+        gopay_cfg=gopay_cfg,
+        session=session,
+    )
+    data = _safe_json(resp) if resp.status_code < 500 else {}
+    if resp.status_code >= 400 or data.get("success") is False:
+        raise GoPayAutoSignupError(f"PIN allowed 失败 ({resp.status_code}): {resp.text[:300]}")
+
+
 def _setup_pin(
     *,
     access_token: str,
@@ -1076,6 +1131,12 @@ def _setup_pin(
     log: Callable[[str], None],
     pre_otp_hook: Callable[[], None] | None = None,
 ) -> None:
+    _ensure_pin_allowed(
+        access_token=access_token,
+        pin=pin,
+        gopay_cfg=gopay_cfg,
+        session=session,
+    )
     resp = signed_post(
         f"{BASE_URL}/cvs/v1/methods",
         {
@@ -1204,6 +1265,8 @@ def auto_login(
             "flow": "login_1fa",
             "device_verification_token_id": None,
         },
+        authorization="",
+        keep_auth=True,
         gopay_cfg=cfg,
         session=session,
     )
@@ -1224,6 +1287,9 @@ def auto_login(
             "is_multiple_method": None,
             "device_verification_token_id": None,
         },
+        authorization="",
+        keep_auth=True,
+        extra_headers={"key": "value"},
         gopay_cfg=cfg,
         session=session,
     )
@@ -1458,6 +1524,8 @@ def auto_signup(
             "flow": "signup",
             "device_verification_token_id": None,
         },
+        authorization="",
+        keep_auth=True,
         gopay_cfg=cfg,
         session=session,
     )
@@ -1478,6 +1546,9 @@ def auto_signup(
             "is_multiple_method": None,
             "device_verification_token_id": None,
         },
+        authorization="",
+        keep_auth=True,
+        extra_headers={"key": "value"},
         gopay_cfg=cfg,
         session=session,
     )
@@ -1535,12 +1606,9 @@ def auto_signup(
         f"{BASE_URL}/goto-auth/token",
         {
             "grant_type": "refresh_token",
-            "account_id": account_id,
             "token": signup_refresh,
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
-            "refresh_token": signup_refresh,
-            "ext_user_token": signup_access,
         },
         authorization=f"Bearer {signup_access}",
         keep_auth=True,
@@ -1550,6 +1618,11 @@ def auto_signup(
     token_data = _safe_json(resp).get("data") or {} if resp.status_code < 500 else {}
     access_token = str(token_data.get("access_token") or signup_access)
     refresh_token = str(token_data.get("refresh_token") or signup_refresh)
+    _accept_signup_consents(
+        access_token=access_token,
+        gopay_cfg=cfg,
+        session=session,
+    )
     _setup_pin(
         access_token=access_token,
         pin=pin,

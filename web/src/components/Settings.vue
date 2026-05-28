@@ -250,7 +250,7 @@
             :disabled="gopayAutoSignupLoading || gopayAutoSignupSaving"
             class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
           >
-            <option value="http">HTTP</option>
+            <option value="http">协议绑定</option>
             <option value="appium">Appium</option>
           </select>
           <p class="mt-1 text-xs text-gray-500">Appium 模式会走真实 GoPay APP 注册、主页补设 PIN，并复用同一短信会话收第二个 OTP。</p>
