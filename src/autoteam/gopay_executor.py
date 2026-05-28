@@ -10,6 +10,7 @@ import random
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
@@ -88,6 +89,8 @@ GOPAY_APPROVE_BLOCKED_COOLDOWN_S = 1800.0
 HTTP_TIMEOUT_SECONDS = 60
 TRANSIENT_HTTP_RETRY_ATTEMPTS = 2
 TRANSIENT_HTTP_RETRY_SLEEP_S = 2.0
+GOPAY_PIN_TOKEN_RETRY_ATTEMPTS = 5
+GOPAY_PIN_TOKEN_RETRY_SLEEP_S = 5.0
 TRANSIENT_RETRY_STAGES = {
     "stripe_payment_method",
     "stripe_init",
@@ -317,6 +320,21 @@ def _env_int(name: str, default: int) -> int:
         return int(float(raw))
     except Exception:
         return default
+
+
+def _transient_http_retry_attempts(stage: str) -> int:
+    if stage not in TRANSIENT_RETRY_STAGES:
+        return 1
+    if stage == "gopay_tokenize_pin":
+        return max(1, _env_int("GOPAY_PIN_TOKEN_RETRY_ATTEMPTS", GOPAY_PIN_TOKEN_RETRY_ATTEMPTS))
+    return max(1, _env_int("GOPAY_TRANSIENT_HTTP_RETRY_ATTEMPTS", TRANSIENT_HTTP_RETRY_ATTEMPTS))
+
+
+def _transient_http_retry_sleep_seconds(stage: str, attempt: int) -> float:
+    if stage == "gopay_tokenize_pin":
+        base = max(0.0, _env_float("GOPAY_PIN_TOKEN_RETRY_SLEEP_SECONDS", GOPAY_PIN_TOKEN_RETRY_SLEEP_S))
+        return base * max(1, int(attempt or 1))
+    return max(0.0, _env_float("GOPAY_TRANSIENT_HTTP_RETRY_SLEEP_SECONDS", TRANSIENT_HTTP_RETRY_SLEEP_S))
 
 
 def _mask_log_value(value: Any, *, left: int = 6, right: int = 4) -> str:
@@ -617,6 +635,15 @@ def _gopay_progress_message(stage: str, payload: dict[str, Any]) -> str:
     if stage == "submit_retry":
         reason = str(payload.get("reason") or "").strip()
         return f"订阅提交失败，准备重试：{_compact_log_text(reason, limit=120)}" if reason else "订阅提交失败，准备重试"
+    if stage.endswith("_retry"):
+        next_attempt = payload.get("next_attempt")
+        max_attempts = payload.get("max_attempts")
+        wait = payload.get("wait_seconds")
+        reason = str(payload.get("reason") or "").strip()
+        suffix = f"（{next_attempt}/{max_attempts}）" if next_attempt and max_attempts else ""
+        wait_text = f"，等待 {int(float(wait))}s" if wait is not None else ""
+        reason_text = f"：{_compact_log_text(reason, limit=120)}" if reason else ""
+        return f"网络请求失败，准备重试{suffix}{wait_text}{reason_text}"
     return stage_messages.get(stage, "")
 
 
@@ -1231,6 +1258,53 @@ def _cookie_header_from_http_session(http: Any) -> str:
         return "; ".join(f"{name}={value}" for name, value in pairs if name and value)
     except Exception:
         return ""
+
+
+def _load_chatgpt_auth_file_context(email: str) -> dict[str, str]:
+    """Load the local Codex/CPA auth file as a fallback ChatGPT token source."""
+    normalized = str(email or "").strip().lower()
+    if not normalized:
+        return {}
+
+    auth_file = ""
+    try:
+        from autoteam.accounts import find_account, load_accounts
+
+        account = find_account(load_accounts(), normalized)
+        if account:
+            auth_file = str(account.get("auth_file") or "").strip()
+    except Exception:
+        auth_file = ""
+
+    if not auth_file:
+        return {}
+
+    try:
+        path = Path(auth_file)
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+    account_data = data.get("account") if isinstance(data.get("account"), dict) else {}
+    user_data = data.get("user") if isinstance(data.get("user"), dict) else {}
+    return {
+        "access_token": str(data.get("access_token") or data.get("accessToken") or "").strip(),
+        "account_id": str(
+            data.get("account_id")
+            or data.get("accountId")
+            or account_data.get("id")
+            or account_data.get("account_id")
+            or user_data.get("account_id")
+            or user_data.get("accountId")
+            or ""
+        ).strip(),
+        "id_token": str(data.get("id_token") or data.get("idToken") or "").strip(),
+        "auth_file": auth_file,
+    }
 
 
 def _looks_like_pm_redirect_url(url: str) -> bool:
@@ -2503,7 +2577,7 @@ class GoPayHttpCharger:
     def _request(self, method: str, url: str, *, stage: str, **kwargs):
         func = getattr(self.http, method.lower())
         timeout = kwargs.pop("timeout", HTTP_TIMEOUT_SECONDS)
-        attempts = TRANSIENT_HTTP_RETRY_ATTEMPTS if stage in TRANSIENT_RETRY_STAGES else 1
+        attempts = _transient_http_retry_attempts(stage)
         last_exc: Exception | None = None
         for attempt in range(1, attempts + 1):
             self._check_cancelled()
@@ -2542,7 +2616,16 @@ class GoPayHttpCharger:
                     attempts,
                     _safe_error_summary(exc),
                 )
-                time.sleep(TRANSIENT_HTTP_RETRY_SLEEP_S)
+                wait_seconds = _transient_http_retry_sleep_seconds(stage, attempt)
+                self._progress(
+                    f"{stage}_retry",
+                    attempt=attempt,
+                    next_attempt=attempt + 1,
+                    max_attempts=attempts,
+                    wait_seconds=wait_seconds,
+                    reason=_safe_error_summary(exc),
+                )
+                self._sleep_with_cancel(wait_seconds)
         raise last_exc or GoPayFlowError(f"{stage} HTTP 请求失败", stage=stage)
 
     def _stripe_create_payment_method(self, checkout_session_id: str, stripe_pk: str, init_ctx: dict | None = None) -> str:
@@ -5543,7 +5626,7 @@ def _run_gopay_bind_task_once(
 
     The default path mirrors the reference project: a single ChatGPT HTTP
     session creates checkout, approves it, then verifies after GoPay settles.
-    Saved auth_session tokens are required; this path does not launch Playwright.
+    A ChatGPT access token is required; auth_session cookies are used when available.
     """
 
     api = ChatGPTTeamAPI()
@@ -5568,6 +5651,9 @@ def _run_gopay_bind_task_once(
     auth_session = load_auth_session(email)
     session_token = str(auth_session.get("sessionToken") or auth_session.get("session_token") or "").strip()
     access_token = str(auth_session.get("accessToken") or auth_session.get("access_token") or "").strip()
+    auth_file_context = _load_chatgpt_auth_file_context(email)
+    if not access_token:
+        access_token = str(auth_file_context.get("access_token") or "").strip()
     generated_checkout_meta: dict = {}
 
     def progress(stage: str, **extra):
@@ -5589,7 +5675,7 @@ def _run_gopay_bind_task_once(
 
     try:
         account_info = auth_session.get("account") if isinstance(auth_session.get("account"), dict) else {}
-        account_id = str(account_info.get("id") or "").strip()
+        account_id = str(account_info.get("id") or auth_file_context.get("account_id") or "").strip()
         device_id = str(
             auth_session.get("device_id")
             or auth_session.get("oai_device_id")
@@ -5606,16 +5692,18 @@ def _run_gopay_bind_task_once(
         oai_client_build_number = str(
             auth_session.get("oai_client_build_number") or auth_session.get("oaiClientBuildNumber") or ""
         ).strip()
-        token_source = "auth_session"
+        token_source = "auth_session" if str(auth_session.get("accessToken") or auth_session.get("access_token") or "").strip() else "auth_file"
 
         logger.info(
-            "[gopay_executor] auth_session ready: email=%s access_token_present=%s session_cookie_present=%s account_id_present=%s device_id=%s sentinel_token_present=%s",
+            "[gopay_executor] ChatGPT token context ready: email=%s source=%s access_token_present=%s session_cookie_present=%s account_id_present=%s device_id=%s sentinel_token_present=%s auth_file_present=%s",
             _safe_email_summary(email),
+            token_source,
             bool(access_token),
             bool(session_token or str(auth_session.get("cookie_header") or "").strip()),
             bool(account_id),
             _mask_log_value(device_id),
             bool(openai_sentinel_token),
+            bool(auth_file_context.get("auth_file")),
         )
 
         if cancelled():
@@ -5624,17 +5712,14 @@ def _run_gopay_bind_task_once(
             return _build_result(
                 "failed",
                 failure_stage="generate_checkout",
-                message=f"对应 auth_session 缺少 accessToken；GoPay 协议模式不会启动 Playwright，请先刷新该账号 auth_session (source={token_source})",
+                message=f"账号缺少 ChatGPT access_token；已尝试 auth_session 和 auth_file/CPA 认证文件 (source={token_source})",
                 screenshot_paths=screenshot_paths,
                 billing_info=public_billing_info,
             )
         if not session_token and not str(auth_session.get("cookie_header") or "").strip():
-            return _build_result(
-                "failed",
-                failure_stage="generate_checkout",
-                message="对应 auth_session 缺少 sessionToken/cookie_header，无法构造参考项目的 ChatGPT HTTP 会话",
-                screenshot_paths=screenshot_paths,
-                billing_info=public_billing_info,
+            logger.info(
+                "[gopay_executor] ChatGPT Web session cookie missing; continuing with bearer access_token from %s",
+                token_source,
             )
 
         cookie_header = _chatgpt_reference_cookie_header(
