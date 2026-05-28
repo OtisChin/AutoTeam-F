@@ -8535,6 +8535,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     class _GoPayWalletSignupNetworkError(RuntimeError):
         pass
 
+    class _GoPayWalletSignupNoNumbers(RuntimeError):
+        pass
+
     def _looks_like_gopay_wallet_signup_rate_limited(exc: Exception | str) -> bool:
         text = _compact_log_text(exc, limit=400)
         normalized = str(text or "").strip().lower()
@@ -8583,9 +8586,27 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             )
         )
 
+    def _looks_like_gopay_wallet_signup_no_numbers(exc: Exception | str) -> bool:
+        normalized = str(_compact_log_text(exc, limit=500) or "").strip().lower()
+        if not normalized:
+            return False
+        return any(
+            marker in normalized
+            for marker in (
+                "no_numbers",
+                "no numbers",
+                "smscode 当前价格区间内没有可用号码",
+                "herosms 当前价格区间内没有可用号码",
+                "hero-sms 取号失败: no_numbers",
+                "smscode 取号失败",
+            )
+        )
+
     def _looks_like_gopay_wallet_signup_provider_error(exc: Exception | str) -> bool:
         normalized = str(_compact_log_text(exc, limit=500) or "").strip().lower()
         if not normalized:
+            return False
+        if _looks_like_gopay_wallet_signup_no_numbers(normalized):
             return False
         return any(
             marker in normalized
@@ -8600,8 +8621,6 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 "bad_key",
                 "bad service",
                 "no_balance",
-                "no numbers",
-                "no_numbers",
             )
         )
     phone_accounts: list[dict] = []
@@ -9805,6 +9824,21 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             },
                         )
                         raise _GoPayWalletSignupRateLimited(message) from exc
+                    if _looks_like_gopay_wallet_signup_no_numbers(exc):
+                        message = f"GoPay 钱包自动注册暂时无可用号码，将进入待重试: {_compact_log_text(exc, limit=220)}"
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_wallet_auto_signup_no_numbers",
+                                "current": index,
+                                "total": total,
+                                "attempt": wallet_attempt,
+                                "max_attempts": max_wallet_attempts,
+                                "message": message,
+                                "level": "warn",
+                            },
+                        )
+                        raise _GoPayWalletSignupNoNumbers(message) from exc
                     if _looks_like_gopay_wallet_signup_provider_error(exc):
                         _append_task_progress(
                             task_id,
@@ -10266,7 +10300,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         total,
                         _safe_email_summary(bind_email),
                     )
-                    if _looks_like_gopay_wallet_signup_provider_error(exc):
+                    if isinstance(exc, _GoPayWalletSignupNoNumbers) or _looks_like_gopay_wallet_signup_no_numbers(exc):
+                        failure_stage = "gopay_wallet_no_numbers"
+                    elif _looks_like_gopay_wallet_signup_provider_error(exc):
                         failure_stage = "gopay_wallet_provider_unavailable"
                     elif "Rekberinaja" in str(exc):
                         failure_stage = "gopay_wallet_funding"
@@ -10493,6 +10529,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 single_result["auto_register_total"] = auto_register_count
                 aggregate_results.append(single_result)
                 last_result = single_result
+                single_failure_stage = str(single_result.get("failure_stage") or "")
                 if _is_gopay_wallet_bound_elsewhere_result(single_result):
                     retry_reason = ""
                 elif single_failure_stage == "gopay_wallet_network_error":
@@ -11057,6 +11094,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             single_result = {
                                 "status": "failed",
                                 "failure_stage": "gopay_wallet_network_error",
+                                "message": str(exc),
+                                "screenshot_paths": [],
+                            }
+                        except _GoPayWalletSignupNoNumbers as exc:
+                            result_retry_round = retry_round
+                            single_result = {
+                                "status": "failed",
+                                "failure_stage": "gopay_wallet_no_numbers",
                                 "message": str(exc),
                                 "screenshot_paths": [],
                             }

@@ -888,6 +888,8 @@ def _gopay_pending_retry_reason(result: dict | None) -> str:
     message = str(result.get("message") or "")
     if _is_midtrans_linking_rate_limited_result(result) or stage == "gopay_rate_limited" or _looks_like_gopay_rate_limit_text(message):
         return "rate_limited"
+    if stage == "gopay_wallet_no_numbers" or "no_numbers" in message.lower() or "no numbers" in message.lower():
+        return "gopay_wallet_no_numbers"
     if stage in {"fetch_otp", "gopay_validate_otp", "trigger_sms_otp"}:
         return "gopay_otp"
     if _looks_like_http_forbidden_text(message):
@@ -917,6 +919,8 @@ def _gopay_pending_retry_source_stage(result: dict | None, reason: str) -> str:
         return "gopay_already_linked_retry"
     if reason == "rate_limited":
         return "gopay_rate_limited_retry"
+    if reason == "gopay_wallet_no_numbers":
+        return "gopay_wallet_no_numbers_retry"
     if reason == "gopay_otp":
         return "gopay_otp_retry"
     return "gopay_retryable_failure_rotate"
