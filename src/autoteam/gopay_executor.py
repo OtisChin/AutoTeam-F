@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -77,6 +79,7 @@ DEFAULT_STRIPE_PK = (
     "ViovU3kLKvpkjh7IqkW00iXQsjo3n"
 )
 DEFAULT_MIDTRANS_CLIENT_ID = "Mid-client-3TX8nUa-f_RgNrky"
+DEFAULT_MIDTRANS_SIGNING_KEY = "1feab063-bf3f-4025-90bf-3be6fa4f4cc2"
 DEFAULT_STRIPE_RUNTIME_VERSION = "fed52f3bc6"
 STRIPE_API = "https://api.stripe.com"
 STRIPE_VERSION_FULL = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
@@ -211,6 +214,16 @@ def _response_json(resp, stage: str) -> dict:
             stage=stage,
         ) from exc
     return data if isinstance(data, dict) else {"_raw": data}
+
+
+def _json_stringify_for_midtrans(data: Any) -> str:
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+
+
+def _midtrans_snap_signature(signing_key: str, url: str, timestamp: str, body_text: str) -> str:
+    payload = f"{url}:{timestamp}:{body_text}"
+    signature = hmac.new(signing_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return "".join(signature[idx + 2 : idx + 4] + signature[idx : idx + 2] for idx in range(0, len(signature), 4))
 
 
 def _ensure_ok(resp, stage: str):
@@ -2560,6 +2573,9 @@ class GoPayHttpCharger:
         self.midtrans_client_id = (
             str(midtrans_client_id or os.environ.get("GOPAY_MIDTRANS_CLIENT_ID") or DEFAULT_MIDTRANS_CLIENT_ID).strip()
         )
+        self.midtrans_signing_key = str(
+            os.environ.get("GOPAY_MIDTRANS_SIGNING_KEY") or DEFAULT_MIDTRANS_SIGNING_KEY
+        ).strip()
         self.approve_callback = approve_callback
         self.verify_callback = verify_callback
         self.sms_otp_trigger_callback = sms_otp_trigger_callback
@@ -3034,18 +3050,24 @@ class GoPayHttpCharger:
             f"payment_status={payload.get('payment_status')!r} status={payload.get('status')!r}"
         )
 
-    def _resolve_snap_token(self, checkout_session_id: str, stripe_pk: str) -> str:
+    def _resolve_snap_token(self, checkout_session_id: str, stripe_pk: str, init_ctx: dict | None = None) -> str:
         self._progress("resolve_midtrans_redirect")
+        init_ctx = init_ctx or {}
+        effective_version = init_ctx.get("stripe_version") or "2025-03-31.basil"
         params = {
             "elements_session_client[elements_init_source]": "custom_checkout",
             "elements_session_client[referrer_host]": "chatgpt.com",
-            "elements_session_client[session_id]": f"elements_session_{uuid.uuid4().hex[:11]}",
-            "elements_session_client[stripe_js_id]": str(uuid.uuid4()),
-            "elements_session_client[locale]": "en",
+            "elements_session_client[session_id]": init_ctx.get("elements_session_id") or f"elements_session_{uuid.uuid4().hex[:11]}",
+            "elements_session_client[stripe_js_id]": init_ctx.get("stripe_js_id") or str(uuid.uuid4()),
+            "elements_session_client[locale]": init_ctx.get("locale") or "en",
             "elements_session_client[is_aggregation_expected]": "false",
             "key": stripe_pk,
-            "_stripe_version": "2025-03-31.basil",
+            "_stripe_version": effective_version,
         }
+        if "checkout_server_update_beta" in effective_version:
+            params["elements_session_client[client_betas][0]"] = "custom_checkout_server_updates_1"
+            params["elements_session_client[client_betas][1]"] = "custom_checkout_manual_approval_1"
+        params.update(init_ctx.get("elements_options_client") or {})
         deadline = time.time() + 60
         last_error = ""
         while time.time() < deadline:
@@ -3146,19 +3168,37 @@ class GoPayHttpCharger:
 
     def _midtrans_init_linking(self, snap_token: str) -> str:
         self._progress("midtrans_linking")
-        headers = {
-            **self._midtrans_auth_header(),
-            "Content-Type": "application/json",
-            "Origin": "https://app.midtrans.com",
-            "Referer": f"https://app.midtrans.com/snap/v4/redirection/{snap_token}",
-        }
+        path = f"/snap/v3/accounts/{snap_token}/linking"
+        url = f"https://app.midtrans.com{path}"
         body = {
             "type": "gopay",
             "country_code": self.country_code,
             "phone_number": self.phone_number,
         }
+        body_text = _json_stringify_for_midtrans(body)
+        base_headers = {
+            **self._midtrans_auth_header(),
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://app.midtrans.com",
+            "Referer": f"https://app.midtrans.com/snap/v4/redirection/{snap_token}",
+            "X-Source": "snap",
+            "X-Source-App-Type": "redirection",
+            "X-Source-Version": "2.3.0",
+        }
         last_error = ""
         for attempt in range(1, GOPAY_LINK_RETRY_LIMIT + 2):
+            timestamp = str(int(time.time()))
+            headers = {
+                **base_headers,
+                "X-Snap-Signature": _midtrans_snap_signature(
+                    self.midtrans_signing_key,
+                    path,
+                    timestamp,
+                    body_text,
+                ),
+                "X-Timestamp": timestamp,
+            }
             logger.info(
                 "[gopay_executor] Midtrans linking attempt: snap_token=%s attempt=%s/%s phone=%s",
                 _mask_log_value(snap_token),
@@ -3168,8 +3208,8 @@ class GoPayHttpCharger:
             )
             resp = self._request(
                 "post",
-                f"https://app.midtrans.com/snap/v3/accounts/{snap_token}/linking",
-                json=body,
+                url,
+                data=body_text.encode("utf-8"),
                 headers=headers,
                 stage="midtrans_linking",
             )
@@ -3591,13 +3631,13 @@ class GoPayHttpCharger:
                     "[gopay_executor] Stripe confirm requires ChatGPT approve: %s",
                     self._confirm_state_summary(confirm_payload),
                 )
-                self._approve_checkout(checkout_session_id)
             else:
                 logger.info(
-                    "[gopay_executor] Stripe confirm did not explicitly require ChatGPT approve, resolving redirect: %s",
+                    "[gopay_executor] Stripe confirm did not explicitly require ChatGPT approve, approving before resolving redirect: %s",
                     self._confirm_state_summary(confirm_payload),
                 )
-            snap_token = self._resolve_snap_token(checkout_session_id, stripe_pk)
+            self._approve_checkout(checkout_session_id)
+            snap_token = self._resolve_snap_token(checkout_session_id, stripe_pk, init_ctx=init_ctx)
         result = self.run_from_snap_token(snap_token=snap_token, checkout_session_id=checkout_session_id)
         result["session_id"] = checkout_session_id
         result["checkout_session_id"] = checkout_session_id

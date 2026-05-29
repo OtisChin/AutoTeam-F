@@ -2514,6 +2514,7 @@ def register_gopay_wallet(
     sms_provider: str = "",
     hero_sms_config: dict[str, Any] | None = None,
     smscloud_config: dict[str, Any] | None = None,
+    smsbower_config: dict[str, Any] | None = None,
     smscode_config: dict[str, Any] | None = None,
     appium_config: dict[str, Any] | None = None,
     public_base_url: str = "",
@@ -2521,11 +2522,13 @@ def register_gopay_wallet(
 ) -> GoPayAutoRegistrationResult:
     hero_sms_config = hero_sms_config or {}
     smscloud_config = smscloud_config or {}
+    smsbower_config = smsbower_config or {}
     smscode_config = smscode_config or {}
     provider = _normalize_sms_provider(
         sms_provider
         or str(hero_sms_config.get("provider") or "")
         or str(smscloud_config.get("provider") or "")
+        or str(smsbower_config.get("provider") or "")
         or str(smscode_config.get("provider") or "")
         or _env_str("GOPAY_AUTO_SIGNUP_SMS_PROVIDER", "smscloud")
     )

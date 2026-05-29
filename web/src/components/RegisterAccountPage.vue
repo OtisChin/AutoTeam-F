@@ -92,8 +92,83 @@
             </span>
           </label>
 
+          <label class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
+            <input
+              v-model="registerForm.postRegisterOauth"
+              type="checkbox"
+              :disabled="registeringBusy"
+              class="mt-1 rounded border-gray-600 bg-gray-800"
+            />
+            <span>
+              <span class="text-gray-100">注册完成后 OAuth 登录</span>
+              <span class="block text-xs text-gray-500">勾选后会生成并保留 CPA 认证文件；遇到 add-phone 时使用“设置 → OAuth 接码配置”。</span>
+            </span>
+          </label>
+
+          <div v-if="registerForm.postRegisterOauth" class="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-3 text-sm text-gray-300 space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">OAuth 接码供应商</label>
+                <select
+                  v-model="registerForm.oauthPhoneSmsProvider"
+                  :disabled="registeringBusy || oauthPhoneSmsLoading"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option v-for="option in oauthPhoneSmsProviderOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}{{ option.configured ? '' : '（未配置）' }}
+                  </option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">接码国家</label>
+                <select
+                  v-model="registerForm.oauthPhoneSmsCountry"
+                  :disabled="registeringBusy || oauthPhoneSmsLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                >
+                  <option v-for="option in oauthPhoneSmsCountryOptionsForSelect" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <div class="text-xs text-gray-500">
+              手机号池会按池内号码国家处理；hero-sms / smsbower 会按这里选择的国家取号，服务固定 OpenAI。
+            </div>
+            <div v-if="!oauthPhoneSmsReady" class="text-xs text-red-400">
+              当前 OAuth 接码供应商未配置 API Key，请先到设置页配置后再启动。
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-3 text-sm text-gray-300">
+            <label class="flex items-start gap-2">
+              <input
+                v-model="registerForm.proxyApiEnabled"
+                type="checkbox"
+                :disabled="registeringBusy"
+                class="mt-1 rounded border-gray-600 bg-gray-800"
+              />
+              <span>
+                <span class="text-gray-100">启用动态代理 API</span>
+                <span class="block text-xs text-gray-500">每个账号注册前提取一条美国代理；浏览器注册、协议注册和注册后 OAuth 共用本次代理。</span>
+              </span>
+            </label>
+            <div v-if="registerForm.proxyApiEnabled" class="mt-3">
+              <label class="block text-xs text-gray-500 mb-1">代理供应商</label>
+              <select
+                v-model="registerForm.proxyApiProvider"
+                :disabled="registeringBusy"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value="1024proxy">1024proxy</option>
+                <option value="cliproxy">Cliproxy</option>
+              </select>
+              <div class="mt-1 text-xs text-gray-500">{{ registerProxyApiHelp }}</div>
+            </div>
+          </div>
+
           <div>
-            <label class="block text-sm text-gray-400 mb-1">邮件 Provider</label>
+            <label class="block text-sm text-gray-400 mb-1">邮件供应商</label>
             <select
               v-model="registerForm.mailProvider"
               :disabled="registeringBusy || mailProviderLoading"
@@ -356,6 +431,8 @@
             <div v-if="isLuckMailProvider">LuckMail 购买：<span class="text-gray-200">{{ luckmailPurchaseLabel }}</span></div>
             <div>密码：<span class="text-gray-200">{{ registerForm.password || '自动随机生成' }}</span></div>
             <div>行为：<span class="text-gray-200">{{ registerBehaviorLabel }}</span></div>
+            <div v-if="registerForm.postRegisterOauth">OAuth接码：<span class="text-gray-200">{{ oauthPhoneSmsProviderLabel }} / {{ oauthPhoneSmsCountryLabel }}</span></div>
+            <div>代理：<span class="text-gray-200">{{ registerProxyLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch' && registerProviderUsesDomains">域名轮换：<span class="text-gray-200">{{ selectedRegisterDomainsLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch'">批量策略：<span class="text-gray-200">并发 {{ validConcurrency }}，固定间隔 {{ validIntervalSeconds }}s，随机抖动 {{ validJitterMinSeconds }}-{{ validJitterMaxSeconds }}s</span></div>
           </div>
@@ -440,6 +517,12 @@ const outlookImportResultOk = ref(true)
 const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
+const oauthPhoneSmsLoading = ref(false)
+const oauthPhoneSmsProviderOptions = ref([
+  { value: 'phone_pool', label: '手机号池', configured: true },
+  { value: 'hero_sms', label: 'hero-sms', configured: false },
+  { value: 'smsbower', label: 'smsbower', configured: false },
+])
 const registerStats = ref({
   task: { total: 0, ok: 0, failed: 0, successRate: 0 },
   today: { total: 0, ok: 0, failed: 0, successRate: 0 },
@@ -461,6 +544,11 @@ const registerForm = ref({
   prefix: '',
   password: '',
   protocolRegister: false,
+  postRegisterOauth: false,
+  oauthPhoneSmsProvider: 'phone_pool',
+  oauthPhoneSmsCountry: '187',
+  proxyApiEnabled: false,
+  proxyApiProvider: '1024proxy',
 })
 const mailProviderLoading = ref(false)
 const mailProviderOptions = ref([])
@@ -482,6 +570,15 @@ const luckmailDomainOptions = [
   { value: 'hotmail.com', label: 'hotmail.com' },
   { value: 'hotmail.de', label: 'hotmail.de' },
   { value: 'live.com', label: 'live.com' },
+]
+const oauthPhoneSmsCountryOptions = [
+  { value: '187', label: '美国 (+1) / 187' },
+  { value: '6', label: '印度尼西亚 (+62) / 6' },
+  { value: '16', label: '英国 (+44) / 16' },
+  { value: '36', label: '加拿大 (+1) / 36' },
+  { value: '43', label: '德国 (+49) / 43' },
+  { value: '78', label: '法国 (+33) / 78' },
+  { value: '48', label: '荷兰 (+31) / 48' },
 ]
 
 const registeringBusy = computed(() => !!props.runningTask)
@@ -563,14 +660,51 @@ const luckmailPurchaseLabel = computed(() => {
   const domain = preferredDomain ? `@${preferredDomain}` : '自动分配'
   return `${emailType} / ${domain}`
 })
-const registerBehaviorLabel = computed(() => registerForm.value.protocolRegister
-  ? '协议注册免费账号并保存 auth_session'
-  : '浏览器注册免费账号并保存 auth_session')
+const registerBehaviorLabel = computed(() => {
+  const registerMode = registerForm.value.protocolRegister ? '协议注册' : '浏览器注册'
+  return registerForm.value.postRegisterOauth
+    ? `${registerMode}免费账号，随后执行 OAuth 并保留 CPA 文件`
+    : `${registerMode}免费账号并保存 auth_session`
+})
+const registerProxyApiHelp = computed(() => {
+  if (registerForm.value.proxyApiProvider === 'cliproxy') {
+    return '运行时使用 Cliproxy 美国白名单 API，每个账号注册前提取一条。'
+  }
+  return '运行时使用 1024proxy 美国白名单 API，每个账号注册前提取一条。'
+})
+const registerProxyLabel = computed(() => {
+  return registerForm.value.proxyApiEnabled ? `动态 API / ${registerForm.value.proxyApiProvider || '1024proxy'}` : '未启用'
+})
+const oauthPhoneSmsCountryOptionsForSelect = computed(() => {
+  const selected = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
+  if (!selected || oauthPhoneSmsCountryOptions.some(option => option.value === selected)) {
+    return oauthPhoneSmsCountryOptions
+  }
+  return [{ value: selected, label: `当前配置 / ${selected}` }, ...oauthPhoneSmsCountryOptions]
+})
+const oauthPhoneSmsProviderLabel = computed(() => {
+  const provider = String(registerForm.value.oauthPhoneSmsProvider || 'phone_pool')
+  const option = oauthPhoneSmsProviderOptions.value.find(item => item.value === provider)
+  return option?.label || provider
+})
+const oauthPhoneSmsCountryLabel = computed(() => {
+  if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') return '按手机号池'
+  const option = oauthPhoneSmsCountryOptionsForSelect.value.find(item => item.value === registerForm.value.oauthPhoneSmsCountry)
+  return option?.label || registerForm.value.oauthPhoneSmsCountry || '美国 (+1) / 187'
+})
+const oauthPhoneSmsReady = computed(() => {
+  if (!registerForm.value.postRegisterOauth) return true
+  const provider = String(registerForm.value.oauthPhoneSmsProvider || 'phone_pool')
+  if (provider === 'phone_pool') return true
+  const option = oauthPhoneSmsProviderOptions.value.find(item => item.value === provider)
+  return Boolean(option?.configured)
+})
 const outlookImportResultClass = computed(() => outlookImportResultOk.value
   ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
   : 'bg-red-500/10 text-red-300 border-red-500/20')
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
+  if (!oauthPhoneSmsReady.value) return false
   if (registerProviderUsesPool.value) return true
   return registerForm.value.mode === 'batch'
     ? selectedRegisterDomains.value.length > 0
@@ -696,6 +830,15 @@ function loadSavedRegisterForm() {
       // 密码不持久化，避免明文留在本地存储
       password: '',
       protocolRegister: Boolean(saved.protocolRegister),
+      postRegisterOauth: Boolean(saved.postRegisterOauth),
+      oauthPhoneSmsProvider: ['phone_pool', 'hero_sms', 'smsbower'].includes(String(saved.oauthPhoneSmsProvider || ''))
+        ? String(saved.oauthPhoneSmsProvider)
+        : 'phone_pool',
+      oauthPhoneSmsCountry: String(saved.oauthPhoneSmsCountry || registerForm.value.oauthPhoneSmsCountry || '187'),
+      proxyApiEnabled: Boolean(saved.proxyApiEnabled),
+      proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || ''))
+        ? String(saved.proxyApiProvider)
+        : '1024proxy',
     }
   } catch (e) {
     console.error('loadSavedRegisterForm', e)
@@ -721,6 +864,15 @@ function saveRegisterForm() {
       luckmailPreferredDomains: registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
       prefix: registerForm.value.prefix,
       protocolRegister: Boolean(registerForm.value.protocolRegister),
+      postRegisterOauth: Boolean(registerForm.value.postRegisterOauth),
+      oauthPhoneSmsProvider: ['phone_pool', 'hero_sms', 'smsbower'].includes(String(registerForm.value.oauthPhoneSmsProvider || ''))
+        ? registerForm.value.oauthPhoneSmsProvider
+        : 'phone_pool',
+      oauthPhoneSmsCountry: registerForm.value.oauthPhoneSmsCountry || '187',
+      proxyApiEnabled: Boolean(registerForm.value.proxyApiEnabled),
+      proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(registerForm.value.proxyApiProvider || ''))
+        ? registerForm.value.proxyApiProvider
+        : '1024proxy',
     })
     )
   } catch (e) {
@@ -770,6 +922,34 @@ async function loadMailProviderOptions() {
     setMessage(`读取邮件 Provider 失败: ${e.message}`, false)
   } finally {
     mailProviderLoading.value = false
+  }
+}
+
+async function loadOAuthPhoneSmsConfig() {
+  oauthPhoneSmsLoading.value = true
+  try {
+    const result = await api.getOAuthPhoneSmsConfig()
+    const providers = Array.isArray(result.providers) && result.providers.length
+      ? result.providers
+      : oauthPhoneSmsProviderOptions.value
+    oauthPhoneSmsProviderOptions.value = providers.map(option => ({
+      value: option.value,
+      label: option.label || option.value,
+      configured: Boolean(option.configured),
+    }))
+    if (!registerForm.value.oauthPhoneSmsProvider) {
+      registerForm.value.oauthPhoneSmsProvider = result.provider || 'phone_pool'
+    }
+    const provider = registerForm.value.oauthPhoneSmsProvider
+    if (!registerForm.value.oauthPhoneSmsCountry || registerForm.value.oauthPhoneSmsCountry === '187') {
+      registerForm.value.oauthPhoneSmsCountry = provider === 'smsbower'
+        ? (result.smsbower_country || '187')
+        : (result.hero_sms_country || '187')
+    }
+  } catch (e) {
+    setMessage(`读取 OAuth 接码配置失败: ${e.message}`, false)
+  } finally {
+    oauthPhoneSmsLoading.value = false
   }
 }
 
@@ -875,6 +1055,10 @@ async function submitManualRegister() {
       prefix: registerForm.value.prefix || null,
       password: registerForm.value.password || null,
       protocol_register: Boolean(registerForm.value.protocolRegister),
+      post_register_oauth: Boolean(registerForm.value.postRegisterOauth),
+      oauth_phone_sms_provider: registerForm.value.postRegisterOauth ? registerForm.value.oauthPhoneSmsProvider : '',
+      oauth_phone_sms_country: registerForm.value.postRegisterOauth ? registerForm.value.oauthPhoneSmsCountry : '',
+      proxy_api_provider: registerForm.value.proxyApiEnabled ? registerForm.value.proxyApiProvider : '',
     }
     const result = await api.startAdd(payload)
     setMessage(`注册任务已提交: ${result.task_id}`)
@@ -912,6 +1096,7 @@ onMounted(reloadRegisterDomains)
 onMounted(() => {
   loadSavedRegisterForm()
   loadMailProviderOptions()
+  loadOAuthPhoneSmsConfig()
   loadRegisterLogs()
   loadRegisterStats()
   logsTimer = window.setInterval(loadRegisterLogs, 3000)

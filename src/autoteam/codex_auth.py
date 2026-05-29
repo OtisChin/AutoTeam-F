@@ -28,7 +28,7 @@ from autoteam.admin_state import (
 )
 from autoteam.auth_index import delete_codex_auth_file, upsert_codex_auth_file
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
-from autoteam.config import get_playwright_launch_options
+from autoteam.config import get_playwright_launch_options, normalize_proxy_url
 from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import write_text
 
@@ -357,20 +357,48 @@ def _extract_account_id_from_auth_session(data: dict) -> str:
     return str(auth_claims.get("chatgpt_account_id") or "").strip() if isinstance(auth_claims, dict) else ""
 
 
-def _make_protocol_oauth_session():
+def _normalize_auth_session_payload(session_data: dict) -> dict:
+    """Merge saved /api/auth/session data with captured browser context."""
+    if not isinstance(session_data, dict):
+        return {}
+    raw_data = session_data.get("data") if isinstance(session_data.get("data"), dict) else session_data
+    context = session_data.get("auth_context") if isinstance(session_data.get("auth_context"), dict) else {}
+    merged = {}
+    if isinstance(raw_data, dict):
+        merged.update(raw_data)
+    merged.update({key: value for key, value in context.items() if value})
+    return merged
+
+
+def _extract_auth_session_token(data: dict) -> str:
+    token = _extract_session_token_from_cookie_header(str((data or {}).get("cookie_header") or ""))
+    if token:
+        return token
+    return str((data or {}).get("sessionToken") or (data or {}).get("session_token") or "").strip()
+
+
+def _make_protocol_oauth_session(proxy_url: str | None = None):
     """Create a browser-like HTTP session for protocol OAuth."""
     try:
         from curl_cffi.requests import Session as CurlCffiSession  # type: ignore
 
         session = CurlCffiSession(impersonate="chrome")
         session._autoteam_transport = "curl_cffi"  # type: ignore[attr-defined]
-        return session
     except Exception:
         import requests
 
         session = requests.Session()
         session._autoteam_transport = "requests"  # type: ignore[attr-defined]
-        return session
+    raw_proxy = str(proxy_url or "").strip()
+    if raw_proxy:
+        proxy = normalize_proxy_url(raw_proxy)
+        try:
+            session.proxies = {"http": proxy, "https": proxy}
+        except Exception:
+            logger.debug("[Codex] 协议 OAuth 设置代理失败", exc_info=True)
+            raise
+        logger.info("[Codex] 协议 OAuth proxy enabled")
+    return session
 
 
 def _set_protocol_cookie(session, name: str, value: str, domain: str):
@@ -1670,6 +1698,8 @@ def _normalize_oauth_phone_sms_provider(value: str | None = None) -> str:
     normalized = str(value or os.environ.get("OAUTH_PHONE_SMS_PROVIDER") or "phone_pool").strip().lower().replace("-", "_")
     if normalized in {"hero_sms", "herosms", "hero"}:
         return "hero_sms"
+    if normalized in {"smsbower", "sms_bower"}:
+        return "smsbower"
     return "phone_pool"
 
 
@@ -1688,7 +1718,7 @@ def _normalize_oauth_hero_sms_country(value: str | None = None) -> str:
     return text
 
 
-def _oauth_hero_sms_config() -> dict[str, str]:
+def _oauth_hero_sms_config(country: str | None = None) -> dict[str, str]:
     return {
         "base_url": str(
             os.environ.get("OAUTH_HERO_SMS_BASE_URL")
@@ -1696,9 +1726,19 @@ def _oauth_hero_sms_config() -> dict[str, str]:
             or "https://hero-sms.com/stubs/handler_api.php"
         ).strip(),
         "api_key": str(os.environ.get("OAUTH_HERO_SMS_API_KEY") or "").strip(),
-        "country": _normalize_oauth_hero_sms_country(os.environ.get("OAUTH_HERO_SMS_COUNTRY")),
+        "country": _normalize_oauth_hero_sms_country(country or os.environ.get("OAUTH_HERO_SMS_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_HERO_SMS_SERVICE")),
         "max_price": str(os.environ.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip(),
+    }
+
+
+def _oauth_smsbower_config(country: str | None = None) -> dict[str, str]:
+    return {
+        "base_url": str(os.environ.get("OAUTH_SMSBOWER_BASE_URL") or "https://smsbower.page/stubs/handler_api.php").strip(),
+        "api_key": str(os.environ.get("OAUTH_SMSBOWER_API_KEY") or "").strip(),
+        "country": _normalize_oauth_hero_sms_country(country or os.environ.get("OAUTH_SMSBOWER_COUNTRY")),
+        "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_SMSBOWER_SERVICE")),
+        "max_price": str(os.environ.get("OAUTH_SMSBOWER_MAX_PRICE") or "").strip(),
     }
 
 
@@ -1872,13 +1912,13 @@ def _oauth_hero_sms_finish_or_cancel(entry: dict[str, Any] | None, *, finish: bo
         )
 
 
-def _acquire_oauth_hero_sms_phone(email: str = "") -> tuple[dict | None, str]:
+def _acquire_oauth_hero_sms_phone(email: str = "", *, country: str | None = None) -> tuple[dict | None, str]:
     try:
         from autoteam.gopay_auto_register import SmsActivation, _hero_get_number
     except Exception as exc:
         return None, f"hero-sms 模块不可用: {exc}"
 
-    cfg = _oauth_hero_sms_config()
+    cfg = _oauth_hero_sms_config(country)
     if not cfg["api_key"]:
         return None, "缺少 OAUTH_HERO_SMS_API_KEY 配置"
     try:
@@ -1960,6 +2000,89 @@ def _acquire_oauth_hero_sms_phone(email: str = "") -> tuple[dict | None, str]:
     return _oauth_hero_sms_item_from_entry(entry, email), ""
 
 
+def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None) -> tuple[dict | None, str]:
+    try:
+        from autoteam.gopay_auto_register import SmsActivation, _hero_get_number, _hero_set_status
+    except Exception as exc:
+        return None, f"smsbower 模块不可用: {exc}"
+
+    cfg = _oauth_smsbower_config(country)
+    if not cfg["api_key"]:
+        return None, "缺少 OAUTH_SMSBOWER_API_KEY 配置"
+    try:
+        country_id = int(float(cfg["country"] or "187"))
+    except Exception:
+        country_id = 187
+    activation_id, phone, error = _hero_get_number(
+        service_code=cfg["service"] or "dr",
+        country_id=country_id,
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        max_price=cfg["max_price"],
+    )
+    if not activation_id or not phone:
+        return None, error or "smsbower 未返回可用号码"
+    class SmsbowerActivation(SmsActivation):
+        def cancel(self) -> None:
+            _hero_set_status(self.base_url, self.api_key, self.activation_id, 8)
+
+    activation = SmsbowerActivation(
+        activation_id=activation_id,
+        phone=phone,
+        country_id=country_id,
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        log=logger.info,
+    )
+    logger.info(
+        "[Codex] add-phone smsbower 已取号: email=%s activation=%s service=%s country=%s max_price=%s",
+        email,
+        activation_id,
+        cfg["service"] or "openai",
+        country_id,
+        cfg["max_price"] or "-",
+    )
+    return {
+        "id": f"smsbower:{activation_id}",
+        "source": "smsbower",
+        "phone_number": phone,
+        "sms_url": "",
+        "activation": activation,
+        "activation_id": activation_id,
+        "country_id": str(country_id),
+    }, ""
+
+
+def _release_oauth_sms_activation_phone(
+    phone_item: dict,
+    *,
+    finish: bool = False,
+    cancel: bool = False,
+    reason: str = "",
+) -> None:
+    activation = phone_item.get("activation")
+    activation_id = str(phone_item.get("activation_id") or "").strip()
+    if not activation:
+        return
+    try:
+        if finish:
+            activation.finish()
+            logger.info("[Codex] add-phone 短信会话已完成: source=%s activation=%s reason=%s", phone_item.get("source"), activation_id, reason)
+        elif cancel:
+            activation.cancel()
+            logger.info("[Codex] add-phone 短信会话已取消: source=%s activation=%s reason=%s", phone_item.get("source"), activation_id, reason)
+    except Exception as exc:
+        logger.info(
+            "[Codex] add-phone 短信会话状态更新失败: source=%s activation=%s finish=%s cancel=%s reason=%s error=%s",
+            phone_item.get("source"),
+            activation_id,
+            finish,
+            cancel,
+            reason,
+            exc,
+        )
+
+
 def _release_oauth_hero_sms_phone(phone_item: dict, *, email: str = "", finish: bool = False, cancel: bool = False, reason: str = "") -> None:
     activation_id = str(phone_item.get("activation_id") or "").strip()
     if not activation_id:
@@ -2034,10 +2157,11 @@ def _mark_oauth_hero_sms_bound(phone_item: dict, *, email: str = "") -> None:
 
 
 def _make_phone_item_otp_provider(phone_item: dict):
-    if str(phone_item.get("source") or "").lower() == "hero_sms":
+    source = str(phone_item.get("source") or "").lower()
+    if source in {"hero_sms", "smsbower"}:
         activation = phone_item.get("activation")
         if not activation:
-            raise RuntimeError("hero-sms activation 为空")
+            raise RuntimeError(f"{source} activation 为空")
 
         def _provider() -> str:
             ignored = getattr(_provider, "_gopay_ignored_otps", set())
@@ -2050,12 +2174,13 @@ def _make_phone_item_otp_provider(phone_item: dict):
                 label="oauth-add-phone",
                 max_resends=0,
             )
-            _oauth_hero_sms_persist_used_codes(str(phone_item.get("activation_id") or ""))
+            if source == "hero_sms":
+                _oauth_hero_sms_persist_used_codes(str(phone_item.get("activation_id") or ""))
             if not code:
-                if not getattr(_provider, "_hero_sms_first_code_received", False):
-                    raise CodexOAuthHeroSmsFirstCodeTimeout("hero-sms 120s 内未收到第一个验证码")
-                raise TimeoutError("hero-sms 120s 内未收到验证码")
-            setattr(_provider, "_hero_sms_first_code_received", True)
+                if not getattr(_provider, "_dynamic_sms_first_code_received", False):
+                    raise CodexOAuthHeroSmsFirstCodeTimeout(f"{source} 120s 内未收到第一个验证码")
+                raise TimeoutError(f"{source} 120s 内未收到验证码")
+            _provider._dynamic_sms_first_code_received = True
             return code
 
         return _provider
@@ -2078,15 +2203,16 @@ def _make_phone_otp_provider(sms_url: str):
 def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> tuple[bool, str]:
     phone = str(phone_item.get("phone_number") or "").strip()
     sms_url = str(phone_item.get("sms_url") or "").strip()
-    is_dynamic_hero_sms = str(phone_item.get("source") or "").lower() == "hero_sms"
-    if not phone or (not sms_url and not is_dynamic_hero_sms):
+    dynamic_sms_source = str(phone_item.get("source") or "").lower()
+    is_dynamic_sms = dynamic_sms_source in {"hero_sms", "smsbower"}
+    if not phone or (not sms_url and not is_dynamic_sms):
         return False, "手机号或接码链接为空"
     if not _is_add_phone_page(page):
         return True, ""
 
     logger.info(
         "[Codex] add-phone 使用%s号码: email=%s phone=%s",
-        "hero-sms 动态" if is_dynamic_hero_sms else "手机号池",
+        f"{dynamic_sms_source} 动态" if is_dynamic_sms else "手机号池",
         email,
         phone,
     )
@@ -2097,7 +2223,7 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         page,
         phone_input,
         phone,
-        force_us=is_dynamic_hero_sms and str(phone_item.get("country_id") or "") == "187",
+        force_us=is_dynamic_sms and str(phone_item.get("country_id") or "") == "187",
     )
     ok, fill_error = _fill_oauth_phone_field(page, phone_input, phone_for_input)
     if not ok:
@@ -2169,13 +2295,18 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
             return False, f"手机验证码无效，已重发 {max_invalid_retries} 次仍失败: {submit_detail or ''}".strip()
         if not _click_phone_resend_if_present(page):
             return False, f"手机验证码无效且未找到重新发送按钮: {submit_detail or ''}".strip()
-        if is_dynamic_hero_sms:
+        if is_dynamic_sms:
             try:
                 activation = phone_item.get("activation")
                 if activation:
                     activation.resend()
             except Exception as exc:
-                logger.info("[Codex] add-phone hero-sms 标记重发失败: activation=%s error=%s", phone_item.get("activation_id"), exc)
+                logger.info(
+                    "[Codex] add-phone 动态短信标记重发失败: source=%s activation=%s error=%s",
+                    dynamic_sms_source,
+                    phone_item.get("activation_id"),
+                    exc,
+                )
         logger.info(
             "[Codex] add-phone 手机验证码无效，已点击重新发送并等待新验证码: email=%s phone=%s attempt=%s/%s",
             email,
@@ -2223,10 +2354,17 @@ def _classify_oauth_phone_rate_limit_exception(error: str) -> str:
     return _classify_oauth_phone_failure(error)
 
 
-def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
+def _handle_oauth_add_phone_if_present(
+    page,
+    *,
+    email: str,
+    phone_sms_provider: str | None = None,
+    phone_sms_country: str | None = None,
+) -> bool:
     if not _is_add_phone_page(page):
         return False
-    provider_mode = _normalize_oauth_phone_sms_provider()
+    provider_mode = _normalize_oauth_phone_sms_provider(phone_sms_provider)
+    country_override = _normalize_oauth_hero_sms_country(phone_sms_country) if phone_sms_country else None
     pool_api: dict[str, Any] = {}
     if provider_mode == "phone_pool":
         try:
@@ -2251,23 +2389,34 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
 
     def acquire_phone_item() -> tuple[dict | None, str]:
         if provider_mode == "hero_sms":
-            return _acquire_oauth_hero_sms_phone(email)
+            return _acquire_oauth_hero_sms_phone(email, country=country_override)
+        if provider_mode == "smsbower":
+            return _acquire_oauth_smsbower_phone(email, country=country_override)
         return pool_api["acquire"](email), ""
 
     def release_phone_item(phone_item: dict, reason: str = "") -> None:
-        if str(phone_item.get("source") or "").lower() == "hero_sms":
+        source = str(phone_item.get("source") or "").lower()
+        if source == "hero_sms":
             _release_oauth_hero_sms_phone(phone_item, email=email, reason=reason)
+            return
+        if source == "smsbower":
+            _release_oauth_sms_activation_phone(phone_item, cancel=True, reason=reason)
             return
         pool_api["release"](str(phone_item.get("id") or ""), email)
 
     def mark_phone_success(phone_item: dict) -> None:
-        if str(phone_item.get("source") or "").lower() == "hero_sms":
+        source = str(phone_item.get("source") or "").lower()
+        if source == "hero_sms":
             _mark_oauth_hero_sms_bound(phone_item, email=email)
+            return
+        if source == "smsbower":
+            _release_oauth_sms_activation_phone(phone_item, finish=True, reason="success")
             return
         pool_api["bound"](str(phone_item.get("id") or ""), email)
 
     def mark_phone_failed(phone_item: dict, action: str, reason: str) -> None:
-        if str(phone_item.get("source") or "").lower() == "hero_sms":
+        source = str(phone_item.get("source") or "").lower()
+        if source == "hero_sms":
             if action == "hero_release":
                 _release_oauth_hero_sms_phone(phone_item, email=email, cancel=True, reason=reason)
                 return
@@ -2275,6 +2424,9 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
                 _release_oauth_hero_sms_phone(phone_item, email=email, cancel=True, reason=reason)
             else:
                 _release_oauth_hero_sms_phone(phone_item, email=email, reason=reason)
+            return
+        if source == "smsbower":
+            _release_oauth_sms_activation_phone(phone_item, cancel=True, reason=reason)
             return
         if action == "cooldown":
             pool_api["cooldown"](str(phone_item.get("id") or ""), reason)
@@ -2288,8 +2440,13 @@ def _handle_oauth_add_phone_if_present(page, *, email: str) -> bool:
     while attempted < 10 and _is_add_phone_page(page):
         phone_item, acquire_error = acquire_phone_item()
         if not phone_item:
-            if provider_mode == "hero_sms":
-                logger.warning("[Codex] add-phone 需要手机号，但 hero-sms 取号失败: email=%s error=%s", email, acquire_error)
+            if provider_mode in {"hero_sms", "smsbower"}:
+                logger.warning(
+                    "[Codex] add-phone 需要手机号，但%s取号失败: email=%s error=%s",
+                    provider_mode,
+                    email,
+                    acquire_error,
+                )
             else:
                 logger.warning("[Codex] add-phone 需要手机号，但手机号池没有可用号码: %s", email)
             return False
@@ -2639,6 +2796,8 @@ def _login_codex_via_browser_simple(
     auth_session_callback=None,
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
+    phone_sms_provider: str | None = None,
+    phone_sms_country: str | None = None,
 ):
     """
     极简 OAuth 登录：输入邮箱 -> 邮箱验证码 -> 授权。
@@ -2735,7 +2894,12 @@ def _login_codex_via_browser_simple(
 
             current_url = page.url or ""
             if "auth.openai.com/add-phone" in current_url:
-                if _handle_oauth_add_phone_if_present(page, email=email):
+                if _handle_oauth_add_phone_if_present(
+                    page,
+                    email=email,
+                    phone_sms_provider=phone_sms_provider,
+                    phone_sms_country=phone_sms_country,
+                ):
                     time.sleep(2)
                     continue
                 phone_required_url = current_url
@@ -2833,7 +2997,12 @@ def _login_codex_via_browser_simple(
                 _screenshot(page, "codex_simple_03_after_about_you.png")
                 continue
 
-            if _handle_oauth_add_phone_if_present(page, email=email):
+            if _handle_oauth_add_phone_if_present(
+                page,
+                email=email,
+                phone_sms_provider=phone_sms_provider,
+                phone_sms_country=phone_sms_country,
+            ):
                 _screenshot(page, "codex_simple_03b_after_add_phone.png")
                 time.sleep(2)
                 continue
@@ -2905,6 +3074,8 @@ def login_codex_via_browser(
     auth_session_callback=None,
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
+    phone_sms_provider: str | None = None,
+    phone_sms_country: str | None = None,
 ):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
@@ -2928,6 +3099,8 @@ def login_codex_via_browser(
             auth_session_callback=auth_session_callback,
             proxy_url=proxy_url,
             proxy_bypass=proxy_bypass,
+            phone_sms_provider=phone_sms_provider,
+            phone_sms_country=phone_sms_country,
         )
 
     code_verifier, code_challenge = _generate_pkce()
@@ -3281,7 +3454,12 @@ def login_codex_via_browser(
             try:
                 current_url = page.url or ""
                 if "auth.openai.com/add-phone" in current_url:
-                    if _handle_oauth_add_phone_if_present(page, email=email):
+                    if _handle_oauth_add_phone_if_present(
+                        page,
+                        email=email,
+                        phone_sms_provider=phone_sms_provider,
+                        phone_sms_country=phone_sms_country,
+                    ):
                         _screenshot(page, "codex_04_add_phone_handled.png")
                         time.sleep(2)
                         continue
@@ -3600,7 +3778,12 @@ def login_codex_via_browser(
             _screenshot(page, "codex_05_no_callback.png")
             final_oauth_url = page.url or ""
             if "auth.openai.com/add-phone" in (page.url or ""):
-                if _handle_oauth_add_phone_if_present(page, email=email):
+                if _handle_oauth_add_phone_if_present(
+                    page,
+                    email=email,
+                    phone_sms_provider=phone_sms_provider,
+                    phone_sms_country=phone_sms_country,
+                ):
                     logger.info("[Codex] OAuth add-phone 已处理，继续等待回调: %s", email)
                     for _ in range(30):
                         if auth_code:
@@ -3876,6 +4059,10 @@ class SessionCodexAuthFlow:
         native_oauth=False,
         password_callback=None,
         auth_file_callback=None,
+        proxy_url=None,
+        auth_cookies=None,
+        phone_sms_provider=None,
+        phone_sms_country=None,
     ):
         self.email = email or ""
         self.password = password or ""
@@ -3886,6 +4073,10 @@ class SessionCodexAuthFlow:
         self.native_oauth = bool(native_oauth)
         self.password_callback = password_callback
         self.auth_file_callback = auth_file_callback or save_auth_file
+        self.proxy_url = str(proxy_url or "").strip()
+        self.auth_cookies = auth_cookies if isinstance(auth_cookies, list) else []
+        self.phone_sms_provider = str(phone_sms_provider or "").strip()
+        self.phone_sms_country = str(phone_sms_country or "").strip()
         self.code_verifier, code_challenge = _generate_pkce()
         self.state = secrets.token_urlsafe(16)
         self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=self.native_oauth)
@@ -3927,6 +4118,8 @@ class SessionCodexAuthFlow:
         lower_url = cur.lower()
         if "auth.openai.com/add-phone" in lower_url or "/add-phone" in lower_url:
             return "phone_required", cur
+        if "auth.openai.com/choose-an-account" in lower_url or "/choose-an-account" in lower_url:
+            return "choose_account", cur
         if "auth.openai.com/email-verification" in lower_url or "/email-verification" in lower_url:
             return "code_required", cur
         if _is_auth_login_url(cur):
@@ -4055,6 +4248,58 @@ class SessionCodexAuthFlow:
 
         return acted
 
+    def _choose_current_account(self):
+        if not self.page:
+            return False
+        try:
+            clicked = self.page.evaluate(
+                """(email) => {
+                const targetEmail = String(email || '').trim().toLowerCase();
+                const visible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                };
+                const norm = (text) => String(text || '').replace(/\\s+/g, ' ').trim();
+                const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], [role="option"], div, li, span, p'));
+                const emailMatches = [];
+                const fallbacks = [];
+                for (const el of candidates) {
+                    if (!visible(el)) continue;
+                    const text = norm(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
+                    if (!text) continue;
+                    const lower = text.toLowerCase();
+                    if (/(remove|delete|移除|删除|刪除)/i.test(lower)) continue;
+                    const clickable = el.closest('button, a, [role="button"], [role="option"], li') || el;
+                    const rect = clickable.getBoundingClientRect();
+                    const item = { el: clickable, text, score: text.length + Math.round(rect.width * rect.height / 1000) };
+                    if (targetEmail && lower.includes(targetEmail)) {
+                        emailMatches.push(item);
+                        continue;
+                    }
+                    if (lower.includes('@') || lower.includes('continue') || lower.includes('继续')) {
+                        fallbacks.push(item);
+                    }
+                }
+                const chosen = (emailMatches.length ? emailMatches : fallbacks).sort((a, b) => a.score - b.score)[0];
+                if (chosen) {
+                    chosen.el.scrollIntoView({block: 'center', inline: 'center'});
+                    chosen.el.click();
+                    return chosen.text;
+                }
+                return '';
+            }""",
+                self.email,
+            )
+        except Exception:
+            clicked = ""
+        if clicked:
+            logger.info("[Codex] 已选择 OAuth 账号: %s", str(clicked)[:120])
+            time.sleep(3)
+            return True
+        return False
+
     def _auto_fill_email(self):
         if _is_email_verification_page(self.page):
             return False
@@ -4131,6 +4376,14 @@ class SessionCodexAuthFlow:
             if step == "completed":
                 return {"step": "completed", "detail": detail}
             if step == "phone_required":
+                if _handle_oauth_add_phone_if_present(
+                    self.page,
+                    email=self.email,
+                    phone_sms_provider=self.phone_sms_provider,
+                    phone_sms_country=self.phone_sms_country,
+                ):
+                    time.sleep(2)
+                    continue
                 return {"step": "phone_required", "detail": detail}
             if step == "account_deactivated":
                 return {"step": "account_deactivated", "detail": detail}
@@ -4155,6 +4408,11 @@ class SessionCodexAuthFlow:
                     continue
                 return {"step": "email_required", "detail": detail}
 
+            if step == "choose_account":
+                if self._choose_current_account():
+                    continue
+                return {"step": "choose_account", "detail": detail}
+
             if self._click_workspace_or_consent():
                 continue
 
@@ -4174,7 +4432,13 @@ class SessionCodexAuthFlow:
         self.chatgpt = ChatGPTTeamAPI()
         if self.device_id:
             self.chatgpt.oai_device_id = self.device_id
-        self.chatgpt.start_with_session(self.session_token, self.account_id, self.workspace_name)
+        self.chatgpt.start_with_session(
+            self.session_token,
+            self.account_id,
+            self.workspace_name,
+            proxy_url=self.proxy_url,
+            cookies=self.auth_cookies,
+        )
         self.page = self.chatgpt.context.new_page()
         self._attach_callback_listeners()
         self._inject_auth_cookies()
@@ -4966,6 +5230,7 @@ def login_codex_via_auth_session_protocol(
     *,
     native_oauth=True,
     auth_file_callback=None,
+    proxy_url=None,
 ):
     """Finish Codex OAuth by following auth redirects with the saved ChatGPT session cookies.
 
@@ -4977,14 +5242,8 @@ def login_codex_via_auth_session_protocol(
         logger.warning("[Codex] 协议 OAuth 失败: session_data 格式无效")
         return None
 
-    raw_data = session_data.get("data") if isinstance(session_data.get("data"), dict) else session_data
-    context = session_data.get("auth_context") if isinstance(session_data.get("auth_context"), dict) else {}
-    merged = {}
-    if isinstance(raw_data, dict):
-        merged.update(raw_data)
-    merged.update({key: value for key, value in context.items() if value})
-
-    session_token = _extract_session_token_from_cookie_header(str(merged.get("cookie_header") or ""))
+    merged = _normalize_auth_session_payload(session_data)
+    session_token = _extract_auth_session_token(merged)
     account_id = _extract_account_id_from_auth_session(merged)
     device_id = str(merged.get("oai_device_id") or merged.get("device_id") or "").strip()
     if not session_token:
@@ -4994,7 +5253,7 @@ def login_codex_via_auth_session_protocol(
     code_verifier, code_challenge = _generate_pkce()
     state = secrets.token_urlsafe(16)
     auth_url = _build_auth_url(code_challenge, state, native_oauth=native_oauth)
-    http = _make_protocol_oauth_session()
+    http = _make_protocol_oauth_session(proxy_url=proxy_url)
     _seed_protocol_auth_cookies(
         http,
         session_token=session_token,
@@ -5027,15 +5286,20 @@ def login_codex_via_auth_session(
     password="",
     native_oauth=True,
     otp_timeout=120,
+    proxy_url=None,
+    phone_sms_provider=None,
+    phone_sms_country=None,
 ):
     """Complete Codex OAuth by reusing a freshly registered ChatGPT auth session."""
     if not isinstance(session_data, dict):
         logger.warning("[Codex] auth_session 复用 OAuth 失败: session_data 格式无效")
         return None
 
-    session_token = _extract_session_token_from_cookie_header(str(session_data.get("cookie_header") or ""))
-    account_id = _extract_account_id_from_auth_session(session_data)
-    device_id = str(session_data.get("oai_device_id") or session_data.get("device_id") or "").strip()
+    merged = _normalize_auth_session_payload(session_data)
+    session_token = _extract_auth_session_token(merged)
+    account_id = _extract_account_id_from_auth_session(merged)
+    device_id = str(merged.get("oai_device_id") or merged.get("device_id") or "").strip()
+    auth_cookies = merged.get("cookies") if isinstance(merged.get("cookies"), list) else []
     if not session_token:
         logger.warning("[Codex] auth_session 复用 OAuth 失败: 缺少 session cookie")
         return None
@@ -5051,6 +5315,10 @@ def login_codex_via_auth_session(
         password=password,
         device_id=device_id,
         native_oauth=native_oauth,
+        proxy_url=proxy_url,
+        auth_cookies=auth_cookies,
+        phone_sms_provider=phone_sms_provider,
+        phone_sms_country=phone_sms_country,
     )
     try:
         state = flow.start()

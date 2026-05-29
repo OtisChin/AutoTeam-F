@@ -1475,6 +1475,9 @@ def _run_post_register_oauth(
     mail_client,
     leave_workspace=False,
     out_outcome=None,
+    proxy_url=None,
+    oauth_phone_sms_provider=None,
+    oauth_phone_sms_country=None,
 ):
     """
     注册（加入 Team）成功后统一的收尾流程：
@@ -1534,7 +1537,15 @@ def _run_post_register_oauth(
             time.sleep(8)
 
         try:
-            bundle = login_codex_via_browser(email, password, mail_client=mail_client, use_personal=True)
+            bundle = login_codex_via_browser(
+                email,
+                password,
+                mail_client=mail_client,
+                use_personal=True,
+                proxy_url=proxy_url,
+                phone_sms_provider=oauth_phone_sms_provider,
+                phone_sms_country=oauth_phone_sms_country,
+            )
         except CodexOAuthPhoneRequired as exc:
             return _handle_oauth_phone_required(exc, "post_leave_workspace")
         if bundle:
@@ -1569,7 +1580,14 @@ def _run_post_register_oauth(
 
     # 原有 Team 流程
     try:
-        bundle = login_codex_via_browser(email, password, mail_client=mail_client)
+        bundle = login_codex_via_browser(
+            email,
+            password,
+            mail_client=mail_client,
+            proxy_url=proxy_url,
+            phone_sms_provider=oauth_phone_sms_provider,
+            phone_sms_country=oauth_phone_sms_country,
+        )
     except CodexOAuthPhoneRequired as exc:
         return _handle_oauth_phone_required(exc, "post_register_team_oauth")
     if bundle:
@@ -1598,6 +1616,7 @@ def _run_post_register_oauth(
 
 _AUTH_SESSION_CONTEXT_KEYS = (
     "cookie_header",
+    "cookies",
     "user_agent",
     "accept_language",
     "oai_language",
@@ -1701,7 +1720,14 @@ def _collect_auth_session_context(page, context, state: dict | None = None) -> d
     except Exception:
         pass
     try:
-        cookies = context.cookies("https://chatgpt.com")
+        saved_cookies = context.cookies(["https://chatgpt.com", "https://auth.openai.com", "https://openai.com"])
+        if saved_cookies:
+            result["cookies"] = saved_cookies
+    except Exception:
+        saved_cookies = []
+
+    try:
+        cookies = saved_cookies or context.cookies("https://chatgpt.com")
         parts = []
         seen = set()
         for cookie in cookies or []:
@@ -1873,6 +1899,80 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
     }
 
 
+def _save_codex_oauth_bundle_for_account(
+    email,
+    password,
+    cloudmail_account_id,
+    bundle,
+    *,
+    out_outcome=None,
+    mail_provider=None,
+    source="protocol_oauth",
+):
+    """Persist a Codex OAuth bundle as CPA JSON and attach it to the account."""
+
+    def _record_outcome(status, **extra):
+        if out_outcome is not None:
+            out_outcome.clear()
+            out_outcome.update(status=status, email=email, **extra)
+
+    if not isinstance(bundle, dict):
+        _record_outcome("protocol_oauth_failed", reason="协议 OAuth 未返回有效 bundle")
+        return None
+    if not str(bundle.get("access_token") or "").strip() or not str(bundle.get("refresh_token") or "").strip():
+        _record_outcome("protocol_oauth_failed", reason="协议 OAuth bundle 缺少 access_token 或 refresh_token")
+        return None
+
+    bundle = dict(bundle)
+    bundle["email"] = str(bundle.get("email") or email or "").strip()
+    plan_type = (bundle.get("plan_type") or "free").strip().lower()
+    account_type = {
+        "free": ACCOUNT_TYPE_FREE,
+        "team": ACCOUNT_TYPE_TEAM,
+        "plus": ACCOUNT_TYPE_PLUS,
+        "pro": ACCOUNT_TYPE_PRO,
+    }.get(plan_type, ACCOUNT_TYPE_FREE)
+    seat_type = SEAT_CHATGPT if plan_type == "team" else SEAT_CODEX
+    status = STATUS_ACTIVE if plan_type in {"free", "team", "plus", "pro"} else STATUS_PERSONAL
+    auth_file = save_auth_file(bundle)
+
+    add_account(
+        email,
+        password,
+        cloudmail_account_id=cloudmail_account_id,
+        seat_type=seat_type,
+        mail_provider=mail_provider,
+    )
+    update_account(
+        email,
+        status=status,
+        account_type=account_type,
+        seat_type=seat_type,
+        auth_file=auth_file,
+        last_active_at=time.time(),
+    )
+    logger.info("[注册] 协议 Codex OAuth 已保存 CPA JSON: %s plan=%s auth_file=%s", email, plan_type, auth_file)
+    _record_outcome(
+        "success",
+        plan=plan_type,
+        auth_file=auth_file,
+        source=source,
+        password=password,
+        cloudmail_account_id=cloudmail_account_id,
+        mail_provider=mail_provider,
+    )
+    return {
+        "email": email,
+        "status": "success",
+        "plan_type": plan_type,
+        "auth_file": auth_file,
+        "password": password,
+        "cloudmail_account_id": cloudmail_account_id,
+        "mail_provider": mail_provider,
+        "source": source,
+    }
+
+
 def _run_post_register_session_oauth(
     email,
     password,
@@ -1881,6 +1981,9 @@ def _run_post_register_session_oauth(
     *,
     cloudmail_account_id=None,
     out_outcome=None,
+    proxy_url=None,
+    oauth_phone_sms_provider=None,
+    oauth_phone_sms_country=None,
 ):
     """Use the just-created ChatGPT session to finish Codex OAuth, codex-console style."""
 
@@ -1891,12 +1994,13 @@ def _run_post_register_session_oauth(
 
     oauth_result = None
     oauth_source = "protocol_oauth"
-    browser_mode = str(os.environ.get("OAUTH_BROWSER_MODE") or "protocol").strip().lower()
+    browser_mode = str(os.environ.get("OAUTH_BROWSER_MODE") or "auto").strip().lower()
     protocol_requested = browser_mode in {"", "auto", "protocol", "http", "session", "session_protocol"}
     ui_requested = browser_mode in {"windows_ui", "real_chrome", "local_ui"}
     cdp_requested = browser_mode in {"chrome", "chrome_cdp", "local_chrome"}
     cdp_required = browser_mode in {"chrome", "chrome_cdp", "local_chrome"}
     session_browser_requested = browser_mode in {"playwright", "browser", "session_browser"}
+    protocol_phone_required_url = ""
 
     if protocol_requested:
         try:
@@ -1905,29 +2009,25 @@ def _run_post_register_session_oauth(
                 email,
                 auth_session_data,
                 native_oauth=True,
+                proxy_url=proxy_url,
             )
             oauth_source = "protocol_oauth"
         except CodexOAuthPhoneRequired as exc:
-            logger.error("[注册] %s 协议 OAuth 需要手机号验证，账号不可用，将删除: %s", email, exc)
-            _discard_registered_account_after_oauth_failure(email, mail_client, reason="oauth_phone_required")
-            record_failure(
+            protocol_phone_required_url = getattr(exc, "url", "") or str(exc)
+            logger.info(
+                "[注册] %s 协议 OAuth 遇到手机号验证，切换到可自动接码的浏览器会话 OAuth: %s",
                 email,
-                "phone_blocked",
-                "Codex OAuth 需要手机号验证",
-                stage="post_register_protocol_oauth",
-                url=getattr(exc, "url", ""),
+                protocol_phone_required_url,
             )
-            _record_outcome("phone_blocked", reason="Codex OAuth 需要手机号验证", stage="post_register_protocol_oauth")
-            return None
         except CodexProtocolOAuthError as exc:
-            logger.warning("[注册] 协议 OAuth 未完成，保留 auth_session 供手动补登录: %s", exc)
+            logger.warning("[注册] 协议 OAuth 未完成，将回退到浏览器会话 OAuth: %s", exc)
             _record_outcome("protocol_oauth_failed", reason=f"协议 OAuth 失败: {exc}")
             if browser_mode in {"auto"}:
                 oauth_result = None
             else:
                 return None
         except Exception as exc:
-            logger.warning("[注册] 协议 OAuth 异常，保留 auth_session 供手动补登录: %s", exc)
+            logger.warning("[注册] 协议 OAuth 异常，将回退到浏览器会话 OAuth: %s", exc)
             _record_outcome("protocol_oauth_failed", reason=f"协议 OAuth 异常: {exc}")
             if browser_mode in {"auto"}:
                 oauth_result = None
@@ -2009,10 +2109,10 @@ def _run_post_register_session_oauth(
     if oauth_result:
         logger.info("[注册] Codex OAuth 成功: %s source=%s", email, oauth_source)
     else:
-        if not session_browser_requested:
+        if not (session_browser_requested or protocol_phone_required_url or browser_mode in {"", "auto"}):
             logger.warning("[注册] Codex OAuth 未完成，已保留 auth_session 供手动补登录: %s", email)
             return None
-        oauth_source = "session_oauth"
+        oauth_source = "session_oauth_after_protocol_phone" if protocol_phone_required_url else "session_oauth"
         try:
             logger.info("[注册] 开始复用注册会话执行 Playwright Codex OAuth: %s", email)
             oauth_result = login_codex_via_auth_session(
@@ -2021,6 +2121,9 @@ def _run_post_register_session_oauth(
                 mail_client=mail_client,
                 password=password,
                 native_oauth=True,
+                proxy_url=proxy_url,
+                phone_sms_provider=oauth_phone_sms_provider,
+                phone_sms_country=oauth_phone_sms_country,
             )
         except CodexOAuthPhoneRequired as exc:
             logger.error("[注册] %s 复用注册会话 OAuth 仍需要手机号验证，账号不可用，将删除: %s", email, exc)
@@ -2638,7 +2741,7 @@ def _complete_direct_about_you(page):
     return False
 
 
-def _register_direct_once(mail_client, email, password, cloudmail_account_id=None, return_session=False):
+def _register_direct_once(mail_client, email, password, cloudmail_account_id=None, return_session=False, proxy_url=None):
     """执行一次直接注册，返回是否完成注册并进入 Team。
 
     在邮箱/密码/验证码/about-you 四个提交节点调用 assert_not_blocked，
@@ -2662,7 +2765,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         return f"打开 ChatGPT 登录页失败：{text}"
 
     with sync_playwright() as p:
-        launch_kwargs = get_playwright_launch_options()
+        launch_kwargs = get_playwright_launch_options(proxy_url=proxy_url)
         if sys.platform.startswith("win"):
             launch_kwargs["slow_mo"] = 100
         browser = p.chromium.launch(**launch_kwargs)
@@ -3018,6 +3121,9 @@ def create_account_direct(
     check_team_membership=True,
     progress_callback=None,
     register_mode="browser",
+    proxy_url=None,
+    oauth_phone_sms_provider=None,
+    oauth_phone_sms_country=None,
 ):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
@@ -3045,6 +3151,7 @@ def create_account_direct(
 
     register_mode = str(register_mode or "browser").strip().lower()
     use_protocol_register = register_mode in {"protocol", "http", "api"}
+    proxy_url = str(proxy_url or "").strip() or None
     resolved_prefix = _with_random_suffix_prefix(email_prefix)
     _progress("register_email_creating", f"正在创建临时邮箱: domain=@{domain or '<default>'}")
     account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
@@ -3109,6 +3216,9 @@ def create_account_direct(
                     email=email,
                     password=password,
                     account_id=account_id,
+                    proxy=proxy_url,
+                    oauth_phone_sms_provider=oauth_phone_sms_provider if post_register_oauth_enabled else None,
+                    oauth_phone_sms_country=oauth_phone_sms_country if post_register_oauth_enabled else None,
                 )
             else:
                 result = _register_direct_once(
@@ -3117,6 +3227,7 @@ def create_account_direct(
                     password,
                     cloudmail_account_id=account_id,
                     return_session=not check_team_membership,
+                    proxy_url=proxy_url,
                 )
             if not check_team_membership:
                 success, session_data = result
@@ -3239,6 +3350,32 @@ def create_account_direct(
                             logger.info("[注册] auth_session 已保存，注册后 Codex OAuth 已禁用: %s", email)
                             _progress("register_auth_session_saved", f"auth_session 已保存: {email}", email=email)
                             return session_auth
+                        if use_protocol_register:
+                            protocol_oauth_auth = _save_codex_oauth_bundle_for_account(
+                                email,
+                                password,
+                                account_id,
+                                session_data.get("codex_oauth_bundle"),
+                                out_outcome=out_outcome,
+                                mail_provider=_mail_client_provider_name(mail_client) or None,
+                                source="protocol_register_oauth",
+                            )
+                            if protocol_oauth_auth:
+                                logger.info("[注册] 协议注册后 Codex OAuth 已完成: %s", email)
+                                _progress(
+                                    "register_protocol_oauth_saved",
+                                    f"协议 OAuth 已完成: {email}",
+                                    email=email,
+                                )
+                                return protocol_oauth_auth
+                            logger.info("[注册] 协议注册未拿到 CPA OAuth bundle，保留 auth_session 供补登录: %s", email)
+                            _progress(
+                                "register_auth_session_saved",
+                                f"auth_session 已保存，协议 OAuth 未完成: {email}",
+                                email=email,
+                                level="warn",
+                            )
+                            return session_auth
                         oauth_auth = _run_post_register_session_oauth(
                             email,
                             password,
@@ -3246,6 +3383,9 @@ def create_account_direct(
                             session_data.get("data") or {},
                             cloudmail_account_id=account_id,
                             out_outcome=out_outcome,
+                            proxy_url=proxy_url,
+                            oauth_phone_sms_provider=oauth_phone_sms_provider,
+                            oauth_phone_sms_country=oauth_phone_sms_country,
                         )
                         if oauth_auth:
                             logger.info("[注册] auth_session 已保存且 Codex OAuth 已完成: %s", email)
@@ -3337,6 +3477,9 @@ def create_account_direct(
         mail_client,
         leave_workspace=leave_workspace,
         out_outcome=out_outcome,
+        proxy_url=proxy_url,
+        oauth_phone_sms_provider=oauth_phone_sms_provider,
+        oauth_phone_sms_country=oauth_phone_sms_country,
     )
 
 
@@ -4052,6 +4195,10 @@ def cmd_register_accounts(
     luckmail_preferred_domain=None,
     luckmail_preferred_domains=None,
     register_mode="browser",
+    register_proxy_selector=None,
+    register_proxy_meta=None,
+    oauth_phone_sms_provider=None,
+    oauth_phone_sms_country=None,
     progress_callback=None,
 ):
     """执行独立注册；成功后保存 auth_session，并复用注册会话尝试生成 Codex OAuth 文件。
@@ -4097,6 +4244,7 @@ def cmd_register_accounts(
     register_mode = str(register_mode or "browser").strip().lower()
     if register_mode not in {"browser", "protocol", "http", "api"}:
         register_mode = "browser"
+    register_proxy_meta = register_proxy_meta or {}
 
     def _emit_progress():
         if not progress_callback:
@@ -4162,6 +4310,21 @@ def cmd_register_accounts(
                 register_target,
             )
             try:
+                selected_proxy_url = ""
+                if callable(register_proxy_selector):
+                    selected_proxy_url = str(register_proxy_selector() or "").strip()
+                    if not selected_proxy_url:
+                        raise RuntimeError("动态代理 API 未返回可用代理")
+                    if progress_callback:
+                        progress_callback(
+                            {
+                                "stage": "register_proxy_api_selected",
+                                "message": f"已为第 {job_index + 1}/{total} 个账号获取动态代理",
+                                "proxy_api_provider": register_proxy_meta.get("proxy_api_provider") or "",
+                                "proxy_api_url_present": bool(register_proxy_meta.get("proxy_api_url_present")),
+                                "email_index": job_index + 1,
+                            }
+                        )
                 raw_result = create_account_direct(
                     mail_client,
                     out_outcome=outcome,
@@ -4172,6 +4335,9 @@ def cmd_register_accounts(
                     post_register_oauth=post_register_oauth,
                     check_team_membership=False,
                     register_mode=register_mode,
+                    proxy_url=selected_proxy_url,
+                    oauth_phone_sms_provider=oauth_phone_sms_provider,
+                    oauth_phone_sms_country=oauth_phone_sms_country,
                 )
                 if isinstance(raw_result, str):
                     result = {"status": outcome.get("status") or "success", "email": raw_result, **outcome}

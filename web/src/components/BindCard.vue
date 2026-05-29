@@ -787,6 +787,7 @@
                   >
                     <option value="smscloud">smscloud</option>
                     <option value="hero_sms">hero-sms</option>
+                    <option value="smsbower">smsbower</option>
                     <option value="smscode">smscode.gg</option>
                   </select>
                 </div>
@@ -925,6 +926,89 @@
                           <span v-if="tier.preferred" class="ml-1 text-amber-300">指定</span>
                         </span>
                         <span v-if="!gopayHeroSmsFilteredTierBadges.length" class="text-gray-500">无</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="gopayAutoSignupProvider === 'smsbower'" class="md:col-span-2 rounded-lg border border-emerald-500/20 bg-gray-950/50 px-3 py-3">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <div class="text-sm font-medium text-emerald-100">SMSBower 实时价格</div>
+                      <div class="mt-1 text-xs text-gray-500">默认国家 ID 6（印尼），服务代码 ni（Gojek）。</div>
+                    </div>
+                    <button
+                      type="button"
+                      @click="queryGoPaySmsbowerPrices"
+                      :disabled="gopaySmsbowerPriceQueryLoading || !gopayAutoSignupProviderConfigured"
+                      class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-blue-600/15 hover:bg-blue-600/25 text-blue-200 border-blue-500/30 transition disabled:opacity-50">
+                      {{ gopaySmsbowerPriceQueryLoading ? '查询中...' : '查询价格' }}
+                    </button>
+                  </div>
+                  <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label class="block text-xs text-emerald-200/80 mb-1">最低购买价</label>
+                      <input
+                        v-model.trim="gopayForm.gopayAutoSignupSmsbowerMinPrice"
+                        type="text"
+                        placeholder="留空不限下限"
+                        :disabled="gopaySubmitting || gopayTaskRunning"
+                        class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs text-emerald-200/80 mb-1">价格上限</label>
+                      <input
+                        v-model.trim="gopayForm.gopayAutoSignupSmsbowerMaxPrice"
+                        type="text"
+                        placeholder="留空不限价"
+                        :disabled="gopaySubmitting || gopayTaskRunning"
+                        class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-xs text-emerald-200/80 mb-1">指定档位</label>
+                      <input
+                        v-model.trim="gopayForm.gopayAutoSignupSmsbowerPreferredPrice"
+                        type="text"
+                        placeholder="留空按价格从低到高"
+                        :disabled="gopaySubmitting || gopayTaskRunning"
+                        class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+                  <div
+                    v-if="gopaySmsbowerPriceQueryResult"
+                    class="mt-3 rounded-lg border border-gray-800 bg-gray-900/80 px-3 py-2 text-xs text-gray-300 space-y-2">
+                    <div class="flex gap-2">
+                      <span class="shrink-0 text-gray-500">全部档位</span>
+                      <div class="flex flex-wrap gap-1.5">
+                        <span
+                          v-for="tier in gopaySmsbowerAllTierBadges"
+                          :key="`smsbower-all-${tier.key}`"
+                          class="rounded-full border border-gray-700 bg-gray-950 px-2 py-0.5 text-gray-300">
+                          <span class="font-medium text-gray-100">{{ tier.price }}</span>
+                          <span class="ml-1 text-gray-500">x{{ tier.count }}</span>
+                        </span>
+                        <span v-if="!gopaySmsbowerAllTierBadges.length" class="text-gray-500">无</span>
+                      </div>
+                    </div>
+                    <div class="flex gap-2">
+                      <span class="shrink-0 text-emerald-400">区间可用</span>
+                      <div class="flex flex-wrap gap-1.5">
+                        <span
+                          v-for="tier in gopaySmsbowerFilteredTierBadges"
+                          :key="`smsbower-filtered-${tier.key}`"
+                          :class="[
+                            'rounded-full border px-2 py-0.5',
+                            tier.preferred
+                              ? 'border-amber-400/40 bg-amber-500/15 text-amber-100'
+                              : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                          ]">
+                          <span class="font-semibold">{{ tier.price }}</span>
+                          <span class="ml-1 opacity-70">x{{ tier.count }}</span>
+                          <span v-if="tier.preferred" class="ml-1 text-amber-300">指定</span>
+                        </span>
+                        <span v-if="!gopaySmsbowerFilteredTierBadges.length" class="text-gray-500">无</span>
                       </div>
                     </div>
                   </div>
@@ -1786,6 +1870,8 @@ const gopayAutoSignupConfigLoading = ref(false)
 const gopayRekberinajaConfig = ref(null)
 const gopayHeroSmsPriceQueryLoading = ref(false)
 const gopayHeroSmsPriceQueryResult = ref(null)
+const gopaySmsbowerPriceQueryLoading = ref(false)
+const gopaySmsbowerPriceQueryResult = ref(null)
 const gopaySmscodePriceQueryLoading = ref(false)
 const gopaySmscodePriceQueryResult = ref(null)
 const gopayForm = ref({
@@ -1804,6 +1890,14 @@ const gopayForm = ref({
   gopayAutoSignupHeroSmsMinPrice: '',
   gopayAutoSignupHeroSmsMaxPrice: '',
   gopayAutoSignupHeroSmsPreferredPrice: '',
+  gopayAutoSignupSmsbowerApiKey: '',
+  gopayAutoSignupSmsbowerBaseUrl: 'https://smsbower.page/stubs/handler_api.php',
+  gopayAutoSignupSmsbowerCountry: '6',
+  gopayAutoSignupSmsbowerService: 'ni',
+  gopayAutoSignupSmsbowerTimeout: 120,
+  gopayAutoSignupSmsbowerMinPrice: '',
+  gopayAutoSignupSmsbowerMaxPrice: '',
+  gopayAutoSignupSmsbowerPreferredPrice: '',
   gopayAutoSignupSmscloudBaseUrl: 'https://smscloud.sbs/api',
   gopayAutoSignupSmscloudCountry: '6',
   gopayAutoSignupSmscloudService: 'ni',
@@ -2071,18 +2165,20 @@ const gopayAutoSignupEnabled = computed(() => Boolean(gopayForm.value.gopayAutoS
 
 const gopayAutoSignupProvider = computed(() => {
   const provider = String(gopayForm.value.gopayAutoSignupSmsProvider || '').trim()
-  return provider === 'hero_sms' || provider === 'smscode' ? provider : 'smscloud'
+  return provider === 'hero_sms' || provider === 'smsbower' || provider === 'smscode' ? provider : 'smscloud'
 })
 
 const gopayAutoSignupProviderConfigured = computed(() => {
   const cfg = gopayAutoSignupConfig.value || {}
   if (gopayAutoSignupProvider.value === 'hero_sms') return Boolean(cfg.hero_sms_api_key_present)
+  if (gopayAutoSignupProvider.value === 'smsbower') return Boolean(cfg.smsbower_api_key_present)
   if (gopayAutoSignupProvider.value === 'smscode') return Boolean(cfg.smscode_api_token_present)
   return Boolean(cfg.smscloud_xi_token_present)
 })
 
 const gopayAutoSignupConfiguredMessage = computed(() => {
   if (gopayAutoSignupProvider.value === 'hero_sms') return 'Hero-SMS 密钥已配置'
+  if (gopayAutoSignupProvider.value === 'smsbower') return 'SMSBower 密钥已配置'
   if (gopayAutoSignupProvider.value === 'smscode') return 'SMSCode 密钥已配置'
   return 'SMSCloud 凭证已配置'
 })
@@ -2090,6 +2186,9 @@ const gopayAutoSignupConfiguredMessage = computed(() => {
 const gopayAutoSignupMissingMessage = computed(() => {
   if (gopayAutoSignupProvider.value === 'hero_sms') {
     return '请到设置页配置 hero-sms API Key，或在 .env 中配置 GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY。'
+  }
+  if (gopayAutoSignupProvider.value === 'smsbower') {
+    return '请到设置页配置 smsbower API Key，或在 .env 中配置 GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY / OAUTH_SMSBOWER_API_KEY。'
   }
   if (gopayAutoSignupProvider.value === 'smscode') {
     return '请到设置页配置 SMSCode API Token，或在 .env 中配置 GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN。'
@@ -2149,6 +2248,24 @@ const gopayHeroSmsFilteredTierBadges = computed(() => {
     result.filtered_tiers,
     result.filtered_prices,
     gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice,
+  )
+})
+
+const gopaySmsbowerAllTierBadges = computed(() => {
+  const result = gopaySmsbowerPriceQueryResult.value || {}
+  return normalizeGoPayHeroSmsTierBadges(
+    result.tiers,
+    result.prices,
+    gopayForm.value.gopayAutoSignupSmsbowerPreferredPrice,
+  )
+})
+
+const gopaySmsbowerFilteredTierBadges = computed(() => {
+  const result = gopaySmsbowerPriceQueryResult.value || {}
+  return normalizeGoPayHeroSmsTierBadges(
+    result.filtered_tiers,
+    result.filtered_prices,
+    gopayForm.value.gopayAutoSignupSmsbowerPreferredPrice,
   )
 })
 
@@ -2355,12 +2472,21 @@ async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
     const cfg = await api.getGoPayAutoSignupConfig()
     gopayAutoSignupConfig.value = cfg
     if (applyDefaults) {
-      gopayForm.value.gopayAutoSignupSmsProvider = ['hero_sms', 'smscode'].includes(cfg.provider) ? cfg.provider : 'smscloud'
+      gopayForm.value.gopayAutoSignupSmsProvider = ['hero_sms', 'smsbower', 'smscode'].includes(cfg.provider) ? cfg.provider : 'smscloud'
       gopayForm.value.gopayAutoSignupMode = 'http'
       gopayForm.value.countryCode = '62'
+      gopayForm.value.gopayAutoSignupHeroSmsBaseUrl = String(cfg.hero_sms_base_url || 'https://hero-sms.com/stubs/handler_api.php').trim()
+      gopayForm.value.gopayAutoSignupHeroSmsCountry = String(cfg.hero_sms_country || '6').trim()
+      gopayForm.value.gopayAutoSignupHeroSmsService = String(cfg.hero_sms_service || 'ni').trim()
       gopayForm.value.gopayAutoSignupHeroSmsMinPrice = String(cfg.hero_sms_min_price || '').trim()
       gopayForm.value.gopayAutoSignupHeroSmsMaxPrice = String(cfg.hero_sms_max_price || '').trim()
       gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice = String(cfg.hero_sms_preferred_price || '').trim()
+      gopayForm.value.gopayAutoSignupSmsbowerBaseUrl = String(cfg.smsbower_base_url || 'https://smsbower.page/stubs/handler_api.php').trim()
+      gopayForm.value.gopayAutoSignupSmsbowerCountry = String(cfg.smsbower_country || '6').trim()
+      gopayForm.value.gopayAutoSignupSmsbowerService = String(cfg.smsbower_service || 'ni').trim()
+      gopayForm.value.gopayAutoSignupSmsbowerMinPrice = String(cfg.smsbower_min_price || '').trim()
+      gopayForm.value.gopayAutoSignupSmsbowerMaxPrice = String(cfg.smsbower_max_price || '').trim()
+      gopayForm.value.gopayAutoSignupSmsbowerPreferredPrice = String(cfg.smsbower_preferred_price || '').trim()
       gopayForm.value.gopayAutoSignupSmscodeBaseUrl = String(cfg.smscode_base_url || 'https://api.smscode.gg/v1').trim()
       gopayForm.value.gopayAutoSignupSmscodeCountryId = String(cfg.smscode_country_id || '6').trim()
       gopayForm.value.gopayAutoSignupSmscodePlatformId = String(cfg.smscode_platform_id || '').trim()
@@ -2408,6 +2534,28 @@ async function queryGoPayHeroSmsPrices() {
     messageClass.value = 'bg-red-500/10 text-red-300 border border-red-500/30'
   } finally {
     gopayHeroSmsPriceQueryLoading.value = false
+  }
+}
+
+async function queryGoPaySmsbowerPrices() {
+  gopaySmsbowerPriceQueryLoading.value = true
+  gopaySmsbowerPriceQueryResult.value = null
+  try {
+    const cfg = gopayAutoSignupConfig.value || {}
+    const result = await api.queryGoPaySmsbowerPrices({
+      smsbower_base_url: gopayForm.value.gopayAutoSignupSmsbowerBaseUrl || cfg.smsbower_base_url || 'https://smsbower.page/stubs/handler_api.php',
+      smsbower_country: gopayForm.value.gopayAutoSignupSmsbowerCountry || cfg.smsbower_country || '6',
+      smsbower_service: gopayForm.value.gopayAutoSignupSmsbowerService || cfg.smsbower_service || 'ni',
+      smsbower_min_price: gopayForm.value.gopayAutoSignupSmsbowerMinPrice,
+      smsbower_max_price: gopayForm.value.gopayAutoSignupSmsbowerMaxPrice,
+      smsbower_preferred_price: gopayForm.value.gopayAutoSignupSmsbowerPreferredPrice,
+    })
+    gopaySmsbowerPriceQueryResult.value = result
+  } catch (e) {
+    message.value = e?.message || 'smsbower 查询失败'
+    messageClass.value = 'bg-red-500/10 text-red-300 border border-red-500/30'
+  } finally {
+    gopaySmsbowerPriceQueryLoading.value = false
   }
 }
 
@@ -3216,6 +3364,9 @@ function getRememberedGoPayForm() {
     gopayAutoSignupHeroSmsMinPrice: String(gopayForm.value.gopayAutoSignupHeroSmsMinPrice || '').trim(),
     gopayAutoSignupHeroSmsMaxPrice: String(gopayForm.value.gopayAutoSignupHeroSmsMaxPrice || '').trim(),
     gopayAutoSignupHeroSmsPreferredPrice: String(gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice || '').trim(),
+    gopayAutoSignupSmsbowerMinPrice: String(gopayForm.value.gopayAutoSignupSmsbowerMinPrice || '').trim(),
+    gopayAutoSignupSmsbowerMaxPrice: String(gopayForm.value.gopayAutoSignupSmsbowerMaxPrice || '').trim(),
+    gopayAutoSignupSmsbowerPreferredPrice: String(gopayForm.value.gopayAutoSignupSmsbowerPreferredPrice || '').trim(),
     gopayAutoSignupSmscodeMinPrice: String(gopayForm.value.gopayAutoSignupSmscodeMinPrice || '').trim(),
     gopayAutoSignupSmscodeMaxPrice: String(gopayForm.value.gopayAutoSignupSmscodeMaxPrice || '').trim(),
     gopayBalanceWaitFallbackTransfer: Boolean(gopayForm.value.gopayBalanceWaitFallbackTransfer),
@@ -3265,7 +3416,7 @@ function loadGoPayFormState() {
       autoRegisterCount: normalizeGoPayAutoRegisterCount(saved.autoRegisterCount),
       autoRegisterProtocol: Boolean(saved.autoRegisterProtocol),
       gopayAutoSignup: saved.gopayAutoSignup === undefined ? true : Boolean(saved.gopayAutoSignup),
-      gopayAutoSignupSmsProvider: ['hero_sms', 'smscode'].includes(saved.gopayAutoSignupSmsProvider) ? saved.gopayAutoSignupSmsProvider : 'smscloud',
+      gopayAutoSignupSmsProvider: ['hero_sms', 'smsbower', 'smscode'].includes(saved.gopayAutoSignupSmsProvider) ? saved.gopayAutoSignupSmsProvider : 'smscloud',
       gopayAutoSignupMode: saved.gopayAutoSignupMode === 'appium' ? 'appium' : 'http',
       gopayAutoSignupHeroSmsApiKey: '',
       gopayAutoSignupHeroSmsBaseUrl: 'https://hero-sms.com/stubs/handler_api.php',
@@ -3275,6 +3426,14 @@ function loadGoPayFormState() {
       gopayAutoSignupHeroSmsMinPrice: String(saved.gopayAutoSignupHeroSmsMinPrice || '').trim(),
       gopayAutoSignupHeroSmsMaxPrice: String(saved.gopayAutoSignupHeroSmsMaxPrice || '').trim(),
       gopayAutoSignupHeroSmsPreferredPrice: String(saved.gopayAutoSignupHeroSmsPreferredPrice || '').trim(),
+      gopayAutoSignupSmsbowerApiKey: '',
+      gopayAutoSignupSmsbowerBaseUrl: 'https://smsbower.page/stubs/handler_api.php',
+      gopayAutoSignupSmsbowerCountry: '6',
+      gopayAutoSignupSmsbowerService: 'ni',
+      gopayAutoSignupSmsbowerTimeout: 120,
+      gopayAutoSignupSmsbowerMinPrice: String(saved.gopayAutoSignupSmsbowerMinPrice || '').trim(),
+      gopayAutoSignupSmsbowerMaxPrice: String(saved.gopayAutoSignupSmsbowerMaxPrice || '').trim(),
+      gopayAutoSignupSmsbowerPreferredPrice: String(saved.gopayAutoSignupSmsbowerPreferredPrice || '').trim(),
       gopayAutoSignupSmscloudBaseUrl: 'https://smscloud.sbs/api',
       gopayAutoSignupSmscloudCountry: '6',
       gopayAutoSignupSmscloudService: 'ni',
@@ -4057,9 +4216,15 @@ async function startGoPayBind() {
       gopay_appium_url: appiumUrl,
       gopay_appium_adb_serial: appiumAdbSerial,
       gopay_auto_signup_hero_sms_api_key: '',
-      gopay_auto_signup_hero_sms_base_url: '',
-      gopay_auto_signup_hero_sms_country: '',
-      gopay_auto_signup_hero_sms_service: '',
+      gopay_auto_signup_hero_sms_base_url: useAutoSignup && gopayAutoSignupProvider.value === 'hero_sms'
+        ? String(gopayForm.value.gopayAutoSignupHeroSmsBaseUrl || autoSignupCfg.hero_sms_base_url || '').trim()
+        : '',
+      gopay_auto_signup_hero_sms_country: useAutoSignup && gopayAutoSignupProvider.value === 'hero_sms'
+        ? String(gopayForm.value.gopayAutoSignupHeroSmsCountry || autoSignupCfg.hero_sms_country || '').trim()
+        : '',
+      gopay_auto_signup_hero_sms_service: useAutoSignup && gopayAutoSignupProvider.value === 'hero_sms'
+        ? String(gopayForm.value.gopayAutoSignupHeroSmsService || autoSignupCfg.hero_sms_service || '').trim()
+        : '',
       gopay_auto_signup_hero_sms_timeout: '',
       gopay_auto_signup_hero_sms_min_price: useAutoSignup && gopayAutoSignupProvider.value === 'hero_sms'
         ? String(gopayForm.value.gopayAutoSignupHeroSmsMinPrice || '').trim()
@@ -4070,6 +4235,26 @@ async function startGoPayBind() {
       gopay_auto_signup_hero_sms_preferred_price: useAutoSignup && gopayAutoSignupProvider.value === 'hero_sms'
         ? String(gopayForm.value.gopayAutoSignupHeroSmsPreferredPrice || '').trim()
         : '',
+      gopay_auto_signup_smsbower_api_key: '',
+      gopay_auto_signup_smsbower_base_url: useAutoSignup && gopayAutoSignupProvider.value === 'smsbower'
+        ? String(gopayForm.value.gopayAutoSignupSmsbowerBaseUrl || autoSignupCfg.smsbower_base_url || '').trim()
+        : '',
+      gopay_auto_signup_smsbower_country: useAutoSignup && gopayAutoSignupProvider.value === 'smsbower'
+        ? String(gopayForm.value.gopayAutoSignupSmsbowerCountry || autoSignupCfg.smsbower_country || '').trim()
+        : '',
+      gopay_auto_signup_smsbower_service: useAutoSignup && gopayAutoSignupProvider.value === 'smsbower'
+        ? String(gopayForm.value.gopayAutoSignupSmsbowerService || autoSignupCfg.smsbower_service || '').trim()
+        : '',
+      gopay_auto_signup_smsbower_min_price: useAutoSignup && gopayAutoSignupProvider.value === 'smsbower'
+        ? String(gopayForm.value.gopayAutoSignupSmsbowerMinPrice || autoSignupCfg.smsbower_min_price || '').trim()
+        : '',
+      gopay_auto_signup_smsbower_max_price: useAutoSignup && gopayAutoSignupProvider.value === 'smsbower'
+        ? String(gopayForm.value.gopayAutoSignupSmsbowerMaxPrice || autoSignupCfg.smsbower_max_price || '').trim()
+        : '',
+      gopay_auto_signup_smsbower_preferred_price: useAutoSignup && gopayAutoSignupProvider.value === 'smsbower'
+        ? String(gopayForm.value.gopayAutoSignupSmsbowerPreferredPrice || autoSignupCfg.smsbower_preferred_price || '').trim()
+        : '',
+      gopay_auto_signup_smsbower_timeout: '',
       gopay_auto_signup_smscloud_base_url: '',
       gopay_auto_signup_smscloud_country: '',
       gopay_auto_signup_smscloud_service: '',

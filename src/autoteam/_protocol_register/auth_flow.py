@@ -8,6 +8,7 @@
 import json
 import base64
 import hashlib
+import html
 import logging
 import os
 import random
@@ -90,6 +91,42 @@ class AuthFlow:
             "1", "true", "yes", "on"
         )
         self._trace_dump_path = ""
+        self._used_email_otp_codes: set[str] = set()
+        if self._trace_dump_enabled:
+            try:
+                os.makedirs("outputs", exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                self._trace_dump_path = os.path.join("outputs", f"auth_trace_{ts}_{os.getpid()}.jsonl")
+                logger.info(f"HTTP 明文抓包已启用: {self._trace_dump_path}")
+            except Exception as e:
+                logger.warning(f"初始化 HTTP 抓包文件失败: {e}")
+                self._trace_dump_enabled = False
+
+    def _wait_for_email_otp(
+        self,
+        mail_provider: MailProvider,
+        email: str,
+        *,
+        timeout: int,
+        issued_after: float,
+        exclude_used: bool = False,
+    ) -> str:
+        kwargs = {
+            "timeout": timeout,
+            "issued_after": issued_after,
+        }
+        if exclude_used and self._used_email_otp_codes:
+            kwargs["exclude_codes"] = set(self._used_email_otp_codes)
+        try:
+            code = mail_provider.wait_for_otp(email, **kwargs)
+        except TypeError:
+            # 兼容旧 MailProvider：不支持 exclude_codes 时仍按原逻辑等待。
+            kwargs.pop("exclude_codes", None)
+            code = mail_provider.wait_for_otp(email, **kwargs)
+        code = str(code or "").strip()
+        if code:
+            self._used_email_otp_codes.add(code)
+        return code
 
     def _build_chatgpt_cookie_header(self) -> str:
         """
@@ -129,6 +166,8 @@ class AuthFlow:
         # 兜底补齐关键 cookie，避免某些 cookiejar 迭代行为差异导致遗漏
         critical_names = [
             "__Secure-next-auth.session-token",
+            "__Secure-next-auth.session-token.0",
+            "__Secure-next-auth.session-token.1",
             "__Host-next-auth.csrf-token",
             "__Secure-next-auth.callback-url",
             "oai-did",
@@ -167,15 +206,56 @@ class AuthFlow:
                 cookie_pairs.append((name, value))
 
         return "; ".join(f"{name}={value}" for name, value in cookie_pairs if name and value)
-        if self._trace_dump_enabled:
+
+    def _extract_chatgpt_session_token(self) -> str:
+        try:
+            direct = self.session.cookies.get("__Secure-next-auth.session-token", "") or ""
+        except Exception:
+            direct = ""
+        if direct:
+            return str(direct)
+
+        parts: dict[int, str] = {}
+        try:
+            jar_iter = list(self.session.cookies)
+        except Exception:
+            jar_iter = []
+        for cookie in jar_iter:
             try:
-                os.makedirs("outputs", exist_ok=True)
-                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                self._trace_dump_path = os.path.join("outputs", f"auth_trace_{ts}_{os.getpid()}.jsonl")
-                logger.info(f"HTTP 明文抓包已启用: {self._trace_dump_path}")
-            except Exception as e:
-                logger.warning(f"初始化 HTTP 抓包文件失败: {e}")
-                self._trace_dump_enabled = False
+                name = (getattr(cookie, "name", "") or "").strip()
+                value = getattr(cookie, "value", "") or ""
+                domain = (getattr(cookie, "domain", "") or "").strip().lower()
+            except Exception:
+                continue
+            if domain and "chatgpt.com" not in domain:
+                continue
+            prefix = "__Secure-next-auth.session-token."
+            if not name.startswith(prefix) or not value:
+                continue
+            suffix = name[len(prefix):]
+            if suffix.isdigit():
+                parts[int(suffix)] = value
+        if parts:
+            return "".join(parts[index] for index in sorted(parts))
+
+        cookie_header = self._build_chatgpt_cookie_header()
+        header_parts: dict[int, str] = {}
+        for raw_part in cookie_header.split(";"):
+            if "=" not in raw_part:
+                continue
+            name, value = raw_part.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if name == "__Secure-next-auth.session-token" and value:
+                return value
+            prefix = "__Secure-next-auth.session-token."
+            if name.startswith(prefix) and value:
+                suffix = name[len(prefix):]
+                if suffix.isdigit():
+                    header_parts[int(suffix)] = value
+        if header_parts:
+            return "".join(header_parts[index] for index in sorted(header_parts))
+        return ""
 
     def _trace_http(self, step: str, resp, extra_request: dict | None = None):
         """可选 HTTP 细粒度追踪（用于协议调试）"""
@@ -551,13 +631,13 @@ class AuthFlow:
         except Exception:
             return
 
-    def _build_pkce_pair(self, raw_bytes: int = 64) -> tuple[str, str]:
+    def _build_pkce_pair(self, raw_bytes: int = 32) -> tuple[str, str]:
         """生成 (code_verifier, code_challenge)。"""
         verifier = self._b64url_no_pad(secrets.token_bytes(max(32, int(raw_bytes))))
         if len(verifier) < 43:
             verifier = (verifier + ("A" * 43))[:43]
-        if len(verifier) > 128:
-            verifier = verifier[:128]
+        if len(verifier) > 43:
+            verifier = verifier[:43]
         challenge = self._b64url_no_pad(hashlib.sha256(verifier.encode("utf-8")).digest())
         return verifier, challenge
 
@@ -631,6 +711,12 @@ class AuthFlow:
 
             # workspace/consent 页面 200 时，主动选择 workspace，拿下一跳 continue_url
             if resp.status_code == 200:
+                if "/choose-an-account" in current:
+                    next_url = self._choose_unified_account(resp.text or "", current)
+                    if next_url:
+                        current = next_url
+                        continue
+
                 is_workspace_like = (
                     ("/workspace" in current)
                     or ("/sign-in-with-chatgpt/" in current)
@@ -693,8 +779,6 @@ class AuthFlow:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            "Origin": "https://auth.openai.com",
-            "Referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
             "User-Agent": USER_AGENT,
         }
         form = {
@@ -780,10 +864,12 @@ class AuthFlow:
             otp_sent_at = time.time()
             if not self.kickoff_otp_delivery("codex_login_need_otp"):
                 self.send_otp()
-            otp_code = mail_provider.wait_for_otp(
+            otp_code = self._wait_for_email_otp(
+                mail_provider,
                 email,
                 timeout=otp_timeout,
                 issued_after=otp_sent_at,
+                exclude_used=True,
             )
             otp_resp = self.verify_otp(otp_code)
             continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(otp_resp))
@@ -828,6 +914,24 @@ class AuthFlow:
             return resp.json() if resp is not None else {}
         except Exception:
             return {}
+
+    @staticmethod
+    def _normalize_add_phone_number_for_api(phone_number: str, phone_item: dict | None = None) -> str:
+        raw = str(phone_number or "").strip()
+        if not raw:
+            return raw
+        if raw.startswith("+"):
+            return raw
+        digits = re.sub(r"\D+", "", raw)
+        if not digits:
+            return raw
+        country_id = str((phone_item or {}).get("country_id") or "").strip()
+        if country_id == "187":
+            if digits.startswith("1") and len(digits) == 11:
+                return f"+{digits}"
+            if len(digits) == 10:
+                return f"+1{digits}"
+        return f"+{digits}"
 
     def _phone_otp_resend(self) -> bool:
         headers = self._phone_headers("https://auth.openai.com/phone-verification")
@@ -896,8 +1000,33 @@ class AuthFlow:
           - OPENAI_PHONE_NUMBER=+1...
           - OPENAI_PHONE_OTP_CMD='...返回短信内容...' 或 OPENAI_PHONE_OTP=123456
         """
+        phone_items: list[dict] = []
+        phone_supplier = getattr(self, "_openai_phone_supplier", None)
+
+        def _load_dynamic_phone_items() -> list[dict]:
+            if not callable(phone_supplier):
+                return []
+            try:
+                supplied = phone_supplier()
+                if isinstance(supplied, dict):
+                    return [supplied]
+                elif isinstance(supplied, (list, tuple)):
+                    return [item for item in supplied if isinstance(item, dict)]
+            except Exception as exc:
+                logger.warning("add-phone 动态取号失败: %s", exc)
+            return []
+
+        if callable(phone_supplier):
+            phone_items = _load_dynamic_phone_items()
+
         phone_raw = (os.getenv("OPENAI_PHONE_NUMBER", "") or "").strip()
         phone_candidates = [x.strip() for x in phone_raw.split(",") if x.strip()]
+        if phone_items:
+            phone_candidates = [
+                str(item.get("phone_number") or item.get("phone") or "").strip()
+                for item in phone_items
+                if str(item.get("phone_number") or item.get("phone") or "").strip()
+            ]
         if not phone_candidates:
             logger.warning("命中 add-phone，但未配置 OPENAI_PHONE_NUMBER，无法继续推进")
             return continue_url or ""
@@ -908,10 +1037,32 @@ class AuthFlow:
             otp_timeout = 180
 
         last_err = ""
-        for idx, phone in enumerate(phone_candidates, 1):
+        max_dynamic_attempts = max(1, int(os.getenv("OPENAI_PHONE_DYNAMIC_MAX_ATTEMPTS", "5") or "5"))
+        dynamic_acquire_count = 1 if callable(phone_supplier) and phone_items else 0
+        idx = 0
+        while True:
+            if idx >= len(phone_candidates):
+                if callable(phone_supplier) and dynamic_acquire_count < max_dynamic_attempts:
+                    phone_items = _load_dynamic_phone_items()
+                    dynamic_acquire_count += 1
+                    phone_candidates = [
+                        str(item.get("phone_number") or item.get("phone") or "").strip()
+                        for item in phone_items
+                        if str(item.get("phone_number") or item.get("phone") or "").strip()
+                    ]
+                    idx = 0
+                    if not phone_candidates:
+                        break
+                else:
+                    break
+
+            phone = phone_candidates[idx]
+            idx += 1
+            phone_item = phone_items[idx - 1] if idx <= len(phone_items) else {}
             try:
-                logger.info("add-phone 尝试号码 %s/%s: %s", idx, len(phone_candidates), phone)
-                send_resp = self._add_phone_send(phone)
+                normalized_phone = self._normalize_add_phone_number_for_api(phone, phone_item)
+                logger.info("add-phone 尝试号码 %s/%s: %s -> %s", idx, len(phone_candidates), phone, normalized_phone)
+                send_resp = self._add_phone_send(normalized_phone)
                 send_page_type = self._extract_page_type(send_resp)
                 send_continue = self._normalize_continue_url(self._extract_continue_url_from_step(send_resp))
                 if send_page_type not in ("phone_otp_verification", "external_url") and "phone-verification" not in (send_continue or ""):
@@ -922,14 +1073,31 @@ class AuthFlow:
                     )
                     continue
 
-                phone_code = self._wait_phone_otp(timeout=otp_timeout)
+                phone_code = ""
+                otp_reader = getattr(self, "_openai_phone_otp_reader", None)
+                if callable(otp_reader) and phone_item:
+                    phone_code = str(otp_reader(phone_item, otp_timeout) or "").strip()
+                if not phone_code:
+                    phone_code = self._wait_phone_otp(timeout=otp_timeout)
                 validate_resp = self._phone_otp_validate(phone_code)
                 next_url = self._normalize_continue_url(self._extract_continue_url_from_step(validate_resp))
                 logger.info("add-phone 验证通过，next=%s", (next_url or "")[:180])
+                phone_success = getattr(self, "_openai_phone_success", None)
+                if callable(phone_success) and phone_item:
+                    try:
+                        phone_success(phone_item)
+                    except Exception as callback_exc:
+                        logger.warning("add-phone 成功回调失败: %s", callback_exc)
                 return next_url or continue_url or ""
             except Exception as e:
                 last_err = str(e)
                 logger.warning("add-phone 号码 %s 失败: %s", phone, e)
+                phone_failure = getattr(self, "_openai_phone_failure", None)
+                if callable(phone_failure) and phone_item:
+                    try:
+                        phone_failure(phone_item, last_err)
+                    except Exception as callback_exc:
+                        logger.warning("add-phone 失败回调失败: %s", callback_exc)
                 try:
                     self._phone_otp_resend()
                 except Exception:
@@ -994,6 +1162,36 @@ class AuthFlow:
             callback_url, final_url = self._follow_authorize_for_callback(
                 auth_url, redirect_uri, "codex_authorize"
             )
+
+            # 新注册账号可能在首轮授权时直接落到 add-phone，不经过 /log-in。
+            if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or ""):
+                logger.info("Codex 授权直接命中 add-phone，尝试协议绑定手机号...")
+                continue_url = ""
+                try:
+                    continue_url = self._handle_add_phone_verification(continue_url=final_url or "")
+                except Exception as e:
+                    logger.warning(f"Codex add-phone 协议绑定失败: {e}")
+                if continue_url:
+                    callback_url, final_url = self._follow_authorize_for_callback(
+                        self._normalize_continue_url(continue_url),
+                        redirect_uri,
+                        "codex_post_add_phone",
+                    )
+                if (not callback_url) and self._env_flag("OAUTH_CODEX_ADD_PHONE_REFRESH_RETRY", "1"):
+                    try:
+                        retry_count = max(1, int(os.getenv("OAUTH_CODEX_ADD_PHONE_REFRESH_RETRY_COUNT", "3")))
+                    except Exception:
+                        retry_count = 3
+                    try:
+                        retry_sleep = max(0.0, float(os.getenv("OAUTH_CODEX_ADD_PHONE_REFRESH_SLEEP", "1.2")))
+                    except Exception:
+                        retry_sleep = 1.2
+                    callback_url, final_url = self._codex_refresh_retry_after_add_phone(
+                        auth_url=auth_url,
+                        redirect_uri=redirect_uri,
+                        attempts=retry_count,
+                        sleep_seconds=retry_sleep,
+                    )
 
             # 若被打回 /log-in，补走一次协议登录，再继续授权链路
             if (not callback_url) and "/log-in" in (final_url or ""):
@@ -1729,6 +1927,101 @@ class AuthFlow:
         self._trace_http("workspace_select", resp)
         return resp.json().get("continue_url", "") if resp.status_code == 200 else ""
 
+    @staticmethod
+    def _json_after_token(text: str, token: str):
+        idx = text.find(token)
+        if idx < 0:
+            return None
+        decoder = json.JSONDecoder()
+        try:
+            return decoder.raw_decode(text[idx + len(token):].lstrip())[0]
+        except Exception:
+            return None
+
+    def _extract_unified_session_id_from_html(self, html_text: str) -> str:
+        variants = [
+            html.unescape(html_text or ""),
+            html.unescape(html_text or "").replace('\\"', '"').replace("\\/", "/"),
+        ]
+        target_email = (self.result.email or "").strip().lower()
+        for text in variants:
+            sessions = self._json_after_token(text, '"unified_sessions":')
+            if not isinstance(sessions, list):
+                sessions = None
+            if isinstance(sessions, list):
+                selected = None
+                for item in sessions:
+                    if not isinstance(item, dict):
+                        continue
+                    username_obj = item.get("username")
+                    username = ""
+                    if isinstance(username_obj, dict):
+                        username = str(username_obj.get("value") or "").strip().lower()
+                    if not username:
+                        username = str(item.get("username") or item.get("name") or "").strip().lower()
+                    if target_email and username == target_email:
+                        selected = item
+                        break
+                    if selected is None:
+                        selected = item
+                if selected:
+                    return str(selected.get("id") or selected.get("session_id") or "").strip()
+
+            # React Router stream serializes loader data as a flat array:
+            # "unified_sessions",[13],{"_14":15,...},"id","us_xxx",...
+            marker = text.find('"unified_sessions"')
+            if marker >= 0:
+                window = text[marker : marker + 3000]
+                email_pos = window.lower().find(target_email) if target_email else -1
+                id_matches = list(re.finditer(r'"id"\s*,\s*"(us_[^"]+)"', window))
+                if id_matches:
+                    if email_pos >= 0:
+                        before_email = [m for m in id_matches if m.start() <= email_pos]
+                        if before_email:
+                            return before_email[-1].group(1).strip()
+                    return id_matches[0].group(1).strip()
+        return ""
+
+    def _choose_unified_account(self, html_text: str, current_url: str) -> str:
+        session_id = self._extract_unified_session_id_from_html(html_text)
+        if not session_id:
+            try:
+                os.makedirs("outputs", exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                path = os.path.join("outputs", f"choose_account_missing_{ts}_{os.getpid()}.html")
+                with open(path, "w", encoding="utf-8") as fw:
+                    fw.write(html_text or "")
+                logger.warning("choose-an-account 未提取到 session_id，已保存页面: %s", path)
+            except Exception:
+                logger.warning("choose-an-account 未提取到 session_id")
+                return ""
+            logger.warning("choose-an-account 未提取到 session_id")
+            return ""
+        logger.info("choose-an-account 选择当前账号 session_id=%s", session_id[:12])
+        headers = self._common_headers(current_url or "https://auth.openai.com/choose-an-account")
+        headers["Content-Type"] = "application/json"
+        resp = self.session.post(
+            "https://auth.openai.com/api/accounts/session/select",
+            headers=headers,
+            json={"session_id": session_id},
+            timeout=30,
+            allow_redirects=False,
+        )
+        self._trace_http("choose_account_select", resp)
+        if resp.status_code in (301, 302, 303, 307, 308):
+            loc = (resp.headers.get("Location", "") or "").strip()
+            return urljoin(current_url or "https://auth.openai.com/choose-an-account", loc) if loc else ""
+        try:
+            data = resp.json() if resp is not None else {}
+        except Exception:
+            data = {}
+        next_url = self._normalize_continue_url(self._extract_continue_url_from_step(data))
+        if next_url:
+            return next_url
+        if resp.status_code == 200:
+            return current_url
+        return ""
+
     def _normalize_continue_url(self, continue_url: str) -> str:
         """
         标准化 continue_url：
@@ -1904,7 +2197,7 @@ class AuthFlow:
         self._trace_http("chatgpt_auth_session", resp)
         resp.raise_for_status()
 
-        session_token = self.session.cookies.get("__Secure-next-auth.session-token", "")
+        session_token = self._extract_chatgpt_session_token()
         access_token = resp.json().get("accessToken", "")
 
         if session_token:
@@ -2142,7 +2435,8 @@ class AuthFlow:
                 otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "180")))
             except Exception:
                 otp_timeout = 180
-            otp_code = mail_provider.wait_for_otp(
+            otp_code = self._wait_for_email_otp(
+                mail_provider,
                 email,
                 timeout=otp_timeout,
                 issued_after=otp_sent_at,
@@ -2157,10 +2451,12 @@ class AuthFlow:
                     otp_sent_at = time.time()
                     if not self.kickoff_otp_delivery("verify_otp_retry_new"):
                         self.send_otp()
-                    otp_code = mail_provider.wait_for_otp(
+                    otp_code = self._wait_for_email_otp(
+                        mail_provider,
                         email,
                         timeout=otp_timeout,
                         issued_after=otp_sent_at,
+                        exclude_used=True,
                     )
                     self.verify_otp(otp_code)
                     self.fetch_client_auth_session_dump("post_verify_otp_retry_new")
@@ -2205,7 +2501,8 @@ class AuthFlow:
                     # password/verify 后推荐使用 resend，而不是 /email-otp/send
                     otp_sent_at = time.time()
                     self.kickoff_otp_delivery("existing_login_password")
-                    otp_code = mail_provider.wait_for_otp(
+                    otp_code = self._wait_for_email_otp(
+                        mail_provider,
                         email,
                         timeout=otp_timeout,
                         issued_after=otp_sent_at,
@@ -2232,7 +2529,8 @@ class AuthFlow:
                         logger.info(f"已有账号验证码模式={mode}，跳过额外 send_otp，直接等邮件")
 
                 try:
-                    otp_code = mail_provider.wait_for_otp(
+                    otp_code = self._wait_for_email_otp(
+                        mail_provider,
                         email,
                         timeout=otp_timeout,
                         issued_after=otp_sent_at,
@@ -2243,10 +2541,12 @@ class AuthFlow:
                     otp_sent_at = time.time()
                     if not self.kickoff_otp_delivery("existing_timeout_retry"):
                         self.send_otp()
-                    otp_code = mail_provider.wait_for_otp(
+                    otp_code = self._wait_for_email_otp(
+                        mail_provider,
                         email,
                         timeout=otp_timeout,
                         issued_after=otp_sent_at,
+                        exclude_used=True,
                     )
                 try:
                     otp_resp = self.verify_otp(otp_code)
@@ -2257,10 +2557,12 @@ class AuthFlow:
                         otp_sent_at = time.time()
                         if not self.kickoff_otp_delivery("existing_verify_retry"):
                             self.send_otp()
-                        otp_code = mail_provider.wait_for_otp(
+                        otp_code = self._wait_for_email_otp(
+                            mail_provider,
                             email,
                             timeout=otp_timeout,
                             issued_after=otp_sent_at,
+                            exclude_used=True,
                         )
                         otp_resp = self.verify_otp(otp_code)
                         self.fetch_client_auth_session_dump("post_verify_otp_retry_existing")
@@ -2425,7 +2727,8 @@ class AuthFlow:
                 self.register_password(email)
                 otp_sent_at = time.time()
                 self.send_otp()
-                otp_code = mail_provider.wait_for_otp(
+                otp_code = self._wait_for_email_otp(
+                    mail_provider,
                     email,
                     timeout=otp_timeout,
                     issued_after=otp_sent_at,
@@ -2447,10 +2750,12 @@ class AuthFlow:
                 self.send_otp()
                 otp_sent_at = time.time()
 
-            otp_code = mail_provider.wait_for_otp(
+            otp_code = self._wait_for_email_otp(
+                mail_provider,
                 email,
                 timeout=otp_timeout,
                 issued_after=otp_sent_at,
+                exclude_used=True,
             )
             try:
                 otp_resp = self.verify_otp(otp_code)
@@ -2461,10 +2766,12 @@ class AuthFlow:
                     otp_sent_at = time.time()
                     if not self.kickoff_otp_delivery("protocol_verify_retry"):
                         self.send_otp()
-                    otp_code = mail_provider.wait_for_otp(
+                    otp_code = self._wait_for_email_otp(
+                        mail_provider,
                         email,
                         timeout=otp_timeout,
                         issued_after=otp_sent_at,
+                        exclude_used=True,
                     )
                     otp_resp = self.verify_otp(otp_code)
                     self.fetch_client_auth_session_dump("post_verify_otp_retry_protocol")

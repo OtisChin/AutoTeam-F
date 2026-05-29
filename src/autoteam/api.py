@@ -457,6 +457,11 @@ def _env_config_keys() -> list[str]:
         "OAUTH_HERO_SMS_BASE_URL",
         "OAUTH_HERO_SMS_COUNTRY",
         "OAUTH_HERO_SMS_SERVICE",
+        "OAUTH_SMSBOWER_API_KEY",
+        "OAUTH_SMSBOWER_MAX_PRICE",
+        "OAUTH_SMSBOWER_BASE_URL",
+        "OAUTH_SMSBOWER_COUNTRY",
+        "OAUTH_SMSBOWER_SERVICE",
         "OUTLOOK_REGISTER_CODE_TIMEOUT",
     ]
     for key in extra_keys:
@@ -849,6 +854,8 @@ def _normalize_gopay_auto_signup_sms_provider(raw: str | None = None) -> str:
     value = str(raw or "").strip().lower().replace("-", "_")
     if value in {"hero_sms", "herosms"}:
         return "hero_sms"
+    if value in {"smsbower", "sms_bower"}:
+        return "smsbower"
     if value in {"smscode", "sms_code", "smscode_gg"}:
         return "smscode"
     return "smscloud"
@@ -863,6 +870,8 @@ def _normalize_oauth_phone_sms_provider(raw: str | None = None) -> str:
     value = str(raw or "").strip().lower().replace("-", "_")
     if value in {"hero_sms", "herosms", "hero"}:
         return "hero_sms"
+    if value in {"smsbower", "sms_bower"}:
+        return "smsbower"
     return "phone_pool"
 
 
@@ -892,9 +901,19 @@ def _gopay_auto_signup_env() -> dict[str, str]:
         "provider": _normalize_gopay_auto_signup_sms_provider(pick("GOPAY_AUTO_SIGNUP_SMS_PROVIDER", "smscloud")),
         "smscloud_xi_token": pick("GOPAY_AUTO_SIGNUP_SMSCLOUD_XI_TOKEN"),
         "hero_sms_api_key": pick("GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY"),
+        "hero_sms_base_url": pick("GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL", "https://hero-sms.com/stubs/handler_api.php"),
+        "hero_sms_country": pick("GOPAY_AUTO_SIGNUP_HERO_SMS_COUNTRY", "6"),
+        "hero_sms_service": pick("GOPAY_AUTO_SIGNUP_HERO_SMS_SERVICE", "ni"),
         "hero_sms_min_price": pick("GOPAY_AUTO_SIGNUP_HERO_SMS_MIN_PRICE"),
         "hero_sms_max_price": pick("GOPAY_AUTO_SIGNUP_HERO_SMS_MAX_PRICE"),
         "hero_sms_preferred_price": pick("GOPAY_AUTO_SIGNUP_HERO_SMS_PREFERRED_PRICE"),
+        "smsbower_api_key": pick("GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY") or pick("OAUTH_SMSBOWER_API_KEY"),
+        "smsbower_base_url": pick("GOPAY_AUTO_SIGNUP_SMSBOWER_BASE_URL", "https://smsbower.page/stubs/handler_api.php"),
+        "smsbower_country": pick("GOPAY_AUTO_SIGNUP_SMSBOWER_COUNTRY", "6"),
+        "smsbower_service": pick("GOPAY_AUTO_SIGNUP_SMSBOWER_SERVICE", "ni"),
+        "smsbower_min_price": pick("GOPAY_AUTO_SIGNUP_SMSBOWER_MIN_PRICE"),
+        "smsbower_max_price": pick("GOPAY_AUTO_SIGNUP_SMSBOWER_MAX_PRICE"),
+        "smsbower_preferred_price": pick("GOPAY_AUTO_SIGNUP_SMSBOWER_PREFERRED_PRICE"),
         "smscode_api_token": pick("GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN"),
         "smscode_base_url": pick("GOPAY_AUTO_SIGNUP_SMSCODE_BASE_URL", "https://api.smscode.gg/v1"),
         "smscode_country_id": pick("GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID", "6"),
@@ -926,6 +945,11 @@ def _oauth_phone_sms_env() -> dict[str, str]:
         "hero_sms_base_url": pick("OAUTH_HERO_SMS_BASE_URL", "https://hero-sms.com/stubs/handler_api.php"),
         "hero_sms_country": _normalize_oauth_hero_sms_country(pick("OAUTH_HERO_SMS_COUNTRY", "187")),
         "hero_sms_service": _normalize_oauth_hero_sms_service(pick("OAUTH_HERO_SMS_SERVICE", "dr")),
+        "smsbower_api_key": pick("OAUTH_SMSBOWER_API_KEY"),
+        "smsbower_max_price": pick("OAUTH_SMSBOWER_MAX_PRICE"),
+        "smsbower_base_url": pick("OAUTH_SMSBOWER_BASE_URL", "https://smsbower.page/stubs/handler_api.php"),
+        "smsbower_country": _normalize_oauth_hero_sms_country(pick("OAUTH_SMSBOWER_COUNTRY", "187")),
+        "smsbower_service": _normalize_oauth_hero_sms_service(pick("OAUTH_SMSBOWER_SERVICE", "dr")),
     }
 
 
@@ -1182,6 +1206,7 @@ def get_gopay_auto_signup_config():
     configured = {
         "smscloud": bool(cfg["smscloud_xi_token"]),
         "hero_sms": bool(cfg["hero_sms_api_key"]),
+        "smsbower": bool(cfg["smsbower_api_key"]),
         "smscode": bool(cfg["smscode_api_token"]),
     }
     return {
@@ -1201,6 +1226,12 @@ def get_gopay_auto_signup_config():
                 "secret_key": "GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY",
             },
             {
+                "value": "smsbower",
+                "label": "smsbower",
+                "configured": bool(cfg["smsbower_api_key"]),
+                "secret_key": "GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY",
+            },
+            {
                 "value": "smscode",
                 "label": "smscode.gg",
                 "configured": bool(cfg["smscode_api_token"]),
@@ -1210,13 +1241,24 @@ def get_gopay_auto_signup_config():
         "configured": bool(configured.get(provider)),
         "smscloud_xi_token_present": bool(cfg["smscloud_xi_token"]),
         "hero_sms_api_key_present": bool(cfg["hero_sms_api_key"]),
+        "smsbower_api_key_present": bool(cfg["smsbower_api_key"]),
         "smscode_api_token_present": bool(cfg["smscode_api_token"]),
         "smscloud_xi_token_masked": _mask_secret_for_config(cfg["smscloud_xi_token"]),
         "hero_sms_api_key_masked": _mask_secret_for_config(cfg["hero_sms_api_key"]),
+        "smsbower_api_key_masked": _mask_secret_for_config(cfg["smsbower_api_key"]),
         "smscode_api_token_masked": _mask_secret_for_config(cfg["smscode_api_token"]),
+        "hero_sms_base_url": cfg.get("hero_sms_base_url", "https://hero-sms.com/stubs/handler_api.php"),
+        "hero_sms_country": cfg.get("hero_sms_country", "6"),
+        "hero_sms_service": cfg.get("hero_sms_service", "ni"),
         "hero_sms_min_price": cfg.get("hero_sms_min_price", ""),
         "hero_sms_max_price": cfg.get("hero_sms_max_price", ""),
         "hero_sms_preferred_price": cfg.get("hero_sms_preferred_price", ""),
+        "smsbower_base_url": cfg.get("smsbower_base_url", "https://smsbower.page/stubs/handler_api.php"),
+        "smsbower_country": cfg.get("smsbower_country", "6"),
+        "smsbower_service": cfg.get("smsbower_service", "ni"),
+        "smsbower_min_price": cfg.get("smsbower_min_price", ""),
+        "smsbower_max_price": cfg.get("smsbower_max_price", ""),
+        "smsbower_preferred_price": cfg.get("smsbower_preferred_price", ""),
         "smscode_base_url": cfg.get("smscode_base_url", "https://api.smscode.gg/v1"),
         "smscode_country_id": cfg.get("smscode_country_id", "6"),
         "smscode_platform_id": cfg.get("smscode_platform_id", ""),
@@ -1300,6 +1342,43 @@ class GoPaySmsCodePriceQueryParams(BaseModel):
     )
 
 
+class GoPaySmsBowerPriceQueryParams(BaseModel):
+    smsbower_api_key: str = Field(
+        "",
+        validation_alias=AliasChoices("smsbower_api_key", "smsbowerApiKey", "gopay_auto_signup_smsbower_api_key"),
+    )
+    smsbower_base_url: str = Field(
+        "",
+        validation_alias=AliasChoices("smsbower_base_url", "smsbowerBaseUrl", "gopay_auto_signup_smsbower_base_url"),
+    )
+    smsbower_country: str = Field(
+        "",
+        validation_alias=AliasChoices("smsbower_country", "smsbowerCountry", "gopay_auto_signup_smsbower_country"),
+    )
+    smsbower_service: str = Field(
+        "",
+        validation_alias=AliasChoices("smsbower_service", "smsbowerService", "gopay_auto_signup_smsbower_service"),
+    )
+    smsbower_min_price: str = Field(
+        "",
+        validation_alias=AliasChoices("smsbower_min_price", "smsbowerMinPrice", "gopay_auto_signup_smsbower_min_price"),
+    )
+    smsbower_max_price: str = Field(
+        "",
+        validation_alias=AliasChoices("smsbower_max_price", "smsbowerMaxPrice", "gopay_auto_signup_smsbower_max_price"),
+    )
+    smsbower_preferred_price: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "smsbower_preferred_price",
+            "smsbowerPreferredPrice",
+            "smsbower_price_tier",
+            "smsbowerPriceTier",
+            "gopay_auto_signup_smsbower_preferred_price",
+        ),
+    )
+
+
 @app.post("/api/config/gopay-auto-signup/hero-sms/prices")
 def query_gopay_hero_sms_prices(params: GoPayHeroSmsPriceQueryParams):
     from autoteam.gopay_auto_register import query_hero_sms_price_tiers
@@ -1310,12 +1389,12 @@ def query_gopay_hero_sms_prices(params: GoPayHeroSmsPriceQueryParams):
         raise HTTPException(status_code=400, detail="缺少 hero-sms API Key")
     base_url = str(
         params.hero_sms_base_url
-        or os.environ.get("GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL")
+        or cfg.get("hero_sms_base_url")
         or "https://hero-sms.com/stubs/handler_api.php"
     ).strip()
-    service = str(params.hero_sms_service or os.environ.get("GOPAY_AUTO_SIGNUP_HERO_SMS_SERVICE") or "ni").strip()
+    service = str(params.hero_sms_service or cfg.get("hero_sms_service") or "ni").strip()
     try:
-        country = int(float(params.hero_sms_country or os.environ.get("GOPAY_AUTO_SIGNUP_HERO_SMS_COUNTRY") or "6"))
+        country = int(float(params.hero_sms_country or cfg.get("hero_sms_country") or "6"))
     except Exception:
         country = 6
     result = query_hero_sms_price_tiers(
@@ -1329,6 +1408,39 @@ def query_gopay_hero_sms_prices(params: GoPayHeroSmsPriceQueryParams):
     )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "hero-sms 查询失败")
+    result.pop("raw", None)
+    return result
+
+
+@app.post("/api/config/gopay-auto-signup/smsbower/prices")
+def query_gopay_smsbower_prices(params: GoPaySmsBowerPriceQueryParams):
+    from autoteam.gopay_auto_register import query_hero_sms_price_tiers
+
+    cfg = _gopay_auto_signup_env()
+    api_key = str(params.smsbower_api_key or cfg["smsbower_api_key"] or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="缺少 smsbower API Key")
+    base_url = str(
+        params.smsbower_base_url
+        or cfg.get("smsbower_base_url")
+        or "https://smsbower.page/stubs/handler_api.php"
+    ).strip()
+    service = str(params.smsbower_service or cfg.get("smsbower_service") or "ni").strip()
+    try:
+        country = int(float(params.smsbower_country or cfg.get("smsbower_country") or "6"))
+    except Exception:
+        country = 6
+    result = query_hero_sms_price_tiers(
+        service_code=service,
+        country_id=country,
+        base_url=base_url,
+        api_key=api_key,
+        min_price=params.smsbower_min_price or cfg.get("smsbower_min_price", ""),
+        max_price=params.smsbower_max_price or cfg.get("smsbower_max_price", ""),
+        preferred_price=params.smsbower_preferred_price or cfg.get("smsbower_preferred_price", ""),
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "smsbower 查询失败")
     result.pop("raw", None)
     return result
 
@@ -1368,9 +1480,19 @@ async def save_gopay_auto_signup_config(request: Request):
         or ""
     ).strip()
     hero_sms_api_key = str(data.get("hero_sms_api_key") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY") or "").strip()
+    hero_sms_base_url = str(data.get("hero_sms_base_url") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL") or "https://hero-sms.com/stubs/handler_api.php").strip()
+    hero_sms_country = str(data.get("hero_sms_country") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_COUNTRY") or "6").strip()
+    hero_sms_service = str(data.get("hero_sms_service") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_SERVICE") or "ni").strip()
     hero_sms_min_price = str(data.get("hero_sms_min_price") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_MIN_PRICE") or "").strip()
     hero_sms_max_price = str(data.get("hero_sms_max_price") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_MAX_PRICE") or "").strip()
     hero_sms_preferred_price = str(data.get("hero_sms_preferred_price") or data.get("GOPAY_AUTO_SIGNUP_HERO_SMS_PREFERRED_PRICE") or "").strip()
+    smsbower_api_key = str(data.get("smsbower_api_key") or data.get("GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY") or "").strip()
+    smsbower_base_url = str(data.get("smsbower_base_url") or data.get("GOPAY_AUTO_SIGNUP_SMSBOWER_BASE_URL") or "https://smsbower.page/stubs/handler_api.php").strip()
+    smsbower_country = str(data.get("smsbower_country") or data.get("GOPAY_AUTO_SIGNUP_SMSBOWER_COUNTRY") or "6").strip()
+    smsbower_service = str(data.get("smsbower_service") or data.get("GOPAY_AUTO_SIGNUP_SMSBOWER_SERVICE") or "ni").strip()
+    smsbower_min_price = str(data.get("smsbower_min_price") or data.get("GOPAY_AUTO_SIGNUP_SMSBOWER_MIN_PRICE") or "").strip()
+    smsbower_max_price = str(data.get("smsbower_max_price") or data.get("GOPAY_AUTO_SIGNUP_SMSBOWER_MAX_PRICE") or "").strip()
+    smsbower_preferred_price = str(data.get("smsbower_preferred_price") or data.get("GOPAY_AUTO_SIGNUP_SMSBOWER_PREFERRED_PRICE") or "").strip()
     smscode_api_token = str(data.get("smscode_api_token") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN") or "").strip()
     smscode_base_url = str(data.get("smscode_base_url") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_BASE_URL") or "https://api.smscode.gg/v1").strip()
     smscode_country_id = str(data.get("smscode_country_id") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID") or "6").strip()
@@ -1394,11 +1516,22 @@ async def save_gopay_auto_signup_config(request: Request):
         updates["GOPAY_AUTO_SIGNUP_SMSCLOUD_XI_TOKEN"] = smscloud_xi_token
     if hero_sms_api_key:
         updates["GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY"] = hero_sms_api_key
+    if smsbower_api_key:
+        updates["GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY"] = smsbower_api_key
     if smscode_api_token:
         updates["GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN"] = smscode_api_token
+    updates["GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL"] = hero_sms_base_url or "https://hero-sms.com/stubs/handler_api.php"
+    updates["GOPAY_AUTO_SIGNUP_HERO_SMS_COUNTRY"] = hero_sms_country or "6"
+    updates["GOPAY_AUTO_SIGNUP_HERO_SMS_SERVICE"] = hero_sms_service or "ni"
     updates["GOPAY_AUTO_SIGNUP_HERO_SMS_MIN_PRICE"] = hero_sms_min_price
     updates["GOPAY_AUTO_SIGNUP_HERO_SMS_MAX_PRICE"] = hero_sms_max_price
     updates["GOPAY_AUTO_SIGNUP_HERO_SMS_PREFERRED_PRICE"] = hero_sms_preferred_price
+    updates["GOPAY_AUTO_SIGNUP_SMSBOWER_BASE_URL"] = smsbower_base_url or "https://smsbower.page/stubs/handler_api.php"
+    updates["GOPAY_AUTO_SIGNUP_SMSBOWER_COUNTRY"] = smsbower_country or "6"
+    updates["GOPAY_AUTO_SIGNUP_SMSBOWER_SERVICE"] = smsbower_service or "ni"
+    updates["GOPAY_AUTO_SIGNUP_SMSBOWER_MIN_PRICE"] = smsbower_min_price
+    updates["GOPAY_AUTO_SIGNUP_SMSBOWER_MAX_PRICE"] = smsbower_max_price
+    updates["GOPAY_AUTO_SIGNUP_SMSBOWER_PREFERRED_PRICE"] = smsbower_preferred_price
     updates["GOPAY_AUTO_SIGNUP_SMSCODE_BASE_URL"] = smscode_base_url or "https://api.smscode.gg/v1"
     updates["GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID"] = smscode_country_id or "6"
     updates["GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_ID"] = smscode_platform_id
@@ -1419,6 +1552,7 @@ async def save_gopay_auto_signup_config(request: Request):
     configured = {
         "smscloud": bool(cfg["smscloud_xi_token"]),
         "hero_sms": bool(cfg["hero_sms_api_key"]),
+        "smsbower": bool(cfg["smsbower_api_key"]),
         "smscode": bool(cfg["smscode_api_token"]),
     }
     return {
@@ -1428,13 +1562,24 @@ async def save_gopay_auto_signup_config(request: Request):
         "configured": bool(configured.get(provider)),
         "smscloud_xi_token_present": bool(cfg["smscloud_xi_token"]),
         "hero_sms_api_key_present": bool(cfg["hero_sms_api_key"]),
+        "smsbower_api_key_present": bool(cfg["smsbower_api_key"]),
         "smscode_api_token_present": bool(cfg["smscode_api_token"]),
         "smscloud_xi_token_masked": _mask_secret_for_config(cfg["smscloud_xi_token"]),
         "hero_sms_api_key_masked": _mask_secret_for_config(cfg["hero_sms_api_key"]),
+        "smsbower_api_key_masked": _mask_secret_for_config(cfg["smsbower_api_key"]),
         "smscode_api_token_masked": _mask_secret_for_config(cfg["smscode_api_token"]),
+        "hero_sms_base_url": cfg.get("hero_sms_base_url", "https://hero-sms.com/stubs/handler_api.php"),
+        "hero_sms_country": cfg.get("hero_sms_country", "6"),
+        "hero_sms_service": cfg.get("hero_sms_service", "ni"),
         "hero_sms_min_price": cfg.get("hero_sms_min_price", ""),
         "hero_sms_max_price": cfg.get("hero_sms_max_price", ""),
         "hero_sms_preferred_price": cfg.get("hero_sms_preferred_price", ""),
+        "smsbower_base_url": cfg.get("smsbower_base_url", "https://smsbower.page/stubs/handler_api.php"),
+        "smsbower_country": cfg.get("smsbower_country", "6"),
+        "smsbower_service": cfg.get("smsbower_service", "ni"),
+        "smsbower_min_price": cfg.get("smsbower_min_price", ""),
+        "smsbower_max_price": cfg.get("smsbower_max_price", ""),
+        "smsbower_preferred_price": cfg.get("smsbower_preferred_price", ""),
         "smscode_base_url": cfg.get("smscode_base_url", "https://api.smscode.gg/v1"),
         "smscode_country_id": cfg.get("smscode_country_id", "6"),
         "smscode_platform_id": cfg.get("smscode_platform_id", ""),
@@ -1465,13 +1610,26 @@ def get_oauth_phone_sms_config():
                 "configured": bool(cfg["hero_sms_api_key"]),
                 "secret_key": "OAUTH_HERO_SMS_API_KEY",
             },
+            {
+                "value": "smsbower",
+                "label": "smsbower",
+                "configured": bool(cfg["smsbower_api_key"]),
+                "secret_key": "OAUTH_SMSBOWER_API_KEY",
+            },
         ],
-        "configured": provider == "phone_pool" or bool(cfg["hero_sms_api_key"]),
+        "configured": provider == "phone_pool"
+        or (provider == "hero_sms" and bool(cfg["hero_sms_api_key"]))
+        or (provider == "smsbower" and bool(cfg["smsbower_api_key"])),
         "hero_sms_api_key_present": bool(cfg["hero_sms_api_key"]),
         "hero_sms_api_key_masked": _mask_secret_for_config(cfg["hero_sms_api_key"]),
         "hero_sms_max_price": cfg["hero_sms_max_price"],
         "hero_sms_country": cfg["hero_sms_country"] or "187",
         "hero_sms_service": cfg["hero_sms_service"] or "dr",
+        "smsbower_api_key_present": bool(cfg["smsbower_api_key"]),
+        "smsbower_api_key_masked": _mask_secret_for_config(cfg["smsbower_api_key"]),
+        "smsbower_max_price": cfg["smsbower_max_price"],
+        "smsbower_country": cfg["smsbower_country"] or "187",
+        "smsbower_service": cfg["smsbower_service"] or "dr",
         "hero_sms_service_label": "OpenAI",
     }
 
@@ -1485,8 +1643,12 @@ async def save_oauth_phone_sms_config(request: Request):
     provider = _normalize_oauth_phone_sms_provider(data.get("provider") or data.get("OAUTH_PHONE_SMS_PROVIDER"))
     hero_sms_api_key = str(data.get("hero_sms_api_key") or data.get("OAUTH_HERO_SMS_API_KEY") or "").strip()
     hero_sms_max_price = str(data.get("hero_sms_max_price") or data.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip()
+    smsbower_api_key = str(data.get("smsbower_api_key") or data.get("OAUTH_SMSBOWER_API_KEY") or "").strip()
+    smsbower_max_price = str(data.get("smsbower_max_price") or data.get("OAUTH_SMSBOWER_MAX_PRICE") or "").strip()
     if provider == "hero_sms" and not (hero_sms_api_key or current["hero_sms_api_key"]):
         raise HTTPException(status_code=400, detail="启用 hero-sms 前需要配置 OAuth hero-sms API Key")
+    if provider == "smsbower" and not (smsbower_api_key or current["smsbower_api_key"]):
+        raise HTTPException(status_code=400, detail="启用 smsbower 前需要配置 OAuth smsbower API Key")
 
     updates = {
         "OAUTH_PHONE_SMS_PROVIDER": provider,
@@ -1494,9 +1656,15 @@ async def save_oauth_phone_sms_config(request: Request):
         "OAUTH_HERO_SMS_BASE_URL": "https://hero-sms.com/stubs/handler_api.php",
         "OAUTH_HERO_SMS_COUNTRY": "187",
         "OAUTH_HERO_SMS_SERVICE": "dr",
+        "OAUTH_SMSBOWER_MAX_PRICE": smsbower_max_price,
+        "OAUTH_SMSBOWER_BASE_URL": "https://smsbower.page/stubs/handler_api.php",
+        "OAUTH_SMSBOWER_COUNTRY": "187",
+        "OAUTH_SMSBOWER_SERVICE": "dr",
     }
     if hero_sms_api_key:
         updates["OAUTH_HERO_SMS_API_KEY"] = hero_sms_api_key
+    if smsbower_api_key:
+        updates["OAUTH_SMSBOWER_API_KEY"] = smsbower_api_key
 
     for key, value in updates.items():
         _write_env(key, value)
@@ -1506,12 +1674,19 @@ async def save_oauth_phone_sms_config(request: Request):
     return {
         "message": "OAuth 手机号接码配置已保存",
         "provider": cfg["provider"],
-        "configured": cfg["provider"] == "phone_pool" or bool(cfg["hero_sms_api_key"]),
+        "configured": cfg["provider"] == "phone_pool"
+        or (cfg["provider"] == "hero_sms" and bool(cfg["hero_sms_api_key"]))
+        or (cfg["provider"] == "smsbower" and bool(cfg["smsbower_api_key"])),
         "hero_sms_api_key_present": bool(cfg["hero_sms_api_key"]),
         "hero_sms_api_key_masked": _mask_secret_for_config(cfg["hero_sms_api_key"]),
         "hero_sms_max_price": cfg["hero_sms_max_price"],
         "hero_sms_country": cfg["hero_sms_country"] or "187",
         "hero_sms_service": cfg["hero_sms_service"] or "dr",
+        "smsbower_api_key_present": bool(cfg["smsbower_api_key"]),
+        "smsbower_api_key_masked": _mask_secret_for_config(cfg["smsbower_api_key"]),
+        "smsbower_max_price": cfg["smsbower_max_price"],
+        "smsbower_country": cfg["smsbower_country"] or "187",
+        "smsbower_service": cfg["smsbower_service"] or "dr",
         "hero_sms_service_label": "OpenAI",
     }
 
@@ -2491,6 +2666,43 @@ class GoPayBindTaskParams(BaseModel):
             "gopayAutoSignupHeroSmsPriceTier",
         ),
     )
+    gopay_auto_signup_smsbower_api_key: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_smsbower_api_key", "gopayAutoSignupSmsbowerApiKey"),
+    )
+    gopay_auto_signup_smsbower_base_url: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_smsbower_base_url", "gopayAutoSignupSmsbowerBaseUrl"),
+    )
+    gopay_auto_signup_smsbower_country: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_smsbower_country", "gopayAutoSignupSmsbowerCountry"),
+    )
+    gopay_auto_signup_smsbower_service: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_smsbower_service", "gopayAutoSignupSmsbowerService"),
+    )
+    gopay_auto_signup_smsbower_timeout: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_smsbower_timeout", "gopayAutoSignupSmsbowerTimeout"),
+    )
+    gopay_auto_signup_smsbower_min_price: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_smsbower_min_price", "gopayAutoSignupSmsbowerMinPrice"),
+    )
+    gopay_auto_signup_smsbower_max_price: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_smsbower_max_price", "gopayAutoSignupSmsbowerMaxPrice"),
+    )
+    gopay_auto_signup_smsbower_preferred_price: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "gopay_auto_signup_smsbower_preferred_price",
+            "gopayAutoSignupSmsbowerPreferredPrice",
+            "gopay_auto_signup_smsbower_price_tier",
+            "gopayAutoSignupSmsbowerPriceTier",
+        ),
+    )
     gopay_auto_signup_smscloud_base_url: str = Field(
         "",
         validation_alias=AliasChoices("gopay_auto_signup_smscloud_base_url", "gopayAutoSignupSmscloudBaseUrl"),
@@ -2766,6 +2978,16 @@ class ManualRegisterParams(BaseModel):
     )
     post_register_oauth: bool = False
     protocol_register: bool = Field(False, validation_alias=AliasChoices("protocol_register", "protocolRegister"))
+    oauth_phone_sms_provider: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_provider", "oauthPhoneSmsProvider"),
+    )
+    oauth_phone_sms_country: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_country", "oauthPhoneSmsCountry"),
+    )
+    proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
+    proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
 
 
 class DeleteBatchParams(BaseModel):
@@ -8462,6 +8684,16 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         "max_price": str(params.gopay_auto_signup_smscloud_max_price or "").strip(),
         "timeout_sec": str(params.gopay_auto_signup_smscloud_timeout or "").strip(),
     }
+    gopay_auto_signup_smsbower_config = {
+        "api_key": str(params.gopay_auto_signup_smsbower_api_key or "").strip(),
+        "base_url": str(params.gopay_auto_signup_smsbower_base_url or "").strip(),
+        "country": str(params.gopay_auto_signup_smsbower_country or "").strip(),
+        "service": str(params.gopay_auto_signup_smsbower_service or "").strip(),
+        "timeout_sec": str(params.gopay_auto_signup_smsbower_timeout or "").strip(),
+        "min_price": str(params.gopay_auto_signup_smsbower_min_price or "").strip(),
+        "max_price": str(params.gopay_auto_signup_smsbower_max_price or "").strip(),
+        "preferred_price": str(params.gopay_auto_signup_smsbower_preferred_price or "").strip(),
+    }
     gopay_auto_signup_smscode_config = {
         "api_token": str(params.gopay_auto_signup_smscode_api_token or "").strip(),
         "base_url": str(params.gopay_auto_signup_smscode_base_url or "").strip(),
@@ -9787,6 +10019,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         sms_provider=gopay_auto_signup_sms_provider,
                         hero_sms_config=gopay_auto_signup_hero_sms_config,
                         smscloud_config=gopay_auto_signup_smscloud_config,
+                        smsbower_config=gopay_auto_signup_smsbower_config,
                         smscode_config=gopay_auto_signup_smscode_config,
                         public_base_url=gopay_task_public_base_url,
                         appium_config=gopay_auto_signup_appium_config,
@@ -11751,6 +11984,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     task_params["gopay_appium_adb_serial"] = gopay_auto_signup_appium_config.get("adb_serial") or ""
     task_params["gopay_task_public_base_url"] = gopay_task_public_base_url
     task_params["gopay_auto_signup_hero_sms_api_key_present"] = bool(gopay_auto_signup_hero_sms_config.get("api_key"))
+    task_params["gopay_auto_signup_smsbower_api_key_present"] = bool(gopay_auto_signup_smsbower_config.get("api_key"))
     task_params["gopay_auto_signup_smscode_api_token_present"] = bool(gopay_auto_signup_smscode_config.get("api_token"))
     task_params["pending_retry_attempts"] = pending_retry_attempts
     task_params["gopay_concurrency"] = gopay_concurrency
@@ -11761,6 +11995,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     task_params["proxy_api_provider"] = proxy_api_provider
     task_params.pop("auto_register_password", None)
     task_params.pop("gopay_auto_signup_hero_sms_api_key", None)
+    task_params.pop("gopay_auto_signup_smsbower_api_key", None)
     task_params.pop("gopay_auto_signup_smscode_api_token", None)
     task_params["phone_account_count"] = len(phone_accounts)
     task_params["phone_accounts"] = [
@@ -13621,6 +13856,25 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
     interval_seconds = max(0.0, float(params.interval_seconds or 0.0))
     jitter_min_seconds = max(0.0, float(params.jitter_min_seconds or 0.0))
     jitter_max_seconds = max(0.0, float(params.jitter_max_seconds or 0.0))
+    oauth_phone_sms_provider = (
+        _normalize_oauth_phone_sms_provider(params.oauth_phone_sms_provider)
+        if params.oauth_phone_sms_provider
+        else ""
+    )
+    oauth_phone_sms_country = (
+        _normalize_oauth_hero_sms_country(params.oauth_phone_sms_country)
+        if params.oauth_phone_sms_country
+        else ""
+    )
+    if bool(params.post_register_oauth) and oauth_phone_sms_provider in {"hero_sms", "smsbower"}:
+        oauth_sms_cfg = _oauth_phone_sms_env()
+        key_present = (
+            bool(oauth_sms_cfg.get("hero_sms_api_key"))
+            if oauth_phone_sms_provider == "hero_sms"
+            else bool(oauth_sms_cfg.get("smsbower_api_key"))
+        )
+        if not key_present:
+            raise HTTPException(status_code=400, detail=f"启用 {oauth_phone_sms_provider} 前需要先在设置页配置 API Key")
     if mode not in ("single", "batch"):
         raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
 
@@ -13671,6 +13925,16 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
     if jitter_min_seconds > jitter_max_seconds:
         raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
 
+    register_proxy_selector = None
+    register_proxy_meta = {}
+    proxy_api_provider = _normalize_proxy_api_provider(params.proxy_api_provider) if params.proxy_api_provider else ""
+    proxy_api_url = str(params.proxy_api_url or "").strip()
+    if proxy_api_provider or proxy_api_url:
+        register_proxy_selector, register_proxy_meta = _build_oauth_proxy_selector(
+            proxy_api_provider=proxy_api_provider or "1024proxy",
+            proxy_api_url=proxy_api_url,
+        )
+
     task_params = {
         "mode": mode,
         "count": count,
@@ -13687,7 +13951,12 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         "luckmail_preferred_domain": luckmail_preferred_domain or "",
         "luckmail_preferred_domains": luckmail_preferred_domains,
         "post_register_oauth": bool(params.post_register_oauth),
+        "oauth_phone_sms_provider": oauth_phone_sms_provider or "<default>",
+        "oauth_phone_sms_country": oauth_phone_sms_country or "",
         "register_mode": register_mode,
+        "proxy_api_provider": proxy_api_provider,
+        "proxy_api_url_present": bool(proxy_api_url),
+        **register_proxy_meta,
     }
 
     def _run_register(task_id: str, **_ignored_kwargs):
@@ -13710,6 +13979,10 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             luckmail_preferred_domains=luckmail_preferred_domains,
             post_register_oauth=bool(params.post_register_oauth),
             register_mode=register_mode,
+            register_proxy_selector=register_proxy_selector,
+            register_proxy_meta=register_proxy_meta,
+            oauth_phone_sms_provider=oauth_phone_sms_provider or None,
+            oauth_phone_sms_country=oauth_phone_sms_country or None,
             progress_callback=_register_progress,
         )
 
@@ -13731,6 +14004,8 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         luckmail_preferred_domain=luckmail_preferred_domain,
         luckmail_preferred_domains=luckmail_preferred_domains,
         post_register_oauth=bool(params.post_register_oauth),
+        oauth_phone_sms_provider=oauth_phone_sms_provider or None,
+        oauth_phone_sms_country=oauth_phone_sms_country or None,
         task_group=TASK_GROUP_REGISTER,
         pass_task_id=True,
     )

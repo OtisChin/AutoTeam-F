@@ -9,7 +9,7 @@
         <div>
           <h2 class="text-lg font-semibold text-white">OAuth 手机号接码</h2>
           <p class="text-sm text-gray-400 mt-1">
-            OAuth 登录遇到 add-phone 时使用；hero-sms 固定服务 openai、国家美国。
+            OAuth 登录遇到 add-phone 时使用；动态供应商固定服务 OpenAI、国家美国。
           </p>
         </div>
         <span
@@ -31,13 +31,14 @@
           >
             <option value="phone_pool">OAuth 手机号池</option>
             <option value="hero_sms">hero-sms</option>
+            <option value="smsbower">smsbower</option>
           </select>
-          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；hero-sms 会每次动态取美国 OpenAI 号码。</p>
+          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；动态供应商会购买美国 OpenAI 号码。</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">固定参数</label>
           <div class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300">
-            服务：OpenAI（Hero-SMS code: dr）/ 国家：美国
+            服务：OpenAI（service: dr）/ 国家：美国
           </div>
         </div>
         <template v-if="oauthPhoneSmsForm.provider === 'hero_sms'">
@@ -65,6 +66,33 @@
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
             <p class="mt-1 text-xs text-gray-500">保存后作为 maxPrice 传给 Hero-SMS getNumber。</p>
+          </div>
+        </template>
+        <template v-if="oauthPhoneSmsForm.provider === 'smsbower'">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              smsbower API Key
+              <span v-if="oauthPhoneSmsStatus.smsbower_api_key_present" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <input
+              v-model="oauthPhoneSmsForm.smsbower_api_key"
+              type="password"
+              autocomplete="off"
+              :placeholder="oauthPhoneSmsStatus.smsbower_api_key_masked || '留空则保留现有配置'"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">smsbower 最高价格</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.smsbower_max_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.045，留空不限价"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">保存后作为 maxPrice 传给 smsbower getNumber。</p>
           </div>
         </template>
       </div>
@@ -241,6 +269,7 @@
           >
             <option value="smscloud">smscloud</option>
             <option value="hero_sms">hero-sms</option>
+            <option value="smsbower">smsbower</option>
             <option value="smscode">smscode.gg</option>
           </select>
         </div>
@@ -319,6 +348,36 @@
           />
           </div>
           <div>
+            <label class="block text-sm text-gray-400 mb-1">hero-sms API 地址</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.hero_sms_base_url"
+              type="text"
+              autocomplete="off"
+              placeholder="https://hero-sms.com/stubs/handler_api.php"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">国家 ID</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.hero_sms_country"
+              type="text"
+              autocomplete="off"
+              placeholder="6"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">服务代码</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.hero_sms_service"
+              type="text"
+              autocomplete="off"
+              placeholder="ni"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
             <label class="block text-sm text-gray-400 mb-1">hero-sms 最低购买价</label>
             <input
               v-model.trim="gopayAutoSignupForm.hero_sms_min_price"
@@ -352,6 +411,84 @@
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
             <p class="mt-1 text-xs text-gray-500">指定档位必须在最低价/最高价区间内，否则会被忽略。</p>
+          </div>
+        </div>
+        <div v-else-if="gopayAutoSignupForm.provider === 'smsbower'" class="grid grid-cols-1 gap-4 md:grid-cols-2 md:col-span-2">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              smsbower API Key
+              <span v-if="gopayAutoSignupStatus.smsbower_api_key_present" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <input
+              v-model="gopayAutoSignupForm.smsbower_api_key"
+              type="password"
+              autocomplete="off"
+              :placeholder="gopayAutoSignupStatus.smsbower_api_key_masked || '留空则保留现有配置'"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">smsbower API 地址</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smsbower_base_url"
+              type="text"
+              autocomplete="off"
+              placeholder="https://smsbower.page/stubs/handler_api.php"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">国家 ID</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smsbower_country"
+              type="text"
+              autocomplete="off"
+              placeholder="6"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">服务代码</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smsbower_service"
+              type="text"
+              autocomplete="off"
+              placeholder="ni"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">smsbower 最低购买价</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smsbower_min_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="留空不限下限"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">smsbower 最高价格</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smsbower_max_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="留空不限价"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">smsbower 指定档位</label>
+            <input
+              v-model.trim="gopayAutoSignupForm.smsbower_preferred_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="留空按价格从低到高"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
           </div>
         </div>
         <div v-else-if="gopayAutoSignupForm.provider === 'smscode'" class="grid grid-cols-1 gap-4 md:grid-cols-2 md:col-span-2">
@@ -876,9 +1013,19 @@ const gopayAutoSignupForm = ref({
   country_code: '+62',
   smscloud_xi_token: '',
   hero_sms_api_key: '',
+  hero_sms_base_url: 'https://hero-sms.com/stubs/handler_api.php',
+  hero_sms_country: '6',
+  hero_sms_service: 'ni',
   hero_sms_min_price: '',
   hero_sms_max_price: '',
   hero_sms_preferred_price: '',
+  smsbower_api_key: '',
+  smsbower_base_url: 'https://smsbower.page/stubs/handler_api.php',
+  smsbower_country: '6',
+  smsbower_service: 'ni',
+  smsbower_min_price: '',
+  smsbower_max_price: '',
+  smsbower_preferred_price: '',
   smscode_api_token: '',
   smscode_base_url: 'https://api.smscode.gg/v1',
   smscode_country_id: '6',
@@ -899,6 +1046,8 @@ const oauthPhoneSmsForm = ref({
   provider: 'phone_pool',
   hero_sms_api_key: '',
   hero_sms_max_price: '',
+  smsbower_api_key: '',
+  smsbower_max_price: '',
 })
 const rekberinajaLoading = ref(false)
 const rekberinajaSaving = ref(false)
@@ -924,13 +1073,16 @@ const configImportExportBusy = computed(() => configImporting.value || configExp
 const accountHubConfigured = computed(() => Boolean(accountHubForm.value.token || accountHubForm.value.url))
 const gopayAutoSignupConfigured = computed(() => {
   if (gopayAutoSignupForm.value.provider === 'hero_sms') return Boolean(gopayAutoSignupStatus.value.hero_sms_api_key_present)
+  if (gopayAutoSignupForm.value.provider === 'smsbower') return Boolean(gopayAutoSignupStatus.value.smsbower_api_key_present)
   if (gopayAutoSignupForm.value.provider === 'smscode') return Boolean(gopayAutoSignupStatus.value.smscode_api_token_present)
   return Boolean(gopayAutoSignupStatus.value.smscloud_xi_token_present)
 })
 const oauthPhoneSmsConfigured = computed(() => {
   return oauthPhoneSmsForm.value.provider === 'phone_pool'
     ? true
-    : Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
+    : oauthPhoneSmsForm.value.provider === 'smsbower'
+      ? Boolean(oauthPhoneSmsStatus.value.smsbower_api_key_present)
+      : Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
 })
 const rekberinajaConfigured = computed(() => Boolean(rekberinajaStatus.value.configured))
 const roxyBrowserConfigured = computed(() => Boolean(roxyBrowserStatus.value.configured))
@@ -1196,13 +1348,23 @@ async function loadGoPayAutoSignupConfig() {
     const cfg = await api.getGoPayAutoSignupConfig()
     gopayAutoSignupStatus.value = cfg || {}
     gopayAutoSignupForm.value = {
-      provider: ['hero_sms', 'smscode'].includes(cfg?.provider) ? cfg.provider : 'smscloud',
+      provider: ['hero_sms', 'smsbower', 'smscode'].includes(cfg?.provider) ? cfg.provider : 'smscloud',
       country_code: '+62',
       smscloud_xi_token: '',
       hero_sms_api_key: '',
+      hero_sms_base_url: cfg?.hero_sms_base_url || 'https://hero-sms.com/stubs/handler_api.php',
+      hero_sms_country: cfg?.hero_sms_country || '6',
+      hero_sms_service: cfg?.hero_sms_service || 'ni',
       hero_sms_min_price: cfg?.hero_sms_min_price || '',
       hero_sms_max_price: cfg?.hero_sms_max_price || '',
       hero_sms_preferred_price: cfg?.hero_sms_preferred_price || '',
+      smsbower_api_key: '',
+      smsbower_base_url: cfg?.smsbower_base_url || 'https://smsbower.page/stubs/handler_api.php',
+      smsbower_country: cfg?.smsbower_country || '6',
+      smsbower_service: cfg?.smsbower_service || 'ni',
+      smsbower_min_price: cfg?.smsbower_min_price || '',
+      smsbower_max_price: cfg?.smsbower_max_price || '',
+      smsbower_preferred_price: cfg?.smsbower_preferred_price || '',
       smscode_api_token: '',
       smscode_base_url: cfg?.smscode_base_url || 'https://api.smscode.gg/v1',
       smscode_country_id: cfg?.smscode_country_id || '6',
@@ -1230,6 +1392,7 @@ async function saveGoPayAutoSignupConfig() {
     gopayAutoSignupStatus.value = result || {}
     gopayAutoSignupForm.value.smscloud_xi_token = ''
     gopayAutoSignupForm.value.hero_sms_api_key = ''
+    gopayAutoSignupForm.value.smsbower_api_key = ''
     gopayAutoSignupForm.value.smscode_api_token = ''
     setMessage(result.message || 'GoPay 自动注册配置已保存')
     await loadGoPayAutoSignupConfig()
@@ -1246,9 +1409,11 @@ async function loadOAuthPhoneSmsConfig() {
     const cfg = await api.getOAuthPhoneSmsConfig()
     oauthPhoneSmsStatus.value = cfg || {}
     oauthPhoneSmsForm.value = {
-      provider: cfg?.provider === 'hero_sms' ? 'hero_sms' : 'phone_pool',
+      provider: ['hero_sms', 'smsbower'].includes(cfg?.provider) ? cfg.provider : 'phone_pool',
       hero_sms_api_key: '',
       hero_sms_max_price: cfg?.hero_sms_max_price || '',
+      smsbower_api_key: '',
+      smsbower_max_price: cfg?.smsbower_max_price || '',
     }
   } catch (e) {
     setMessage(e.message || '加载 OAuth 接码配置失败', 'error')
@@ -1263,6 +1428,7 @@ async function saveOAuthPhoneSmsConfig() {
     const result = await api.saveOAuthPhoneSmsConfig(oauthPhoneSmsForm.value)
     oauthPhoneSmsStatus.value = result || {}
     oauthPhoneSmsForm.value.hero_sms_api_key = ''
+    oauthPhoneSmsForm.value.smsbower_api_key = ''
     setMessage(result.message || 'OAuth 接码配置已保存')
     await loadOAuthPhoneSmsConfig()
   } catch (e) {

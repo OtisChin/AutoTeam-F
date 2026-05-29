@@ -1566,7 +1566,14 @@ class ChatGPTTeamAPI:
         self.workspace_name = get_chatgpt_workspace_name()
         self.start_with_session(session_token, self.account_id, self.workspace_name)
 
-    def start_with_session(self, session_token, account_id, workspace_name=""):
+    def start_with_session(
+        self,
+        session_token,
+        account_id,
+        workspace_name="",
+        proxy_url: str | None = None,
+        cookies: list[dict] | None = None,
+    ):
         """用指定的 session/account 启动浏览器上下文。"""
         if not session_token:
             raise FileNotFoundError("缺少会话信息")
@@ -1575,7 +1582,13 @@ class ChatGPTTeamAPI:
         if not self.account_id:
             raise RuntimeError("缺少 workspace/account ID")
 
-        self._launch_browser()
+        self._launch_browser(proxy_url=proxy_url)
+        if cookies:
+            try:
+                self.context.add_cookies(cookies)
+                logger.info("[ChatGPT] 已注入 auth_session 保存的浏览器 cookies: count=%d", len(cookies))
+            except Exception as exc:
+                logger.warning("[ChatGPT] 注入 auth_session 保存 cookies 失败，继续使用 session_token: %s", exc)
         logger.info("[ChatGPT] 访问 chatgpt.com 过 Cloudflare...")
         self.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
         time.sleep(5)
@@ -1650,8 +1663,11 @@ class ChatGPTTeamAPI:
                 return "file"
 
         logger.info("[ChatGPT] 尝试通过页面获取 access token...")
-        self.page.goto("https://chatgpt.com/", wait_until="networkidle", timeout=60000)
-        time.sleep(10)
+        try:
+            self.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
+        except Exception as exc:
+            logger.warning("[ChatGPT] 刷新 chatgpt.com 获取 access token 超时，继续尝试读取页面缓存: %s", exc)
+        time.sleep(3)
 
         token = self.page.evaluate("""() => {
             try {
