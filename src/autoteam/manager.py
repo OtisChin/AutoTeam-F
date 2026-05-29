@@ -1925,7 +1925,11 @@ def _save_codex_oauth_bundle_for_account(
 
     bundle = dict(bundle)
     bundle["email"] = str(bundle.get("email") or email or "").strip()
-    plan_type = (bundle.get("plan_type") or "free").strip().lower()
+    # Accounts created by the registration flow are free accounts. Keep the
+    # CPA filename, JSON metadata, and account pool metadata aligned.
+    bundle["plan_type"] = "free"
+    bundle["chatgpt_plan_type"] = "free"
+    plan_type = "free"
     account_type = {
         "free": ACCOUNT_TYPE_FREE,
         "team": ACCOUNT_TYPE_TEAM,
@@ -2147,8 +2151,12 @@ def _run_post_register_session_oauth(
         _record_outcome(f"{oauth_source}_failed", reason="Codex OAuth 未返回 bundle")
         return None
 
-    bundle = oauth_result["bundle"]
-    plan_type = (bundle.get("plan_type") or "free").strip().lower()
+    bundle = dict(oauth_result["bundle"])
+    # Accounts created by the registration flow are free accounts. Do not
+    # infer Plus/Team from incomplete or stale OAuth metadata.
+    bundle["plan_type"] = "free"
+    bundle["chatgpt_plan_type"] = "free"
+    plan_type = "free"
     account_type = {
         "free": ACCOUNT_TYPE_FREE,
         "team": ACCOUNT_TYPE_TEAM,
@@ -2157,7 +2165,7 @@ def _run_post_register_session_oauth(
     }.get(plan_type, ACCOUNT_TYPE_FREE)
     seat_type = SEAT_CHATGPT if plan_type == "team" else SEAT_CODEX
     status = STATUS_ACTIVE if plan_type in {"free", "team", "plus", "pro"} else STATUS_PERSONAL
-    auth_file = oauth_result.get("auth_file") or save_auth_file(bundle)
+    auth_file = save_auth_file(bundle)
 
     add_account(
         email,

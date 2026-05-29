@@ -314,6 +314,8 @@ def _write_auth_file(filepath, bundle):
         "refresh_token": bundle.get("refresh_token", ""),
         "account_id": bundle.get("account_id", ""),
         "email": bundle.get("email", ""),
+        "plan_type": bundle.get("plan_type", "unknown"),
+        "chatgpt_plan_type": bundle.get("plan_type", "unknown"),
         "expired": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bundle.get("expired", 0))),
         "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bundle.get("last_refresh_ts", time.time()))),
     }
@@ -650,7 +652,15 @@ def sync_from_cpa():
 
 def import_local_cpa_auth_sources(sources):
     """Import local CPA/Codex auth JSON payloads into data/auths and accounts."""
-    from autoteam.accounts import ACCOUNT_SOURCE_MANAGED, ACCOUNT_TYPE_FREE, SEAT_CODEX, STATUS_STANDBY, find_account, load_accounts, save_accounts
+    from autoteam.accounts import (
+        ACCOUNT_SOURCE_MANAGED,
+        ACCOUNT_TYPE_FREE,
+        SEAT_CODEX,
+        STATUS_STANDBY,
+        find_account,
+        load_accounts,
+        save_accounts,
+    )
 
     AUTH_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -731,9 +741,8 @@ def import_local_cpa_auth_sources(sources):
             updates = {
                 "auth_file": resolved_path,
                 "account_source": ACCOUNT_SOURCE_MANAGED,
+                "account_type": ACCOUNT_TYPE_FREE,
             }
-            if not acc.get("account_type"):
-                updates["account_type"] = ACCOUNT_TYPE_FREE
             if not acc.get("seat_type"):
                 updates["seat_type"] = SEAT_CODEX
             for key, value in updates.items():

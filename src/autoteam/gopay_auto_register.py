@@ -810,18 +810,20 @@ def query_hero_sms_price_tiers(
 def _hero_get_number(
     *,
     service_code: str,
-    country_id: int,
+    country_id: int | str | None,
     base_url: str,
     api_key: str,
     max_price: str = "",
     min_price: str = "",
     preferred_price: str = "",
 ) -> tuple[str, str, str]:
+    country_text = str(country_id or "").strip().lower()
+    limited_country = country_text not in {"", "all", "any", "*"}
     price_plan = None
-    if str(min_price or "").strip() or str(max_price or "").strip() or str(preferred_price or "").strip():
+    if limited_country and (str(min_price or "").strip() or str(max_price or "").strip() or str(preferred_price or "").strip()):
         price_plan = query_hero_sms_price_tiers(
             service_code=service_code,
-            country_id=country_id,
+            country_id=int(float(country_text)),
             base_url=base_url,
             api_key=api_key,
             min_price=min_price,
@@ -833,7 +835,9 @@ def _hero_get_number(
         if not price_plan.get("filtered_prices"):
             return "", "", "HeroSMS 当前价格区间内没有可用号码"
 
-    params = {"service": service_code, "country": country_id}
+    params = {"service": service_code}
+    if limited_country:
+        params["country"] = int(float(country_text))
     if str(max_price or "").strip():
         params["maxPrice"] = str(max_price or "").strip()
     candidate_params = [params]
@@ -843,10 +847,11 @@ def _hero_get_number(
         for price in price_plan["filtered_prices"]:
             candidate = {
                 "service": service_code,
-                "country": country_id,
                 "maxPrice": str(price),
                 "fixedPrice": "true",
             }
+            if limited_country:
+                candidate["country"] = int(float(country_text))
             candidate_params.append(candidate)
     last_error = ""
     for candidate in candidate_params:

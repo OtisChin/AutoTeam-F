@@ -305,13 +305,11 @@ class RekberinajaClient:
             )
         transaction_id = self.create_gopay_order(phone_number)
         self.pay_with_saldo(transaction_id)
-        order = self.wait_order_completed(transaction_id)
         return {
             "transaction_id": transaction_id,
             "phone_number": format_gopay_phone_for_rekberinaja(phone_number),
             "balance_before": balance,
-            "status": order.get("status") or "",
-            "order": order,
+            "status": "submitted",
         }
 
 

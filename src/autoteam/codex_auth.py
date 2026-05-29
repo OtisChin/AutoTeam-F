@@ -605,10 +605,14 @@ def _write_auth_file(filepath, bundle):
             "refresh_token": bundle.get("refresh_token", ""),
             "account_id": bundle.get("account_id", ""),
             "email": bundle.get("email", ""),
+            "plan_type": bundle.get("plan_type", "unknown"),
+            "chatgpt_plan_type": bundle.get("plan_type", "unknown"),
             "expired": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bundle.get("expired", 0))),
             "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
+    auth_data.setdefault("plan_type", bundle.get("plan_type", "unknown"))
+    auth_data.setdefault("chatgpt_plan_type", bundle.get("plan_type", "unknown"))
     write_text(filepath, json.dumps(auth_data, indent=2))
     ensure_auth_file_permissions(filepath)
     try:
@@ -1713,6 +1717,8 @@ def _normalize_oauth_hero_sms_service(value: str | None = None) -> str:
 
 def _normalize_oauth_hero_sms_country(value: str | None = None) -> str:
     text = str(value or "").strip().lower()
+    if text in {"all", "any", "*", "全部", "所有", "不限", "global"}:
+        return "all"
     if text in {"", "us", "usa", "united_states", "united states", "+1", "1", "12"}:
         return "187"
     return text
@@ -1827,10 +1833,14 @@ def _oauth_hero_sms_restore_entry(cfg: dict[str, str], activation_cls) -> dict[s
     if str(payload.get("config_fingerprint") or "") != _oauth_hero_sms_config_fingerprint(cfg):
         _oauth_hero_sms_persist_entry(None)
         return None
-    try:
-        country_id = int(float(payload.get("country_id") or cfg.get("country") or "187"))
-    except Exception:
-        country_id = 187
+    country_raw = str(payload.get("country_id") or cfg.get("country") or "187").strip().lower()
+    if country_raw in {"all", "any", "*"}:
+        country_id = "all"
+    else:
+        try:
+            country_id = int(float(country_raw))
+        except Exception:
+            country_id = 187
     activation = activation_cls(
         activation_id=str(payload.get("activation_id") or "").strip(),
         phone=str(payload.get("phone_number") or "").strip(),
@@ -1921,10 +1931,14 @@ def _acquire_oauth_hero_sms_phone(email: str = "", *, country: str | None = None
     cfg = _oauth_hero_sms_config(country)
     if not cfg["api_key"]:
         return None, "缺少 OAUTH_HERO_SMS_API_KEY 配置"
-    try:
-        country_id = int(float(cfg["country"] or "187"))
-    except Exception:
-        country_id = 187
+    country_raw = str(cfg["country"] or "187").strip().lower()
+    if country_raw in {"all", "any", "*"}:
+        country_id = "all"
+    else:
+        try:
+            country_id = int(float(country_raw))
+        except Exception:
+            country_id = 187
     now = time.time()
     with _OAUTH_HERO_SMS_REUSE_LOCK:
         cached = _OAUTH_HERO_SMS_REUSE.get("current")
@@ -2009,10 +2023,14 @@ def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None
     cfg = _oauth_smsbower_config(country)
     if not cfg["api_key"]:
         return None, "缺少 OAUTH_SMSBOWER_API_KEY 配置"
-    try:
-        country_id = int(float(cfg["country"] or "187"))
-    except Exception:
-        country_id = 187
+    country_raw = str(cfg["country"] or "187").strip().lower()
+    if country_raw in {"all", "any", "*"}:
+        country_id = "all"
+    else:
+        try:
+            country_id = int(float(country_raw))
+        except Exception:
+            country_id = 187
     activation_id, phone, error = _hero_get_number(
         service_code=cfg["service"] or "dr",
         country_id=country_id,

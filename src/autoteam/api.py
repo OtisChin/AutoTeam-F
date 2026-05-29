@@ -9106,8 +9106,127 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         gopay_wallet_funding_attempted_ids: set[int] = set()
         gopay_wallet_balance_ready_ids: set[int] = set()
         gopay_wallet_created_at: dict[int, float] = {}
+        gopay_no_transfer_balance_miss_count = 0
+        gopay_no_transfer_balance_fallback_forced = False
+        gopay_transfer_1001_balance_count = 0
+        gopay_transfer_disabled_for_official_gift = False
+        gopay_funded_balance_insufficient_count = 0
+        gopay_balance_insufficient_stop_requested = False
         gopay_state_lock = threading.RLock()
         gopay_worker_context = threading.local()
+        gopay_balance_insufficient_stop_message = "连续 3 次 Rekberinaja 转账后 GoPay 余额仍不足，已停止任务，不再取新的 SMS 手机号注册"
+
+        def _reset_no_transfer_balance_misses() -> None:
+            nonlocal gopay_no_transfer_balance_miss_count
+            with gopay_state_lock:
+                gopay_no_transfer_balance_miss_count = 0
+
+        def _reset_funded_balance_insufficient_count() -> None:
+            nonlocal gopay_funded_balance_insufficient_count
+            with gopay_state_lock:
+                gopay_funded_balance_insufficient_count = 0
+
+        def _transfer_disabled_for_official_gift() -> bool:
+            with gopay_state_lock:
+                return bool(gopay_transfer_disabled_for_official_gift)
+
+        def _gopay_balance_insufficient_stop_requested() -> bool:
+            with gopay_state_lock:
+                return bool(gopay_balance_insufficient_stop_requested)
+
+        def _gopay_wallet_funding_attempted(wallet) -> bool:
+            if wallet is None:
+                return False
+            wallet_id = id(wallet)
+            with gopay_state_lock:
+                return wallet_id in funded_gopay_wallet_ids or wallet_id in gopay_wallet_funding_attempted_ids
+
+        def _record_funded_balance_insufficient(wallet, *, index: int = 1, total: int = 1) -> bool:
+            nonlocal gopay_funded_balance_insufficient_count, gopay_balance_insufficient_stop_requested
+            with gopay_state_lock:
+                gopay_funded_balance_insufficient_count += 1
+                insufficient_count = gopay_funded_balance_insufficient_count
+                if insufficient_count >= 3 and not gopay_balance_insufficient_stop_requested:
+                    gopay_balance_insufficient_stop_requested = True
+                    stop_now = True
+                else:
+                    stop_now = gopay_balance_insufficient_stop_requested
+            if stop_now:
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_wallet_balance_insufficient_limit",
+                        "current": index,
+                        "total": total,
+                        "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                        "balance_insufficient_count": insufficient_count,
+                        "message": gopay_balance_insufficient_stop_message,
+                        "level": "error",
+                    },
+                )
+            return stop_now
+
+        def _record_no_transfer_balance_miss(wallet, *, index: int = 1, total: int = 1) -> bool:
+            nonlocal gopay_no_transfer_balance_miss_count, gopay_no_transfer_balance_fallback_forced
+            nonlocal gopay_transfer_disabled_for_official_gift, gopay_transfer_1001_balance_count
+            with gopay_state_lock:
+                gopay_no_transfer_balance_miss_count += 1
+                miss_count = gopay_no_transfer_balance_miss_count
+                if miss_count >= 3 and not gopay_no_transfer_balance_fallback_forced:
+                    gopay_no_transfer_balance_fallback_forced = True
+                    gopay_transfer_disabled_for_official_gift = False
+                    gopay_transfer_1001_balance_count = 0
+                    switch_now = True
+                else:
+                    switch_now = gopay_no_transfer_balance_fallback_forced
+            if switch_now:
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_wallet_balance_auto_transfer_enabled",
+                        "current": index,
+                        "total": total,
+                        "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                        "balance_miss_count": miss_count,
+                        "message": "连续 3 个 GoPay 钱包官方赠送 Rp1 未到账，已切换到 Rekberinaja 转账模式",
+                        "level": "warn",
+                    },
+                )
+            return switch_now
+
+        def _record_transfer_balance_ready(wallet, value: float, balance: dict, *, index: int = 1, total: int = 1) -> None:
+            nonlocal gopay_no_transfer_balance_miss_count, gopay_no_transfer_balance_fallback_forced
+            nonlocal gopay_transfer_1001_balance_count, gopay_transfer_disabled_for_official_gift
+            rounded_value = int(float(value or 0))
+            with gopay_state_lock:
+                if rounded_value == 1001:
+                    gopay_transfer_1001_balance_count += 1
+                else:
+                    gopay_transfer_1001_balance_count = 0
+                match_count = gopay_transfer_1001_balance_count
+                if match_count >= 3 and not gopay_transfer_disabled_for_official_gift:
+                    gopay_transfer_disabled_for_official_gift = True
+                    gopay_no_transfer_balance_fallback_forced = False
+                    gopay_no_transfer_balance_miss_count = 0
+                    switch_now = True
+                else:
+                    switch_now = False
+            if switch_now:
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_wallet_transfer_auto_disabled",
+                        "current": index,
+                        "total": total,
+                        "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                        "balance": value,
+                        "currency": balance.get("currency") or "IDR",
+                        "display_value": balance.get("display_value") or "",
+                        "balance_1001_count": match_count,
+                        "message": "连续 3 次 Rekberinaja 转账后 GoPay 余额为 Rp1001，判断官方 Rp1 已恢复赠送，本任务后续关闭转账并等待官方 Rp1 到账",
+                        "level": "warn",
+                    },
+                )
 
         def _gopay_worker_progress_fields() -> dict:
             label = str(getattr(gopay_worker_context, "label", "") or "").strip()
@@ -9641,6 +9760,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         class _GoPayWalletBalanceNotReady(RuntimeError):
             pass
 
+        class _GoPayWalletBalanceInsufficientLimit(RuntimeError):
+            pass
+
         def _gopay_wallet_balance_poll_intervals() -> list[float]:
             return _gopay_wallet_balance_poll_intervals_from_env()
 
@@ -9649,7 +9771,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 
             if is_rekberinaja_enabled():
                 return False
-            return bool(gopay_balance_wait_fallback_transfer)
+            with gopay_state_lock:
+                forced_fallback = gopay_no_transfer_balance_fallback_forced
+                official_gift_mode = gopay_transfer_disabled_for_official_gift
+            if official_gift_mode:
+                return False
+            return bool(gopay_balance_wait_fallback_transfer or forced_fallback)
 
         def _wait_for_gopay_wallet_balance_ready(
             wallet,
@@ -9661,6 +9788,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             not_ready_message: str = "GoPay 余额三次查询仍未到账，舍弃该钱包并重新注册",
             ready_message: str = "GoPay 钱包余额已到账，开始绑定",
             raise_on_not_ready: bool = True,
+            ready_callback=None,
         ) -> bool:
             if wallet is None:
                 return False
@@ -9736,6 +9864,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     },
                 )
                 if value >= 1:
+                    if callable(ready_callback):
+                        try:
+                            ready_callback(value, balance)
+                        except Exception:
+                            logger.debug("[gopay-bind] GoPay balance ready callback failed", exc_info=True)
                     _append_task_progress(
                         task_id,
                         {
@@ -9752,6 +9885,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     )
                     with gopay_state_lock:
                         gopay_wallet_balance_ready_ids.add(id(wallet))
+                    _reset_funded_balance_insufficient_count()
                     return True
             _append_task_progress(
                 task_id,
@@ -9780,7 +9914,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             from autoteam.rekberinaja import fund_gopay_wallet_if_enabled, is_rekberinaja_enabled, load_rekberinaja_config
 
             transfer_enabled = is_rekberinaja_enabled()
-            if wallet is None or not (transfer_enabled or allow_when_transfer_disabled):
+            if wallet is None or _transfer_disabled_for_official_gift() or not (transfer_enabled or allow_when_transfer_disabled):
                 return None
             funding_config = None
             if allow_when_transfer_disabled and not transfer_enabled:
@@ -9884,12 +10018,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             _append_task_progress(
                 task_id,
                 {
-                    "stage": "gopay_wallet_funding_done",
+                    "stage": "gopay_wallet_funding_submitted",
                     "current": index,
                     "total": total,
                     "phone_number": _mask_gopay_phone_for_log(phone),
                     "transaction_id": (result or {}).get("transaction_id") or "",
-                    "message": f"Rekberinaja GoPay 钱包充值完成 ({index}/{total})",
+                    "message": f"Rekberinaja GoPay 转账已提交，开始轮询 GoPay 余额 ({index}/{total})",
                 },
             )
             _wait_for_gopay_wallet_balance_ready(
@@ -9898,13 +10032,31 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 total=total,
                 poll_intervals=_gopay_wallet_balance_poll_intervals(),
                 not_ready_message="Rekberinaja 转账后 GoPay 余额仍未到账，舍弃该钱包并重新注册",
+                ready_callback=lambda value, balance: _record_transfer_balance_ready(
+                    wallet,
+                    value,
+                    balance,
+                    index=index,
+                    total=total,
+                ),
+            )
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_wallet_funding_done",
+                    "current": index,
+                    "total": total,
+                    "phone_number": _mask_gopay_phone_for_log(phone),
+                    "transaction_id": (result or {}).get("transaction_id") or "",
+                    "message": f"Rekberinaja GoPay 转账余额已到账 ({index}/{total})",
+                },
             )
             return result
 
         def _wait_after_gopay_pin_when_transfer_disabled(wallet, *, index: int = 1, total: int = 1) -> None:
             from autoteam.rekberinaja import is_rekberinaja_enabled
 
-            if wallet is None or is_rekberinaja_enabled():
+            if wallet is None or (is_rekberinaja_enabled() and not _transfer_disabled_for_official_gift()):
                 return
             with gopay_state_lock:
                 if id(wallet) in gopay_wallet_balance_ready_ids:
@@ -9923,6 +10075,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         raise_on_not_ready=False,
                     )
                     if ready:
+                        _reset_no_transfer_balance_misses()
                         return
                     _append_task_progress(
                         task_id,
@@ -9948,6 +10101,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     total=total,
                     poll_intervals=_gopay_wallet_balance_poll_intervals(),
                 )
+                _reset_no_transfer_balance_misses()
                 return
             delay_seconds = _gopay_auto_signup_no_transfer_bind_wait_seconds()
             if delay_seconds <= 0:
@@ -10191,19 +10345,19 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             max_wallet_attempts = max(1, int(os.environ.get("GOPAY_AUTO_SIGNUP_WALLET_ATTEMPTS", "10") or "10"))
             last_exc: Exception | None = None
             for wallet_attempt in range(1, max_wallet_attempts + 1):
+                if _gopay_balance_insufficient_stop_requested():
+                    raise _GoPayWalletBalanceInsufficientLimit(gopay_balance_insufficient_stop_message)
                 current_wallet = wallet
                 wallet = None
                 if current_wallet is None:
                     current_wallet = _register_gopay_wallet_for_bind(index=index, total=total)
-                try:
-                    _fund_gopay_wallet_for_bind(current_wallet, index=index, total=total)
-                    _wait_after_gopay_pin_when_transfer_disabled(current_wallet, index=index, total=total)
-                    return current_wallet
-                except _GoPayWalletBalanceNotReady as exc:
+
+                def _retry_after_balance_not_ready(exc: Exception) -> None:
+                    nonlocal last_exc
                     last_exc = exc
                     _discard_gopay_wallet_for_balance_not_ready(current_wallet, index=index, total=total)
                     if wallet_attempt >= max_wallet_attempts:
-                        raise
+                        raise exc
                     _append_task_progress(
                         task_id,
                         {
@@ -10216,6 +10370,49 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             "level": "warn",
                         },
                     )
+
+                try:
+                    _fund_gopay_wallet_for_bind(current_wallet, index=index, total=total)
+                    _wait_after_gopay_pin_when_transfer_disabled(current_wallet, index=index, total=total)
+                    return current_wallet
+                except _GoPayWalletBalanceNotReady as exc:
+                    last_exc = exc
+                    if _gopay_wallet_funding_attempted(current_wallet):
+                        stop_now = _record_funded_balance_insufficient(current_wallet, index=index, total=total)
+                        _discard_gopay_wallet_for_balance_not_ready(current_wallet, index=index, total=total)
+                        if stop_now:
+                            raise _GoPayWalletBalanceInsufficientLimit(gopay_balance_insufficient_stop_message) from exc
+                        if wallet_attempt >= max_wallet_attempts:
+                            raise
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_wallet_auto_signup_retry",
+                                "current": index,
+                                "total": total,
+                                "attempt": wallet_attempt + 1,
+                                "max_attempts": max_wallet_attempts,
+                                "message": "GoPay 余额未到账，准备重新注册 GoPay 钱包",
+                                "level": "warn",
+                            },
+                        )
+                        continue
+                    if _record_no_transfer_balance_miss(current_wallet, index=index, total=total):
+                        try:
+                            _fund_gopay_wallet_for_bind(
+                                current_wallet,
+                                index=index,
+                                total=total,
+                                allow_when_transfer_disabled=True,
+                            )
+                        except _GoPayWalletBalanceNotReady as funded_exc:
+                            if _record_funded_balance_insufficient(current_wallet, index=index, total=total):
+                                _discard_gopay_wallet_for_balance_not_ready(current_wallet, index=index, total=total)
+                                raise _GoPayWalletBalanceInsufficientLimit(gopay_balance_insufficient_stop_message) from funded_exc
+                            _retry_after_balance_not_ready(funded_exc)
+                            continue
+                        return current_wallet
+                    _retry_after_balance_not_ready(exc)
             raise last_exc or RuntimeError("GoPay 钱包准备失败")
 
         class _GoPayWalletPrefetcher:
@@ -10227,10 +10424,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 self.next_index = 1
 
             def ensure_ahead(self, completed_index: int) -> None:
-                if self.executor is None or cancel_signal.is_cancelled():
+                if self.executor is None or cancel_signal.is_cancelled() or _gopay_balance_insufficient_stop_requested():
                     return
                 self.next_index = max(self.next_index, int(completed_index or 0) + 1)
-                while len(self.futures) < self.max_workers and self.next_index <= self.total:
+                while (
+                    len(self.futures) < self.max_workers
+                    and self.next_index <= self.total
+                    and not _gopay_balance_insufficient_stop_requested()
+                ):
                     prefetch_index = self.next_index
                     self.next_index += 1
                     _append_task_progress(
@@ -10537,6 +10738,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         failure_stage = "gopay_wallet_no_numbers"
                     elif _looks_like_gopay_wallet_signup_provider_error(exc):
                         failure_stage = "gopay_wallet_provider_unavailable"
+                    elif isinstance(exc, _GoPayWalletBalanceInsufficientLimit):
+                        failure_stage = "gopay_wallet_balance_insufficient"
                     elif "Rekberinaja" in str(exc):
                         failure_stage = "gopay_wallet_funding"
                     else:
@@ -10863,9 +11066,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             "bind_status": single_result.get("bind_status") or "",
                         }
                     )
+                if _gopay_balance_insufficient_stop_requested():
+                    break
 
             pending_retry_backoffs = [60.0, 120.0]
             for retry_round in range(1, pending_retry_attempts + 1):
+                if _gopay_balance_insufficient_stop_requested():
+                    break
                 retry_candidates = pending_retry_items[:]
                 if not retry_candidates or cancel_signal.is_cancelled():
                     break
@@ -11366,6 +11573,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 
             pending_retry_backoffs = [60.0, 120.0]
             for retry_round in range(1, pending_retry_attempts + 1):
+                if _gopay_balance_insufficient_stop_requested():
+                    break
                 retry_candidates = pending_retry_items[:]
                 if not retry_candidates or cancel_signal.is_cancelled():
                     break
@@ -11619,6 +11828,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         "level": "warn",
                     },
                 )
+                if _gopay_balance_insufficient_stop_requested():
+                    break
 
             wallet_prefetcher.close()
 
@@ -11744,9 +11955,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             failure_stage = "gopay_auto_register" if auto_register and not email else "post_submit"
             if isinstance(exc, _GoPayWalletSignupRateLimited):
                 failure_stage = "gopay_wallet_rate_limited"
-            if isinstance(exc, _GoPayWalletSignupNetworkError):
+            elif isinstance(exc, _GoPayWalletSignupNetworkError):
                 failure_stage = "gopay_wallet_network_error"
-            if "Rekberinaja" in str(exc):
+            elif isinstance(exc, _GoPayWalletBalanceInsufficientLimit):
+                failure_stage = "gopay_wallet_balance_insufficient"
+            elif "Rekberinaja" in str(exc):
                 failure_stage = "gopay_wallet_funding"
             result = {
                 "status": "failed",
