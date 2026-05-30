@@ -9748,12 +9748,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 return False
             stage = str(result_payload.get("failure_stage") or "")
             reason = str(retry_reason or "")
-            return stage in {
+            wallet_signup_failure_stages = {
                 "gopay_wallet_no_numbers",
                 "gopay_wallet_provider_unavailable",
                 "gopay_wallet_network_error",
                 "gopay_wallet_rate_limited",
-            } or reason in {"gopay_wallet_no_numbers", "rate_limited"}
+            }
+            return stage in wallet_signup_failure_stages or reason in wallet_signup_failure_stages
 
         def _preserve_gopay_wallet(wallet) -> None:
             with gopay_state_lock:
