@@ -8675,6 +8675,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     from autoteam.bind_audit import record_bind_audit
     from autoteam.config import normalize_proxy_url
     from autoteam.gopay_executor import (
+        _is_chatgpt_approve_blocked_result,
+        _is_chatgpt_token_invalidated_result,
         _compact_log_text,
         _looks_like_gopay_rate_limit_text,
         _gopay_pending_retry_reason,
@@ -8998,7 +9000,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         normalized_proxy_url = ""
         proxy_config_state = "invalid"
         proxy_config_error = _compact_log_text(exc, limit=160)
-    bind_proxy_url = proxy_url
+    bind_proxy_url = normalized_proxy_url
     normalized_proxy_pool: list[str] = []
     for raw_pool_proxy in proxy_pool:
         try:
@@ -9654,7 +9656,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             if stage in {"midtrans_create_charge", "gopay_payment_validate", "gopay_payment_confirm", "gopay_payment_process"}:
                 return False
             text = json.dumps(result_payload, ensure_ascii=False).lower()
-            if stage in {"generate_checkout", "chatgpt_http_session", "chatgpt_verify"}:
+            if stage in {"proxy_config", "generate_checkout", "chatgpt_http_session", "chatgpt_verify"}:
                 return True
             if (
                 "token_invalidated" in text
@@ -9721,6 +9723,26 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 )
             )
 
+        def _is_gopay_account_side_failure_result(result_payload: dict | None, retry_reason: str = "") -> bool:
+            if not isinstance(result_payload, dict) or result_payload.get("status") == "success":
+                return False
+            stage = str(result_payload.get("failure_stage") or "")
+            reason = str(retry_reason or "")
+            if _is_chatgpt_approve_blocked_result(result_payload) or _is_chatgpt_token_invalidated_result(result_payload):
+                return True
+            if reason in {"chatgpt_approve_blocked", "http_403"}:
+                return True
+            if stage in {"generate_checkout", "chatgpt_http_session", "chatgpt_verify", "chatgpt_approve"}:
+                return True
+            text = json.dumps(result_payload, ensure_ascii=False).lower()
+            return (
+                "token_invalidated" in text
+                or "authentication token has been invalidated" in text
+                or "user is paid" in text
+                or "already a paid user" in text
+                or "already subscribed" in text
+            )
+
         def _preserve_gopay_wallet(wallet) -> None:
             with gopay_state_lock:
                 if wallet in reusable_gopay_wallets:
@@ -9758,6 +9780,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 reusable, reason = is_sms_bridge_reusable(bridge_token) if bridge_token else (False, "bridge_token_missing")
                 if reusable:
                     break
+                logger.warning(
+                    "[gopay-bind] reusable wallet discarded before bind: index=%s/%s phone=%s reason=%s",
+                    index,
+                    total,
+                    _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                    reason,
+                )
                 _append_task_progress(
                     task_id,
                     {
@@ -9786,6 +9815,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     "expires_in_seconds": max(0, int(float(entry.get("expires_at") or 0) - time.time())),
                     "message": f"优先复用 20 分钟有效期内未完成绑定的 GoPay 钱包 ({index}/{total})",
                 },
+            )
+            logger.info(
+                "[gopay-bind] reusable wallet selected for bind: index=%s/%s phone=%s funded=%s",
+                index,
+                total,
+                _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                bool(entry.get("funded")),
             )
             return wallet
 
@@ -10160,8 +10196,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             from autoteam.gopay_auto_register import GoPaySignupProbeError, register_gopay_wallet
 
             max_wallet_attempts = max(1, int(os.environ.get("GOPAY_AUTO_SIGNUP_WALLET_ATTEMPTS", "10") or "10"))
+            no_numbers_attempts = max(1, int(os.environ.get("GOPAY_AUTO_SIGNUP_NO_NUMBERS_ATTEMPTS", "3") or "3"))
             last_exc: Exception | None = None
-            for wallet_attempt in range(1, max_wallet_attempts + 1):
+            wallet_attempt = 1
+            no_numbers_attempt = 0
+            while wallet_attempt <= max_wallet_attempts:
                 def _signup_log(message: str, *, _attempt: int = wallet_attempt) -> None:
                     text = _compact_log_text(message, limit=220)
                     logger.info(text)
@@ -10238,12 +10277,35 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 "total": total,
                                 "attempt": wallet_attempt,
                                 "max_attempts": max_wallet_attempts,
+                                "no_numbers_attempt": no_numbers_attempt,
+                                "no_numbers_max_attempts": no_numbers_attempts,
                                 "message": message,
                                 "level": "error",
                             },
                         )
                         raise _GoPayWalletSignupRateLimited(message) from exc
                     if _looks_like_gopay_wallet_signup_no_numbers(exc):
+                        no_numbers_attempt += 1
+                        if no_numbers_attempt < no_numbers_attempts:
+                            _append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "gopay_wallet_auto_signup_no_numbers_retry",
+                                    "current": index,
+                                    "total": total,
+                                    "attempt": wallet_attempt,
+                                    "max_attempts": max_wallet_attempts,
+                                    "no_numbers_attempt": no_numbers_attempt,
+                                    "no_numbers_max_attempts": no_numbers_attempts,
+                                    "message": (
+                                        f"GoPay 钱包自动注册暂时无可用号码，准备第 {no_numbers_attempt + 1}/{no_numbers_attempts} 次重新取号: "
+                                        f"{_compact_log_text(exc, limit=220)}"
+                                    ),
+                                    "level": "warn",
+                                },
+                            )
+                            time.sleep(3)
+                            continue
                         message = f"GoPay 钱包自动注册暂时无可用号码，将进入待重试: {_compact_log_text(exc, limit=220)}"
                         _append_task_progress(
                             task_id,
@@ -10253,6 +10315,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 "total": total,
                                 "attempt": wallet_attempt,
                                 "max_attempts": max_wallet_attempts,
+                                "no_numbers_attempt": no_numbers_attempt,
+                                "no_numbers_max_attempts": no_numbers_attempts,
                                 "message": message,
                                 "level": "warn",
                             },
@@ -10302,6 +10366,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         },
                     )
                     time.sleep(2)
+                    wallet_attempt += 1
             else:
                 raise last_exc or RuntimeError("GoPay 钱包自动注册失败")
             with gopay_state_lock:
@@ -10754,6 +10819,24 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 pending_retry_override=0,
                             )
                             or {}
+                        )
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_bind_attempt_finished",
+                                "email": _normalized_email(single_result.get("email_used") or single_result.get("email") or bind_email),
+                                "current": index,
+                                "total": total,
+                                "wallet_attempt": wallet_attempt,
+                                "status": single_result.get("status") or "failed",
+                                "failure_stage": single_result.get("failure_stage") or "",
+                                "message": (
+                                    f"GoPay 绑定尝试返回: status={single_result.get('status') or 'failed'}; "
+                                    f"failure_stage={single_result.get('failure_stage') or '-'}; "
+                                    f"detail={_compact_log_text(single_result.get('message') or '', limit=220) or '-'}"
+                                ),
+                                "level": "info" if single_result.get("status") == "success" else "warn",
+                            },
                         )
                     finally:
                         gopay_wallet_prefetch_context.update({"prefetcher": None, "index": 0, "total": 0, "triggered": False})
@@ -11362,8 +11445,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 },
             )
 
-            def _worker(item: tuple[int, str, int, int, queue.Queue]) -> tuple[int, str, int, dict, Any | None]:
-                index, candidate_email, round_total, retry_round, worker_slots = item
+            def _worker(item: tuple[int, Any, int, int, queue.Queue]) -> tuple[int, str, int, dict, Any | None]:
+                index, candidate_payload, round_total, retry_round, worker_slots = item
                 worker_index = int(worker_slots.get())
                 worker_label = f"worker-{worker_index}" if worker_index > 0 else ""
                 if worker_label:
@@ -11371,6 +11454,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     gopay_worker_context.index = worker_index
                     _task_context.gopay_worker_label = worker_label
                     _task_context.gopay_worker_index = worker_index
+                reusable_wallet = None
+                if isinstance(candidate_payload, dict):
+                    candidate_email = str(candidate_payload.get("email") or "")
+                    reusable_wallet = candidate_payload.get("wallet")
+                else:
+                    candidate_email = str(candidate_payload or "")
                 normalized_candidate = _normalized_email(candidate_email)
                 try:
                     if not normalized_candidate:
@@ -11400,7 +11489,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         index=index,
                         total=round_total,
                         wallet_prefetcher=None,
-                        reusable_wallet=None,
+                        reusable_wallet=reusable_wallet,
                         exception_message_prefix="GoPay 自动注册后绑定异常",
                     )
                     return index, normalized_candidate, retry_round, single_result, auto_wallet
@@ -11491,14 +11580,52 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     }
                 )
                 retry_reason = "" if _is_gopay_wallet_bound_elsewhere_result(single_result) else _gopay_pending_retry_reason(single_result)
-                if single_email and retry_reason and retry_round < pending_retry_attempts:
+                account_side_failure = _is_gopay_account_side_failure_result(single_result, retry_reason)
+                if account_side_failure and auto_wallet is not None and not _is_gopay_wallet_bound_elsewhere_result(single_result):
+                    _preserve_gopay_wallet(auto_wallet)
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_account_failed_wallet_preserved",
+                            "email": single_email,
+                            "retry_round": retry_round,
+                            "max_retry_rounds": pending_retry_attempts,
+                            "reason": retry_reason,
+                            "failure_stage": single_result.get("failure_stage") or "",
+                            "message": f"GoPay 邮箱账号侧失败，已保留注册好的钱包给其他账号复用: {single_email}",
+                            "level": "warn",
+                        },
+                    )
+                if single_email and retry_reason and not account_side_failure and retry_round < pending_retry_attempts:
+                    retry_source_stage = _gopay_pending_retry_source_stage(single_result, retry_reason)
+                    failure_stage = str(single_result.get("failure_stage") or "")
+                    failure_detail = _compact_log_text(single_result.get("message") or "", limit=220)
+                    retry_wallet = (
+                        auto_wallet
+                        if auto_wallet is not None
+                        and not _is_no_transfer_balance_pending_result(single_result)
+                        and not _is_gopay_wallet_bound_elsewhere_result(single_result)
+                        else None
+                    )
                     pending_retry_items.append(
                         {
                             "email": single_email,
                             "reason": retry_reason,
                             "retry_round": retry_round,
-                            "source_stage": _gopay_pending_retry_source_stage(single_result, retry_reason),
+                            "source_stage": retry_source_stage,
+                            "failure_stage": failure_stage,
+                            "message": failure_detail,
+                            "wallet": retry_wallet,
                         }
+                    )
+                    logger.warning(
+                        "[gopay-bind] parallel account queued for retry: email=%s reason=%s source_stage=%s failure_stage=%s reuse_wallet=%s message=%s",
+                        _safe_email_summary(single_email),
+                        retry_reason,
+                        retry_source_stage,
+                        failure_stage,
+                        bool(retry_wallet),
+                        failure_detail,
                     )
                     _append_task_progress(
                         task_id,
@@ -11508,8 +11635,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             "retry_round": retry_round,
                             "max_retry_rounds": pending_retry_attempts,
                             "reason": retry_reason,
-                            "source_stage": _gopay_pending_retry_source_stage(single_result, retry_reason),
+                            "source_stage": retry_source_stage,
+                            "failure_stage": failure_stage,
+                            "reuse_wallet": bool(retry_wallet),
                             "pending_retry": len(pending_retry_items),
+                            "detail": failure_detail,
                             "message": f"GoPay 并发账号失败，已加入待重试池: {single_email}",
                             "level": "warn",
                         },
@@ -11529,7 +11659,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     },
                 )
 
-            def _run_parallel_round(round_candidates: list[str], *, retry_round: int = 0) -> None:
+            def _candidate_payload_email(candidate_payload: Any) -> str:
+                if isinstance(candidate_payload, dict):
+                    return _normalized_email(candidate_payload.get("email") or "")
+                return _normalized_email(candidate_payload)
+
+            def _run_parallel_round(round_candidates: list[Any], *, retry_round: int = 0) -> None:
                 round_total = len(round_candidates)
                 if round_total <= 0:
                     return
@@ -11539,9 +11674,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     for worker_index in range(1, worker_count + 1):
                         worker_slots.put(worker_index)
                     futures = {
-                        executor.submit(_worker, (index, candidate_email, round_total, retry_round, worker_slots)): (index, _normalized_email(candidate_email))
-                        for index, candidate_email in enumerate(round_candidates, 1)
-                        if _normalized_email(candidate_email)
+                        executor.submit(_worker, (index, candidate_payload, round_total, retry_round, worker_slots)): (index, _candidate_payload_email(candidate_payload))
+                        for index, candidate_payload in enumerate(round_candidates, 1)
+                        if _candidate_payload_email(candidate_payload)
                     }
                     for _future, (_index, _email) in futures.items():
                         if _email:
@@ -11647,7 +11782,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         "message": f"开始并发 GoPay 待重试第 {retry_round}/{pending_retry_attempts} 轮，共 {len(retry_candidates)} 个账号，并发 {gopay_concurrency}",
                     },
                 )
-                _run_parallel_round([str(item.get("email") or "") for item in retry_candidates], retry_round=retry_round)
+                _run_parallel_round(retry_candidates, retry_round=retry_round)
 
             if not aggregate_results:
                 return {
