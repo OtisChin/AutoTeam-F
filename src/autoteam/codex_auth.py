@@ -1739,6 +1739,8 @@ def _normalize_oauth_hero_sms_country(value: str | None = None) -> str:
         return "all"
     if text in {"", "us", "usa", "united_states", "united states", "+1", "1", "12"}:
         return "187"
+    if text in {"id", "idn", "indonesia", "indonesian", "印度尼西亚", "印尼", "+62", "62", "6"}:
+        return "6"
     return text
 
 
@@ -2029,12 +2031,34 @@ def _acquire_oauth_hero_sms_phone(email: str = "", *, country: str | None = None
     with _OAUTH_HERO_SMS_REUSE_LOCK:
         _OAUTH_HERO_SMS_REUSE["current"] = entry
         _oauth_hero_sms_persist_entry(entry)
-    return _oauth_hero_sms_item_from_entry(entry, email), ""
+    item = _oauth_hero_sms_item_from_entry(entry, email)
+    item["record_id"] = f"hero_sms:{activation_id}"
+    try:
+        from autoteam.oauth_phone_records import record_acquired
+
+        record_acquired(
+            {
+                "id": item["record_id"],
+                "provider": "hero_sms",
+                "activation_id": activation_id,
+                "phone_number": phone,
+                "country": str(country_id),
+                "service": cfg["service"] or "dr",
+                "price": cfg["max_price"] or "",
+                "price_limit": cfg["max_price"] or "",
+                "price_source": "max_price_config" if cfg["max_price"] else "unknown",
+                "email": email,
+                "status": "acquired",
+            }
+        )
+    except Exception:
+        logger.debug("[Codex] add-phone 记录 hero-sms 取号失败", exc_info=True)
+    return item, ""
 
 
 def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None) -> tuple[dict | None, str]:
     try:
-        from autoteam.gopay_auto_register import SmsActivation, _hero_get_number, _hero_set_status
+        from autoteam.gopay_auto_register import SmsActivation, _hero_set_status, _smsbower_get_number
     except Exception as exc:
         return None, f"smsbower 模块不可用: {exc}"
 
@@ -2049,12 +2073,22 @@ def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None
             country_id = int(float(country_raw))
         except Exception:
             country_id = 187
-    activation_id, phone, error = _hero_get_number(
+    logger.info(
+        "[Codex] add-phone smsbower 取号参数: email=%s service=%s country_raw=%s country_id=%s max_price=%s",
+        email,
+        cfg["service"] or "dr",
+        country_raw,
+        country_id,
+        cfg["max_price"] or "-",
+    )
+    meta: dict[str, Any] = {}
+    activation_id, phone, error = _smsbower_get_number(
         service_code=cfg["service"] or "dr",
         country_id=country_id,
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
         max_price=cfg["max_price"],
+        meta_out=meta,
     )
     if not activation_id or not phone:
         return None, error or "smsbower 未返回可用号码"
@@ -2078,8 +2112,36 @@ def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None
         country_id,
         cfg["max_price"] or "-",
     )
+    record_id = f"smsbower:{activation_id}"
+    try:
+        from autoteam.oauth_phone_records import record_acquired
+
+        price = str(meta.get("price") or "").strip()
+        price_source = str(meta.get("price_source") or "").strip()
+        if not price and cfg["max_price"]:
+            price = cfg["max_price"]
+            price_source = "max_price_config"
+        record_acquired(
+            {
+                "id": record_id,
+                "provider": "smsbower",
+                "activation_id": activation_id,
+                "phone_number": phone,
+                "country": str(country_id),
+                "service": cfg["service"] or "dr",
+                "price": price,
+                "price_limit": cfg["max_price"] or "",
+                "price_source": price_source or "unknown",
+                "email": email,
+                "status": "acquired",
+                "meta": meta,
+            }
+        )
+    except Exception:
+        logger.debug("[Codex] add-phone 记录 smsbower 取号失败", exc_info=True)
     return {
-        "id": f"smsbower:{activation_id}",
+        "record_id": record_id,
+        "id": record_id,
         "source": "smsbower",
         "phone_number": phone,
         "sms_url": "",
@@ -2098,15 +2160,24 @@ def _release_oauth_sms_activation_phone(
 ) -> None:
     activation = phone_item.get("activation")
     activation_id = str(phone_item.get("activation_id") or "").strip()
+    record_id = str(phone_item.get("record_id") or phone_item.get("id") or "").strip()
     if not activation:
         return
     try:
         if finish:
             activation.finish()
             logger.info("[Codex] add-phone 短信会话已完成: source=%s activation=%s reason=%s", phone_item.get("source"), activation_id, reason)
+            if record_id:
+                from autoteam.oauth_phone_records import update_record
+
+                update_record(record_id, status="success", reason=reason)
         elif cancel:
             activation.cancel()
             logger.info("[Codex] add-phone 短信会话已取消: source=%s activation=%s reason=%s", phone_item.get("source"), activation_id, reason)
+            if record_id:
+                from autoteam.oauth_phone_records import update_record
+
+                update_record(record_id, status="cancelled", reason=reason)
     except Exception as exc:
         logger.info(
             "[Codex] add-phone 短信会话状态更新失败: source=%s activation=%s finish=%s cancel=%s reason=%s error=%s",
@@ -2121,6 +2192,7 @@ def _release_oauth_sms_activation_phone(
 
 def _release_oauth_hero_sms_phone(phone_item: dict, *, email: str = "", finish: bool = False, cancel: bool = False, reason: str = "") -> None:
     activation_id = str(phone_item.get("activation_id") or "").strip()
+    record_id = str(phone_item.get("record_id") or phone_item.get("id") or "").strip()
     if not activation_id:
         return
     entry_to_close: dict[str, Any] | None = None
@@ -2147,9 +2219,23 @@ def _release_oauth_hero_sms_phone(phone_item: dict, *, email: str = "", finish: 
                     _oauth_hero_sms_remaining_seconds(entry),
                     reason,
                 )
+                if record_id:
+                    try:
+                        from autoteam.oauth_phone_records import update_record
+
+                        update_record(record_id, status="released", reason=reason)
+                    except Exception:
+                        logger.debug("[Codex] add-phone 更新 hero-sms 释放记录失败", exc_info=True)
                 return
     if entry_to_close:
         _oauth_hero_sms_finish_or_cancel(entry_to_close, finish=close_finish, cancel=close_cancel, reason=reason)
+        if record_id:
+            try:
+                from autoteam.oauth_phone_records import update_record
+
+                update_record(record_id, status="success" if close_finish else "cancelled", reason=reason)
+            except Exception:
+                logger.debug("[Codex] add-phone 更新 hero-sms 记录失败", exc_info=True)
         return
     # Fallback for entries that were not the current reusable session.
     fallback = {
@@ -2157,10 +2243,18 @@ def _release_oauth_hero_sms_phone(phone_item: dict, *, email: str = "", finish: 
         "activation_id": activation_id,
     }
     _oauth_hero_sms_finish_or_cancel(fallback, finish=finish, cancel=cancel, reason=reason)
+    if record_id:
+        try:
+            from autoteam.oauth_phone_records import update_record
+
+            update_record(record_id, status="success" if finish else "cancelled" if cancel else "released", reason=reason)
+        except Exception:
+            logger.debug("[Codex] add-phone 更新 hero-sms fallback 记录失败", exc_info=True)
 
 
 def _mark_oauth_hero_sms_bound(phone_item: dict, *, email: str = "") -> None:
     activation_id = str(phone_item.get("activation_id") or "").strip()
+    record_id = str(phone_item.get("record_id") or phone_item.get("id") or "").strip()
     if not activation_id:
         return
     entry_to_finish: dict[str, Any] | None = None
@@ -2184,12 +2278,38 @@ def _mark_oauth_hero_sms_bound(phone_item: dict, *, email: str = "") -> None:
                     _oauth_hero_sms_max_binds(),
                     remaining,
                 )
+                if record_id:
+                    try:
+                        from autoteam.oauth_phone_records import update_record
+
+                        update_record(
+                            record_id,
+                            status="success_reusable",
+                            reason="bound_and_reusable",
+                            bound_count=entry["bound_count"],
+                        )
+                    except Exception:
+                        logger.debug("[Codex] add-phone 更新 hero-sms 绑定记录失败", exc_info=True)
                 return
     if entry_to_finish:
         _oauth_hero_sms_finish_or_cancel(entry_to_finish, finish=True, reason="max_binds_or_expiring_after_success")
+        if record_id:
+            try:
+                from autoteam.oauth_phone_records import update_record
+
+                update_record(record_id, status="success", reason="max_binds_or_expiring_after_success")
+            except Exception:
+                logger.debug("[Codex] add-phone 更新 hero-sms 完成记录失败", exc_info=True)
         return
     fallback = {"activation": phone_item.get("activation"), "activation_id": activation_id}
     _oauth_hero_sms_finish_or_cancel(fallback, finish=True, reason="success_without_reusable_entry")
+    if record_id:
+        try:
+            from autoteam.oauth_phone_records import update_record
+
+            update_record(record_id, status="success", reason="success_without_reusable_entry")
+        except Exception:
+            logger.debug("[Codex] add-phone 更新 hero-sms fallback 完成记录失败", exc_info=True)
 
 
 def _make_phone_item_otp_provider(phone_item: dict):
@@ -2402,6 +2522,13 @@ def _handle_oauth_add_phone_if_present(
     provider_mode = _normalize_oauth_phone_sms_provider(phone_sms_provider)
     provider_order = _oauth_add_phone_provider_order(provider_mode)
     country_override = _normalize_oauth_hero_sms_country(phone_sms_country) if phone_sms_country else None
+    logger.info(
+        "[Codex] add-phone 取号配置: email=%s provider=%s providers=%s country=%s",
+        email,
+        provider_mode,
+        ",".join(provider_order),
+        country_override or "<env/default>",
+    )
     pool_api: dict[str, Any] = {}
     if "phone_pool" in provider_order:
         try:

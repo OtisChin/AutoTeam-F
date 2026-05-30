@@ -60,6 +60,7 @@ const items = [
   { key: 'gopay', icon: '💸', label: 'GoPay', mobileLabel: 'GoPay' },
   { key: 'paypal', icon: '🅿️', label: 'PayPal', mobileLabel: 'PayPal' },
   { key: 'oauthPhones', icon: '📱', label: 'OAuth 手机号', mobileLabel: '手机号' },
+  { key: 'oauthPhoneRecords', icon: '🧾', label: 'OAuth 取号记录', mobileLabel: '取号' },
   { key: 'trade', icon: '🎫', label: '交易管理', mobileLabel: '交易' },
   { key: 'cpa2sub', icon: '🧩', label: 'CPA_2_Sub2API', mobileLabel: 'CPA2Sub2API' },
   { key: 'oauth', icon: '🔐', label: 'OAuth 登录', mobileLabel: 'OAuth' },

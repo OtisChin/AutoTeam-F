@@ -998,6 +998,7 @@ def _smsbower_get_number(
     max_price: str = "",
     min_price: str = "",
     preferred_price: str = "",
+    meta_out: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     country_text = str(country_id or "").strip().lower()
     limited_country = country_text not in {"", "all", "any", "*"}
@@ -1049,11 +1050,33 @@ def _smsbower_get_number(
         if line.upper().startswith("ACCESS_NUMBER:"):
             parts = line.split(":", 2)
             if len(parts) >= 3:
+                if meta_out is not None:
+                    fixed_request_price = ""
+                    if str(candidate.get("minPrice") or "") and str(candidate.get("minPrice") or "") == str(candidate.get("maxPrice") or ""):
+                        fixed_request_price = str(candidate.get("maxPrice") or "")
+                    meta_out.update(
+                        {
+                            "request_params": candidate,
+                            "response_text": line,
+                            "price": fixed_request_price,
+                            "price_source": "fixed_price_request" if fixed_request_price else "unknown",
+                        }
+                    )
                 return parts[1].strip(), parts[2].strip(), ""
         if isinstance(data, dict):
             activation_id = str(data.get("activationId") or data.get("activation_id") or data.get("id") or "")
             phone = str(data.get("phoneNumber") or data.get("phone") or data.get("number") or "")
             if activation_id and phone:
+                if meta_out is not None:
+                    price = data.get("price") or data.get("cost") or data.get("activationCost") or data.get("activation_cost") or ""
+                    meta_out.update(
+                        {
+                            "request_params": candidate,
+                            "response_data": data,
+                            "price": str(price or ""),
+                            "price_source": "api_response" if price else "unknown",
+                        }
+                    )
                 return activation_id, phone, ""
         last_error = line or "无法解析号码"
         if re.search(r"\b(?:NO_NUMBERS|WRONG_MAX_PRICE)\b", last_error, re.I):

@@ -171,6 +171,7 @@ export const api = {
   redeemCardPoolItems: (payload) => request('POST', '/card-pool/redeem-batch', payload),
   fetchCardPoolSms: (url) => request('POST', '/card-pool/fetch-sms', { url }),
   getOAuthPhonePool: () => request('GET', '/oauth-phone-pool'),
+  getOAuthPhoneRecords: (limit = 300) => request('GET', `/oauth-phone-records?limit=${encodeURIComponent(limit)}`),
   importOAuthPhonePool: (text) => request('POST', '/oauth-phone-pool/import', { text }),
   saveOAuthPhonePoolItem: (item) => item?.id
     ? request('PUT', `/oauth-phone-pool/${encodeURIComponent(item.id)}`, item)

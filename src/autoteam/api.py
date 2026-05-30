@@ -888,6 +888,8 @@ def _normalize_oauth_hero_sms_country(raw: str | None = None) -> str:
         return "all"
     if value in {"", "us", "usa", "united_states", "united states", "+1", "1", "12"}:
         return "187"
+    if value in {"id", "idn", "indonesia", "indonesian", "印度尼西亚", "印尼", "+62", "62", "6"}:
+        return "6"
     return value
 
 
@@ -1645,8 +1647,14 @@ async def save_oauth_phone_sms_config(request: Request):
     provider = _normalize_oauth_phone_sms_provider(data.get("provider") or data.get("OAUTH_PHONE_SMS_PROVIDER"))
     hero_sms_api_key = str(data.get("hero_sms_api_key") or data.get("OAUTH_HERO_SMS_API_KEY") or "").strip()
     hero_sms_max_price = str(data.get("hero_sms_max_price") or data.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip()
+    hero_sms_country = _normalize_oauth_hero_sms_country(
+        data.get("hero_sms_country") or data.get("OAUTH_HERO_SMS_COUNTRY") or current["hero_sms_country"] or "187"
+    )
     smsbower_api_key = str(data.get("smsbower_api_key") or data.get("OAUTH_SMSBOWER_API_KEY") or "").strip()
     smsbower_max_price = str(data.get("smsbower_max_price") or data.get("OAUTH_SMSBOWER_MAX_PRICE") or "").strip()
+    smsbower_country = _normalize_oauth_hero_sms_country(
+        data.get("smsbower_country") or data.get("OAUTH_SMSBOWER_COUNTRY") or current["smsbower_country"] or "187"
+    )
     if provider == "hero_sms" and not (hero_sms_api_key or current["hero_sms_api_key"]):
         raise HTTPException(status_code=400, detail="启用 hero-sms 前需要配置 OAuth hero-sms API Key")
     if provider == "smsbower" and not (smsbower_api_key or current["smsbower_api_key"]):
@@ -1656,11 +1664,11 @@ async def save_oauth_phone_sms_config(request: Request):
         "OAUTH_PHONE_SMS_PROVIDER": provider,
         "OAUTH_HERO_SMS_MAX_PRICE": hero_sms_max_price,
         "OAUTH_HERO_SMS_BASE_URL": "https://hero-sms.com/stubs/handler_api.php",
-        "OAUTH_HERO_SMS_COUNTRY": "187",
+        "OAUTH_HERO_SMS_COUNTRY": hero_sms_country,
         "OAUTH_HERO_SMS_SERVICE": "dr",
         "OAUTH_SMSBOWER_MAX_PRICE": smsbower_max_price,
         "OAUTH_SMSBOWER_BASE_URL": "https://smsbower.page/stubs/handler_api.php",
-        "OAUTH_SMSBOWER_COUNTRY": "187",
+        "OAUTH_SMSBOWER_COUNTRY": smsbower_country,
         "OAUTH_SMSBOWER_SERVICE": "dr",
     }
     if hero_sms_api_key:
@@ -8054,6 +8062,21 @@ def get_oauth_phone_pool():
     }
 
 
+@app.get("/api/oauth-phone-records")
+def get_oauth_phone_records(limit: int = 300):
+    from autoteam.oauth_phone_records import list_records
+
+    items = list_records(limit=limit)
+    return {
+        "items": items,
+        "total": len(items),
+        "success_count": sum(1 for item in items if str(item.get("status") or "").startswith("success")),
+        "active_count": sum(1 for item in items if item.get("status") == "acquired"),
+        "cancelled_count": sum(1 for item in items if item.get("status") == "cancelled"),
+        "failed_count": sum(1 for item in items if item.get("status") in {"failed", "invalid", "cooldown"}),
+    }
+
+
 @app.post("/api/oauth-phone-pool/import")
 def post_oauth_phone_pool_import(params: OAuthPhonePoolImportParams):
     from autoteam.oauth_phone_pool import import_phones
@@ -14098,6 +14121,12 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         )
         if not key_present:
             raise HTTPException(status_code=400, detail=f"启用 {oauth_phone_sms_provider} 前需要先在设置页配置 API Key")
+        logger.info(
+            "[注册账号] OAuth 接码参数: provider=%s country=%s max_price=%s",
+            oauth_phone_sms_provider,
+            oauth_phone_sms_country or "<default>",
+            oauth_phone_sms_max_price or "<default>",
+        )
     if mode not in ("single", "batch"):
         raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
 

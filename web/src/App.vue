@@ -51,6 +51,8 @@
 
       <OAuthPhonePoolPage v-else-if="currentPage === 'oauthPhones'" />
 
+      <OAuthPhoneRecordsPage v-else-if="currentPage === 'oauthPhoneRecords'" />
+
       <TradeManagerPage v-else-if="currentPage === 'trade'" />
 
       <CpaToSub2ApiPage v-else-if="currentPage === 'cpa2sub'" />
@@ -111,6 +113,7 @@ import BindCard from './components/BindCard.vue'
 import BindCardPool from './components/BindCardPool.vue'
 import PayPalPage from './components/PayPalPage.vue'
 import OAuthPhonePoolPage from './components/OAuthPhonePoolPage.vue'
+import OAuthPhoneRecordsPage from './components/OAuthPhoneRecordsPage.vue'
 import TradeManagerPage from './components/TradeManagerPage.vue'
 import CpaToSub2ApiPage from './components/CpaToSub2ApiPage.vue'
 import TaskHistoryPage from './components/TaskHistoryPage.vue'
@@ -125,7 +128,7 @@ const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autoteam_current_page'
-const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'paypal', 'oauthPhones', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
+const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'paypal', 'oauthPhones', 'oauthPhoneRecords', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
 const IDLE_POLLING_ENABLED = false
