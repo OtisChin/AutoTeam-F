@@ -80,7 +80,7 @@ DEFAULT_STRIPE_PK = (
 )
 DEFAULT_MIDTRANS_CLIENT_ID = "Mid-client-3TX8nUa-f_RgNrky"
 DEFAULT_MIDTRANS_SIGNING_KEY = "1feab063-bf3f-4025-90bf-3be6fa4f4cc2"
-DEFAULT_STRIPE_RUNTIME_VERSION = "fed52f3bc6"
+DEFAULT_STRIPE_RUNTIME_VERSION = "922d612e68"
 STRIPE_API = "https://api.stripe.com"
 STRIPE_VERSION_FULL = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
 GOPAY_LINK_RETRY_LIMIT = 3
@@ -1083,6 +1083,34 @@ def _stripe_runtime_from_env() -> dict:
     }
 
 
+def _stripe_checkout_encoded(value: str) -> str:
+    padded = f"{value}{' ' * ((3 - len(value) % 3) % 3)}"
+    xored = "".join(chr(ord(char) ^ 5) for char in padded)
+    encoded = base64.b64encode(xored.encode("utf-8")).decode("ascii")
+    return quote(encoded, safe="-_.!~*'()")
+
+
+def _stripe_checkout_shift(value: str, amount: int = 11) -> str:
+    return "".join(chr((ord(char) - 32 + amount) % 95 + 32) for char in value)
+
+
+def _stripe_js_checksum(payment_method_id: str) -> str:
+    payload = json.dumps({"id": str(payment_method_id or "")}, separators=(",", ":"))
+    return _stripe_checkout_shift(_stripe_checkout_encoded(payload), 11)
+
+
+def _stripe_rv_timestamp() -> str:
+    payload = json.dumps(
+        {
+            "rvTs": "2024-01-01 00:00:00 -0000",
+            "rv": "922d612e68849ef9d78eb8c5b2834f677468ff41",
+            "sv": "d125994b3e6d6a27ed8a2458976b4bb6938cb428aaa80be6de043326452e0e0a",
+        },
+        separators=(",", ":"),
+    )
+    return _stripe_checkout_shift(_stripe_checkout_encoded(payload), 11)
+
+
 def _split_gopay_phone(phone_number: str, country_code: str = "") -> tuple[str, str]:
     explicit_country = re.sub(r"\D", "", str(country_code or ""))
     digits = re.sub(r"\D", "", str(phone_number or ""))
@@ -1149,9 +1177,13 @@ def _chatgpt_reference_cookie_header(
             parts.append(item)
 
     token = str(session_token or "").strip()
-    if token and "__Secure-next-auth.session-token" not in seen:
+    has_session_cookie = any(name == "__Secure-next-auth.session-token" or name.startswith("__Secure-next-auth.session-token.") for name in seen)
+    if token and not has_session_cookie:
         parts.append(f"__Secure-next-auth.session-token={token}")
         seen.add("__Secure-next-auth.session-token")
+    if account_id and "_account" not in seen:
+        parts.append(f"_account={account_id}")
+        seen.add("_account")
     if device_id and "oai-did" not in seen:
         parts.append(f"oai-did={device_id}")
     return "; ".join(parts)
@@ -1526,6 +1558,90 @@ def _chatgpt_checkout_headers(
     return headers
 
 
+def _playwright_cookie_items_from_header(cookie_header: str) -> list[dict[str, str]]:
+    cookies: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in str(cookie_header or "").split(";"):
+        if "=" not in raw:
+            continue
+        name, value = raw.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not name or not value or name in seen:
+            continue
+        if any(ord(ch) < 33 or ch in '()<>@,;:\\"/[]?={} ' for ch in name):
+            continue
+        seen.add(name)
+        cookies.append({"name": name, "value": value, "url": "https://chatgpt.com/"})
+    return cookies
+
+
+def _checkout_approval_sentinel_headers(
+    cookie_header: str = "",
+    user_agent: str = "",
+    checkout_url: str = "",
+) -> dict[str, str]:
+    """Generate the same Sentinel approval headers used by the checkout frontend."""
+    if _env_enabled("GOPAY_APPROVE_SENTINEL", True) is False:
+        return {}
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        logger.info("[gopay_executor] Sentinel approval headers unavailable: %s", _safe_error_summary(exc))
+        return {}
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            context = browser.new_context(
+                locale="en-US",
+                timezone_id="Asia/Shanghai",
+                user_agent=str(user_agent or "").strip()
+                or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+            )
+            cookies = _playwright_cookie_items_from_header(cookie_header)
+            if cookies:
+                context.add_cookies(cookies)
+            page = context.new_page()
+            page.goto("https://chatgpt.com/backend-api/sentinel/sdk.js", wait_until="domcontentloaded", timeout=20000)
+            result = page.evaluate(
+                """async () => {
+                    function load(src) {
+                        return new Promise((resolve, reject) => {
+                            const script = document.createElement("script");
+                            script.src = src;
+                            script.onload = resolve;
+                            script.onerror = () => reject(new Error("sentinel sdk load failed"));
+                            document.head.appendChild(script);
+                        });
+                    }
+                    await load("https://chatgpt.com/backend-api/sentinel/sdk.js");
+                    const timeout = new Promise((_, reject) => {
+                        setTimeout(() => reject(new Error("sentinel token timeout")), 20000);
+                    });
+                    const token = await Promise.race([
+                        window.SentinelSDK.token("checkout_session_approval"),
+                        timeout,
+                    ]);
+                    const timing = window.SentinelSDK.timing ? await window.SentinelSDK.timing() : "[1,null]";
+                    return { token, timing };
+                }"""
+            )
+            context.close()
+            browser.close()
+    except Exception as exc:
+        logger.info("[gopay_executor] Sentinel approval headers failed: %s", _safe_error_summary(exc))
+        return {}
+
+    token = str((result or {}).get("token") or "").strip() if isinstance(result, dict) else ""
+    if not token:
+        return {}
+    return {
+        "OpenAI-Sentinel-Token": token,
+        "OAI-Telemetry": str((result or {}).get("timing") or "[1,null]").strip() or "[1,null]",
+    }
+
+
 def _normalize_checkout_ui_mode(value: str = "") -> str:
     mode = str(value or "").strip().lower()
     return "hosted" if mode == "hosted" else "custom"
@@ -1656,6 +1772,30 @@ def _approve_checkout_http(
             device_id=device_id,
             openai_sentinel_token=openai_sentinel_token,
         )
+    user_agent = ""
+    try:
+        user_agent = str((getattr(http, "headers", {}) or {}).get("User-Agent") or "")
+    except Exception:
+        user_agent = ""
+    headers = _chatgpt_checkout_headers(
+        access_token=access_token,
+        checkout_session_id=checkout_session_id,
+        processor_entity=processor_entity,
+        cookie_header=cookie_header or _cookie_header_from_http_session(http),
+        account_id=account_id,
+        device_id=device_id,
+        target_path="/backend-api/payments/checkout/approve",
+        openai_sentinel_token="",
+    )
+    sentinel_headers = _checkout_approval_sentinel_headers(
+        cookie_header=headers.get("cookie", ""),
+        user_agent=user_agent,
+        checkout_url=f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
+    )
+    headers.update(sentinel_headers)
+    headers.pop("openai-sentinel-token", None)
+    if user_agent:
+        headers["user-agent"] = user_agent
     try:
         http.post(
             "https://chatgpt.com/backend-api/sentinel/ping",
@@ -1668,7 +1808,7 @@ def _approve_checkout_http(
         "[gopay_executor] ChatGPT approve request using reference-style session headers: cookie_present=%s auth_present=%s sentinel_present=%s",
         bool(cookie_header or _cookie_header_from_http_session(http)),
         bool(access_token),
-        bool(openai_sentinel_token),
+        bool(openai_sentinel_token or sentinel_headers.get("OpenAI-Sentinel-Token")),
     )
     resp = http.post(
         "https://chatgpt.com/backend-api/payments/checkout/approve",
@@ -1676,6 +1816,7 @@ def _approve_checkout_http(
             "checkout_session_id": checkout_session_id,
             "processor_entity": processor_entity,
         },
+        headers=headers,
         timeout=HTTP_TIMEOUT_SECONDS,
     )
     if resp.status_code != 200:
@@ -1754,26 +1895,8 @@ def _inject_chatgpt_browser_cookies(
     if not getattr(api, "context", None):
         raise GoPayFlowError("浏览器上下文未初始化，无法注入 ChatGPT 登录态", stage="chatgpt_approve")
 
-    cookies = []
-    seen = set()
-    for raw in str(cookie_header or "").split(";"):
-        if "=" not in raw:
-            continue
-        name, value = raw.split("=", 1)
-        name = name.strip()
-        value = value.strip()
-        if not name or not value or name in seen:
-            continue
-        seen.add(name)
-        cookies.append(
-            {
-                "name": name,
-                "value": value,
-                "url": "https://chatgpt.com",
-                "secure": True,
-                "sameSite": "Lax",
-            }
-        )
+    cookies = _playwright_cookie_items_from_header(cookie_header)
+    seen = {str(cookie.get("name") or "") for cookie in cookies}
 
     token = str(session_token or "").strip()
     has_session_cookie = any(
@@ -1798,10 +1921,7 @@ def _inject_chatgpt_browser_cookies(
                 {
                     "name": name,
                     "value": value,
-                    "url": "https://chatgpt.com",
-                    "httpOnly": True,
-                    "secure": True,
-                    "sameSite": "Lax",
+                    "url": "https://chatgpt.com/",
                 }
             )
 
@@ -1810,9 +1930,7 @@ def _inject_chatgpt_browser_cookies(
             {
                 "name": "_account",
                 "value": account_id,
-                "url": "https://chatgpt.com",
-                "secure": True,
-                "sameSite": "Lax",
+                "url": "https://chatgpt.com/",
             }
         )
     if device_id and "oai-did" not in seen:
@@ -1820,9 +1938,7 @@ def _inject_chatgpt_browser_cookies(
             {
                 "name": "oai-did",
                 "value": device_id,
-                "url": "https://chatgpt.com",
-                "secure": True,
-                "sameSite": "Lax",
+                "url": "https://chatgpt.com/",
             }
         )
     if cookies:
@@ -2220,11 +2336,44 @@ def _browser_checkout_to_gopay_redirect(
 
     captured: dict[str, Any] = {"redirect_url": "", "snap_token": "", "rate_limited": "", "rate_limited_count": 0}
 
+    def maybe_capture_checkout_request(obj):
+        if not _env_truthy("GOPAY_CAPTURE_CHECKOUT_NETWORK"):
+            return
+        try:
+            url = str(getattr(obj, "url", "") or "")
+            method = str(getattr(obj, "method", "") or "").upper()
+        except Exception:
+            return
+        if method != "POST":
+            return
+        if "/v1/payment_pages/" not in url and "/backend-api/payments/checkout/approve" not in url:
+            return
+        if "/confirm" not in url and "/backend-api/payments/checkout/approve" not in url:
+            return
+        try:
+            post_data = obj.post_data if hasattr(obj, "post_data") else ""
+        except Exception:
+            post_data = ""
+        payload = {
+            "url": _safe_url_summary(url),
+            "method": method,
+            "post_data": _redact_network_capture_text(post_data, limit=2000),
+            "time": time.time(),
+        }
+        try:
+            GOPAY_NETWORK_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+            path = GOPAY_NETWORK_CAPTURE_DIR / f"checkout_submit_{int(time.time())}_{uuid.uuid4().hex[:8]}.json"
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info("[gopay_executor] checkout network capture saved: path=%s", path)
+        except Exception:
+            logger.debug("[gopay_executor] checkout network capture save failed", exc_info=True)
+
     def remember_from_obj(obj):
         try:
             _remember_gopay_redirect_url(getattr(obj, "url", ""), captured)
         except Exception:
             pass
+        maybe_capture_checkout_request(obj)
 
     def remember_response(obj):
         remember_from_obj(obj)
@@ -2712,9 +2861,8 @@ class GoPayHttpCharger:
     @staticmethod
     def _elements_options_client_payload() -> dict:
         return {
-            "elements_options_client[stripe_js_locale]": "auto",
-            "elements_options_client[saved_payment_method][enable_save]": "never",
-            "elements_options_client[saved_payment_method][enable_redisplay]": "never",
+            "elements_options_client[saved_payment_method][enable_save]": "auto",
+            "elements_options_client[saved_payment_method][enable_redisplay]": "auto",
         }
 
     @staticmethod
@@ -2738,10 +2886,11 @@ class GoPayHttpCharger:
         url = f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/init"
 
         STRIPE_VERSION_BASE = "2025-03-31.basil"
-        # 先用基础版本，失败再用完整版本
+        # ChatGPT checkout initializes Stripe with the manual-approval beta.
+        # Keep the base version only as a compatibility fallback.
         for version, include_betas in [
-            (STRIPE_VERSION_BASE, False),
             (STRIPE_VERSION_FULL, True),
+            (STRIPE_VERSION_BASE, False),
         ]:
             data = {
                 "browser_locale": "en-US",
@@ -2749,7 +2898,7 @@ class GoPayHttpCharger:
                 "elements_session_client[elements_init_source]": "custom_checkout",
                 "elements_session_client[referrer_host]": "chatgpt.com",
                 "elements_session_client[stripe_js_id]": stripe_js_id,
-                "elements_session_client[locale]": "en",
+                "elements_session_client[locale]": "en-US",
                 "elements_session_client[is_aggregation_expected]": "false",
                 "_stripe_version": version,
                 "key": stripe_pk,
@@ -2802,7 +2951,8 @@ class GoPayHttpCharger:
             "deferred_intent[amount]": str(int(_parse_amount(amount) or 0)),
             "deferred_intent[currency]": currency,
             "deferred_intent[setup_future_usage]": "off_session",
-            "deferred_intent[payment_method_types][0]": "gopay",
+            "deferred_intent[payment_method_types][0]": "card",
+            "deferred_intent[payment_method_types][1]": "gopay",
             "currency": currency,
             "key": stripe_pk,
             "_stripe_version": effective_version,
@@ -2959,10 +3109,8 @@ class GoPayHttpCharger:
         if consent_behavior:
             data["consent[terms_of_service]"] = "accepted"
         data.update(init_ctx.get("elements_options_client") or {})
-        if runtime.get("js_checksum"):
-            data["js_checksum"] = runtime["js_checksum"]
-        if runtime.get("rv_timestamp"):
-            data["rv_timestamp"] = runtime["rv_timestamp"]
+        data["js_checksum"] = runtime.get("js_checksum") or _stripe_js_checksum(payment_method_id)
+        data["rv_timestamp"] = runtime.get("rv_timestamp") or _stripe_rv_timestamp()
         resp = self._request(
             "post",
             f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/confirm",
@@ -3013,7 +3161,44 @@ class GoPayHttpCharger:
                 return str((candidate.get("redirect_to_url") or {}).get("url") or "")
             if isinstance(candidate, dict) and candidate.get("redirect_to_url"):
                 return str((candidate.get("redirect_to_url") or {}).get("url") or "")
+        for url in GoPayHttpCharger._find_redirect_urls(payload):
+            lowered = url.lower()
+            if "pm-redirects.stripe.com" in lowered or "app.midtrans.com/snap/" in lowered:
+                return url
         return ""
+
+    @staticmethod
+    def _find_redirect_urls(value: Any) -> list[str]:
+        urls: list[str] = []
+
+        def visit(item: Any, key_hint: str = "") -> None:
+            if len(urls) >= 10:
+                return
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    visit(child, str(key))
+                return
+            if isinstance(item, list):
+                for child in item:
+                    visit(child, key_hint)
+                return
+            if not isinstance(item, str):
+                return
+            text = item.strip()
+            if not text.startswith(("http://", "https://")):
+                return
+            lowered = text.lower()
+            key_lowered = key_hint.lower()
+            if (
+                "pm-redirects.stripe.com" in lowered
+                or "app.midtrans.com/snap/" in lowered
+                or key_lowered in {"url", "return_url", "redirect_url"}
+                or key_lowered.endswith("_url")
+            ):
+                urls.append(text)
+
+        visit(value)
+        return urls
 
     @staticmethod
     def _confirm_requires_checkout_approval(payload: dict) -> bool:
@@ -3087,6 +3272,12 @@ class GoPayHttpCharger:
                     f"setup_intent={setup_intent.get('status')!r} "
                     f"payment_status={payload.get('payment_status')!r} status={payload.get('status')!r}"
                 )
+                redirect_candidates = self._find_redirect_urls(payload)
+                if redirect_candidates:
+                    logger.info(
+                        "[gopay_executor] Stripe payment page redirect candidates without supported snap token: %s",
+                        ", ".join(_safe_url_summary(url) for url in redirect_candidates[:5]),
+                    )
             else:
                 last_error = f"HTTP {resp.status_code}: {(resp.text or '')[:160]}"
             time.sleep(1)
@@ -3109,6 +3300,20 @@ class GoPayHttpCharger:
     def _midtrans_auth_header(self) -> dict:
         token = base64.b64encode(f"{self.midtrans_client_id}:".encode("ascii")).decode("ascii")
         return {"Authorization": f"Basic {token}"}
+
+    def _use_midtrans_client_id_from_transaction(self, transaction: dict):
+        merchant = transaction.get("merchant") if isinstance(transaction, dict) else {}
+        client_key = str((merchant or {}).get("client_key") or "").strip()
+        if not client_key:
+            return
+        if client_key == self.midtrans_client_id:
+            return
+        logger.info(
+            "[gopay_executor] using Midtrans client key from transaction: previous_present=%s transaction_client_key=%s",
+            bool(self.midtrans_client_id),
+            _mask_log_value(client_key),
+        )
+        self.midtrans_client_id = client_key
 
     def _midtrans_load_transaction(self, snap_token: str):
         self._progress("midtrans_load_transaction", snap_token=snap_token)
@@ -3182,9 +3387,6 @@ class GoPayHttpCharger:
             "Content-Type": "application/json",
             "Origin": "https://app.midtrans.com",
             "Referer": f"https://app.midtrans.com/snap/v4/redirection/{snap_token}",
-            "X-Source": "snap",
-            "X-Source-App-Type": "redirection",
-            "X-Source-Version": "2.3.0",
         }
         last_error = ""
         for attempt in range(1, GOPAY_LINK_RETRY_LIMIT + 2):
@@ -3631,12 +3833,12 @@ class GoPayHttpCharger:
                     "[gopay_executor] Stripe confirm requires ChatGPT approve: %s",
                     self._confirm_state_summary(confirm_payload),
                 )
+                self._approve_checkout(checkout_session_id)
             else:
                 logger.info(
-                    "[gopay_executor] Stripe confirm did not explicitly require ChatGPT approve, approving before resolving redirect: %s",
+                    "[gopay_executor] Stripe confirm did not explicitly require ChatGPT approve, resolving redirect: %s",
                     self._confirm_state_summary(confirm_payload),
                 )
-            self._approve_checkout(checkout_session_id)
             snap_token = self._resolve_snap_token(checkout_session_id, stripe_pk, init_ctx=init_ctx)
         result = self.run_from_snap_token(snap_token=snap_token, checkout_session_id=checkout_session_id)
         result["session_id"] = checkout_session_id
@@ -3649,6 +3851,7 @@ class GoPayHttpCharger:
 
     def run_from_snap_token(self, *, snap_token: str, checkout_session_id: str = "") -> dict:
         transaction = self._midtrans_load_transaction(snap_token)
+        self._use_midtrans_client_id_from_transaction(transaction)
         self._guard_before_gopay_binding(transaction)
         reference_id = self._midtrans_init_linking(snap_token)
         if (

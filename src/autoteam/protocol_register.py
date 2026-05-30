@@ -386,3 +386,56 @@ def register_once(
         return False, {"status": 0, "data": {}, "raw": "协议注册未返回有效 auth_session"}
     logger.info("[协议注册] 协议注册完成，已获取 auth_session: %s", email)
     return True, _session_data_from_auth_result(result)
+
+
+def login_once(
+    mail_client,
+    *,
+    email: str,
+    password: str,
+    account_id: str | int | None = None,
+    proxy: str | None = None,
+    oauth_phone_sms_provider: str | None = None,
+    oauth_phone_sms_country: str | None = None,
+) -> dict:
+    """Pure protocol login for an existing account; returns auth_session and optional Codex OAuth bundle."""
+
+    AuthFlow, Config = _load_protocol_classes()
+    cfg = Config()
+    cfg.proxy = proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None
+    flow = AuthFlow(cfg)
+    _attach_flow_stage_logs(flow)
+    _attach_oauth_phone_supplier(
+        flow,
+        provider=oauth_phone_sms_provider,
+        country=oauth_phone_sms_country,
+        email=email,
+    )
+    adapter = ProtocolMailAdapter(mail_client, email=email, account_id=account_id)
+    logger.info(
+        "[协议登录] 开始协议登录 OAuth: email=%s mailbox_id_present=%s proxy=%s",
+        email,
+        bool(account_id),
+        "enabled" if cfg.proxy else "disabled",
+    )
+    try:
+        result = flow.run_protocol_login(adapter, email, password=password)
+    except Exception:
+        phone_state = getattr(flow, "_openai_phone_state", {}) or {}
+        phone_item = phone_state.get("item") if isinstance(phone_state, dict) else None
+        if isinstance(phone_item, dict) and not phone_state.get("finished"):
+            failure = getattr(flow, "_openai_phone_failure", None)
+            if callable(failure):
+                try:
+                    failure(phone_item, "protocol_login_exception")
+                except Exception:
+                    pass
+        raise
+    if not result or not result.is_valid():
+        raise RuntimeError(f"协议登录未返回有效 auth_session: {email}")
+    payload = _session_data_from_auth_result(result)
+    if not payload.get("codex_oauth_bundle"):
+        logger.warning("[协议登录] 协议登录完成但未直接生成 CPA OAuth bundle: %s", email)
+    else:
+        logger.info("[协议登录] 协议登录已生成 CPA OAuth bundle: %s", email)
+    return payload

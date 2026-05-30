@@ -979,6 +979,11 @@
                   <div
                     v-if="gopaySmsbowerPriceQueryResult"
                     class="mt-3 rounded-lg border border-gray-800 bg-gray-900/80 px-3 py-2 text-xs text-gray-300 space-y-2">
+                    <div
+                      v-if="gopaySmsbowerPriceQueryResult.warning"
+                      class="rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-amber-100">
+                      {{ gopaySmsbowerPriceQueryResult.warning }}
+                    </div>
                     <div class="flex gap-2">
                       <span class="shrink-0 text-gray-500">全部档位</span>
                       <div class="flex flex-wrap gap-1.5">

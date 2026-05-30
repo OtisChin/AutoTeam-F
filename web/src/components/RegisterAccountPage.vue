@@ -121,6 +121,14 @@
               </div>
               <div>
                 <label class="block text-xs text-gray-500 mb-1">接码国家</label>
+                <input
+                  v-model="oauthPhoneSmsCountrySearch"
+                  :disabled="registeringBusy || oauthPhoneSmsLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="搜索国家 / 区号 / ID"
+                  class="mb-2 w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                />
                 <select
                   v-model="registerForm.oauthPhoneSmsCountry"
                   :disabled="registeringBusy || oauthPhoneSmsLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
@@ -131,6 +139,18 @@
                   </option>
                 </select>
               </div>
+            </div>
+            <div v-if="registerForm.oauthPhoneSmsProvider !== 'phone_pool'">
+              <label class="block text-xs text-gray-500 mb-1">最高价格</label>
+              <input
+                v-model.trim="registerForm.oauthPhoneSmsMaxPrice"
+                :disabled="registeringBusy || oauthPhoneSmsLoading"
+                type="text"
+                inputmode="decimal"
+                autocomplete="off"
+                placeholder="留空使用设置页配置；例如 0.12"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
+              />
             </div>
             <div class="text-xs text-gray-500">
               手机号池会按池内号码国家处理；hero-sms / smsbower 会按这里选择的国家取号，服务固定 OpenAI。
@@ -518,6 +538,7 @@ const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
 const oauthPhoneSmsLoading = ref(false)
+const oauthPhoneSmsCountrySearch = ref('')
 const oauthPhoneSmsProviderOptions = ref([
   { value: 'phone_pool', label: '手机号池', configured: true },
   { value: 'hero_sms', label: 'hero-sms', configured: false },
@@ -547,6 +568,7 @@ const registerForm = ref({
   postRegisterOauth: false,
   oauthPhoneSmsProvider: 'phone_pool',
   oauthPhoneSmsCountry: '187',
+  oauthPhoneSmsMaxPrice: '',
   proxyApiEnabled: false,
   proxyApiProvider: '1024proxy',
 })
@@ -572,13 +594,38 @@ const luckmailDomainOptions = [
   { value: 'live.com', label: 'live.com' },
 ]
 const oauthPhoneSmsCountryOptions = [
+  { value: 'all', label: '全部国家 / 不限制' },
   { value: '187', label: '美国 (+1) / 187' },
+  { value: '0', label: '俄罗斯 (+7) / 0' },
+  { value: '1', label: '乌克兰 (+380) / 1' },
+  { value: '2', label: '哈萨克斯坦 (+7) / 2' },
+  { value: '3', label: '中国 (+86) / 3' },
+  { value: '4', label: '菲律宾 (+63) / 4' },
+  { value: '5', label: '缅甸 (+95) / 5' },
   { value: '6', label: '印度尼西亚 (+62) / 6' },
+  { value: '7', label: '马来西亚 (+60) / 7' },
+  { value: '10', label: '越南 (+84) / 10' },
+  { value: '12', label: '美国旧ID (+1) / 12' },
+  { value: '13', label: '以色列 (+972) / 13' },
+  { value: '14', label: '香港 (+852) / 14' },
+  { value: '15', label: '波兰 (+48) / 15' },
   { value: '16', label: '英国 (+44) / 16' },
+  { value: '19', label: '尼日利亚 (+234) / 19' },
+  { value: '22', label: '印度 (+91) / 22' },
+  { value: '32', label: '罗马尼亚 (+40) / 32' },
   { value: '36', label: '加拿大 (+1) / 36' },
   { value: '43', label: '德国 (+49) / 43' },
+  { value: '46', label: '瑞典 (+46) / 46' },
   { value: '78', label: '法国 (+33) / 78' },
   { value: '48', label: '荷兰 (+31) / 48' },
+  { value: '52', label: '泰国 (+66) / 52' },
+  { value: '56', label: '西班牙 (+34) / 56' },
+  { value: '73', label: '巴西 (+55) / 73' },
+  { value: '86', label: '意大利 (+39) / 86' },
+  { value: '117', label: '葡萄牙 (+351) / 117' },
+  { value: '175', label: '澳大利亚 (+61) / 175' },
+  { value: '176', label: '希腊 (+30) / 176' },
+  { value: '179', label: '新西兰 (+64) / 179' },
 ]
 
 const registeringBusy = computed(() => !!props.runningTask)
@@ -677,10 +724,19 @@ const registerProxyLabel = computed(() => {
 })
 const oauthPhoneSmsCountryOptionsForSelect = computed(() => {
   const selected = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
-  if (!selected || oauthPhoneSmsCountryOptions.some(option => option.value === selected)) {
-    return oauthPhoneSmsCountryOptions
+  const query = String(oauthPhoneSmsCountrySearch.value || '').trim().toLowerCase()
+  let options = oauthPhoneSmsCountryOptions
+  if (query) {
+    options = oauthPhoneSmsCountryOptions.filter(option => {
+      const text = `${option.value} ${option.label}`.toLowerCase()
+      return text.includes(query)
+    })
   }
-  return [{ value: selected, label: `当前配置 / ${selected}` }, ...oauthPhoneSmsCountryOptions]
+  if (selected && !options.some(option => option.value === selected)) {
+    const known = oauthPhoneSmsCountryOptions.find(option => option.value === selected)
+    options = [{ value: selected, label: known?.label || `当前配置 / ${selected}` }, ...options]
+  }
+  return options
 })
 const oauthPhoneSmsProviderLabel = computed(() => {
   const provider = String(registerForm.value.oauthPhoneSmsProvider || 'phone_pool')
@@ -835,6 +891,7 @@ function loadSavedRegisterForm() {
         ? String(saved.oauthPhoneSmsProvider)
         : 'phone_pool',
       oauthPhoneSmsCountry: String(saved.oauthPhoneSmsCountry || registerForm.value.oauthPhoneSmsCountry || '187'),
+      oauthPhoneSmsMaxPrice: String(saved.oauthPhoneSmsMaxPrice || ''),
       proxyApiEnabled: Boolean(saved.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || ''))
         ? String(saved.proxyApiProvider)
@@ -869,6 +926,7 @@ function saveRegisterForm() {
         ? registerForm.value.oauthPhoneSmsProvider
         : 'phone_pool',
       oauthPhoneSmsCountry: registerForm.value.oauthPhoneSmsCountry || '187',
+      oauthPhoneSmsMaxPrice: registerForm.value.oauthPhoneSmsMaxPrice || '',
       proxyApiEnabled: Boolean(registerForm.value.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(registerForm.value.proxyApiProvider || ''))
         ? registerForm.value.proxyApiProvider
@@ -945,6 +1003,11 @@ async function loadOAuthPhoneSmsConfig() {
       registerForm.value.oauthPhoneSmsCountry = provider === 'smsbower'
         ? (result.smsbower_country || '187')
         : (result.hero_sms_country || '187')
+    }
+    if (!registerForm.value.oauthPhoneSmsMaxPrice) {
+      registerForm.value.oauthPhoneSmsMaxPrice = provider === 'smsbower'
+        ? (result.smsbower_max_price || '')
+        : (result.hero_sms_max_price || '')
     }
   } catch (e) {
     setMessage(`读取 OAuth 接码配置失败: ${e.message}`, false)
@@ -1058,6 +1121,7 @@ async function submitManualRegister() {
       post_register_oauth: Boolean(registerForm.value.postRegisterOauth),
       oauth_phone_sms_provider: registerForm.value.postRegisterOauth ? registerForm.value.oauthPhoneSmsProvider : '',
       oauth_phone_sms_country: registerForm.value.postRegisterOauth ? registerForm.value.oauthPhoneSmsCountry : '',
+      oauth_phone_sms_max_price: registerForm.value.postRegisterOauth ? registerForm.value.oauthPhoneSmsMaxPrice : '',
       proxy_api_provider: registerForm.value.proxyApiEnabled ? registerForm.value.proxyApiProvider : '',
     }
     const result = await api.startAdd(payload)

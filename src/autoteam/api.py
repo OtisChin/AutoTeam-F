@@ -884,6 +884,8 @@ def _normalize_oauth_hero_sms_service(raw: str | None = None) -> str:
 
 def _normalize_oauth_hero_sms_country(raw: str | None = None) -> str:
     value = str(raw or "").strip().lower()
+    if value in {"all", "any", "*", "全部", "所有", "不限", "global"}:
+        return "all"
     if value in {"", "us", "usa", "united_states", "united states", "+1", "1", "12"}:
         return "187"
     return value
@@ -1414,7 +1416,7 @@ def query_gopay_hero_sms_prices(params: GoPayHeroSmsPriceQueryParams):
 
 @app.post("/api/config/gopay-auto-signup/smsbower/prices")
 def query_gopay_smsbower_prices(params: GoPaySmsBowerPriceQueryParams):
-    from autoteam.gopay_auto_register import query_hero_sms_price_tiers
+    from autoteam.gopay_auto_register import query_smsbower_price_tiers
 
     cfg = _gopay_auto_signup_env()
     api_key = str(params.smsbower_api_key or cfg["smsbower_api_key"] or "").strip()
@@ -1430,7 +1432,7 @@ def query_gopay_smsbower_prices(params: GoPaySmsBowerPriceQueryParams):
         country = int(float(params.smsbower_country or cfg.get("smsbower_country") or "6"))
     except Exception:
         country = 6
-    result = query_hero_sms_price_tiers(
+    result = query_smsbower_price_tiers(
         service_code=service,
         country_id=country,
         base_url=base_url,
@@ -2985,6 +2987,10 @@ class ManualRegisterParams(BaseModel):
     oauth_phone_sms_country: str = Field(
         "",
         validation_alias=AliasChoices("oauth_phone_sms_country", "oauthPhoneSmsCountry"),
+    )
+    oauth_phone_sms_max_price: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_max_price", "oauthPhoneSmsMaxPrice"),
     )
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
@@ -8849,6 +8855,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 "缺少 gopay_auto_signup_smscloud",
                 "缺少 gopay_auto_signup_hero",
                 "缺少 gopay_auto_signup_smscode",
+                "缺少 gopay_auto_signup_smsbower",
+                "smsbower api key",
+                "no access",
                 "smscode",
                 "bad_key",
                 "bad service",
@@ -14079,6 +14088,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         if params.oauth_phone_sms_country
         else ""
     )
+    oauth_phone_sms_max_price = str(params.oauth_phone_sms_max_price or "").strip()
     if bool(params.post_register_oauth) and oauth_phone_sms_provider in {"hero_sms", "smsbower"}:
         oauth_sms_cfg = _oauth_phone_sms_env()
         key_present = (
@@ -14166,6 +14176,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         "post_register_oauth": bool(params.post_register_oauth),
         "oauth_phone_sms_provider": oauth_phone_sms_provider or "<default>",
         "oauth_phone_sms_country": oauth_phone_sms_country or "",
+        "oauth_phone_sms_max_price": oauth_phone_sms_max_price,
         "register_mode": register_mode,
         "proxy_api_provider": proxy_api_provider,
         "proxy_api_url_present": bool(proxy_api_url),
@@ -14196,6 +14207,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             register_proxy_meta=register_proxy_meta,
             oauth_phone_sms_provider=oauth_phone_sms_provider or None,
             oauth_phone_sms_country=oauth_phone_sms_country or None,
+            oauth_phone_sms_max_price=oauth_phone_sms_max_price,
             progress_callback=_register_progress,
         )
 
@@ -14219,6 +14231,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         post_register_oauth=bool(params.post_register_oauth),
         oauth_phone_sms_provider=oauth_phone_sms_provider or None,
         oauth_phone_sms_country=oauth_phone_sms_country or None,
+        oauth_phone_sms_max_price=oauth_phone_sms_max_price,
         task_group=TASK_GROUP_REGISTER,
         pass_task_id=True,
     )

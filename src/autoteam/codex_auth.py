@@ -1707,6 +1707,24 @@ def _normalize_oauth_phone_sms_provider(value: str | None = None) -> str:
     return "phone_pool"
 
 
+def _oauth_add_phone_provider_order(provider_mode: str) -> list[str]:
+    """Try the selected provider first, then any configured fallback provider.
+
+    OAuth add-phone must complete if possible. A single provider can fail due to
+    service-code or inventory issues, so do not stop until all configured sources
+    have been tried.
+    """
+    primary = _normalize_oauth_phone_sms_provider(provider_mode)
+    order = [primary]
+    if os.environ.get("OAUTH_HERO_SMS_API_KEY") and "hero_sms" not in order:
+        order.append("hero_sms")
+    if os.environ.get("OAUTH_SMSBOWER_API_KEY") and "smsbower" not in order:
+        order.append("smsbower")
+    if "phone_pool" not in order:
+        order.append("phone_pool")
+    return order
+
+
 def _normalize_oauth_hero_sms_service(value: str | None = None) -> str:
     text = str(value or "").strip().lower().replace("-", "_")
     # Hero-SMS uses SMS-Activate service codes. OpenAI / ChatGPT is "dr".
@@ -2382,9 +2400,10 @@ def _handle_oauth_add_phone_if_present(
     if not _is_add_phone_page(page):
         return False
     provider_mode = _normalize_oauth_phone_sms_provider(phone_sms_provider)
+    provider_order = _oauth_add_phone_provider_order(provider_mode)
     country_override = _normalize_oauth_hero_sms_country(phone_sms_country) if phone_sms_country else None
     pool_api: dict[str, Any] = {}
-    if provider_mode == "phone_pool":
+    if "phone_pool" in provider_order:
         try:
             from autoteam.oauth_phone_pool import (
                 acquire_available_phone,
@@ -2403,14 +2422,40 @@ def _handle_oauth_add_phone_if_present(
             }
         except Exception as exc:
             logger.warning("[Codex] add-phone 手机号池不可用: %s", exc)
-            return False
+            pool_api = {}
 
     def acquire_phone_item() -> tuple[dict | None, str]:
-        if provider_mode == "hero_sms":
-            return _acquire_oauth_hero_sms_phone(email, country=country_override)
-        if provider_mode == "smsbower":
-            return _acquire_oauth_smsbower_phone(email, country=country_override)
-        return pool_api["acquire"](email), ""
+        errors: list[str] = []
+        for candidate in provider_order:
+            phone_item: dict | None = None
+            error = ""
+            if candidate == "hero_sms":
+                phone_item, error = _acquire_oauth_hero_sms_phone(email, country=country_override)
+            elif candidate == "smsbower":
+                phone_item, error = _acquire_oauth_smsbower_phone(email, country=country_override)
+            elif pool_api.get("acquire"):
+                phone_item = pool_api["acquire"](email)
+            else:
+                error = "手机号池不可用"
+
+            if phone_item:
+                if candidate != provider_mode:
+                    logger.info(
+                        "[Codex] add-phone %s取号失败后已切换到%s: email=%s",
+                        provider_mode,
+                        candidate,
+                        email,
+                    )
+                return phone_item, ""
+            errors.append(f"{candidate}: {error or '无可用号码'}")
+            if candidate == provider_mode:
+                logger.warning(
+                    "[Codex] add-phone 当前配置服务商取号失败，将尝试备用服务商: provider=%s email=%s error=%s",
+                    candidate,
+                    email,
+                    error or "无可用号码",
+                )
+        return None, "; ".join(errors)
 
     def release_phone_item(phone_item: dict, reason: str = "") -> None:
         source = str(phone_item.get("source") or "").lower()
@@ -2458,15 +2503,12 @@ def _handle_oauth_add_phone_if_present(
     while attempted < 10 and _is_add_phone_page(page):
         phone_item, acquire_error = acquire_phone_item()
         if not phone_item:
-            if provider_mode in {"hero_sms", "smsbower"}:
-                logger.warning(
-                    "[Codex] add-phone 需要手机号，但%s取号失败: email=%s error=%s",
-                    provider_mode,
-                    email,
-                    acquire_error,
-                )
-            else:
-                logger.warning("[Codex] add-phone 需要手机号，但手机号池没有可用号码: %s", email)
+            logger.warning(
+                "[Codex] add-phone 需要手机号，但所有可用来源取号失败: email=%s providers=%s error=%s",
+                email,
+                ",".join(provider_order),
+                acquire_error,
+            )
             return False
         attempted += 1
         try:

@@ -2193,6 +2193,152 @@ def _run_post_register_session_oauth(
     }
 
 
+def _run_post_register_relogin_oauth(
+    email,
+    password,
+    mail_client,
+    *,
+    cloudmail_account_id=None,
+    out_outcome=None,
+    proxy_url=None,
+    oauth_phone_sms_provider=None,
+    oauth_phone_sms_country=None,
+):
+    """Finish post-register Codex OAuth by logging in again, not by reusing the register session."""
+
+    def _record_outcome(status, **extra):
+        if out_outcome is not None:
+            out_outcome.clear()
+            out_outcome.update(status=status, email=email, **extra)
+
+    bundle = None
+    oauth_source = "protocol_relogin_oauth"
+    browser_mode = str(os.environ.get("OAUTH_BROWSER_MODE") or "auto").strip().lower()
+    protocol_requested = browser_mode in {"", "auto", "protocol", "http", "api", "protocol_login"}
+    protocol_required = browser_mode in {"protocol", "http", "api", "protocol_login"}
+    browser_allowed = browser_mode in {"", "auto", "browser", "playwright", "chrome", "chromium"}
+
+    if protocol_requested:
+        try:
+            logger.info("[注册] 开始协议重新登录执行 Codex OAuth: %s", email)
+            from autoteam.protocol_register import login_once as protocol_login_once
+
+            protocol_payload = protocol_login_once(
+                mail_client,
+                email=email,
+                password=password,
+                account_id=cloudmail_account_id,
+                proxy=proxy_url,
+                oauth_phone_sms_provider=oauth_phone_sms_provider,
+                oauth_phone_sms_country=oauth_phone_sms_country,
+            )
+            bundle = protocol_payload.get("codex_oauth_bundle")
+            if not bundle:
+                auth_session_data = protocol_payload.get("data") or {}
+                protocol_result = login_codex_via_auth_session_protocol(
+                    email,
+                    auth_session_data,
+                    native_oauth=True,
+                    proxy_url=proxy_url,
+                )
+                bundle = (protocol_result or {}).get("bundle") if isinstance(protocol_result, dict) else None
+            if bundle:
+                oauth_source = "protocol_relogin_oauth"
+        except CodexOAuthPhoneRequired as exc:
+            logger.error("[注册] %s 协议重新登录 OAuth 需要手机号验证，账号保留供补登录: %s", email, exc)
+            record_failure(
+                email,
+                "phone_blocked",
+                "Codex OAuth 需要手机号验证",
+                stage="post_register_protocol_relogin_oauth",
+                url=getattr(exc, "url", ""),
+            )
+            _record_outcome(
+                "phone_blocked",
+                reason="Codex OAuth 需要手机号验证",
+                stage="post_register_protocol_relogin_oauth",
+            )
+            return None
+        except Exception as exc:
+            logger.warning("[注册] 协议重新登录 OAuth 失败: %s", exc)
+            _record_outcome("protocol_relogin_oauth_failed", reason=f"协议重新登录 OAuth 失败: {exc}")
+            if protocol_required:
+                return None
+
+    if not bundle and browser_allowed:
+        try:
+            logger.info("[注册] 协议 OAuth 未完成，回退浏览器重新登录执行 Codex OAuth: %s", email)
+            bundle = login_codex_via_browser(
+                email,
+                password,
+                mail_client=mail_client,
+                native_oauth=True,
+                use_personal=True,
+                mail_account_id=cloudmail_account_id,
+                proxy_url=proxy_url,
+                phone_sms_provider=oauth_phone_sms_provider,
+                phone_sms_country=oauth_phone_sms_country,
+            )
+            oauth_source = "browser_relogin_oauth"
+        except CodexOAuthPhoneRequired as exc:
+            logger.error("[注册] %s 浏览器重新登录 OAuth 需要手机号验证，账号保留供补登录: %s", email, exc)
+            record_failure(
+                email,
+                "phone_blocked",
+                "Codex OAuth 需要手机号验证",
+                stage="post_register_browser_relogin_oauth",
+                url=getattr(exc, "url", ""),
+            )
+            _record_outcome(
+                "phone_blocked",
+                reason="Codex OAuth 需要手机号验证",
+                stage="post_register_browser_relogin_oauth",
+            )
+            return None
+        except Exception as exc:
+            logger.warning("[注册] 浏览器重新登录 OAuth 失败，保留 auth_session 供手动补登录: %s", exc)
+            _record_outcome("browser_relogin_oauth_failed", reason=f"浏览器重新登录 OAuth 失败: {exc}")
+            return None
+
+    if not bundle:
+        logger.warning("[注册] 重新登录 OAuth 未返回 bundle，保留 auth_session 供手动补登录: %s", email)
+        _record_outcome("relogin_oauth_failed", reason="重新登录 OAuth 未返回 bundle")
+        return None
+
+    bundle = dict(bundle)
+    bundle["email"] = email
+    # Registration-created accounts are free accounts; avoid mixing imported or
+    # stale plan metadata into the local pool.
+    bundle["plan_type"] = "free"
+    bundle["chatgpt_plan_type"] = "free"
+    auth_file = save_auth_file(bundle)
+
+    add_account(
+        email,
+        password,
+        cloudmail_account_id=cloudmail_account_id,
+        seat_type=SEAT_CODEX,
+        mail_provider=_mail_client_provider_name(mail_client) or None,
+    )
+    update_account(
+        email,
+        status=STATUS_ACTIVE,
+        account_type=ACCOUNT_TYPE_FREE,
+        seat_type=SEAT_CODEX,
+        auth_file=auth_file,
+        last_active_at=time.time(),
+    )
+    logger.info("[注册] 重新登录 Codex OAuth 成功: %s auth_file=%s source=%s", email, auth_file, oauth_source)
+    _record_outcome("success", plan="free", auth_file=auth_file, source=oauth_source)
+    return {
+        "email": email,
+        "status": "success",
+        "plan_type": "free",
+        "auth_file": auth_file,
+        "source": oauth_source,
+    }
+
+
 def _complete_registration(email, password, invite_link, mail_client, *, leave_workspace=False, out_outcome=None):
     """完成注册 + Codex 登录（从已有邀请链接继续）。out_outcome 透传给 _run_post_register_oauth。"""
     from playwright.sync_api import sync_playwright
@@ -3358,37 +3504,16 @@ def create_account_direct(
                             logger.info("[注册] auth_session 已保存，注册后 Codex OAuth 已禁用: %s", email)
                             _progress("register_auth_session_saved", f"auth_session 已保存: {email}", email=email)
                             return session_auth
-                        if use_protocol_register:
-                            protocol_oauth_auth = _save_codex_oauth_bundle_for_account(
-                                email,
-                                password,
-                                account_id,
-                                session_data.get("codex_oauth_bundle"),
-                                out_outcome=out_outcome,
-                                mail_provider=_mail_client_provider_name(mail_client) or None,
-                                source="protocol_register_oauth",
-                            )
-                            if protocol_oauth_auth:
-                                logger.info("[注册] 协议注册后 Codex OAuth 已完成: %s", email)
-                                _progress(
-                                    "register_protocol_oauth_saved",
-                                    f"协议 OAuth 已完成: {email}",
-                                    email=email,
-                                )
-                                return protocol_oauth_auth
-                            logger.info("[注册] 协议注册未拿到 CPA OAuth bundle，保留 auth_session 供补登录: %s", email)
-                            _progress(
-                                "register_auth_session_saved",
-                                f"auth_session 已保存，协议 OAuth 未完成: {email}",
-                                email=email,
-                                level="warn",
-                            )
-                            return session_auth
-                        oauth_auth = _run_post_register_session_oauth(
+                        logger.info("[注册] auth_session 已保存，开始重新登录执行 Codex OAuth: %s", email)
+                        _progress(
+                            "register_relogin_oauth",
+                            f"auth_session 已保存，开始重新登录 OAuth: {email}",
+                            email=email,
+                        )
+                        oauth_auth = _run_post_register_relogin_oauth(
                             email,
                             password,
                             mail_client,
-                            session_data.get("data") or {},
                             cloudmail_account_id=account_id,
                             out_outcome=out_outcome,
                             proxy_url=proxy_url,
@@ -3396,12 +3521,19 @@ def create_account_direct(
                             oauth_phone_sms_country=oauth_phone_sms_country,
                         )
                         if oauth_auth:
-                            logger.info("[注册] auth_session 已保存且 Codex OAuth 已完成: %s", email)
-                            _progress("register_auth_session_saved", f"auth_session 已保存且 OAuth 已完成: {email}", email=email)
+                            logger.info("[注册] 重新登录 Codex OAuth 已完成: %s", email)
+                            _progress("register_oauth_saved", f"重新登录 OAuth 已完成: {email}", email=email)
                             return oauth_auth
                         if out_outcome is not None and out_outcome.get("status") == "phone_blocked":
-                            return None
-                        logger.info("[注册] auth_session 已保存，复用会话 OAuth 未完成，等待手动补登录: %s", email)
+                            logger.info("[注册] OAuth 需要手机号验证，但注册已完成，保留 auth_session 供补登录: %s", email)
+                            _progress(
+                                "register_auth_session_saved",
+                                f"auth_session 已保存，OAuth 需要手机号补登录: {email}",
+                                email=email,
+                                level="warn",
+                            )
+                            return session_auth
+                        logger.info("[注册] auth_session 已保存，重新登录 OAuth 未完成，等待手动补登录: %s", email)
                         _progress("register_auth_session_saved", f"auth_session 已保存，等待手动补登录: {email}", email=email)
                         return session_auth
                     logger.warning("[注册] /api/auth/session 未生成 auth_session 文件，继续按注册成功收尾: %s", email)
@@ -4207,6 +4339,7 @@ def cmd_register_accounts(
     register_proxy_meta=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    oauth_phone_sms_max_price=None,
     progress_callback=None,
 ):
     """执行独立注册；成功后保存 auth_session，并复用注册会话尝试生成 Codex OAuth 文件。
@@ -4253,6 +4386,13 @@ def cmd_register_accounts(
     if register_mode not in {"browser", "protocol", "http", "api"}:
         register_mode = "browser"
     register_proxy_meta = register_proxy_meta or {}
+    oauth_env_overrides = {}
+    oauth_provider = str(oauth_phone_sms_provider or "").strip().lower().replace("-", "_")
+    oauth_max_price = str(oauth_phone_sms_max_price or "").strip()
+    if oauth_max_price and oauth_provider == "hero_sms":
+        oauth_env_overrides["OAUTH_HERO_SMS_MAX_PRICE"] = oauth_max_price
+    elif oauth_max_price and oauth_provider == "smsbower":
+        oauth_env_overrides["OAUTH_SMSBOWER_MAX_PRICE"] = oauth_max_price
 
     def _emit_progress():
         if not progress_callback:
@@ -4333,20 +4473,21 @@ def cmd_register_accounts(
                                 "email_index": job_index + 1,
                             }
                         )
-                raw_result = create_account_direct(
-                    mail_client,
-                    out_outcome=outcome,
-                    email_prefix=email_prefix,
-                    password=password,
-                    domain=job_domain,
-                    skip_post_register=not post_register_oauth,
-                    post_register_oauth=post_register_oauth,
-                    check_team_membership=False,
-                    register_mode=register_mode,
-                    proxy_url=selected_proxy_url,
-                    oauth_phone_sms_provider=oauth_phone_sms_provider,
-                    oauth_phone_sms_country=oauth_phone_sms_country,
-                )
+                with _temporary_mail_provider(None, oauth_env_overrides):
+                    raw_result = create_account_direct(
+                        mail_client,
+                        out_outcome=outcome,
+                        email_prefix=email_prefix,
+                        password=password,
+                        domain=job_domain,
+                        skip_post_register=not post_register_oauth,
+                        post_register_oauth=post_register_oauth,
+                        check_team_membership=False,
+                        register_mode=register_mode,
+                        proxy_url=selected_proxy_url,
+                        oauth_phone_sms_provider=oauth_phone_sms_provider,
+                        oauth_phone_sms_country=oauth_phone_sms_country,
+                    )
                 if isinstance(raw_result, str):
                     result = {"status": outcome.get("status") or "success", "email": raw_result, **outcome}
                 elif isinstance(raw_result, dict):

@@ -1,4 +1,4 @@
-[02:10:14] INFO     [验证] outlook 配置...                                     
+[03:58:26] INFO     [验证] outlook 配置...                                     
            INFO      已加载 26 个 Outlook 账号                                 
            INFO     [验证] outlook 登录成功                                    
            INFO     [验证] outlook 配置验证通过                                
@@ -8,172 +8,19 @@
            INFO     [API] 启动 AutoTeam API 服务器 http://127.0.0.1:8787       
            INFO     [API] 前端面板 http://127.0.0.1:8787                       
            INFO     [API] API 文档 http://127.0.0.1:8787/docs                  
-           INFO     [启动] 已修复 8 个 auths 认证文件权限                      
+           WARNING  [启动] 已取消 1 个后端重启后残留的运行中任务快照           
+           INFO     [启动] 已修复 13 个 auths 认证文件权限                     
            INFO      自动上传线程已启动: interval=300s                         
            INFO     [巡检] 自动巡检已关闭，启动时跳过后台线程                  
            INFO     [刷新凭证] 自动刷新已关闭，等待重新启用                    
-INFO:     127.0.0.1:60476 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60476 - "GET /assets/index-BqLdr_3J.js HTTP/1.1" 304 Not Modified
-INFO:     127.0.0.1:60477 - "GET /assets/index-BDetaiV0.css HTTP/1.1" 304 Not Modified
-INFO:     127.0.0.1:60477 - "GET /favicon.ico HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60477 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60476 - "GET /api/config/rekberinaja HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60476 - "GET /api/card-pool/card HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60476 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60477 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60476 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60476 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
-[02:10:42] INFO     [API] GoPay OTP config resolved: otp_channel=sms           
-                    sms_url=<empty> phone_accounts=[]                          
-           INFO      task submitted: email=d8b...1f(len=10)@edu.rexoox.com     
-                    auto_register=False auto_register_count=1                  
-                    gopay_auto_signup=True account_count=1                     
-                    pending_retry_attempts=3 concurrency=3/3                   
-                    checkout=<auto-generate> checkout_mode=hosted phone=GoPay  
-                    自动注册 proxy_label=<none> proxy_state=api proxy=disabled 
-                    proxy_error=<none> timeout=900                             
-           INFO      runner started: task_id=20dfa8af                          
-                    email=d8b...1f(len=10)@edu.rexoox.com auto_register=False  
-                    auto_register_count=1 gopay_auto_signup=True               
-                    account_count=1 pending_retry_attempts=3 concurrency=3     
-                    checkout=<auto-generate> checkout_mode=hosted              
-                    proxy_label=<none> proxy_state=api proxy=disabled          
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:10:43] INFO      准备注册 GoPay 钱包: provider=hero_sms country=62         
-                    proxy=enabled                                              
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:10:46] INFO      hero-sms 取号成功: +62***7954                             
-           INFO      signup_mode resolved: request='http' final='http'         
-           INFO      探测手机号是否已注册: +6287766207954                      
-[02:10:47] INFO      手机号未注册，准备获取注册 verification_id                
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:10:49] INFO      已获取注册 verification_id，触发注册 SMS OTP              
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:10:52] INFO      等待注册 SMS OTP...                                       
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60484 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60484 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60484 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60484 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60568 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:11:11] INFO      已收到注册 SMS OTP，开始校验...                           
-           INFO      注册 OTP 校验成功，创建 GoPay customer...                 
-[02:11:12] INFO      GoPay customer 创建成功，刷新访问 token...                
-           INFO      GoPay token 已就绪，接受必要授权...                       
-INFO:     127.0.0.1:60568 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:11:14] INFO      授权已接受，开始设置 PIN...                               
-           INFO      校验 PIN 是否可设置...                                    
-           INFO      请求 PIN 设置验证方式...                                  
-INFO:     127.0.0.1:60568 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:11:16] INFO      触发 PIN 设置 SMS OTP...                                  
-[02:11:17] INFO      等待 PIN 设置 SMS OTP...                                  
-INFO:     127.0.0.1:60568 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60482 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60668 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:11:36] INFO      已收到 PIN 设置 SMS OTP，开始校验...                      
-           INFO      PIN OTP 校验成功，提交 PIN 设置...                        
-           INFO      PIN 设置完成                                              
-           INFO      GoPay 钱包注册流程完成                                    
-INFO:     127.0.0.1:60668 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:11:39] INFO     Rekberinaja GoPay top-up completed:                        
-                    transaction_id=3NFWOSCXD3NB                                
-INFO:     127.0.0.1:60668 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60668 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60567 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60567 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60567 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60567 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60567 - "GET /api/accounts HTTP/1.1" 200 OK
-[02:12:20] INFO      account rotation mode: enabled=False                      
-                    requested_email=d8b...1f(len=10)@edu.rexoox.com            
-                    checkout=<auto-generate> candidates=[]                     
-           INFO      GoPay task starting: email=d8b...1f(len=10)@edu.rexoox.com
-                    checkout=<auto-generate> phone=country_code=62             
-                    phone=***7954(len=11) proxy=disabled bypass=<none>         
-                    timeout=900                                                
-           INFO      本次账单地址: {'name': 'Staffridu', 'country': 'US',      
-                    'state': 'CA', 'city': 'Sacramento', 'zip': '95814',       
-                    'address1': '699  Park Avenue', 'address2': '',            
-                    'phone_number': '916-360-2890'}                            
-           INFO      ChatGPT token context ready:                              
-                    email=d8b...1f(len=10)@edu.rexoox.com source=auth_session  
-                    access_token_present=True session_cookie_present=True      
-                    account_id_present=True device_id=d4d624...c237(len=36)    
-                    sentinel_token_present=False auth_file_present=True        
-           INFO      ChatGPT HTTP session ready:                               
-                    email=d8b...1f(len=10)@edu.rexoox.com proxy=disabled       
-                    transport=curl_cffi                                        
-[02:12:24] INFO      generated GoPay checkout session for protocol form mode:  
-                    checkout_ui_mode=hosted url=host=pay.openai.com            
-                    path=/c/pay/cs_liv...vUGE(len=66)                          
-           INFO      checkout identifiers ready:                               
-                    checkout_session_id=cs_liv...vUGE(len=66)                  
-                    direct_redirect=False browser_ui=False form_mode=protocol  
-                    processor_entity=openai_llc                                
-                    midtrans_client_id_present=False                           
-           INFO      GoPay OTP channel resolved: otp_channel=sms               
-                    sms_url=host=localhost:8787                                
-                    path=/otp/gopay-signup/5093f1787d8b4ed9b3db76e5cddd70f5    
-           INFO      GoPay flow started:                                       
-                    checkout_session_id=cs_liv...vUGE(len=66)                  
-                    direct_redirect=False browser_ui=False form_mode=protocol  
-           INFO      HTTP request: stage=stripe_init method=POST attempt=1/2   
-                    timeout=60 url=host=api.stripe.com                         
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)/init          
-[02:12:25] INFO      HTTP response: stage=stripe_init status=200               
-                    url=host=api.stripe.com                                    
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)/init          
-           INFO      HTTP request: stage=stripe_elements_session method=GET    
-                    attempt=1/2 timeout=60 url=host=api.stripe.com             
-                    path=/v1/elements/sessions                                 
-           INFO      HTTP response: stage=stripe_elements_session status=200   
-                    url=host=api.stripe.com path=/v1/elements/sessions         
-           INFO      Stripe elements/sessions ready: session_id_present=True   
-                    config_id_present=True                                     
-           INFO      HTTP request: stage=stripe_address_update method=POST     
-                    attempt=1/2 timeout=60 url=host=api.stripe.com             
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-[02:12:26] INFO      HTTP response: stage=stripe_address_update status=200     
-                    url=host=api.stripe.com                                    
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-[02:12:27] INFO      HTTP request: stage=stripe_address_update method=POST     
-                    attempt=1/2 timeout=60 url=host=api.stripe.com             
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-[02:12:28] INFO      HTTP response: stage=stripe_address_update status=200     
-                    url=host=api.stripe.com                                    
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-           INFO      HTTP request: stage=stripe_address_update method=POST     
-                    attempt=1/2 timeout=60 url=host=api.stripe.com             
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-[02:12:30] INFO      HTTP response: stage=stripe_address_update status=200     
-                    url=host=api.stripe.com                                    
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-           INFO      HTTP request: stage=stripe_address_update method=POST     
-                    attempt=1/2 timeout=60 url=host=api.stripe.com             
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-[02:12:31] INFO      HTTP response: stage=stripe_address_update status=200     
-                    url=host=api.stripe.com                                    
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-           INFO      HTTP request: stage=stripe_address_update method=POST     
-                    attempt=1/2 timeout=60 url=host=api.stripe.com             
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-[02:12:32] INFO      HTTP response: stage=stripe_address_update status=200     
-                    url=host=api.stripe.com                                    
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-[02:12:33] INFO      HTTP request: stage=stripe_address_update method=POST     
-                    attempt=1/2 timeout=60 url=host=api.stripe.com             
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-[02:12:34] INFO      HTTP response: stage=stripe_address_update status=200     
-                    url=host=api.stripe.com                                    
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)               
-           INFO      HTTP request: stage=stripe_payment_method method=POST     
-                    attempt=1/2 timeout=60 url=host=api.stripe.com             
-                    path=/v1/payment_methods                                   
-           INFO      HTTP response: stage=stripe_payment_method status=200     
-                    url=host=api.stripe.com path=/v1/payment_methods           
-           INFO      HTTP request: stage=stripe_confirm method=POST attempt=1/2
-                    timeout=60 url=host=api.stripe.com                         
-                    path=/v1/payment_pages/cs_liv...vUGE(len=66)/confirm       
+INFO:     127.0.0.1:52966 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53433 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53433 - "GET /assets/index-D-TCfO5E.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:53434 - "GET /assets/index-miEnmses.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:53434 - "GET /favicon.ico HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53434 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53433 - "GET /api/config/rekberinaja HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53433 - "GET /api/card-pool/card HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53433 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53434 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53433 - "GET /api/accounts HTTP/1.1" 200 OK

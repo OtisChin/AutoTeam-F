@@ -294,6 +294,7 @@ class SmsActivation:
         country_id: int,
         base_url: str,
         api_key: str,
+        provider: str = "hero_sms",
         log: Callable[[str], None] = logger.info,
     ):
         self.activation_id = activation_id
@@ -301,6 +302,7 @@ class SmsActivation:
         self.country_id = country_id
         self.base_url = base_url
         self.api_key = api_key
+        self.provider = provider
         self.log = log
         self.used_codes: set[str] = set()
 
@@ -807,6 +809,109 @@ def query_hero_sms_price_tiers(
     }
 
 
+def query_smsbower_price_tiers(
+    *,
+    service_code: str,
+    country_id: int,
+    base_url: str,
+    api_key: str,
+    min_price: str = "",
+    max_price: str = "",
+    preferred_price: str = "",
+) -> dict[str, Any]:
+    payloads: list[Any] = []
+    errors: list[str] = []
+    for action, params in (
+        ("getPrices", {"service": service_code, "country": country_id}),
+        ("getTopCountriesByService", {"service": service_code}),
+    ):
+        try:
+            ok, text, data = _hero_request(base_url, api_key, action, params, timeout=30)
+        except Exception as exc:
+            ok, text, data = False, str(exc), None
+        payload: Any = data if data is not None else text
+        if ok:
+            payloads.append(payload)
+        else:
+            errors.append(f"{action}: {text or 'failed'}")
+
+    tier_map: dict[float, int] = {}
+    for payload in payloads:
+        for price, count in _collect_hero_price_tiers(payload).items():
+            tier_map[price] = max(tier_map.get(price, 0), count)
+        for price, count in _collect_hero_top_country_price_tiers(payload, country_id).items():
+            tier_map[price] = max(tier_map.get(price, 0), count)
+    prices = _sorted_unique_hero_prices(
+        list(tier_map.keys()) or [price for payload in payloads for price in _collect_hero_price_candidates(payload)]
+    )
+    filtered, error = _filter_hero_prices(
+        prices,
+        min_price=min_price,
+        max_price=max_price,
+        preferred_price=preferred_price,
+    )
+    if error:
+        return {"ok": False, "error": error, "raw": payloads, "prices": prices, "filtered_prices": []}
+    filtered_tiers, error = _filter_hero_tiers(
+        tier_map,
+        min_price=min_price,
+        max_price=max_price,
+        preferred_price=preferred_price,
+    )
+    if error:
+        return {"ok": False, "error": error, "raw": payloads, "prices": prices, "filtered_prices": []}
+    tiers = [{"price": price, "count": max(0, int(tier_map.get(price, 0)))} for price in prices]
+    no_access = bool(errors) and all("no access" in str(error).lower() for error in errors)
+    if not payloads and no_access:
+        return {
+            "ok": True,
+            "error": "",
+            "warning": "smsbower 当前 API Key 无价格查询权限；取号会直接按 minPrice/maxPrice 调用 getNumber",
+            "price_query_unavailable": True,
+            "raw": [],
+            "prices": [],
+            "filtered_prices": [],
+            "tiers": [],
+            "filtered_tiers": [],
+            "count": 0,
+        }
+    if not payloads:
+        return {
+            "ok": False,
+            "error": "；".join(errors) or "smsbower 价格查询失败",
+            "raw": [],
+            "prices": [],
+            "filtered_prices": [],
+        }
+    return {
+        "ok": True,
+        "error": "",
+        "warning": "；".join(errors) if errors else "",
+        "raw": payloads,
+        "prices": prices,
+        "filtered_prices": filtered,
+        "tiers": tiers,
+        "filtered_tiers": filtered_tiers,
+        "count": len(filtered),
+    }
+
+
+def _smsbower_access_denied(text: Any = "", data: Any = None) -> bool:
+    haystack = f"{text or ''} {json.dumps(data, ensure_ascii=False) if isinstance(data, (dict, list)) else data or ''}".lower()
+    return "no access" in haystack or "bad_key" in haystack or "bad key" in haystack
+
+
+def _smsbower_check_api_access(base_url: str, api_key: str) -> tuple[bool, str]:
+    ok, text, data = _hero_request(base_url, api_key, "getBalance", {}, timeout=20)
+    if not ok:
+        if _smsbower_access_denied(text, data):
+            return False, "smsbower API Key 无法访问客户端 API：getBalance 返回 No access；请在 smsbower 个人资料中复制 Client API Key，并确认账号已启用 API"
+        return True, str(text or "getBalance failed")
+    if _smsbower_access_denied(text, data):
+        return False, "smsbower API Key 无法访问客户端 API：getBalance 返回 No access；请在 smsbower 个人资料中复制 Client API Key，并确认账号已启用 API"
+    return True, ""
+
+
 def _hero_get_number(
     *,
     service_code: str,
@@ -884,6 +989,79 @@ def _hero_get_number(
     return "", "", last_error or "HeroSMS 无可用号码"
 
 
+def _smsbower_get_number(
+    *,
+    service_code: str,
+    country_id: int | str | None,
+    base_url: str,
+    api_key: str,
+    max_price: str = "",
+    min_price: str = "",
+    preferred_price: str = "",
+) -> tuple[str, str, str]:
+    country_text = str(country_id or "").strip().lower()
+    limited_country = country_text not in {"", "all", "any", "*"}
+
+    def build_params(*, min_value: float | None, max_value: float | None) -> dict[str, Any]:
+        params: dict[str, Any] = {"service": service_code}
+        if limited_country:
+            params["country"] = int(float(country_text))
+        if min_value is not None:
+            params["minPrice"] = str(min_value)
+        elif str(min_price or "").strip():
+            params["minPrice"] = str(min_price or "").strip()
+        if max_value is not None:
+            params["maxPrice"] = str(max_value)
+        elif str(max_price or "").strip():
+            params["maxPrice"] = str(max_price or "").strip()
+        return params
+
+    min_limit = _normalize_hero_price(min_price)
+    max_limit = _normalize_hero_price(max_price)
+    preferred = _normalize_hero_price(preferred_price)
+    if min_limit is not None and max_limit is not None and min_limit > max_limit:
+        return "", "", f"smsbower 价格区间无效：最低购买价 {min_limit} 高于价格上限 {max_limit}"
+
+    candidate_params: list[dict[str, Any]] = []
+    if preferred is not None:
+        if min_limit is None or preferred >= min_limit:
+            if max_limit is None or preferred <= max_limit:
+                candidate_params.append(build_params(min_value=preferred, max_value=preferred))
+    candidate_params.append(build_params(min_value=None, max_value=None))
+
+    last_error = ""
+    for candidate in candidate_params:
+        ok, text, data = _hero_request(
+            base_url,
+            api_key,
+            "getNumber",
+            candidate,
+            timeout=30,
+        )
+        if not ok:
+            last_error = str(text or "getNumber failed")
+            if _smsbower_access_denied(text, data):
+                return "", "", "smsbower API Key 无法访问客户端 API：getNumber 返回 No access；请检查 .env 中的 GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY / OAUTH_SMSBOWER_API_KEY"
+            if re.search(r"\b(?:NO_NUMBERS|WRONG_MAX_PRICE)\b", last_error, re.I):
+                continue
+            return "", "", last_error
+        line = str(text or "").strip()
+        if line.upper().startswith("ACCESS_NUMBER:"):
+            parts = line.split(":", 2)
+            if len(parts) >= 3:
+                return parts[1].strip(), parts[2].strip(), ""
+        if isinstance(data, dict):
+            activation_id = str(data.get("activationId") or data.get("activation_id") or data.get("id") or "")
+            phone = str(data.get("phoneNumber") or data.get("phone") or data.get("number") or "")
+            if activation_id and phone:
+                return activation_id, phone, ""
+        last_error = line or "无法解析号码"
+        if re.search(r"\b(?:NO_NUMBERS|WRONG_MAX_PRICE)\b", last_error, re.I):
+            continue
+        return "", "", last_error
+    return "", "", last_error or "smsbower 无可用号码"
+
+
 def _hero_set_status(base_url: str, api_key: str, activation_id: str, status: int) -> str:
     if not activation_id:
         return ""
@@ -903,6 +1081,8 @@ def _normalize_sms_provider(value: str) -> str:
         return "smscloud"
     if normalized in {"smscode", "sms_code", "smscode_gg"}:
         return "smscode"
+    if normalized in {"smsbower", "sms_bower"}:
+        return "smsbower"
     return "hero_sms"
 
 
@@ -2645,6 +2825,69 @@ def register_gopay_wallet(
             api_token=smscode_token,
             log=log,
         )
+    elif provider == "smsbower":
+        smsbower_api_key = str(
+            smsbower_config.get("api_key")
+            or _env_str("GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY")
+            or _env_str("OAUTH_SMSBOWER_API_KEY")
+        ).strip()
+        smsbower_base_url = str(
+            smsbower_config.get("base_url")
+            or _env_str("GOPAY_AUTO_SIGNUP_SMSBOWER_BASE_URL", "https://smsbower.page/stubs/handler_api.php")
+        ).strip()
+        try:
+            sms_country = int(float(smsbower_config.get("country") or _env_int("GOPAY_AUTO_SIGNUP_SMSBOWER_COUNTRY", 6)))
+        except Exception:
+            sms_country = 6
+        sms_service = str(smsbower_config.get("service") or _env_str("GOPAY_AUTO_SIGNUP_SMSBOWER_SERVICE", "ni")).strip()
+        smsbower_max_price = str(
+            smsbower_config.get("max_price") or _env_str("GOPAY_AUTO_SIGNUP_SMSBOWER_MAX_PRICE")
+        ).strip()
+        smsbower_min_price = str(
+            smsbower_config.get("min_price") or _env_str("GOPAY_AUTO_SIGNUP_SMSBOWER_MIN_PRICE")
+        ).strip()
+        smsbower_preferred_price = str(
+            smsbower_config.get("preferred_price")
+            or smsbower_config.get("price_tier")
+            or _env_str("GOPAY_AUTO_SIGNUP_SMSBOWER_PREFERRED_PRICE")
+        ).strip()
+        try:
+            sms_timeout = int(
+                float(
+                    smsbower_config.get("timeout_sec")
+                    or _env_int("GOPAY_AUTO_SIGNUP_SMSBOWER_TIMEOUT", DEFAULT_AUTO_SIGNUP_OTP_TIMEOUT_SEC)
+                )
+            )
+        except Exception:
+            sms_timeout = DEFAULT_AUTO_SIGNUP_OTP_TIMEOUT_SEC
+        if not smsbower_api_key:
+            raise GoPayAutoSignupError("缺少 GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY 配置")
+        access_ok, access_error = _smsbower_check_api_access(smsbower_base_url, smsbower_api_key)
+        if not access_ok:
+            raise GoPayAutoSignupError(access_error)
+        if access_error:
+            log(f"[gopay-signup] smsbower getBalance 预检查失败，继续尝试取号: {access_error}")
+        activation_id, phone_raw, error = _smsbower_get_number(
+            service_code=sms_service,
+            country_id=sms_country,
+            base_url=smsbower_base_url,
+            api_key=smsbower_api_key,
+            max_price=smsbower_max_price,
+            min_price=smsbower_min_price,
+            preferred_price=smsbower_preferred_price,
+        )
+        if not activation_id:
+            raise GoPayAutoSignupError(f"smsbower 取号失败: {error}")
+        log(f"[gopay-signup] smsbower 取号成功: +{resolved_country_code.strip('+')}***{str(phone_raw)[-4:]}")
+        activation = SmsActivation(
+            activation_id=activation_id,
+            phone=phone_raw,
+            country_id=sms_country,
+            base_url=smsbower_base_url,
+            api_key=smsbower_api_key,
+            provider="smsbower",
+            log=log,
+        )
     else:
         hero_api_key = str(hero_sms_config.get("api_key") or _env_str("GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY")).strip()
         hero_base_url = str(
@@ -2696,6 +2939,7 @@ def register_gopay_wallet(
             country_id=sms_country,
             base_url=hero_base_url,
             api_key=hero_api_key,
+            provider="hero_sms",
             log=log,
         )
 
