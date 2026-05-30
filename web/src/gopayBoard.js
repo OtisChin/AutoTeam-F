@@ -12,6 +12,18 @@ function listEmail(item) {
   return normalizedEmail((item && typeof item === 'object') ? item.email : item)
 }
 
+const walletSignupFailureStages = new Set([
+  'gopay_wallet_no_numbers',
+  'gopay_wallet_provider_unavailable',
+  'gopay_wallet_network_error',
+  'gopay_wallet_rate_limited',
+])
+
+function isWalletSignupFailureItem(item) {
+  if (!item || typeof item !== 'object') return false
+  return walletSignupFailureStages.has(String(item.failure_stage || ''))
+}
+
 function taskEvents(task) {
   return Array.isArray(task?.progress_events) ? task.progress_events : []
 }
@@ -146,6 +158,7 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
   for (const list of lists) {
     if (!Array.isArray(list)) continue
     for (const [index, item] of list.entries()) {
+      if (isWalletSignupFailureItem(item)) continue
       const normalized = listEmail(item)
       if (normalized) {
         if (!successful.has(normalized)) failedEmails.add(normalized)
@@ -169,6 +182,10 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
   ])
   for (const event of events) {
     const stage = String(event?.stage || '')
+    if (
+      stage === 'gopay_wallet_signup_failed_no_account_retry'
+      || (stage === 'gopay_auto_signup_account_failed' && isWalletSignupFailureItem(event))
+    ) continue
     const email = normalizedEmail(event?.email)
     if (email) {
       if (stage === 'gopay_pending_retry_queued' || stage === 'paypal_pending_retry_queued') {

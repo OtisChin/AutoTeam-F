@@ -37,6 +37,7 @@ POLL_INTERVAL_SEC = 3.0
 DEFAULT_AUTO_SIGNUP_OTP_TIMEOUT_SEC = 120
 DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC = 120
 STATUS_CANCEL = -1
+STATUS_SMSBOWER_CANCEL = 8
 STATUS_RESEND = 3
 STATUS_FINISH = 6
 DEFAULT_SMSCODE_BASE_URL = "https://api.smscode.gg/v1"
@@ -182,7 +183,7 @@ class GoPaySmsBridge:
             elif self.provider == "smscloud":
                 _smscloud_cancel(self.base_url, self.api_key, self.activation_id)
             else:
-                _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_CANCEL)
+                _hero_set_status(self.base_url, self.api_key, self.activation_id, _sms_provider_cancel_status(self.provider))
             self.closed = True
 
     def resend(self) -> None:
@@ -345,7 +346,7 @@ class SmsActivation:
         return ""
 
     def cancel(self) -> None:
-        _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_CANCEL)
+        _hero_set_status(self.base_url, self.api_key, self.activation_id, _sms_provider_cancel_status(self.provider))
 
     def finish(self) -> None:
         _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_FINISH)
@@ -1096,6 +1097,12 @@ def _hero_set_status(base_url: str, api_key: str, activation_id: str, status: in
         timeout=20,
     )
     return str(text or "")
+
+
+def _sms_provider_cancel_status(provider: str) -> int:
+    if _normalize_sms_provider(provider) == "smsbower":
+        return STATUS_SMSBOWER_CANCEL
+    return STATUS_CANCEL
 
 
 def _normalize_sms_provider(value: str) -> str:

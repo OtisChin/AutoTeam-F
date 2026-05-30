@@ -2058,7 +2058,7 @@ def _acquire_oauth_hero_sms_phone(email: str = "", *, country: str | None = None
 
 def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None) -> tuple[dict | None, str]:
     try:
-        from autoteam.gopay_auto_register import SmsActivation, _hero_set_status, _smsbower_get_number
+        from autoteam.gopay_auto_register import SmsActivation, _smsbower_get_number
     except Exception as exc:
         return None, f"smsbower 模块不可用: {exc}"
 
@@ -2092,16 +2092,13 @@ def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None
     )
     if not activation_id or not phone:
         return None, error or "smsbower 未返回可用号码"
-    class SmsbowerActivation(SmsActivation):
-        def cancel(self) -> None:
-            _hero_set_status(self.base_url, self.api_key, self.activation_id, 8)
-
-    activation = SmsbowerActivation(
+    activation = SmsActivation(
         activation_id=activation_id,
         phone=phone,
         country_id=country_id,
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
+        provider="smsbower",
         log=logger.info,
     )
     logger.info(

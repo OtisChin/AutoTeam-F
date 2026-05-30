@@ -3674,6 +3674,20 @@ function formatGoPayProgressMessage(event) {
   return `${goPayProgressWorkerPrefix(event)}${message}`
 }
 
+const goPayWalletSignupFailureStages = new Set([
+  'gopay_wallet_no_numbers',
+  'gopay_wallet_provider_unavailable',
+  'gopay_wallet_network_error',
+  'gopay_wallet_rate_limited',
+])
+
+function shouldHideGoPayProgressEvent(event) {
+  const stage = String(event?.stage || '')
+  if (stage === 'gopay_wallet_signup_failed_no_account_retry') return true
+  return stage === 'gopay_auto_signup_account_failed'
+    && goPayWalletSignupFailureStages.has(String(event?.failure_stage || ''))
+}
+
 function processGoPayProgressEvents(task) {
   const events = Array.isArray(task?.progress_events) ? task.progress_events : []
   let printed = 0
@@ -3687,6 +3701,7 @@ function processGoPayProgressEvents(task) {
     if (event?.stage === 'gopay_account_bound') {
       showGoPaySuccessNotice(event?.email || '')
     }
+    if (shouldHideGoPayProgressEvent(event)) continue
     const message = formatGoPayProgressMessage(event)
     if (!message) continue
     pushGoPayLog(message, goPayProgressLogLevel(event))
@@ -3822,7 +3837,7 @@ async function pollBindTask(taskId) {
     }
     const previousStage = previous?.progress?.stage || ''
     const nextStage = task?.progress?.stage || ''
-    if (nextStage && previousStage !== nextStage) {
+    if (nextStage && previousStage !== nextStage && !shouldHideGoPayProgressEvent(task.progress)) {
       pushBindLog(`执行阶段：${nextStage}`, 'info')
     }
     if (['pending', 'running'].includes(task.status)) {
@@ -3865,14 +3880,14 @@ async function pollGoPayTask(taskId) {
     }
     const previousStage = previous?.progress?.stage || ''
     const nextStage = task?.progress?.stage || ''
-    if (nextStage && previousStage !== nextStage) {
+    if (nextStage && previousStage !== nextStage && !shouldHideGoPayProgressEvent(task.progress)) {
       pushGoPayLog(`执行阶段：${gopayStageLabelMap[nextStage] || nextStage}`, 'info')
     }
     const printedProgressEvents = processGoPayProgressEvents(task)
     if (['pending', 'running'].includes(task.status)) {
       const previousProgressMessage = formatGoPayProgressMessage(previous?.progress || {})
       const nextProgressMessage = formatGoPayProgressMessage(task?.progress || {})
-      if (!printedProgressEvents && nextProgressMessage && nextProgressMessage !== previousProgressMessage) {
+      if (!shouldHideGoPayProgressEvent(task.progress) && !printedProgressEvents && nextProgressMessage && nextProgressMessage !== previousProgressMessage) {
         pushGoPayLog(nextProgressMessage, nextStage === 'checkout_not_approved_rotate' ? 'warn' : 'info')
       }
       gopayTaskPollTimer = window.setTimeout(() => {
