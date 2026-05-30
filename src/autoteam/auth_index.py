@@ -129,3 +129,48 @@ def codex_auth_files_by_email(emails: list[str] | set[str] | tuple[str, ...] | N
         if email and email not in out:
             out[email] = _normalize(row["file_path"])
     return out
+
+
+def codex_auth_metadata_by_email(emails: list[str] | set[str] | tuple[str, ...] | None = None) -> dict[str, dict]:
+    """Return latest indexed non-main Codex auth metadata for each email."""
+    wanted = sorted({_normalize(email).lower() for email in (emails or []) if _normalize(email)})
+    sqlite_store.initialize()
+    with sqlite_store.connect() as conn:
+        if wanted:
+            placeholders = ",".join("?" for _ in wanted)
+            rows = conn.execute(
+                f"""
+                SELECT email, file_path, data, updated_at
+                FROM codex_auth_files
+                WHERE is_main = 0 AND email IN ({placeholders})
+                ORDER BY email, updated_at DESC
+                """,
+                wanted,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT email, file_path, data, updated_at
+                FROM codex_auth_files
+                WHERE is_main = 0 AND email != ''
+                ORDER BY email, updated_at DESC
+                """
+            ).fetchall()
+
+    out: dict[str, dict] = {}
+    for row in rows:
+        email = _normalize(row["email"]).lower()
+        if not email or email in out:
+            continue
+        try:
+            data = json.loads(row["data"] or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        id_token = str(data.get("id_token") or data.get("idToken") or "")
+        out[email] = {
+            "file_path": _normalize(row["file_path"]),
+            "synthetic": bool(data.get("id_token_synthetic")) or ".synthetic" in id_token,
+        }
+    return out

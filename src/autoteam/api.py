@@ -3175,6 +3175,22 @@ def _resolve_codex_auth_file(acc: dict) -> str:
     return str(candidates[0]) if candidates else ""
 
 
+def _valid_account_auth_file(acc: dict) -> str:
+    auth_file = str(acc.get("auth_file") or "").strip()
+    if not auth_file:
+        return ""
+    try:
+        from autoteam.auth_storage import AUTH_DIR
+
+        path = Path(auth_file)
+        if path.exists() and path.is_file():
+            path.resolve().relative_to(AUTH_DIR.resolve())
+            return str(path)
+    except Exception:
+        return ""
+    return ""
+
+
 def _codex_auth_file_is_synthetic(auth_file: str) -> bool:
     path_text = str(auth_file or "").strip()
     if not path_text:
@@ -3231,43 +3247,59 @@ def _sanitize_accounts_batch(accounts: list[dict], quota_cache: dict | None = No
     """Batch sanitize accounts without per-row filesystem scans."""
     quota_cache = quota_cache or {}
     emails = [_normalized_email(acc.get("email")) for acc in accounts if _normalized_email(acc.get("email"))]
+    single_account = len(accounts) == 1
     try:
         from autoteam.admin_state import get_admin_email
 
         main_email = _normalized_email(get_admin_email())
     except Exception:
         main_email = ""
+    if single_account and emails and not main_email:
+        try:
+            if _is_main_account_email(emails[0]):
+                main_email = emails[0]
+        except Exception:
+            pass
     try:
-        from autoteam.auth_index import codex_auth_files_by_email
+        from autoteam.auth_index import codex_auth_metadata_by_email
 
-        auth_files = codex_auth_files_by_email(emails)
+        auth_metadata = codex_auth_metadata_by_email(emails)
     except Exception:
-        auth_files = {}
+        auth_metadata = {}
     try:
         from autoteam.auth_session_store import auth_session_files_by_email
 
         auth_session_files = auth_session_files_by_email(emails)
     except Exception:
         auth_session_files = {}
+    if single_account and emails and not auth_session_files.get(emails[0]):
+        try:
+            from autoteam.auth_session_store import get_auth_session_file
+
+            auth_session_file = get_auth_session_file(emails[0]) or ""
+            if auth_session_file:
+                auth_session_files[emails[0]] = auth_session_file
+        except Exception:
+            pass
 
     sanitized_rows = []
     for acc in accounts:
         email = _normalized_email(acc.get("email"))
         quota_snapshot = quota_cache.get(email) if isinstance(quota_cache, dict) else None
-        sanitized_rows.append(_sanitize_account_with_indexes(acc, quota_snapshot, auth_files, auth_session_files, main_email))
+        sanitized_rows.append(_sanitize_account_with_indexes(acc, quota_snapshot, auth_metadata, auth_session_files, main_email))
     return sanitized_rows
 
 
 def _sanitize_account_with_indexes(
     acc: dict,
     quota_snapshot: dict | None,
-    auth_files: dict[str, str],
+    auth_metadata: dict[str, dict],
     auth_session_files: dict[str, str],
     main_email: str = "",
 ) -> dict:
     sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
     email = _normalized_email(acc.get("email"))
-    is_main = bool(email and (email == main_email or _is_main_account_email(email)))
+    is_main = bool(email and main_email and email == main_email)
     sanitized["is_main_account"] = is_main
     status = acc.get("status", "")
     if status in ("personal", "plus"):
@@ -3281,7 +3313,8 @@ def _sanitize_account_with_indexes(
     sanitized["credentials_exported_at"] = acc.get("credentials_exported_at")
     sanitized["account_hub_synced"] = bool(acc.get("account_hub_synced"))
     sanitized["account_hub_synced_at"] = acc.get("account_hub_synced_at")
-    indexed_auth_file = auth_files.get(email) or ""
+    indexed_auth = auth_metadata.get(email) if isinstance(auth_metadata, dict) else {}
+    indexed_auth_file = str((indexed_auth or {}).get("file_path") or "").strip()
     if indexed_auth_file:
         try:
             from autoteam.auth_storage import AUTH_DIR
@@ -3289,24 +3322,20 @@ def _sanitize_account_with_indexes(
             Path(indexed_auth_file).resolve().relative_to(AUTH_DIR.resolve())
         except Exception:
             indexed_auth_file = ""
-    codex_auth_file = _resolve_codex_auth_file(acc) or indexed_auth_file
+    codex_auth_file = indexed_auth_file or _valid_account_auth_file(acc)
     if not codex_auth_file and sanitized["is_main_account"]:
         codex_auth_file = _resolve_codex_auth_file(acc)
     sanitized["codex_auth_file"] = codex_auth_file
     sanitized["has_codex_auth_file"] = bool(codex_auth_file)
-    sanitized["codex_auth_synthetic"] = _codex_auth_file_is_synthetic(codex_auth_file)
+    if codex_auth_file and indexed_auth_file and codex_auth_file == indexed_auth_file:
+        sanitized["codex_auth_synthetic"] = bool((indexed_auth or {}).get("synthetic"))
+    else:
+        sanitized["codex_auth_synthetic"] = _codex_auth_file_is_synthetic(codex_auth_file)
     sanitized["needs_codex_login"] = (
         not sanitized["is_main_account"]
         and (not bool(codex_auth_file) or bool(sanitized["codex_auth_synthetic"]))
     )
     auth_session_file = auth_session_files.get(email, "")
-    if not auth_session_file:
-        try:
-            from autoteam.auth_session_store import get_auth_session_file
-
-            auth_session_file = get_auth_session_file(email) or ""
-        except Exception:
-            auth_session_file = ""
     sanitized["auth_session_file"] = auth_session_file
     return sanitized
 

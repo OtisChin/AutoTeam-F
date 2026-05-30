@@ -229,10 +229,7 @@ def _is_luckmail_token_missing(acc: dict) -> bool:
     if token.startswith("tok_"):
         return False
     provider = str(acc.get("mail_provider") or "").strip().lower()
-    if provider:
-        return provider == "luckmail"
-    domain = email.rsplit("@", 1)[-1]
-    return domain.startswith("outlook.") or domain in {"outlook.com", "hotmail.com", "live.com"}
+    return provider == "luckmail"
 
 
 def _purchase_item_to_luckmail_token(item: dict) -> tuple[str, str] | None:
@@ -355,14 +352,26 @@ def build_upload_payload(
 
     name = str(node_name or get_config().get("name") or default_node_name()).strip() or default_node_name()
     accounts = load_accounts()
+    accounts = _filter_accounts_by_emails(accounts, selected_emails)
+    if syncable_only:
+        accounts = _syncable_accounts(accounts)
     restored = _restore_luckmail_tokens_for_accounts(accounts)
     if restored:
         from autoteam.accounts import save_accounts
 
-        save_accounts(accounts)
-    accounts = _filter_accounts_by_emails(accounts, selected_emails)
-    if syncable_only:
-        accounts = _syncable_accounts(accounts)
+        all_accounts = load_accounts()
+        restored_by_email = {
+            str(acc.get("email") or "").strip().lower(): acc
+            for acc in accounts
+            if isinstance(acc, dict) and str(acc.get("email") or "").strip()
+        }
+        for acc in all_accounts:
+            email = str(acc.get("email") or "").strip().lower()
+            restored_acc = restored_by_email.get(email)
+            if restored_acc:
+                acc["cloudmail_account_id"] = restored_acc.get("cloudmail_account_id")
+                acc["mail_provider"] = restored_acc.get("mail_provider")
+        save_accounts(all_accounts)
     luckmail_tokens = _luckmail_tokens_by_email()
     accounts_payload = [_account_payload_for_hub(acc, luckmail_tokens) for acc in accounts]
     auths = []

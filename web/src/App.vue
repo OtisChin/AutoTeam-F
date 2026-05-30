@@ -408,26 +408,32 @@ function navigateTo(page) {
 
 async function refresh() {
   loading.value = true
+  const tasksPromise = loadOrFallback(api.getTasks(), tasks.value || [], 'tasks')
+  const adminPromise = loadOrFallback(api.getAdminStatus(), adminStatus.value || null, 'admin-status')
+  const codexPromise = loadOrFallback(api.getMainCodexStatus(), codexStatus.value || null, 'main-codex-status')
+  const manualAccountPromise = loadOrFallback(api.getManualAccountStatus(), manualAccountStatus.value || null, 'manual-account-status')
+  const auxiliaryPromise = Promise.all([tasksPromise, adminPromise, codexPromise, manualAccountPromise])
+    .then(([t, admin, codex, manualAccount]) => {
+      tasks.value = t
+      adminStatus.value = admin
+      codexStatus.value = codex
+      manualAccountStatus.value = manualAccount
+      runningTask.value = t.find(task =>
+        (task.status === 'running' || task.status === 'pending') && task.command === 'refresh-quota'
+      ) || t.find(task =>
+        (task.status === 'running' || task.status === 'pending') && task.exclusive !== false
+      ) || null
+      syncPollingWithTasks()
+    })
+    .catch(e => {
+      if (e.status === 401) {
+        authenticated.value = false
+      } else {
+        console.warn('辅助状态刷新失败:', e)
+      }
+    })
   try {
-    const [s, t, admin, codex, manualAccount] = await Promise.all([
-      loadDashboardStatus(),
-      loadOrFallback(api.getTasks(), tasks.value || [], 'tasks'),
-      loadOrFallback(api.getAdminStatus(), adminStatus.value || null, 'admin-status'),
-      loadOrFallback(api.getMainCodexStatus(), codexStatus.value || null, 'main-codex-status'),
-      loadOrFallback(api.getManualAccountStatus(), manualAccountStatus.value || null, 'manual-account-status'),
-    ])
-    status.value = s
-    tasks.value = t
-    adminStatus.value = admin
-    codexStatus.value = codex
-    manualAccountStatus.value = manualAccount
-    runningTask.value = t.find(task =>
-      (task.status === 'running' || task.status === 'pending') && task.command === 'refresh-quota'
-    ) || t.find(task =>
-      (task.status === 'running' || task.status === 'pending') && task.exclusive !== false
-    ) || null
-    refreshFullStatusInBackground()
-    syncPollingWithTasks()
+    status.value = await loadDashboardStatus()
   } catch (e) {
     if (e.status === 401) {
       authenticated.value = false
@@ -437,6 +443,10 @@ async function refresh() {
   } finally {
     loading.value = false
   }
+
+  void auxiliaryPromise
+
+  refreshFullStatusInBackground()
 }
 
 function onTaskStarted() {
