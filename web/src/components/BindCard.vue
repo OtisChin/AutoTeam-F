@@ -1130,14 +1130,14 @@
                   v-model.number="gopayForm.gopayConcurrency"
                   type="number"
                   min="1"
-                  max="3"
+                  max="5"
                   step="1"
                   :disabled="gopaySubmitting || gopayTaskRunning || gopayForm.autoRegister || Boolean(gopayForm.checkoutUrl)"
                   class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div class="text-xs text-gray-500">
-                待重试最多 3 轮，退避 60s / 120s；并发仅用于批量账号绑定，自动注册 ChatGPT 账号保持顺序。
+                待重试最多 3 轮，退避 60s / 120s；并发最多 5，仅用于批量账号绑定，自动注册 ChatGPT 账号保持顺序。
               </div>
             </div>
           </div>
@@ -2468,7 +2468,7 @@ function normalizeGoPayPendingRetryAttempts(value) {
 function normalizeGoPayConcurrency(value) {
   const count = Number(value ?? 1)
   if (!Number.isFinite(count)) return 1
-  return Math.max(1, Math.min(3, Math.floor(count)))
+  return Math.max(1, Math.min(5, Math.floor(count)))
 }
 
 async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {

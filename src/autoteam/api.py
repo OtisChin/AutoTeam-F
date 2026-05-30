@@ -8796,7 +8796,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     except Exception:
         pending_retry_attempts = 1
     try:
-        requested_gopay_concurrency = max(1, min(3, int(params.gopay_concurrency or 1)))
+        requested_gopay_concurrency = max(1, min(5, int(params.gopay_concurrency or 1)))
     except Exception:
         requested_gopay_concurrency = 1
     gopay_concurrency = requested_gopay_concurrency
