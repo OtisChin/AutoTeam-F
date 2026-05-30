@@ -9743,6 +9743,18 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 or "already subscribed" in text
             )
 
+        def _is_gopay_wallet_signup_failure_result(result_payload: dict | None, retry_reason: str = "") -> bool:
+            if not isinstance(result_payload, dict) or result_payload.get("status") == "success":
+                return False
+            stage = str(result_payload.get("failure_stage") or "")
+            reason = str(retry_reason or "")
+            return stage in {
+                "gopay_wallet_no_numbers",
+                "gopay_wallet_provider_unavailable",
+                "gopay_wallet_network_error",
+                "gopay_wallet_rate_limited",
+            } or reason in {"gopay_wallet_no_numbers", "rate_limited"}
+
         def _preserve_gopay_wallet(wallet) -> None:
             with gopay_state_lock:
                 if wallet in reusable_gopay_wallets:
@@ -10865,6 +10877,27 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         "message": f"{exception_message_prefix}: {exc}",
                         "screenshot_paths": [],
                     }
+                    if failure_stage in {"gopay_wallet_no_numbers"} and wallet_attempt < max_wallet_attempts:
+                        last_result = single_result
+                        auto_wallet = None
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_wallet_signup_retry_same_account",
+                                "email": bind_email,
+                                "current": index,
+                                "total": total,
+                                "attempt": wallet_attempt + 1,
+                                "max_attempts": max_wallet_attempts,
+                                "failure_stage": failure_stage,
+                                "message": (
+                                    f"GoPay 钱包注册未拿到可用手机号，继续为当前账号重新注册钱包后绑定: "
+                                    f"{_compact_log_text(exc, limit=180)}"
+                                ),
+                                "level": "warn",
+                            },
+                        )
+                        continue
 
                 last_result = single_result
                 if not _is_gopay_wallet_bound_elsewhere_result(single_result):
@@ -11581,6 +11614,21 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 )
                 retry_reason = "" if _is_gopay_wallet_bound_elsewhere_result(single_result) else _gopay_pending_retry_reason(single_result)
                 account_side_failure = _is_gopay_account_side_failure_result(single_result, retry_reason)
+                wallet_signup_failure = _is_gopay_wallet_signup_failure_result(single_result, retry_reason)
+                if wallet_signup_failure:
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_wallet_signup_failed_no_account_retry",
+                            "email": single_email,
+                            "retry_round": retry_round,
+                            "max_retry_rounds": pending_retry_attempts,
+                            "reason": retry_reason,
+                            "failure_stage": single_result.get("failure_stage") or "",
+                            "message": f"GoPay 钱包注册阶段失败，账号尚未进入绑定，不加入账号待重试池: {single_email}",
+                            "level": "warn",
+                        },
+                    )
                 if account_side_failure and auto_wallet is not None and not _is_gopay_wallet_bound_elsewhere_result(single_result):
                     _preserve_gopay_wallet(auto_wallet)
                     _append_task_progress(
@@ -11596,7 +11644,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             "level": "warn",
                         },
                     )
-                if single_email and retry_reason and not account_side_failure and retry_round < pending_retry_attempts:
+                if single_email and retry_reason and not account_side_failure and not wallet_signup_failure and retry_round < pending_retry_attempts:
                     retry_source_stage = _gopay_pending_retry_source_stage(single_result, retry_reason)
                     failure_stage = str(single_result.get("failure_stage") or "")
                     failure_detail = _compact_log_text(single_result.get("message") or "", limit=220)
