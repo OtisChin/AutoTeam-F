@@ -11658,6 +11658,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     pending_retry_items.append(
                         {
                             "email": single_email,
+                            "index": index,
                             "reason": retry_reason,
                             "retry_round": retry_round,
                             "source_stage": retry_source_stage,
@@ -11784,10 +11785,190 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             auto_wallet=auto_wallet,
                         )
 
-            _run_parallel_round(candidates, retry_round=0)
+            scheduled_retry_items: list[dict[str, Any]] = []
+
+            def _pending_retry_emails() -> list[str]:
+                emails: list[str] = []
+                for item in [*pending_retry_items, *scheduled_retry_items]:
+                    candidate_email = _normalized_email(item.get("email") or "")
+                    if candidate_email:
+                        _append_unique(emails, candidate_email)
+                return emails
+
+            def _run_parallel_dynamic() -> None:
+                retry_backoffs = [60.0, 120.0]
+
+                def retry_wait_seconds(retry_round: int) -> float:
+                    return retry_backoffs[min(max(0, retry_round - 1), len(retry_backoffs) - 1)]
+
+                def schedule_pending_retries() -> None:
+                    while pending_retry_items:
+                        item = pending_retry_items.pop(0)
+                        retry_round = int(item.get("retry_round") or 0) + 1
+                        if retry_round > pending_retry_attempts:
+                            continue
+                        wait_seconds = retry_wait_seconds(retry_round)
+                        scheduled = dict(item)
+                        scheduled["retry_round"] = retry_round
+                        scheduled["due_at"] = time.time() + wait_seconds
+                        scheduled_retry_items.append(scheduled)
+                        retry_email = _normalized_email(scheduled.get("email") or "")
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_pending_retry_wait",
+                                "email": retry_email,
+                                "retry_round": retry_round,
+                                "max_retry_rounds": pending_retry_attempts,
+                                "pending_retry": len(_pending_retry_emails()),
+                                "delay_seconds": wait_seconds,
+                                "message": f"GoPay 并发待重试第 {retry_round}/{pending_retry_attempts} 轮将在 {wait_seconds:.0f}s 后开始: {retry_email}",
+                            },
+                        )
+
+                def pop_due_retry() -> dict[str, Any] | None:
+                    if not scheduled_retry_items:
+                        return None
+                    scheduled_retry_items.sort(key=lambda item: (float(item.get("due_at") or 0), int(item.get("retry_round") or 0)))
+                    if float(scheduled_retry_items[0].get("due_at") or 0) <= time.time():
+                        return scheduled_retry_items.pop(0)
+                    return None
+
+                def next_retry_due_in() -> float | None:
+                    if not scheduled_retry_items:
+                        return None
+                    return max(0.0, min(float(item.get("due_at") or 0) for item in scheduled_retry_items) - time.time())
+
+                def finish_future(future, *, index: int, round_total: int, retry_round: int, normalized_candidate: str) -> None:
+                    auto_wallet = None
+                    try:
+                        index, normalized_candidate, result_retry_round, single_result, auto_wallet = future.result()
+                    except _GoPayWalletSignupRateLimited as exc:
+                        result_retry_round = retry_round
+                        single_result = {"status": "failed", "failure_stage": "gopay_wallet_rate_limited", "message": str(exc), "screenshot_paths": []}
+                    except _GoPayWalletSignupNetworkError as exc:
+                        result_retry_round = retry_round
+                        single_result = {"status": "failed", "failure_stage": "gopay_wallet_network_error", "message": str(exc), "screenshot_paths": []}
+                    except _GoPayWalletSignupNoNumbers as exc:
+                        result_retry_round = retry_round
+                        single_result = {"status": "failed", "failure_stage": "gopay_wallet_no_numbers", "message": str(exc), "screenshot_paths": []}
+                    except Exception as exc:
+                        result_retry_round = retry_round
+                        logger.exception(
+                            "[gopay-bind] parallel GoPay auto-signup bind failed: index=%s/%s email=%s retry_round=%s",
+                            index,
+                            round_total,
+                            _safe_email_summary(normalized_candidate),
+                            retry_round,
+                        )
+                        single_result = {
+                            "status": "failed",
+                            "failure_stage": "post_submit",
+                            "message": f"GoPay 自动注册后绑定异常: {exc}",
+                            "screenshot_paths": [],
+                        }
+                    _record_parallel_result(
+                        index=index,
+                        round_total=round_total,
+                        retry_round=result_retry_round,
+                        normalized_candidate=normalized_candidate,
+                        single_result=single_result,
+                        auto_wallet=auto_wallet,
+                    )
+                    schedule_pending_retries()
+
+                initial_items: list[tuple[int, Any, int, int]] = [
+                    (index, candidate_payload, total, 0)
+                    for index, candidate_payload in enumerate(candidates, 1)
+                    if _candidate_payload_email(candidate_payload)
+                ]
+                worker_count = max(1, min(gopay_concurrency, max(1, len(initial_items))))
+                worker_slots: queue.Queue[int] = queue.Queue()
+                for worker_index in range(1, worker_count + 1):
+                    worker_slots.put(worker_index)
+                active: dict[Any, tuple[int, int, int, str]] = {}
+
+                def submit_item(executor: ThreadPoolExecutor, item: tuple[int, Any, int, int]) -> None:
+                    index, candidate_payload, round_total, retry_round = item
+                    candidate_email = _candidate_payload_email(candidate_payload)
+                    if not candidate_email:
+                        return
+                    future = executor.submit(_worker, (index, candidate_payload, round_total, retry_round, worker_slots))
+                    active[future] = (index, round_total, retry_round, candidate_email)
+                    _append_unique(attempted_emails, candidate_email)
+                    if retry_round:
+                        _append_unique(retried_emails, candidate_email)
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_pending_retry_started",
+                                "email": candidate_email,
+                                "retry_round": retry_round,
+                                "max_retry_rounds": pending_retry_attempts,
+                                "pending_retry": len(_pending_retry_emails()),
+                                "concurrency": gopay_concurrency,
+                                "message": f"开始并发 GoPay 待重试第 {retry_round}/{pending_retry_attempts} 轮: {candidate_email}",
+                            },
+                        )
+
+                def submit_available(executor: ThreadPoolExecutor) -> None:
+                    while len(active) < worker_count and not cancel_signal.is_cancelled() and not _gopay_balance_insufficient_stop_requested():
+                        if initial_items:
+                            submit_item(executor, initial_items.pop(0))
+                            continue
+                        retry_item = pop_due_retry()
+                        if not retry_item:
+                            break
+                        retry_email = _normalized_email(retry_item.get("email") or "")
+                        if not retry_email:
+                            continue
+                        submit_item(
+                            executor,
+                            (
+                                int(retry_item.get("index") or 1),
+                                {"email": retry_email, "wallet": retry_item.get("wallet")},
+                                total,
+                                int(retry_item.get("retry_round") or 0),
+                            ),
+                        )
+
+                with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="gopay-bind") as executor:
+                    while (
+                        initial_items or active or pending_retry_items or scheduled_retry_items
+                    ) and not cancel_signal.is_cancelled() and not _gopay_balance_insufficient_stop_requested():
+                        schedule_pending_retries()
+                        submit_available(executor)
+                        if not active:
+                            next_due = next_retry_due_in()
+                            if next_due is None:
+                                break
+                            cancel_event = _task_cancel_signals.get(task_id)
+                            if cancel_event is not None:
+                                if cancel_event.wait(next_due):
+                                    break
+                            elif next_due > 0:
+                                time.sleep(min(next_due, 1.0))
+                            continue
+                        timeout = None
+                        if len(active) < worker_count and not initial_items:
+                            timeout = next_retry_due_in()
+                        done, _ = wait(active.keys(), timeout=timeout, return_when=FIRST_COMPLETED)
+                        if not done:
+                            continue
+                        for future in done:
+                            index, round_total, retry_round, normalized_candidate = active.pop(future)
+                            finish_future(
+                                future,
+                                index=index,
+                                round_total=round_total,
+                                retry_round=retry_round,
+                                normalized_candidate=normalized_candidate,
+                            )
+
+            _run_parallel_dynamic()
 
             pending_retry_backoffs = [60.0, 120.0]
-            for retry_round in range(1, pending_retry_attempts + 1):
+            for retry_round in range(0):
                 if _gopay_balance_insufficient_stop_requested():
                     break
                 retry_candidates = pending_retry_items[:]
@@ -11879,7 +12060,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     "nonzero_blocked_emails": nonzero_blocked_emails,
                     "blocked_emails": blocked_emails,
                     "failed_emails": failed_emails,
-                    "pending_retry_emails": [item["email"] for item in pending_retry_items if item.get("email")],
+                    "pending_retry_emails": _pending_retry_emails(),
                     "retried_emails": retried_emails,
                     "concurrency": gopay_concurrency,
                 }
