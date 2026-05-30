@@ -918,6 +918,9 @@ def _gopay_pending_retry_reason(result: dict | None) -> str:
         "gopay_payment_confirm",
         "browser_checkout",
         "generate_checkout",
+        "chatgpt_http_session",
+        "chatgpt_verify",
+        "chatgpt_approve",
     }:
         return "transient_gopay_flow"
     return ""

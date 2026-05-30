@@ -8665,6 +8665,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         STATUS_ACTIVE,
         STATUS_FAIL,
         STATUS_PERSONAL,
+        STATUS_PLUS,
         add_account,
         ensure_session_only_account,
         find_account,
@@ -8675,8 +8676,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     from autoteam.bind_audit import record_bind_audit
     from autoteam.config import normalize_proxy_url
     from autoteam.gopay_executor import (
-        _is_chatgpt_approve_blocked_result,
         _is_chatgpt_token_invalidated_result,
+        _is_chatgpt_user_paid_result,
+        _as_chatgpt_user_paid_success,
         _compact_log_text,
         _looks_like_gopay_rate_limit_text,
         _gopay_pending_retry_reason,
@@ -9335,7 +9337,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 "last_bind_task_id": task_id,
                 "last_bind_message": message or "GoPay 绑定成功",
                 "last_bind_failure_stage": "",
-                "status": STATUS_ACTIVE,
+                "status": STATUS_PLUS,
                 "account_type": ACCOUNT_TYPE_PLUS,
                 "seat_type": SEAT_CODEX,
                 "account_source": ACCOUNT_SOURCE_MANAGED,
@@ -9728,19 +9730,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 return False
             stage = str(result_payload.get("failure_stage") or "")
             reason = str(retry_reason or "")
-            if _is_chatgpt_approve_blocked_result(result_payload) or _is_chatgpt_token_invalidated_result(result_payload):
-                return True
-            if reason in {"chatgpt_approve_blocked", "http_403"}:
-                return True
-            if stage in {"generate_checkout", "chatgpt_http_session", "chatgpt_verify", "chatgpt_approve"}:
+            if _is_chatgpt_token_invalidated_result(result_payload):
                 return True
             text = json.dumps(result_payload, ensure_ascii=False).lower()
             return (
                 "token_invalidated" in text
                 or "authentication token has been invalidated" in text
-                or "user is paid" in text
-                or "already a paid user" in text
-                or "already subscribed" in text
             )
 
         def _is_gopay_wallet_signup_failure_result(result_payload: dict | None, retry_reason: str = "") -> bool:
@@ -11605,6 +11600,35 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 ):
                     _preserve_gopay_wallet(auto_wallet)
 
+                if _is_chatgpt_user_paid_result(single_result):
+                    paid_success = _as_chatgpt_user_paid_success(
+                        single_result,
+                        checkout_url=str(single_result.get("checkout_url") or checkout_url or ""),
+                        billing_info=single_result.get("billing_info") if isinstance(single_result.get("billing_info"), dict) else None,
+                    )
+                    _append_unique(successful_emails, single_email)
+                    if single_email:
+                        _mark_gopay_success_account(
+                            single_email,
+                            message=paid_success.get("message") or "ChatGPT account is already Plus",
+                            success_checkout_url=paid_success.get("checkout_url") or checkout_url or "",
+                        )
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_auto_signup_account_success",
+                            "email": single_email,
+                            "current": index,
+                            "total": round_total,
+                            "retry_round": retry_round,
+                            "max_retry_rounds": pending_retry_attempts,
+                            "successful": len(successful_emails),
+                            "message": f"GoPay account is already Plus, counted as success: {single_email} ({index}/{round_total})",
+                            **_gopay_success_progress_fields(),
+                        },
+                    )
+                    return
+
                 failed_emails.append(
                     {
                         "email": single_email,
@@ -11613,7 +11637,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         "retry_round": retry_round,
                     }
                 )
-                retry_reason = "" if _is_gopay_wallet_bound_elsewhere_result(single_result) else _gopay_pending_retry_reason(single_result)
+                retry_reason = _gopay_pending_retry_reason(single_result)
+                if not retry_reason and _is_gopay_wallet_bound_elsewhere_result(single_result):
+                    retry_reason = "gopay_already_linked"
                 account_side_failure = _is_gopay_account_side_failure_result(single_result, retry_reason)
                 wallet_signup_failure = _is_gopay_wallet_signup_failure_result(single_result, retry_reason)
                 if wallet_signup_failure:
