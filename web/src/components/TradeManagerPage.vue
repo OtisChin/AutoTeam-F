@@ -127,6 +127,13 @@
                   <div class="flex justify-end gap-2">
                     <button @click="copyText(item.code)" class="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700">复制</button>
                     <button
+                      @click="downloadCdkRedemptions(item.code)"
+                      :disabled="downloadingCode === item.code || !item.used_count"
+                      class="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-40"
+                    >
+                      {{ downloadingCode === item.code ? '下载中' : '下载' }}
+                    </button>
+                    <button
                       @click="revokeCdk(item.code)"
                       :disabled="revokingCode === item.code || item.status !== 'active'"
                       class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
@@ -151,6 +158,7 @@ import { api } from '../api.js'
 const loading = ref(false)
 const creating = ref(false)
 const revokingCode = ref('')
+const downloadingCode = ref('')
 const summary = ref(null)
 const cdks = ref([])
 const quotaTotal = ref(1)
@@ -224,6 +232,36 @@ async function revokeCdk(code) {
     showMessage(e.message, 'error')
   } finally {
     revokingCode.value = ''
+  }
+}
+
+function saveBase64File(filename, contentType, contentBase64) {
+  const binary = atob(contentBase64 || '')
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  const blob = new Blob([bytes], { type: contentType || 'application/octet-stream' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename || 'download.zip'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+async function downloadCdkRedemptions(code) {
+  downloadingCode.value = code
+  try {
+    const payload = await api.downloadTradeCdkRedemptions(code)
+    saveBase64File(payload.filename, payload.content_type, payload.content_base64)
+    showMessage(`已下载 ${payload.count || 0} 个账号`)
+  } catch (e) {
+    showMessage(e.message, 'error')
+  } finally {
+    downloadingCode.value = ''
   }
 }
 

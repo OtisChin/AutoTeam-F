@@ -7531,6 +7531,16 @@ def post_trade_cdk_revoke(code: str):
         _trade_http_error(exc)
 
 
+@app.get("/api/trade/cdks/{code}/redemptions/download")
+def get_trade_cdk_redemptions_download(code: str):
+    from autoteam.trade import download_cdk_redemptions
+
+    try:
+        return download_cdk_redemptions(code)
+    except Exception as exc:
+        _trade_http_error(exc)
+
+
 @app.post("/api/public/plus-extractor/redeem")
 def post_public_plus_extractor_redeem(params: TradeRedeemParams):
     from autoteam.trade import redeem_cdk
@@ -8796,7 +8806,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     except Exception:
         pending_retry_attempts = 1
     try:
-        requested_gopay_concurrency = max(1, min(5, int(params.gopay_concurrency or 1)))
+        requested_gopay_concurrency = max(1, min(10, int(params.gopay_concurrency or 1)))
     except Exception:
         requested_gopay_concurrency = 1
     gopay_concurrency = requested_gopay_concurrency

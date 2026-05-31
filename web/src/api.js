@@ -109,6 +109,7 @@ export const api = {
   createTradeCdk: (quotaTotal, note = '') => request('POST', '/trade/cdks', { quota_total: quotaTotal, note }),
   getTradeCdk: (code) => request('GET', `/trade/cdks/${encodeURIComponent(code)}`),
   revokeTradeCdk: (code) => request('POST', `/trade/cdks/${encodeURIComponent(code)}/revoke`),
+  downloadTradeCdkRedemptions: (code) => request('GET', `/trade/cdks/${encodeURIComponent(code)}/redemptions/download`),
 
   startRotate: (target = 5) => request('POST', '/tasks/rotate', { target }),
   startCheck: () => request('POST', '/tasks/check'),

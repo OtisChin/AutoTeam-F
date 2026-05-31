@@ -939,6 +939,91 @@ def download_cdk_redemption_batch(code: str, password: str, batch_id: str) -> di
     }
 
 
+def download_cdk_redemptions(code: str) -> dict:
+    code = validate_code(code)
+    sqlite_store.initialize()
+    with sqlite_store.connect() as conn:
+        row = conn.execute("SELECT * FROM plus_cdks WHERE code = ?", (code,)).fetchone()
+        if not row:
+            raise TradeError("CDK 不存在", status_code=404)
+        records = conn.execute(
+            """
+            SELECT batch_id, email, format, redeemed_at
+            FROM plus_cdk_redemptions
+            WHERE code = ?
+            ORDER BY redeemed_at ASC, id ASC
+            """,
+            (code,),
+        ).fetchall()
+        if not records:
+            raise TradeError("该 CDK 暂无提取记录", status_code=404)
+        cdk = _row_to_cdk(row, used_count=_cdk_used_count(conn, code), latest_redeemed_at=_cdk_latest_redeemed_at(conn, code))
+
+    batches: dict[str, dict] = {}
+    batch_order: list[str] = []
+    for record in records:
+        batch_id = str(record["batch_id"] or "").strip()
+        if not batch_id:
+            batch_id = "legacy"
+        if batch_id not in batches:
+            batch_order.append(batch_id)
+            batches[batch_id] = {
+                "batch_id": batch_id,
+                "redeemed_at": float(record["redeemed_at"] or 0),
+                "formats": _formats_from_stored(record["format"]),
+                "emails": [],
+            }
+        email = str(record["email"] or "").strip().lower()
+        if email:
+            batches[batch_id]["emails"].append(email)
+
+    manifest_batches = []
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, batch_id in enumerate(batch_order, start=1):
+            batch = batches[batch_id]
+            emails = list(dict.fromkeys(batch["emails"]))
+            formats = ["cpa", "sub", "credentials"]
+            sources = _bundle_sources_for_emails(emails, formats)
+            payload = _export_payload_from_bundle_sources(sources, formats)
+            raw = base64.b64decode(payload["content_base64"])
+            folder = f"{index:03d}-{time.strftime('%Y%m%d-%H%M%S', time.localtime(batch['redeemed_at'] or 0))}-{batch_id[:8]}"
+            archive.writestr(f"{folder}/{payload['filename']}", raw)
+            archive.writestr(f"{folder}/emails.txt", "\n".join(source["email"] for source in sources))
+            manifest_batches.append(
+                {
+                    "batch_id": batch_id,
+                    "redeemed_at": batch["redeemed_at"],
+                    "formats": formats,
+                    "count": len(sources),
+                    "emails": [source["email"] for source in sources],
+                    "filename": f"{folder}/{payload['filename']}",
+                }
+            )
+
+        manifest = {
+            "code": code,
+            "quota_total": cdk["quota_total"],
+            "used_count": cdk["used_count"],
+            "remaining": cdk["remaining"],
+            "latest_redeemed_at": cdk["latest_redeemed_at"],
+            "batch_count": len(manifest_batches),
+            "count": sum(batch["count"] for batch in manifest_batches),
+            "batches": manifest_batches,
+        }
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+
+    return {
+        "code": code,
+        "batch_count": len(manifest_batches),
+        "count": manifest["count"],
+        "emails": [email for batch in manifest_batches for email in batch["emails"]],
+        "filename": f"{code}-redemptions-{time.strftime('%Y%m%d-%H%M%S')}.zip",
+        "content_type": "application/zip",
+        "content_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }
+
+
 def redeem_cdk(code: str, password: str, count: int, export_format: str | list[str]) -> dict:
     code = validate_code(code)
     password_value = str(password or "")
@@ -1006,6 +1091,11 @@ def redeem_cdk(code: str, password: str, count: int, export_format: str | list[s
 
         if len(selected) < requested_count:
             raise TradeError("Plus 库存竞争冲突，请重试")
+        for source in selected:
+            conn.execute(
+                "UPDATE accounts SET credentials_exported = 1, updated_at = ? WHERE lower(email) = ?",
+                (redeemed_at, source["email"]),
+            )
         if requested_count >= remaining:
             conn.execute(
                 "UPDATE plus_cdks SET status = 'exhausted', updated_at = ? WHERE code = ?",
