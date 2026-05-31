@@ -661,15 +661,55 @@
                     <option value="smscode">smscode.gg</option>
                   </select>
                 </div>
+                <div>
+                  <label class="mb-1 block text-xs text-emerald-200/80">余额查询间隔(s)</label>
+                  <input
+                    v-model.number="gopayRuntimeBalancePollIntervalSeconds"
+                    type="number"
+                    min="0"
+                    max="300"
+                    step="1"
+                    class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-xs text-emerald-200/80">转账到账等待(s)</label>
+                  <input
+                    v-model.number="gopayRuntimeTransferBalanceWaitSeconds"
+                    type="number"
+                    min="0"
+                    max="1800"
+                    step="1"
+                    class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
               </div>
-              <div class="mt-2">
-                <label class="mb-1 block text-xs text-emerald-200/80">追加账号</label>
-                <textarea
-                  v-model="gopayRuntimeAppendEmailsText"
-                  rows="2"
-                  placeholder="每行一个邮箱"
-                  class="w-full resize-y px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
-                ></textarea>
+              <div class="mt-2 rounded-lg border border-emerald-500/20 bg-gray-900/70 px-3 py-3">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="mb-1 text-xs text-emerald-200/80">追加账号</div>
+                    <div class="text-sm text-gray-200">已选择 {{ gopayRuntimeAppendEmails.length }} 个待追加账号</div>
+                  </div>
+                  <button
+                    type="button"
+                    @click="openGoPayAccountPicker('runtime')"
+                    :disabled="loadingAccounts"
+                    class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-200 border-emerald-500/30 transition disabled:opacity-50"
+                  >
+                    {{ loadingAccounts ? '加载中...' : '选择账号' }}
+                  </button>
+                </div>
+                <div v-if="gopayRuntimeAppendEmails.length" class="mt-2 flex flex-wrap gap-2">
+                  <span
+                    v-for="email in gopayRuntimeAppendPreviewEmails"
+                    :key="`runtime-append-${email}`"
+                    class="max-w-full truncate rounded-md border border-emerald-500/20 bg-gray-950 px-2 py-1 text-xs text-gray-300 font-mono">
+                    {{ email }}
+                  </span>
+                  <span v-if="gopayRuntimeAppendEmails.length > gopayRuntimeAppendPreviewEmails.length" class="rounded-md border border-emerald-500/20 bg-gray-950 px-2 py-1 text-xs text-gray-500">
+                    +{{ gopayRuntimeAppendEmails.length - gopayRuntimeAppendPreviewEmails.length }}
+                  </span>
+                </div>
               </div>
               <button
                 type="button"
@@ -785,7 +825,7 @@
                 </div>
                 <button
                   type="button"
-                  @click="openGoPayAccountPicker"
+                  @click="openGoPayAccountPicker('batch')"
                   :disabled="gopaySubmitting || gopayTaskRunning || loadingAccounts"
                   class="shrink-0 px-4 py-2 rounded-lg text-sm border bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/30 transition disabled:opacity-50">
                   {{ loadingAccounts ? '加载中...' : '选择账号' }}
@@ -1782,8 +1822,8 @@
       <div class="w-full max-w-3xl max-h-[82vh] rounded-xl border border-gray-800 bg-gray-900 shadow-2xl flex flex-col">
         <div class="flex items-center justify-between gap-4 px-5 py-4 border-b border-gray-800">
           <div>
-            <h4 class="text-lg font-semibold text-white">批量选择账号</h4>
-            <div class="text-xs text-gray-500 mt-1">已选择 {{ gopaySelectedBatchEmails.length }} / {{ accountOptions.length }} 个账号</div>
+            <h4 class="text-lg font-semibold text-white">{{ gopayAccountPickerTitle }}</h4>
+            <div class="text-xs text-gray-500 mt-1">{{ gopayAccountPickerHelp }}</div>
           </div>
           <button
             type="button"
@@ -1809,14 +1849,14 @@
               <button
                 type="button"
                 @click="selectAllGoPayAccounts"
-                :disabled="loadingAccounts || !accountOptions.length || gopayAllAccountsSelected"
+                :disabled="loadingAccounts || !accountOptions.length || gopayAllPickerAccountsSelected"
                 class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
                 全选
               </button>
               <button
                 type="button"
-                @click="clearGoPayBatchAccounts"
-                :disabled="!gopaySelectedBatchEmails.length"
+                @click="clearGoPayPickerAccounts"
+                :disabled="!activeGoPayAccountPickerEmails.length"
                 class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
                 清空
               </button>
@@ -1831,7 +1871,7 @@
             class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-gray-200 hover:bg-gray-800 cursor-pointer"
           >
             <input
-              v-model="gopayForm.accountEmails"
+              v-model="activeGoPayAccountPickerEmails"
               type="checkbox"
               :value="account.email"
               class="accent-blue-500"
@@ -1925,9 +1965,11 @@ const gopaySmsbowerPriceQueryResult = ref(null)
 const gopaySmscodePriceQueryLoading = ref(false)
 const gopaySmscodePriceQueryResult = ref(null)
 const gopayRuntimeUpdating = ref(false)
-const gopayRuntimeAppendEmailsText = ref('')
+const gopayRuntimeAppendEmails = ref([])
 const gopayRuntimeConcurrency = ref(1)
 const gopayRuntimeSmsProvider = ref('smscloud')
+const gopayRuntimeBalancePollIntervalSeconds = ref(20)
+const gopayRuntimeTransferBalanceWaitSeconds = ref(120)
 const gopayForm = ref({
   email: '',
   autoRegister: false,
@@ -2006,6 +2048,7 @@ const gopayForm = ref({
 })
 const gopayAccountSearchKeyword = ref('')
 const gopayAccountPickerOpen = ref(false)
+const gopayAccountPickerMode = ref('batch')
 const gopayAutoRegisterConfigOpen = ref(false)
 const gopayPhonePoolConfigOpen = ref(false)
 const gopayProxyPoolConfigOpen = ref(false)
@@ -2113,6 +2156,32 @@ const gopaySelectedBatchEmails = computed(() => {
     })
 })
 
+const gopayRuntimeAppendPreviewEmails = computed(() => gopayRuntimeAppendEmails.value.slice(0, 4))
+
+const activeGoPayAccountPickerEmails = computed({
+  get() {
+    return gopayAccountPickerMode.value === 'runtime'
+      ? gopayRuntimeAppendEmails.value
+      : gopaySelectedBatchEmails.value
+  },
+  set(emails) {
+    setGoPayPickerEmails(emails)
+  },
+})
+
+const gopayAccountPickerTitle = computed(() => (
+  gopayAccountPickerMode.value === 'runtime' ? '选择追加账号' : '批量选择账号'
+))
+
+const gopayAccountPickerHelp = computed(() => {
+  const selectedCount = activeGoPayAccountPickerEmails.value.length
+  const totalCount = accountOptions.value.length
+  if (gopayAccountPickerMode.value === 'runtime') {
+    return `已选择 ${selectedCount} / ${totalCount} 个待追加账号，应用热切换后加入当前任务队列`
+  }
+  return `已选择 ${selectedCount} / ${totalCount} 个账号`
+})
+
 const normalizedGoPayAutoRegisterCount = computed(() => {
   return normalizeGoPayAutoRegisterCount(gopayForm.value.autoRegisterCount)
 })
@@ -2198,9 +2267,9 @@ const gopayAllAutoRegisterDomainsSelected = computed(() => {
   return gopayRegisterDomainOptions.value.every(domain => selected.has(String(domain || '').toLowerCase()))
 })
 
-const gopayAllAccountsSelected = computed(() => {
+const gopayAllPickerAccountsSelected = computed(() => {
   if (!accountOptions.value.length) return false
-  const selected = new Set(gopaySelectedBatchEmails.value)
+  const selected = new Set(activeGoPayAccountPickerEmails.value)
   return accountOptions.value.every(account => selected.has(String(account.email || '').toLowerCase()))
 })
 
@@ -2520,17 +2589,10 @@ function normalizeGoPayConcurrency(value) {
   return Math.max(1, Math.min(10, Math.floor(count)))
 }
 
-function parseEmailLines(text) {
-  const seen = new Set()
-  return String(text || '')
-    .split(/[\s,;，；]+/)
-    .map(value => String(value || '').trim().toLowerCase())
-    .filter(value => {
-      if (!value || !value.includes('@')) return false
-      if (seen.has(value)) return false
-      seen.add(value)
-      return true
-    })
+function normalizeGoPayRuntimeSeconds(value, fallback, maxSeconds) {
+  const seconds = Number(value ?? fallback)
+  if (!Number.isFinite(seconds)) return fallback
+  return Math.max(0, Math.min(maxSeconds, Math.floor(seconds)))
 }
 
 async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
@@ -2799,6 +2861,26 @@ watch(
     const normalized = normalizeGoPayConcurrency(count)
     if (normalized !== count) {
       gopayForm.value.gopayConcurrency = normalized
+    }
+  }
+)
+
+watch(
+  gopayRuntimeBalancePollIntervalSeconds,
+  count => {
+    const normalized = normalizeGoPayRuntimeSeconds(count, 20, 300)
+    if (normalized !== count) {
+      gopayRuntimeBalancePollIntervalSeconds.value = normalized
+    }
+  }
+)
+
+watch(
+  gopayRuntimeTransferBalanceWaitSeconds,
+  count => {
+    const normalized = normalizeGoPayRuntimeSeconds(count, 120, 1800)
+    if (normalized !== count) {
+      gopayRuntimeTransferBalanceWaitSeconds.value = normalized
     }
   }
 )
@@ -3216,19 +3298,28 @@ function normalizeEmailList(value) {
     })
 }
 
-function mergeGoPayBatchEmails(emails) {
-  gopayForm.value.accountEmails = normalizeEmailList([
-    ...gopaySelectedBatchEmails.value,
+function setGoPayPickerEmails(emails) {
+  const normalized = normalizeEmailList(emails)
+  if (gopayAccountPickerMode.value === 'runtime') {
+    gopayRuntimeAppendEmails.value = normalized
+  } else {
+    gopayForm.value.accountEmails = normalized
+  }
+}
+
+function mergeGoPayPickerEmails(emails) {
+  setGoPayPickerEmails([
+    ...activeGoPayAccountPickerEmails.value,
     ...emails,
   ])
 }
 
 function selectAllGoPayAccounts() {
-  mergeGoPayBatchEmails(accountOptions.value.map(account => account.email))
+  mergeGoPayPickerEmails(accountOptions.value.map(account => account.email))
 }
 
-function clearGoPayBatchAccounts() {
-  gopayForm.value.accountEmails = []
+function clearGoPayPickerAccounts() {
+  setGoPayPickerEmails([])
 }
 
 async function loadGoPayAutoRegisterDomains() {
@@ -3411,7 +3502,8 @@ async function startWhatsAppOtpListener({ silent = false } = {}) {
   }
 }
 
-function openGoPayAccountPicker() {
+function openGoPayAccountPicker(mode = 'batch') {
+  gopayAccountPickerMode.value = mode === 'runtime' ? 'runtime' : 'batch'
   gopayAccountPickerOpen.value = true
 }
 
@@ -3580,6 +3672,8 @@ async function loadAccounts() {
       gopayForm.value.email = ''
     }
     gopayForm.value.accountEmails = normalizeEmailList(gopayForm.value.accountEmails)
+      .filter(email => selectableEmails.has(email))
+    gopayRuntimeAppendEmails.value = normalizeEmailList(gopayRuntimeAppendEmails.value)
       .filter(email => selectableEmails.has(email))
   } catch (e) {
     setMessage(`加载号池账号失败: ${e.message}`, false)
@@ -3779,6 +3873,8 @@ function hydrateGoPayTaskLog(task, restoreMessage = '') {
   if (isTaskActive(task)) {
     gopayRuntimeConcurrency.value = normalizeGoPayConcurrency(task.params?.gopay_concurrency || task.result?.concurrency || gopayForm.value.gopayConcurrency)
     gopayRuntimeSmsProvider.value = String(task.params?.gopay_auto_signup_sms_provider || task.result?.gopay_auto_signup_sms_provider || gopayForm.value.gopayAutoSignupSmsProvider || 'smscloud')
+    gopayRuntimeBalancePollIntervalSeconds.value = normalizeGoPayRuntimeSeconds(task.params?.gopay_balance_poll_interval_seconds, 20, 300)
+    gopayRuntimeTransferBalanceWaitSeconds.value = normalizeGoPayRuntimeSeconds(task.params?.gopay_transfer_balance_wait_seconds, 120, 1800)
   }
   rememberGoPayTaskId(task.task_id)
   if (restoreMessage) {
@@ -4403,7 +4499,9 @@ async function startGoPayBind() {
     gopayTask.value = task
     gopayRuntimeConcurrency.value = normalizedGoPayConcurrency.value
     gopayRuntimeSmsProvider.value = gopayAutoSignupProvider.value
-    gopayRuntimeAppendEmailsText.value = ''
+    gopayRuntimeBalancePollIntervalSeconds.value = normalizeGoPayRuntimeSeconds(task.params?.gopay_balance_poll_interval_seconds, 20, 300)
+    gopayRuntimeTransferBalanceWaitSeconds.value = normalizeGoPayRuntimeSeconds(task.params?.gopay_transfer_balance_wait_seconds, 120, 1800)
+    gopayRuntimeAppendEmails.value = []
     rememberGoPayTaskId(task.task_id)
     pushGoPayLog(`GoPay 任务已提交，任务 ID: ${task.task_id}`, 'success')
     setMessage(`GoPay 任务已提交: ${task.task_id}`)
@@ -4455,18 +4553,20 @@ async function skipGoPayCurrentAccount() {
 
 async function applyGoPayRuntimeControl() {
   if (!gopayTaskRunning.value || gopayRuntimeUpdating.value) return
-  const accountEmails = parseEmailLines(gopayRuntimeAppendEmailsText.value)
+  const accountEmails = normalizeEmailList(gopayRuntimeAppendEmails.value)
   gopayRuntimeUpdating.value = true
   try {
     const result = await api.updateGoPayRuntimeControl({
       task_id: gopayTask.value?.task_id || '',
       gopay_concurrency: normalizeGoPayConcurrency(gopayRuntimeConcurrency.value),
       gopay_auto_signup_sms_provider: gopayRuntimeSmsProvider.value,
+      gopay_balance_poll_interval_seconds: normalizeGoPayRuntimeSeconds(gopayRuntimeBalancePollIntervalSeconds.value, 20, 300),
+      gopay_transfer_balance_wait_seconds: normalizeGoPayRuntimeSeconds(gopayRuntimeTransferBalanceWaitSeconds.value, 120, 1800),
       account_emails: accountEmails,
     })
     const updates = result?.updates || {}
     if (updates.added_account_emails?.length) {
-      gopayRuntimeAppendEmailsText.value = ''
+      gopayRuntimeAppendEmails.value = []
     }
     pushGoPayLog(result?.message || 'GoPay 热切换已应用', 'success')
     setMessage(result?.message || 'GoPay 热切换已应用')

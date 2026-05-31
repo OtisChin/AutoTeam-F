@@ -95,6 +95,57 @@ def _gopay_wallet_balance_poll_intervals_from_env() -> list[float]:
     return [interval] * attempts
 
 
+def _default_gopay_wallet_balance_poll_interval_seconds() -> float:
+    intervals = _gopay_wallet_balance_poll_intervals_from_env()
+    for value in intervals:
+        try:
+            seconds = float(value)
+        except Exception:
+            continue
+        if seconds > 0:
+            return seconds
+    return 0.0
+
+
+def _default_gopay_wallet_balance_wait_seconds() -> float:
+    return sum(max(0.0, float(value or 0.0)) for value in _gopay_wallet_balance_poll_intervals_from_env())
+
+
+def _normalize_gopay_runtime_seconds(
+    value: int | float | str | None,
+    default: int | float,
+    *,
+    minimum: float = 0.0,
+    maximum: float = 1800.0,
+) -> float:
+    try:
+        raw = default if value is None else value
+        seconds = float(raw)
+    except Exception:
+        seconds = float(default or 0.0)
+    if seconds < minimum:
+        seconds = minimum
+    if seconds > maximum:
+        seconds = maximum
+    return round(seconds, 3)
+
+
+def _build_gopay_balance_poll_intervals(total_wait_seconds: float, interval_seconds: float) -> list[float]:
+    total_wait = max(0.0, float(total_wait_seconds or 0.0))
+    interval = max(0.0, float(interval_seconds or 0.0))
+    if total_wait <= 0 or interval <= 0:
+        return [0.0]
+    intervals: list[float] = []
+    remaining = total_wait
+    while remaining > 0:
+        wait_seconds = min(interval, remaining)
+        intervals.append(wait_seconds)
+        remaining = max(0.0, remaining - wait_seconds)
+        if len(intervals) >= 120:
+            break
+    return intervals or [0.0]
+
+
 def _gopay_auto_signup_prefetch_wallets() -> int:
     try:
         return max(0, min(2, int(os.environ.get("GOPAY_AUTO_SIGNUP_PREFETCH_WALLETS", "1") or "1")))
@@ -2907,6 +2958,14 @@ class GoPayRuntimeControlParams(BaseModel):
         default_factory=list,
         validation_alias=AliasChoices("account_emails", "accountEmails"),
     )
+    gopay_balance_poll_interval_seconds: float | None = Field(
+        None,
+        validation_alias=AliasChoices("gopay_balance_poll_interval_seconds", "gopayBalancePollIntervalSeconds"),
+    )
+    gopay_transfer_balance_wait_seconds: float | None = Field(
+        None,
+        validation_alias=AliasChoices("gopay_transfer_balance_wait_seconds", "gopayTransferBalanceWaitSeconds"),
+    )
 
 
 class PayPalTaskParams(BaseModel):
@@ -3197,6 +3256,8 @@ def _init_gopay_runtime_control(
     gopay_concurrency: int,
     sms_provider: str,
     account_emails: list[str],
+    balance_poll_interval_seconds: int | float | str | None = None,
+    transfer_balance_wait_seconds: int | float | str | None = None,
 ) -> dict[str, Any]:
     normalized_task_id = str(task_id or "").strip()
     if not normalized_task_id:
@@ -3214,6 +3275,22 @@ def _init_gopay_runtime_control(
         control.setdefault("all_account_emails", normalized_accounts[:])
         control.setdefault("gopay_concurrency", _normalize_gopay_runtime_concurrency(gopay_concurrency, 1))
         control.setdefault("gopay_auto_signup_sms_provider", _normalize_gopay_auto_signup_sms_provider(sms_provider or "smscloud"))
+        control.setdefault(
+            "gopay_balance_poll_interval_seconds",
+            _normalize_gopay_runtime_seconds(
+                balance_poll_interval_seconds,
+                _default_gopay_wallet_balance_poll_interval_seconds(),
+                maximum=300.0,
+            ),
+        )
+        control.setdefault(
+            "gopay_transfer_balance_wait_seconds",
+            _normalize_gopay_runtime_seconds(
+                transfer_balance_wait_seconds,
+                _default_gopay_wallet_balance_wait_seconds(),
+                maximum=1800.0,
+            ),
+        )
         control["version"] = int(control.get("version") or 0)
         return dict(control)
 
@@ -9347,6 +9424,29 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 or "smscloud"
             )
 
+        def _current_gopay_balance_poll_interval_seconds() -> float:
+            control = _gopay_runtime_control(task_id)
+            return _normalize_gopay_runtime_seconds(
+                control.get("gopay_balance_poll_interval_seconds"),
+                _default_gopay_wallet_balance_poll_interval_seconds(),
+                maximum=300.0,
+            )
+
+        def _current_gopay_transfer_balance_wait_seconds() -> float:
+            control = _gopay_runtime_control(task_id)
+            return _normalize_gopay_runtime_seconds(
+                control.get("gopay_transfer_balance_wait_seconds"),
+                _default_gopay_wallet_balance_wait_seconds(),
+                maximum=1800.0,
+            )
+
+        def _gopay_wallet_balance_poll_intervals(total_wait_seconds: float | None = None) -> list[float]:
+            total_wait = _default_gopay_wallet_balance_wait_seconds() if total_wait_seconds is None else total_wait_seconds
+            return _build_gopay_balance_poll_intervals(total_wait, _current_gopay_balance_poll_interval_seconds())
+
+        def _gopay_transfer_balance_poll_intervals() -> list[float]:
+            return _gopay_wallet_balance_poll_intervals(_current_gopay_transfer_balance_wait_seconds())
+
         def _runtime_account_total(default: int = 0) -> int:
             control = _gopay_runtime_control(task_id)
             accounts = control.get("all_account_emails") if isinstance(control, dict) else []
@@ -9974,6 +10074,19 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 )
             )
 
+        def _is_gopay_wallet_charge_denied_result(result_payload: dict | None) -> bool:
+            if not isinstance(result_payload, dict) or result_payload.get("status") == "success":
+                return False
+            if str(result_payload.get("failure_stage") or "") != "gopay_payment_process":
+                return False
+            text = json.dumps(result_payload, ensure_ascii=False).lower()
+            return (
+                "transaction is denied" in text
+                or "try another payment method" in text
+                or ("transaction_status" in text and "deny" in text)
+                or ("fraud_status" in text and "deny" in text)
+            )
+
         def _is_gopay_account_side_failure_result(result_payload: dict | None, retry_reason: str = "") -> bool:
             if not isinstance(result_payload, dict) or result_payload.get("status") == "success":
                 return False
@@ -10088,9 +10201,6 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         class _GoPayWalletBalanceInsufficientLimit(RuntimeError):
             pass
 
-        def _gopay_wallet_balance_poll_intervals() -> list[float]:
-            return _gopay_wallet_balance_poll_intervals_from_env()
-
         def _rekberinaja_fallback_after_balance_wait_enabled() -> bool:
             from autoteam.rekberinaja import is_rekberinaja_enabled
 
@@ -10109,6 +10219,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             index: int = 1,
             total: int = 1,
             poll_intervals: list[float] | None = None,
+            poll_intervals_runtime_mode: str = "",
             initial_wait: float | None = None,
             not_ready_message: str = "GoPay 余额三次查询仍未到账，舍弃该钱包并重新注册",
             ready_message: str = "GoPay 钱包余额已到账，开始绑定",
@@ -10126,13 +10237,47 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 
             from autoteam.gopay_auto_register import query_gopay_balance
 
+            runtime_mode = str(poll_intervals_runtime_mode or "").strip().lower()
+            if poll_intervals is None:
+                runtime_mode = runtime_mode or "balance"
             intervals = list(poll_intervals if poll_intervals is not None else _gopay_wallet_balance_poll_intervals())
             if initial_wait is not None:
                 intervals = [float(initial_wait), *intervals]
             if not intervals:
                 intervals = [0.0]
             max_checks = max(1, len(intervals))
+
+            def _latest_runtime_intervals() -> list[float]:
+                if runtime_mode == "transfer":
+                    return _gopay_transfer_balance_poll_intervals()
+                if runtime_mode == "balance":
+                    return _gopay_wallet_balance_poll_intervals()
+                return []
+
+            def _sleep_balance_wait(wait_seconds: float, check_index: int) -> None:
+                wait_seconds = max(0.0, float(wait_seconds or 0.0))
+                if wait_seconds <= 0:
+                    return
+                started = time.time()
+                while True:
+                    elapsed = max(0.0, time.time() - started)
+                    remaining = wait_seconds - elapsed
+                    if remaining <= 0:
+                        return
+                    time.sleep(min(1.0, remaining))
+                    latest_intervals = _latest_runtime_intervals()
+                    if check_index <= len(latest_intervals):
+                        latest_wait = max(0.0, float(latest_intervals[check_index - 1] or 0.0))
+                        if latest_wait < wait_seconds and time.time() - started >= latest_wait:
+                            return
+
             for check_index, wait_seconds in enumerate(intervals, 1):
+                latest_intervals = _latest_runtime_intervals()
+                if latest_intervals:
+                    if check_index > len(latest_intervals):
+                        break
+                    wait_seconds = latest_intervals[check_index - 1]
+                    max_checks = len(latest_intervals)
                 wait_seconds = max(0.0, float(wait_seconds))
                 if wait_seconds > 0:
                     _append_task_progress(
@@ -10149,7 +10294,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             "level": "warn",
                         },
                     )
-                    time.sleep(wait_seconds)
+                    _sleep_balance_wait(wait_seconds, check_index)
                 try:
                     balance = query_gopay_balance(
                         access_token=access_token,
@@ -10287,7 +10432,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     wallet,
                     index=index,
                     total=total,
-                    poll_intervals=_gopay_wallet_balance_poll_intervals(),
+                    poll_intervals=_gopay_transfer_balance_poll_intervals(),
+                    poll_intervals_runtime_mode="transfer",
                     not_ready_message="GoPay 已提交过充值订单但余额仍未到账，舍弃该钱包并重新注册",
                 )
                 return None
@@ -10355,7 +10501,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 wallet,
                 index=index,
                 total=total,
-                poll_intervals=_gopay_wallet_balance_poll_intervals(),
+                poll_intervals=_gopay_transfer_balance_poll_intervals(),
+                poll_intervals_runtime_mode="transfer",
                 not_ready_message="Rekberinaja 转账后 GoPay 余额仍未到账，舍弃该钱包并重新注册",
                 ready_callback=lambda value, balance: _record_transfer_balance_ready(
                     wallet,
@@ -10697,6 +10844,35 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 },
             )
 
+        def _discard_gopay_wallet_charge_denied(wallet, *, index: int = 1, total: int = 1) -> None:
+            if wallet is None:
+                return
+            with gopay_state_lock:
+                if wallet in reusable_gopay_wallets:
+                    reusable_gopay_wallets.remove(wallet)
+                if wallet in active_gopay_wallets:
+                    active_gopay_wallets.remove(wallet)
+                retained_gopay_wallets[:] = [item for item in retained_gopay_wallets if item is not wallet]
+                funded_gopay_wallet_ids.discard(id(wallet))
+                gopay_wallet_funding_attempted_ids.discard(id(wallet))
+                gopay_wallet_balance_ready_ids.discard(id(wallet))
+                gopay_wallet_created_at.pop(id(wallet), None)
+            try:
+                wallet.close(success=False)
+            except Exception:
+                logger.debug("[gopay-bind] close denied GoPay wallet failed", exc_info=True)
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_wallet_charge_denied_discarded",
+                    "current": index,
+                    "total": total,
+                    "phone_number": _mask_gopay_phone_for_log(_gopay_wallet_phone(wallet)),
+                    "message": "Midtrans 拒绝该 GoPay 钱包扣款，已舍弃该钱包并准备重新注册",
+                    "level": "warn",
+                },
+            )
+
         def _prepare_gopay_wallet_for_bind(wallet=None, *, index: int = 1, total: int = 1):
             max_wallet_attempts = max(1, int(os.environ.get("GOPAY_AUTO_SIGNUP_WALLET_ATTEMPTS", "10") or "10"))
             last_exc: Exception | None = None
@@ -10982,6 +11158,11 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             selected = phone_accounts[(max(1, int(index or 1)) - 1) % len(phone_accounts)]
             return [dict(selected)]
 
+        def _auto_signup_wallet_phone_account(wallet) -> dict:
+            account = dict(wallet.as_phone_account() or {})
+            account["auto_signup_wallet"] = True
+            return account
+
         def _run_one_gopay_bind(
             bind_email: str,
             bind_account_emails: list[str],
@@ -11074,7 +11255,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             _run_one_gopay_bind(
                                 bind_email,
                                 bind_account_emails,
-                                selected_phone_accounts=[auto_wallet.as_phone_account()],
+                                selected_phone_accounts=[_auto_signup_wallet_phone_account(auto_wallet)],
                                 pending_retry_override=0,
                             )
                             or {}
@@ -11148,7 +11329,26 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 
                 last_result = single_result
                 if not _is_gopay_wallet_bound_elsewhere_result(single_result):
-                    return single_result, auto_wallet
+                    if not _is_gopay_wallet_charge_denied_result(single_result):
+                        return single_result, auto_wallet
+                    _discard_gopay_wallet_charge_denied(auto_wallet, index=index, total=total)
+                    auto_wallet = None
+                    if wallet_attempt >= max_wallet_attempts:
+                        break
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_wallet_charge_denied_retry",
+                            "email": bind_email,
+                            "current": index,
+                            "total": total,
+                            "attempt": wallet_attempt + 1,
+                            "max_attempts": max_wallet_attempts,
+                            "message": "Midtrans 拒绝该 GoPay 钱包扣款，正在重新注册 GoPay 钱包后重试当前账号",
+                            "level": "warn",
+                        },
+                    )
+                    continue
 
                 _discard_gopay_wallet_bound_elsewhere(auto_wallet, index=index, total=total)
                 auto_wallet = None
@@ -11375,7 +11575,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             "email": single_email,
                             "index": index,
                             "phone_accounts": (
-                                [auto_wallet.as_phone_account()]
+                                [_auto_signup_wallet_phone_account(auto_wallet)]
                                 if auto_wallet is not None
                                 else _phone_accounts_for_attempt(index)
                             ),
@@ -11729,9 +11929,10 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 },
             )
 
-            def _worker(item: tuple[int, Any, int, int, queue.Queue]) -> tuple[int, str, int, dict, Any | None]:
+            def _worker(item: tuple[int, Any, int, int, queue.Queue | int]) -> tuple[int, str, int, dict, Any | None]:
                 index, candidate_payload, round_total, retry_round, worker_slots = item
-                worker_index = int(worker_slots.get())
+                worker_slots_is_queue = hasattr(worker_slots, "get") and hasattr(worker_slots, "put")
+                worker_index = int(worker_slots.get() if worker_slots_is_queue else worker_slots)
                 worker_label = f"worker-{worker_index}" if worker_index > 0 else ""
                 if worker_label:
                     gopay_worker_context.label = worker_label
@@ -11783,7 +11984,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         gopay_worker_context.index = 0
                         _task_context.gopay_worker_label = ""
                         _task_context.gopay_worker_index = 0
-                    worker_slots.put(worker_index)
+                    if worker_slots_is_queue:
+                        worker_slots.put(worker_index)
 
             def _record_parallel_result(
                 *,
@@ -12167,10 +12369,19 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 ]
                 queued_emails = {_candidate_payload_email(item[1]) for item in initial_items if _candidate_payload_email(item[1])}
                 next_index = len(initial_items) + 1
-                worker_slots: queue.Queue[int] = queue.Queue()
-                for worker_index in range(1, 11):
-                    worker_slots.put(worker_index)
-                active: dict[Any, tuple[int, int, int, str]] = {}
+                active_worker_indexes: set[int] = set()
+                active: dict[Any, tuple[int, int, int, str, int]] = {}
+
+                def acquire_worker_index() -> int:
+                    for worker_index in range(1, _current_gopay_concurrency() + 1):
+                        if worker_index not in active_worker_indexes:
+                            active_worker_indexes.add(worker_index)
+                            return worker_index
+                    return 0
+
+                def release_worker_index(worker_index: int) -> None:
+                    if worker_index > 0:
+                        active_worker_indexes.discard(worker_index)
 
                 def append_runtime_accounts() -> None:
                     nonlocal next_index
@@ -12199,8 +12410,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     candidate_email = _candidate_payload_email(candidate_payload)
                     if not candidate_email:
                         return
-                    future = executor.submit(_worker, (index, candidate_payload, round_total, retry_round, worker_slots))
-                    active[future] = (index, round_total, retry_round, candidate_email)
+                    worker_index = acquire_worker_index()
+                    future = executor.submit(_worker, (index, candidate_payload, round_total, retry_round, worker_index))
+                    active[future] = (index, round_total, retry_round, candidate_email, worker_index)
                     _append_unique(attempted_emails, candidate_email)
                     if retry_round:
                         _append_unique(retried_emails, candidate_email)
@@ -12274,7 +12486,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         if not done:
                             continue
                         for future in done:
-                            index, round_total, retry_round, normalized_candidate = active.pop(future)
+                            index, round_total, retry_round, normalized_candidate, worker_index = active.pop(future)
+                            release_worker_index(worker_index)
                             finish_future(
                                 future,
                                 index=index,
@@ -15152,6 +15365,22 @@ def post_gopay_runtime_control(params: GoPayRuntimeControlParams):
             control["gopay_concurrency"] = _normalize_gopay_runtime_concurrency(params.gopay_concurrency, 1)
             updates["gopay_concurrency"] = control["gopay_concurrency"]
 
+        if params.gopay_balance_poll_interval_seconds is not None:
+            control["gopay_balance_poll_interval_seconds"] = _normalize_gopay_runtime_seconds(
+                params.gopay_balance_poll_interval_seconds,
+                _default_gopay_wallet_balance_poll_interval_seconds(),
+                maximum=300.0,
+            )
+            updates["gopay_balance_poll_interval_seconds"] = control["gopay_balance_poll_interval_seconds"]
+
+        if params.gopay_transfer_balance_wait_seconds is not None:
+            control["gopay_transfer_balance_wait_seconds"] = _normalize_gopay_runtime_seconds(
+                params.gopay_transfer_balance_wait_seconds,
+                _default_gopay_wallet_balance_wait_seconds(),
+                maximum=1800.0,
+            )
+            updates["gopay_transfer_balance_wait_seconds"] = control["gopay_transfer_balance_wait_seconds"]
+
         provider_input = str(params.gopay_auto_signup_sms_provider or "").strip()
         if provider_input:
             provider = _normalize_gopay_auto_signup_sms_provider(provider_input)
@@ -15187,12 +15416,21 @@ def post_gopay_runtime_control(params: GoPayRuntimeControlParams):
         public_params["account_emails"] = merged
         task["params"] = public_params
         updates["added_account_emails"] = added_emails
-    if "gopay_concurrency" in updates or "gopay_auto_signup_sms_provider" in updates:
+    if (
+        "gopay_concurrency" in updates
+        or "gopay_auto_signup_sms_provider" in updates
+        or "gopay_balance_poll_interval_seconds" in updates
+        or "gopay_transfer_balance_wait_seconds" in updates
+    ):
         public_params = task.get("params") if isinstance(task.get("params"), dict) else {}
         if "gopay_concurrency" in updates:
             public_params["gopay_concurrency"] = updates["gopay_concurrency"]
         if "gopay_auto_signup_sms_provider" in updates:
             public_params["gopay_auto_signup_sms_provider"] = updates["gopay_auto_signup_sms_provider"]
+        if "gopay_balance_poll_interval_seconds" in updates:
+            public_params["gopay_balance_poll_interval_seconds"] = updates["gopay_balance_poll_interval_seconds"]
+        if "gopay_transfer_balance_wait_seconds" in updates:
+            public_params["gopay_transfer_balance_wait_seconds"] = updates["gopay_transfer_balance_wait_seconds"]
         task["params"] = public_params
 
     if not updates or set(updates) == {"version"}:
@@ -15209,6 +15447,12 @@ def post_gopay_runtime_control(params: GoPayRuntimeControlParams):
                     [
                         f"并发 {updates['gopay_concurrency']}" if "gopay_concurrency" in updates else "",
                         f"短信服务商 {updates['gopay_auto_signup_sms_provider']}" if "gopay_auto_signup_sms_provider" in updates else "",
+                        f"余额查询间隔 {updates['gopay_balance_poll_interval_seconds']}s"
+                        if "gopay_balance_poll_interval_seconds" in updates
+                        else "",
+                        f"转账到账等待 {updates['gopay_transfer_balance_wait_seconds']}s"
+                        if "gopay_transfer_balance_wait_seconds" in updates
+                        else "",
                         f"追加账号 {len(added_emails)} 个" if added_emails else "",
                     ]
                 ).strip("，")

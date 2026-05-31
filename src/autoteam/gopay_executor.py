@@ -216,6 +216,20 @@ def _response_json(resp, stage: str) -> dict:
     return data if isinstance(data, dict) else {"_raw": data}
 
 
+def _is_midtrans_charge_denied_payload(payload: dict | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    transaction_status = str(payload.get("transaction_status") or "").strip().lower()
+    fraud_status = str(payload.get("fraud_status") or "").strip().lower()
+    status_message = str(payload.get("status_message") or "").strip().lower()
+    return (
+        transaction_status == "deny"
+        or fraud_status == "deny"
+        or "transaction is denied" in status_message
+        or "try another payment method" in status_message
+    )
+
+
 def _json_stringify_for_midtrans(data: Any) -> str:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
@@ -773,6 +787,10 @@ def _is_gopay_payment_process_rotatable_result(result: dict | None) -> bool:
         or "errorcode=201" in message
         or '"code":"201"' in message
         or "'code': '201'" in message
+        or "transaction is denied" in message
+        or "try another payment method" in message
+        or "transaction_status" in message and "deny" in message
+        or "fraud_status" in message and "deny" in message
     )
 
 
@@ -2713,6 +2731,7 @@ class GoPayHttpCharger:
         sms_otp_trigger_callback: Callable[[str, str], None] | None = None,
         otp_channel: str = "sms",
         sms_resend_wait_seconds: float | None = None,
+        fail_already_linked_immediately: bool = False,
         is_cancelled=None,
         progress_callback=None,
     ):
@@ -2744,6 +2763,7 @@ class GoPayHttpCharger:
         self.expected_due_currency = ""
         self._stripe_expected_due_checked = False
         self.activation_link_url = ""
+        self.fail_already_linked_immediately = bool(fail_already_linked_immediately)
 
     def _progress(self, stage: str, **extra):
         _emit_gopay_progress(self.progress_callback, stage, **extra)
@@ -3435,6 +3455,17 @@ class GoPayHttpCharger:
                 messages = payload.get("error_messages") or []
                 last_error = str(messages[0] if messages else payload)
                 if "already linked" in last_error.lower():
+                    if self.fail_already_linked_immediately:
+                        self._progress(
+                            "midtrans_already_linked_auto_wallet_failed",
+                            attempt=attempt,
+                            max_retries=0,
+                            message="自动注册 GoPay 钱包已绑定其他账号，立即舍弃该钱包并换号重试",
+                        )
+                        raise GoPayAlreadyLinked(
+                            "该 GoPay 手机号已绑定其他账号，自动注册钱包将立即换号重试",
+                            stage="midtrans_linking",
+                        )
                     if attempt > GOPAY_LINK_RETRY_LIMIT:
                         self._progress(
                             "midtrans_already_linked_failed",
@@ -3749,6 +3780,11 @@ class GoPayHttpCharger:
         )
         _ensure_ok(resp, "midtrans_create_charge")
         payload = _response_json(resp, "midtrans_create_charge")
+        if _is_midtrans_charge_denied_payload(payload):
+            raise GoPayFlowError(
+                f"Midtrans GoPay charge denied: {payload}",
+                stage="gopay_payment_process",
+            )
         matched = re.search(r"reference=([A-Za-z0-9]+)", str(payload.get("gopay_verification_link_url") or ""))
         if not matched:
             raise GoPayFlowError(f"Midtrans charge 缺少 GoPay reference: {payload}", stage="midtrans_create_charge")
@@ -5881,6 +5917,7 @@ def _run_gopay_bind_task_once(
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
     timeout_seconds: int = 900,
+    fail_already_linked_immediately: bool = False,
     is_cancelled=None,
     progress_callback=None,
 ):
@@ -6248,6 +6285,7 @@ def _run_gopay_bind_task_once(
             verify_callback=verify_callback,
             sms_otp_trigger_callback=sms_otp_trigger_callback,
             otp_channel=resolved_otp_channel,
+            fail_already_linked_immediately=fail_already_linked_immediately,
             is_cancelled=is_cancelled,
             progress_callback=progress_callback,
         )
@@ -6537,6 +6575,11 @@ def run_gopay_bind_task(
                 "sms_url": account_sms_url,
                 "gopay_pin": account_gopay_pin,
                 "otp_channel": account_otp_channel,
+                "auto_signup_wallet": bool(
+                    raw_phone_account.get("auto_signup_wallet")
+                    or raw_phone_account.get("gopay_auto_signup_wallet")
+                    or raw_phone_account.get("_gopay_auto_signup_wallet")
+                ),
             }
         )
     if not normalized_phone_accounts:
@@ -6550,6 +6593,7 @@ def run_gopay_bind_task(
                 "sms_url": fallback_sms_url,
                 "gopay_pin": str(gopay_pin or "").strip(),
                 "otp_channel": str(otp_channel or "sms").strip().lower(),
+                "auto_signup_wallet": False,
             }
         )
 
@@ -6587,6 +6631,7 @@ def run_gopay_bind_task(
             proxy_url=proxy_url,
             proxy_bypass=proxy_bypass,
             timeout_seconds=timeout_seconds,
+            fail_already_linked_immediately=bool(active_phone.get("auto_signup_wallet")),
             is_cancelled=current_attempt_interrupted,
             progress_callback=progress_callback,
         )
