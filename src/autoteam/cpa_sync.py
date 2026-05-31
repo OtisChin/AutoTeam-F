@@ -136,7 +136,14 @@ def _bundle_from_auth_data(auth_data, fallback_name=""):
     profile_claims = claims.get("https://api.openai.com/profile", {}) if isinstance(claims, dict) else {}
     access_profile_claims = access_claims.get("https://api.openai.com/profile", {}) if isinstance(access_claims, dict) else {}
 
-    plan_type = auth_claims.get("chatgpt_plan_type", "") or access_auth_claims.get("chatgpt_plan_type", "")
+    credentials = auth_data.get("credentials") if isinstance(auth_data.get("credentials"), dict) else {}
+    plan_type = (
+        auth_data.get("plan_type")
+        or auth_data.get("chatgpt_plan_type")
+        or credentials.get("plan_type")
+        or auth_claims.get("chatgpt_plan_type", "")
+        or access_auth_claims.get("chatgpt_plan_type", "")
+    )
     if not plan_type and "-team" in fallback_name:
         plan_type = "team"
     if not plan_type and "-plus" in fallback_name:
@@ -326,6 +333,73 @@ def _write_auth_file(filepath, bundle):
     except Exception as exc:
         logger.warning("[CPA] SQLite auth 索引写入失败: %s", exc)
     return filepath
+
+
+def update_local_auth_plan_type(email: str, preferred_path: str = "", *, plan_type: str = "plus") -> dict:
+    """Update a local CPA auth JSON's visible plan_type and rename it canonically."""
+    target_email = str(email or "").strip().lower()
+    target_plan = str(plan_type or "").strip().lower() or "plus"
+    candidates: list[Path] = []
+    if preferred_path:
+        candidates.append(Path(preferred_path))
+    if target_email and AUTH_DIR.exists():
+        candidates.extend(path for path in AUTH_DIR.glob(f"codex-{target_email}-*.json") if path.is_file())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            path = candidate.resolve()
+        except Exception:
+            path = candidate
+        key = str(path).lower()
+        if key in seen or not path.exists() or not path.is_file():
+            continue
+        seen.add(key)
+        try:
+            auth_data = json.loads(read_text(path))
+        except Exception:
+            continue
+        if not isinstance(auth_data, dict):
+            continue
+        bundle = _bundle_from_auth_data(auth_data, fallback_name=path.name)
+        bundle_email = str(bundle.get("email") or "").strip().lower()
+        if target_email and bundle_email and bundle_email != target_email:
+            continue
+
+        auth_data["plan_type"] = target_plan
+        auth_data["chatgpt_plan_type"] = target_plan
+        for key_name in ("credentials", "providerSpecificData", "account"):
+            nested = auth_data.get(key_name)
+            if isinstance(nested, dict):
+                nested["plan_type"] = target_plan
+                nested["chatgpt_plan_type"] = target_plan
+
+        bundle = _bundle_from_auth_data(auth_data, fallback_name=path.name)
+        if target_email and not bundle.get("email"):
+            bundle["email"] = target_email
+        bundle["plan_type"] = target_plan
+        target_path = _normalized_auth_path(bundle, main=path.name.startswith("codex-main-"))
+        ensure_auth_dir()
+        write_text(target_path, json.dumps(auth_data, ensure_ascii=False, indent=2))
+        ensure_auth_file_permissions(target_path)
+        try:
+            upsert_codex_auth_file(target_path, auth_data, main=target_path.name.startswith("codex-main-"))
+        except Exception as exc:
+            logger.warning("[CPA] SQLite auth 索引写入失败: %s", exc)
+        if path != target_path and path.exists():
+            try:
+                delete_codex_auth_file(path)
+            except Exception:
+                pass
+            path.unlink()
+        return {
+            "status": "updated",
+            "auth_file": str(target_path.resolve()),
+            "filename": target_path.name,
+            "plan_type": target_plan,
+        }
+
+    return {"status": "skipped", "reason": "auth_file_not_found", "plan_type": target_plan}
 
 
 def _save_normalized_auth_file(bundle, main=False):
@@ -655,6 +729,9 @@ def import_local_cpa_auth_sources(sources):
     from autoteam.accounts import (
         ACCOUNT_SOURCE_MANAGED,
         ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+        ACCOUNT_TYPE_TEAM,
         SEAT_CODEX,
         STATUS_STANDBY,
         find_account,
@@ -736,12 +813,19 @@ def import_local_cpa_auth_sources(sources):
             continue
 
         acc = find_account(accounts, email)
+        imported_account_type = str(bundle.get("plan_type") or "").strip().lower()
+        if imported_account_type not in {ACCOUNT_TYPE_FREE, ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM}:
+            imported_account_type = ACCOUNT_TYPE_FREE
         if acc:
             changed = False
+            existing_account_type = str(acc.get("account_type") or "").strip().lower()
+            next_account_type = imported_account_type
+            if existing_account_type in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM} and imported_account_type == ACCOUNT_TYPE_FREE:
+                next_account_type = existing_account_type
             updates = {
                 "auth_file": resolved_path,
                 "account_source": ACCOUNT_SOURCE_MANAGED,
-                "account_type": ACCOUNT_TYPE_FREE,
+                "account_type": next_account_type,
             }
             if not acc.get("seat_type"):
                 updates["seat_type"] = SEAT_CODEX

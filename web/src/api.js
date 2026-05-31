@@ -130,6 +130,7 @@ export const api = {
   getTask: (id) => request('GET', `/tasks/${id}`),
   cancelTask: (params = null) => request('POST', '/tasks/cancel', params),
   skipCurrentTask: () => request('POST', '/tasks/skip-current'),
+  updateGoPayRuntimeControl: (payload) => request('POST', '/tasks/gopay/runtime-control', payload),
 
   getAutoCheckConfig: () => request('GET', '/config/auto-check'),
   setAutoCheckConfig: (cfg) => request('PUT', '/config/auto-check', cfg),

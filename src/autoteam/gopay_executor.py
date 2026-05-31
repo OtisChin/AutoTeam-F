@@ -6683,7 +6683,8 @@ def run_gopay_bind_task(
             pending_retry=len(pending_retry),
             reason=reason,
             source_stage=stage,
-            retry_round=retry_round,
+            retry_round=retry_round + 1,
+            source_retry_round=retry_round,
             max_retry_rounds=pending_retry_attempts,
             message=f"账号暂未明确失败，加入待重试: {candidate}",
         )
@@ -7012,7 +7013,13 @@ def run_gopay_bind_task(
         if cancel_requested():
             return _build_result("failed", failure_stage="generate_checkout", message="任务已取消")
         if wait_seconds > 0:
-            time.sleep(wait_seconds)
+            waited = 0.0
+            while waited < wait_seconds:
+                if current_attempt_interrupted():
+                    return _build_result("failed", failure_stage="generate_checkout", message="任务已取消")
+                step = min(1.0, wait_seconds - waited)
+                time.sleep(step)
+                waited += step
         if cancel_requested():
             return _build_result("failed", failure_stage="generate_checkout", message="任务已取消")
 

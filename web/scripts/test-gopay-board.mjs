@@ -127,6 +127,85 @@ function cards(task, options = {}) {
 
 {
   const task = {
+    task_id: 'task-gopay-parallel-high-index-started',
+    status: 'running',
+    params: {
+      account_emails: Array.from({ length: 38 }, (_, index) => `u${index + 1}@example.com`),
+      gopay_auto_signup: true,
+      gopay_concurrency: 10,
+    },
+    progress: {
+      stage: 'gopay_parallel_account',
+      email: 'u38@example.com',
+      attempt: 38,
+      total: 38,
+    },
+    progress_events: [
+      { stage: 'gopay_parallel_started', total: 38, concurrency: 10 },
+      { stage: 'gopay_parallel_account', email: 'u38@example.com', attempt: 38, total: 38 },
+    ],
+  }
+  const result = metrics(task)
+  assert.equal(result.progressStats.total, 38)
+  assert.equal(result.progressStats.attempted, 1)
+  assert.equal(result.progressStats.successful, 0)
+  const cardMap = cards(task)
+  assert.equal(cardMap['任务进度'].value, '1/38')
+}
+
+{
+  const task = {
+    task_id: 'task-gopay-auto-register-parallel-high-index-started',
+    status: 'running',
+    params: {
+      auto_register: true,
+      auto_register_count: 38,
+      gopay_concurrency: 10,
+    },
+    progress: {
+      stage: 'gopay_parallel_account',
+      email: 'wallet38@example.com',
+      attempt: 38,
+      total: 38,
+    },
+    progress_events: [
+      { stage: 'gopay_parallel_started', total: 38, concurrency: 10 },
+      { stage: 'gopay_parallel_account', email: 'wallet38@example.com', attempt: 38, total: 38 },
+    ],
+  }
+  const result = metrics(task)
+  assert.equal(result.progressStats.total, 38)
+  assert.equal(result.progressStats.attempted, 1)
+  const cardMap = cards(task)
+  assert.equal(cardMap['任务进度'].value, '1/38')
+}
+
+{
+  const task = {
+    task_id: 'task-retry-wait-progress-events-truncated',
+    status: 'running',
+    params: {
+      account_emails: ['ok@example.com', 'retry@example.com'],
+    },
+    progress: {
+      stage: 'gopay_pending_retry_wait',
+      retry_round: 1,
+      max_retry_rounds: 2,
+      pending_retry: 1,
+    },
+    progress_events: [
+      { stage: 'gopay_auto_signup_account_success', email: 'ok@example.com', attempt: 1, total: 2 },
+    ],
+  }
+  const result = metrics(task)
+  assert.equal(result.pendingRetry, 1)
+  assert.equal(result.pendingRetryMeta, '第 1/2 轮 · 1 个待重试')
+  const cardMap = cards(task)
+  assert.equal(cardMap['待重试'].value, '1')
+}
+
+{
+  const task = {
     task_id: 'task-wait',
     status: 'running',
     params: { account_emails: Array.from({ length: 19 }, (_, index) => `u${index}@example.com`) },

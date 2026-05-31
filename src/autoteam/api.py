@@ -14,7 +14,7 @@ import uuid
 import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -1779,6 +1779,10 @@ _task_group_locks: dict[str, threading.Lock] = {}
 _current_task_ids: dict[str, str | None] = {}
 _task_skip_signals: dict[str, threading.Event] = {}
 _task_cancel_signals: dict[str, threading.Event] = {}
+_task_cancel_hooks: dict[str, list[Callable[[], None]]] = {}
+_task_cancel_hooks_lock = threading.RLock()
+_task_runtime_controls: dict[str, dict[str, Any]] = {}
+_task_runtime_controls_lock = threading.RLock()
 _admin_login_api = None
 _admin_login_step: str | None = None
 _main_codex_flow = None
@@ -1835,6 +1839,59 @@ def _current_task_id_for_group(task_group: str | None = None) -> str | None:
     if task_group:
         return _current_task_ids.get(str(task_group or TASK_GROUP_DEFAULT))
     return _current_task_id
+
+
+def _register_task_cancel_hook(task_id: str, hook: Callable[[], None]) -> Callable[[], None]:
+    """Register a best-effort callback that runs as soon as a task is cancelled."""
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id or not callable(hook):
+        return lambda: None
+    with _task_cancel_hooks_lock:
+        _task_cancel_hooks.setdefault(normalized_task_id, []).append(hook)
+        cancel_event = _task_cancel_signals.get(normalized_task_id)
+        already_cancelled = bool(cancel_event and cancel_event.is_set())
+
+    def unregister() -> None:
+        with _task_cancel_hooks_lock:
+            hooks = _task_cancel_hooks.get(normalized_task_id)
+            if not hooks:
+                return
+            try:
+                hooks.remove(hook)
+            except ValueError:
+                return
+            if not hooks:
+                _task_cancel_hooks.pop(normalized_task_id, None)
+
+    if already_cancelled:
+        try:
+            hook()
+        except Exception:
+            logger.exception("[API] task cancel hook failed after late registration: task=%s", normalized_task_id[:8])
+        unregister()
+    return unregister
+
+
+def _run_task_cancel_hooks(task_id: str) -> None:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return
+    with _task_cancel_hooks_lock:
+        hooks = list(_task_cancel_hooks.pop(normalized_task_id, []))
+    for hook in hooks:
+        try:
+            hook()
+        except Exception:
+            logger.exception("[API] task cancel hook failed: task=%s", normalized_task_id[:8])
+
+
+def _clear_task_runtime_controls(task_id: str) -> None:
+    _task_skip_signals.pop(task_id, None)
+    _task_cancel_signals.pop(task_id, None)
+    with _task_cancel_hooks_lock:
+        _task_cancel_hooks.pop(task_id, None)
+    with _task_runtime_controls_lock:
+        _task_runtime_controls.pop(task_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -2389,8 +2446,7 @@ def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
                 delattr(_task_context, attr)
             except AttributeError:
                 pass
-        _task_skip_signals.pop(task_id, None)
-        _task_cancel_signals.pop(task_id, None)
+        _clear_task_runtime_controls(task_id)
         group_lock.release()
         return
 
@@ -2418,8 +2474,7 @@ def _run_task(task_id: str, func, pass_task_id: bool = False, *args, **kwargs):
                 delattr(_task_context, attr)
             except AttributeError:
                 pass
-        _task_skip_signals.pop(task_id, None)
-        _task_cancel_signals.pop(task_id, None)
+        _clear_task_runtime_controls(task_id)
         group_lock.release()
 
 
@@ -2448,16 +2503,15 @@ def _run_task_nonexclusive(task_id: str, func, pass_task_id: bool = False, *args
                 delattr(_task_context, attr)
             except AttributeError:
                 pass
-        _task_skip_signals.pop(task_id, None)
-        _task_cancel_signals.pop(task_id, None)
+        _clear_task_runtime_controls(task_id)
         return
 
     try:
         result = func(task_id, *args, **kwargs) if pass_task_id else func(*args, **kwargs)
-        task["status"] = "completed"
+        task["status"] = "cancelled" if cancel_signal.is_cancelled() else "completed"
         task["result"] = result
     except Exception as e:
-        task["status"] = "failed"
+        task["status"] = "cancelled" if cancel_signal.is_cancelled() else "failed"
         if getattr(e, "task_result", None) is not None:
             task["result"] = e.task_result
         task["error"] = str(e)
@@ -2471,8 +2525,7 @@ def _run_task_nonexclusive(task_id: str, func, pass_task_id: bool = False, *args
                 delattr(_task_context, attr)
             except AttributeError:
                 pass
-        _task_skip_signals.pop(task_id, None)
-        _task_cancel_signals.pop(task_id, None)
+        _clear_task_runtime_controls(task_id)
 
 
 def _start_task(
@@ -2525,7 +2578,7 @@ def _start_task(
         if group_lock_preacquired:
             _task_group_lock(normalized_group).release()
         _tasks.pop(task_id, None)
-        _task_cancel_signals.pop(task_id, None)
+        _clear_task_runtime_controls(task_id)
         raise
 
     return task
@@ -2840,6 +2893,22 @@ class GoPayBindTaskParams(BaseModel):
     )
 
 
+class GoPayRuntimeControlParams(BaseModel):
+    task_id: str = Field("", validation_alias=AliasChoices("task_id", "taskId"))
+    gopay_concurrency: int | None = Field(
+        None,
+        validation_alias=AliasChoices("gopay_concurrency", "gopayConcurrency"),
+    )
+    gopay_auto_signup_sms_provider: str = Field(
+        "",
+        validation_alias=AliasChoices("gopay_auto_signup_sms_provider", "gopayAutoSignupSmsProvider"),
+    )
+    account_emails: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("account_emails", "accountEmails"),
+    )
+
+
 class PayPalTaskParams(BaseModel):
     runner_mode: str = Field("", validation_alias=AliasChoices("runner_mode", "runnerMode"))
     email: str = ""
@@ -3101,6 +3170,52 @@ class TradeCdkStatusParams(BaseModel):
 
 def _normalized_email(value: str | None) -> str:
     return (value or "").strip().lower()
+
+
+def _normalize_gopay_runtime_concurrency(value: int | str | None, default: int = 1) -> int:
+    try:
+        raw = default if value is None else value
+        return max(1, min(10, int(raw or default)))
+    except Exception:
+        return max(1, min(10, int(default or 1)))
+
+
+def _gopay_runtime_control(task_id: str, *, create: bool = False) -> dict[str, Any]:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return {}
+    with _task_runtime_controls_lock:
+        if create:
+            return _task_runtime_controls.setdefault(normalized_task_id, {})
+        control = _task_runtime_controls.get(normalized_task_id)
+        return control if isinstance(control, dict) else {}
+
+
+def _init_gopay_runtime_control(
+    task_id: str,
+    *,
+    gopay_concurrency: int,
+    sms_provider: str,
+    account_emails: list[str],
+) -> dict[str, Any]:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return {}
+    normalized_accounts = []
+    seen_accounts = set()
+    for raw_email in account_emails or []:
+        email = _normalized_email(raw_email)
+        if email and email not in seen_accounts:
+            seen_accounts.add(email)
+            normalized_accounts.append(email)
+    with _task_runtime_controls_lock:
+        control = _task_runtime_controls.setdefault(normalized_task_id, {})
+        control.setdefault("pending_account_emails", [])
+        control.setdefault("all_account_emails", normalized_accounts[:])
+        control.setdefault("gopay_concurrency", _normalize_gopay_runtime_concurrency(gopay_concurrency, 1))
+        control.setdefault("gopay_auto_signup_sms_provider", _normalize_gopay_auto_signup_sms_provider(sms_provider or "smscloud"))
+        control["version"] = int(control.get("version") or 0)
+        return dict(control)
 
 
 def _is_main_account_email(email: str | None) -> bool:
@@ -5769,7 +5884,7 @@ def export_account_credentials(params: AccountCredentialExportParams):
 @app.post("/api/accounts/export-cpa-auths")
 def export_account_cpa_auths(params: AccountEmailBatchParams):
     """导出 data/auths 下的 CPA 兼容认证 JSON。单个返回 JSON，多个返回 zip。"""
-    from autoteam.accounts import ACCOUNT_SOURCE_MANAGED, SEAT_CODEX, STATUS_ACTIVE, find_account, load_accounts, update_account
+    from autoteam.accounts import ACCOUNT_TYPE_PLUS, find_account, load_accounts, update_account
 
     requested = []
     seen = set()
@@ -5793,6 +5908,9 @@ def export_account_cpa_auths(params: AccountEmailBatchParams):
         if not auth_file:
             missing.append(email)
             continue
+        if str(account.get("account_type") or "").strip().lower() == ACCOUNT_TYPE_PLUS:
+            plan_update = _update_account_cpa_auth_plan_type(email, account=account, plan_type=ACCOUNT_TYPE_PLUS)
+            auth_file = str(plan_update.get("auth_file") or auth_file)
         path = Path(auth_file)
         try:
             content = read_text(path)
@@ -5967,7 +6085,7 @@ def import_account_cpa_auths(params: AccountCpaAuthImportParams):
 @app.post("/api/accounts/export-sub-auths")
 def export_account_sub_auths(params: AccountEmailBatchParams):
     """导出所选账号的 Sub2API 导入 JSON。"""
-    from autoteam.accounts import ACCOUNT_SOURCE_MANAGED, SEAT_CODEX, STATUS_ACTIVE, find_account, load_accounts, update_account
+    from autoteam.accounts import ACCOUNT_TYPE_PLUS, find_account, load_accounts, update_account
     from autoteam.sub2api_converter import ConversionError, ExportSettings, export_records, generate_default_filename, inspect_sources
 
     requested = []
@@ -5992,6 +6110,9 @@ def export_account_sub_auths(params: AccountEmailBatchParams):
         if not auth_file:
             missing.append(email)
             continue
+        if str(account.get("account_type") or "").strip().lower() == ACCOUNT_TYPE_PLUS:
+            plan_update = _update_account_cpa_auth_plan_type(email, account=account, plan_type=ACCOUNT_TYPE_PLUS)
+            auth_file = str(plan_update.get("auth_file") or auth_file)
         path = Path(auth_file)
         try:
             content = read_text(path)
@@ -6164,6 +6285,23 @@ def _convert_account_auth_session_to_cpa_auth(
         **result,
         "account": _sanitize_account(saved) if saved else None,
     }
+
+
+def _update_account_cpa_auth_plan_type(email: str, *, account: dict | None = None, plan_type: str = "plus") -> dict:
+    """Keep imported CPA auth JSON metadata aligned after a payment upgrade."""
+    from autoteam.accounts import update_account
+    from autoteam.cpa_sync import update_local_auth_plan_type
+
+    normalized_email = _normalized_email(email)
+    if not normalized_email:
+        return {"status": "skipped", "reason": "email_empty"}
+    preferred_path = str((account or {}).get("auth_file") or "").strip()
+    result = update_local_auth_plan_type(normalized_email, preferred_path, plan_type=plan_type)
+    auth_file = str(result.get("auth_file") or "").strip()
+    if result.get("status") == "updated" and auth_file and auth_file != preferred_path:
+        update_account(normalized_email, auth_file=auth_file)
+        result["account_updated"] = True
+    return result
 
 
 @app.post("/api/accounts/export-status")
@@ -9164,6 +9302,12 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     def _run():
         nonlocal email, account_emails
         task_id = _current_task_id_for_group() or ""
+        _init_gopay_runtime_control(
+            task_id,
+            gopay_concurrency=gopay_concurrency,
+            sms_provider=gopay_auto_signup_sms_provider,
+            account_emails=account_emails or ([email] if email else []),
+        )
         started_at = time.time()
         result = None
         realtime_successful_emails: set[str] = set()
@@ -9190,6 +9334,43 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         gopay_state_lock = threading.RLock()
         gopay_worker_context = threading.local()
         gopay_balance_insufficient_stop_message = "连续 3 次 Rekberinaja 转账后 GoPay 余额仍不足，已停止任务，不再取新的 SMS 手机号注册"
+
+        def _current_gopay_concurrency() -> int:
+            control = _gopay_runtime_control(task_id)
+            return _normalize_gopay_runtime_concurrency(control.get("gopay_concurrency"), gopay_concurrency)
+
+        def _current_gopay_auto_signup_sms_provider() -> str:
+            control = _gopay_runtime_control(task_id)
+            return _normalize_gopay_auto_signup_sms_provider(
+                control.get("gopay_auto_signup_sms_provider")
+                or gopay_auto_signup_sms_provider
+                or "smscloud"
+            )
+
+        def _runtime_account_total(default: int = 0) -> int:
+            control = _gopay_runtime_control(task_id)
+            accounts = control.get("all_account_emails") if isinstance(control, dict) else []
+            return max(int(default or 0), len(accounts) if isinstance(accounts, list) else 0)
+
+        def _drain_runtime_added_account_emails(existing_emails: set[str]) -> list[str]:
+            control = _gopay_runtime_control(task_id)
+            if not control:
+                return []
+            with _task_runtime_controls_lock:
+                live = _task_runtime_controls.get(task_id)
+                if not isinstance(live, dict):
+                    return []
+                pending = live.get("pending_account_emails")
+                if not isinstance(pending, list) or not pending:
+                    return []
+                live["pending_account_emails"] = []
+            drained: list[str] = []
+            for raw_email in pending:
+                normalized = _normalized_email(raw_email)
+                if normalized and normalized not in existing_emails:
+                    existing_emails.add(normalized)
+                    drained.append(normalized)
+            return drained
 
         def _reset_no_transfer_balance_misses() -> None:
             nonlocal gopay_no_transfer_balance_miss_count
@@ -9392,6 +9573,16 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 updated_account = update_account(success_email, **success_fields)
                 account_exists_after_update = bool(updated_account) or bool(find_account(load_accounts(), success_email))
             if updated_account or account_exists_after_update:
+                try:
+                    plan_update = _update_account_cpa_auth_plan_type(
+                        success_email,
+                        account=updated_account if isinstance(updated_account, dict) else None,
+                        plan_type=ACCOUNT_TYPE_PLUS,
+                    )
+                    if plan_update.get("auth_file") and isinstance(updated_account, dict):
+                        updated_account["auth_file"] = plan_update["auth_file"]
+                except Exception:
+                    logger.warning("[gopay-bind] failed to update CPA auth plan_type after Plus upgrade: %s", _safe_email_summary(success_email), exc_info=True)
                 with gopay_state_lock:
                     realtime_successful_emails.add(success_email)
                 logger.info(
@@ -9658,6 +9849,25 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         def _merge_email_list(result_payload: dict, key: str, target: list[str]):
             for raw_email in result_payload.get(key) or []:
                 _append_unique(target, raw_email)
+
+        def _dedupe_failed_email_results(items: list[dict]) -> list[dict]:
+            deduped: list[dict] = []
+            positions: dict[str, int] = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                email = _normalized_email(item.get("email") or "")
+                if not email:
+                    deduped.append(item)
+                    continue
+                normalized_item = dict(item)
+                normalized_item["email"] = email
+                if email in positions:
+                    deduped[positions[email]] = normalized_item
+                else:
+                    positions[email] = len(deduped)
+                    deduped.append(normalized_item)
+            return deduped
 
         def _is_gopay_wallet_bound_elsewhere_result(result_payload: dict | None) -> bool:
             if not isinstance(result_payload, dict) or result_payload.get("status") == "success":
@@ -10274,11 +10484,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         "total": total,
                         "attempt": wallet_attempt,
                         "max_attempts": max_wallet_attempts,
+                        "sms_provider": _current_gopay_auto_signup_sms_provider(),
                         "message": f"正在自动注册 GoPay 钱包 ({index}/{total})，取号尝试 {wallet_attempt}/{max_wallet_attempts}",
                     },
                 )
                 try:
                     signup_proxy_url = _select_gopay_wallet_signup_proxy(index=index, total=total)
+                    signup_sms_provider = _current_gopay_auto_signup_sms_provider()
                     wallet = register_gopay_wallet(
                         pin=gopay_pin,
                         proxy_url=signup_proxy_url,
@@ -10288,7 +10500,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             else ""
                         ),
                         country_code=country_code,
-                        sms_provider=gopay_auto_signup_sms_provider,
+                        sms_provider=signup_sms_provider,
                         hero_sms_config=gopay_auto_signup_hero_sms_config,
                         smscloud_config=gopay_auto_signup_smscloud_config,
                         smsbower_config=gopay_auto_signup_smsbower_config,
@@ -11179,6 +11391,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             "total": auto_register_count,
                             "reason": retry_reason,
                             "source_stage": source_stage,
+                            "retry_round": 1,
+                            "source_retry_round": 0,
+                            "max_retry_rounds": pending_retry_attempts,
                             "pending_retry": len(pending_retry_items),
                             "message": f"自动注册账号加入待重试: {single_email}",
                             "level": "warn",
@@ -11376,7 +11591,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 "email": single_email,
                                 "current": retry_index,
                                 "total": auto_register_count,
-                                "retry_round": retry_round,
+                                "retry_round": retry_round + 1,
+                                "source_retry_round": retry_round,
                                 "max_retry_rounds": pending_retry_attempts,
                                 "reason": retry_reason,
                                 "pending_retry": len(pending_retry_items),
@@ -11508,8 +11724,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 {
                     "stage": "gopay_parallel_started",
                     "total": total,
-                    "concurrency": gopay_concurrency,
-                    "message": f"开始并发 GoPay 自动钱包绑定：{total} 个账号，并发 {gopay_concurrency}",
+                    "concurrency": _current_gopay_concurrency(),
+                    "message": f"开始并发 GoPay 自动钱包绑定：{total} 个账号，并发 {_current_gopay_concurrency()}",
                 },
             )
 
@@ -11747,7 +11963,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                         {
                             "stage": "gopay_pending_retry_queued",
                             "email": single_email,
-                            "retry_round": retry_round,
+                            "retry_round": retry_round + 1,
+                            "source_retry_round": retry_round,
                             "max_retry_rounds": pending_retry_attempts,
                             "reason": retry_reason,
                             "source_stage": retry_source_stage,
@@ -11948,11 +12165,34 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     for index, candidate_payload in enumerate(candidates, 1)
                     if _candidate_payload_email(candidate_payload)
                 ]
-                worker_count = max(1, min(gopay_concurrency, max(1, len(initial_items))))
+                queued_emails = {_candidate_payload_email(item[1]) for item in initial_items if _candidate_payload_email(item[1])}
+                next_index = len(initial_items) + 1
                 worker_slots: queue.Queue[int] = queue.Queue()
-                for worker_index in range(1, worker_count + 1):
+                for worker_index in range(1, 11):
                     worker_slots.put(worker_index)
                 active: dict[Any, tuple[int, int, int, str]] = {}
+
+                def append_runtime_accounts() -> None:
+                    nonlocal next_index
+                    added = _drain_runtime_added_account_emails(queued_emails)
+                    if not added:
+                        return
+                    round_total = _runtime_account_total(total)
+                    for added_email in added:
+                        initial_items.append((next_index, added_email, round_total, 0))
+                        next_index += 1
+                    _append_task_progress(
+                        task_id,
+                        {
+                            "stage": "gopay_runtime_accounts_added",
+                            "added": len(added),
+                            "added_emails": added,
+                            "pending": len(initial_items),
+                            "total": _runtime_account_total(total),
+                            "message": f"已追加 {len(added)} 个 GoPay 待处理账号，后续空闲并发会继续处理",
+                            "level": "success",
+                        },
+                    )
 
                 def submit_item(executor: ThreadPoolExecutor, item: tuple[int, Any, int, int]) -> None:
                     index, candidate_payload, round_total, retry_round = item
@@ -11972,12 +12212,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 "retry_round": retry_round,
                                 "max_retry_rounds": pending_retry_attempts,
                                 "pending_retry": len(_pending_retry_emails()),
-                                "concurrency": gopay_concurrency,
+                                "concurrency": _current_gopay_concurrency(),
                                 "message": f"开始并发 GoPay 待重试第 {retry_round}/{pending_retry_attempts} 轮: {candidate_email}",
                             },
                         )
 
                 def submit_available(executor: ThreadPoolExecutor) -> None:
+                    append_runtime_accounts()
+                    worker_count = _current_gopay_concurrency()
                     while len(active) < worker_count and not cancel_signal.is_cancelled() and not _gopay_balance_insufficient_stop_requested():
                         if initial_items:
                             submit_item(executor, initial_items.pop(0))
@@ -11998,10 +12240,13 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             ),
                         )
 
-                with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="gopay-bind") as executor:
+                executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="gopay-bind")
+                try:
                     while (
                         initial_items or active or pending_retry_items or scheduled_retry_items
                     ) and not cancel_signal.is_cancelled() and not _gopay_balance_insufficient_stop_requested():
+                        append_runtime_accounts()
+                        worker_count = _current_gopay_concurrency()
                         schedule_pending_retries()
                         submit_available(executor)
                         if not active:
@@ -12009,16 +12254,23 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                             if next_due is None:
                                 break
                             cancel_event = _task_cancel_signals.get(task_id)
+                            wait_seconds = min(float(next_due or 0.0), 1.0)
                             if cancel_event is not None:
-                                if cancel_event.wait(next_due):
+                                if cancel_event.wait(wait_seconds):
                                     break
-                            elif next_due > 0:
-                                time.sleep(min(next_due, 1.0))
+                            elif wait_seconds > 0:
+                                time.sleep(wait_seconds)
                             continue
                         timeout = None
                         if len(active) < worker_count and not initial_items:
                             timeout = next_retry_due_in()
+                        if timeout is None:
+                            timeout = 1.0
+                        else:
+                            timeout = min(float(timeout or 0.0), 1.0)
                         done, _ = wait(active.keys(), timeout=timeout, return_when=FIRST_COMPLETED)
+                        if cancel_signal.is_cancelled() or _gopay_balance_insufficient_stop_requested():
+                            break
                         if not done:
                             continue
                         for future in done:
@@ -12030,6 +12282,22 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                                 retry_round=retry_round,
                                 normalized_candidate=normalized_candidate,
                             )
+                finally:
+                    if cancel_signal.is_cancelled():
+                        for future in list(active.keys()):
+                            future.cancel()
+                        _append_task_progress(
+                            task_id,
+                            {
+                                "stage": "gopay_parallel_cancelled",
+                                "active": len(active),
+                                "pending": len(initial_items) + len(pending_retry_items) + len(scheduled_retry_items),
+                                "message": "GoPay 并发任务已停止提交新账号，正在释放未开始的后台步骤",
+                            },
+                        )
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    else:
+                        executor.shutdown(wait=True)
 
             _run_parallel_dynamic()
 
@@ -12092,7 +12360,16 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                 }
 
             success_set = {_normalized_email(item) for item in successful_emails if _normalized_email(item)}
-            failed_emails = [item for item in failed_emails if _normalized_email(item.get("email")) not in success_set]
+            pending_retry_emails = _pending_retry_emails()
+            pending_retry_set = {_normalized_email(item) for item in pending_retry_emails if _normalized_email(item)}
+            failed_emails = _dedupe_failed_email_results(
+                [
+                    item
+                    for item in failed_emails
+                    if _normalized_email(item.get("email")) not in success_set
+                    and _normalized_email(item.get("email")) not in pending_retry_set
+                ]
+            )
             rejected_emails = [item for item in rejected_emails if _normalized_email(item) not in success_set]
             payment_failed_emails = [item for item in payment_failed_emails if _normalized_email(item) not in success_set]
             nonzero_blocked_emails = [item for item in nonzero_blocked_emails if _normalized_email(item) not in success_set]
@@ -12100,16 +12377,17 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
 
             success_count = len(successful_emails)
             attempted_count = len(attempted_emails)
+            final_total = _runtime_account_total(total)
             aggregate_status = "success" if success_count else ("cancelled" if cancel_signal.is_cancelled() else "failed")
             failure_stage = ""
             if success_count and failed_emails:
                 failure_stage = "partial_failed"
             elif not success_count:
                 failure_stage = last_result.get("failure_stage") or ("cancelled" if cancel_signal.is_cancelled() else "gopay_auto_signup")
-            message = f"GoPay 自动注册绑定完成: 成功 {success_count}/{total} 个账号"
+            message = f"GoPay 自动注册绑定完成: 成功 {success_count}/{final_total} 个账号"
             if failed_emails:
                 message += f"，失败 {len(failed_emails)} 个"
-            if cancel_signal.is_cancelled() and attempted_count < total:
+            if cancel_signal.is_cancelled() and attempted_count < final_total:
                 message += "，任务已取消"
 
             result_payload = dict(last_result)
@@ -12126,16 +12404,16 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
                     "nonzero_blocked_emails": nonzero_blocked_emails,
                     "blocked_emails": blocked_emails,
                     "failed_emails": failed_emails,
-                    "pending_retry_emails": _pending_retry_emails(),
+                    "pending_retry_emails": pending_retry_emails,
                     "retried_emails": retried_emails,
-                    "concurrency": gopay_concurrency,
+                    "concurrency": _current_gopay_concurrency(),
                 }
             )
             return result_payload
 
         def _run_gopay_auto_signup_existing_accounts_batch() -> dict:
             candidates = account_emails[:] if account_emails else [email]
-            if gopay_concurrency > 1 and len(candidates) > 1:
+            if len(candidates) > 1:
                 return _run_gopay_auto_signup_existing_accounts_batch_parallel(candidates)
             aggregate_results: list[dict] = []
             attempted_emails: list[str] = []
@@ -12477,7 +12755,8 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
         result["checkout_url"] = checkout_url or result.get("checkout_url") or ""
         result["account_emails"] = account_emails
         result["pending_retry_attempts"] = pending_retry_attempts
-        result["concurrency"] = gopay_concurrency
+        result["concurrency"] = _current_gopay_concurrency()
+        result["gopay_auto_signup_sms_provider"] = _current_gopay_auto_signup_sms_provider()
         if oauth_scheduled_emails:
             result["oauth_scheduled_emails"] = sorted(oauth_scheduled_emails)
         if oauth_successful_emails:
@@ -12526,7 +12805,7 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             success_email = _normalized_email(raw_email)
             if success_email and success_email not in successful_emails:
                 successful_emails.append(success_email)
-        if result.get("status") == "success":
+        if result.get("status") == "success" and not successful_emails:
             success_email = _normalized_email(actual_email)
             if success_email and success_email not in successful_emails:
                 successful_emails.append(success_email)
@@ -12685,7 +12964,14 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
     ]
     task_params.pop("gopay_pin", None)
     task = _start_task("gopay-bind", _run, task_params, task_group=TASK_GROUP_GOPAY)
+    _init_gopay_runtime_control(
+        task["task_id"],
+        gopay_concurrency=gopay_concurrency,
+        sms_provider=gopay_auto_signup_sms_provider,
+        account_emails=account_emails or ([email] if email else []),
+    )
     _task_skip_signals[task["task_id"]] = skip_current_signal
+    _register_task_cancel_hook(task["task_id"], skip_current_signal.set)
     return task
 
 
@@ -13732,6 +14018,16 @@ def post_paypal_task(params: PayPalTaskParams):
                 add_account(candidate_email, "", seat_type=SEAT_CODEX)
                 updated_account = update_account(candidate_email, **update_fields)
             if single_result.get("status") == "success":
+                try:
+                    plan_update = _update_account_cpa_auth_plan_type(
+                        candidate_email,
+                        account=updated_account if isinstance(updated_account, dict) else None,
+                        plan_type=ACCOUNT_TYPE_PLUS,
+                    )
+                    if plan_update.get("auth_file") and isinstance(updated_account, dict):
+                        updated_account["auth_file"] = plan_update["auth_file"]
+                except Exception:
+                    logger.warning("[paypal] failed to update CPA auth plan_type after Plus upgrade: %s", _safe_email_summary(candidate_email), exc_info=True)
                 _append_unique(successful_emails, candidate_email)
                 _handle_paypal_success_auth(candidate_email, selected_proxy_url)
             else:
@@ -14767,9 +15063,8 @@ def get_task(task_id: str):
 @app.post("/api/tasks/cancel", status_code=202)
 def post_task_cancel(params: TaskControlParams = TaskControlParams()):
     """
-    请求当前正在运行的任务在下一个安全点退出。
-    协作式:后台 worker 在每个批次/账号边界检查 cancel_signal.is_cancelled(),
-    调用这里后等 10-30s 让当前步骤跑完,任务状态会在 task["status"] 里显示为 "cancelled"。
+    请求当前正在运行的任务退出。
+    任务会先触发已注册的取消 hook,再由 worker 在安全点检查 cancel_signal.is_cancelled() 后退出。
     """
     from autoteam import cancel_signal
 
@@ -14782,9 +15077,17 @@ def post_task_cancel(params: TaskControlParams = TaskControlParams()):
         cancel_signal.request_cancel_event(cancel_event, f"手动停止 task={task_id[:8]}")
     else:
         cancel_signal.request_cancel(f"手动停止 task={task_id[:8]}")
+    _run_task_cancel_hooks(task_id)
     task["cancel_requested"] = True
+    _append_task_progress(
+        task_id,
+        {
+            "stage": "task_cancel_requested",
+            "message": "已请求立即中止任务，正在停止提交新步骤并打断当前可中断等待",
+        },
+    )
     return {
-        "message": "已请求中止,等待当前步骤安全退出",
+        "message": "已请求立即中止，正在停止提交新步骤并打断当前可中断等待",
         "task_id": task_id,
         "command": task.get("command"),
         "task_group": task.get("task_group"),
@@ -14824,6 +15127,100 @@ def post_task_skip_current(params: TaskControlParams = TaskControlParams()):
         "task_id": task_id,
         "command": task.get("command"),
         "task_group": task.get("task_group"),
+    }
+
+
+@app.post("/api/tasks/gopay/runtime-control", status_code=202)
+def post_gopay_runtime_control(params: GoPayRuntimeControlParams):
+    """Hot-update GoPay controls for not-yet-started accounts in the current task."""
+    task_params = TaskControlParams(task_id=params.task_id) if params.task_id else TaskControlParams()
+    task = _find_control_task(task_params, default_group=TASK_GROUP_GOPAY, command="gopay-bind")
+    task_id = str(task.get("task_id") or "")
+    if task.get("status") not in ("running", "pending"):
+        raise HTTPException(status_code=400, detail=f"任务当前状态 {task.get('status')} 无法热切换")
+    if task.get("command") != "gopay-bind":
+        raise HTTPException(status_code=400, detail="当前任务不支持 GoPay 热切换")
+
+    updates: dict[str, Any] = {}
+    added_emails: list[str] = []
+    with _task_runtime_controls_lock:
+        control = _task_runtime_controls.setdefault(task_id, {})
+        control.setdefault("pending_account_emails", [])
+        control.setdefault("all_account_emails", [])
+
+        if params.gopay_concurrency is not None:
+            control["gopay_concurrency"] = _normalize_gopay_runtime_concurrency(params.gopay_concurrency, 1)
+            updates["gopay_concurrency"] = control["gopay_concurrency"]
+
+        provider_input = str(params.gopay_auto_signup_sms_provider or "").strip()
+        if provider_input:
+            provider = _normalize_gopay_auto_signup_sms_provider(provider_input)
+            control["gopay_auto_signup_sms_provider"] = provider
+            updates["gopay_auto_signup_sms_provider"] = provider
+
+        all_emails = control["all_account_emails"] if isinstance(control.get("all_account_emails"), list) else []
+        pending = control["pending_account_emails"] if isinstance(control.get("pending_account_emails"), list) else []
+        seen = {_normalized_email(email) for email in all_emails}
+        for raw_email in params.account_emails or []:
+            email = _normalized_email(raw_email)
+            if not email or email in seen:
+                continue
+            seen.add(email)
+            all_emails.append(email)
+            pending.append(email)
+            added_emails.append(email)
+        control["all_account_emails"] = all_emails
+        control["pending_account_emails"] = pending
+        control["version"] = int(control.get("version") or 0) + 1
+        updates["version"] = control["version"]
+
+    if added_emails:
+        public_params = task.get("params") if isinstance(task.get("params"), dict) else {}
+        existing = public_params.get("account_emails") if isinstance(public_params.get("account_emails"), list) else []
+        merged = []
+        seen_public = set()
+        for raw_email in [*existing, *added_emails]:
+            email = _normalized_email(raw_email)
+            if email and email not in seen_public:
+                seen_public.add(email)
+                merged.append(email)
+        public_params["account_emails"] = merged
+        task["params"] = public_params
+        updates["added_account_emails"] = added_emails
+    if "gopay_concurrency" in updates or "gopay_auto_signup_sms_provider" in updates:
+        public_params = task.get("params") if isinstance(task.get("params"), dict) else {}
+        if "gopay_concurrency" in updates:
+            public_params["gopay_concurrency"] = updates["gopay_concurrency"]
+        if "gopay_auto_signup_sms_provider" in updates:
+            public_params["gopay_auto_signup_sms_provider"] = updates["gopay_auto_signup_sms_provider"]
+        task["params"] = public_params
+
+    if not updates or set(updates) == {"version"}:
+        raise HTTPException(status_code=400, detail="没有可应用的热切换内容")
+
+    _append_task_progress(
+        task_id,
+        {
+            "stage": "gopay_runtime_control_updated",
+            "updates": updates,
+            "message": (
+                "GoPay 热切换已应用："
+                + "，".join(
+                    [
+                        f"并发 {updates['gopay_concurrency']}" if "gopay_concurrency" in updates else "",
+                        f"短信服务商 {updates['gopay_auto_signup_sms_provider']}" if "gopay_auto_signup_sms_provider" in updates else "",
+                        f"追加账号 {len(added_emails)} 个" if added_emails else "",
+                    ]
+                ).strip("，")
+            ),
+            "level": "success",
+        },
+    )
+    _persist_task_snapshot(task)
+    return {
+        "message": "GoPay 热切换已应用",
+        "task_id": task_id,
+        "updates": updates,
     }
 
 

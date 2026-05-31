@@ -128,6 +128,17 @@ function latestAccountEmail(events) {
   return String(event?.email || '').trim()
 }
 
+function uniqueEventEmailCount(events, stages) {
+  const wanted = new Set(stages)
+  const emails = new Set()
+  for (const event of events) {
+    if (!wanted.has(String(event?.stage || ''))) continue
+    const email = normalizedEmail(event?.email)
+    if (email) emails.add(email)
+  }
+  return emails.size
+}
+
 export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false, selectedBatchEmails = [] } = {}) {
   const progress = task?.progress || {}
   const result = task?.result || {}
@@ -240,7 +251,7 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
     if (eventPendingEmails.size) {
       pendingRetry = eventPendingEmails.size
     } else if (Number.isFinite(Number(progress.pending_retry))) {
-      pendingRetry = Math.max(0, Number(progress.pending_retry || 0) - successful.size)
+      pendingRetry = Math.max(0, Number(progress.pending_retry || 0))
     }
   }
 
@@ -333,6 +344,14 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
       return Number.isFinite(total) ? Math.max(maxTotal, total) : maxTotal
     }, 0)
     : 0
+  const parallelBatchRunning = events.some(event => String(event?.stage || '') === 'gopay_parallel_started')
+  const parallelAccountAttempt = parallelBatchRunning
+    ? uniqueEventEmailCount(events, [
+      'gopay_parallel_account',
+      'gopay_auto_signup_account_success',
+      'gopay_auto_signup_account_failed',
+    ])
+    : 0
   const progressSuccessful = Number.isFinite(Number(progress.successful)) ? Math.max(0, Number(progress.successful || 0)) : 0
   const resultSuccessful = Array.isArray(result.successful_emails) ? result.successful_emails.filter(email => normalizedEmail(email)).length : 0
   const adjustedProgressSuccessful = Math.max(0, progressSuccessful - removed.size)
@@ -342,10 +361,14 @@ export function computeGoPayBoardMetrics({ task, form = {}, batchActive = false,
     ? Math.max(autoRegisterCount, knownSuccessfulCount, Number(result.auto_register_attempted || 0), autoRegisterEventAttempted)
     : Number(accounts.length || (batchActive ? selectedBatchEmails.length : 0) || batchEventTotal || (params.email ? 1 : 0) || progress.total || (task?.task_id ? 1 : 0))
   const attempted = isAutoRegister
-    ? Math.max(Number(result.auto_register_attempted || 0), Number(progress.attempted || progress.attempt || 0), autoRegisterEventAttempted)
+    ? parallelBatchRunning
+      ? Math.max(parallelAccountAttempt, knownSuccessfulCount, failedEmails.size)
+      : Math.max(Number(result.auto_register_attempted || 0), Number(progress.attempted || progress.attempt || 0), autoRegisterEventAttempted)
     : Array.isArray(result.attempted_emails)
       ? Math.max(result.attempted_emails.length, currentAccountAttempt)
-      : Math.max(Number(progress.attempted || progress.attempt || 0), currentAccountAttempt)
+      : parallelBatchRunning
+        ? Math.max(parallelAccountAttempt, knownSuccessfulCount, failedEmails.size)
+        : Math.max(Number(progress.attempted || progress.attempt || 0), currentAccountAttempt)
   const successfulCount = knownSuccessfulCount
   const rawDone = Math.max(attempted, successfulCount)
   const done = baseTotal ? Math.min(baseTotal, rawDone) : rawDone

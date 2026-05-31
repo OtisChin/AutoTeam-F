@@ -342,6 +342,40 @@ def _account_payload_for_hub(acc: dict, luckmail_tokens: dict[str, str]) -> dict
     return payload
 
 
+def _normalize_plus_auth_plan_types_for_hub(accounts: list[dict]) -> int:
+    try:
+        from autoteam.accounts import update_account
+        from autoteam.cpa_sync import update_local_auth_plan_type
+    except Exception:
+        return 0
+
+    updated = 0
+    for acc in accounts:
+        if not isinstance(acc, dict):
+            continue
+        email = str(acc.get("email") or "").strip().lower()
+        if not email:
+            continue
+        account_type = str(acc.get("account_type") or "").strip().lower()
+        status = str(acc.get("status") or "").strip().lower()
+        if account_type != "plus" and status != "plus":
+            continue
+        try:
+            result = update_local_auth_plan_type(email, str(acc.get("auth_file") or ""), plan_type="plus")
+        except Exception as exc:
+            logger.warning("[account_hub] 修正 Plus auth plan_type 失败: email=%s error=%s", email, exc)
+            continue
+        auth_file = str(result.get("auth_file") or "").strip()
+        if result.get("status") == "updated" and auth_file and auth_file != str(acc.get("auth_file") or ""):
+            acc["auth_file"] = auth_file
+            try:
+                update_account(email, auth_file=auth_file)
+            except Exception as exc:
+                logger.warning("[account_hub] 保存 Plus auth_file 路径失败: email=%s error=%s", email, exc)
+            updated += 1
+    return updated
+
+
 def build_upload_payload(
     *,
     node_name: str | None = None,
@@ -355,6 +389,7 @@ def build_upload_payload(
     accounts = _filter_accounts_by_emails(accounts, selected_emails)
     if syncable_only:
         accounts = _syncable_accounts(accounts)
+    _normalize_plus_auth_plan_types_for_hub(accounts)
     restored = _restore_luckmail_tokens_for_accounts(accounts)
     if restored:
         from autoteam.accounts import save_accounts

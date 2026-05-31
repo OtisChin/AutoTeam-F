@@ -635,6 +635,51 @@
                 {{ gopayCancelling ? '取消中...' : '取消任务' }}
               </button>
             </div>
+            <div v-if="gopayTaskRunning" class="mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
+              <div class="mb-2 text-xs font-medium text-emerald-100">运行中热切换</div>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div>
+                  <label class="mb-1 block text-xs text-emerald-200/80">并发数</label>
+                  <input
+                    v-model.number="gopayRuntimeConcurrency"
+                    type="number"
+                    min="1"
+                    max="10"
+                    step="1"
+                    class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-xs text-emerald-200/80">短信服务商</label>
+                  <select
+                    v-model="gopayRuntimeSmsProvider"
+                    class="w-full px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="smscloud">smscloud</option>
+                    <option value="hero_sms">hero-sms</option>
+                    <option value="smsbower">smsbower</option>
+                    <option value="smscode">smscode.gg</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mt-2">
+                <label class="mb-1 block text-xs text-emerald-200/80">追加账号</label>
+                <textarea
+                  v-model="gopayRuntimeAppendEmailsText"
+                  rows="2"
+                  placeholder="每行一个邮箱"
+                  class="w-full resize-y px-3 py-2 bg-gray-900 border border-emerald-500/20 rounded-lg text-sm text-white focus:outline-none focus:border-emerald-500"
+                ></textarea>
+              </div>
+              <button
+                type="button"
+                @click="applyGoPayRuntimeControl"
+                :disabled="gopayRuntimeUpdating"
+                class="mt-2 w-full px-4 py-2 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-500 text-white transition disabled:opacity-50"
+              >
+                {{ gopayRuntimeUpdating ? '应用中...' : '应用热切换' }}
+              </button>
+            </div>
           </div>
 
           <div class="space-y-3 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-2 xl:pb-2">
@@ -1879,6 +1924,10 @@ const gopaySmsbowerPriceQueryLoading = ref(false)
 const gopaySmsbowerPriceQueryResult = ref(null)
 const gopaySmscodePriceQueryLoading = ref(false)
 const gopaySmscodePriceQueryResult = ref(null)
+const gopayRuntimeUpdating = ref(false)
+const gopayRuntimeAppendEmailsText = ref('')
+const gopayRuntimeConcurrency = ref(1)
+const gopayRuntimeSmsProvider = ref('smscloud')
 const gopayForm = ref({
   email: '',
   autoRegister: false,
@@ -2469,6 +2518,19 @@ function normalizeGoPayConcurrency(value) {
   const count = Number(value ?? 1)
   if (!Number.isFinite(count)) return 1
   return Math.max(1, Math.min(10, Math.floor(count)))
+}
+
+function parseEmailLines(text) {
+  const seen = new Set()
+  return String(text || '')
+    .split(/[\s,;，；]+/)
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(value => {
+      if (!value || !value.includes('@')) return false
+      if (seen.has(value)) return false
+      seen.add(value)
+      return true
+    })
 }
 
 async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
@@ -3714,6 +3776,10 @@ function hydrateGoPayTaskLog(task, restoreMessage = '') {
   if (!task) return
   activeTab.value = 'gopay'
   gopayTask.value = task
+  if (isTaskActive(task)) {
+    gopayRuntimeConcurrency.value = normalizeGoPayConcurrency(task.params?.gopay_concurrency || task.result?.concurrency || gopayForm.value.gopayConcurrency)
+    gopayRuntimeSmsProvider.value = String(task.params?.gopay_auto_signup_sms_provider || task.result?.gopay_auto_signup_sms_provider || gopayForm.value.gopayAutoSignupSmsProvider || 'smscloud')
+  }
   rememberGoPayTaskId(task.task_id)
   if (restoreMessage) {
     pushGoPayLog(restoreMessage, 'info')
@@ -4158,7 +4224,7 @@ async function startBindCard() {
 async function cancelBindTask() {
   if (!bindTaskRunning.value || bindCancelling.value) return
   bindCancelling.value = true
-  pushBindLog('已发起取消请求，等待任务在安全点退出', 'warn')
+  pushBindLog('已发起取消请求，正在停止提交新步骤并打断可中断等待', 'warn')
   try {
     const result = await api.cancelTask()
     if (result?.message) {
@@ -4335,6 +4401,9 @@ async function startGoPayBind() {
       gopay_concurrency: normalizedGoPayConcurrency.value,
     })
     gopayTask.value = task
+    gopayRuntimeConcurrency.value = normalizedGoPayConcurrency.value
+    gopayRuntimeSmsProvider.value = gopayAutoSignupProvider.value
+    gopayRuntimeAppendEmailsText.value = ''
     rememberGoPayTaskId(task.task_id)
     pushGoPayLog(`GoPay 任务已提交，任务 ID: ${task.task_id}`, 'success')
     setMessage(`GoPay 任务已提交: ${task.task_id}`)
@@ -4352,7 +4421,7 @@ async function startGoPayBind() {
 async function cancelGoPayTask() {
   if (!gopayTaskRunning.value || gopayCancelling.value) return
   gopayCancelling.value = true
-  pushGoPayLog('已发起取消请求，等待任务在安全点退出', 'warn')
+  pushGoPayLog('已发起取消请求，正在停止提交新账号并打断可中断等待', 'warn')
   try {
     const result = await api.cancelTask()
     if (result?.message) {
@@ -4381,6 +4450,31 @@ async function skipGoPayCurrentAccount() {
     pushGoPayLog(`跳过当前账号失败: ${e.message}`, 'error')
     setMessage(`跳过当前账号失败: ${e.message}`, false)
     gopaySkipping.value = false
+  }
+}
+
+async function applyGoPayRuntimeControl() {
+  if (!gopayTaskRunning.value || gopayRuntimeUpdating.value) return
+  const accountEmails = parseEmailLines(gopayRuntimeAppendEmailsText.value)
+  gopayRuntimeUpdating.value = true
+  try {
+    const result = await api.updateGoPayRuntimeControl({
+      task_id: gopayTask.value?.task_id || '',
+      gopay_concurrency: normalizeGoPayConcurrency(gopayRuntimeConcurrency.value),
+      gopay_auto_signup_sms_provider: gopayRuntimeSmsProvider.value,
+      account_emails: accountEmails,
+    })
+    const updates = result?.updates || {}
+    if (updates.added_account_emails?.length) {
+      gopayRuntimeAppendEmailsText.value = ''
+    }
+    pushGoPayLog(result?.message || 'GoPay 热切换已应用', 'success')
+    setMessage(result?.message || 'GoPay 热切换已应用')
+  } catch (e) {
+    pushGoPayLog(`GoPay 热切换失败: ${e.message}`, 'error')
+    setMessage(`GoPay 热切换失败: ${e.message}`, false)
+  } finally {
+    gopayRuntimeUpdating.value = false
   }
 }
 
