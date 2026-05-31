@@ -14,7 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from autoteam import sqlite_store
-from autoteam.accounts import ACCOUNT_TYPE_PLUS, STATUS_ACTIVE, STATUS_AUTH_INVALID, STATUS_FAIL, STATUS_ORPHAN
+from autoteam.accounts import (
+    ACCOUNT_TYPE_PLUS,
+    STATUS_ACTIVE,
+    STATUS_AUTH_INVALID,
+    STATUS_FAIL,
+    STATUS_ORPHAN,
+    STATUS_PLUS,
+)
 from autoteam.auth_storage import AUTH_DIR
 from autoteam.sub2api_converter import (
     ConversionError,
@@ -326,12 +333,14 @@ def revoke_cdk(code: str) -> dict:
     return get_cdk(code)
 
 
-def _allocated_emails(conn) -> set[str]:
-    from autoteam.accounts import load_accounts
+def _allocated_emails(conn, accounts: list[dict] | None = None) -> set[str]:
+    if accounts is None:
+        from autoteam.accounts import load_accounts
 
+        accounts = load_accounts()
     exported_emails = {
         str(account.get("email") or "").strip().lower()
-        for account in load_accounts()
+        for account in accounts
         if bool(account.get("credentials_exported"))
     }
     return {
@@ -344,12 +353,14 @@ def _allocated_emails(conn) -> set[str]:
     }
 
 
-def _clear_unexported_trade_allocations(conn) -> int:
-    from autoteam.accounts import load_accounts
+def _clear_unexported_trade_allocations(conn, accounts: list[dict] | None = None) -> int:
+    if accounts is None:
+        from autoteam.accounts import load_accounts
 
+        accounts = load_accounts()
     reusable_emails = [
         str(account.get("email") or "").strip().lower()
-        for account in load_accounts()
+        for account in accounts
         if str(account.get("email") or "").strip() and not bool(account.get("credentials_exported"))
     ]
     if not reusable_emails:
@@ -470,9 +481,9 @@ def _eligible_plus_sources(export_format: str, allocated: set[str]) -> list[dict
         email = str(account.get("email") or "").strip().lower()
         if not email or email == main_email or email in allocated:
             continue
-        if str(account.get("account_type") or "").strip().lower() != ACCOUNT_TYPE_PLUS:
+        if not _is_trade_plus_account(account, main_email):
             continue
-        if str(account.get("status") or "").strip().lower() != STATUS_ACTIVE:
+        if not _is_trade_stock_status(account):
             continue
         if bool(account.get("credentials_exported")):
             continue
@@ -504,9 +515,9 @@ def _eligible_plus_bundle_sources(export_formats: list[str], allocated: set[str]
         email = str(account.get("email") or "").strip().lower()
         if not email or email == main_email or email in allocated:
             continue
-        if str(account.get("account_type") or "").strip().lower() != ACCOUNT_TYPE_PLUS:
+        if not _is_trade_plus_account(account, main_email):
             continue
-        if str(account.get("status") or "").strip().lower() != STATUS_ACTIVE:
+        if not _is_trade_stock_status(account):
             continue
         if bool(account.get("credentials_exported")):
             continue
@@ -554,58 +565,118 @@ def _bundle_sources_for_emails(emails: list[str], export_formats: list[str]) -> 
     return sources
 
 
-def _is_plus_account(account: dict, main_email: str) -> bool:
+def _is_trade_stock_status(account: dict) -> bool:
+    status = str(account.get("status") or "").strip().lower()
+    return status in {STATUS_ACTIVE, STATUS_PLUS}
+
+
+def _is_trade_plus_account(account: dict, main_email: str) -> bool:
     email = str(account.get("email") or "").strip().lower()
+    account_type = str(account.get("account_type") or "").strip().lower()
+    status = str(account.get("status") or "").strip().lower()
     return bool(
         email
         and email != main_email
-        and str(account.get("account_type") or "").strip().lower() == ACCOUNT_TYPE_PLUS
+        and (account_type == ACCOUNT_TYPE_PLUS or status == STATUS_PLUS)
     )
+
+
+def _is_plus_account(account: dict, main_email: str) -> bool:
+    return _is_trade_plus_account(account, main_email)
 
 
 def _has_valid_codex_auth(account: dict) -> bool:
     return _source_for_account(account, "cpa") is not None
 
 
+def _inventory_format_counts(accounts: list[dict], main_email: str, allocated: set[str]) -> tuple[dict[str, int], int]:
+    counts = {
+        "cpa": 0,
+        "sub": 0,
+        "credentials": 0,
+        "cpa_sub": 0,
+        "cpa_credentials": 0,
+        "all_formats": 0,
+    }
+    missing_credentials_count = 0
+    outlook_urls = outlook_mailapi_urls_by_email()
+
+    for account in accounts:
+        email = str(account.get("email") or "").strip().lower()
+        if not email or email == main_email or email in allocated:
+            continue
+        if not _is_trade_plus_account(account, main_email):
+            continue
+        if not _is_trade_stock_status(account):
+            continue
+        if bool(account.get("credentials_exported")):
+            continue
+
+        auth_file = _resolve_codex_auth_file(account)
+        if not auth_file:
+            missing_credentials_count += 1
+            continue
+
+        path = Path(auth_file)
+        try:
+            content = read_text(path)
+            json.loads(content)
+        except Exception:
+            missing_credentials_count += 1
+            continue
+
+        has_cpa = True
+        has_sub = False
+        try:
+            records = inspect_sources([(path.name, content)])
+            has_sub = any(record.is_valid for record in records)
+        except Exception:
+            has_sub = False
+        has_credentials = bool(credential_export_line_for_account(account, outlook_mailapi_urls=outlook_urls))
+
+        if has_cpa:
+            counts["cpa"] += 1
+        if has_sub:
+            counts["sub"] += 1
+        if has_credentials:
+            counts["credentials"] += 1
+        if has_cpa and has_sub:
+            counts["cpa_sub"] += 1
+        if has_cpa and has_credentials:
+            counts["cpa_credentials"] += 1
+        if has_cpa and has_sub and has_credentials:
+            counts["all_formats"] += 1
+
+    return counts, missing_credentials_count
+
+
 def inventory_summary() -> dict:
     from autoteam.accounts import load_accounts
     from autoteam.admin_state import get_admin_email
 
+    accounts = load_accounts()
     sqlite_store.initialize()
     with sqlite_store.connect() as conn:
-        _clear_unexported_trade_allocations(conn)
-        allocated = _allocated_emails(conn)
-    stock_sources = _eligible_plus_sources("cpa", allocated)
-    stock_sources_sub = _eligible_plus_sources("sub", allocated)
-    stock_sources_credentials = _eligible_plus_sources("credentials", allocated)
-    stock_sources_cpa_sub = _eligible_plus_bundle_sources(["cpa", "sub"], allocated)
-    stock_sources_cpa_credentials = _eligible_plus_bundle_sources(["cpa", "credentials"], allocated)
-    stock_sources_all_formats = _eligible_plus_bundle_sources(["cpa", "sub", "credentials"], allocated)
+        _clear_unexported_trade_allocations(conn, accounts)
+        allocated = _allocated_emails(conn, accounts)
     cdks = list_cdks()
     main_email = str(get_admin_email() or "").strip().lower()
-    plus_accounts = [account for account in load_accounts() if _is_plus_account(account, main_email)]
+    plus_accounts = [account for account in accounts if _is_plus_account(account, main_email)]
     exported_count = sum(1 for account in plus_accounts if bool(account.get("credentials_exported")))
     discarded_count = sum(
         1
         for account in plus_accounts
         if str(account.get("status") or "").strip().lower() in EXCLUDED_ACCOUNT_STATUSES
     )
-    missing_credentials_count = sum(
-        1
-        for account in plus_accounts
-        if str(account.get("status") or "").strip().lower() == STATUS_ACTIVE
-        and not bool(account.get("credentials_exported"))
-        and str(account.get("email") or "").strip().lower() not in allocated
-        and not _has_valid_codex_auth(account)
-    )
+    stock_counts, missing_credentials_count = _inventory_format_counts(accounts, main_email, allocated)
     return {
-        "stock_available": len(stock_sources),
-        "stock_available_cpa": len(stock_sources),
-        "stock_available_sub": len(stock_sources_sub),
-        "stock_available_credentials": len(stock_sources_credentials),
-        "stock_available_cpa_sub": len(stock_sources_cpa_sub),
-        "stock_available_cpa_credentials": len(stock_sources_cpa_credentials),
-        "stock_available_all_formats": len(stock_sources_all_formats),
+        "stock_available": stock_counts["cpa"],
+        "stock_available_cpa": stock_counts["cpa"],
+        "stock_available_sub": stock_counts["sub"],
+        "stock_available_credentials": stock_counts["credentials"],
+        "stock_available_cpa_sub": stock_counts["cpa_sub"],
+        "stock_available_cpa_credentials": stock_counts["cpa_credentials"],
+        "stock_available_all_formats": stock_counts["all_formats"],
         "stock_exported": exported_count,
         "stock_discarded": discarded_count,
         "stock_missing_credentials": missing_credentials_count,
