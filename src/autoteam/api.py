@@ -3194,6 +3194,22 @@ class GoPayProNumbersParams(BaseModel):
 class GoPayProConfigParams(BaseModel):
     slots: int | None = None
     concurrency: int | None = None
+    proxy_api_enabled: bool | None = Field(
+        None,
+        validation_alias=AliasChoices("proxy_api_enabled", "proxyApiEnabled"),
+    )
+    proxy_api_provider: str = Field(
+        "",
+        validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"),
+    )
+    proxy_api_url: str = Field(
+        "",
+        validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"),
+    )
+    proxy_api_chunk_size: int | None = Field(
+        None,
+        validation_alias=AliasChoices("proxy_api_chunk_size", "proxyApiChunkSize"),
+    )
 
 
 class GoPayProSlotParams(BaseModel):
@@ -6342,6 +6358,104 @@ def _mask_gopay_pro_token(value: Any) -> str:
     return f"{text[:10]}...{text[-6:]}"
 
 
+def _mask_gopay_pro_proxy(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(text)
+    except Exception:
+        return "***"
+    if not parsed.netloc:
+        return "***"
+    host = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme or 'proxy'}://***@{host}{port}"
+
+
+def _gopay_pro_proxy_api_settings(config: dict | None) -> dict[str, Any]:
+    raw_config = config if isinstance(config, dict) else {}
+    pool = raw_config.get("pool") if isinstance(raw_config.get("pool"), dict) else {}
+    proxy_api = pool.get("proxy_api") if isinstance(pool.get("proxy_api"), dict) else {}
+    enabled = bool(
+        proxy_api.get("enabled")
+        or pool.get("proxy_api_enabled")
+        or raw_config.get("gopay_proxy_api_enabled")
+    )
+    provider = str(
+        proxy_api.get("provider")
+        or pool.get("proxy_api_provider")
+        or raw_config.get("gopay_proxy_api_provider")
+        or "cliproxy"
+    ).strip()
+    try:
+        provider = _normalize_proxy_api_provider(provider)
+    except HTTPException:
+        provider = "cliproxy"
+    api_url = str(
+        proxy_api.get("url")
+        or pool.get("proxy_api_url")
+        or raw_config.get("gopay_proxy_api_url")
+        or ""
+    ).strip()
+    if enabled and not api_url:
+        api_url = _default_gopay_proxy_api_url(provider)
+    return {
+        "enabled": enabled,
+        "provider": provider,
+        "url": api_url,
+        "chunk_size": max(1, int(proxy_api.get("chunk_size") or pool.get("concurrency") or 1)),
+    }
+
+
+def _prepare_gopay_pro_register_proxy(task_id: str, paths: dict[str, Path]) -> str:
+    config = _read_json_file(paths["config"], {})
+    settings = _gopay_pro_proxy_api_settings(config)
+    if not settings.get("enabled"):
+        return ""
+    provider = str(settings.get("provider") or "cliproxy")
+    api_url = str(settings.get("url") or "").strip()
+    if not api_url:
+        api_url = _default_gopay_proxy_api_url(provider)
+    _append_task_progress(
+        task_id,
+        {
+            "stage": "gopay_pro_proxy_api_fetch",
+            "message": f"reg.cmd 使用 {provider} 印尼代理 API 提取代理",
+            "proxy_api_provider": provider,
+            "proxy_api_url_present": bool(api_url),
+        },
+    )
+    proxy_url = _fetch_proxy_from_api_url(
+        api_url,
+        default_auth_scheme="http",
+        provider=provider,
+    )
+    if not proxy_url:
+        raise RuntimeError("Cliproxy 未返回可用印尼代理，已停止 reg.cmd，避免直连注册")
+    if not isinstance(config, dict):
+        config = {}
+    config["proxy_id"] = proxy_url
+    pool = config.setdefault("pool", {})
+    if isinstance(pool, dict):
+        proxy_api = pool.setdefault("proxy_api", {})
+        if isinstance(proxy_api, dict):
+            proxy_api["enabled"] = True
+            proxy_api["provider"] = provider
+            proxy_api["url"] = api_url
+    _write_json_atomic(paths["config"], config)
+    _append_task_progress(
+        task_id,
+        {
+            "stage": "gopay_pro_proxy_api_selected",
+            "message": f"reg.cmd 已切换到 {provider} 印尼代理: {_mask_gopay_pro_proxy(proxy_url)}",
+            "proxy_api_provider": provider,
+            "proxy_url_present": True,
+        },
+    )
+    return proxy_url
+
+
 def _safe_gopay_pro_slug(value: str, fallback: str = "auth") -> str:
     slug = re.sub(r"[^a-zA-Z0-9@._-]+", "-", str(value or "").strip().lower()).strip("-")
     return slug or fallback
@@ -6438,6 +6552,7 @@ def _gopay_pro_status_payload() -> dict:
         key = str(slot.get("state") or "UNKNOWN")
         state_counts[key] = state_counts.get(key, 0) + 1
     pool_config = config.get("pool") if isinstance(config.get("pool"), dict) else {}
+    proxy_api_settings = _gopay_pro_proxy_api_settings(config if isinstance(config, dict) else {})
     active_number_count = len(_active_pool_lines(number_lines))
     tasks = [
         task
@@ -6453,6 +6568,10 @@ def _gopay_pro_status_payload() -> dict:
             "gptMode": str(pool_config.get("gpt_mode") or ""),
             "numberPoolFile": str(pool_config.get("number_pool_file") or "pool_numbers.txt"),
             "tokenFile": str(pool_config.get("provided_tokens_file") or "pool_tokens.txt"),
+            "proxyApiEnabled": bool(proxy_api_settings.get("enabled")),
+            "proxyApiProvider": str(proxy_api_settings.get("provider") or "cliproxy"),
+            "proxyApiUrlPresent": bool(proxy_api_settings.get("url")),
+            "proxyApiChunkSize": int(proxy_api_settings.get("chunk_size") or 1),
         },
         "counts": {
             "numbers": active_number_count,
@@ -6489,6 +6608,27 @@ def update_gopay_pro_config(params: GoPayProConfigParams):
     pool["slots"] = max(1, min(50, active_number_count or int(pool.get("slots") or 1)))
     if params.concurrency is not None:
         pool["concurrency"] = max(1, min(50, int(params.concurrency)))
+    if params.proxy_api_enabled is not None or params.proxy_api_provider or params.proxy_api_url:
+        proxy_api = pool.setdefault("proxy_api", {})
+        if not isinstance(proxy_api, dict):
+            proxy_api = {}
+            pool["proxy_api"] = proxy_api
+        if params.proxy_api_enabled is not None:
+            proxy_api["enabled"] = bool(params.proxy_api_enabled)
+        if params.proxy_api_provider:
+            proxy_api["provider"] = _normalize_proxy_api_provider(params.proxy_api_provider)
+        elif not proxy_api.get("provider"):
+            proxy_api["provider"] = "cliproxy"
+        if params.proxy_api_url:
+            proxy_api["url"] = str(params.proxy_api_url or "").strip()
+        elif bool(proxy_api.get("enabled")) and not str(proxy_api.get("url") or "").strip():
+            proxy_api["url"] = _default_gopay_proxy_api_url(str(proxy_api.get("provider") or "cliproxy"))
+    if params.proxy_api_chunk_size is not None:
+        proxy_api = pool.setdefault("proxy_api", {})
+        if not isinstance(proxy_api, dict):
+            proxy_api = {}
+            pool["proxy_api"] = proxy_api
+        proxy_api["chunk_size"] = max(1, min(50, int(params.proxy_api_chunk_size or 1)))
     _write_json_atomic(paths["config"], config)
     return _gopay_pro_status_payload()
 
@@ -6716,8 +6856,17 @@ def _run_gopay_pro_script(kind: str, task_id: str, *, stage: str = "") -> dict:
     script_path = root / script
     if not script_path.exists():
         raise RuntimeError(f"脚本不存在: {script_path}")
+    if str(kind or "") == "register" and os.name != "nt":
+        _prepare_gopay_pro_register_proxy(task_id, paths)
     command = ["cmd.exe", "/c", str(script_path)] if os.name == "nt" else ["bash", str(script_path)]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    env = None
+    if str(kind or "") == "register":
+        script_config = _read_json_file(paths["config"], {})
+        script_pool = script_config.get("pool") if isinstance(script_config.get("pool"), dict) else {}
+        script_slots = max(1, int(script_pool.get("slots") or 1))
+        env = os.environ.copy()
+        env["CNGOPAY_REGISTER_TOTAL_SLOTS"] = str(script_slots)
     process = subprocess.Popen(
         command,
         cwd=str(root),
@@ -6727,6 +6876,7 @@ def _run_gopay_pro_script(kind: str, task_id: str, *, stage: str = "") -> dict:
         encoding="utf-8",
         errors="replace",
         creationflags=creationflags,
+        env=env,
     )
 
     def _terminate_process() -> None:

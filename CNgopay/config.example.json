@@ -40,6 +40,13 @@
       "poll_interval_sec": 3
     },
     "slots": 5,
+    "proxy_api": {
+      "_comment": "reg.cmd 启动前动态提取印尼代理。支持 cliproxy / 1024proxy。",
+      "enabled": false,
+      "provider": "cliproxy",
+      "url": "https://api.cliproxy.io/white/api?region=ID&num=1&time=10&format=n&type=txt",
+      "chunk_size": 5
+    },
     "_comment_gpt_mode": "provided=从 pool_tokens.txt 读 token; fresh=Go 端现注册(未实现)",
     "gpt_mode": "provided",
     "number_pool_file": "pool_numbers.txt",
