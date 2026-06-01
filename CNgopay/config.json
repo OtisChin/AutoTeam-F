@@ -1,0 +1,54 @@
+{
+  "gopay_pin": "558023",
+  "country_code": "+62",
+  "_comment_proxy": "印尼 socks5 代理(GoPay 注册/登录/钱包)。从代理商拿同账号同端口,只换 region 即可",
+  "proxy_id": "socks5://hyrj1177789-region-ID-st-Bengkulu-city-Bengkulu-sid-mmnnHDKf-t-120:smhwqe9f@us.arxlabs.io:3010",
+  "_comment_proxy_jp": "日本节点(chatgpt.com / stripe / midtrans / 试用探测)",
+  "proxy_jp": "socks5://hyrj1177789-region-JP-st-Kyoto-city-Kyoto-sid-yWdxzrVb-t-120:smhwqe9f@us.arxlabs.io:3010",
+  "rebind_email": "your_throwaway@gmail.com",
+  "payment": {
+    "sms_switch_countdown_sec": 62
+  },
+  "hero_sms": {
+    "_comment": "换绑临时号(支付完后释放稳定号),hero-sms.com 账号",
+    "api_key": "A37491fe291e3e782A4db6f74fc5c687",
+    "base_url": "https://hero-sms.com/stubs/handler_api.php",
+    "service": "ni",
+    "max_price": 0.08,
+    "otp_timeout_sec": 60,
+    "countries": [
+      {
+        "id": 6,
+        "code": "+62",
+        "name": "ID"
+      },
+      {
+        "id": 52,
+        "code": "+66",
+        "name": "TH"
+      }
+    ]
+  },
+  "cpa": {
+    "_comment": "CPA codex auth 入库服务(可选,主要给 codex_register 用)",
+    "base_url": "https://your-cpa-host.example.com",
+    "management_key": "YOUR_CPA_MANAGEMENT_KEY"
+  },
+  "pool": {
+    "sms8": {
+      "_comment": "sms8.net 接码(注册 GoPay + 支付时 linking OTP)",
+      "signup_otp_timeout_sec": 120,
+      "linking_otp_timeout_sec": 300,
+      "poll_interval_sec": 3
+    },
+    "slots": 50,
+    "_comment_gpt_mode": "provided=从 pool_tokens.txt 读 token; fresh=Go 端现注册(未实现)",
+    "gpt_mode": "provided",
+    "number_pool_file": "pool_numbers.txt",
+    "email_pool_file": "pool_emails.txt",
+    "provided_tokens_file": "pool_tokens.txt",
+    "balance_poll_interval_sec": 15,
+    "balance_threshold_idr": 1,
+    "concurrency": 5
+  }
+}

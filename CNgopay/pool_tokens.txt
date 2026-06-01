@@ -1,0 +1,2 @@
+# ChatGPT access_token 池 (codex_register 写入,pool.exe 消费)
+# 一行一条,可以是裸 access_token 或 /api/auth/session 的完整 JSON

@@ -31,10 +31,10 @@
   </nav>
 
   <!-- 移动端底部 tab 栏 -->
-  <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 z-50 flex">
+  <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 z-50 flex overflow-x-auto">
     <button v-for="item in items" :key="item.key"
       @click="$emit('navigate', item.key)"
-      class="flex-1 flex flex-col items-center py-2 text-xs transition"
+      class="min-w-20 shrink-0 flex flex-col items-center px-2 py-2 text-xs transition"
       :class="active === item.key
         ? 'text-blue-400'
         : 'text-gray-500'">
@@ -58,6 +58,7 @@ const items = [
   { key: 'cardpool', icon: '💳', label: '卡池', mobileLabel: '卡池' },
   { key: 'bindcard', icon: '🔗', label: '自动绑卡服务', mobileLabel: '绑卡' },
   { key: 'gopay', icon: '💸', label: 'GoPay', mobileLabel: 'GoPay' },
+  { key: 'gopayPro', icon: '⚡', label: 'GoPay Pro', mobileLabel: 'GoPay Pro' },
   { key: 'paypal', icon: '🅿️', label: 'PayPal', mobileLabel: 'PayPal' },
   { key: 'oauthPhones', icon: '📱', label: 'OAuth 手机号', mobileLabel: '手机号' },
   { key: 'oauthPhoneRecords', icon: '🧾', label: 'OAuth 取号记录', mobileLabel: '取号' },

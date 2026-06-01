@@ -216,11 +216,14 @@ Plus 兼容旧参数：
   "paypal_mode": "create_account",
   "paypal_email": "",
   "paypal_password": "",
+  "paypal_browser": "protocol",
+  "paypal_country": "JP",
+  "paypal_lang": "ja",
   "sms_url": "https://sms.example.test/api/record?token=demo",
   "otp_channel": "sms",
-  "paypal_card_number": "4111111111111111",
-  "paypal_card_expiry": "03/30",
-  "paypal_card_cvv": "996",
+  "paypal_card_number": "",
+  "paypal_card_expiry": "",
+  "paypal_card_cvv": "",
   "timeout_seconds": 900
 }
 ```
@@ -233,9 +236,11 @@ Plus 兼容旧参数：
 - `proxy_url` / `proxy_label`：可选，任务级代理覆盖
 - `manual_confirm`：`false` 时走自动模式，会自动填写 checkout 账单、切到 PayPal，并继续处理登录/注册/短信验证码/授权；`true` 时只打开页面并等待人工确认
 - `paypal_mode`：自动模式支持 `existing_account`（登录已有 PayPal 账号）或 `create_account`（按 PDF 教程自动注册新 PayPal 账号并完成授权）
+- `paypal_browser`：可选。`protocol` / `no-card` 走无卡协议模式；`chromium` / `camoufox` / `roxybrowser` 走浏览器模式
+- `paypal_country` / `paypal_lang`：可选。PayPal 注册/授权页区域与语言；日区无卡传 `JP` / `ja`
 - `paypal_email` / `paypal_password`：`existing_account` 模式必填；`create_account` 模式可选，留空则自动生成。密码只用于本次执行，不会写入任务参数/审计日志
 - `sms_url` / `otp_channel`：`create_account` 模式使用的接码配置；`otp_channel` 支持 `sms` 或 `whatsapp`
-- `paypal_card_number` / `paypal_card_expiry` / `paypal_card_cvv`：`create_account` 模式必填，用于 PayPal 注册页的卡信息
+- `paypal_card_number` / `paypal_card_expiry` / `paypal_card_cvv`：浏览器 `create_account` 模式必填，用于 PayPal 注册页的卡信息；无卡协议模式不需要
 - `autofill_enabled`：可选。开启后会自动填写 OpenAI/Stripe checkout 的账单/联系字段；若 `billing_*` 未填完整，会自动调用与 GoPay 流程相同的美国随机地址服务补齐，再提交前做一次账单地址稳定性校验
 - `billing_*`：账单/联系字段；其中 `billing_phone` 在 `create_account` 模式下同时作为 PayPal 接码手机号使用
 - `timeout_seconds`：等待最终结果的超时时间，默认 900 秒

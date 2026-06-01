@@ -1521,6 +1521,7 @@ function bindProviderLabel(provider) {
   return {
     paypal: 'PayPal',
     gopay: 'GoPay',
+    gopay_pro: 'GoPay Pro',
     card: 'Card',
   }[String(provider || '').toLowerCase()] || '-'
 }
@@ -1535,6 +1536,7 @@ function bindProviderClass(provider) {
   return {
     paypal: 'bg-blue-500/10 text-blue-300',
     gopay: 'bg-emerald-500/10 text-emerald-300',
+    gopay_pro: 'bg-cyan-500/10 text-cyan-300',
     card: 'bg-amber-500/10 text-amber-300',
   }[String(provider || '').toLowerCase()] || 'bg-gray-500/10 text-gray-500'
 }

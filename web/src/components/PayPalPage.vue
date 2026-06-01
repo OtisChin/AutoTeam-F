@@ -130,13 +130,24 @@
               </div>
 
               <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
+                <label class="mb-1 block text-sm font-medium text-gray-200">地区流程</label>
+                <select v-model="form.paypalRegion" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
+                  <option value="US_CARD">美区 PayPal</option>
+                  <option value="JP_NOCARD">日区无卡 PayPal</option>
+                </select>
+                <div class="mt-2 text-xs text-gray-500">
+                  {{ paypalRegionHelp }}
+                </div>
+              </div>
+
+              <div class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
                 <label class="flex items-center justify-between gap-3 text-sm text-gray-300">
                   <span class="font-medium text-gray-200">执行模式</span>
                   <select v-model="form.paypalBrowser" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
                     <option value="chromium">Chromium</option>
                     <option value="camoufox">Camoufox</option>
                     <option value="roxybrowser">RoxyBrowser</option>
-                    <option value="protocol">协议模式</option>
+                    <option value="protocol">协议模式（无卡）</option>
                   </select>
                 </label>
                 <div v-if="roxyBrowserConfigIssue" class="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
@@ -668,7 +679,7 @@
               <input v-model.trim="form.billingZip" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running" />
             </div>
 
-            <template v-if="form.paypalMode === 'create_account'">
+            <template v-if="form.paypalMode === 'create_account' && !isNoCardPayPalMode">
               <div class="md:col-span-2 border-t border-gray-800 pt-3 text-xs font-semibold uppercase tracking-wide text-gray-500">卡片信息</div>
               <div>
                 <label class="block text-xs text-gray-400 mb-1">卡号</label>
@@ -743,6 +754,7 @@ const form = ref({
   pendingRetryAttempts: 1,
   paypalConcurrency: 1,
   manualConfirm: false,
+  paypalRegion: 'US_CARD',
   paypalMode: 'create_account',
   paypalEmail: '',
   paypalPassword: '',
@@ -822,6 +834,17 @@ const accountSelectionLabel = computed(() => selectedBatchEmails.value.length ? 
 const filteredPromoOptions = computed(() => promoOptions.filter(item => item.plan === bindForm.value.planType))
 const running = computed(() => ['pending', 'running'].includes(String(lastTask.value?.status || '')))
 const isCreateAccountMode = computed(() => form.value.paypalMode === 'create_account')
+const isNoCardPayPalMode = computed(() => (
+  form.value.paypalRegion === 'JP_NOCARD'
+  || (form.value.paypalMode === 'create_account' && form.value.paypalBrowser === 'protocol')
+))
+const paypalCountry = computed(() => form.value.paypalRegion === 'JP_NOCARD' ? 'JP' : String(form.value.billingCountry || 'US').trim().toUpperCase())
+const paypalLang = computed(() => paypalCountry.value === 'JP' ? 'ja' : 'en')
+const paypalRegionHelp = computed(() => (
+  form.value.paypalRegion === 'JP_NOCARD'
+    ? '使用 JP/JPY 支付链接和 PayPal 协议无卡注册，不需要填写卡片信息。'
+    : '保留现有美区流程，可用浏览器或协议模式，自动注册时按原规则使用卡片。'
+))
 const singleSelectedEmail = computed(() => String(selectedAccountEmail.value || '').trim().toLowerCase())
 const phonePoolEntries = computed(() => parsePayPalPhonePool(form.value.phonePoolText, { strict: false }))
 const availablePhonePoolEntries = computed(() => phonePoolEntries.value.filter(entry => phonePoolEntryAvailable(entry)))
@@ -938,9 +961,26 @@ const boardCards = computed(() => (boardView.value.cards || []).filter(card => c
 function normalizeBindDefaults() {
   bindForm.value.planType = 'plus'
   bindForm.value.promoId = 'plus-1-month-free'
+  const country = String(bindForm.value.country || 'US').trim().toUpperCase()
+  bindForm.value.country = countryCurrencyMap[country] ? country : 'US'
+  bindForm.value.currency = countryCurrencyMap[bindForm.value.country] || 'USD'
+  bindForm.value.checkoutUiMode = 'hosted'
+}
+
+function applyPayPalRegionDefaults() {
+  if (form.value.paypalRegion === 'JP_NOCARD') {
+    form.value.paypalMode = 'create_account'
+    form.value.paypalBrowser = 'protocol'
+    form.value.billingCountry = 'JP'
+    bindForm.value.country = 'JP'
+    bindForm.value.currency = 'JPY'
+    return
+  }
+  if (!String(form.value.billingCountry || '').trim() || String(form.value.billingCountry || '').trim().toUpperCase() === 'JP') {
+    form.value.billingCountry = 'US'
+  }
   bindForm.value.country = 'US'
   bindForm.value.currency = 'USD'
-  bindForm.value.checkoutUiMode = 'hosted'
 }
 
 function normalizePhoneKey(phone) {
@@ -1251,6 +1291,9 @@ function restorePayPalState() {
         form.value.pendingRetryAttempts = 1
       } else {
         form.value.pendingRetryAttempts = Math.max(0, Math.min(3, Math.trunc(Number(form.value.pendingRetryAttempts) || 0)))
+      }
+      if (!['US_CARD', 'JP_NOCARD'].includes(String(form.value.paypalRegion || ''))) {
+        form.value.paypalRegion = String(form.value.billingCountry || '').trim().toUpperCase() === 'JP' ? 'JP_NOCARD' : 'US_CARD'
       }
       if (!['1024proxy', 'cliproxy'].includes(String(form.value.proxyApiProvider || ''))) {
         form.value.proxyApiProvider = '1024proxy'
@@ -1632,9 +1675,11 @@ function validateBeforeStart() {
         if (!String(form.value.billingState || '').trim()) throw new Error('手动账单信息模式需要填写州/省')
         if (!String(form.value.billingZip || '').trim()) throw new Error('手动账单信息模式需要填写邮编')
         if (!String(form.value.billingCountry || '').trim()) throw new Error('手动账单信息模式需要填写国家')
-        if (!String(form.value.paypalCardNumber || '').trim()) throw new Error('自动注册模式需要填写卡号')
-        if (!String(form.value.paypalCardExpiry || '').trim()) throw new Error('自动注册模式需要填写卡有效期')
-        if (!String(form.value.paypalCardCvv || '').trim()) throw new Error('自动注册模式需要填写 CVV')
+        if (!isNoCardPayPalMode.value) {
+          if (!String(form.value.paypalCardNumber || '').trim()) throw new Error('自动注册模式需要填写卡号')
+          if (!String(form.value.paypalCardExpiry || '').trim()) throw new Error('自动注册模式需要填写卡有效期')
+          if (!String(form.value.paypalCardCvv || '').trim()) throw new Error('自动注册模式需要填写 CVV')
+        }
       }
     } else {
       if (!String(form.value.paypalEmail || '').trim()) throw new Error('已有账号模式需要填写 PayPal 邮箱')
@@ -1657,6 +1702,7 @@ async function startTask() {
     const effectiveEmail = form.value.batchMode ? selectedBatchEmails.value[0] : singleSelectedEmail.value
     const phoneAccounts = isCreateAccountMode.value && form.value.phonePoolEnabled ? availablePhonePoolEntries.value : []
     const firstPhoneAccount = phoneAccounts[0] || null
+    const effectivePayPalBrowser = isNoCardPayPalMode.value ? 'protocol' : form.value.paypalBrowser
     const task = await api.startPayPal({
       runner_mode: 'manual_checkout',
       email: effectiveEmail,
@@ -1670,16 +1716,18 @@ async function startTask() {
       paypal_concurrency: Math.max(1, Math.min(3, Math.trunc(Number(form.value.paypalConcurrency) || 1))),
       proxy_label: form.value.proxyLabel,
       manual_confirm: Boolean(form.value.manualConfirm),
-      paypal_browser: form.value.paypalBrowser,
+      paypal_browser: effectivePayPalBrowser,
       paypal_mode: form.value.paypalMode,
+      paypal_country: paypalCountry.value,
+      paypal_lang: paypalLang.value,
       paypal_email: isCreateAccountMode.value ? '' : form.value.paypalEmail,
       paypal_password: isCreateAccountMode.value ? '' : form.value.paypalPassword,
       phone_accounts: phoneAccounts,
       sms_url: firstPhoneAccount?.sms_url || form.value.smsUrl,
       otp_channel: 'sms',
-      paypal_card_number: form.value.paypalCardNumber,
-      paypal_card_expiry: form.value.paypalCardExpiry,
-      paypal_card_cvv: form.value.paypalCardCvv,
+      paypal_card_number: isNoCardPayPalMode.value ? '' : form.value.paypalCardNumber,
+      paypal_card_expiry: isNoCardPayPalMode.value ? '' : form.value.paypalCardExpiry,
+      paypal_card_cvv: isNoCardPayPalMode.value ? '' : form.value.paypalCardCvv,
       autofill_enabled: Boolean(form.value.autofillEnabled),
       auto_oauth_after_success: Boolean(form.value.autoOauthAfterSuccess),
       roxybrowser_profile_id: form.value.roxyBrowserAutoCreateProfile ? '' : form.value.roxyBrowserProfileId,
@@ -1687,7 +1735,7 @@ async function startTask() {
       billing_name: form.value.billingName,
       billing_email: effectiveEmail,
       billing_phone: firstPhoneAccount?.phone_number || form.value.billingPhone,
-      billing_country: form.value.billingCountry,
+      billing_country: paypalCountry.value,
       billing_state: form.value.billingState,
       billing_city: form.value.billingCity,
       billing_zip: form.value.billingZip,
@@ -1735,6 +1783,14 @@ watch(
   () => bindForm.value.country,
   (country) => {
     bindForm.value.currency = countryCurrencyMap[country] || 'USD'
+  },
+  { immediate: true }
+)
+
+watch(
+  () => form.value.paypalRegion,
+  () => {
+    applyPayPalRegionDefaults()
   },
   { immediate: true }
 )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -17,6 +18,28 @@ PP_ORIGIN = "https://www.paypal.com"
 PAYPAL_PROTOCOL_OTP_TIMEOUT_SECONDS = 120
 PAYPAL_PROTOCOL_OTP_RESEND_AFTER_SECONDS = 60
 PAYPAL_PROTOCOL_OTP_MAX_RESEND_ATTEMPTS = 1
+PAYPAL_CALLING_CODE_COUNTRIES = {
+    "1": "US",
+    "33": "FR",
+    "34": "ES",
+    "39": "IT",
+    "44": "GB",
+    "49": "DE",
+    "52": "MX",
+    "55": "BR",
+    "60": "MY",
+    "61": "AU",
+    "62": "ID",
+    "63": "PH",
+    "65": "SG",
+    "66": "TH",
+    "81": "JP",
+    "82": "KR",
+    "84": "VN",
+    "86": "CN",
+    "852": "HK",
+    "91": "IN",
+}
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
@@ -461,7 +484,17 @@ def _bootstrap(http: Any, ba_token: str, *, locale_country: str, locale_lang: st
     return ec_token, signup_url, signup_html
 
 
-def _gql(http: Any, op_name: str, variables: dict[str, Any], query: str, *, signup_url: str, timeout: int, extra_body: dict[str, Any] | None = None) -> dict[str, Any]:
+def _gql(
+    http: Any,
+    op_name: str,
+    variables: dict[str, Any],
+    query: str,
+    *,
+    signup_url: str,
+    timeout: int,
+    locale_lang: str = "en",
+    extra_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     body = {"operationName": op_name, "variables": variables, "query": query}
     if extra_body:
         body.update(extra_body)
@@ -479,7 +512,7 @@ def _gql(http: Any, op_name: str, variables: dict[str, Any], query: str, *, sign
             "User-Agent": USER_AGENT,
             "Content-Type": "application/json",
             "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": f"{locale_lang}-{country.upper()},{locale_lang};q=0.9,en;q=0.8",
             "Origin": PP_ORIGIN,
             "Referer": signup_url,
             "X-Requested-With": "fetch",
@@ -487,7 +520,7 @@ def _gql(http: Any, op_name: str, variables: dict[str, Any], query: str, *, sign
             "PayPal-Client-Context": token,
             "PayPal-Client-Metadata-Id": token,
             "X-Country": country,
-            "X-Locale": f"en_{country.upper()}",
+            "X-Locale": f"{locale_lang}_{country.upper()}",
             "Sec-Fetch-Site": "same-origin",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Dest": "empty",
@@ -512,7 +545,7 @@ def _gql(http: Any, op_name: str, variables: dict[str, Any], query: str, *, sign
 def _phone_split(phone: str) -> tuple[str, str]:
     digits = re.sub(r"\D+", "", str(phone or ""))
     if str(phone or "").strip().startswith("+"):
-        for code in ("1", "33", "44", "49", "61", "81", "82", "86", "91", "62"):
+        for code in sorted(PAYPAL_CALLING_CODE_COUNTRIES, key=len, reverse=True):
             if digits.startswith(code) and len(digits) - len(code) >= 7:
                 return code, digits[len(code) :]
     if len(digits) == 10:
@@ -660,6 +693,8 @@ def run_paypal_no_card_protocol_signup(
     locale_lang: str = "en",
 ) -> dict[str, Any]:
     timeout = max(20, min(int(timeout_seconds or 180), 300))
+    locale_country = str(locale_country or "US").strip().upper() or "US"
+    locale_lang = str(locale_lang or "en").strip().lower() or "en"
     rejected_phone = str(signup_profile.get("phone") or "")
     try:
         if callable(is_cancelled) and is_cancelled():
@@ -697,7 +732,7 @@ def run_paypal_no_card_protocol_signup(
             ("CheckoutSessionDataQuery", {"token": ec_token}, Q_CHECKOUT_SESSION),
         ):
             try:
-                _gql(http, op_name, variables, query, signup_url=signup_url, timeout=timeout)
+                _gql(http, op_name, variables, query, signup_url=signup_url, timeout=timeout, locale_lang=locale_lang)
             except Exception as exc:
                 logger.info("[paypal_protocol_signup] warmup %s soft-failed: %s", op_name, exc)
 
@@ -708,13 +743,14 @@ def run_paypal_no_card_protocol_signup(
             "InitiateRiskBasedTwoFactorPhoneConfirmationMutation",
             {
                 "locale": {"country": locale_country, "lang": locale_lang},
-                "phoneCountry": {"1": "US", "33": "FR", "44": "GB"}.get(calling_code, locale_country),
+                "phoneCountry": PAYPAL_CALLING_CODE_COUNTRIES.get(calling_code, locale_country),
                 "phoneNumber": subscriber,
                 "token": ec_token,
             },
             Q_INIT_OTP,
             signup_url=signup_url,
             timeout=timeout,
+            locale_lang=locale_lang,
         )
         init_data = (init_payload.get("data") or {}).get("initiateRiskBasedTwoFactorPhoneConfirmation") or {}
         auth_id = str(init_data.get("authId") or "")
@@ -724,6 +760,14 @@ def run_paypal_no_card_protocol_signup(
                 "status": "failed",
                 "failure_stage": "paypal_phone_rejected",
                 "message": "PayPal 拒绝当前手机号，请更换手机号",
+                "rejected_phone": rejected_phone,
+            }
+        if os.environ.get("AUTOTEAM_PAYPAL_STOP_AFTER_OTP_INIT"):
+            _emit(on_progress, "paypal_wait_sms_otp_window", phone=rejected_phone)
+            return {
+                "status": "needs_review",
+                "failure_stage": "paypal_wait_signup_otp",
+                "message": "PayPal 已发起手机号验证码，按调试开关停止，未拉取或提交验证码",
                 "rejected_phone": rejected_phone,
             }
 
@@ -757,6 +801,7 @@ def run_paypal_no_card_protocol_signup(
             Q_CONFIRM_OTP,
             signup_url=signup_url,
             timeout=timeout,
+            locale_lang=locale_lang,
         )
         confirm_state = ((confirm_payload.get("data") or {}).get("confirmRiskBasedTwoFactorPhoneConfirmation") or {}).get("state")
         if str(confirm_state or "").upper() != "CONFIRMED":
@@ -780,6 +825,7 @@ def run_paypal_no_card_protocol_signup(
             Q_SIGNUP,
             signup_url=signup_url,
             timeout=timeout,
+            locale_lang=locale_lang,
             extra_body={"fn_sync_data": _paypal_fn_sync_data(ec_token)},
         )
         signup_parts = _signup_response_parts(signup_payload)

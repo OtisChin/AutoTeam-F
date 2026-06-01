@@ -58,6 +58,23 @@ DEFAULT_PAYPAL_BILLING_PROFILE = {
     "address2": "",
     "phone_number": "213-555-0182",
 }
+DEFAULT_PAYPAL_JP_BILLING_PROFILE = {
+    "name": DEFAULT_PAYPAL_NAME,
+    "country": "JP",
+    "state": "Tokyo",
+    "city": "Chiyoda",
+    "zip": "100-0001",
+    "address1": "1-1 Chiyoda",
+    "address2": "",
+    "phone_number": "090-1234-5678",
+}
+DEFAULT_PAYPAL_COUNTRY_BILLING_PROFILES = {
+    "JP": DEFAULT_PAYPAL_JP_BILLING_PROFILE,
+}
+PAYPAL_COUNTRY_DEFAULT_LANG = {
+    "US": "en",
+    "JP": "ja",
+}
 US_STATE_NAME_TO_CODE = {
     "alabama": "AL",
     "alaska": "AK",
@@ -1383,6 +1400,8 @@ def _run_paypal_protocol_flow(
     phone_accounts: list[dict] | None,
     billing_payload: dict[str, str],
     timeout_seconds: int,
+    paypal_country: str = "US",
+    paypal_lang: str = "en",
     is_cancelled=None,
     on_progress=None,
 ):
@@ -1393,6 +1412,8 @@ def _run_paypal_protocol_flow(
         return _build_result("failed", failure_stage="paypal_protocol", message="协议模式无法识别 checkout session id")
     if not _has_complete_billing_payload(billing_payload):
         return _build_result("failed", failure_stage="paypal_protocol", message="协议模式账单地址缺少必要字段")
+    paypal_country = _normalize_paypal_country(paypal_country or str(billing_payload.get("country") or "US"))
+    paypal_lang = _normalize_paypal_lang(paypal_lang, paypal_country)
 
     http = _new_http_session(proxy_url, require_curl_cffi=False)
     _emit_progress(on_progress, _progress_event("paypal_protocol_start", checkout_session_id=checkout_session_id))
@@ -1502,8 +1523,8 @@ def _run_paypal_protocol_flow(
                 timeout_seconds=max(90, timeout_seconds),
                 is_cancelled=is_cancelled,
                 on_progress=on_progress,
-                locale_country=str(current_profile.get("country") or billing_payload.get("country") or "US").strip().upper() or "US",
-                locale_lang="en",
+                locale_country=str(current_profile.get("country") or billing_payload.get("country") or paypal_country).strip().upper() or paypal_country,
+                locale_lang=paypal_lang,
             )
             protocol_signup_result["paypal_approve_url"] = approve_url
             protocol_signup_result["ba_token"] = protocol_signup_result.get("ba_token") or ba_token
@@ -2085,13 +2106,18 @@ def _build_checkout_billing_payload(payload: dict | None) -> dict[str, str]:
 
 def _merge_checkout_billing_payload(payload: dict | None) -> dict[str, str]:
     requested = _build_checkout_billing_payload(payload)
-    generated_raw = _fetch_paypal_random_billing_profile()
+    requested_country = _normalize_paypal_country(requested.get("country") or "US")
+    if requested_country in DEFAULT_PAYPAL_COUNTRY_BILLING_PROFILES:
+        generated_raw = dict(DEFAULT_PAYPAL_COUNTRY_BILLING_PROFILES[requested_country])
+    else:
+        requested_country = "US"
+        generated_raw = _fetch_paypal_random_billing_profile()
     generated = _public_paypal_billing_info(generated_raw)
     merged = {
         "name": str(generated.get("name") or DEFAULT_PAYPAL_NAME).strip() or DEFAULT_PAYPAL_NAME,
         "email": str(requested.get("email") or "").strip(),
         "phone": str(requested.get("phone") or generated.get("phone_number") or "").strip(),
-        "country": "US",
+        "country": requested_country,
         "state": str(generated.get("state") or "").strip(),
         "city": str(generated.get("city") or "").strip(),
         "zip": str(generated.get("zip") or "").strip(),
@@ -2867,7 +2893,19 @@ def _sync_relevant_payment_page(api: ChatGPTTeamAPI, *, prefer_paypal: bool = Fa
     return api.page
 
 
-def _force_paypal_us_locale(api: ChatGPTTeamAPI) -> bool:
+def _normalize_paypal_country(value: str = "") -> str:
+    normalized = re.sub(r"[^A-Za-z]", "", str(value or "")).upper()
+    return normalized[:2] or "US"
+
+
+def _normalize_paypal_lang(value: str = "", country: str = "US") -> str:
+    normalized = re.sub(r"[^A-Za-z-]", "", str(value or "")).lower()
+    if normalized:
+        return normalized.split("-", 1)[0] or PAYPAL_COUNTRY_DEFAULT_LANG.get(country, "en")
+    return PAYPAL_COUNTRY_DEFAULT_LANG.get(country, "en")
+
+
+def _force_paypal_us_locale(api: ChatGPTTeamAPI, *, country: str = "US", lang: str = "en") -> bool:
     current_url = str(getattr(api.page, "url", "") or "")
     if not _is_paypal_host(current_url):
         return False
@@ -2876,12 +2914,15 @@ def _force_paypal_us_locale(api: ChatGPTTeamAPI) -> bool:
     except Exception:
         return False
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    country = _normalize_paypal_country(country)
+    lang = _normalize_paypal_lang(lang, country)
+    locale = f"{lang}_{country}"
     changed = False
-    if query.get("country.x") != "US":
-        query["country.x"] = "US"
+    if query.get("country.x") != country:
+        query["country.x"] = country
         changed = True
-    if query.get("locale.x") != "en_US":
-        query["locale.x"] = "en_US"
+    if query.get("locale.x") != locale:
+        query["locale.x"] = locale
         changed = True
     if not changed:
         return False
@@ -2894,7 +2935,7 @@ def _force_paypal_us_locale(api: ChatGPTTeamAPI) -> bool:
             time.sleep(1.5)
         return True
     except Exception as exc:
-        logger.info("[paypal_bind_executor] forcing PayPal US locale failed: %s", exc)
+        logger.info("[paypal_bind_executor] forcing PayPal locale failed: %s", exc)
         return False
 
 
@@ -5128,11 +5169,15 @@ def _run_paypal_authorize_flow(
     session_id: str,
     screenshot_paths: list[str],
     timeout_seconds: int,
+    paypal_country: str = "US",
+    paypal_lang: str = "en",
     is_cancelled=None,
     on_progress=None,
     phone_accounts: list[dict] | None = None,
 ):
     deadline = time.time() + max(20, timeout_seconds)
+    paypal_country = _normalize_paypal_country(paypal_country)
+    paypal_lang = _normalize_paypal_lang(paypal_lang, paypal_country)
     effective_credentials = dict(credentials or {})
     signup_profiles = _paypal_signup_profiles_for_phone_pool(signup_profile, phone_accounts)
     signup_profile_index = 0
@@ -5159,7 +5204,7 @@ def _run_paypal_authorize_flow(
         active_phone_key = _normalize_paypal_phone(str(active_signup_profile.get("phone") or ""))
         active_phone_submitted = bool(active_phone_key and active_phone_key in submitted_phone_keys)
         if not signup_form_submitted and not active_phone_submitted:
-            _force_paypal_us_locale(api)
+            _force_paypal_us_locale(api, country=paypal_country, lang=paypal_lang)
         current_url = getattr(api.page, "url", "")
         if current_url and not _is_paypal_host(current_url):
             if otp_phone_lock_key:
@@ -5695,6 +5740,8 @@ def _run_paypal_auto_flow(
     signup_profile: dict[str, str | bool] | None,
     phone_accounts: list[dict] | None = None,
     billing_payload: dict[str, str] | None = None,
+    paypal_country: str = "US",
+    paypal_lang: str = "en",
     session_id: str,
     screenshot_paths: list[str],
     timeout_seconds: int,
@@ -5705,6 +5752,8 @@ def _run_paypal_auto_flow(
 ):
     current_url = getattr(api.page, "url", "")
     billing_payload = dict(billing_payload or _resolve_checkout_billing_payload(autofill_payload, auto_generate=bool(autofill_enabled)))
+    paypal_country = _normalize_paypal_country(paypal_country or str(billing_payload.get("country") or "US"))
+    paypal_lang = _normalize_paypal_lang(paypal_lang, paypal_country)
     progress = _progress_adapter(on_progress)
     authorize_timeout_seconds = _paypal_authorize_timeout_seconds(timeout_seconds)
     result_timeout_seconds = _paypal_result_timeout_seconds(timeout_seconds)
@@ -5780,6 +5829,8 @@ def _run_paypal_auto_flow(
     authorize_result = _run_paypal_authorize_flow(
         api,
         paypal_mode=paypal_mode,
+        paypal_country=paypal_country,
+        paypal_lang=paypal_lang,
         credentials=paypal_credentials,
         signup_profile=signup_profile,
         session_id=session_id,
@@ -5828,6 +5879,8 @@ def run_paypal_bind_task(
     paypal_card_expiry: str = "",
     paypal_card_cvv: str = "",
     paypal_browser: str = "chromium",
+    paypal_country: str = "US",
+    paypal_lang: str = "en",
     roxybrowser_workspace_id: str = "",
     roxybrowser_profile_id: str = "",
 ):
@@ -5837,6 +5890,8 @@ def run_paypal_bind_task(
     auto_mode = not bool(manual_confirm)
     paypal_mode = _normalize_paypal_mode(paypal_mode)
     paypal_browser = str(paypal_browser or "chromium").strip().lower()
+    paypal_country = _normalize_paypal_country(paypal_country)
+    paypal_lang = _normalize_paypal_lang(paypal_lang, paypal_country)
     protocol_mode = paypal_browser in {"protocol", "http", "no_card", "no-card", "pure_protocol"}
     use_camoufox = paypal_browser in {"camoufox", "firefox"}
     use_roxybrowser = paypal_browser in {"roxybrowser", "roxy-browser", "roxy"}
@@ -5846,12 +5901,14 @@ def run_paypal_bind_task(
     roxybrowser_profile_id = str(roxybrowser_profile_id or "").strip()
 
     def _launch_browser_for_checkout(current_proxy_url: str | None, current_proxy_bypass: str | None) -> None:
+        browser_locale = f"{paypal_lang}-{paypal_country}"
+        browser_accept_language = f"{paypal_lang}-{paypal_country},{paypal_lang};q=0.9,en;q=0.8"
         api._launch_browser(
             proxy_url=current_proxy_url,
             proxy_bypass=current_proxy_bypass,
             background=False,
-            locale="en-US",
-            accept_language="en-US,en;q=0.9",
+            locale=browser_locale,
+            accept_language=browser_accept_language,
             randomize_fingerprint=False,
             use_camoufox=use_camoufox,
             use_roxybrowser=use_roxybrowser,
@@ -5868,6 +5925,8 @@ def run_paypal_bind_task(
                 checkout_url=checkout_url,
                 proxy_url=launch_proxy_url,
                 paypal_mode=paypal_mode,
+                paypal_country=paypal_country,
+                paypal_lang=paypal_lang,
                 signup_profile=_build_paypal_signup_profile(
                     paypal_email=paypal_email,
                     paypal_password=paypal_password,
@@ -5907,8 +5966,8 @@ def run_paypal_bind_task(
                 proxy_url=launch_proxy_url,
                 proxy_bypass=launch_proxy_bypass,
                 background=False,
-                locale="en-US",
-                accept_language="en-US,en;q=0.9",
+                locale=f"{paypal_lang}-{paypal_country}",
+                accept_language=f"{paypal_lang}-{paypal_country},{paypal_lang};q=0.9,en;q=0.8",
                 use_camoufox=True,
                 on_progress=on_progress,
             )
@@ -5929,6 +5988,8 @@ def run_paypal_bind_task(
             authorize_result = _run_paypal_authorize_flow(
                 api,
                 paypal_mode=paypal_mode,
+                paypal_country=paypal_country,
+                paypal_lang=paypal_lang,
                 credentials=_normalize_paypal_credentials(paypal_email, paypal_password),
                 signup_profile=_build_paypal_signup_profile(
                     paypal_email=paypal_email,
@@ -6013,6 +6074,8 @@ def run_paypal_bind_task(
                 checkout_url=checkout_url,
                 proxy_url=launch_proxy_url,
                 paypal_mode=paypal_mode,
+                paypal_country=paypal_country,
+                paypal_lang=paypal_lang,
                 paypal_credentials=_normalize_paypal_credentials(paypal_email, paypal_password),
                 signup_profile=_build_paypal_signup_profile(
                     paypal_email=paypal_email,
