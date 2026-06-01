@@ -1107,7 +1107,7 @@
                   <div class="flex items-center justify-between gap-3">
                     <div>
                       <div class="text-sm font-medium text-emerald-100">SMSCode 实时产品</div>
-                      <div class="mt-1 text-xs text-gray-500">默认国家 ID 6（印尼），平台关键词 gopay；也可在设置页固定平台 ID 或产品 ID。</div>
+                      <div class="mt-1 text-xs text-gray-500">默认国家 ID 7（SMSCode 印尼），平台关键词 gojek；也可在设置页固定平台 ID 或产品 ID。</div>
                     </div>
                     <button
                       type="button"
@@ -2001,9 +2001,9 @@ const gopayForm = ref({
   gopayAutoSignupSmscloudTimeout: 120,
   gopayAutoSignupSmscodeApiToken: '',
   gopayAutoSignupSmscodeBaseUrl: 'https://api.smscode.gg/v1',
-  gopayAutoSignupSmscodeCountryId: '6',
+  gopayAutoSignupSmscodeCountryId: '7',
   gopayAutoSignupSmscodePlatformId: '',
-  gopayAutoSignupSmscodePlatformQuery: 'gopay',
+  gopayAutoSignupSmscodePlatformQuery: 'gojek',
   gopayAutoSignupSmscodeProductId: '',
   gopayAutoSignupSmscodeMinPrice: '',
   gopayAutoSignupSmscodeMaxPrice: '',
@@ -2600,6 +2600,11 @@ async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
   try {
     const cfg = await api.getGoPayAutoSignupConfig()
     gopayAutoSignupConfig.value = cfg
+    gopayForm.value.gopayAutoSignupSmscodeBaseUrl = String(cfg.smscode_base_url || 'https://api.smscode.gg/v1').trim()
+    gopayForm.value.gopayAutoSignupSmscodeCountryId = String(cfg.smscode_country_id || '7').trim()
+    gopayForm.value.gopayAutoSignupSmscodePlatformId = String(cfg.smscode_platform_id || '').trim()
+    gopayForm.value.gopayAutoSignupSmscodePlatformQuery = String(cfg.smscode_platform_query || 'gojek').trim()
+    gopayForm.value.gopayAutoSignupSmscodeProductId = String(cfg.smscode_product_id || '').trim()
     if (applyDefaults) {
       gopayForm.value.gopayAutoSignupSmsProvider = ['hero_sms', 'smsbower', 'smscode'].includes(cfg.provider) ? cfg.provider : 'smscloud'
       gopayForm.value.gopayAutoSignupMode = 'http'
@@ -2617,9 +2622,9 @@ async function loadGoPayAutoSignupConfig({ applyDefaults = false } = {}) {
       gopayForm.value.gopayAutoSignupSmsbowerMaxPrice = String(cfg.smsbower_max_price || '').trim()
       gopayForm.value.gopayAutoSignupSmsbowerPreferredPrice = String(cfg.smsbower_preferred_price || '').trim()
       gopayForm.value.gopayAutoSignupSmscodeBaseUrl = String(cfg.smscode_base_url || 'https://api.smscode.gg/v1').trim()
-      gopayForm.value.gopayAutoSignupSmscodeCountryId = String(cfg.smscode_country_id || '6').trim()
+      gopayForm.value.gopayAutoSignupSmscodeCountryId = String(cfg.smscode_country_id || '7').trim()
       gopayForm.value.gopayAutoSignupSmscodePlatformId = String(cfg.smscode_platform_id || '').trim()
-      gopayForm.value.gopayAutoSignupSmscodePlatformQuery = String(cfg.smscode_platform_query || 'gopay').trim()
+      gopayForm.value.gopayAutoSignupSmscodePlatformQuery = String(cfg.smscode_platform_query || 'gojek').trim()
       gopayForm.value.gopayAutoSignupSmscodeProductId = String(cfg.smscode_product_id || '').trim()
       gopayForm.value.gopayAutoSignupSmscodeMinPrice = String(cfg.smscode_min_price || '').trim()
       gopayForm.value.gopayAutoSignupSmscodeMaxPrice = String(cfg.smscode_max_price || '').trim()
@@ -2695,9 +2700,9 @@ async function queryGoPaySmscodePrices() {
     const cfg = gopayAutoSignupConfig.value || {}
     const result = await api.queryGoPaySmscodePrices({
       smscode_base_url: gopayForm.value.gopayAutoSignupSmscodeBaseUrl || cfg.smscode_base_url || 'https://api.smscode.gg/v1',
-      smscode_country_id: gopayForm.value.gopayAutoSignupSmscodeCountryId || cfg.smscode_country_id || '6',
+      smscode_country_id: gopayForm.value.gopayAutoSignupSmscodeCountryId || cfg.smscode_country_id || '7',
       smscode_platform_id: gopayForm.value.gopayAutoSignupSmscodePlatformId || cfg.smscode_platform_id || '',
-      smscode_platform_query: gopayForm.value.gopayAutoSignupSmscodePlatformQuery || cfg.smscode_platform_query || 'gopay',
+      smscode_platform_query: gopayForm.value.gopayAutoSignupSmscodePlatformQuery || cfg.smscode_platform_query || 'gojek',
       smscode_min_price: gopayForm.value.gopayAutoSignupSmscodeMinPrice,
       smscode_max_price: gopayForm.value.gopayAutoSignupSmscodeMaxPrice,
     })
@@ -3600,9 +3605,9 @@ function loadGoPayFormState() {
       gopayAutoSignupSmscloudTimeout: 120,
       gopayAutoSignupSmscodeApiToken: '',
       gopayAutoSignupSmscodeBaseUrl: 'https://api.smscode.gg/v1',
-      gopayAutoSignupSmscodeCountryId: '6',
+      gopayAutoSignupSmscodeCountryId: '7',
       gopayAutoSignupSmscodePlatformId: '',
-      gopayAutoSignupSmscodePlatformQuery: 'gopay',
+      gopayAutoSignupSmscodePlatformQuery: 'gojek',
       gopayAutoSignupSmscodeProductId: '',
       gopayAutoSignupSmscodeMinPrice: String(saved.gopayAutoSignupSmscodeMinPrice || '').trim(),
       gopayAutoSignupSmscodeMaxPrice: String(saved.gopayAutoSignupSmscodeMaxPrice || '').trim(),

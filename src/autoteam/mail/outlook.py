@@ -277,10 +277,27 @@ class OutlookMailProvider(MailProvider):
         try:
             from autoteam.accounts import load_accounts
 
-            return {normalize_email_addr(a.get("email")) for a in load_accounts() if a.get("email")}
+            emails = {normalize_email_addr(a.get("email")) for a in load_accounts() if a.get("email")}
         except Exception:
             logger.debug("[outlook] 读取本地账号池失败，跳过已注册过滤", exc_info=True)
-            return set()
+            emails = set()
+        try:
+            from autoteam.register_failures import list_failures
+
+            for failure in list_failures(500):
+                email = normalize_email_addr(failure.get("email"))
+                if not email:
+                    continue
+                category = str(failure.get("category") or "").strip().lower()
+                reason = str(failure.get("reason") or "").strip().lower()
+                timestamp = float(failure.get("timestamp") or 0)
+                if category == "email_already_in_use" or "email_already_in_use" in reason or "email is already in use" in reason:
+                    emails.add(email)
+                elif category in {"email_otp_rate_limited", "email_no_otp"} and timestamp and time.time() - timestamp < 1800:
+                    emails.add(email)
+        except Exception:
+            logger.debug("[outlook] 读取邮箱占用失败记录失败，跳过过滤", exc_info=True)
+        return emails
 
     def _find_account(self, value: int | str | None) -> OutlookAccount | None:
         target = normalize_email_addr(value)

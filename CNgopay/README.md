@@ -42,32 +42,6 @@ ChatGPT Plus 全自动批量订阅工具(印尼 GoPay 通道)。
 | 收割开 Plus + 换绑 | `.\harvest.cmd` | `./harvest.sh` |
 | 单独换绑 | `.\rebind.cmd` | `./rebind.sh` |
 | 看池状态 | `.\status.cmd` | `./status.sh` |
-| 本地前端控制台 | `.\start-web.cmd` | `npm run web` |
-
-### 本地前端控制台
-
-Windows 直接运行：
-
-```bat
-.\start-web.cmd
-```
-
-默认访问 `http://127.0.0.1:8765`。控制台支持：
-
-- 粘贴或选择外部 CPA/Codex JSON，自动追加 `access_token` 到 `pool_tokens.txt`
-- 追加 GoPay 稳定号到 `pool_numbers.txt`
-- 启动 `.\reg.cmd`、`.\harvest.cmd`、`.\rebind.cmd`、`.\status.cmd`
-- 查看和调整 `runs/pool/state.json` 里的 slot 状态
-- 将 Plus CPA JSON 导入 `D:\code\OpenSource\AutoTeam-F` 的账号中心数据目录
-
-可选环境变量：
-
-```bat
-set CNGOPAY_WEB_PORT=8765
-set AUTOTEAM_F_ROOT=D:\code\OpenSource\AutoTeam-F
-npm run web
-```
-
 ### 二进制文件(根据系统选)
 
 | 系统 | 文件 |

@@ -85,14 +85,35 @@ def _email_received_at(email_data: dict) -> float:
 class ProtocolMailAdapter:
     """Adapter expected by the referenced AuthFlow."""
 
-    def __init__(self, mail_client, *, email: str, account_id: str | int | None = None):
+    def __init__(
+        self,
+        mail_client,
+        *,
+        email: str = "",
+        account_id: str | int | None = None,
+        mailbox_factory=None,
+    ):
         self.mail_client = mail_client
         self.email = str(email or "").strip()
         self.account_id = account_id
+        self.mailbox_factory = mailbox_factory
 
     def create_mailbox(self) -> str:
+        if not self.email and callable(self.mailbox_factory):
+            account_id, email = self.mailbox_factory()
+            self.account_id = account_id
+            self.email = str(email or "").strip()
+        if not self.email:
+            raise RuntimeError("邮箱供应商未返回可用邮箱")
         logger.info("[协议注册] 已锁定注册邮箱: %s", self.email)
         return self.email
+
+    def rotate_mailbox(self) -> str:
+        if not callable(self.mailbox_factory):
+            return self.create_mailbox()
+        self.account_id = None
+        self.email = ""
+        return self.create_mailbox()
 
     def wait_for_otp(
         self,
@@ -100,6 +121,7 @@ class ProtocolMailAdapter:
         timeout: int = 180,
         issued_after: float | None = None,
         exclude_codes: set[str] | list[str] | tuple[str, ...] | None = None,
+        strict_issued_after: bool = False,
     ) -> str:
         target = str(email or self.email or "").strip()
         deadline = time.time() + max(1, int(timeout or 180))
@@ -135,6 +157,8 @@ class ProtocolMailAdapter:
                 # code just because the provider timestamp appears a few hours
                 # earlier than the trigger time.
                 if issued_after_ts and received_at and 86400 < (issued_after_ts - received_at):
+                    continue
+                if strict_issued_after and issued_after_ts and received_at and received_at < issued_after_ts - 5:
                     continue
                 code = ""
                 try:
@@ -215,7 +239,9 @@ def _attach_oauth_phone_supplier(
     provider = str(provider or "").strip().lower().replace("-", "_")
     if provider in {"herosms", "hero"}:
         provider = "hero_sms"
-    if provider not in {"hero_sms", "smsbower"}:
+    if provider in {"", "pool", "phonepool", "phone_pool"}:
+        provider = "phone_pool"
+    if provider not in {"hero_sms", "smsbower", "phone_pool"}:
         return
 
     phone_state: dict[str, Any] = {"item": None, "finished": False}
@@ -228,10 +254,19 @@ def _attach_oauth_phone_supplier(
         phone_state["finished"] = False
         if provider == "hero_sms":
             item, error = _acquire_oauth_hero_sms_phone(email=email, country=country)
-        else:
+        elif provider == "smsbower":
             item, error = _acquire_oauth_smsbower_phone(email=email, country=country)
+        else:
+            try:
+                from autoteam.oauth_phone_pool import acquire_available_phone
+
+                item = acquire_available_phone(email)
+                error = "" if item else "手机号池无可用号码"
+            except Exception as exc:
+                item, error = None, str(exc)
         if not item:
             raise RuntimeError(error or f"{provider} 未返回可用号码")
+        item.setdefault("source", provider)
         phone_state["item"] = item
         logger.info("[协议注册] add-phone 已取号: provider=%s phone=%s", provider, item.get("phone_number") or item.get("phone"))
         return item
@@ -239,7 +274,12 @@ def _attach_oauth_phone_supplier(
     def otp_reader(phone_item: dict, timeout: int) -> str:
         activation = phone_item.get("activation")
         if not activation or not hasattr(activation, "wait_code"):
-            return ""
+            sms_url = str(phone_item.get("sms_url") or "").strip()
+            if not sms_url:
+                return ""
+            from autoteam.codex_auth import _make_phone_otp_provider
+
+            return str(_make_phone_otp_provider(sms_url)() or "").strip()
         logger.info(
             "[协议注册] add-phone 等待手机验证码: provider=%s activation=%s",
             provider,
@@ -256,27 +296,46 @@ def _attach_oauth_phone_supplier(
 
     def success(phone_item: dict) -> None:
         phone_state["finished"] = True
-        if provider == "hero_sms":
-            from autoteam.codex_auth import _mark_oauth_hero_sms_bound
+        bound_email = str(
+            phone_item.get("bound_email")
+            or getattr(getattr(flow, "result", None), "email", "")
+            or email
+            or ""
+        ).strip()
+        source = str(phone_item.get("source") or provider).lower()
+        if source == "hero_sms":
+            from autoteam.codex_auth import _mark_oauth_hero_sms_bound, _release_oauth_hero_sms_phone
 
-            _mark_oauth_hero_sms_bound(phone_item, email=email)
-        else:
+            if phone_item.get("phone_first_signup"):
+                _release_oauth_hero_sms_phone(phone_item, email=bound_email, finish=True, reason="phone_first_signup_success")
+            else:
+                _mark_oauth_hero_sms_bound(phone_item, email=bound_email)
+        elif source == "smsbower":
             from autoteam.codex_auth import _release_oauth_sms_activation_phone
 
             _release_oauth_sms_activation_phone(phone_item, finish=True, reason="protocol_oauth_success")
+        else:
+            from autoteam.oauth_phone_pool import mark_phone_bound
+
+            mark_phone_bound(str(phone_item.get("id") or ""), bound_email)
 
     def failure(phone_item: dict, reason: str = "") -> None:
         if phone_state.get("finished"):
             return
         phone_state["finished"] = True
-        if provider == "hero_sms":
+        source = str(phone_item.get("source") or provider).lower()
+        if source == "hero_sms":
             from autoteam.codex_auth import _release_oauth_hero_sms_phone
 
             _release_oauth_hero_sms_phone(phone_item, email=email, cancel=True, reason=reason or "protocol_oauth_failed")
-        else:
+        elif source == "smsbower":
             from autoteam.codex_auth import _release_oauth_sms_activation_phone
 
             _release_oauth_sms_activation_phone(phone_item, cancel=True, reason=reason or "protocol_oauth_failed")
+        else:
+            from autoteam.oauth_phone_pool import release_phone_reservation
+
+            release_phone_reservation(str(phone_item.get("id") or ""), email)
         phone_state["item"] = None
         phone_state["finished"] = False
 
@@ -386,6 +445,64 @@ def register_once(
         return False, {"status": 0, "data": {}, "raw": "协议注册未返回有效 auth_session"}
     logger.info("[协议注册] 协议注册完成，已获取 auth_session: %s", email)
     return True, _session_data_from_auth_result(result)
+
+
+def phone_first_register_once(
+    mail_client,
+    *,
+    email: str = "",
+    password: str,
+    account_id: str | int | None = None,
+    mailbox_factory=None,
+    proxy: str | None = None,
+    oauth_phone_sms_provider: str | None = None,
+    oauth_phone_sms_country: str | None = None,
+    progress_callback=None,
+) -> tuple[bool, dict]:
+    """Phone-first free registration, then bind the selected AutoTeam mailbox."""
+
+    AuthFlow, Config = _load_protocol_classes()
+    cfg = Config()
+    cfg.proxy = proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None
+    flow = AuthFlow(cfg)
+    if callable(progress_callback):
+        flow._autoteam_progress_callback = progress_callback
+    _attach_flow_stage_logs(flow)
+    _attach_oauth_phone_supplier(
+        flow,
+        provider=oauth_phone_sms_provider,
+        country=oauth_phone_sms_country,
+        email=email,
+    )
+    if password:
+        flow._default_password_from_email = lambda _email: password  # type: ignore[attr-defined]
+    adapter = ProtocolMailAdapter(
+        mail_client,
+        email=email,
+        account_id=account_id,
+        mailbox_factory=mailbox_factory,
+    )
+    logger.info(
+        "[phone-first] 开始手机号注册并绑定邮箱: email=%s mailbox_id_present=%s proxy=%s provider=%s",
+        email or "<手机号注册成功后创建>",
+        bool(account_id),
+        "enabled" if cfg.proxy else "disabled",
+        oauth_phone_sms_provider or "<default>",
+    )
+    result = flow.run_phone_first_register(adapter)
+    has_codex_tokens = bool(
+        result
+        and str(getattr(result, "access_token", "") or "").strip()
+        and str(getattr(result, "refresh_token", "") or "").strip()
+    )
+    if not result or (not result.is_valid() and not has_codex_tokens):
+        logger.error("[phone-first] 未返回有效 auth_session/Codex OAuth token: %s", email)
+        return False, {"status": 0, "data": {}, "raw": "phone-first 未返回有效 auth_session/Codex OAuth token"}
+    session_data = _session_data_from_auth_result(result)
+    session_data["mailbox_email"] = adapter.email
+    session_data["mailbox_account_id"] = adapter.account_id
+    logger.info("[phone-first] 注册完成，已绑定邮箱: %s", adapter.email)
+    return True, session_data
 
 
 def login_once(

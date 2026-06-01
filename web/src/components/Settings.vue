@@ -521,7 +521,7 @@
               v-model.trim="gopayAutoSignupForm.smscode_country_id"
               type="text"
               autocomplete="off"
-              placeholder="6"
+              placeholder="7"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
           </div>
@@ -1028,9 +1028,9 @@ const gopayAutoSignupForm = ref({
   smsbower_preferred_price: '',
   smscode_api_token: '',
   smscode_base_url: 'https://api.smscode.gg/v1',
-  smscode_country_id: '6',
+  smscode_country_id: '7',
   smscode_platform_id: '',
-  smscode_platform_query: 'gopay',
+  smscode_platform_query: 'gojek',
   smscode_product_id: '',
   smscode_min_price: '',
   smscode_max_price: '',
@@ -1367,9 +1367,9 @@ async function loadGoPayAutoSignupConfig() {
       smsbower_preferred_price: cfg?.smsbower_preferred_price || '',
       smscode_api_token: '',
       smscode_base_url: cfg?.smscode_base_url || 'https://api.smscode.gg/v1',
-      smscode_country_id: cfg?.smscode_country_id || '6',
+      smscode_country_id: cfg?.smscode_country_id || '7',
       smscode_platform_id: cfg?.smscode_platform_id || '',
-      smscode_platform_query: cfg?.smscode_platform_query || 'gopay',
+      smscode_platform_query: cfg?.smscode_platform_query || 'gojek',
       smscode_product_id: cfg?.smscode_product_id || '',
       smscode_min_price: cfg?.smscode_min_price || '',
       smscode_max_price: cfg?.smscode_max_price || '',

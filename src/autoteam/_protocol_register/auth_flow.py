@@ -92,6 +92,7 @@ class AuthFlow:
         )
         self._trace_dump_path = ""
         self._used_email_otp_codes: set[str] = set()
+        self._last_register_password_error: str = ""
         if self._trace_dump_enabled:
             try:
                 os.makedirs("outputs", exist_ok=True)
@@ -102,6 +103,15 @@ class AuthFlow:
                 logger.warning(f"初始化 HTTP 抓包文件失败: {e}")
                 self._trace_dump_enabled = False
 
+    def _emit_progress(self, stage: str, message: str, **extra: Any) -> None:
+        callback = getattr(self, "_autoteam_progress_callback", None)
+        if not callable(callback):
+            return
+        try:
+            callback({"stage": stage, "message": message, **extra})
+        except Exception:
+            logger.debug("progress callback failed", exc_info=True)
+
     def _wait_for_email_otp(
         self,
         mail_provider: MailProvider,
@@ -110,6 +120,7 @@ class AuthFlow:
         timeout: int,
         issued_after: float,
         exclude_used: bool = False,
+        strict_issued_after: bool = False,
     ) -> str:
         kwargs = {
             "timeout": timeout,
@@ -117,11 +128,14 @@ class AuthFlow:
         }
         if exclude_used and self._used_email_otp_codes:
             kwargs["exclude_codes"] = set(self._used_email_otp_codes)
+        if strict_issued_after:
+            kwargs["strict_issued_after"] = True
         try:
             code = mail_provider.wait_for_otp(email, **kwargs)
         except TypeError:
             # 兼容旧 MailProvider：不支持 exclude_codes 时仍按原逻辑等待。
             kwargs.pop("exclude_codes", None)
+            kwargs.pop("strict_issued_after", None)
             code = mail_provider.wait_for_otp(email, **kwargs)
         code = str(code or "").strip()
         if code:
@@ -830,6 +844,8 @@ class AuthFlow:
             return ""
         password = (self.result.password or "").strip() or self._default_password_from_email(email)
         self.result.password = password
+        username_kind = "phone_number" if email.startswith("+") else "email"
+        self._emit_progress("phone_first_codex_login_started", "Codex OAuth 回落登录页，正在推进登录状态")
 
         device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip()
         if not device_id:
@@ -843,14 +859,23 @@ class AuthFlow:
             screen_hint="login",
             referer="https://auth.openai.com/log-in",
             trace_step="authorize_continue_login_codex",
+            username_kind=username_kind,
         )
         page_type = self._extract_page_type(step)
         continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(step))
+        self._emit_progress(
+            "phone_first_codex_login_step",
+            f"Codex 登录推进返回: page={page_type or '-'} next={(continue_url or '')[:120]}",
+        )
 
         if page_type == "login_password" or "/log-in/password" in continue_url:
             step = self.login_password_verify(password)
             page_type = self._extract_page_type(step)
             continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(step))
+            self._emit_progress(
+                "phone_first_codex_password_done",
+                f"Codex 手机号密码登录已提交: page={page_type or '-'} next={(continue_url or '')[:120]}",
+            )
 
         need_otp = (page_type == "email_otp_verification") or ("/email-verification" in (continue_url or ""))
         if need_otp:
@@ -874,6 +899,11 @@ class AuthFlow:
             otp_resp = self.verify_otp(otp_code)
             continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(otp_resp))
 
+        if self._is_add_email_state(page_type="", continue_url=continue_url):
+            next_url = self._handle_add_email_verification(mail_provider=mail_provider, continue_url=continue_url)
+            if next_url:
+                continue_url = self._normalize_continue_url(next_url)
+
         # add-phone 分支（可选）：
         # 仅在配置了手机号与验证码获取方式时尝试自动推进
         if self._is_add_phone_state(page_type="", continue_url=continue_url):
@@ -888,6 +918,39 @@ class AuthFlow:
         pt = (page_type or "").strip().lower()
         cu = (continue_url or "").strip().lower()
         return (pt == "add_phone") or ("add-phone" in cu)
+
+    @staticmethod
+    def _is_add_email_state(page_type: str = "", continue_url: str = "") -> bool:
+        pt = (page_type or "").strip().lower()
+        cu = (continue_url or "").strip().lower()
+        return (pt == "add_email") or ("add-email" in cu)
+
+    @staticmethod
+    def _looks_like_email_already_in_use_error(exc: Any) -> bool:
+        text = str(exc or "").lower()
+        return "email_already" in text or "email is already in use" in text
+
+    @staticmethod
+    def _looks_like_email_otp_timeout(exc: Any) -> bool:
+        text = str(exc or "").lower()
+        return "未收到 openai 邮箱验证码" in text or "email otp" in text and "timeout" in text
+
+    @staticmethod
+    def _looks_like_email_otp_rate_limited(exc: Any) -> bool:
+        text = str(exc or "").lower()
+        return "too many tries" in text or "please wait a few minutes" in text
+
+    @staticmethod
+    def _record_email_failure(email: str, category: str, reason: str) -> None:
+        target = str(email or "").strip()
+        if not target:
+            return
+        try:
+            from autoteam.register_failures import record_failure
+
+            record_failure(target, category, reason or category)
+        except Exception:
+            logger.debug("record email failure failed", exc_info=True)
 
     def _phone_headers(self, referer: str) -> dict:
         headers = self._common_headers(referer)
@@ -958,6 +1021,155 @@ class AuthFlow:
             return resp.json() if resp is not None else {}
         except Exception:
             return {}
+
+    def _phone_signup_send_otp(self) -> dict:
+        headers = self._phone_headers("https://auth.openai.com/create-account/password")
+        resp = self.session.get(
+            "https://auth.openai.com/api/accounts/phone-otp/send",
+            headers=headers,
+            timeout=30,
+        )
+        self._trace_http("phone_signup_send_otp", resp)
+        if resp.status_code != 200:
+            raise RuntimeError(f"phone-otp/send 失败: {resp.status_code} - {(resp.text or '')[:220]}")
+        try:
+            return resp.json() if resp is not None else {}
+        except Exception:
+            return {}
+
+    def _add_email_send(self, email: str) -> dict:
+        headers = self._phone_headers("https://auth.openai.com/add-email")
+        resp = self.session.post(
+            "https://auth.openai.com/api/accounts/add-email/send",
+            headers=headers,
+            json={"email": email},
+            timeout=30,
+        )
+        self._trace_http("add_email_send", resp)
+        if resp.status_code != 200:
+            raise RuntimeError(f"add-email/send 失败: {resp.status_code} - {(resp.text or '')[:220]}")
+        try:
+            return resp.json() if resp is not None else {}
+        except Exception:
+            return {}
+
+    def _handle_add_email_verification(self, mail_provider: Optional[MailProvider], continue_url: str = "") -> str:
+        """Bind an email during Codex OAuth, matching the CNgopay phone->email->OAuth flow."""
+        if mail_provider is None:
+            logger.warning("Codex OAuth 命中 add-email，但未提供邮箱供应商")
+            return continue_url or ""
+        try:
+            mailbox_attempts = max(1, min(30, int(os.getenv("ADD_EMAIL_MAILBOX_ATTEMPTS", "30") or 30)))
+        except Exception:
+            mailbox_attempts = 30
+
+        last_error = ""
+        next_url = continue_url or ""
+        for mailbox_attempt in range(1, mailbox_attempts + 1):
+            if mailbox_attempt > 1 and hasattr(mail_provider, "rotate_mailbox"):
+                bind_email = getattr(mail_provider, "rotate_mailbox")()
+            else:
+                bind_email = mail_provider.create_mailbox()
+            bind_email = str(bind_email or "").strip()
+            if not bind_email:
+                raise RuntimeError("add-email 未能创建绑定邮箱")
+            logger.info("[phone-first] Codex OAuth 命中 add-email，开始绑定邮箱: %s", bind_email)
+            self._emit_progress(
+                "phone_first_add_email_started",
+                f"开始绑定邮箱: {bind_email}",
+                mailbox_attempt=mailbox_attempt,
+                max_mailbox_attempts=mailbox_attempts,
+            )
+            self.result.email = bind_email
+            self._used_email_otp_codes.clear()
+            add_email_started = time.time()
+
+            try:
+                step = self._add_email_send(bind_email)
+                page_type = self._extract_page_type(step)
+                next_url = self._normalize_continue_url(self._extract_continue_url_from_step(step))
+                self._emit_progress(
+                    "phone_first_add_email_sent",
+                    f"绑定邮箱已提交: page={page_type or '-'} next={(next_url or '')[:120]}",
+                )
+                if not next_url:
+                    next_url = "https://auth.openai.com/email-verification" if page_type == "email_otp_verification" else (continue_url or "")
+                if page_type == "email_otp_verification" or "/email-verification" in (next_url or ""):
+                    try:
+                        email_otp_timeout = max(20, int(os.getenv("ADD_EMAIL_OTP_TIMEOUT", os.getenv("OTP_TIMEOUT", "45"))))
+                    except Exception:
+                        email_otp_timeout = 45
+                    self._emit_progress("phone_first_add_email_otp_wait", "等待绑定邮箱 OTP")
+                    deadline = time.time() + email_otp_timeout
+                    last_otp_error = ""
+                    while time.time() < deadline:
+                        code = self._wait_for_email_otp(
+                            mail_provider,
+                            bind_email,
+                            timeout=max(10, int(deadline - time.time())),
+                            issued_after=add_email_started,
+                            exclude_used=True,
+                            strict_issued_after=True,
+                        )
+                        self._emit_progress("phone_first_add_email_otp_received", "已收到绑定邮箱 OTP")
+                        try:
+                            otp_resp = self.verify_otp(code)
+                            otp_page_type = self._extract_page_type(otp_resp)
+                            next_url = self._normalize_continue_url(self._extract_continue_url_from_step(otp_resp))
+                            self._emit_progress(
+                                "phone_first_add_email_otp_verified",
+                                f"绑定邮箱 OTP 已验证: page={otp_page_type or '-'} next={(next_url or '')[:120]}",
+                            )
+                            last_otp_error = ""
+                            break
+                        except Exception as otp_exc:
+                            last_otp_error = str(otp_exc)
+                            if self._looks_like_email_already_in_use_error(otp_exc):
+                                break
+                            if self._looks_like_email_otp_rate_limited(otp_exc):
+                                raise
+                            self._used_email_otp_codes.add(str(code or "").strip())
+                            self._emit_progress(
+                                "phone_first_add_email_otp_invalid",
+                                f"绑定邮箱 OTP 验证失败，继续等待新验证码: {last_otp_error[:160]}",
+                                level="warn",
+                            )
+                    if last_otp_error:
+                        raise RuntimeError(last_otp_error)
+                logger.info("[phone-first] Codex OAuth 邮箱绑定完成: %s", bind_email)
+                self._emit_progress("phone_first_add_email_done", "绑定邮箱流程完成")
+                return next_url or continue_url or ""
+            except Exception as exc:
+                last_error = str(exc)
+                email_already_used = self._looks_like_email_already_in_use_error(exc)
+                if email_already_used:
+                    self._record_email_failure(bind_email, "email_already_in_use", last_error)
+                if email_already_used and mailbox_attempt < mailbox_attempts:
+                    self._emit_progress(
+                        "phone_first_add_email_mailbox_used",
+                        f"绑定邮箱已被占用，切换下一个邮箱: {bind_email}",
+                        level="warn",
+                        mailbox_attempt=mailbox_attempt,
+                        max_mailbox_attempts=mailbox_attempts,
+                    )
+                    continue
+                email_otp_timeout = self._looks_like_email_otp_timeout(exc)
+                if email_otp_timeout:
+                    self._record_email_failure(bind_email, "email_no_otp", last_error)
+                if email_otp_timeout and mailbox_attempt < mailbox_attempts:
+                    self._emit_progress(
+                        "phone_first_add_email_mailbox_no_otp",
+                        f"绑定邮箱未收到新 OTP，切换下一个邮箱: {bind_email}",
+                        level="warn",
+                        mailbox_attempt=mailbox_attempt,
+                        max_mailbox_attempts=mailbox_attempts,
+                    )
+                    continue
+                if self._looks_like_email_otp_rate_limited(exc):
+                    self._record_email_failure(bind_email, "email_otp_rate_limited", last_error)
+                raise
+
+        raise RuntimeError(last_error or "add-email 绑定邮箱失败")
 
     @staticmethod
     def _extract_otp6(text: str) -> str:
@@ -1151,6 +1363,7 @@ class AuthFlow:
         self._codex_rt_attempted = True
 
         logger.info("尝试 Codex OAuth 直连换取 refresh_token ...")
+        self._emit_progress("phone_first_codex_oauth_started", "开始 Codex OAuth 换取 refresh_token")
         try:
             auth_url, state, verifier, redirect_uri, client_id = self._build_codex_authorize()
             self._oauth_auth_url = auth_url
@@ -1162,6 +1375,17 @@ class AuthFlow:
             callback_url, final_url = self._follow_authorize_for_callback(
                 auth_url, redirect_uri, "codex_authorize"
             )
+
+            if (not callback_url) and self._is_add_email_state(page_type="", continue_url=final_url or ""):
+                logger.info("Codex 授权直接命中 add-email，按 phone->email->OAuth 流程绑定邮箱...")
+                self._emit_progress("phone_first_add_email_required", "Codex OAuth 要求绑定邮箱")
+                continue_url = self._handle_add_email_verification(mail_provider=mail_provider, continue_url=final_url or "")
+                if continue_url:
+                    callback_url, final_url = self._follow_authorize_for_callback(
+                        self._normalize_continue_url(continue_url),
+                        redirect_uri,
+                        "codex_post_add_email",
+                    )
 
             # 新注册账号可能在首轮授权时直接落到 add-phone，不经过 /log-in。
             if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or ""):
@@ -1201,6 +1425,11 @@ class AuthFlow:
                     continue_url = self._codex_drive_login_from_log_in(mail_provider=mail_provider)
                 except Exception as e:
                     logger.warning(f"Codex 登录推进失败，改走 no-prompt 兜底: {e}")
+                    self._emit_progress(
+                        "phone_first_codex_login_failed",
+                        f"Codex 登录推进失败，改走 no-prompt 兜底: {str(e)[:180]}",
+                        level="warn",
+                    )
                 if continue_url:
                     # 命中 add-phone 时，支持“刷新重试”策略（不立刻放弃）
                     if self._is_add_phone_state(page_type="", continue_url=continue_url) and self._env_flag(
@@ -1240,16 +1469,32 @@ class AuthFlow:
 
             if not callback_url:
                 logger.warning("Codex OAuth 未捕获 callback code, final=%s", (final_url or "")[:180])
+                self._emit_progress(
+                    "phone_first_codex_oauth_no_callback",
+                    f"Codex OAuth 未捕获 callback code: {(final_url or '')[:160]}",
+                    level="warn",
+                )
                 return False
-            return self._exchange_codex_callback_code(
+            ok = self._exchange_codex_callback_code(
                 callback_url=callback_url,
                 expected_state=state,
                 verifier=verifier,
                 redirect_uri=redirect_uri,
                 client_id=client_id,
             )
+            self._emit_progress(
+                "phone_first_codex_oauth_done" if ok else "phone_first_codex_oauth_failed",
+                "Codex OAuth refresh_token 交换成功" if ok else "Codex OAuth refresh_token 交换失败",
+                level="success" if ok else "warn",
+            )
+            return ok
         except Exception as e:
             logger.warning(f"Codex OAuth 交换异常: {e}")
+            self._emit_progress(
+                "phone_first_codex_oauth_failed",
+                f"Codex OAuth 交换异常: {str(e)[:180]}",
+                level="warn",
+            )
             return False
 
     def _inject_pkce_into_auth_url(self, auth_url: str) -> str:
@@ -1582,6 +1827,7 @@ class AuthFlow:
         screen_hint: str = "signup",
         referer: str = "https://auth.openai.com/create-account",
         trace_step: str = "",
+        username_kind: str = "email",
     ) -> dict:
         """调用 /api/accounts/authorize/continue，返回 JSON。"""
         headers = self._common_headers(referer)
@@ -1589,7 +1835,7 @@ class AuthFlow:
         if sentinel_token:
             headers["openai-sentinel-token"] = sentinel_token
         payload = {
-            "username": {"value": email, "kind": "email"},
+            "username": {"value": email, "kind": username_kind or "email"},
             "screen_hint": screen_hint,
         }
         resp = self.session.post(
@@ -1703,10 +1949,36 @@ class AuthFlow:
         )
         self._trace_http("register_password", resp)
         if resp.status_code != 200:
-            logger.warning(f"密码注册返回 {resp.status_code}: {resp.text[:200]}")
+            detail = self._format_register_password_error(resp)
+            self._last_register_password_error = detail
+            logger.warning("密码注册返回 %s: %s", resp.status_code, detail)
             return False
+        self._last_register_password_error = ""
         logger.info("密码注册成功")
         return True
+
+    @staticmethod
+    def _format_register_password_error(resp) -> str:
+        status = getattr(resp, "status_code", "") or ""
+        text = str(getattr(resp, "text", "") or "").strip()
+        code = ""
+        message = ""
+        try:
+            payload = json.loads(text) if text else {}
+            error = payload.get("error") if isinstance(payload, dict) else {}
+            if isinstance(error, dict):
+                code = str(error.get("code") or "").strip()
+                message = str(error.get("message") or "").strip()
+        except Exception:
+            pass
+        if code == "phone_number_in_use":
+            return f"{status}: phone_number_in_use: 手机号已被使用"
+        if code == "account_creation_failed":
+            return f"{status}: account_creation_failed: OpenAI 拒绝创建账号，请换手机号/国家/代理重试"
+        if code or message:
+            return f"{status}: {code or 'openai_error'}: {message or '注册密码步骤失败'}"
+        text = re.sub(r"\s+", " ", text)[:220]
+        return f"{status}: {text or '注册密码步骤失败'}"
 
     # ── Step 7: 发送 OTP ──
     def send_otp(self):
@@ -2390,6 +2662,153 @@ class AuthFlow:
         except Exception as e:
             logger.warning(f"二次 authorize 交换异常: {e}")
             return False
+
+    # ── 手机号优先注册流程 ──
+    def run_phone_first_register(self, mail_provider: MailProvider) -> AuthResult:
+        """手机号先注册 ChatGPT，再绑定当前 mail_provider 创建的邮箱。"""
+        if not self.check_proxy():
+            logger.warning("网络预检查未通过，继续尝试 phone-first 注册链路以获取精确错误...")
+            self._emit_progress("phone_first_network_precheck_failed", "网络预检查未通过，继续尝试 phone-first 注册链路", level="warn")
+        else:
+            self._emit_progress("phone_first_network_precheck_done", "网络预检查通过")
+
+        signup_phone_item = None
+        phone_supplier = getattr(self, "_openai_phone_supplier", None)
+        phone_failure = getattr(self, "_openai_phone_failure", None)
+        phone_success = getattr(self, "_openai_phone_success", None)
+        if not callable(phone_supplier):
+            raise RuntimeError("phone-first 注册缺少手机号供应商，请配置 OAuth 接码供应商或手机号池")
+
+        try:
+            phone_attempt_limit = max(1, int(os.getenv("OPENAI_PHONE_FIRST_PHONE_ATTEMPTS", "8") or "8"))
+        except Exception:
+            phone_attempt_limit = 8
+        phone_attempt = int(getattr(self, "_phone_first_phone_attempt", 0) or 0) + 1
+        self._phone_first_phone_attempt = phone_attempt
+        if phone_attempt > 1:
+            self.session = create_http_session(
+                proxy=self.config.proxy,
+                impersonate=self._impersonate_candidates[self._impersonate_idx],
+            )
+            self.result = AuthResult()
+            self._last_register_password_error = ""
+
+        try:
+            phone_signup_finished = False
+            signup_phone_item = phone_supplier()
+            phone = str(
+                (signup_phone_item or {}).get("phone_number")
+                or (signup_phone_item or {}).get("phone")
+                or ""
+            ).strip()
+            if not phone:
+                raise RuntimeError("手机号供应商未返回 phone_number")
+            phone = self._normalize_add_phone_number_for_api(phone, signup_phone_item)
+            logger.info("[phone-first] 使用手机号注册: phone=%s", phone)
+            self._emit_progress("phone_first_phone_selected", "已获取手机号，开始注册")
+
+            self.result.email = phone
+            self._emit_progress("phone_first_csrf_started", "获取 ChatGPT CSRF")
+            csrf_token = self.get_csrf_token()
+            self._emit_progress("phone_first_authorize_started", "打开手机号注册授权入口")
+            auth_url = self.get_auth_url(csrf_token)
+            device_id = self.auth_oauth_init(auth_url)
+            sentinel = self.get_sentinel_token(device_id)
+            step = self.authorize_continue(
+                email=phone,
+                sentinel_token=sentinel,
+                screen_hint="login_or_signup",
+                referer="https://auth.openai.com/log-in-or-create-account?usernameKind=phone_number",
+                trace_step="authorize_continue_phone_signup",
+                username_kind="phone_number",
+            )
+            page_type = (self._extract_page_type(step) or "").lower()
+            continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(step))
+            if page_type == "login_password" or "/log-in" in (continue_url or ""):
+                raise RuntimeError(f"PHONE_ALREADY_REGISTERED: 手机号已注册或进入登录页: {continue_url or page_type}")
+
+            if page_type != "create_account_password" and "/create-account/password" not in (continue_url or ""):
+                logger.warning(
+                    "[phone-first] authorize/continue 返回非标准页面: page=%s continue=%s",
+                    page_type or "(empty)",
+                    (continue_url or "")[:180],
+                )
+
+            if not self.register_password(phone):
+                detail = (self._last_register_password_error or "").strip()
+                if "phone_number_in_use" in detail:
+                    raise RuntimeError("PHONE_NUMBER_IN_USE: 手机号已被使用")
+                if "account_creation_failed" in detail:
+                    raise RuntimeError("手机号注册 password 步骤失败: account_creation_failed: OpenAI 拒绝创建账号，请换手机号/国家/代理重试")
+                raise RuntimeError(f"手机号注册 password 步骤失败: {detail or 'unknown'}")
+            self._emit_progress("phone_first_password_done", "手机号注册密码已提交")
+            self._phone_signup_send_otp()
+            self._emit_progress("phone_first_phone_otp_sent", "手机 OTP 已触发")
+            otp_reader = getattr(self, "_openai_phone_otp_reader", None)
+            if not callable(otp_reader):
+                raise RuntimeError("phone-first 注册缺少手机号 OTP 读取器")
+            try:
+                otp_timeout = max(30, int(os.getenv("OPENAI_PHONE_OTP_TIMEOUT", "45") or "45"))
+            except Exception:
+                otp_timeout = 45
+            phone_code = str(otp_reader(signup_phone_item, otp_timeout) or "").strip()
+            if not phone_code:
+                raise RuntimeError("phone-first 手机 OTP 未提供")
+            self._emit_progress("phone_first_phone_otp_received", "已收到手机 OTP")
+            validate_resp = self._phone_otp_validate(phone_code)
+            self._emit_progress("phone_first_phone_otp_verified", "手机 OTP 已验证")
+            continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(validate_resp))
+
+            if continue_url and "/about-you" not in continue_url:
+                logger.info("[phone-first] phone OTP 后 next=%s", continue_url[:180])
+            continue_url = self.create_account()
+            self._emit_progress("phone_first_account_created", "手机号账号创建完成，准备绑定邮箱和 OAuth")
+
+            if continue_url:
+                continue_url = self._normalize_continue_url(continue_url)
+                logger.info("[phone-first] 手机号注册 create_account 完成，保留回调给后续 OAuth 流程: %s", continue_url[:180])
+            logger.info("[phone-first] 手机号注册成功，准备进入 Codex OAuth 绑定邮箱: phone=%s", phone)
+            phone_signup_finished = True
+            if isinstance(signup_phone_item, dict):
+                signup_phone_item["bound_email"] = phone
+                signup_phone_item["phone_first_signup"] = True
+            if callable(phone_success):
+                try:
+                    phone_success(signup_phone_item)
+                except Exception as callback_exc:
+                    logger.warning("[phone-first] 手机号成功回调失败: %s", callback_exc)
+            signup_phone_item = None
+
+            phone_login = phone
+            phone_password = self.result.password
+            self.session = create_http_session(
+                proxy=self.config.proxy,
+                impersonate=self._impersonate_candidates[self._impersonate_idx],
+            )
+            self.result = AuthResult()
+            self.result.email = phone_login
+            self.result.password = phone_password
+            if not self.oauth_codex_rt_exchange(mail_provider=mail_provider):
+                raise RuntimeError("phone-first Codex OAuth 未完成")
+            if not (self.result.access_token and self.result.refresh_token):
+                raise RuntimeError("phone-first Codex OAuth 未获取有效 token")
+            logger.info("[phone-first] 注册流程完成: %s", self.result.email)
+            return self.result
+        except Exception as exc:
+            if isinstance(signup_phone_item, dict) and callable(phone_failure):
+                try:
+                    phone_failure(signup_phone_item, "phone_first_register_exception")
+                except Exception:
+                    pass
+            if not locals().get("phone_signup_finished", False) and phone_attempt < phone_attempt_limit:
+                logger.info(
+                    "[phone-first] 手机号注册失败，切换下一个手机号重试: %s/%s (%s)",
+                    phone_attempt + 1,
+                    phone_attempt_limit,
+                    str(exc).splitlines()[0][:160],
+                )
+                return self.run_phone_first_register(mail_provider)
+            raise
 
     # ── 完整注册流程 ──
     def run_register(self, mail_provider: MailProvider) -> AuthResult:

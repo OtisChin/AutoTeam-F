@@ -3275,6 +3275,7 @@ def create_account_direct(
     check_team_membership=True,
     progress_callback=None,
     register_mode="browser",
+    registration_flow="standard",
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
@@ -3304,18 +3305,24 @@ def create_account_direct(
             logger.debug("[直接注册] progress_callback failed", exc_info=True)
 
     register_mode = str(register_mode or "browser").strip().lower()
+    registration_flow = str(registration_flow or "standard").strip().lower()
     use_protocol_register = register_mode in {"protocol", "http", "api"}
     proxy_url = str(proxy_url or "").strip() or None
     resolved_prefix = _with_random_suffix_prefix(email_prefix)
-    _progress("register_email_creating", f"正在创建临时邮箱: domain=@{domain or '<default>'}")
-    account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
-    _progress("register_email_created", f"已创建临时邮箱: {email}", email=email)
+    account_id = None
+    email = ""
+    if registration_flow != "phone_cpa":
+        _progress("register_email_creating", f"正在创建临时邮箱: domain=@{domain or '<default>'}")
+        account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
+        _progress("register_email_created", f"已创建临时邮箱: {email}", email=email)
     chosen_password = password or random_password()
     password = chosen_password
     last_failure_reason = ""
     post_register_oauth_enabled = (
         POST_REGISTER_OAUTH_ENABLED if post_register_oauth is None else bool(post_register_oauth)
     )
+    register_attempts = 0
+    duplicate_swaps = 0
 
     def _record_outcome(status, **extra):
         if out_outcome is not None:
@@ -3328,6 +3335,83 @@ def create_account_direct(
                 **extra,
             )
 
+    if registration_flow == "phone_cpa":
+        provider_label = str(oauth_phone_sms_provider or os.environ.get("OAUTH_PHONE_SMS_PROVIDER") or "phone_pool")
+        _progress(
+            "phone_first_register_started",
+            "开始手机号注册，成功后再创建并绑定邮箱",
+            oauth_phone_sms_provider=provider_label,
+        )
+
+        def _create_phone_first_mailbox():
+            nonlocal account_id, email
+            _progress("register_email_creating", f"手机号注册成功，正在创建绑定邮箱: domain=@{domain or '<default>'}")
+            account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
+            _progress("register_email_created", f"已创建绑定邮箱: {email}", email=email)
+            return account_id, email
+
+        try:
+            from autoteam.protocol_register import phone_first_register_once
+
+            success, session_data = phone_first_register_once(
+                mail_client,
+                email="",
+                password=password,
+                account_id=None,
+                mailbox_factory=_create_phone_first_mailbox,
+                proxy=proxy_url,
+                oauth_phone_sms_provider=provider_label,
+                oauth_phone_sms_country=oauth_phone_sms_country,
+                progress_callback=progress_callback,
+            )
+            if isinstance(session_data, dict):
+                email = str(session_data.get("mailbox_email") or email or "").strip()
+                account_id = session_data.get("mailbox_account_id") or account_id
+            if not success:
+                reason = str((session_data or {}).get("raw") or "phone-first 注册未成功")
+                record_failure(email, "phone_first_failed", reason)
+                _record_outcome("phone_first_failed", reason=reason)
+                _progress("phone_first_register_failed", f"手机号注册失败: {email or '<未创建邮箱>'}: {reason}", email=email, level="error")
+                return None
+
+            bundle = (session_data or {}).get("codex_oauth_bundle")
+            if bundle:
+                saved = _save_codex_oauth_bundle_for_account(
+                    email,
+                    password,
+                    account_id,
+                    bundle,
+                    out_outcome=out_outcome,
+                    mail_provider=_mail_client_provider_name(mail_client) or None,
+                    source="phone_first_protocol_oauth",
+                )
+                if saved:
+                    _progress("phone_first_register_finished", f"手机号注册和 OAuth 已完成: {email}", email=email)
+                    return saved
+
+            saved_session = _save_auth_from_session_page(
+                email,
+                password,
+                account_id,
+                session_data,
+                out_outcome=out_outcome,
+                mail_provider=_mail_client_provider_name(mail_client) or None,
+            )
+            if saved_session:
+                _progress("phone_first_register_finished", f"手机号注册完成，已保存 auth_session: {email}", email=email)
+                return saved_session
+            reason = str((out_outcome or {}).get("reason") or "phone-first 注册完成但未保存有效凭证")
+            record_failure(email, "phone_first_auth_failed", reason)
+            _record_outcome("phone_first_auth_failed", reason=reason)
+            _progress("phone_first_register_failed", f"手机号注册完成但凭证保存失败: {email}", email=email, level="error")
+            return None
+        except Exception as exc:
+            reason = str(exc)
+            record_failure(email, "phone_first_exception", reason)
+            _record_outcome("phone_first_exception", reason=reason)
+            _progress("phone_first_register_failed", f"手机号注册异常: {email}: {reason}", email=email, level="error")
+            raise
+
     def _discard_email(reason):
         logger.info("[直接注册] %s，保留临时邮箱服务账号: %s id=%s", reason, email, account_id)
 
@@ -3335,8 +3419,6 @@ def create_account_direct(
     success = False
     MAX_REGISTER_ATTEMPTS = 3
     MAX_DUPLICATE_SWAPS = 5
-    register_attempts = 0
-    duplicate_swaps = 0
     while register_attempts < MAX_REGISTER_ATTEMPTS:
         logger.info(
             "[直接注册] 开始注册尝试: %s（已试 %d/%d，duplicate 换邮箱 %d/%d）",
@@ -4335,6 +4417,7 @@ def cmd_register_accounts(
     luckmail_preferred_domain=None,
     luckmail_preferred_domains=None,
     register_mode="browser",
+    registration_flow="standard",
     register_proxy_selector=None,
     register_proxy_meta=None,
     oauth_phone_sms_provider=None,
@@ -4383,8 +4466,11 @@ def cmd_register_accounts(
     }
     post_register_oauth = bool(post_register_oauth)
     register_mode = str(register_mode or "browser").strip().lower()
+    registration_flow = str(registration_flow or "standard").strip().lower()
     if register_mode not in {"browser", "protocol", "http", "api"}:
         register_mode = "browser"
+    if registration_flow not in {"standard", "phone_cpa"}:
+        registration_flow = "standard"
     register_proxy_meta = register_proxy_meta or {}
     oauth_env_overrides = {}
     oauth_provider = str(oauth_phone_sms_provider or "").strip().lower().replace("-", "_")
@@ -4408,6 +4494,86 @@ def cmd_register_accounts(
                 "successRate": (progress["ok"] / total * 100) if total > 0 else 0,
             }
         )
+
+    def _probe_register_proxy(proxy_url: str) -> tuple[bool, str]:
+        proxy = str(proxy_url or "").strip()
+        if not proxy:
+            return False, "代理为空"
+        try:
+            from autoteam._protocol_register.http_client import USER_AGENT, create_http_session
+
+            session = create_http_session(proxy=proxy, impersonate="chrome136")
+            headers = {
+                "Accept": "application/json",
+                "Referer": "https://chatgpt.com/auth/login",
+                "Origin": "https://chatgpt.com",
+                "User-Agent": USER_AGENT,
+            }
+            resp = session.get("https://chatgpt.com/api/auth/csrf", headers=headers, timeout=20)
+            if int(resp.status_code) == 200:
+                try:
+                    if str((resp.json() or {}).get("csrfToken") or "").strip():
+                        return True, ""
+                except Exception:
+                    pass
+                return False, "chatgpt csrf 响应缺少 csrfToken"
+            if int(resp.status_code) == 403:
+                return False, "chatgpt csrf HTTP 403"
+            return False, f"chatgpt csrf HTTP {resp.status_code}"
+        except Exception as exc:
+            return False, str(exc)
+
+    def _select_working_register_proxy(job_index: int, total: int) -> str:
+        if not callable(register_proxy_selector):
+            return ""
+        try:
+            max_attempts = max(1, min(10, int(os.environ.get("REGISTER_PROXY_PROBE_ATTEMPTS", "5") or 5)))
+        except Exception:
+            max_attempts = 5
+        last_error = ""
+        for proxy_attempt in range(1, max_attempts + 1):
+            selected = str(register_proxy_selector() or "").strip()
+            if not selected:
+                last_error = "动态代理 API 未返回可用代理"
+                break
+            ok, probe_error = _probe_register_proxy(selected)
+            if ok:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "stage": "register_proxy_api_selected",
+                            "message": f"已为第 {job_index + 1}/{total} 个账号获取动态代理",
+                            "proxy_api_provider": register_proxy_meta.get("proxy_api_provider") or "",
+                            "proxy_api_url_present": bool(register_proxy_meta.get("proxy_api_url_present")),
+                            "email_index": job_index + 1,
+                            "proxy_attempt": proxy_attempt,
+                            "max_proxy_attempts": max_attempts,
+                        }
+                    )
+                return selected
+            last_error = probe_error or "代理连通性探测失败"
+            logger.warning(
+                "[注册账号] 第 %d/%d 个动态代理预探测失败 %d/%d: %s",
+                job_index + 1,
+                total,
+                proxy_attempt,
+                max_attempts,
+                last_error,
+            )
+            if progress_callback:
+                progress_callback(
+                    {
+                        "stage": "register_proxy_api_probe_failed",
+                        "message": f"动态代理预探测失败，准备换代理重试 {proxy_attempt}/{max_attempts}: {last_error[:180]}",
+                        "level": "warn",
+                        "proxy_api_provider": register_proxy_meta.get("proxy_api_provider") or "",
+                        "proxy_api_url_present": bool(register_proxy_meta.get("proxy_api_url_present")),
+                        "email_index": job_index + 1,
+                        "proxy_attempt": proxy_attempt,
+                        "max_proxy_attempts": max_attempts,
+                    }
+                )
+        raise RuntimeError(f"动态代理不可用: {last_error or '代理连通性探测失败'}")
 
     # cloud-mail 看起来对同一管理员账号的并发 login/token 刷新不友好：
     # 后一个 worker 登录后，前一个 worker 的 token 会被服务端判成“身份认证失效”。
@@ -4458,21 +4624,7 @@ def cmd_register_accounts(
                 register_target,
             )
             try:
-                selected_proxy_url = ""
-                if callable(register_proxy_selector):
-                    selected_proxy_url = str(register_proxy_selector() or "").strip()
-                    if not selected_proxy_url:
-                        raise RuntimeError("动态代理 API 未返回可用代理")
-                    if progress_callback:
-                        progress_callback(
-                            {
-                                "stage": "register_proxy_api_selected",
-                                "message": f"已为第 {job_index + 1}/{total} 个账号获取动态代理",
-                                "proxy_api_provider": register_proxy_meta.get("proxy_api_provider") or "",
-                                "proxy_api_url_present": bool(register_proxy_meta.get("proxy_api_url_present")),
-                                "email_index": job_index + 1,
-                            }
-                        )
+                selected_proxy_url = _select_working_register_proxy(job_index, total)
                 with _temporary_mail_provider(None, oauth_env_overrides):
                     raw_result = create_account_direct(
                         mail_client,
@@ -4484,9 +4636,11 @@ def cmd_register_accounts(
                         post_register_oauth=post_register_oauth,
                         check_team_membership=False,
                         register_mode=register_mode,
+                        registration_flow=registration_flow,
                         proxy_url=selected_proxy_url,
                         oauth_phone_sms_provider=oauth_phone_sms_provider,
                         oauth_phone_sms_country=oauth_phone_sms_country,
+                        progress_callback=progress_callback,
                     )
                 if isinstance(raw_result, str):
                     result = {"status": outcome.get("status") or "success", "email": raw_result, **outcome}

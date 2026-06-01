@@ -3,7 +3,7 @@
     <div class="grid shrink-0 grid-cols-1 gap-4 xl:grid-cols-[380px_minmax(0,1fr)] xl:items-stretch">
       <div class="flex flex-col justify-center">
         <h2 class="text-xl font-bold text-white">GoPay Pro</h2>
-        <p class="mt-1 text-sm text-gray-400">接入 CNgopay 稳定号池，自动循环注册、绑定 Plus 并释放稳定号。</p>
+        <p class="mt-1 text-sm text-gray-400">接入稳定主号池，自动循环注册、绑定 Plus 并释放主号。</p>
       </div>
       <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard label="任务进度" :value="`${selectedTaskMetrics.successful}/${selectedTaskMetrics.total}`" class-name="text-blue-400" />
@@ -95,48 +95,6 @@
                   <input v-model.number="batchMaxAttempts" type="number" min="1" max="10" class="w-full rounded-lg border border-emerald-500/20 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
                 </div>
               </div>
-              <div class="mt-3 rounded-lg border border-emerald-500/20 bg-gray-950/60 px-3 py-3">
-                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <label class="inline-flex items-center gap-2 text-sm text-emerald-100">
-                    <input
-                      v-model="configDraft.proxyApiEnabled"
-                      type="checkbox"
-                      class="accent-emerald-500"
-                      @change="saveConfig({ silent: true })"
-                    />
-                    reg.cmd 使用代理 API
-                  </label>
-                  <div class="grid grid-cols-[1fr_96px] gap-2 sm:w-64">
-                    <div>
-                      <label class="mb-1 block text-[11px] text-emerald-200/70">供应商</label>
-                      <select
-                        v-model="configDraft.proxyApiProvider"
-                        :disabled="!configDraft.proxyApiEnabled"
-                        class="w-full rounded-lg border border-emerald-500/20 bg-gray-900 px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 disabled:opacity-50"
-                        @change="saveConfig({ silent: true })"
-                      >
-                        <option value="cliproxy">Cliproxy</option>
-                        <option value="1024proxy">1024proxy</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label class="mb-1 block text-[11px] text-emerald-200/70">每片 slot</label>
-                      <input
-                        v-model.number="configDraft.proxyApiChunkSize"
-                        :disabled="!configDraft.proxyApiEnabled"
-                        type="number"
-                        min="1"
-                        max="50"
-                        class="w-full rounded-lg border border-emerald-500/20 bg-gray-900 px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 disabled:opacity-50"
-                        @change="saveConfig({ silent: true })"
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div class="mt-2 text-xs leading-relaxed" :class="configDraft.proxyApiEnabled ? 'text-blue-200' : 'text-gray-500'">
-                  {{ proxyApiSummary }}
-                </div>
-              </div>
               <button @click="clearSelectedAccounts" :disabled="!selectedAccountEmails.length" class="mt-3 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">
                 清空已选账号
               </button>
@@ -145,7 +103,7 @@
             <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
               <div class="mb-3">
                 <h3 class="text-sm font-semibold text-white">流程动作</h3>
-                <p class="mt-1 text-xs text-gray-500">启动 CNgopay 根目录下的脚本任务。</p>
+                <p class="mt-1 text-xs text-gray-500">启动 GoPay Pro 脚本任务。</p>
               </div>
               <div class="grid gap-2">
                 <button v-for="item in taskActions" :key="item.kind" @click="startTask(item.kind)" :disabled="saving" class="flex items-center justify-between rounded-lg border border-gray-700 bg-gray-900 px-3 py-3 text-left transition hover:border-blue-500/50 hover:bg-gray-800 disabled:opacity-50">
@@ -322,8 +280,10 @@
 </template>
 
 <script setup>
-import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { api } from '../api.js'
+
+const selectedAccountsStorageKey = 'autoteam_gopay_pro_selected_accounts'
 
 const slotStates = [
   'EMPTY',
@@ -356,9 +316,9 @@ const saving = ref(false)
 const message = ref('')
 const messageOk = ref(true)
 const root = ref('')
-const config = reactive({ slots: 0, concurrency: 0, gptMode: '', numberPoolFile: '', tokenFile: '', proxyApiEnabled: false, proxyApiProvider: 'cliproxy', proxyApiUrlPresent: false, proxyApiChunkSize: 5 })
-const configDraft = reactive({ slots: 1, concurrency: 1, proxyApiEnabled: false, proxyApiProvider: 'cliproxy', proxyApiChunkSize: 5 })
-const counts = reactive({ numbers: 0, tokens: 0, imported: 0, plusImports: 0, hubReadyImports: 0 })
+const config = reactive({ slots: 0, concurrency: 0, gptMode: '', numberPoolFile: '', tokenFile: '' })
+const configDraft = reactive({ slots: 1, concurrency: 1 })
+const counts = reactive({ numbers: 0, tokens: 0 })
 const slots = ref([])
 const slotDrafts = reactive({})
 const stateCounts = ref({})
@@ -370,13 +330,17 @@ const selectedTaskId = ref('')
 const slotKeyword = ref('')
 const accountKeyword = ref('')
 const accountPickerOpen = ref(false)
-const selectedAccountEmails = ref([])
+const selectedAccountEmails = ref(loadSelectedAccountEmails())
 const batchConcurrency = ref(0)
 const batchMaxAttempts = ref(3)
 const configDraftEditing = ref(false)
 const logScrollRef = ref(null)
 let pollTimer = null
 let statusRequestInFlight = false
+
+watch(selectedAccountEmails, (emails) => {
+  persistSelectedAccountEmails(emails)
+}, { deep: true })
 
 const filteredSlots = computed(() => {
   const q = slotKeyword.value.toLowerCase()
@@ -411,13 +375,6 @@ const selectableAccounts = computed(() => filteredAccounts.value.filter(isAccoun
 const selectedAccountPreviewEmails = computed(() => selectedAccountEmails.value.slice(0, 4))
 
 const accountPickerHelp = computed(() => `已选择 ${selectedAccountEmails.value.length} / ${availableAccounts.value.length} 个账号`)
-
-const proxyApiSummary = computed(() => {
-  if (!configDraft.proxyApiEnabled) return '未启用，reg.cmd 继续使用 CNgopay 当前 proxy_id。'
-  const chunk = Math.max(1, Number(configDraft.proxyApiChunkSize || 1))
-  if (configDraft.proxyApiProvider === '1024proxy') return `reg.cmd 会按每 ${chunk} 个 slot 一片拆分，每片使用一条 1024proxy 印尼代理。`
-  return `reg.cmd 会按每 ${chunk} 个 slot 一片拆分，每片使用一条 Cliproxy 印尼代理。`
-})
 
 const allPickerAccountsSelected = computed(() => {
   if (!availableAccounts.value.length) return false
@@ -472,11 +429,6 @@ function applyStatus(payload) {
   if (!configDraftEditing.value) {
     configDraft.slots = Number(config.slots || 1)
     configDraft.concurrency = Number(config.concurrency || 1)
-    configDraft.proxyApiEnabled = Boolean(config.proxyApiEnabled)
-    configDraft.proxyApiProvider = ['cliproxy', '1024proxy'].includes(String(config.proxyApiProvider || ''))
-      ? String(config.proxyApiProvider)
-      : 'cliproxy'
-    configDraft.proxyApiChunkSize = Math.max(1, Number(config.proxyApiChunkSize || config.concurrency || 5))
   }
   if (!batchConcurrency.value) batchConcurrency.value = Number(config.concurrency || 1)
   Object.assign(counts, payload?.counts || {})
@@ -532,14 +484,37 @@ function isAccountSelectable(account) {
     && String(account.account_type || '').toLowerCase() !== 'plus'
 }
 
+function normalizeSelectedAccountEmails(emails) {
+  return Array.from(new Set(
+    (Array.isArray(emails) ? emails : [])
+      .map((email) => String(email || '').trim().toLowerCase())
+      .filter(Boolean),
+  ))
+}
+
+function loadSelectedAccountEmails() {
+  try {
+    return normalizeSelectedAccountEmails(JSON.parse(window.localStorage.getItem(selectedAccountsStorageKey) || '[]'))
+  } catch {
+    return []
+  }
+}
+
+function persistSelectedAccountEmails(emails) {
+  try {
+    window.localStorage.setItem(selectedAccountsStorageKey, JSON.stringify(normalizeSelectedAccountEmails(emails)))
+  } catch {
+    // The page still works when browser storage is unavailable.
+  }
+}
+
 async function loadAccounts() {
   loadingAccounts.value = true
   try {
     const payload = await api.getAccounts({ includeSessionStubs: true })
     accounts.value = Array.isArray(payload) ? payload : (payload?.accounts || [])
     const validEmails = new Set(availableAccounts.value.map((account) => String(account.email || '').trim().toLowerCase()))
-    selectedAccountEmails.value = selectedAccountEmails.value
-      .map((email) => String(email || '').trim().toLowerCase())
+    selectedAccountEmails.value = normalizeSelectedAccountEmails(selectedAccountEmails.value)
       .filter((email) => email && validEmails.has(email))
   } catch (error) {
     setMessage(error.message || '加载 GPT 账号池失败', false)
@@ -624,9 +599,6 @@ async function saveConfig(options = {}) {
   try {
     const status = await api.saveGoPayProConfig({
       concurrency: configDraft.concurrency,
-      proxy_api_enabled: Boolean(configDraft.proxyApiEnabled),
-      proxy_api_provider: configDraft.proxyApiProvider || 'cliproxy',
-      proxy_api_chunk_size: Math.max(1, Number(configDraft.proxyApiChunkSize || 1)),
     })
     configDraftEditing.value = false
     applyStatus(status)

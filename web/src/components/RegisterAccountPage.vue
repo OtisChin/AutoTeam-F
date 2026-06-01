@@ -1,30 +1,40 @@
 <template>
-  <div>
-    <h2 class="text-xl font-bold text-white mb-2">注册账号</h2>
-    <p class="text-sm text-gray-400 mb-6">
-      使用当前已配置的邮箱服务执行纯注册任务，不进行后续 OAuth / 入池流程。支持单次注册和批量注册。
-    </p>
+  <div class="space-y-6 xl:h-[calc(100vh-3rem)] xl:min-h-0">
+    <div class="grid shrink-0 grid-cols-1 gap-4 xl:grid-cols-[380px_minmax(0,1fr)] xl:items-stretch">
+      <div class="flex flex-col justify-center">
+        <h2 class="text-xl font-bold text-white">注册账号</h2>
+        <p class="mt-1 text-sm text-gray-400">
+          使用当前已配置的邮箱服务执行注册任务；也可以走手机号注册后绑定邮箱流程。
+        </p>
+        <div class="mt-4 flex items-center gap-2">
+          <button
+            @click="statsMode = 'task'"
+            class="px-3 py-1.5 rounded-lg text-xs border transition"
+            :class="statsMode === 'task'
+              ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+              : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+            本次任务
+          </button>
+          <button
+            @click="statsMode = 'today'"
+            class="px-3 py-1.5 rounded-lg text-xs border transition"
+            :class="statsMode === 'today'
+              ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+              : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+            今日统计
+          </button>
+        </div>
+      </div>
 
-    <div class="flex items-center gap-2 mb-4">
-      <button
-        @click="statsMode = 'task'"
-        class="px-3 py-1.5 rounded-lg text-xs border transition"
-        :class="statsMode === 'task'
-          ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-          : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'">
-        本次任务
-      </button>
-      <button
-        @click="statsMode = 'today'"
-        class="px-3 py-1.5 rounded-lg text-xs border transition"
-        :class="statsMode === 'today'
-          ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-          : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'">
-        今日统计
-      </button>
+      <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <div v-for="card in statCards" :key="card.label" class="min-w-0 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
+          <div class="text-xs text-gray-400">{{ card.label }}</div>
+          <div class="mt-2 truncate text-xl font-bold" :class="card.color">{{ card.value }}</div>
+        </div>
+      </div>
     </div>
 
-    <div v-if="statsMode === 'task'" class="mb-4 px-4 py-3 rounded-lg border bg-gray-900 border-gray-800 text-sm text-gray-300">
+    <div v-if="statsMode === 'task'" class="shrink-0 rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-300">
       <span class="text-gray-500">任务 ID：</span>
       <span class="font-mono text-white">{{ currentTaskMeta.taskId || '-' }}</span>
       <span class="mx-3 text-gray-700">|</span>
@@ -32,29 +42,33 @@
       <span class="font-mono text-white">{{ currentTaskMeta.startedAt || '-' }}</span>
     </div>
 
-    <div class="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
-      <div v-for="card in statCards" :key="card.label" class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div class="text-sm text-gray-400">{{ card.label }}</div>
-        <div class="text-3xl font-bold mt-1" :class="card.color">{{ card.value }}</div>
-      </div>
+    <div v-if="message" class="shrink-0 rounded-lg border px-4 py-3 text-sm" :class="messageClass">
+      {{ message }}
     </div>
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
-        <div>
-          <h3 class="text-lg font-semibold text-white">注册配置</h3>
-          <p class="text-sm text-gray-400 mt-1">
-            域名型邮箱会按前缀生成地址；Outlook / LuckMail 会从已配置的邮箱池中选择账号。
-          </p>
-        </div>
-      </div>
-
-      <div v-if="message" class="mt-4 px-4 py-3 rounded-lg text-sm border" :class="messageClass">
-        {{ message }}
-      </div>
-
-      <div class="grid grid-cols-1 xl:grid-cols-[380px_minmax(0,1fr)] gap-4">
-        <div class="space-y-3">
+    <section class="rounded-xl border border-gray-800 bg-gray-900 p-4 xl:h-[calc(100vh-170px)] xl:min-h-0 xl:flex xl:flex-col xl:overflow-hidden">
+      <div class="grid grid-cols-1 gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[430px_minmax(0,1fr)] xl:overflow-hidden">
+        <div class="space-y-3 xl:min-h-0 xl:overflow-y-auto xl:pr-2 xl:pb-2">
+          <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+            <button
+              @click="submitManualRegister"
+              :disabled="registeringBusy || registeringAccount || !canSubmitRegister"
+              class="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition hover:bg-blue-500 disabled:opacity-50">
+              {{ registeringAccount ? '提交中...' : (isPhoneCpaFlow ? '开始手机注册' : (registerForm.mode === 'batch' ? '开始批量注册' : '开始注册')) }}
+            </button>
+            <div class="mt-3 flex items-start justify-between gap-3">
+              <div class="min-w-0 text-xs leading-relaxed text-gray-500">
+                域名型邮箱按前缀生成地址；Outlook / LuckMail 从已配置邮箱池中选择账号。
+              </div>
+              <button
+                v-if="registerProviderUsesDomains"
+                @click="reloadRegisterDomains"
+                :disabled="registerConfigLoading"
+                class="shrink-0 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 transition hover:bg-gray-700 disabled:opacity-50">
+                {{ registerConfigLoading ? '刷新中...' : '刷新域名' }}
+              </button>
+            </div>
+          </div>
           <div>
             <label class="block text-sm text-gray-400 mb-1">注册模式</label>
             <div class="grid grid-cols-2 gap-2">
@@ -79,7 +93,38 @@
             </div>
           </div>
 
-          <label class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">注册链路</label>
+            <div class="grid grid-cols-2 gap-2">
+              <button
+                @click="registerForm.registrationFlow = 'standard'"
+                :disabled="registeringBusy"
+                class="px-4 py-2 rounded-lg text-sm border transition"
+                :class="registerForm.registrationFlow === 'standard'
+                  ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
+                  : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'">
+                邮箱注册
+              </button>
+              <button
+                @click="registerForm.registrationFlow = 'phone_cpa'"
+                :disabled="registeringBusy"
+                class="px-4 py-2 rounded-lg text-sm border transition"
+                :class="registerForm.registrationFlow === 'phone_cpa'
+                  ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/40'
+                  : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'">
+                手机→邮箱→OAuth
+              </button>
+            </div>
+          </div>
+
+          <div v-if="isPhoneCpaFlow" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-100 space-y-1">
+            <div class="font-medium">手机→邮箱→OAuth 注册</div>
+            <div class="text-xs text-emerald-200/80">
+              先使用下方手机号供应商注册 ChatGPT，再绑定当前邮件供应商邮箱，最后生成 OAuth 凭证并写入当前账号池。
+            </div>
+          </div>
+
+          <label v-if="!isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
             <input
               v-model="registerForm.protocolRegister"
               type="checkbox"
@@ -92,7 +137,7 @@
             </span>
           </label>
 
-          <label class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
+          <label v-if="!isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
             <input
               v-model="registerForm.postRegisterOauth"
               type="checkbox"
@@ -101,14 +146,14 @@
             />
             <span>
               <span class="text-gray-100">注册完成后 OAuth 登录</span>
-              <span class="block text-xs text-gray-500">勾选后会生成并保留 CPA 认证文件；遇到 add-phone 时使用“设置 → OAuth 接码配置”。</span>
+              <span class="block text-xs text-gray-500">勾选后会生成并保留 OAuth 凭证；遇到 add-phone 时使用“设置 → OAuth 手机号”配置。</span>
             </span>
           </label>
 
-          <div v-if="registerForm.postRegisterOauth" class="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-3 text-sm text-gray-300 space-y-3">
+          <div v-if="isPhoneCpaFlow || registerForm.postRegisterOauth" class="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-3 text-sm text-gray-300 space-y-3">
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <label class="block text-xs text-gray-500 mb-1">OAuth 接码供应商</label>
+                <label class="block text-xs text-gray-500 mb-1">{{ isPhoneCpaFlow ? '手机号供应商' : 'OAuth 手机号供应商' }}</label>
                 <select
                   v-model="registerForm.oauthPhoneSmsProvider"
                   :disabled="registeringBusy || oauthPhoneSmsLoading"
@@ -120,7 +165,7 @@
                 </select>
               </div>
               <div>
-                <label class="block text-xs text-gray-500 mb-1">接码国家</label>
+                <label class="block text-xs text-gray-500 mb-1">手机号国家</label>
                 <input
                   v-model="oauthPhoneSmsCountrySearch"
                   :disabled="registeringBusy || oauthPhoneSmsLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
@@ -141,22 +186,22 @@
               </div>
             </div>
             <div v-if="registerForm.oauthPhoneSmsProvider !== 'phone_pool'">
-              <label class="block text-xs text-gray-500 mb-1">最高价格</label>
+              <label class="block text-xs text-gray-500 mb-1">价格上限</label>
               <input
                 v-model.trim="registerForm.oauthPhoneSmsMaxPrice"
                 :disabled="registeringBusy || oauthPhoneSmsLoading"
                 type="text"
                 inputmode="decimal"
                 autocomplete="off"
-                placeholder="留空使用设置页配置；例如 0.12"
+                placeholder="留空使用设置页配置；例如 0.045"
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
               />
             </div>
             <div class="text-xs text-gray-500">
-              手机号池会按池内号码国家处理；hero-sms / smsbower 会按这里选择的国家取号，服务固定 OpenAI。
+              手机号池使用池内号码；hero-sms / smsbower 会按这里的国家 ID 和价格上限取 OpenAI/ChatGPT 号码。
             </div>
             <div v-if="!oauthPhoneSmsReady" class="text-xs text-red-400">
-              当前 OAuth 接码供应商未配置 API Key，请先到设置页配置后再启动。
+              当前手机号供应商未配置 API Key，请先到设置页配置后再启动。
             </div>
           </div>
 
@@ -451,31 +496,20 @@
             <div v-if="isLuckMailProvider">LuckMail 购买：<span class="text-gray-200">{{ luckmailPurchaseLabel }}</span></div>
             <div>密码：<span class="text-gray-200">{{ registerForm.password || '自动随机生成' }}</span></div>
             <div>行为：<span class="text-gray-200">{{ registerBehaviorLabel }}</span></div>
-            <div v-if="registerForm.postRegisterOauth">OAuth接码：<span class="text-gray-200">{{ oauthPhoneSmsProviderLabel }} / {{ oauthPhoneSmsCountryLabel }}</span></div>
+            <div v-if="isPhoneCpaFlow || registerForm.postRegisterOauth">
+              {{ isPhoneCpaFlow ? '手机号配置' : 'OAuth 手机号' }}：
+              <span class="text-gray-200">{{ oauthPhoneSmsProviderLabel }} / {{ oauthPhoneSmsCountryLabel }} / 价格上限 {{ oauthPhoneSmsMaxPriceLabel }}</span>
+            </div>
             <div>代理：<span class="text-gray-200">{{ registerProxyLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch' && registerProviderUsesDomains">域名轮换：<span class="text-gray-200">{{ selectedRegisterDomainsLabel }}</span></div>
             <div v-if="registerForm.mode === 'batch'">批量策略：<span class="text-gray-200">并发 {{ validConcurrency }}，固定间隔 {{ validIntervalSeconds }}s，随机抖动 {{ validJitterMinSeconds }}-{{ validJitterMaxSeconds }}s</span></div>
           </div>
 
-          <div class="flex items-center gap-3">
-            <button
-              @click="submitManualRegister"
-              :disabled="registeringBusy || registeringAccount || !canSubmitRegister"
-              class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg transition disabled:opacity-50">
-              {{ registeringAccount ? '提交中...' : (registerForm.mode === 'batch' ? '开始批量注册' : '开始注册') }}
-            </button>
-            <button
-              @click="reloadRegisterDomains"
-              :disabled="registerConfigLoading"
-              class="px-3 py-2 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
-              {{ registerConfigLoading ? '刷新中...' : '刷新域名' }}
-            </button>
-          </div>
         </div>
 
-        <div class="min-h-0">
-          <div class="border border-gray-800 rounded-xl bg-gray-950/60 overflow-hidden h-full">
-            <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+        <div class="min-h-[520px] xl:min-h-0">
+          <section class="flex h-full min-h-0 flex-col rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+            <div class="shrink-0 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <h3 class="text-white font-semibold">注册日志</h3>
                 <div class="text-xs text-gray-500 mt-0.5">显示最近的注册相关日志</div>
@@ -483,16 +517,16 @@
               <button
                 @click="loadRegisterLogs"
                 :disabled="logsLoading"
-                class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                class="shrink-0 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-50">
                 {{ logsLoading ? '加载中...' : '刷新日志' }}
               </button>
             </div>
-            <div ref="logsContainer" class="h-[620px] overflow-y-auto px-4 py-3 space-y-2">
+            <div ref="logsContainer" class="mt-4 min-h-0 flex-1 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-3 space-y-2">
               <div v-if="!registerLogs.length" class="text-sm text-gray-500">暂无注册日志</div>
               <div
                 v-for="(log, idx) in registerLogs"
                 :key="idx"
-                class="border border-gray-800 rounded-lg px-3 py-2 bg-gray-900/70">
+                class="rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2">
                 <div class="flex items-center justify-between gap-3">
                   <span class="text-xs font-mono text-gray-500">{{ fmtLogTime(log.time) }}</span>
                   <span class="text-[11px] uppercase tracking-wide" :class="logLevelClass(log.level)">{{ log.level }}</span>
@@ -500,10 +534,10 @@
                 <div class="mt-1 text-sm text-gray-200 whitespace-pre-wrap break-words">{{ log.message }}</div>
               </div>
             </div>
-          </div>
+          </section>
         </div>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
@@ -551,6 +585,7 @@ const registerStats = ref({
 const statsMode = ref('task')
 const registerForm = ref({
   mode: 'single',
+  registrationFlow: 'standard',
   count: 1,
   concurrency: 3,
   intervalSeconds: 12,
@@ -613,6 +648,7 @@ const oauthPhoneSmsCountryOptions = [
   { value: '19', label: '尼日利亚 (+234) / 19' },
   { value: '22', label: '印度 (+91) / 22' },
   { value: '32', label: '罗马尼亚 (+40) / 32' },
+  { value: '33', label: '哥伦比亚 (+57) / 33' },
   { value: '36', label: '加拿大 (+1) / 36' },
   { value: '43', label: '德国 (+49) / 43' },
   { value: '46', label: '瑞典 (+46) / 46' },
@@ -676,6 +712,7 @@ const registerAllDomainsSelected = computed(() => {
 })
 const isLuckMailProvider = computed(() => registerForm.value.mailProvider === 'luckmail')
 const isOutlookProvider = computed(() => registerForm.value.mailProvider === 'outlook')
+const isPhoneCpaFlow = computed(() => registerForm.value.registrationFlow === 'phone_cpa')
 const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookProvider.value)
 const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value)
 const registerProviderPoolMessage = computed(() => {
@@ -708,9 +745,10 @@ const luckmailPurchaseLabel = computed(() => {
   return `${emailType} / ${domain}`
 })
 const registerBehaviorLabel = computed(() => {
+  if (isPhoneCpaFlow.value) return '先用手机号注册 ChatGPT，再绑定当前邮件供应商邮箱并生成 OAuth 凭证'
   const registerMode = registerForm.value.protocolRegister ? '协议注册' : '浏览器注册'
   return registerForm.value.postRegisterOauth
-    ? `${registerMode}免费账号，随后执行 OAuth 并保留 CPA 文件`
+    ? `${registerMode}免费账号，随后执行 OAuth 并保留凭证`
     : `${registerMode}免费账号并保存 auth_session`
 })
 const registerProxyApiHelp = computed(() => {
@@ -748,8 +786,12 @@ const oauthPhoneSmsCountryLabel = computed(() => {
   const option = oauthPhoneSmsCountryOptionsForSelect.value.find(item => item.value === registerForm.value.oauthPhoneSmsCountry)
   return option?.label || registerForm.value.oauthPhoneSmsCountry || '美国 (+1) / 187'
 })
+const oauthPhoneSmsMaxPriceLabel = computed(() => {
+  if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') return '不适用'
+  return String(registerForm.value.oauthPhoneSmsMaxPrice || '').trim() || '使用设置页配置'
+})
 const oauthPhoneSmsReady = computed(() => {
-  if (!registerForm.value.postRegisterOauth) return true
+  if (!isPhoneCpaFlow.value && !registerForm.value.postRegisterOauth) return true
   const provider = String(registerForm.value.oauthPhoneSmsProvider || 'phone_pool')
   if (provider === 'phone_pool') return true
   const option = oauthPhoneSmsProviderOptions.value.find(item => item.value === provider)
@@ -861,6 +903,7 @@ function loadSavedRegisterForm() {
     registerForm.value = {
       ...registerForm.value,
       mode: saved.mode === 'batch' ? 'batch' : 'single',
+      registrationFlow: saved.registrationFlow === 'phone_cpa' ? 'phone_cpa' : 'standard',
       count: Number(saved.count || registerForm.value.count),
       concurrency: Number(saved.concurrency || registerForm.value.concurrency),
       intervalSeconds: Number(saved.intervalSeconds ?? registerForm.value.intervalSeconds),
@@ -908,6 +951,7 @@ function saveRegisterForm() {
       REGISTER_FORM_STORAGE_KEY,
       JSON.stringify({
         mode: registerForm.value.mode,
+        registrationFlow: registerForm.value.registrationFlow,
         count: registerForm.value.count,
         concurrency: registerForm.value.concurrency,
         intervalSeconds: registerForm.value.intervalSeconds,
@@ -1022,7 +1066,7 @@ async function loadRegisterLogs() {
     const result = await api.getLogs(200)
     registerLogs.value = (result.logs || []).filter(entry => {
       const msg = String(entry.message || '')
-      return msg.includes('[注册账号]') || msg.includes('[直接注册]') || msg.includes('[注册]') || msg.includes('[Codex]')
+      return msg.includes('[注册账号]') || msg.includes('[直接注册]') || msg.includes('[注册]') || msg.includes('[协议注册]') || msg.includes('[phone-first]') || msg.includes('[Codex]')
     })
     await nextTick()
     if (logsContainer.value) {
@@ -1104,6 +1148,7 @@ async function submitManualRegister() {
   try {
     const payload = {
       mode: registerForm.value.mode,
+      registration_flow: registerForm.value.registrationFlow,
       count: registerForm.value.mode === 'batch' ? Number(registerForm.value.count || 1) : 1,
       concurrency: registerForm.value.mode === 'batch' ? validConcurrency.value : 1,
       interval_seconds: registerForm.value.mode === 'batch' ? validIntervalSeconds.value : 0,
@@ -1117,11 +1162,11 @@ async function submitManualRegister() {
       luckmail_preferred_domains: isLuckMailProvider.value && registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
       prefix: registerForm.value.prefix || null,
       password: registerForm.value.password || null,
-      protocol_register: Boolean(registerForm.value.protocolRegister),
-      post_register_oauth: Boolean(registerForm.value.postRegisterOauth),
-      oauth_phone_sms_provider: registerForm.value.postRegisterOauth ? registerForm.value.oauthPhoneSmsProvider : '',
-      oauth_phone_sms_country: registerForm.value.postRegisterOauth ? registerForm.value.oauthPhoneSmsCountry : '',
-      oauth_phone_sms_max_price: registerForm.value.postRegisterOauth ? registerForm.value.oauthPhoneSmsMaxPrice : '',
+      protocol_register: isPhoneCpaFlow.value || Boolean(registerForm.value.protocolRegister),
+      post_register_oauth: isPhoneCpaFlow.value || Boolean(registerForm.value.postRegisterOauth),
+      oauth_phone_sms_provider: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsProvider : '',
+      oauth_phone_sms_country: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsCountry : '',
+      oauth_phone_sms_max_price: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsMaxPrice : '',
       proxy_api_provider: registerForm.value.proxyApiEnabled ? registerForm.value.proxyApiProvider : '',
     }
     const result = await api.startAdd(payload)

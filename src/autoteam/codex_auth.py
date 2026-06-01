@@ -1741,6 +1741,8 @@ def _normalize_oauth_hero_sms_country(value: str | None = None) -> str:
         return "187"
     if text in {"id", "idn", "indonesia", "indonesian", "印度尼西亚", "印尼", "+62", "62", "6"}:
         return "6"
+    if text in {"co", "colombia", "colombian", "哥伦比亚", "哥伦比亚共和国", "+57", "57", "33"}:
+        return "33"
     return text
 
 

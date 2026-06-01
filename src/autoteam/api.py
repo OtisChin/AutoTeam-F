@@ -942,6 +942,8 @@ def _normalize_oauth_hero_sms_country(raw: str | None = None) -> str:
         return "187"
     if value in {"id", "idn", "indonesia", "indonesian", "印度尼西亚", "印尼", "+62", "62", "6"}:
         return "6"
+    if value in {"co", "colombia", "colombian", "哥伦比亚", "哥伦比亚共和国", "+57", "57", "33"}:
+        return "33"
     return value
 
 
@@ -972,9 +974,9 @@ def _gopay_auto_signup_env() -> dict[str, str]:
         "smsbower_preferred_price": pick("GOPAY_AUTO_SIGNUP_SMSBOWER_PREFERRED_PRICE"),
         "smscode_api_token": pick("GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN"),
         "smscode_base_url": pick("GOPAY_AUTO_SIGNUP_SMSCODE_BASE_URL", "https://api.smscode.gg/v1"),
-        "smscode_country_id": pick("GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID", "6"),
+        "smscode_country_id": pick("GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID", "7"),
         "smscode_platform_id": pick("GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_ID"),
-        "smscode_platform_query": pick("GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_QUERY", "gopay"),
+        "smscode_platform_query": pick("GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_QUERY", "gojek"),
         "smscode_product_id": pick("GOPAY_AUTO_SIGNUP_SMSCODE_PRODUCT_ID"),
         "smscode_min_price": pick("GOPAY_AUTO_SIGNUP_SMSCODE_MIN_PRICE"),
         "smscode_max_price": pick("GOPAY_AUTO_SIGNUP_SMSCODE_MAX_PRICE"),
@@ -1316,9 +1318,9 @@ def get_gopay_auto_signup_config():
         "smsbower_max_price": cfg.get("smsbower_max_price", ""),
         "smsbower_preferred_price": cfg.get("smsbower_preferred_price", ""),
         "smscode_base_url": cfg.get("smscode_base_url", "https://api.smscode.gg/v1"),
-        "smscode_country_id": cfg.get("smscode_country_id", "6"),
+        "smscode_country_id": cfg.get("smscode_country_id", "7"),
         "smscode_platform_id": cfg.get("smscode_platform_id", ""),
-        "smscode_platform_query": cfg.get("smscode_platform_query", "gopay"),
+        "smscode_platform_query": cfg.get("smscode_platform_query", "gojek"),
         "smscode_product_id": cfg.get("smscode_product_id", ""),
         "smscode_min_price": cfg.get("smscode_min_price", ""),
         "smscode_max_price": cfg.get("smscode_max_price", ""),
@@ -1512,9 +1514,9 @@ def query_gopay_smscode_prices(params: GoPaySmsCodePriceQueryParams):
     result = query_smscode_products(
         base_url=str(params.smscode_base_url or cfg.get("smscode_base_url") or "https://api.smscode.gg/v1").strip(),
         api_token=api_token,
-        country_id=str(params.smscode_country_id or cfg.get("smscode_country_id") or "6").strip(),
+        country_id=str(params.smscode_country_id or cfg.get("smscode_country_id") or "7").strip(),
         platform_id=str(params.smscode_platform_id or cfg.get("smscode_platform_id") or "").strip(),
-        platform_query=str(params.smscode_platform_query or cfg.get("smscode_platform_query") or "gopay").strip(),
+        platform_query=str(params.smscode_platform_query or cfg.get("smscode_platform_query") or "gojek").strip(),
         min_price=params.smscode_min_price or cfg.get("smscode_min_price", ""),
         max_price=params.smscode_max_price or cfg.get("smscode_max_price", ""),
     )
@@ -1551,9 +1553,9 @@ async def save_gopay_auto_signup_config(request: Request):
     smsbower_preferred_price = str(data.get("smsbower_preferred_price") or data.get("GOPAY_AUTO_SIGNUP_SMSBOWER_PREFERRED_PRICE") or "").strip()
     smscode_api_token = str(data.get("smscode_api_token") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_API_TOKEN") or "").strip()
     smscode_base_url = str(data.get("smscode_base_url") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_BASE_URL") or "https://api.smscode.gg/v1").strip()
-    smscode_country_id = str(data.get("smscode_country_id") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID") or "6").strip()
+    smscode_country_id = str(data.get("smscode_country_id") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID") or "7").strip()
     smscode_platform_id = str(data.get("smscode_platform_id") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_ID") or "").strip()
-    smscode_platform_query = str(data.get("smscode_platform_query") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_QUERY") or "gopay").strip()
+    smscode_platform_query = str(data.get("smscode_platform_query") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_QUERY") or "gojek").strip()
     smscode_product_id = str(data.get("smscode_product_id") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_PRODUCT_ID") or "").strip()
     smscode_min_price = str(data.get("smscode_min_price") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_MIN_PRICE") or "").strip()
     smscode_max_price = str(data.get("smscode_max_price") or data.get("GOPAY_AUTO_SIGNUP_SMSCODE_MAX_PRICE") or "").strip()
@@ -1589,9 +1591,9 @@ async def save_gopay_auto_signup_config(request: Request):
     updates["GOPAY_AUTO_SIGNUP_SMSBOWER_MAX_PRICE"] = smsbower_max_price
     updates["GOPAY_AUTO_SIGNUP_SMSBOWER_PREFERRED_PRICE"] = smsbower_preferred_price
     updates["GOPAY_AUTO_SIGNUP_SMSCODE_BASE_URL"] = smscode_base_url or "https://api.smscode.gg/v1"
-    updates["GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID"] = smscode_country_id or "6"
+    updates["GOPAY_AUTO_SIGNUP_SMSCODE_COUNTRY_ID"] = smscode_country_id or "7"
     updates["GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_ID"] = smscode_platform_id
-    updates["GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_QUERY"] = smscode_platform_query or "gopay"
+    updates["GOPAY_AUTO_SIGNUP_SMSCODE_PLATFORM_QUERY"] = smscode_platform_query or "gojek"
     updates["GOPAY_AUTO_SIGNUP_SMSCODE_PRODUCT_ID"] = smscode_product_id
     updates["GOPAY_AUTO_SIGNUP_SMSCODE_MIN_PRICE"] = smscode_min_price
     updates["GOPAY_AUTO_SIGNUP_SMSCODE_MAX_PRICE"] = smscode_max_price
@@ -1637,9 +1639,9 @@ async def save_gopay_auto_signup_config(request: Request):
         "smsbower_max_price": cfg.get("smsbower_max_price", ""),
         "smsbower_preferred_price": cfg.get("smsbower_preferred_price", ""),
         "smscode_base_url": cfg.get("smscode_base_url", "https://api.smscode.gg/v1"),
-        "smscode_country_id": cfg.get("smscode_country_id", "6"),
+        "smscode_country_id": cfg.get("smscode_country_id", "7"),
         "smscode_platform_id": cfg.get("smscode_platform_id", ""),
-        "smscode_platform_query": cfg.get("smscode_platform_query", "gopay"),
+        "smscode_platform_query": cfg.get("smscode_platform_query", "gojek"),
         "smscode_product_id": cfg.get("smscode_product_id", ""),
         "smscode_min_price": cfg.get("smscode_min_price", ""),
         "smscode_max_price": cfg.get("smscode_max_price", ""),
@@ -2458,7 +2460,7 @@ def _append_task_progress(task_id: str | None, progress: dict):
     }
     progress_events = task.setdefault("progress_events", [])
     progress_events.append(event)
-    max_progress_events = 2000 if str(task.get("command") or "") in {"gopay-pro", "gopay-pro-batch"} else 300
+    max_progress_events = 2000 if str(task.get("command") or "") in {"gopay-pro", "gopay-pro-batch", "register"} else 300
     if len(progress_events) > max_progress_events:
         del progress_events[: len(progress_events) - max_progress_events]
     _persist_task_snapshot(task)
@@ -3106,6 +3108,7 @@ class WhatsAppOtpStartParams(BaseModel):
 
 class ManualRegisterParams(BaseModel):
     mode: str = "single"
+    registration_flow: str = Field("standard", validation_alias=AliasChoices("registration_flow", "registrationFlow"))
     count: int = 1
     concurrency: int = 3
     interval_seconds: float = 12.0
@@ -3194,22 +3197,6 @@ class GoPayProNumbersParams(BaseModel):
 class GoPayProConfigParams(BaseModel):
     slots: int | None = None
     concurrency: int | None = None
-    proxy_api_enabled: bool | None = Field(
-        None,
-        validation_alias=AliasChoices("proxy_api_enabled", "proxyApiEnabled"),
-    )
-    proxy_api_provider: str = Field(
-        "",
-        validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"),
-    )
-    proxy_api_url: str = Field(
-        "",
-        validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"),
-    )
-    proxy_api_chunk_size: int | None = Field(
-        None,
-        validation_alias=AliasChoices("proxy_api_chunk_size", "proxyApiChunkSize"),
-    )
 
 
 class GoPayProSlotParams(BaseModel):
@@ -3220,16 +3207,6 @@ class GoPayProSlotParams(BaseModel):
 
 class GoPayProTaskParams(BaseModel):
     kind: str = ""
-
-
-class GoPayProImportCpaParams(BaseModel):
-    text: str = ""
-    filename: str = "pasted.json"
-
-
-class GoPayProUploadHubParams(BaseModel):
-    ids: list[str] = []
-    force_plus: bool = Field(True, validation_alias=AliasChoices("force_plus", "forcePlus"))
 
 
 class GoPayProBatchParams(BaseModel):
@@ -4066,7 +4043,7 @@ def _fetch_proxy_from_api_url(api_url: str, *, default_auth_scheme: str, provide
             return ""
         raise RuntimeError("动态代理 API 未返回可识别的代理")
     if "://" not in candidate and "@" not in candidate:
-        scheme = "http" if normalized_provider in {"1024proxy", "cliproxy"} else default_auth_scheme
+        scheme = "http" if normalized_provider == "1024proxy" else default_auth_scheme
         candidate = f"{scheme}://{candidate}"
     try:
         return normalize_proxy_url(candidate, default_auth_scheme=default_auth_scheme)
@@ -6051,6 +6028,22 @@ def export_account_cpa_auths(params: AccountEmailBatchParams):
             missing.append(email)
             continue
         auth_file = _resolve_codex_auth_file(account)
+        if not auth_file and str(account.get("account_type") or "").strip().lower() == ACCOUNT_TYPE_PLUS:
+            try:
+                from autoteam.auth_session_store import get_auth_session_file
+
+                session_auth_file = str(get_auth_session_file(email) or "").strip()
+                if session_auth_file and Path(session_auth_file).exists():
+                    plan_update = _update_account_cpa_auth_plan_type(
+                        email,
+                        account={**account, "auth_file": session_auth_file},
+                        plan_type=ACCOUNT_TYPE_PLUS,
+                    )
+                    auth_file = str(plan_update.get("auth_file") or "")
+                    if auth_file:
+                        account = {**account, "auth_file": auth_file}
+            except Exception:
+                logger.warning("[API] CPA auth 导出兜底转换 auth_session 失败: email=%s", _safe_email_summary(email), exc_info=True)
         if not auth_file:
             missing.append(email)
             continue
@@ -6253,7 +6246,6 @@ def _gopay_pro_paths(root: Path | None = None) -> dict[str, Path]:
         "state": base / "runs" / "pool" / "state.json",
         "numbers": _pool_file("number_pool_file", "pool_numbers.txt"),
         "tokens": _pool_file("provided_tokens_file", "pool_tokens.txt"),
-        "imports": base / "web" / "data" / "imports",
     }
 
 
@@ -6271,6 +6263,42 @@ def _write_json_atomic(path: Path, value) -> None:
     tmp.replace(path)
 
 
+def _gopay_pro_pool_line_phone(line: str) -> str:
+    return str(line or "").split("----", 1)[0].strip()
+
+
+def _gopay_pro_phone_key(value: Any) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def _gopay_pro_local_phone(value: str) -> str:
+    text = str(value or "").strip()
+    return re.sub(r"^\+?62", "", text)
+
+
+def _gopay_pro_slot_pick_score(slot_key: str, slot: dict, expected_key: str) -> tuple[int, int, int, int]:
+    state_priority = {
+        "WALLET_READY": 90,
+        "WALLET_WAITING": 80,
+        "GOPAY_REGISTERING": 70,
+        "PLUS_PAYING": 60,
+        "RELEASED": 50,
+        "NO_TRIAL": 40,
+        "FAILED": 10,
+        "EMPTY": 0,
+    }
+    try:
+        updated = int(slot.get("updated_at") or 0)
+    except Exception:
+        updated = 0
+    return (
+        1 if slot_key == expected_key else 0,
+        1 if slot.get("refresh_token") else 0,
+        state_priority.get(str(slot.get("state") or ""), 0),
+        updated,
+    )
+
+
 def _normalize_gopay_pro_slot_ids(paths: dict[str, Path] | None = None) -> int:
     resolved = paths or _gopay_pro_paths()
     state_path = resolved["state"]
@@ -6278,6 +6306,53 @@ def _normalize_gopay_pro_slot_ids(paths: dict[str, Path] | None = None) -> int:
     slots = state.get("slots") if isinstance(state, dict) else {}
     if not isinstance(slots, dict):
         return 0
+
+    number_lines = _active_pool_lines(_read_lines_file(resolved["numbers"]))
+    if number_lines:
+        normalized_slots: dict[str, dict] = {}
+        for index, line in enumerate(number_lines, start=1):
+            expected_id = f"slot-{index:02d}"
+            phone = _gopay_pro_pool_line_phone(line)
+            phone_key = _gopay_pro_phone_key(phone)
+            candidates: list[tuple[str, dict]] = []
+            for slot_key, slot in slots.items():
+                if not isinstance(slot, dict):
+                    continue
+                slot_phone_keys = {
+                    _gopay_pro_phone_key(slot.get("full_phone")),
+                    _gopay_pro_phone_key(slot.get("phone")),
+                    _gopay_pro_phone_key(_gopay_pro_pool_line_phone(str(slot.get("card") or ""))),
+                }
+                if phone_key and phone_key in slot_phone_keys:
+                    candidates.append((str(slot_key), slot))
+
+            if candidates:
+                _, picked_slot = max(
+                    candidates,
+                    key=lambda item: _gopay_pro_slot_pick_score(item[0], item[1], expected_id),
+                )
+                normalized = dict(picked_slot)
+            else:
+                normalized = {
+                    "state": "EMPTY",
+                    "updated_at": int(time.time()),
+                }
+
+            normalized["id"] = expected_id
+            normalized["card"] = line
+            normalized["full_phone"] = phone
+            normalized["phone"] = normalized.get("phone") or _gopay_pro_local_phone(phone)
+            normalized_slots[expected_id] = normalized
+
+        changed = json.dumps(slots, sort_keys=True, ensure_ascii=False) != json.dumps(
+            normalized_slots, sort_keys=True, ensure_ascii=False
+        )
+        if changed:
+            state["slots"] = normalized_slots
+            _write_json_atomic(state_path, state)
+            return 1
+        return 0
+
     changed = 0
     for slot_key, slot in slots.items():
         if not isinstance(slot, dict):
@@ -6351,181 +6426,6 @@ def _mask_gopay_pro_phone(value: Any) -> str:
     return f"{text[:5]}****{text[-3:]}"
 
 
-def _mask_gopay_pro_token(value: Any) -> str:
-    text = str(value or "")
-    if len(text) <= 16:
-        return text
-    return f"{text[:10]}...{text[-6:]}"
-
-
-def _mask_gopay_pro_proxy(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        parsed = urlsplit(text)
-    except Exception:
-        return "***"
-    if not parsed.netloc:
-        return "***"
-    host = parsed.hostname or ""
-    port = f":{parsed.port}" if parsed.port else ""
-    return f"{parsed.scheme or 'proxy'}://***@{host}{port}"
-
-
-def _gopay_pro_proxy_api_settings(config: dict | None) -> dict[str, Any]:
-    raw_config = config if isinstance(config, dict) else {}
-    pool = raw_config.get("pool") if isinstance(raw_config.get("pool"), dict) else {}
-    proxy_api = pool.get("proxy_api") if isinstance(pool.get("proxy_api"), dict) else {}
-    enabled = bool(
-        proxy_api.get("enabled")
-        or pool.get("proxy_api_enabled")
-        or raw_config.get("gopay_proxy_api_enabled")
-    )
-    provider = str(
-        proxy_api.get("provider")
-        or pool.get("proxy_api_provider")
-        or raw_config.get("gopay_proxy_api_provider")
-        or "cliproxy"
-    ).strip()
-    try:
-        provider = _normalize_proxy_api_provider(provider)
-    except HTTPException:
-        provider = "cliproxy"
-    api_url = str(
-        proxy_api.get("url")
-        or pool.get("proxy_api_url")
-        or raw_config.get("gopay_proxy_api_url")
-        or ""
-    ).strip()
-    if enabled and not api_url:
-        api_url = _default_gopay_proxy_api_url(provider)
-    return {
-        "enabled": enabled,
-        "provider": provider,
-        "url": api_url,
-        "chunk_size": max(1, int(proxy_api.get("chunk_size") or pool.get("concurrency") or 1)),
-    }
-
-
-def _prepare_gopay_pro_register_proxy(task_id: str, paths: dict[str, Path]) -> str:
-    config = _read_json_file(paths["config"], {})
-    settings = _gopay_pro_proxy_api_settings(config)
-    if not settings.get("enabled"):
-        return ""
-    provider = str(settings.get("provider") or "cliproxy")
-    api_url = str(settings.get("url") or "").strip()
-    if not api_url:
-        api_url = _default_gopay_proxy_api_url(provider)
-    _append_task_progress(
-        task_id,
-        {
-            "stage": "gopay_pro_proxy_api_fetch",
-            "message": f"reg.cmd 使用 {provider} 印尼代理 API 提取代理",
-            "proxy_api_provider": provider,
-            "proxy_api_url_present": bool(api_url),
-        },
-    )
-    proxy_url = _fetch_proxy_from_api_url(
-        api_url,
-        default_auth_scheme="http",
-        provider=provider,
-    )
-    if not proxy_url:
-        raise RuntimeError("Cliproxy 未返回可用印尼代理，已停止 reg.cmd，避免直连注册")
-    if not isinstance(config, dict):
-        config = {}
-    config["proxy_id"] = proxy_url
-    pool = config.setdefault("pool", {})
-    if isinstance(pool, dict):
-        proxy_api = pool.setdefault("proxy_api", {})
-        if isinstance(proxy_api, dict):
-            proxy_api["enabled"] = True
-            proxy_api["provider"] = provider
-            proxy_api["url"] = api_url
-    _write_json_atomic(paths["config"], config)
-    _append_task_progress(
-        task_id,
-        {
-            "stage": "gopay_pro_proxy_api_selected",
-            "message": f"reg.cmd 已切换到 {provider} 印尼代理: {_mask_gopay_pro_proxy(proxy_url)}",
-            "proxy_api_provider": provider,
-            "proxy_url_present": True,
-        },
-    )
-    return proxy_url
-
-
-def _safe_gopay_pro_slug(value: str, fallback: str = "auth") -> str:
-    slug = re.sub(r"[^a-zA-Z0-9@._-]+", "-", str(value or "").strip().lower()).strip("-")
-    return slug or fallback
-
-
-def _summarize_gopay_pro_auth(name: str, auth_data: dict) -> dict:
-    from autoteam.cpa_sync import _bundle_from_auth_data
-
-    data = dict(auth_data or {})
-    bundle = _bundle_from_auth_data(data, fallback_name=name)
-    access_token = str(data.get("access_token") or data.get("accessToken") or "").strip()
-    refresh_token = str(data.get("refresh_token") or data.get("refreshToken") or "").strip()
-    id_token = str(data.get("id_token") or data.get("idToken") or "").strip()
-    email = _normalized_email(bundle.get("email"))
-    plan = str(bundle.get("plan_type") or "unknown").strip().lower() or "unknown"
-    account_id = str(bundle.get("account_id") or "").strip()
-    filename = Path(name).name if str(name or "").endswith(".json") else f"{_safe_gopay_pro_slug(email or name)}.json"
-    item_id = uuid.uuid4().hex
-    return {
-        "id": item_id,
-        "filename": filename,
-        "email": email,
-        "plan": plan,
-        "accountId": account_id,
-        "tokenPreview": _mask_gopay_pro_token(access_token),
-        "importedAt": int(time.time() * 1000),
-        "validForHarvest": bool(access_token),
-        "validForHub": bool(access_token and refresh_token and id_token and email and account_id),
-        "data": data,
-    }
-
-
-def _gopay_pro_public_import(item: dict) -> dict:
-    return {key: value for key, value in dict(item or {}).items() if key != "data"}
-
-
-def _list_gopay_pro_imports(paths: dict[str, Path] | None = None) -> list[dict]:
-    resolved = paths or _gopay_pro_paths()
-    import_dir = resolved["imports"]
-    import_dir.mkdir(parents=True, exist_ok=True)
-    items = []
-    for path in import_dir.glob("*.json"):
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if isinstance(raw, dict):
-            item = _gopay_pro_public_import(raw)
-            item["file"] = path.name
-            items.append(item)
-    items.sort(key=lambda item: int(item.get("importedAt") or 0), reverse=True)
-    return items
-
-
-def _load_gopay_pro_import(item_id: str, paths: dict[str, Path] | None = None) -> dict:
-    normalized = re.sub(r"[^a-fA-F0-9-]", "", str(item_id or ""))
-    if not normalized:
-        raise HTTPException(status_code=400, detail="导入记录 ID 不能为空")
-    path = (paths or _gopay_pro_paths())["imports"] / f"{normalized}.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="导入记录不存在")
-    try:
-        item = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"导入记录损坏: {exc}") from exc
-    if not isinstance(item, dict):
-        raise HTTPException(status_code=400, detail="导入记录格式不正确")
-    return item
-
-
 def _gopay_pro_status_payload() -> dict:
     root = _gopay_pro_root()
     paths = _gopay_pro_paths(root)
@@ -6534,7 +6434,6 @@ def _gopay_pro_status_payload() -> dict:
     state = _read_json_file(paths["state"], {"slots": {}})
     number_lines = _read_lines_file(paths["numbers"])
     token_lines = _read_lines_file(paths["tokens"])
-    imports = _list_gopay_pro_imports(paths)
     slots = []
     for slot_id, slot in (state.get("slots") or {}).items():
         if not isinstance(slot, dict):
@@ -6552,7 +6451,6 @@ def _gopay_pro_status_payload() -> dict:
         key = str(slot.get("state") or "UNKNOWN")
         state_counts[key] = state_counts.get(key, 0) + 1
     pool_config = config.get("pool") if isinstance(config.get("pool"), dict) else {}
-    proxy_api_settings = _gopay_pro_proxy_api_settings(config if isinstance(config, dict) else {})
     active_number_count = len(_active_pool_lines(number_lines))
     tasks = [
         task
@@ -6568,21 +6466,13 @@ def _gopay_pro_status_payload() -> dict:
             "gptMode": str(pool_config.get("gpt_mode") or ""),
             "numberPoolFile": str(pool_config.get("number_pool_file") or "pool_numbers.txt"),
             "tokenFile": str(pool_config.get("provided_tokens_file") or "pool_tokens.txt"),
-            "proxyApiEnabled": bool(proxy_api_settings.get("enabled")),
-            "proxyApiProvider": str(proxy_api_settings.get("provider") or "cliproxy"),
-            "proxyApiUrlPresent": bool(proxy_api_settings.get("url")),
-            "proxyApiChunkSize": int(proxy_api_settings.get("chunk_size") or 1),
         },
         "counts": {
             "numbers": active_number_count,
             "tokens": len(_active_pool_lines(token_lines)),
-            "imported": len(imports),
-            "plusImports": sum(1 for item in imports if str(item.get("plan") or "").lower() == "plus"),
-            "hubReadyImports": sum(1 for item in imports if item.get("validForHub")),
         },
         "slots": slots,
         "stateCounts": state_counts,
-        "imports": imports,
         "tasks": tasks,
     }
 
@@ -6608,27 +6498,10 @@ def update_gopay_pro_config(params: GoPayProConfigParams):
     pool["slots"] = max(1, min(50, active_number_count or int(pool.get("slots") or 1)))
     if params.concurrency is not None:
         pool["concurrency"] = max(1, min(50, int(params.concurrency)))
-    if params.proxy_api_enabled is not None or params.proxy_api_provider or params.proxy_api_url:
-        proxy_api = pool.setdefault("proxy_api", {})
-        if not isinstance(proxy_api, dict):
-            proxy_api = {}
-            pool["proxy_api"] = proxy_api
-        if params.proxy_api_enabled is not None:
-            proxy_api["enabled"] = bool(params.proxy_api_enabled)
-        if params.proxy_api_provider:
-            proxy_api["provider"] = _normalize_proxy_api_provider(params.proxy_api_provider)
-        elif not proxy_api.get("provider"):
-            proxy_api["provider"] = "cliproxy"
-        if params.proxy_api_url:
-            proxy_api["url"] = str(params.proxy_api_url or "").strip()
-        elif bool(proxy_api.get("enabled")) and not str(proxy_api.get("url") or "").strip():
-            proxy_api["url"] = _default_gopay_proxy_api_url(str(proxy_api.get("provider") or "cliproxy"))
-    if params.proxy_api_chunk_size is not None:
-        proxy_api = pool.setdefault("proxy_api", {})
-        if not isinstance(proxy_api, dict):
-            proxy_api = {}
-            pool["proxy_api"] = proxy_api
-        proxy_api["chunk_size"] = max(1, min(50, int(params.proxy_api_chunk_size or 1)))
+    pool.pop("proxy_api", None)
+    pool.pop("proxy_api_enabled", None)
+    pool.pop("proxy_api_provider", None)
+    pool.pop("proxy_api_url", None)
     _write_json_atomic(paths["config"], config)
     return _gopay_pro_status_payload()
 
@@ -6654,118 +6527,38 @@ def import_gopay_pro_numbers(params: GoPayProNumbersParams):
     return {**result, "status": _gopay_pro_status_payload()}
 
 
-@app.post("/api/gopay-pro/import-cpa")
-def import_gopay_pro_cpa(params: GoPayProImportCpaParams):
-    paths = _gopay_pro_paths()
-    sources, invalid = _parse_cpa_import_text(params.text, params.filename or "pasted.json")
-    items = []
-    tokens_added = 0
-    paths["imports"].mkdir(parents=True, exist_ok=True)
-    for source in sources:
-        auth_data = source.get("auth_data") if isinstance(source, dict) else None
-        if not isinstance(auth_data, dict):
-            continue
-        if not (auth_data.get("access_token") or auth_data.get("accessToken") or auth_data.get("refresh_token") or auth_data.get("refreshToken")):
-            continue
-        item = _summarize_gopay_pro_auth(str(source.get("name") or params.filename or "pasted.json"), auth_data)
-        _write_json_atomic(paths["imports"] / f"{item['id']}.json", item)
-        access_token = str(auth_data.get("access_token") or auth_data.get("accessToken") or "").strip()
-        if access_token:
-            result = _append_unique_pool_lines(paths["tokens"], [access_token])
-            tokens_added += int(result.get("added") or 0)
-        items.append(_gopay_pro_public_import(item))
-    if not items:
-        detail = {"message": "没有识别到 CPA/Codex auth JSON", "invalid": invalid}
-        raise HTTPException(status_code=400, detail=detail)
-    return {"imported": items, "tokensAdded": tokens_added, "invalid": invalid, "status": _gopay_pro_status_payload()}
-
-
-@app.post("/api/gopay-pro/upload-hub")
-def upload_gopay_pro_hub(params: GoPayProUploadHubParams):
-    from autoteam.accounts import ACCOUNT_TYPE_PLUS, SEAT_CODEX, STATUS_PLUS, update_account
-    from autoteam.cpa_sync import import_local_cpa_auth_sources
-
-    paths = _gopay_pro_paths()
-    ids = [str(item).strip() for item in params.ids or [] if str(item).strip()]
-    selected_ids = ids or [
-        str(item.get("id") or "")
-        for item in _list_gopay_pro_imports(paths)
-        if str(item.get("plan") or "").lower() == "plus"
-    ]
-    auth_sources = []
-    force_by_filename = {}
-    for item_id in selected_ids:
-        item = _load_gopay_pro_import(item_id, paths)
-        if not item.get("validForHub"):
-            continue
-        data = item.get("data")
-        if not isinstance(data, dict):
-            continue
-        filename = str(item.get("filename") or "imported.json")
-        force_plus = bool(params.force_plus) or str(item.get("plan") or "").lower() == "plus"
-        if force_plus:
-            data = dict(data)
-            data["plan_type"] = "plus"
-            data["chatgpt_plan_type"] = "plus"
-        auth_sources.append({"name": filename, "auth_data": data})
-        force_by_filename[filename] = force_plus
-    if not auth_sources:
-        raise HTTPException(status_code=400, detail="没有可上传的 Plus CPA JSON")
-
-    result = import_local_cpa_auth_sources(auth_sources)
-    marked_plus = 0
-    updated_files = []
-    for imported in result.get("files") or []:
-        email = _normalized_email(imported.get("email"))
-        auth_file = str(imported.get("auth_file") or "").strip()
-        filename = str(imported.get("filename") or "").strip()
-        plan_type = str(imported.get("plan_type") or "").strip().lower()
-        should_mark_plus = plan_type == "plus" or force_by_filename.get(filename, False)
-        if not email or not auth_file or not should_mark_plus:
-            continue
-        plan_result = _update_account_cpa_auth_plan_type(email, plan_type="plus", account={"auth_file": auth_file})
-        next_auth_file = str(plan_result.get("auth_file") or auth_file)
-        updated = update_account(
-            email,
-            status=STATUS_PLUS,
-            account_type=ACCOUNT_TYPE_PLUS,
-            seat_type=SEAT_CODEX,
-            auth_file=next_auth_file,
-            last_bind_status="plus_done",
-            last_bind_provider="gopay_pro",
-            last_bind_at=time.time(),
-        )
-        if updated:
-            marked_plus += 1
-            updated_files.append({"email": email, "auth_file": next_auth_file})
-    result["marked_plus"] = marked_plus
-    result["updated_plus_files"] = updated_files
-    return {"ok": True, "result": result, "status": _gopay_pro_status_payload()}
-
-
-def _mark_gopay_pro_success_account(email: str, *, task_id: str, message: str = "") -> dict | None:
+def _mark_gopay_pro_success_account(email: str, *, task_id: str, message: str = "", auth_file: str = "") -> dict | None:
     from autoteam.accounts import ACCOUNT_SOURCE_MANAGED, ACCOUNT_TYPE_PLUS, SEAT_CODEX, STATUS_PLUS, update_account
 
     normalized = _normalized_email(email)
     if not normalized:
         return None
     marked_at = time.time()
+    resolved_auth_file = str(Path(auth_file).resolve()) if auth_file and Path(auth_file).exists() else ""
+    update_fields = {
+        "status": STATUS_PLUS,
+        "account_type": ACCOUNT_TYPE_PLUS,
+        "seat_type": SEAT_CODEX,
+        "account_source": ACCOUNT_SOURCE_MANAGED,
+        "last_bind_status": "success",
+        "last_bind_provider": "gopay_pro",
+        "last_bind_at": marked_at,
+        "last_bind_task_id": task_id,
+        "last_bind_message": message or "GoPay Pro 绑定成功",
+        "last_bind_failure_stage": "",
+        "plus_bound_at": marked_at,
+    }
+    if resolved_auth_file:
+        update_fields["auth_file"] = resolved_auth_file
     updated = update_account(
         normalized,
-        status=STATUS_PLUS,
-        account_type=ACCOUNT_TYPE_PLUS,
-        seat_type=SEAT_CODEX,
-        account_source=ACCOUNT_SOURCE_MANAGED,
-        last_bind_status="success",
-        last_bind_provider="gopay_pro",
-        last_bind_at=marked_at,
-        last_bind_task_id=task_id,
-        last_bind_message=message or "GoPay Pro 绑定成功",
-        last_bind_failure_stage="",
-        plus_bound_at=marked_at,
+        **update_fields,
     )
     try:
-        plan_update = _update_account_cpa_auth_plan_type(normalized, account=updated if isinstance(updated, dict) else None, plan_type=ACCOUNT_TYPE_PLUS)
+        account_for_plan = updated if isinstance(updated, dict) else {}
+        if resolved_auth_file and not account_for_plan.get("auth_file"):
+            account_for_plan = {**account_for_plan, "auth_file": resolved_auth_file}
+        plan_update = _update_account_cpa_auth_plan_type(normalized, account=account_for_plan, plan_type=ACCOUNT_TYPE_PLUS)
         if isinstance(updated, dict) and plan_update.get("auth_file"):
             updated["auth_file"] = plan_update["auth_file"]
     except Exception:
@@ -6838,7 +6631,14 @@ def _gopay_pro_account_token_items(account_emails: list[str]) -> list[dict[str, 
     return items
 
 
-def _run_gopay_pro_script(kind: str, task_id: str, *, stage: str = "") -> dict:
+def _run_gopay_pro_script(
+    kind: str,
+    task_id: str,
+    *,
+    stage: str = "",
+    args: list[str] | None = None,
+    suppress_status_table: bool = False,
+) -> dict:
     from autoteam import cancel_signal
 
     root = _gopay_pro_root()
@@ -6856,17 +6656,13 @@ def _run_gopay_pro_script(kind: str, task_id: str, *, stage: str = "") -> dict:
     script_path = root / script
     if not script_path.exists():
         raise RuntimeError(f"脚本不存在: {script_path}")
-    if str(kind or "") == "register" and os.name != "nt":
-        _prepare_gopay_pro_register_proxy(task_id, paths)
-    command = ["cmd.exe", "/c", str(script_path)] if os.name == "nt" else ["bash", str(script_path)]
+    script_args = [str(arg) for arg in (args or []) if str(arg or "").strip()]
+    command = (
+        ["cmd.exe", "/c", str(script_path), *script_args]
+        if os.name == "nt"
+        else ["bash", str(script_path), *script_args]
+    )
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-    env = None
-    if str(kind or "") == "register":
-        script_config = _read_json_file(paths["config"], {})
-        script_pool = script_config.get("pool") if isinstance(script_config.get("pool"), dict) else {}
-        script_slots = max(1, int(script_pool.get("slots") or 1))
-        env = os.environ.copy()
-        env["CNGOPAY_REGISTER_TOTAL_SLOTS"] = str(script_slots)
     process = subprocess.Popen(
         command,
         cwd=str(root),
@@ -6876,7 +6672,6 @@ def _run_gopay_pro_script(kind: str, task_id: str, *, stage: str = "") -> dict:
         encoding="utf-8",
         errors="replace",
         creationflags=creationflags,
-        env=env,
     )
 
     def _terminate_process() -> None:
@@ -6889,16 +6684,26 @@ def _run_gopay_pro_script(kind: str, task_id: str, *, stage: str = "") -> dict:
     unregister = _register_task_cancel_hook(task_id, _terminate_process)
     log_tail = ""
     log_text = ""
+    in_status_table = False
     try:
         assert process.stdout is not None
         for line in process.stdout:
+            stripped = line.strip()
+            if suppress_status_table:
+                if re.match(r"^SLOT\s+状态\s+号码\s+余额\s+备注", stripped):
+                    in_status_table = True
+                    continue
+                if in_status_table:
+                    if stripped.startswith("汇总:"):
+                        in_status_table = False
+                    continue
             log_tail = (log_tail + line)[-6000:]
             log_text = (log_text + line)[-200000:]
             _append_task_progress(
                 task_id,
                 {
                     "stage": stage or f"gopay_pro_{kind}",
-                    "message": line.strip() or f"{script} 输出",
+                    "message": stripped or f"{script} 输出",
                     "script": script,
                     "log_tail": log_tail,
                 },
@@ -6910,7 +6715,7 @@ def _run_gopay_pro_script(kind: str, task_id: str, *, stage: str = "") -> dict:
     finally:
         unregister()
         _normalize_gopay_pro_slot_ids(paths)
-    return {"kind": kind, "script": script, "exit_code": exit_code, "log_tail": log_tail, "log_text": log_text}
+    return {"kind": kind, "script": script, "args": script_args, "exit_code": exit_code, "log_tail": log_tail, "log_text": log_text}
 
 
 def _set_gopay_pro_no_trial_slots_ready(round_tokens: set[str] | None, task_id: str, slot_ids: set[str] | None = None) -> int:
@@ -6964,6 +6769,18 @@ def _gopay_pro_text_has_token_invalidated(value: Any) -> bool:
     return "token_invalidated" in text or "authentication token has been invalidated" in text
 
 
+def _gopay_pro_text_has_chatgpt_checkout_unauthorized(value: Any) -> bool:
+    text = str(value or "").lower()
+    return (
+        "chatgpt checkout 401" in text
+        and (
+            "could not parse your authentication token" in text
+            or "unauthorized_unknown" in text
+            or "please try signing in again" in text
+        )
+    )
+
+
 def _gopay_pro_slot_log_has_token_invalidated(log_text: str, slot_id: str) -> bool:
     if not slot_id:
         return False
@@ -6971,11 +6788,113 @@ def _gopay_pro_slot_log_has_token_invalidated(log_text: str, slot_id: str) -> bo
     return bool(pattern.search(str(log_text or "")))
 
 
+def _gopay_pro_slot_log_has_chatgpt_checkout_unauthorized(log_text: str, slot_id: str) -> bool:
+    if not slot_id:
+        return False
+    lines = str(log_text or "").splitlines()
+    for index, line in enumerate(lines):
+        if not re.search(rf"\[{re.escape(slot_id)}\]", line):
+            continue
+        if "chatgpt checkout 401" not in line.lower():
+            continue
+        block = "\n".join(lines[index:index + 12])
+        if _gopay_pro_text_has_chatgpt_checkout_unauthorized(block):
+            return True
+    return False
+
+
 def _gopay_pro_slot_log_has_success(log_text: str, slot_id: str) -> bool:
     if not slot_id:
         return False
     pattern = re.compile(rf"\[{re.escape(slot_id)}\].*(✅\s*Plus\s*开通成功|chatgpt verify ok|换绑完成)", re.IGNORECASE)
     return bool(pattern.search(str(log_text or "")))
+
+
+def _gopay_pro_harvest_terminal_events(log_text: str) -> list[dict[str, str]]:
+    events: list[dict[str, str]] = []
+    terminal_slots: set[str] = set()
+    for line in str(log_text or "").splitlines():
+        match = re.search(r"\[(slot-[^\]\s]+)\]\s+(.*)", line)
+        if not match:
+            continue
+        slot_id = match.group(1)
+        message = match.group(2)
+        if slot_id in terminal_slots:
+            continue
+        lower = message.lower()
+        kind = ""
+        if "✅" in message and "Plus 开通成功" in message:
+            kind = "success"
+        elif "账号无免费试用资格" in message or "无免费试用资格" in message or "no_trial" in lower:
+            kind = "no_trial"
+        elif _gopay_pro_text_has_token_invalidated(message):
+            kind = "token_invalidated"
+        if kind:
+            terminal_slots.add(slot_id)
+            events.append({"kind": kind, "slot_id": slot_id})
+    return events
+
+
+def _gopay_pro_payment_validate_failed_slots(log_text: str) -> list[str]:
+    slots: list[str] = []
+    seen: set[str] = set()
+    pattern = re.compile(r"\[(slot-[^\]\s]+)\].*Plus\s+支付失败:\s*payment/validate\s+重试后仍失败", re.IGNORECASE)
+    for match in pattern.finditer(str(log_text or "")):
+        slot_id = match.group(1)
+        if slot_id in seen:
+            continue
+        seen.add(slot_id)
+        slots.append(slot_id)
+    return slots
+
+
+def _repair_gopay_pro_payment_validate_failed_slots(task_id: str, slot_ids: list[str]) -> None:
+    slots = [slot_id for slot_id in slot_ids if re.fullmatch(r"slot-\d+", str(slot_id or ""))]
+    if not slots:
+        return
+    _append_task_progress(
+        task_id,
+        {
+            "stage": "gopay_pro_validate_failed_repair_started",
+            "slots": slots,
+            "message": f"检测到 {len(slots)} 个 payment/validate 失败 slot，开始单独换绑后重新注册: {', '.join(slots)}",
+            "level": "warn",
+        },
+    )
+    repaired = 0
+    for slot_id in slots:
+        result = _run_gopay_pro_script(
+            "rebind",
+            task_id,
+            stage="gopay_pro_validate_failed_rebind",
+            args=["--slot", slot_id],
+            suppress_status_table=True,
+        )
+        if int(result.get("exit_code") or 0) == 0:
+            repaired += 1
+        else:
+            _append_task_progress(
+                task_id,
+                {
+                    "stage": "gopay_pro_validate_failed_rebind_failed",
+                    "slot": slot_id,
+                    "exit_code": result.get("exit_code"),
+                    "message": f"{slot_id} payment/validate 失败后单独换绑退出码 {result.get('exit_code')}，仍会继续处理其他 slot",
+                    "level": "error",
+                },
+            )
+    if repaired:
+        _append_task_progress(
+            task_id,
+            {
+                "stage": "gopay_pro_validate_failed_register_started",
+                "slots": slots,
+                "repaired": repaired,
+                "message": f"{repaired} 个 payment/validate 失败 slot 已完成换绑，开始 reg 重建 GoPay 钱包",
+                "level": "warn",
+            },
+        )
+        _run_gopay_pro_script("register", task_id, stage="gopay_pro_validate_failed_register")
 
 
 def _reset_gopay_pro_unusable_ready_slots(task_id: str) -> int:
@@ -7079,10 +6998,12 @@ def _run_gopay_pro_batch_task(task_id: str, account_emails: list[str], concurren
     paths = _gopay_pro_paths()
     if not paths["root"].exists():
         raise RuntimeError(f"CNgopay 目录不存在: {paths['root']}")
+    _normalize_gopay_pro_slot_ids(paths)
     token_items = _gopay_pro_account_token_items(account_emails)
     config = _read_json_file(paths["config"], {})
     pool_cfg = config.get("pool") if isinstance(config.get("pool"), dict) else {}
-    configured_slots = max(1, int(pool_cfg.get("slots") or len(_active_pool_lines(_read_lines_file(paths["numbers"]))) or 1))
+    number_count = len(_active_pool_lines(_read_lines_file(paths["numbers"])))
+    configured_slots = max(1, int(number_count or pool_cfg.get("slots") or 1))
     configured_concurrency = max(1, int(pool_cfg.get("concurrency") or configured_slots))
     round_size = max(1, min(50, int(concurrency or configured_concurrency or configured_slots), configured_slots))
     max_attempts = max(1, min(10, int(max_attempts or 3)))
@@ -7186,6 +7107,8 @@ def _run_gopay_pro_batch_task(task_id: str, account_emails: list[str], concurren
             if cancel_signal.is_cancelled():
                 break
             harvest_result = _run_gopay_pro_script("harvest", task_id, stage="gopay_pro_harvest")
+            harvest_log_text = str(harvest_result.get("log_text") or harvest_result.get("log_tail") or "")
+            validate_failed_slots = _gopay_pro_payment_validate_failed_slots(harvest_log_text)
             harvest_ok = int(harvest_result.get("exit_code") or 0) == 0
             if not harvest_ok:
                 _append_task_progress(
@@ -7198,6 +7121,7 @@ def _run_gopay_pro_batch_task(task_id: str, account_emails: list[str], concurren
                         "level": "warn",
                     },
                 )
+            _repair_gopay_pro_payment_validate_failed_slots(task_id, validate_failed_slots)
             _reset_gopay_pro_stuck_paying_slots(task_id)
             remaining_tokens = set(_active_pool_lines(_read_lines_file(paths["tokens"])))
             state = _read_json_file(paths["state"], {"slots": {}})
@@ -7207,7 +7131,6 @@ def _run_gopay_pro_batch_task(task_id: str, account_emails: list[str], concurren
                 for slot_id, slot in slots.items()
                 if isinstance(slot, dict)
             }
-            harvest_log_text = str(harvest_result.get("log_text") or harvest_result.get("log_tail") or "")
             started_slots = _gopay_pro_harvest_started_slots(harvest_log_text)
             token_slot_ids = {
                 token: started_slots[index]
@@ -7219,6 +7142,7 @@ def _run_gopay_pro_batch_task(task_id: str, account_emails: list[str], concurren
             no_trial_tokens: set[str] = set()
             no_trial_slot_ids: set[str] = set()
             token_invalidated_tokens: set[str] = set()
+            checkout_unauthorized_tokens: set[str] = set()
             ambiguous_tokens: list[str] = []
             harvest_log_tail = harvest_log_text
             for token in round_tokens:
@@ -7227,31 +7151,70 @@ def _run_gopay_pro_batch_task(task_id: str, account_emails: list[str], concurren
                 slot_error = str(slot.get("error") or "")
                 if slot_id and (_gopay_pro_text_has_token_invalidated(slot_error) or _gopay_pro_slot_log_has_token_invalidated(harvest_log_tail, slot_id)):
                     token_invalidated_tokens.add(token)
-            for token in consumed_tokens:
-                if token in token_invalidated_tokens:
-                    continue
-                slot_id = token_slot_ids.get(token, "")
-                slot_state = str((slot_by_id.get(slot_id) or {}).get("state") or "")
-                if slot_state == "RELEASED" or _gopay_pro_slot_log_has_success(harvest_log_tail, slot_id):
+                if slot_id and (
+                    _gopay_pro_text_has_chatgpt_checkout_unauthorized(slot_error)
+                    or _gopay_pro_slot_log_has_chatgpt_checkout_unauthorized(harvest_log_tail, slot_id)
+                ):
+                    checkout_unauthorized_tokens.add(token)
+            consumed_queue = [
+                token
+                for token in consumed_tokens
+                if token not in token_invalidated_tokens and token not in checkout_unauthorized_tokens
+            ]
+            terminal_events = _gopay_pro_harvest_terminal_events(harvest_log_tail)
+            for event in terminal_events:
+                if not consumed_queue:
+                    break
+                token = consumed_queue.pop(0)
+                slot_id = str(event.get("slot_id") or "")
+                kind = str(event.get("kind") or "")
+                if kind == "success":
                     success_tokens.append(token)
-                elif slot_state == "NO_TRIAL":
+                elif kind == "no_trial":
                     no_trial_tokens.add(token)
                     if slot_id:
                         no_trial_slot_ids.add(slot_id)
-                else:
-                    ambiguous_tokens.append(token)
+                elif kind == "token_invalidated":
+                    token_invalidated_tokens.add(token)
+
+            if consumed_queue and not terminal_events:
+                for token in list(consumed_queue):
+                    slot_id = token_slot_ids.get(token, "")
+                    slot_state = str((slot_by_id.get(slot_id) or {}).get("state") or "")
+                    if slot_state == "RELEASED" or _gopay_pro_slot_log_has_success(harvest_log_tail, slot_id):
+                        success_tokens.append(token)
+                        consumed_queue.remove(token)
+                    elif slot_state == "NO_TRIAL":
+                        no_trial_tokens.add(token)
+                        if slot_id:
+                            no_trial_slot_ids.add(slot_id)
+                        consumed_queue.remove(token)
+
+            ambiguous_tokens.extend(consumed_queue)
             terminal_consumed_tokens.update(success_tokens)
             terminal_consumed_tokens.update(no_trial_tokens)
             terminal_consumed_tokens.update(token_invalidated_tokens)
+            terminal_consumed_tokens.update(checkout_unauthorized_tokens)
             terminal_consumed_tokens.update(ambiguous_tokens)
-            terminal_round_tokens = set(success_tokens) | set(no_trial_tokens) | set(token_invalidated_tokens) | set(ambiguous_tokens)
+            terminal_round_tokens = (
+                set(success_tokens)
+                | set(no_trial_tokens)
+                | set(token_invalidated_tokens)
+                | set(checkout_unauthorized_tokens)
+                | set(ambiguous_tokens)
+            )
             retry_tokens = [token for token in round_tokens if token not in terminal_round_tokens]
 
             for token in success_tokens:
                 email = token_to_item[token]["email"]
                 if email not in successful:
                     successful.append(email)
-                _mark_gopay_pro_success_account(email, task_id=task_id, message="GoPay Pro 全自动绑定成功")
+                _mark_gopay_pro_success_account(
+                    email,
+                    task_id=task_id,
+                    message="GoPay Pro 全自动绑定成功",
+                    auth_file=token_to_item[token].get("auth_file") or "",
+                )
                 _append_task_progress(
                     task_id,
                     {
@@ -7305,6 +7268,28 @@ def _run_gopay_pro_batch_task(task_id: str, account_emails: list[str], concurren
                         "total": len(token_items),
                         "removed": email in removed,
                         "message": f"账号 token 已失效，已从号池删除: {email}",
+                        "level": "error",
+                    },
+                )
+
+            for token in checkout_unauthorized_tokens:
+                email = token_to_item[token]["email"]
+                failed.append({"email": email, "failure_stage": "chatgpt_checkout_401", "message": "ChatGPT checkout 401，OpenAI token 无效"})
+                removed = _remove_pool_accounts_from_local_and_mail(
+                    [email],
+                    log_context="gopay-pro",
+                    reason="chatgpt_checkout_401",
+                    message="GoPay Pro ChatGPT checkout 401，OpenAI token 无效，已从号池删除",
+                )
+                _append_task_progress(
+                    task_id,
+                    {
+                        "stage": "gopay_pro_account_checkout_unauthorized",
+                        "email": email,
+                        "failed": len(failed),
+                        "total": len(token_items),
+                        "removed": email in removed,
+                        "message": f"账号 checkout 401/token 无效，已从号池删除: {email}",
                         "level": "error",
                     },
                 )
@@ -16395,12 +16380,16 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         luckmail_preferred_domains.append(cleaned)
     resolved_password = password or random_password()
     mode = (params.mode or "single").strip().lower()
-    register_mode = "protocol" if bool(params.protocol_register) else "browser"
     count = max(1, int(params.count or 1))
     concurrency = max(1, min(20, int(params.concurrency or 1)))
     interval_seconds = max(0.0, float(params.interval_seconds or 0.0))
     jitter_min_seconds = max(0.0, float(params.jitter_min_seconds or 0.0))
     jitter_max_seconds = max(0.0, float(params.jitter_max_seconds or 0.0))
+    registration_flow = str(params.registration_flow or "standard").strip().lower()
+    if registration_flow not in {"standard", "phone_cpa"}:
+        raise HTTPException(status_code=400, detail="registration_flow 只支持 standard 或 phone_cpa")
+    register_mode = "protocol" if registration_flow == "phone_cpa" or bool(params.protocol_register) else "browser"
+    post_register_oauth = registration_flow == "phone_cpa" or bool(params.post_register_oauth)
     oauth_phone_sms_provider = (
         _normalize_oauth_phone_sms_provider(params.oauth_phone_sms_provider)
         if params.oauth_phone_sms_provider
@@ -16412,7 +16401,9 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         else ""
     )
     oauth_phone_sms_max_price = str(params.oauth_phone_sms_max_price or "").strip()
-    if bool(params.post_register_oauth) and oauth_phone_sms_provider in {"hero_sms", "smsbower"}:
+    if registration_flow == "phone_cpa" and not oauth_phone_sms_provider:
+        oauth_phone_sms_provider = _normalize_oauth_phone_sms_provider(_oauth_phone_sms_env().get("provider") or "phone_pool")
+    if post_register_oauth and oauth_phone_sms_provider in {"hero_sms", "smsbower"}:
         oauth_sms_cfg = _oauth_phone_sms_env()
         key_present = (
             bool(oauth_sms_cfg.get("hero_sms_api_key"))
@@ -16429,6 +16420,8 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         )
     if mode not in ("single", "batch"):
         raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
+    if jitter_min_seconds > jitter_max_seconds:
+        raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
 
     configured_domains = get_register_domains()
     domain_required = mail_provider not in {"luckmail", "outlook"}
@@ -16474,9 +16467,6 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         jitter_min_seconds = 0.0
         jitter_max_seconds = 0.0
         selected_domains = [selected_domain] if selected_domain else []
-    if jitter_min_seconds > jitter_max_seconds:
-        raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
-
     register_proxy_selector = None
     register_proxy_meta = {}
     proxy_api_provider = _normalize_proxy_api_provider(params.proxy_api_provider) if params.proxy_api_provider else ""
@@ -16489,6 +16479,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
 
     task_params = {
         "mode": mode,
+        "registration_flow": registration_flow,
         "count": count,
         "concurrency": concurrency,
         "interval_seconds": interval_seconds,
@@ -16502,7 +16493,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         "luckmail_email_type": luckmail_email_type or "",
         "luckmail_preferred_domain": luckmail_preferred_domain or "",
         "luckmail_preferred_domains": luckmail_preferred_domains,
-        "post_register_oauth": bool(params.post_register_oauth),
+        "post_register_oauth": post_register_oauth,
         "oauth_phone_sms_provider": oauth_phone_sms_provider or "<default>",
         "oauth_phone_sms_country": oauth_phone_sms_country or "",
         "oauth_phone_sms_max_price": oauth_phone_sms_max_price,
@@ -16530,7 +16521,8 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             luckmail_email_type=luckmail_email_type or None,
             luckmail_preferred_domain=luckmail_preferred_domain,
             luckmail_preferred_domains=luckmail_preferred_domains,
-            post_register_oauth=bool(params.post_register_oauth),
+            post_register_oauth=post_register_oauth,
+            registration_flow=registration_flow,
             register_mode=register_mode,
             register_proxy_selector=register_proxy_selector,
             register_proxy_meta=register_proxy_meta,
@@ -16557,7 +16549,8 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         luckmail_email_type=luckmail_email_type or None,
         luckmail_preferred_domain=luckmail_preferred_domain,
         luckmail_preferred_domains=luckmail_preferred_domains,
-        post_register_oauth=bool(params.post_register_oauth),
+        post_register_oauth=post_register_oauth,
+        registration_flow=registration_flow,
         oauth_phone_sms_provider=oauth_phone_sms_provider or None,
         oauth_phone_sms_country=oauth_phone_sms_country or None,
         oauth_phone_sms_max_price=oauth_phone_sms_max_price,
