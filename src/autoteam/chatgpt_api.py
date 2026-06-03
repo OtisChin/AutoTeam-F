@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -1966,6 +1967,46 @@ class ChatGPTTeamAPI:
     def stop(self):
         roxybrowser_client = getattr(self, "_roxybrowser_client", None)
         if roxybrowser_client:
+            if bool(getattr(self, "_preserve_roxybrowser_on_stop", False)):
+                keepalive_seconds = max(0, int(getattr(self, "_preserve_roxybrowser_on_stop_seconds", 0) or 0))
+                dir_id = self._roxybrowser_dir_id
+                workspace_id = self._roxybrowser_workspace_id
+                created_dir = bool(self._roxybrowser_created_dir)
+                logger.info(
+                    "[ChatGPT] preserving RoxyBrowser window on stop | workspace_id=%s | dir_id=%s | keepalive_seconds=%s",
+                    workspace_id,
+                    dir_id,
+                    keepalive_seconds,
+                )
+                try:
+                    if self.playwright:
+                        self.playwright.stop()
+                except Exception:
+                    pass
+                if keepalive_seconds > 0 and dir_id:
+                    def _close_preserved_roxybrowser_window():
+                        try:
+                            roxybrowser_client.browser_close(dir_id)
+                        except Exception:
+                            pass
+                        if created_dir and workspace_id:
+                            try:
+                                roxybrowser_client.browser_delete(workspace_id, [dir_id])
+                            except Exception:
+                                pass
+
+                    timer = threading.Timer(keepalive_seconds, _close_preserved_roxybrowser_window)
+                    timer.daemon = True
+                    timer.start()
+                self.browser = None
+                self.context = None
+                self.page = None
+                self.playwright = None
+                self._roxybrowser_client = None
+                self._roxybrowser_dir_id = None
+                self._roxybrowser_workspace_id = None
+                self._roxybrowser_created_dir = False
+                return
             try:
                 if self.context:
                     self.context.close()

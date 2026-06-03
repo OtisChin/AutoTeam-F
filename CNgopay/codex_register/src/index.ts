@@ -1,4 +1,4 @@
-﻿import {appConfig} from "./config.js";
+import {appConfig} from "./config.js";
 import {generateRandomDeviceProfile} from "./device-profile.js";
 import {OpenAIClient} from "./openai.js";
 import {createSMSBroker} from "./sms/index.js";
@@ -53,7 +53,7 @@ async function runOnce(): Promise<void> {
     if (codexCpa) {
         const phoneArg = readArgValue("--phone").trim();
         const password = readArgValue("--password").trim() || appConfig.defaultPassword;
-        const cpaBase = readArgValue("--cpa-base").trim() || process.env.CPA_BASE_URL?.trim() || appConfig.cliproxyApiBaseUrl || "";
+        const cpaBase = readArgValue("--cpa-base").trim() || process.env.CPA_BASE_URL?.trim() || appConfig.cliproxyApiBaseUrl || "https://cpa.iceaix.com";
         const cpaKey = readArgValue("--cpa-key").trim() || process.env.CPA_MANAGEMENT_KEY?.trim() || appConfig.cliproxyApiManagementKey || "";
         if (!cpaKey) {
             throw new Error("--codex-cpa 需要 --cpa-key 或 CPA_MANAGEMENT_KEY 环境变量");
@@ -169,7 +169,25 @@ async function runOnce(): Promise<void> {
         });
 
         console.log(`[codex-cpa] [2] 走 OAuth 登录 phone=${phone}`);
-        const callbackUrl = await client.authLoginViaCpaAuthorizeURL(authorizeUrl);
+        let callbackUrl: string;
+        try {
+            callbackUrl = await client.authLoginViaCpaAuthorizeURL(authorizeUrl);
+        } catch (e) {
+            const msg = (e as Error)?.message || String(e);
+            // 邮箱已被占用 = 该 hotmail 卡密已永久绑死另一个 ChatGPT 账号(race condition 残留),
+            // 立即从池里消费掉,避免下次再被随机选到
+            if (msg.includes("email_already_in_use") && bindEmail) {
+                console.warn(`[codex-cpa] [⚠️] hotmail 卡密 ${bindEmail} 已绑死另一账号,立即消费`);
+                try {
+                    const {consumeHotmailLine} = await import("./consume-hotmail.js");
+                    const cr = consumeHotmailLine(bindEmail);
+                    console.log(`[codex-cpa] [hotmail 卡密消费] ${cr.reason}`);
+                } catch (consumeErr) {
+                    console.warn(`[codex-cpa] [hotmail 卡密消费失败] ${(consumeErr as Error).message}`);
+                }
+            }
+            throw e;
+        }
         console.log(`[codex-cpa]     callback: ${callbackUrl.slice(0, 120)}...`);
 
         console.log(`[codex-cpa] [3] 提交 callback 给 CPA`);
@@ -273,6 +291,7 @@ async function runOnce(): Promise<void> {
                                 console.warn(`[codex-cpa] [hotmail 卡密消费失败，忽略] ${(e as Error).message}`);
                             }
                         }
+                        console.log(`[POOL-RESULT] status=no_trial phone=${phone || ""} email=${bindEmail || ""}`);
                         process.exit(2);
                     }
                 } catch (probeErr) {
@@ -290,7 +309,7 @@ async function runOnce(): Promise<void> {
                     const {appendFile, mkdir, readFile, writeFile} = await import("node:fs/promises");
                     const {dirname} = await import("node:path");
                     await mkdir(dirname(gpTokenFile), {recursive: true});
-                    // 追加模式：每个 token 一行，方便 Go pool 按行消费
+                    // 追加模式：每个 token 一行
                     let existing = "";
                     try {
                         existing = await readFile(gpTokenFile, "utf8");
@@ -321,6 +340,7 @@ async function runOnce(): Promise<void> {
         }
 
         console.log(`\n[✅️codex-cpa 成功] phone=${phone} email=${bindEmail || "(none)"} 已入 CPA token 池`);
+        console.log(`[POOL-RESULT] status=ok phone=${phone} email=${bindEmail || ""}`);
 
         // 注册成功 → 把用过的 hotmail 卡密从池文件移除，append 到 history
         if (bindEmail) {

@@ -27,7 +27,7 @@
                 :disabled="saving || !selectedAccountEmails.length"
                 class="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition hover:bg-blue-500 disabled:opacity-50"
               >
-                {{ saving ? '提交中...' : `启动全自动批量 (${selectedAccountEmails.length})` }}
+                {{ saving ? '提交中...' : '开始批量任务' }}
               </button>
               <button
                 v-if="selectedTask && ['pending', 'running'].includes(selectedTask.status)"
@@ -95,9 +95,6 @@
                   <input v-model.number="batchMaxAttempts" type="number" min="1" max="10" class="w-full rounded-lg border border-emerald-500/20 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
                 </div>
               </div>
-              <button @click="clearSelectedAccounts" :disabled="!selectedAccountEmails.length" class="mt-3 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">
-                清空已选账号
-              </button>
             </div>
 
             <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
@@ -112,6 +109,26 @@
                     <span class="mt-0.5 block text-xs text-gray-500">{{ item.script }}</span>
                   </span>
                   <span class="text-xs text-blue-300">启动</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+              <div class="mb-3">
+                <h3 class="text-sm font-semibold text-white">诊断工具</h3>
+                <p class="mt-1 text-xs text-gray-500">用于检查 GoPay 绑定状态和资料；仅 Linking 不发起扣款。</p>
+              </div>
+              <div class="grid gap-2 sm:grid-cols-3">
+                <button
+                  v-for="item in diagnosticActions"
+                  :key="item.kind"
+                  type="button"
+                  @click="startTask(item.kind)"
+                  :disabled="saving"
+                  class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-left transition hover:border-emerald-500/50 hover:bg-gray-800 disabled:opacity-50"
+                >
+                  <span class="block text-sm font-medium text-white">{{ item.label }}</span>
+                  <span class="mt-0.5 block text-xs text-gray-500">{{ item.script }}</span>
                 </button>
               </div>
             </div>
@@ -176,6 +193,13 @@
                         <span class="whitespace-nowrap font-mono text-xs text-gray-300">{{ slot.id }}</span>
                         <span class="h-2 w-2 rounded-full" :class="slotStateDotClass(slot.state)"></span>
                         <span class="whitespace-nowrap text-xs" :class="slotStateClass(slot.state)">{{ slot.state || '-' }}</span>
+                        <span
+                          v-if="isMidtrans202Marked(slot)"
+                          class="whitespace-nowrap rounded-md border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-200"
+                          title="midtrans charge denied code=202"
+                        >
+                          202 拒付
+                        </span>
                       </div>
                       <div class="mt-1 truncate font-mono text-xs text-gray-500">{{ slot.displayPhone || '-' }} / {{ slot.account_id || '-' }}</div>
                       <div v-if="slot.error" class="mt-1 line-clamp-2 text-xs text-rose-200/90" :title="slot.error">{{ slot.error }}</div>
@@ -305,6 +329,12 @@ const taskActions = [
   { kind: 'status', label: '检查状态', script: 'status.cmd' },
 ]
 
+const diagnosticActions = [
+  { kind: 'linkedapps', label: '查绑定', script: 'linkedapps.cmd' },
+  { kind: 'profile', label: '查资料', script: 'profile.cmd' },
+  { kind: 'link-only', label: '仅 Linking', script: 'link-only.cmd' },
+]
+
 const StatCard = (props) => h('div', { class: 'min-w-0 rounded-xl border border-gray-800 bg-gray-900 px-4 py-3' }, [
   h('div', { class: 'text-xs text-gray-400' }, props.label),
   h('div', { class: `mt-2 truncate text-xl font-bold ${props.className || 'text-white'}` }, String(props.value ?? 0)),
@@ -353,10 +383,16 @@ const filteredSlots = computed(() => {
     slot.displayPhone,
     slot.account_id,
     slot.error,
+    isMidtrans202Marked(slot) ? '202 midtrans charge denied 拒付' : '',
   ].some((value) => String(value || '').toLowerCase().includes(q)))
 })
 
-const stateSummary = computed(() => Object.entries(stateCounts.value || {}).map(([key, value]) => `${key}: ${value}`).join(' / '))
+const midtrans202Count = computed(() => slots.value.filter((slot) => isMidtrans202Marked(slot)).length)
+const stateSummary = computed(() => {
+  const parts = Object.entries(stateCounts.value || {}).map(([key, value]) => `${key}: ${value}`)
+  if (midtrans202Count.value) parts.push(`202标记: ${midtrans202Count.value}`)
+  return parts.join(' / ')
+})
 
 const filteredAccounts = computed(() => {
   const q = accountKeyword.value.toLowerCase()
@@ -480,8 +516,13 @@ async function scrollLogToBottomIfNeeded(options = {}) {
 
 function isAccountSelectable(account) {
   return Boolean(account?.email)
+    && Boolean(account?.has_codex_auth_file || account?.auth_session_file)
     && String(account.status || '').toLowerCase() !== 'plus'
     && String(account.account_type || '').toLowerCase() !== 'plus'
+}
+
+function isMidtrans202Marked(slot) {
+  return Boolean(slot?.midtransCharge202 || slot?.midtrans_charge_202)
 }
 
 function normalizeSelectedAccountEmails(emails) {

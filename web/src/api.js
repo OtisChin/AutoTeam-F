@@ -151,6 +151,7 @@ export const api = {
   queryGoPaySmsbowerPrices: (cfg) => request('POST', '/config/gopay-auto-signup/smsbower/prices', cfg),
   queryGoPaySmscodePrices: (cfg) => request('POST', '/config/gopay-auto-signup/smscode/prices', cfg),
   getOAuthPhoneSmsConfig: () => request('GET', '/config/oauth-phone-sms'),
+  getOAuthPhoneSmsCountries: (provider = '') => request('GET', `/config/oauth-phone-sms/countries${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`),
   saveOAuthPhoneSmsConfig: (cfg) => request('PUT', '/config/oauth-phone-sms', cfg),
   getRekberinajaConfig: () => request('GET', '/config/rekberinaja'),
   saveRekberinajaConfig: (cfg) => request('PUT', '/config/rekberinaja', cfg),

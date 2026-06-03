@@ -237,7 +237,7 @@ Plus 兼容旧参数：
 - `manual_confirm`：`false` 时走自动模式，会自动填写 checkout 账单、切到 PayPal，并继续处理登录/注册/短信验证码/授权；`true` 时只打开页面并等待人工确认
 - `paypal_mode`：自动模式支持 `existing_account`（登录已有 PayPal 账号）或 `create_account`（按 PDF 教程自动注册新 PayPal 账号并完成授权）
 - `paypal_browser`：可选。`protocol` / `no-card` 走无卡协议模式；`chromium` / `camoufox` / `roxybrowser` 走浏览器模式
-- `paypal_country` / `paypal_lang`：可选。PayPal 注册/授权页区域与语言；日区无卡传 `JP` / `ja`
+- `paypal_country` / `paypal_lang`：可选。PayPal 注册/授权页区域与语言；日区无卡传 `JP` / `ja`，但 checkout 链接需要使用支持 PayPal 的 `US` / `USD`
 - `paypal_email` / `paypal_password`：`existing_account` 模式必填；`create_account` 模式可选，留空则自动生成。密码只用于本次执行，不会写入任务参数/审计日志
 - `sms_url` / `otp_channel`：`create_account` 模式使用的接码配置；`otp_channel` 支持 `sms` 或 `whatsapp`
 - `paypal_card_number` / `paypal_card_expiry` / `paypal_card_cvv`：浏览器 `create_account` 模式必填，用于 PayPal 注册页的卡信息；无卡协议模式不需要

@@ -40,7 +40,7 @@
             </td>
             <td class="px-4 py-3 text-xs text-gray-400">{{ formatTime(task.created_at) }}</td>
             <td class="px-4 py-3 text-xs text-gray-400">{{ duration(task) }}</td>
-            <td class="px-4 py-3 text-xs max-w-xs truncate" :class="task.error ? 'text-red-400' : 'text-gray-400'">
+            <td class="px-4 py-3 text-xs max-w-xs truncate" :class="taskHasFailure(task) ? 'text-red-400' : 'text-gray-400'">
               {{ task.error || formatResult(task.result) }}
             </td>
           </tr>
@@ -100,6 +100,19 @@ function formatParams(params) {
 function formatResult(result) {
   if (result === null || result === undefined) return '-'
   if (typeof result === 'string') return result
+  const failed = Number(result.failed || 0)
+  if (failed > 0 && Array.isArray(result.results)) {
+    const firstFailure = result.results.find(item => item && !['registered', 'success'].includes(String(item.status || '')))
+    const reason = firstFailure?.reason || firstFailure?.message || firstFailure?.raw || firstFailure?.error
+    if (reason) return `失败原因：${reason}`
+  }
+  if (result.message) return result.message
   return JSON.stringify(result)
+}
+
+function taskHasFailure(task) {
+  if (task?.error) return true
+  const result = task?.result
+  return Boolean(result && Number(result.failed || 0) > 0)
 }
 </script>

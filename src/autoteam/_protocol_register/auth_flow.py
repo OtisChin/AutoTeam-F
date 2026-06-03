@@ -93,6 +93,7 @@ class AuthFlow:
         self._trace_dump_path = ""
         self._used_email_otp_codes: set[str] = set()
         self._last_register_password_error: str = ""
+        self._last_codex_oauth_error: str = ""
         if self._trace_dump_enabled:
             try:
                 os.makedirs("outputs", exist_ok=True)
@@ -1244,9 +1245,9 @@ class AuthFlow:
             return continue_url or ""
 
         try:
-            otp_timeout = max(30, int(os.getenv("OPENAI_PHONE_OTP_TIMEOUT", "180")))
+            otp_timeout = max(30, int(os.getenv("OPENAI_PHONE_OTP_TIMEOUT", "60")))
         except Exception:
-            otp_timeout = 180
+            otp_timeout = 60
 
         last_err = ""
         max_dynamic_attempts = max(1, int(os.getenv("OPENAI_PHONE_DYNAMIC_MAX_ATTEMPTS", "5") or "5"))
@@ -1361,6 +1362,7 @@ class AuthFlow:
             logger.info("Codex RT 本轮已尝试过，跳过重复尝试（可用 OAUTH_CODEX_RT_ALLOW_RETRY=1 强制重试）")
             return False
         self._codex_rt_attempted = True
+        self._last_codex_oauth_error = ""
 
         logger.info("尝试 Codex OAuth 直连换取 refresh_token ...")
         self._emit_progress("phone_first_codex_oauth_started", "开始 Codex OAuth 换取 refresh_token")
@@ -1424,6 +1426,7 @@ class AuthFlow:
                 try:
                     continue_url = self._codex_drive_login_from_log_in(mail_provider=mail_provider)
                 except Exception as e:
+                    self._last_codex_oauth_error = str(e)
                     logger.warning(f"Codex 登录推进失败，改走 no-prompt 兜底: {e}")
                     self._emit_progress(
                         "phone_first_codex_login_failed",
@@ -1468,11 +1471,17 @@ class AuthFlow:
                     )
 
             if not callback_url:
-                logger.warning("Codex OAuth 未捕获 callback code, final=%s", (final_url or "")[:180])
+                detail = self._last_codex_oauth_error.strip()
+                message = (
+                    f"Codex OAuth 未完成: {detail[:160]}"
+                    if detail
+                    else f"Codex OAuth 未捕获 callback code: {(final_url or '')[:160]}"
+                )
+                logger.warning("Codex OAuth 未捕获 callback code, final=%s detail=%s", (final_url or "")[:180], detail[:220])
                 self._emit_progress(
                     "phone_first_codex_oauth_no_callback",
-                    f"Codex OAuth 未捕获 callback code: {(final_url or '')[:160]}",
-                    level="warn",
+                    message,
+                    level="error" if detail else "warn",
                 )
                 return False
             ok = self._exchange_codex_callback_code(
@@ -1489,6 +1498,7 @@ class AuthFlow:
             )
             return ok
         except Exception as e:
+            self._last_codex_oauth_error = str(e)
             logger.warning(f"Codex OAuth 交换异常: {e}")
             self._emit_progress(
                 "phone_first_codex_oauth_failed",
@@ -2714,6 +2724,8 @@ class AuthFlow:
             auth_url = self.get_auth_url(csrf_token)
             device_id = self.auth_oauth_init(auth_url)
             sentinel = self.get_sentinel_token(device_id)
+            if isinstance(signup_phone_item, dict):
+                signup_phone_item["phone_first_openai_used"] = True
             step = self.authorize_continue(
                 email=phone,
                 sentinel_token=sentinel,
@@ -2748,9 +2760,9 @@ class AuthFlow:
             if not callable(otp_reader):
                 raise RuntimeError("phone-first 注册缺少手机号 OTP 读取器")
             try:
-                otp_timeout = max(30, int(os.getenv("OPENAI_PHONE_OTP_TIMEOUT", "45") or "45"))
+                otp_timeout = max(30, int(os.getenv("OPENAI_PHONE_OTP_TIMEOUT", "60") or "60"))
             except Exception:
-                otp_timeout = 45
+                otp_timeout = 60
             phone_code = str(otp_reader(signup_phone_item, otp_timeout) or "").strip()
             if not phone_code:
                 raise RuntimeError("phone-first 手机 OTP 未提供")
@@ -2789,23 +2801,35 @@ class AuthFlow:
             self.result.email = phone_login
             self.result.password = phone_password
             if not self.oauth_codex_rt_exchange(mail_provider=mail_provider):
+                detail = str(getattr(self, "_last_codex_oauth_error", "") or "").strip()
+                if detail:
+                    raise RuntimeError(detail)
                 raise RuntimeError("phone-first Codex OAuth 未完成")
             if not (self.result.access_token and self.result.refresh_token):
                 raise RuntimeError("phone-first Codex OAuth 未获取有效 token")
             logger.info("[phone-first] 注册流程完成: %s", self.result.email)
             return self.result
         except Exception as exc:
+            exc_text = str(exc)
             if isinstance(signup_phone_item, dict) and callable(phone_failure):
                 try:
-                    phone_failure(signup_phone_item, "phone_first_register_exception")
+                    phone_failure(signup_phone_item, f"phone_first_register_exception: {exc_text}")
                 except Exception:
                     pass
-            if not locals().get("phone_signup_finished", False) and phone_attempt < phone_attempt_limit:
+            should_stop_retry = any(
+                hint in exc_text.lower()
+                for hint in (
+                    "rate_limit_exceeded",
+                    "too many requests",
+                    "http 429",
+                )
+            )
+            if not should_stop_retry and not locals().get("phone_signup_finished", False) and phone_attempt < phone_attempt_limit:
                 logger.info(
                     "[phone-first] 手机号注册失败，切换下一个手机号重试: %s/%s (%s)",
                     phone_attempt + 1,
                     phone_attempt_limit,
-                    str(exc).splitlines()[0][:160],
+                    exc_text.splitlines()[0][:160],
                 )
                 return self.run_phone_first_register(mail_provider)
             raise

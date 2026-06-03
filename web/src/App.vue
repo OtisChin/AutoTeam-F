@@ -74,8 +74,22 @@
 
     <div
       v-if="busyTasks.length"
-      class="fixed top-4 right-4 z-50 w-[min(380px,calc(100vw-2rem))] max-h-[calc(100vh-2rem)] overflow-y-auto space-y-3"
+      ref="taskPanelRef"
+      class="fixed z-50 w-[min(380px,calc(100vw-2rem))]"
+      :style="taskPanelStyle"
     >
+      <div class="mb-2 flex justify-end">
+        <button
+          type="button"
+          title="拖动任务进度；双击恢复右上角"
+          class="touch-none rounded-md border border-gray-700 bg-gray-950/95 px-2 py-1 font-mono text-xs leading-none text-gray-400 shadow-lg shadow-black/20 transition hover:border-yellow-400/40 hover:text-yellow-200"
+          @pointerdown="startTaskPanelDrag"
+          @dblclick="resetTaskPanelPosition"
+        >
+          ⋮⋮
+        </button>
+      </div>
+      <div class="max-h-[calc(100vh-4rem)] space-y-3 overflow-y-auto">
       <div
         v-for="task in busyTasks"
         :key="taskNoticeKey(task)"
@@ -99,6 +113,7 @@
           </div>
         </div>
         </div>
+      </div>
       </div>
     </div>
   </div>
@@ -135,6 +150,7 @@ const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gop
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
 const IDLE_POLLING_ENABLED = false
+const TASK_PANEL_POSITION_KEY = 'autoteam_task_panel_position'
 const savedPage = localStorage.getItem(CURRENT_PAGE_KEY)
 const currentPage = ref(PAGE_KEYS.has(savedPage) ? savedPage : 'dashboard')
 
@@ -146,6 +162,9 @@ const tasks = ref([])
 const loading = ref(false)
 const statusRefreshing = ref(false)
 const runningTask = ref(null)
+const taskPanelRef = ref(null)
+const taskPanelPosition = ref(loadTaskPanelPosition())
+const taskPanelDrag = ref(null)
 const activeTasks = computed(() => (tasks.value || []).filter(task => ['running', 'pending'].includes(String(task?.status || ''))))
 const registerRunningTask = computed(() => activeTasks.value.find(task => task?.command === 'register') || null)
 const busyTasks = computed(() => {
@@ -165,6 +184,84 @@ const busyTasks = computed(() => {
   return items
 })
 const busyTask = computed(() => busyTasks.value[0] || null)
+const taskPanelStyle = computed(() => {
+  const position = taskPanelPosition.value
+  if (!position) return { top: '1rem', right: '1rem' }
+  return {
+    left: `${position.x}px`,
+    top: `${position.y}px`,
+  }
+})
+
+function loadTaskPanelPosition() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(TASK_PANEL_POSITION_KEY) || 'null')
+    if (Number.isFinite(parsed?.x) && Number.isFinite(parsed?.y)) {
+      return { x: parsed.x, y: parsed.y }
+    }
+  } catch {}
+  return null
+}
+
+function persistTaskPanelPosition(position) {
+  try {
+    if (position) {
+      window.localStorage.setItem(TASK_PANEL_POSITION_KEY, JSON.stringify(position))
+    } else {
+      window.localStorage.removeItem(TASK_PANEL_POSITION_KEY)
+    }
+  } catch {}
+}
+
+function clampTaskPanelPosition(x, y) {
+  const el = taskPanelRef.value
+  const width = el?.offsetWidth || 380
+  const height = el?.offsetHeight || 120
+  const margin = 8
+  const maxX = Math.max(margin, window.innerWidth - width - margin)
+  const maxY = Math.max(margin, window.innerHeight - height - margin)
+  return {
+    x: Math.min(Math.max(margin, x), maxX),
+    y: Math.min(Math.max(margin, y), maxY),
+  }
+}
+
+function startTaskPanelDrag(event) {
+  if (typeof event.button === 'number' && event.button !== 0) return
+  const rect = taskPanelRef.value?.getBoundingClientRect()
+  if (!rect) return
+  taskPanelDrag.value = {
+    offsetX: event.clientX - rect.left,
+    offsetY: event.clientY - rect.top,
+  }
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', moveTaskPanel)
+  window.addEventListener('pointerup', stopTaskPanelDrag, { once: true })
+  event.preventDefault()
+}
+
+function moveTaskPanel(event) {
+  const drag = taskPanelDrag.value
+  if (!drag) return
+  taskPanelPosition.value = clampTaskPanelPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY)
+}
+
+function stopTaskPanelDrag() {
+  if (taskPanelPosition.value) persistTaskPanelPosition(taskPanelPosition.value)
+  taskPanelDrag.value = null
+  window.removeEventListener('pointermove', moveTaskPanel)
+}
+
+function resetTaskPanelPosition() {
+  taskPanelPosition.value = null
+  persistTaskPanelPosition(null)
+}
+
+function keepTaskPanelInViewport() {
+  if (!taskPanelPosition.value) return
+  taskPanelPosition.value = clampTaskPanelPosition(taskPanelPosition.value.x, taskPanelPosition.value.y)
+  persistTaskPanelPosition(taskPanelPosition.value)
+}
 
 function taskNoticeKey(task) {
   return task?.task_id || `${task?.command || 'task'}-${task?.created_at || ''}`
@@ -514,6 +611,7 @@ function onSetupDone() {
 }
 
 onMounted(async () => {
+  window.addEventListener('resize', keepTaskPanelInViewport)
   const setupOk = await checkSetup()
   if (!setupOk) {
     needSetup.value = true
@@ -527,6 +625,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('resize', keepTaskPanelInViewport)
+  window.removeEventListener('pointermove', moveTaskPanel)
   stopPolling()
 })
 </script>

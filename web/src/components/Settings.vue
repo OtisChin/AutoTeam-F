@@ -9,7 +9,7 @@
         <div>
           <h2 class="text-lg font-semibold text-white">OAuth 手机号接码</h2>
           <p class="text-sm text-gray-400 mt-1">
-            OAuth 登录遇到 add-phone 时使用；动态供应商固定服务 OpenAI、国家美国。
+            OAuth 登录遇到 add-phone 时使用；国家 ID 在注册任务页按所选供应商单独选择。
           </p>
         </div>
         <span
@@ -33,12 +33,12 @@
             <option value="hero_sms">hero-sms</option>
             <option value="smsbower">smsbower</option>
           </select>
-          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；动态供应商会购买美国 OpenAI 号码。</p>
+          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；动态供应商会按任务页选择的供应商国家 ID 购买 OpenAI 号码。</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">固定参数</label>
           <div class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300">
-            服务：OpenAI（service: dr）/ 国家：美国
+            服务：OpenAI（service: dr）/ 国家：注册任务页选择
           </div>
         </div>
         <template v-if="oauthPhoneSmsForm.provider === 'hero_sms'">

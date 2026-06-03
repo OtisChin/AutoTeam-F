@@ -19,6 +19,22 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _phone_pool_failure_action(reason: str) -> str:
+    text = str(reason or "").strip().lower()
+    if not text:
+        return "release"
+    if "429" in text or "too many requests" in text or "rate_limit" in text or "rate limit" in text:
+        return "cooldown"
+    if (
+        "phone_already_registered" in text
+        or "phone_number_in_use" in text
+        or "手机号已注册" in text
+        or "手机号已被使用" in text
+    ):
+        return "invalid"
+    return "release"
+
+
 def _load_protocol_classes():
     protocol_dir = Path(__file__).resolve().parent / "_protocol_register"
     if not (protocol_dir / "auth_flow.py").exists():
@@ -128,6 +144,7 @@ class ProtocolMailAdapter:
         issued_after_ts = float(issued_after or 0)
         excluded = {str(x or "").strip() for x in (exclude_codes or []) if str(x or "").strip()}
         last_seen = ""
+        last_no_code_signature = ""
         next_wait_log_at = 0.0
         logger.info("[协议注册] 等待邮箱验证码: email=%s timeout=%ss", target, int(timeout or 180))
         while time.time() < deadline:
@@ -171,6 +188,19 @@ class ProtocolMailAdapter:
                         continue
                     logger.info("[协议注册] 收到邮箱验证码: %s***len=%d", code[:1], len(code))
                     return code
+                raw = item.get("raw")
+                raw_keys = sorted(raw.keys())[:12] if isinstance(raw, dict) else []
+                item_keys = sorted(item.keys())[:12]
+                signature = f"{item.get('id') or item.get('message_id') or ''}|{item.get('subject') or ''}|{item_keys}|{raw_keys}"
+                if signature != last_no_code_signature:
+                    logger.info(
+                        "[协议注册] 候选邮件未解析出验证码: subject=%s received_at=%s keys=%s raw_keys=%s",
+                        str(item.get("subject") or "")[:80],
+                        received_at or "",
+                        item_keys,
+                        raw_keys,
+                    )
+                    last_no_code_signature = signature
                 if not last_seen:
                     last_seen = str(item.get("subject") or item.get("text") or item.get("content") or "")[:180]
 
@@ -235,6 +265,7 @@ def _attach_oauth_phone_supplier(
     provider: str | None = None,
     country: str | None = None,
     email: str = "",
+    allow_hero_reuse: bool = True,
 ) -> None:
     provider = str(provider or "").strip().lower().replace("-", "_")
     if provider in {"herosms", "hero"}:
@@ -245,6 +276,7 @@ def _attach_oauth_phone_supplier(
         return
 
     phone_state: dict[str, Any] = {"item": None, "finished": False}
+    reservation_owner = str(email or f"protocol_register:{id(flow)}").strip()
 
     def supplier() -> dict:
         if isinstance(phone_state.get("item"), dict) and not phone_state.get("finished"):
@@ -253,9 +285,19 @@ def _attach_oauth_phone_supplier(
 
         phone_state["finished"] = False
         if provider == "hero_sms":
-            item, error = _acquire_oauth_hero_sms_phone(email=email, country=country)
+            item, error = _acquire_oauth_hero_sms_phone(
+                email=email,
+                country=country,
+                reservation_owner=reservation_owner,
+                allow_reuse=allow_hero_reuse,
+            )
         elif provider == "smsbower":
-            item, error = _acquire_oauth_smsbower_phone(email=email, country=country)
+            item, error = _acquire_oauth_smsbower_phone(
+                email=email,
+                country=country,
+                reservation_owner=reservation_owner,
+                allow_reuse=True,
+            )
         else:
             try:
                 from autoteam.oauth_phone_pool import acquire_available_phone
@@ -307,13 +349,28 @@ def _attach_oauth_phone_supplier(
             from autoteam.codex_auth import _mark_oauth_hero_sms_bound, _release_oauth_hero_sms_phone
 
             if phone_item.get("phone_first_signup"):
-                _release_oauth_hero_sms_phone(phone_item, email=bound_email, finish=True, reason="phone_first_signup_success")
+                _release_oauth_hero_sms_phone(
+                    phone_item,
+                    email=bound_email,
+                    finish=True,
+                    reason="phone_first_signup_success",
+                    reservation_owner=reservation_owner,
+                )
             else:
                 _mark_oauth_hero_sms_bound(phone_item, email=bound_email)
         elif source == "smsbower":
-            from autoteam.codex_auth import _release_oauth_sms_activation_phone
+            from autoteam.codex_auth import _mark_oauth_smsbower_bound, _release_oauth_sms_activation_phone
 
-            _release_oauth_sms_activation_phone(phone_item, finish=True, reason="protocol_oauth_success")
+            if phone_item.get("phone_first_signup"):
+                _release_oauth_sms_activation_phone(
+                    phone_item,
+                    email=bound_email,
+                    finish=True,
+                    reason="phone_first_signup_success",
+                    reservation_owner=reservation_owner,
+                )
+            else:
+                _mark_oauth_smsbower_bound(phone_item, email=bound_email)
         else:
             from autoteam.oauth_phone_pool import mark_phone_bound
 
@@ -327,15 +384,44 @@ def _attach_oauth_phone_supplier(
         if source == "hero_sms":
             from autoteam.codex_auth import _release_oauth_hero_sms_phone
 
-            _release_oauth_hero_sms_phone(phone_item, email=email, cancel=True, reason=reason or "protocol_oauth_failed")
+            phone_first_used = bool(phone_item.get("phone_first_openai_used") or phone_item.get("phone_first_signup"))
+            _release_oauth_hero_sms_phone(
+                phone_item,
+                email=email,
+                cancel=phone_first_used,
+                reason=reason or "protocol_oauth_failed",
+                reservation_owner=reservation_owner,
+            )
         elif source == "smsbower":
             from autoteam.codex_auth import _release_oauth_sms_activation_phone
 
-            _release_oauth_sms_activation_phone(phone_item, cancel=True, reason=reason or "protocol_oauth_failed")
+            phone_first_used = bool(phone_item.get("phone_first_openai_used") or phone_item.get("phone_first_signup"))
+            _release_oauth_sms_activation_phone(
+                phone_item,
+                email=email,
+                cancel=phone_first_used,
+                reason=reason or "protocol_oauth_failed",
+                reservation_owner=reservation_owner,
+            )
         else:
-            from autoteam.oauth_phone_pool import release_phone_reservation
+            from autoteam.oauth_phone_pool import mark_phone_cooldown, mark_phone_invalid, release_phone_reservation
 
-            release_phone_reservation(str(phone_item.get("id") or ""), email)
+            item_id = str(phone_item.get("id") or "")
+            if phone_item.get("phone_first_openai_used") or phone_item.get("phone_first_signup"):
+                mark_phone_invalid(item_id, reason or "phone_first_openai_used")
+                logger.info("[协议注册] phone_pool 注册手机号已标记无效: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
+                phone_state["item"] = None
+                phone_state["finished"] = False
+                return
+            action = _phone_pool_failure_action(reason)
+            if action == "cooldown":
+                mark_phone_cooldown(item_id, reason or "rate_limited")
+                logger.info("[协议注册] phone_pool 号码已冷却: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
+            elif action == "invalid":
+                mark_phone_invalid(item_id, reason or "phone_unusable")
+                logger.info("[协议注册] phone_pool 号码已标记无效: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
+            else:
+                release_phone_reservation(item_id, email)
         phone_state["item"] = None
         phone_state["finished"] = False
 

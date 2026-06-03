@@ -1737,11 +1737,28 @@ def _normalize_oauth_hero_sms_country(value: str | None = None) -> str:
     text = str(value or "").strip().lower()
     if text in {"all", "any", "*", "全部", "所有", "不限", "global"}:
         return "all"
-    if text in {"", "us", "usa", "united_states", "united states", "+1", "1", "12"}:
+    if text and re.fullmatch(r"\d+", text):
+        return text
+    if text in {"", "us", "usa", "united_states", "united states", "+1"}:
         return "187"
-    if text in {"id", "idn", "indonesia", "indonesian", "印度尼西亚", "印尼", "+62", "62", "6"}:
+    if text in {"id", "idn", "indonesia", "indonesian", "印度尼西亚", "印尼", "+62"}:
         return "6"
-    if text in {"co", "colombia", "colombian", "哥伦比亚", "哥伦比亚共和国", "+57", "57", "33"}:
+    if text in {"co", "colombia", "colombian", "哥伦比亚", "哥伦比亚共和国", "+57"}:
+        return "33"
+    return text
+
+
+def _normalize_oauth_smsbower_country(value: str | None = None) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"all", "any", "*", "全部", "所有", "不限", "global"}:
+        return "all"
+    if text and re.fullmatch(r"\d+", text):
+        return text
+    if text in {"", "us", "usa", "united_states", "united states", "+1"}:
+        return "187"
+    if text in {"id", "idn", "indonesia", "indonesian", "印度尼西亚", "印尼", "+62"}:
+        return "6"
+    if text in {"co", "colombia", "colombian", "哥伦比亚", "哥伦比亚共和国", "+57"}:
         return "33"
     return text
 
@@ -1764,7 +1781,7 @@ def _oauth_smsbower_config(country: str | None = None) -> dict[str, str]:
     return {
         "base_url": str(os.environ.get("OAUTH_SMSBOWER_BASE_URL") or "https://smsbower.page/stubs/handler_api.php").strip(),
         "api_key": str(os.environ.get("OAUTH_SMSBOWER_API_KEY") or "").strip(),
-        "country": _normalize_oauth_hero_sms_country(country or os.environ.get("OAUTH_SMSBOWER_COUNTRY")),
+        "country": _normalize_oauth_smsbower_country(country or os.environ.get("OAUTH_SMSBOWER_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_SMSBOWER_SERVICE")),
         "max_price": str(os.environ.get("OAUTH_SMSBOWER_MAX_PRICE") or "").strip(),
     }
@@ -1774,6 +1791,10 @@ _OAUTH_HERO_SMS_REUSE_LOCK = threading.Lock()
 _OAUTH_HERO_SMS_REUSE: dict[str, Any] = {}
 _OAUTH_HERO_SMS_REUSE_NAMESPACE = "oauth_hero_sms"
 _OAUTH_HERO_SMS_REUSE_KEY = "current"
+_OAUTH_SMSBOWER_REUSE_LOCK = threading.Lock()
+_OAUTH_SMSBOWER_REUSE: dict[str, Any] = {}
+_OAUTH_SMSBOWER_REUSE_NAMESPACE = "oauth_smsbower"
+_OAUTH_SMSBOWER_REUSE_KEY = "current"
 
 
 def _oauth_hero_sms_ttl_seconds() -> int:
@@ -1782,6 +1803,14 @@ def _oauth_hero_sms_ttl_seconds() -> int:
 
 def _oauth_hero_sms_max_binds() -> int:
     return max(1, int(float(os.environ.get("OAUTH_HERO_SMS_MAX_BINDS", "3") or "3")))
+
+
+def _oauth_smsbower_ttl_seconds() -> int:
+    return max(60, int(float(os.environ.get("OAUTH_SMSBOWER_REUSE_TTL_SECONDS", "1200") or "1200")))
+
+
+def _oauth_smsbower_max_binds() -> int:
+    return max(1, int(float(os.environ.get("OAUTH_SMSBOWER_MAX_BINDS", "3") or "3")))
 
 
 def _oauth_hero_sms_remaining_seconds(entry: dict[str, Any], *, now: float | None = None) -> int:
@@ -1917,6 +1946,7 @@ def _oauth_hero_sms_item_from_entry(entry: dict[str, Any], email: str = "") -> d
         "hero_reuse": True,
         "hero_remaining_seconds": _oauth_hero_sms_remaining_seconds(entry),
         "hero_bound_count": int(entry.get("bound_count") or 0),
+        "hero_reserved_by": entry.get("reserved_by") or "",
     }
 
 
@@ -1944,7 +1974,168 @@ def _oauth_hero_sms_finish_or_cancel(entry: dict[str, Any] | None, *, finish: bo
         )
 
 
-def _acquire_oauth_hero_sms_phone(email: str = "", *, country: str | None = None) -> tuple[dict | None, str]:
+def _oauth_smsbower_remaining_seconds(entry: dict[str, Any], *, now: float | None = None) -> int:
+    current = time.time() if now is None else float(now)
+    expires_at = float(entry.get("expires_at") or 0)
+    return max(0, int(expires_at - current))
+
+
+def _oauth_smsbower_entry_reusable(entry: dict[str, Any], *, now: float | None = None) -> bool:
+    if not entry:
+        return False
+    if entry.get("reserved_by"):
+        return False
+    if int(entry.get("bound_count") or 0) >= _oauth_smsbower_max_binds():
+        return False
+    return _oauth_smsbower_remaining_seconds(entry, now=now) > 90
+
+
+def _oauth_smsbower_config_fingerprint(cfg: dict[str, str] | None = None) -> str:
+    data = cfg or _oauth_smsbower_config()
+    raw = "|".join(
+        str(data.get(key) or "")
+        for key in ("base_url", "api_key", "country", "service", "max_price")
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _oauth_smsbower_persist_entry(entry: dict[str, Any] | None) -> None:
+    if not entry:
+        sqlite_store.set_json(_OAUTH_SMSBOWER_REUSE_NAMESPACE, _OAUTH_SMSBOWER_REUSE_KEY, {})
+        return
+    payload = {
+        "activation_id": str(entry.get("activation_id") or "").strip(),
+        "phone_number": str(entry.get("phone_number") or "").strip(),
+        "country_id": str(entry.get("country_id") or "").strip(),
+        "created_at": float(entry.get("created_at") or time.time()),
+        "expires_at": float(entry.get("expires_at") or 0),
+        "bound_count": int(entry.get("bound_count") or 0),
+        "used_codes": _oauth_hero_sms_activation_used_codes(entry),
+        "config_fingerprint": _oauth_smsbower_config_fingerprint(),
+        "updated_at": time.time(),
+    }
+    if payload["activation_id"] and payload["phone_number"]:
+        sqlite_store.set_json(_OAUTH_SMSBOWER_REUSE_NAMESPACE, _OAUTH_SMSBOWER_REUSE_KEY, payload)
+    else:
+        sqlite_store.set_json(_OAUTH_SMSBOWER_REUSE_NAMESPACE, _OAUTH_SMSBOWER_REUSE_KEY, {})
+
+
+def _oauth_smsbower_persist_used_codes(activation_id: str) -> None:
+    target = str(activation_id or "").strip()
+    if not target:
+        return
+    with _OAUTH_SMSBOWER_REUSE_LOCK:
+        entry = _OAUTH_SMSBOWER_REUSE.get("current")
+        if entry and str(entry.get("activation_id") or "").strip() == target:
+            _oauth_smsbower_persist_entry(entry)
+
+
+def _oauth_smsbower_finish_or_cancel(entry: dict[str, Any] | None, *, finish: bool = False, cancel: bool = False, reason: str = "") -> None:
+    if not entry:
+        return
+    activation = entry.get("activation")
+    if not activation:
+        return
+    try:
+        if finish:
+            activation.finish()
+            logger.info("[Codex] add-phone smsbower 会话已完成: activation=%s reason=%s", entry.get("activation_id"), reason)
+        elif cancel:
+            activation.cancel()
+            logger.info("[Codex] add-phone smsbower 会话已取消: activation=%s reason=%s", entry.get("activation_id"), reason)
+    except Exception as exc:
+        logger.info(
+            "[Codex] add-phone smsbower 会话状态更新失败: activation=%s finish=%s cancel=%s reason=%s error=%s",
+            entry.get("activation_id"),
+            finish,
+            cancel,
+            reason,
+            exc,
+        )
+
+
+def _oauth_smsbower_restore_entry(cfg: dict[str, str], activation_cls) -> dict[str, Any] | None:
+    payload = sqlite_store.get_json(_OAUTH_SMSBOWER_REUSE_NAMESPACE, _OAUTH_SMSBOWER_REUSE_KEY, default={})
+    if not isinstance(payload, dict) or not payload.get("activation_id") or not payload.get("phone_number"):
+        return None
+    if str(payload.get("config_fingerprint") or "") != _oauth_smsbower_config_fingerprint(cfg):
+        _oauth_smsbower_persist_entry(None)
+        return None
+    country_raw = str(payload.get("country_id") or cfg.get("country") or "187").strip().lower()
+    if country_raw in {"all", "any", "*"}:
+        country_id = "all"
+    else:
+        try:
+            country_id = int(float(country_raw))
+        except Exception:
+            country_id = 187
+    activation = activation_cls(
+        activation_id=str(payload.get("activation_id") or "").strip(),
+        phone=str(payload.get("phone_number") or "").strip(),
+        country_id=country_id,
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        provider="smsbower",
+        log=logger.info,
+    )
+    try:
+        activation.used_codes.update({str(code or "").strip() for code in (payload.get("used_codes") or []) if str(code or "").strip()})
+    except Exception:
+        pass
+    entry = {
+        "activation": activation,
+        "activation_id": str(payload.get("activation_id") or "").strip(),
+        "phone_number": str(payload.get("phone_number") or "").strip(),
+        "country_id": str(country_id),
+        "created_at": float(payload.get("created_at") or time.time()),
+        "expires_at": float(payload.get("expires_at") or 0),
+        "bound_count": int(payload.get("bound_count") or 0),
+        "reserved_by": "",
+    }
+    if not _oauth_smsbower_entry_reusable(entry):
+        _oauth_smsbower_persist_entry(None)
+        _oauth_smsbower_finish_or_cancel(
+            entry,
+            finish=int(entry.get("bound_count") or 0) > 0,
+            cancel=int(entry.get("bound_count") or 0) <= 0,
+            reason="expired_or_full_after_restore",
+        )
+        return None
+    logger.info(
+        "[Codex] add-phone 已恢复 smsbower 可复用号码: activation=%s phone=%s bound=%s/%s remaining=%ss",
+        entry.get("activation_id"),
+        entry.get("phone_number"),
+        entry.get("bound_count") or 0,
+        _oauth_smsbower_max_binds(),
+        _oauth_smsbower_remaining_seconds(entry),
+    )
+    return entry
+
+
+def _oauth_smsbower_item_from_entry(entry: dict[str, Any], email: str = "") -> dict[str, Any]:
+    return {
+        "id": f"smsbower:{entry.get('activation_id') or ''}",
+        "record_id": f"smsbower:{entry.get('activation_id') or ''}",
+        "source": "smsbower",
+        "phone_number": entry.get("phone_number") or "",
+        "sms_url": "",
+        "activation": entry.get("activation"),
+        "activation_id": entry.get("activation_id") or "",
+        "country_id": str(entry.get("country_id") or ""),
+        "smsbower_reuse": True,
+        "smsbower_remaining_seconds": _oauth_smsbower_remaining_seconds(entry),
+        "smsbower_bound_count": int(entry.get("bound_count") or 0),
+        "smsbower_reserved_by": entry.get("reserved_by") or "",
+    }
+
+
+def _acquire_oauth_hero_sms_phone(
+    email: str = "",
+    *,
+    country: str | None = None,
+    reservation_owner: str | None = None,
+    allow_reuse: bool = True,
+) -> tuple[dict | None, str]:
     try:
         from autoteam.gopay_auto_register import SmsActivation, _hero_get_number
     except Exception as exc:
@@ -1962,38 +2153,41 @@ def _acquire_oauth_hero_sms_phone(email: str = "", *, country: str | None = None
         except Exception:
             country_id = 187
     now = time.time()
-    with _OAUTH_HERO_SMS_REUSE_LOCK:
-        cached = _OAUTH_HERO_SMS_REUSE.get("current")
-        if not cached:
-            cached = _oauth_hero_sms_restore_entry(cfg, SmsActivation)
-            if cached:
-                _OAUTH_HERO_SMS_REUSE["current"] = cached
-        if _oauth_hero_sms_entry_reusable(cached or {}, now=now):
-            cached["reserved_by"] = email
-            logger.info(
-                "[Codex] add-phone 复用 hero-sms 号码: email=%s activation=%s phone=%s bound=%s/%s remaining=%ss",
-                email,
-                cached.get("activation_id"),
-                cached.get("phone_number"),
-                cached.get("bound_count") or 0,
-                _oauth_hero_sms_max_binds(),
-                _oauth_hero_sms_remaining_seconds(cached, now=now),
+    owner = str(reservation_owner or email or f"anonymous:{threading.get_ident()}").strip()
+    cached = None
+    if allow_reuse:
+        with _OAUTH_HERO_SMS_REUSE_LOCK:
+            cached = _OAUTH_HERO_SMS_REUSE.get("current")
+            if not cached:
+                cached = _oauth_hero_sms_restore_entry(cfg, SmsActivation)
+                if cached:
+                    _OAUTH_HERO_SMS_REUSE["current"] = cached
+            if _oauth_hero_sms_entry_reusable(cached or {}, now=now):
+                cached["reserved_by"] = owner
+                logger.info(
+                    "[Codex] add-phone 复用 hero-sms 号码: email=%s activation=%s phone=%s bound=%s/%s remaining=%ss",
+                    email,
+                    cached.get("activation_id"),
+                    cached.get("phone_number"),
+                    cached.get("bound_count") or 0,
+                    _oauth_hero_sms_max_binds(),
+                    _oauth_hero_sms_remaining_seconds(cached, now=now),
+                )
+                return _oauth_hero_sms_item_from_entry(cached, email), ""
+            if cached and not _oauth_hero_sms_entry_reusable(cached, now=now):
+                _OAUTH_HERO_SMS_REUSE.pop("current", None)
+                _oauth_hero_sms_persist_entry(None)
+                finish_old = int(cached.get("bound_count") or 0) > 0
+            else:
+                cached = None
+                finish_old = False
+        if cached:
+            _oauth_hero_sms_finish_or_cancel(
+                cached,
+                finish=finish_old,
+                cancel=not finish_old,
+                reason="expired_or_full_before_new_acquire",
             )
-            return _oauth_hero_sms_item_from_entry(cached, email), ""
-        if cached and not _oauth_hero_sms_entry_reusable(cached, now=now):
-            _OAUTH_HERO_SMS_REUSE.pop("current", None)
-            _oauth_hero_sms_persist_entry(None)
-            finish_old = int(cached.get("bound_count") or 0) > 0
-        else:
-            cached = None
-            finish_old = False
-    if cached:
-        _oauth_hero_sms_finish_or_cancel(
-            cached,
-            finish=finish_old,
-            cancel=not finish_old,
-            reason="expired_or_full_before_new_acquire",
-        )
 
     activation_id, phone, error = _hero_get_number(
         service_code=cfg["service"] or "dr",
@@ -2028,12 +2222,14 @@ def _acquire_oauth_hero_sms_phone(email: str = "", *, country: str | None = None
         "created_at": now,
         "expires_at": now + _oauth_hero_sms_ttl_seconds(),
         "bound_count": 0,
-        "reserved_by": email,
+        "reserved_by": owner,
     }
-    with _OAUTH_HERO_SMS_REUSE_LOCK:
-        _OAUTH_HERO_SMS_REUSE["current"] = entry
-        _oauth_hero_sms_persist_entry(entry)
+    if allow_reuse:
+        with _OAUTH_HERO_SMS_REUSE_LOCK:
+            _OAUTH_HERO_SMS_REUSE["current"] = entry
+            _oauth_hero_sms_persist_entry(entry)
     item = _oauth_hero_sms_item_from_entry(entry, email)
+    item["hero_reuse"] = allow_reuse
     item["record_id"] = f"hero_sms:{activation_id}"
     try:
         from autoteam.oauth_phone_records import record_acquired
@@ -2058,7 +2254,13 @@ def _acquire_oauth_hero_sms_phone(email: str = "", *, country: str | None = None
     return item, ""
 
 
-def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None) -> tuple[dict | None, str]:
+def _acquire_oauth_smsbower_phone(
+    email: str = "",
+    *,
+    country: str | None = None,
+    reservation_owner: str | None = None,
+    allow_reuse: bool = True,
+) -> tuple[dict | None, str]:
     try:
         from autoteam.gopay_auto_register import SmsActivation, _smsbower_get_number
     except Exception as exc:
@@ -2083,6 +2285,43 @@ def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None
         country_id,
         cfg["max_price"] or "-",
     )
+    now = time.time()
+    owner = str(reservation_owner or email or f"anonymous:{threading.get_ident()}").strip()
+    cached = None
+    if allow_reuse:
+        with _OAUTH_SMSBOWER_REUSE_LOCK:
+            cached = _OAUTH_SMSBOWER_REUSE.get("current")
+            if not cached:
+                cached = _oauth_smsbower_restore_entry(cfg, SmsActivation)
+                if cached:
+                    _OAUTH_SMSBOWER_REUSE["current"] = cached
+            if _oauth_smsbower_entry_reusable(cached or {}, now=now):
+                cached["reserved_by"] = owner
+                logger.info(
+                    "[Codex] add-phone 复用 smsbower 号码: email=%s activation=%s phone=%s bound=%s/%s remaining=%ss",
+                    email,
+                    cached.get("activation_id"),
+                    cached.get("phone_number"),
+                    cached.get("bound_count") or 0,
+                    _oauth_smsbower_max_binds(),
+                    _oauth_smsbower_remaining_seconds(cached, now=now),
+                )
+                return _oauth_smsbower_item_from_entry(cached, email), ""
+            if cached and not _oauth_smsbower_entry_reusable(cached, now=now):
+                _OAUTH_SMSBOWER_REUSE.pop("current", None)
+                _oauth_smsbower_persist_entry(None)
+                finish_old = int(cached.get("bound_count") or 0) > 0
+            else:
+                cached = None
+                finish_old = False
+        if cached:
+            _oauth_smsbower_finish_or_cancel(
+                cached,
+                finish=finish_old,
+                cancel=not finish_old,
+                reason="expired_or_full_before_new_acquire",
+            )
+
     meta: dict[str, Any] = {}
     activation_id, phone, error = _smsbower_get_number(
         service_code=cfg["service"] or "dr",
@@ -2112,6 +2351,20 @@ def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None
         cfg["max_price"] or "-",
     )
     record_id = f"smsbower:{activation_id}"
+    entry = {
+        "activation": activation,
+        "activation_id": activation_id,
+        "phone_number": phone,
+        "country_id": str(country_id),
+        "created_at": now,
+        "expires_at": now + _oauth_smsbower_ttl_seconds(),
+        "bound_count": 0,
+        "reserved_by": owner,
+    }
+    if allow_reuse:
+        with _OAUTH_SMSBOWER_REUSE_LOCK:
+            _OAUTH_SMSBOWER_REUSE["current"] = entry
+            _oauth_smsbower_persist_entry(entry)
     try:
         from autoteam.oauth_phone_records import record_acquired
 
@@ -2138,25 +2391,30 @@ def _acquire_oauth_smsbower_phone(email: str = "", *, country: str | None = None
         )
     except Exception:
         logger.debug("[Codex] add-phone 记录 smsbower 取号失败", exc_info=True)
-    return {
-        "record_id": record_id,
-        "id": record_id,
-        "source": "smsbower",
-        "phone_number": phone,
-        "sms_url": "",
-        "activation": activation,
-        "activation_id": activation_id,
-        "country_id": str(country_id),
-    }, ""
+    item = _oauth_smsbower_item_from_entry(entry, email)
+    item["smsbower_reuse"] = allow_reuse
+    return item, ""
 
 
 def _release_oauth_sms_activation_phone(
     phone_item: dict,
     *,
+    email: str = "",
     finish: bool = False,
     cancel: bool = False,
     reason: str = "",
+    reservation_owner: str | None = None,
 ) -> None:
+    if str(phone_item.get("source") or "").lower() == "smsbower":
+        _release_oauth_smsbower_phone(
+            phone_item,
+            email=email,
+            finish=finish,
+            cancel=cancel,
+            reason=reason,
+            reservation_owner=reservation_owner,
+        )
+        return
     activation = phone_item.get("activation")
     activation_id = str(phone_item.get("activation_id") or "").strip()
     record_id = str(phone_item.get("record_id") or phone_item.get("id") or "").strip()
@@ -2189,11 +2447,145 @@ def _release_oauth_sms_activation_phone(
         )
 
 
-def _release_oauth_hero_sms_phone(phone_item: dict, *, email: str = "", finish: bool = False, cancel: bool = False, reason: str = "") -> None:
+def _release_oauth_smsbower_phone(
+    phone_item: dict,
+    *,
+    email: str = "",
+    finish: bool = False,
+    cancel: bool = False,
+    reason: str = "",
+    reservation_owner: str | None = None,
+) -> None:
     activation_id = str(phone_item.get("activation_id") or "").strip()
     record_id = str(phone_item.get("record_id") or phone_item.get("id") or "").strip()
     if not activation_id:
         return
+    owner = str(reservation_owner or phone_item.get("smsbower_reserved_by") or email or "").strip()
+    entry_to_close: dict[str, Any] | None = None
+    close_finish = False
+    close_cancel = False
+    with _OAUTH_SMSBOWER_REUSE_LOCK:
+        entry = _OAUTH_SMSBOWER_REUSE.get("current")
+        if entry and str(entry.get("activation_id") or "") == activation_id:
+            if finish or cancel:
+                entry_to_close = _OAUTH_SMSBOWER_REUSE.pop("current", None)
+                _oauth_smsbower_persist_entry(None)
+                close_finish = finish
+                close_cancel = cancel
+            else:
+                if not owner or str(entry.get("reserved_by") or "") == owner:
+                    entry["reserved_by"] = ""
+                _oauth_smsbower_persist_entry(entry)
+                logger.info(
+                    "[Codex] add-phone smsbower 号码已释放供复用: activation=%s phone=%s bound=%s/%s remaining=%ss reason=%s",
+                    activation_id,
+                    entry.get("phone_number"),
+                    entry.get("bound_count") or 0,
+                    _oauth_smsbower_max_binds(),
+                    _oauth_smsbower_remaining_seconds(entry),
+                    reason,
+                )
+                if record_id:
+                    try:
+                        from autoteam.oauth_phone_records import update_record
+
+                        update_record(record_id, status="released", reason=reason)
+                    except Exception:
+                        logger.debug("[Codex] add-phone 更新 smsbower 释放记录失败", exc_info=True)
+                return
+    if entry_to_close:
+        _oauth_smsbower_finish_or_cancel(entry_to_close, finish=close_finish, cancel=close_cancel, reason=reason)
+        if record_id:
+            try:
+                from autoteam.oauth_phone_records import update_record
+
+                update_record(record_id, status="success" if close_finish else "cancelled", reason=reason)
+            except Exception:
+                logger.debug("[Codex] add-phone 更新 smsbower 记录失败", exc_info=True)
+        return
+    fallback = {
+        "activation": phone_item.get("activation"),
+        "activation_id": activation_id,
+    }
+    _oauth_smsbower_finish_or_cancel(fallback, finish=finish, cancel=cancel, reason=reason)
+    if record_id:
+        try:
+            from autoteam.oauth_phone_records import update_record
+
+            update_record(record_id, status="success" if finish else "cancelled" if cancel else "released", reason=reason)
+        except Exception:
+            logger.debug("[Codex] add-phone 更新 smsbower fallback 记录失败", exc_info=True)
+
+
+def _mark_oauth_smsbower_bound(phone_item: dict, *, email: str = "") -> None:
+    activation_id = str(phone_item.get("activation_id") or "").strip()
+    record_id = str(phone_item.get("record_id") or phone_item.get("id") or "").strip()
+    if not activation_id:
+        return
+    entry_to_finish: dict[str, Any] | None = None
+    with _OAUTH_SMSBOWER_REUSE_LOCK:
+        entry = _OAUTH_SMSBOWER_REUSE.get("current")
+        if entry and str(entry.get("activation_id") or "") == activation_id:
+            entry["bound_count"] = int(entry.get("bound_count") or 0) + 1
+            entry["reserved_by"] = ""
+            remaining = _oauth_smsbower_remaining_seconds(entry)
+            if entry["bound_count"] >= _oauth_smsbower_max_binds() or remaining <= 90:
+                entry_to_finish = _OAUTH_SMSBOWER_REUSE.pop("current", None)
+                _oauth_smsbower_persist_entry(None)
+            else:
+                _oauth_smsbower_persist_entry(entry)
+                logger.info(
+                    "[Codex] add-phone smsbower 绑定成功后保留号码复用: email=%s activation=%s phone=%s bound=%s/%s remaining=%ss",
+                    email,
+                    activation_id,
+                    entry.get("phone_number"),
+                    entry["bound_count"],
+                    _oauth_smsbower_max_binds(),
+                    remaining,
+                )
+                if record_id:
+                    try:
+                        from autoteam.oauth_phone_records import update_record
+
+                        update_record(record_id, status="reusable", email=email, reason="success_reusable")
+                    except Exception:
+                        logger.debug("[Codex] add-phone 更新 smsbower 复用记录失败", exc_info=True)
+                return
+    if entry_to_finish:
+        _oauth_smsbower_finish_or_cancel(entry_to_finish, finish=True, reason="max_binds_or_expiring_after_success")
+        if record_id:
+            try:
+                from autoteam.oauth_phone_records import update_record
+
+                update_record(record_id, status="success", email=email, reason="max_binds_or_expiring_after_success")
+            except Exception:
+                logger.debug("[Codex] add-phone 更新 smsbower 完成记录失败", exc_info=True)
+        return
+    fallback = {"activation": phone_item.get("activation"), "activation_id": activation_id}
+    _oauth_smsbower_finish_or_cancel(fallback, finish=True, reason="success_without_reusable_entry")
+    if record_id:
+        try:
+            from autoteam.oauth_phone_records import update_record
+
+            update_record(record_id, status="success", email=email, reason="success_without_reusable_entry")
+        except Exception:
+            logger.debug("[Codex] add-phone 更新 smsbower fallback 完成记录失败", exc_info=True)
+
+
+def _release_oauth_hero_sms_phone(
+    phone_item: dict,
+    *,
+    email: str = "",
+    finish: bool = False,
+    cancel: bool = False,
+    reason: str = "",
+    reservation_owner: str | None = None,
+) -> None:
+    activation_id = str(phone_item.get("activation_id") or "").strip()
+    record_id = str(phone_item.get("record_id") or phone_item.get("id") or "").strip()
+    if not activation_id:
+        return
+    owner = str(reservation_owner or phone_item.get("hero_reserved_by") or email or "").strip()
     entry_to_close: dict[str, Any] | None = None
     close_finish = False
     close_cancel = False
@@ -2206,7 +2598,7 @@ def _release_oauth_hero_sms_phone(phone_item: dict, *, email: str = "", finish: 
                 close_finish = finish
                 close_cancel = cancel
             else:
-                if not email or str(entry.get("reserved_by") or "") == email:
+                if not owner or str(entry.get("reserved_by") or "") == owner:
                     entry["reserved_by"] = ""
                 _oauth_hero_sms_persist_entry(entry)
                 logger.info(
@@ -2331,6 +2723,8 @@ def _make_phone_item_otp_provider(phone_item: dict):
             )
             if source == "hero_sms":
                 _oauth_hero_sms_persist_used_codes(str(phone_item.get("activation_id") or ""))
+            elif source == "smsbower":
+                _oauth_smsbower_persist_used_codes(str(phone_item.get("activation_id") or ""))
             if not code:
                 if not getattr(_provider, "_dynamic_sms_first_code_received", False):
                     raise CodexOAuthHeroSmsFirstCodeTimeout(f"{source} 120s 内未收到第一个验证码")
@@ -2520,7 +2914,10 @@ def _handle_oauth_add_phone_if_present(
         return False
     provider_mode = _normalize_oauth_phone_sms_provider(phone_sms_provider)
     provider_order = _oauth_add_phone_provider_order(provider_mode)
-    country_override = _normalize_oauth_hero_sms_country(phone_sms_country) if phone_sms_country else None
+    if phone_sms_country and provider_mode == "smsbower":
+        country_override = _normalize_oauth_smsbower_country(phone_sms_country)
+    else:
+        country_override = _normalize_oauth_hero_sms_country(phone_sms_country) if phone_sms_country else None
     logger.info(
         "[Codex] add-phone 取号配置: email=%s provider=%s providers=%s country=%s",
         email,
@@ -2589,7 +2986,7 @@ def _handle_oauth_add_phone_if_present(
             _release_oauth_hero_sms_phone(phone_item, email=email, reason=reason)
             return
         if source == "smsbower":
-            _release_oauth_sms_activation_phone(phone_item, cancel=True, reason=reason)
+            _release_oauth_sms_activation_phone(phone_item, email=email, reason=reason)
             return
         pool_api["release"](str(phone_item.get("id") or ""), email)
 
@@ -2599,7 +2996,7 @@ def _handle_oauth_add_phone_if_present(
             _mark_oauth_hero_sms_bound(phone_item, email=email)
             return
         if source == "smsbower":
-            _release_oauth_sms_activation_phone(phone_item, finish=True, reason="success")
+            _mark_oauth_smsbower_bound(phone_item, email=email)
             return
         pool_api["bound"](str(phone_item.get("id") or ""), email)
 
@@ -2615,7 +3012,10 @@ def _handle_oauth_add_phone_if_present(
                 _release_oauth_hero_sms_phone(phone_item, email=email, reason=reason)
             return
         if source == "smsbower":
-            _release_oauth_sms_activation_phone(phone_item, cancel=True, reason=reason)
+            if action in {"cooldown", "invalid", "hero_release"}:
+                _release_oauth_sms_activation_phone(phone_item, email=email, cancel=True, reason=reason)
+            else:
+                _release_oauth_sms_activation_phone(phone_item, email=email, reason=reason)
             return
         if action == "cooldown":
             pool_api["cooldown"](str(phone_item.get("id") or ""), reason)

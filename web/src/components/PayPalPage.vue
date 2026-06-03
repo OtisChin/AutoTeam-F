@@ -153,7 +153,7 @@
                 <div v-if="roxyBrowserConfigIssue" class="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
                   {{ roxyBrowserConfigIssue }}
                 </div>
-                <div v-if="form.paypalBrowser === 'roxybrowser' && roxyBrowserConfigured" class="mt-3 space-y-3">
+                <div v-if="usesRoxyBrowserForPayPal && roxyBrowserConfigured" class="mt-3 space-y-3">
                   <label class="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-2 text-sm text-gray-300">
                     <span>
                       <span class="block font-medium text-gray-200">自动创建窗口</span>
@@ -842,7 +842,7 @@ const paypalCountry = computed(() => form.value.paypalRegion === 'JP_NOCARD' ? '
 const paypalLang = computed(() => paypalCountry.value === 'JP' ? 'ja' : 'en')
 const paypalRegionHelp = computed(() => (
   form.value.paypalRegion === 'JP_NOCARD'
-    ? '使用 JP/JPY 支付链接和 PayPal 协议无卡注册，不需要填写卡片信息。'
+    ? '使用支持 PayPal 的 US/USD checkout，并按 JP/ja 进行 PayPal 协议无卡注册；不需要填写卡片信息。'
     : '保留现有美区流程，可用浏览器或协议模式，自动注册时按原规则使用卡片。'
 ))
 const singleSelectedEmail = computed(() => String(selectedAccountEmail.value || '').trim().toLowerCase())
@@ -862,8 +862,10 @@ const proxySettingSummary = computed(() => {
   return `已配置 ${proxyPoolEntries.value.length} 条代理；每个账号流程开始时随机选一条，编辑弹窗内可导入、修改和删除。`
 })
 const roxyBrowserConfigured = computed(() => Boolean(roxyBrowserConfig.value.api_token_present && roxyBrowserConfig.value.api_host_valid !== false))
+const paypalFallbackBrowser = computed(() => (form.value.paypalRegion === 'JP_NOCARD' ? 'roxybrowser' : ''))
+const usesRoxyBrowserForPayPal = computed(() => form.value.paypalBrowser === 'roxybrowser' || paypalFallbackBrowser.value === 'roxybrowser')
 const roxyBrowserConfigIssue = computed(() => {
-  if (form.value.paypalBrowser !== 'roxybrowser') return ''
+  if (!usesRoxyBrowserForPayPal.value) return ''
   if (roxyBrowserConfigLoading.value) return '正在检查 RoxyBrowser 配置...'
   if (!roxyBrowserConfigured.value) {
     if (roxyBrowserConfig.value.api_host_valid === false) {
@@ -972,8 +974,8 @@ function applyPayPalRegionDefaults() {
     form.value.paypalMode = 'create_account'
     form.value.paypalBrowser = 'protocol'
     form.value.billingCountry = 'JP'
-    bindForm.value.country = 'JP'
-    bindForm.value.currency = 'JPY'
+    bindForm.value.country = 'US'
+    bindForm.value.currency = 'USD'
     return
   }
   if (!String(form.value.billingCountry || '').trim() || String(form.value.billingCountry || '').trim().toUpperCase() === 'JP') {
@@ -1646,7 +1648,7 @@ function validateBeforeStart() {
   if (form.value.batchMode && !selectedBatchEmails.value.length) {
     throw new Error('请先选择批量账号')
   }
-  if (form.value.paypalBrowser === 'roxybrowser' && roxyBrowserConfigIssue.value) {
+  if (usesRoxyBrowserForPayPal.value && roxyBrowserConfigIssue.value) {
     throw new Error(roxyBrowserConfigIssue.value)
   }
   if (form.value.proxyApiEnabled) {
@@ -1691,7 +1693,7 @@ function validateBeforeStart() {
 async function startTask() {
   busy.value = true
   try {
-    if (form.value.paypalBrowser === 'roxybrowser') {
+    if (usesRoxyBrowserForPayPal.value) {
       await loadRoxyBrowserConfig()
       if (!form.value.roxyBrowserAutoCreateProfile) {
         await loadRoxyBrowserProfiles()
@@ -1717,6 +1719,7 @@ async function startTask() {
       proxy_label: form.value.proxyLabel,
       manual_confirm: Boolean(form.value.manualConfirm),
       paypal_browser: effectivePayPalBrowser,
+      paypal_fallback_browser: paypalFallbackBrowser.value,
       paypal_mode: form.value.paypalMode,
       paypal_country: paypalCountry.value,
       paypal_lang: paypalLang.value,

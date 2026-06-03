@@ -38,6 +38,7 @@ DEFAULT_AUTO_SIGNUP_OTP_TIMEOUT_SEC = 120
 DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC = 120
 STATUS_CANCEL = -1
 STATUS_SMSBOWER_CANCEL = 8
+STATUS_READY = 1
 STATUS_RESEND = 3
 STATUS_FINISH = 6
 DEFAULT_SMSCODE_BASE_URL = "https://api.smscode.gg/v1"
@@ -312,6 +313,12 @@ class SmsActivation:
         last_resend = start
         resend_count = 0
         resend_intervals = [30, 60, 120]
+        try:
+            ready_text = _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_READY)
+            if ready_text:
+                self.log(f"[{label}] 已通知短信供应商开始等待验证码: activation={self.activation_id} status={ready_text}")
+        except Exception as exc:
+            self.log(f"[{label}] 通知短信供应商等待验证码失败: activation={self.activation_id} error={exc}")
         while time.time() - start < timeout_sec:
             ok, text, data = _hero_request(
                 self.base_url,
@@ -660,6 +667,184 @@ def _collect_hero_top_country_candidates(
             int(item.get("country") or 0),
         ),
     )
+
+
+def _country_option_name(payload: dict[str, Any]) -> str:
+    for key in ("chn", "name_cn", "name_zh", "countryName", "country_name", "name", "eng", "rus", "title"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _country_option_phone_code(payload: dict[str, Any]) -> str:
+    for key in ("prefix", "phone_code", "phoneCode", "countryCode", "country_code", "code"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value if value.startswith("+") else f"+{value.lstrip('+')}"
+    return ""
+
+
+def _collect_sms_country_options(payload: Any) -> list[dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+
+    def visit(node: Any, key_hint: str = "") -> None:
+        if isinstance(node, dict):
+            country_raw = node.get("country") or node.get("countryId") or node.get("country_id") or node.get("id")
+            if country_raw is None and str(key_hint).strip().replace(".", "", 1).isdigit():
+                country_raw = key_hint
+            country = str(country_raw or "").strip()
+            if country and country.replace(".", "", 1).isdigit():
+                country = str(int(float(country)))
+                name = _country_option_name(node)
+                phone_code = _country_option_phone_code(node)
+                price = _normalize_hero_price(node.get("price") or node.get("retail_price") or node.get("cost"))
+                try:
+                    count = max(
+                        0,
+                        int(
+                            float(
+                                node.get("count")
+                                or node.get("physicalCount")
+                                or node.get("stock")
+                                or node.get("available")
+                                or node.get("quantity")
+                                or node.get("qty")
+                                or 0
+                            )
+                        ),
+                    )
+                except Exception:
+                    count = 0
+                existing = found.get(country) or {}
+                found[country] = {
+                    "value": country,
+                    "label": name or existing.get("label") or f"国家 ID {country}",
+                    "phone_code": phone_code or existing.get("phone_code") or "",
+                    "count": max(count, int(existing.get("count") or 0)),
+                    "price": price if price is not None else existing.get("price"),
+                }
+            for child_key, child in node.items():
+                if isinstance(child, (dict, list)):
+                    visit(child, str(child_key))
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(payload)
+    return sorted(
+        found.values(),
+        key=lambda item: (
+            0 if int(item.get("count") or 0) > 0 else 1,
+            float(item["price"]) if item.get("price") is not None else 999999,
+            int(item.get("value") or 0),
+        ),
+    )
+
+
+def _is_generic_country_label(value: Any) -> bool:
+    text = str(value or "").strip()
+    return not text or text.startswith("国家 ID ")
+
+
+def query_dynamic_sms_countries(
+    *,
+    provider: str,
+    service_code: str,
+    base_url: str,
+    api_key: str,
+) -> dict[str, Any]:
+    provider = _normalize_sms_provider(provider)
+    payloads: list[tuple[str, Any]] = []
+    errors: list[str] = []
+    if provider == "smsbower":
+        actions = (
+            ("getCountries", {}),
+            ("getTopCountriesByService", {"service": service_code}),
+        )
+    else:
+        actions = (
+            ("getCountries", {}),
+            ("getTopCountriesByService", {"service": service_code, "freePrice": "true"}),
+            ("getPrices", {"service": service_code}),
+        )
+    for action, params in actions:
+        try:
+            ok, text, data = _hero_request(base_url, api_key, action, params, timeout=30)
+        except Exception as exc:
+            ok, text, data = False, str(exc), None
+        payload = data if data is not None else text
+        if ok:
+            payloads.append((action, payload))
+        else:
+            errors.append(f"{action}: {text or 'failed'}")
+    merged_options: dict[str, dict[str, Any]] = {}
+    country_catalog_loaded = False
+    for action, payload in payloads:
+        if action != "getCountries":
+            continue
+        country_catalog_loaded = True
+        for option in _collect_sms_country_options(payload):
+            value = str(option.get("value") or "").strip()
+            if not value:
+                continue
+            merged_options[value] = {
+                "value": value,
+                "label": str(option.get("label") or f"国家 ID {value}"),
+                "phone_code": str(option.get("phone_code") or ""),
+                "count": int(option.get("count") or 0),
+                "price": option.get("price"),
+            }
+    valid_country_ids = set(merged_options) if country_catalog_loaded else set()
+    for action, payload in payloads:
+        if action == "getCountries":
+            continue
+        for option in _collect_sms_country_options(payload):
+            value = str(option.get("value") or "").strip()
+            if not value:
+                continue
+            if valid_country_ids and value not in valid_country_ids:
+                continue
+            existing = merged_options.get(value) or {"value": value}
+            incoming_label = str(option.get("label") or "").strip()
+            existing_label = str(existing.get("label") or "").strip()
+            if _is_generic_country_label(incoming_label) and not _is_generic_country_label(existing_label):
+                label = existing_label
+            else:
+                label = incoming_label or existing_label or f"国家 ID {value}"
+            merged_options[value] = {
+                "value": value,
+                "label": label,
+                "phone_code": str(option.get("phone_code") or existing.get("phone_code") or ""),
+                "count": max(int(option.get("count") or 0), int(existing.get("count") or 0)),
+                "price": option.get("price") if option.get("price") is not None else existing.get("price"),
+            }
+    options: list[dict[str, Any]] = []
+    for option in sorted(
+        merged_options.values(),
+        key=lambda item: (
+            0 if int(item.get("count") or 0) > 0 else 1,
+            float(item["price"]) if item.get("price") is not None else 999999,
+            int(item.get("value") or 0),
+        ),
+    ):
+        value = str(option.get("value") or "").strip()
+        label_parts = [str(option.get("label") or f"国家 ID {value}")]
+        if option.get("phone_code"):
+            label_parts.append(str(option["phone_code"]))
+        label_parts.append(value)
+        if option.get("count"):
+            label_parts.append(f"{int(option['count'])}个")
+        if option.get("price") is not None:
+            label_parts.append(f"${option['price']}")
+        options.append({**option, "label": " / ".join(label_parts)})
+    return {
+        "ok": bool(options),
+        "provider": provider,
+        "error": "" if options else "；".join(errors),
+        "options": options,
+        "count": len(options),
+    }
 
 
 def _sorted_unique_hero_prices(values: list[float]) -> list[float]:

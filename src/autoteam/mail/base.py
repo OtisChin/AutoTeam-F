@@ -245,20 +245,61 @@ class MailProvider(ABC):
 
         # OpenAI 登录验证码经常直接出现在 subject；部分邮件列表接口首轮只返回标题/摘要。
         add_source(email_data.get("subject"))
-        for key in ("verification_code", "verify_code", "code", "otp"):
+        code_keys = (
+            "verification_code",
+            "verificationCode",
+            "verify_code",
+            "verifyCode",
+            "email_code",
+            "mail_code",
+            "otp",
+            "otp_code",
+            "code",
+        )
+        text_keys = (
+            "text",
+            "plain_text",
+            "text_body",
+            "mail_text",
+            "mail_body",
+            "mail_content",
+            "content",
+            "message",
+            "body",
+            "snippet",
+            "summary",
+            "preview",
+        )
+        html_keys = (
+            "html",
+            "html_body",
+            "body_html",
+            "mail_html",
+            "mail_body_html",
+            "raw_html",
+        )
+
+        for key in code_keys:
             add_source(email_data.get(key))
-        add_source(email_data.get("text"))
-        for key in ("content", "message", "html", "body"):
+        for key in text_keys:
+            add_source(email_data.get(key))
+        for key in html_keys:
             add_source(email_data.get(key), html=True)
 
         raw = email_data.get("raw")
         if isinstance(raw, dict):
-            add_source(raw.get("subject"))
-            for key in ("verification_code", "verify_code", "code", "otp"):
-                add_source(raw.get(key))
-            add_source(raw.get("text"))
-            for key in ("content", "message", "html", "body", "snippet", "summary"):
-                add_source(raw.get(key), html=key in {"content", "message", "html", "body"})
+            raw_items = [raw]
+            nested_mail = raw.get("mail")
+            if isinstance(nested_mail, dict):
+                raw_items.append(nested_mail)
+            for raw_item in raw_items:
+                add_source(raw_item.get("subject") or raw_item.get("mail_subject"))
+                for key in code_keys:
+                    add_source(raw_item.get(key))
+                for key in text_keys:
+                    add_source(raw_item.get(key))
+                for key in html_keys:
+                    add_source(raw_item.get(key), html=True)
         elif isinstance(raw, str):
             add_source(raw)
 

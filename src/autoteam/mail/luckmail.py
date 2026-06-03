@@ -21,11 +21,14 @@ from urllib.parse import quote
 
 from curl_cffi import requests as curl_requests
 
+from autoteam import sqlite_store
 from autoteam.mail.base import MailProvider, html_to_visible_text, normalize_email_addr
 from autoteam.paths import PROJECT_ROOT
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
+_PERSIST_NAMESPACE = "luckmail"
+_PERSIST_KEY = "accounts"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -86,6 +89,7 @@ class LuckMailProvider(MailProvider):
             account = self._parse_account_line(line)
             if account and account.validate():
                 accounts.append(account)
+        accounts.extend(self._load_persisted_accounts())
 
         seen: set[str] = set()
         unique: list[LuckMailAccount] = []
@@ -96,6 +100,49 @@ class LuckMailProvider(MailProvider):
             seen.add(key)
             unique.append(account)
         return unique
+
+    @staticmethod
+    def _load_persisted_accounts() -> list[LuckMailAccount]:
+        data = sqlite_store.get_json(_PERSIST_NAMESPACE, _PERSIST_KEY, default=[])
+        if not isinstance(data, list):
+            return []
+        accounts: list[LuckMailAccount] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            account = LuckMailAccount(
+                email=normalize_email_addr(item.get("email")),
+                token=str(item.get("token") or "").strip(),
+                purchase_id=str(item.get("purchase_id") or "").strip(),
+            )
+            if account.validate():
+                accounts.append(account)
+        return accounts
+
+    @staticmethod
+    def _persist_purchased_account(account: LuckMailAccount) -> None:
+        if not account.validate():
+            return
+        data = sqlite_store.get_json(_PERSIST_NAMESPACE, _PERSIST_KEY, default=[])
+        items = data if isinstance(data, list) else []
+        email = account.email.lower()
+        now = time.time()
+        next_items = [
+            item
+            for item in items
+            if not (isinstance(item, dict) and normalize_email_addr(item.get("email")).lower() == email)
+        ]
+        next_items.insert(
+            0,
+            {
+                "email": account.email,
+                "token": account.token,
+                "purchase_id": account.purchase_id,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        sqlite_store.set_json(_PERSIST_NAMESPACE, _PERSIST_KEY, next_items[:1000])
 
     @staticmethod
     def _parse_account_line(line: str) -> LuckMailAccount | None:
@@ -132,6 +179,7 @@ class LuckMailProvider(MailProvider):
     def create_temp_email(self, prefix: str | None = None, domain: str | None = None) -> tuple[int | str, str]:
         if not self.accounts and self.api_key:
             account = self._purchase_account(domain=domain)
+            self._persist_purchased_account(account)
             with self._lock:
                 self.accounts.append(account)
                 self._tokens_by_email[account.email.lower()] = account.token
@@ -164,6 +212,7 @@ class LuckMailProvider(MailProvider):
 
         if self.api_key:
             account = self._purchase_account(domain=domain)
+            self._persist_purchased_account(account)
             with self._lock:
                 self.accounts.append(account)
                 self._tokens_by_email[account.email.lower()] = account.token
@@ -351,16 +400,69 @@ class LuckMailProvider(MailProvider):
 
     @staticmethod
     def _mail_item_to_legacy(token: str, email: str, item: dict[str, Any]) -> dict:
-        code = str(item.get("verification_code") or item.get("code") or "").strip()
-        subject = str(item.get("subject") or item.get("mail_subject") or "")
-        sender = str(item.get("from") or item.get("mail_from") or "")
-        body = str(item.get("body") or item.get("mail_body") or item.get("mail_body_html") or "")
-        html = str(item.get("html_body") or item.get("html") or "")
+        raw_item = item if isinstance(item, dict) else {}
+        nested_mail = raw_item.get("mail") if isinstance(raw_item.get("mail"), dict) else {}
+        source = {**nested_mail, **raw_item}
+
+        def first_value(*keys: str) -> Any:
+            for key in keys:
+                value = source.get(key)
+                if value is not None and str(value).strip():
+                    return value
+            return ""
+
+        code = str(
+            first_value(
+                "verification_code",
+                "verificationCode",
+                "verify_code",
+                "verifyCode",
+                "email_code",
+                "mail_code",
+                "otp",
+                "otp_code",
+                "code",
+            )
+        ).strip()
+        subject = str(first_value("subject", "mail_subject", "title"))
+        sender = str(first_value("from", "mail_from", "sender", "sendEmail", "fromEmail"))
+        body = str(
+            first_value(
+                "text",
+                "plain_text",
+                "text_body",
+                "mail_text",
+                "mail_body",
+                "mail_content",
+                "content",
+                "message",
+                "body",
+                "snippet",
+                "summary",
+                "preview",
+            )
+        )
+        html = str(first_value("html", "html_body", "body_html", "mail_html", "mail_body_html", "raw_html"))
+        received_at = first_value(
+            "received_at",
+            "receivedAt",
+            "receive_time",
+            "receiveTime",
+            "created_at",
+            "createdAt",
+            "create_time",
+            "createTime",
+            "date",
+            "time",
+            "timestamp",
+            "code_time",
+            "codeTime",
+        )
         text_parts = [subject, html_to_visible_text(body), html_to_visible_text(html)]
         if code:
             text_parts.insert(0, f"verification code: {code}")
         text = "\n".join(part for part in text_parts if part).strip()
-        message_id = str(item.get("message_id") or item.get("id") or code or token)
+        message_id = str(first_value("message_id", "messageId", "mail_id", "mailId", "id") or code or token)
         return {
             "id": message_id,
             "accountId": token,
@@ -372,7 +474,7 @@ class LuckMailProvider(MailProvider):
             "content": html or body or text,
             "html": html,
             "message": html or body or text,
-            "createTime": item.get("received_at") or item.get("created_at") or item.get("code_time") or 0,
-            "createdAt": item.get("received_at") or item.get("created_at") or item.get("code_time") or 0,
-            "raw": item,
+            "createTime": received_at or 0,
+            "createdAt": received_at or 0,
+            "raw": raw_item,
         }

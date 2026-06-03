@@ -35,11 +35,31 @@
     </div>
 
     <div v-if="statsMode === 'task'" class="shrink-0 rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-300">
-      <span class="text-gray-500">任务 ID：</span>
-      <span class="font-mono text-white">{{ currentTaskMeta.taskId || '-' }}</span>
-      <span class="mx-3 text-gray-700">|</span>
-      <span class="text-gray-500">开始时间：</span>
-      <span class="font-mono text-white">{{ currentTaskMeta.startedAt || '-' }}</span>
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="min-w-0">
+          <span class="text-gray-500">任务 ID：</span>
+          <span class="font-mono text-white">{{ currentTaskMeta.taskId || '-' }}</span>
+          <span class="mx-3 text-gray-700">|</span>
+          <span class="text-gray-500">开始时间：</span>
+          <span class="font-mono text-white">{{ currentTaskMeta.startedAt || '-' }}</span>
+          <template v-if="activeRegisterTaskStatus">
+            <span class="mx-3 text-gray-700">|</span>
+            <span class="text-gray-500">状态：</span>
+            <span class="font-mono text-amber-300">{{ activeRegisterTaskStatus }}</span>
+          </template>
+        </div>
+        <button
+          v-if="props.runningTask"
+          type="button"
+          @click="cancelRegisterTask"
+          :disabled="registerCancelBusy || registerCancelRequested"
+          class="shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium transition"
+          :class="registerCancelBusy || registerCancelRequested
+            ? 'cursor-not-allowed border-gray-700 bg-gray-800 text-gray-500'
+            : 'border-rose-500/30 bg-rose-600/10 text-rose-300 hover:bg-rose-600/20'">
+          {{ registerCancelRequested ? '取消中...' : (registerCancelBusy ? '提交中...' : '取消任务') }}
+        </button>
+      </div>
     </div>
 
     <div v-if="message" class="shrink-0 rounded-lg border px-4 py-3 text-sm" :class="messageClass">
@@ -56,18 +76,6 @@
               class="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition hover:bg-blue-500 disabled:opacity-50">
               {{ registeringAccount ? '提交中...' : (isPhoneCpaFlow ? '开始手机注册' : (registerForm.mode === 'batch' ? '开始批量注册' : '开始注册')) }}
             </button>
-            <div class="mt-3 flex items-start justify-between gap-3">
-              <div class="min-w-0 text-xs leading-relaxed text-gray-500">
-                域名型邮箱按前缀生成地址；Outlook / LuckMail 从已配置邮箱池中选择账号。
-              </div>
-              <button
-                v-if="registerProviderUsesDomains"
-                @click="reloadRegisterDomains"
-                :disabled="registerConfigLoading"
-                class="shrink-0 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 transition hover:bg-gray-700 disabled:opacity-50">
-                {{ registerConfigLoading ? '刷新中...' : '刷新域名' }}
-              </button>
-            </div>
           </div>
           <div>
             <label class="block text-sm text-gray-400 mb-1">注册模式</label>
@@ -166,23 +174,46 @@
               </div>
               <div>
                 <label class="block text-xs text-gray-500 mb-1">手机号国家</label>
-                <input
-                  v-model="oauthPhoneSmsCountrySearch"
-                  :disabled="registeringBusy || oauthPhoneSmsLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
-                  type="search"
-                  autocomplete="off"
-                  placeholder="搜索国家 / 区号 / ID"
-                  class="mb-2 w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
-                />
-                <select
-                  v-model="registerForm.oauthPhoneSmsCountry"
-                  :disabled="registeringBusy || oauthPhoneSmsLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
-                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-60"
-                >
-                  <option v-for="option in oauthPhoneSmsCountryOptionsForSelect" :key="option.value" :value="option.value">
-                    {{ option.label }}
-                  </option>
-                </select>
+                <div class="relative">
+                  <input
+                    v-model="oauthPhoneSmsCountrySearch"
+                    :disabled="registeringBusy || oauthPhoneSmsLoading || oauthPhoneSmsCountriesLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
+                    type="search"
+                    autocomplete="off"
+                    :placeholder="oauthPhoneSmsCountriesLoading ? '国家列表加载中...' : '搜索或选择国家'"
+                    class="w-full px-3 py-2 pr-9 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                    @focus="openOAuthPhoneSmsCountryDropdown"
+                    @input="handleOAuthPhoneSmsCountryInput"
+                    @blur="closeOAuthPhoneSmsCountryDropdownSoon"
+                  />
+                  <button
+                    type="button"
+                    :disabled="registeringBusy || oauthPhoneSmsLoading || oauthPhoneSmsCountriesLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
+                    class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-1.5 py-1 text-xs text-gray-400 transition hover:bg-gray-700 hover:text-white disabled:pointer-events-none disabled:opacity-40"
+                    @mousedown.prevent
+                    @click="toggleOAuthPhoneSmsCountryDropdown"
+                  >
+                    ▾
+                  </button>
+                  <div
+                    v-if="oauthPhoneSmsCountryDropdownOpen && registerForm.oauthPhoneSmsProvider !== 'phone_pool'"
+                    class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl shadow-black/40"
+                  >
+                    <button
+                      v-for="option in oauthPhoneSmsCountryOptionsForSelect"
+                      :key="option.value"
+                      type="button"
+                      class="block w-full px-3 py-2 text-left text-sm transition hover:bg-gray-800"
+                      :class="option.value === registerForm.oauthPhoneSmsCountry ? 'bg-blue-600/15 text-blue-200' : 'text-gray-200'"
+                      @mousedown.prevent="selectOAuthPhoneSmsCountry(option)"
+                    >
+                      <span class="block truncate">{{ option.label }}</span>
+                    </button>
+                    <div v-if="!oauthPhoneSmsCountryOptionsForSelect.length" class="px-3 py-2 text-sm text-gray-500">
+                      没有匹配的国家
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
             <div v-if="registerForm.oauthPhoneSmsProvider !== 'phone_pool'">
@@ -202,6 +233,9 @@
             </div>
             <div v-if="!oauthPhoneSmsReady" class="text-xs text-red-400">
               当前手机号供应商未配置 API Key，请先到设置页配置后再启动。
+            </div>
+            <div v-if="oauthPhoneSmsCountryError" class="text-xs text-amber-300">
+              {{ oauthPhoneSmsCountryError }}
             </div>
           </div>
 
@@ -546,6 +580,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 
 const REGISTER_FORM_STORAGE_KEY = 'autoteam_register_form_v1'
+const OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY = 'autoteam_oauth_phone_sms_countries_v2'
+const OAUTH_PHONE_SMS_COUNTRIES_CACHE_TTL_MS = 30 * 60 * 1000
 
 const props = defineProps({
   runningTask: Object,
@@ -571,13 +607,21 @@ const outlookImportResultOk = ref(true)
 const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
+const registerCancelBusy = ref(false)
+const registerCancelRequested = ref(false)
 const oauthPhoneSmsLoading = ref(false)
+const oauthPhoneSmsCountriesLoading = ref(false)
+const oauthPhoneSmsCountryError = ref('')
 const oauthPhoneSmsCountrySearch = ref('')
+const oauthPhoneSmsCountryDropdownOpen = ref(false)
+const oauthPhoneSmsCountryRequests = new Map()
 const oauthPhoneSmsProviderOptions = ref([
   { value: 'phone_pool', label: '手机号池', configured: true },
   { value: 'hero_sms', label: 'hero-sms', configured: false },
   { value: 'smsbower', label: 'smsbower', configured: false },
 ])
+const oauthPhoneSmsConfig = ref({})
+const oauthPhoneSmsConfigLoaded = ref(false)
 const registerStats = ref({
   task: { total: 0, ok: 0, failed: 0, successRate: 0 },
   today: { total: 0, ok: 0, failed: 0, successRate: 0 },
@@ -611,6 +655,8 @@ const mailProviderLoading = ref(false)
 const mailProviderOptions = ref([])
 let savedLuckmailEmailType = false
 let savedLuckmailPreferredDomain = false
+let savedOauthPhoneSmsCountries = {}
+let savedOauthPhoneSmsMaxPrices = {}
 const luckmailEmailTypeOptions = [
   { value: 'ms_graph', label: '微软 Graph 邮箱' },
   { value: 'ms_imap', label: '微软 IMAP 邮箱' },
@@ -628,41 +674,27 @@ const luckmailDomainOptions = [
   { value: 'hotmail.de', label: 'hotmail.de' },
   { value: 'live.com', label: 'live.com' },
 ]
-const oauthPhoneSmsCountryOptions = [
+const oauthPhoneSmsCountryFallbackOptions = {
+  phone_pool: [],
+  hero_sms: [
+    { value: 'all', label: '全部国家 / 不限制' },
+    { value: '187', label: '美国 / 187' },
+    { value: '6', label: '印度尼西亚 / 6' },
+    { value: '33', label: '哥伦比亚 / 33' },
+  ],
+  smsbower: [
+    { value: 'all', label: '全部国家 / 不限制' },
+    { value: '187', label: '美国 / 187' },
+    { value: '6', label: '印度尼西亚 / 6' },
+    { value: '33', label: '哥伦比亚 / 33' },
+  ],
+}
+const oauthPhoneSmsCountryOptions = ref([
   { value: 'all', label: '全部国家 / 不限制' },
   { value: '187', label: '美国 (+1) / 187' },
-  { value: '0', label: '俄罗斯 (+7) / 0' },
-  { value: '1', label: '乌克兰 (+380) / 1' },
-  { value: '2', label: '哈萨克斯坦 (+7) / 2' },
-  { value: '3', label: '中国 (+86) / 3' },
-  { value: '4', label: '菲律宾 (+63) / 4' },
-  { value: '5', label: '缅甸 (+95) / 5' },
   { value: '6', label: '印度尼西亚 (+62) / 6' },
-  { value: '7', label: '马来西亚 (+60) / 7' },
-  { value: '10', label: '越南 (+84) / 10' },
-  { value: '12', label: '美国旧ID (+1) / 12' },
-  { value: '13', label: '以色列 (+972) / 13' },
-  { value: '14', label: '香港 (+852) / 14' },
-  { value: '15', label: '波兰 (+48) / 15' },
-  { value: '16', label: '英国 (+44) / 16' },
-  { value: '19', label: '尼日利亚 (+234) / 19' },
-  { value: '22', label: '印度 (+91) / 22' },
-  { value: '32', label: '罗马尼亚 (+40) / 32' },
   { value: '33', label: '哥伦比亚 (+57) / 33' },
-  { value: '36', label: '加拿大 (+1) / 36' },
-  { value: '43', label: '德国 (+49) / 43' },
-  { value: '46', label: '瑞典 (+46) / 46' },
-  { value: '78', label: '法国 (+33) / 78' },
-  { value: '48', label: '荷兰 (+31) / 48' },
-  { value: '52', label: '泰国 (+66) / 52' },
-  { value: '56', label: '西班牙 (+34) / 56' },
-  { value: '73', label: '巴西 (+55) / 73' },
-  { value: '86', label: '意大利 (+39) / 86' },
-  { value: '117', label: '葡萄牙 (+351) / 117' },
-  { value: '175', label: '澳大利亚 (+61) / 175' },
-  { value: '176', label: '希腊 (+30) / 176' },
-  { value: '179', label: '新西兰 (+64) / 179' },
-]
+])
 
 const registeringBusy = computed(() => !!props.runningTask)
 const validBatchCount = computed(() => {
@@ -763,18 +795,25 @@ const registerProxyLabel = computed(() => {
 const oauthPhoneSmsCountryOptionsForSelect = computed(() => {
   const selected = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
   const query = String(oauthPhoneSmsCountrySearch.value || '').trim().toLowerCase()
-  let options = oauthPhoneSmsCountryOptions
-  if (query) {
-    options = oauthPhoneSmsCountryOptions.filter(option => {
+  const sourceOptions = oauthPhoneSmsCountryOptions.value || []
+  const selectedOption = sourceOptions.find(option => option.value === selected)
+  const selectedLabel = String(selectedOption?.label || '').trim().toLowerCase()
+  let options = sourceOptions
+  if (query && query !== selectedLabel) {
+    options = sourceOptions.filter(option => {
       const text = `${option.value} ${option.label}`.toLowerCase()
       return text.includes(query)
     })
   }
   if (selected && !options.some(option => option.value === selected)) {
-    const known = oauthPhoneSmsCountryOptions.find(option => option.value === selected)
+    const known = sourceOptions.find(option => option.value === selected)
     options = [{ value: selected, label: known?.label || `当前配置 / ${selected}` }, ...options]
   }
   return options
+})
+const selectedOAuthPhoneSmsCountryOption = computed(() => {
+  const selected = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
+  return (oauthPhoneSmsCountryOptions.value || []).find(item => item.value === selected) || null
 })
 const oauthPhoneSmsProviderLabel = computed(() => {
   const provider = String(registerForm.value.oauthPhoneSmsProvider || 'phone_pool')
@@ -783,7 +822,7 @@ const oauthPhoneSmsProviderLabel = computed(() => {
 })
 const oauthPhoneSmsCountryLabel = computed(() => {
   if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') return '按手机号池'
-  const option = oauthPhoneSmsCountryOptionsForSelect.value.find(item => item.value === registerForm.value.oauthPhoneSmsCountry)
+  const option = selectedOAuthPhoneSmsCountryOption.value
   return option?.label || registerForm.value.oauthPhoneSmsCountry || '美国 (+1) / 187'
 })
 const oauthPhoneSmsMaxPriceLabel = computed(() => {
@@ -821,9 +860,15 @@ const statCards = computed(() => {
   ]
 })
 const currentTaskMeta = computed(() => ({
-  taskId: registerStats.value.taskMeta?.taskId || '',
-  startedAt: registerStats.value.taskMeta?.startedAt || '',
+  taskId: props.runningTask?.task_id || registerStats.value.taskMeta?.taskId || '',
+  startedAt: props.runningTask
+    ? fmtTaskTime(props.runningTask.started_at || props.runningTask.created_at || 0)
+    : (registerStats.value.taskMeta?.startedAt || ''),
 }))
+const activeRegisterTaskStatus = computed(() => {
+  if (!props.runningTask) return ''
+  return props.runningTask.cancel_requested ? 'cancel_requested' : String(props.runningTask.status || '')
+})
 
 function setMessage(text, ok = true) {
   message.value = text
@@ -839,6 +884,47 @@ function setMessage(text, ok = true) {
 function toggleRegisterDomainDropdown() {
   if (registeringBusy.value || !registerDomainOptions.value.length) return
   registerDomainDropdownOpen.value = !registerDomainDropdownOpen.value
+}
+
+function syncOAuthPhoneSmsCountrySearch() {
+  if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') {
+    oauthPhoneSmsCountrySearch.value = ''
+    oauthPhoneSmsCountryDropdownOpen.value = false
+    return
+  }
+  oauthPhoneSmsCountrySearch.value = oauthPhoneSmsCountryLabel.value
+}
+
+function openOAuthPhoneSmsCountryDropdown(event) {
+  if (registeringBusy.value || oauthPhoneSmsLoading.value || oauthPhoneSmsCountriesLoading.value) return
+  if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') return
+  oauthPhoneSmsCountryDropdownOpen.value = true
+  event?.target?.select?.()
+}
+
+function handleOAuthPhoneSmsCountryInput() {
+  if (registeringBusy.value || oauthPhoneSmsLoading.value || oauthPhoneSmsCountriesLoading.value) return
+  if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') return
+  oauthPhoneSmsCountryDropdownOpen.value = true
+}
+
+function toggleOAuthPhoneSmsCountryDropdown() {
+  if (registeringBusy.value || oauthPhoneSmsLoading.value || oauthPhoneSmsCountriesLoading.value) return
+  if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') return
+  oauthPhoneSmsCountryDropdownOpen.value = !oauthPhoneSmsCountryDropdownOpen.value
+}
+
+function closeOAuthPhoneSmsCountryDropdownSoon() {
+  window.setTimeout(() => {
+    oauthPhoneSmsCountryDropdownOpen.value = false
+    syncOAuthPhoneSmsCountrySearch()
+  }, 120)
+}
+
+function selectOAuthPhoneSmsCountry(option) {
+  registerForm.value.oauthPhoneSmsCountry = String(option?.value || '').trim()
+  oauthPhoneSmsCountrySearch.value = String(option?.label || option?.value || '').trim()
+  oauthPhoneSmsCountryDropdownOpen.value = false
 }
 
 function selectAllRegisterDomains() {
@@ -900,6 +986,30 @@ function loadSavedRegisterForm() {
     if (!saved || typeof saved !== 'object') return
     savedLuckmailEmailType = Object.prototype.hasOwnProperty.call(saved, 'luckmailEmailType')
     savedLuckmailPreferredDomain = Object.prototype.hasOwnProperty.call(saved, 'luckmailPreferredDomain')
+    savedOauthPhoneSmsCountries = saved.oauthPhoneSmsCountryByProvider && typeof saved.oauthPhoneSmsCountryByProvider === 'object'
+      ? Object.fromEntries(
+        Object.entries(saved.oauthPhoneSmsCountryByProvider)
+          .map(([provider, country]) => [String(provider), String(country || '').trim()])
+          .filter(([, country]) => country)
+      )
+      : {}
+    savedOauthPhoneSmsMaxPrices = saved.oauthPhoneSmsMaxPriceByProvider && typeof saved.oauthPhoneSmsMaxPriceByProvider === 'object'
+      ? Object.fromEntries(
+        Object.entries(saved.oauthPhoneSmsMaxPriceByProvider)
+          .map(([provider, maxPrice]) => [String(provider), String(maxPrice || '').trim()])
+      )
+      : {}
+    const savedOauthPhoneSmsProvider = ['phone_pool', 'hero_sms', 'smsbower'].includes(String(saved.oauthPhoneSmsProvider || ''))
+      ? String(saved.oauthPhoneSmsProvider)
+      : 'phone_pool'
+    const savedOauthPhoneSmsCountry = String(saved.oauthPhoneSmsCountry || savedOauthPhoneSmsCountries[savedOauthPhoneSmsProvider] || registerForm.value.oauthPhoneSmsCountry || '187')
+    if (savedOauthPhoneSmsProvider !== 'phone_pool' && savedOauthPhoneSmsCountry) {
+      savedOauthPhoneSmsCountries[savedOauthPhoneSmsProvider] = savedOauthPhoneSmsCountry
+    }
+    const savedOauthPhoneSmsMaxPrice = String(saved.oauthPhoneSmsMaxPrice || savedOauthPhoneSmsMaxPrices[savedOauthPhoneSmsProvider] || '').trim()
+    if (savedOauthPhoneSmsProvider !== 'phone_pool') {
+      savedOauthPhoneSmsMaxPrices[savedOauthPhoneSmsProvider] = savedOauthPhoneSmsMaxPrice
+    }
     registerForm.value = {
       ...registerForm.value,
       mode: saved.mode === 'batch' ? 'batch' : 'single',
@@ -930,11 +1040,9 @@ function loadSavedRegisterForm() {
       password: '',
       protocolRegister: Boolean(saved.protocolRegister),
       postRegisterOauth: Boolean(saved.postRegisterOauth),
-      oauthPhoneSmsProvider: ['phone_pool', 'hero_sms', 'smsbower'].includes(String(saved.oauthPhoneSmsProvider || ''))
-        ? String(saved.oauthPhoneSmsProvider)
-        : 'phone_pool',
-      oauthPhoneSmsCountry: String(saved.oauthPhoneSmsCountry || registerForm.value.oauthPhoneSmsCountry || '187'),
-      oauthPhoneSmsMaxPrice: String(saved.oauthPhoneSmsMaxPrice || ''),
+      oauthPhoneSmsProvider: savedOauthPhoneSmsProvider,
+      oauthPhoneSmsCountry: savedOauthPhoneSmsCountry,
+      oauthPhoneSmsMaxPrice: savedOauthPhoneSmsMaxPrice,
       proxyApiEnabled: Boolean(saved.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || ''))
         ? String(saved.proxyApiProvider)
@@ -947,6 +1055,17 @@ function loadSavedRegisterForm() {
 
 function saveRegisterForm() {
   try {
+    const oauthProvider = ['phone_pool', 'hero_sms', 'smsbower'].includes(String(registerForm.value.oauthPhoneSmsProvider || ''))
+      ? registerForm.value.oauthPhoneSmsProvider
+      : 'phone_pool'
+    const oauthCountry = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
+    if (oauthProvider !== 'phone_pool' && oauthCountry) {
+      savedOauthPhoneSmsCountries[oauthProvider] = oauthCountry
+    }
+    const oauthMaxPrice = String(registerForm.value.oauthPhoneSmsMaxPrice || '').trim()
+    if (oauthProvider !== 'phone_pool') {
+      savedOauthPhoneSmsMaxPrices[oauthProvider] = oauthMaxPrice
+    }
     localStorage.setItem(
       REGISTER_FORM_STORAGE_KEY,
       JSON.stringify({
@@ -966,11 +1085,11 @@ function saveRegisterForm() {
       prefix: registerForm.value.prefix,
       protocolRegister: Boolean(registerForm.value.protocolRegister),
       postRegisterOauth: Boolean(registerForm.value.postRegisterOauth),
-      oauthPhoneSmsProvider: ['phone_pool', 'hero_sms', 'smsbower'].includes(String(registerForm.value.oauthPhoneSmsProvider || ''))
-        ? registerForm.value.oauthPhoneSmsProvider
-        : 'phone_pool',
-      oauthPhoneSmsCountry: registerForm.value.oauthPhoneSmsCountry || '187',
-      oauthPhoneSmsMaxPrice: registerForm.value.oauthPhoneSmsMaxPrice || '',
+      oauthPhoneSmsProvider: oauthProvider,
+      oauthPhoneSmsCountry: oauthCountry || '187',
+      oauthPhoneSmsCountryByProvider: savedOauthPhoneSmsCountries,
+      oauthPhoneSmsMaxPrice: oauthMaxPrice,
+      oauthPhoneSmsMaxPriceByProvider: savedOauthPhoneSmsMaxPrices,
       proxyApiEnabled: Boolean(registerForm.value.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(registerForm.value.proxyApiProvider || ''))
         ? registerForm.value.proxyApiProvider
@@ -1031,6 +1150,8 @@ async function loadOAuthPhoneSmsConfig() {
   oauthPhoneSmsLoading.value = true
   try {
     const result = await api.getOAuthPhoneSmsConfig()
+    oauthPhoneSmsConfig.value = result || {}
+    oauthPhoneSmsConfigLoaded.value = true
     const providers = Array.isArray(result.providers) && result.providers.length
       ? result.providers
       : oauthPhoneSmsProviderOptions.value
@@ -1043,20 +1164,119 @@ async function loadOAuthPhoneSmsConfig() {
       registerForm.value.oauthPhoneSmsProvider = result.provider || 'phone_pool'
     }
     const provider = registerForm.value.oauthPhoneSmsProvider
-    if (!registerForm.value.oauthPhoneSmsCountry || registerForm.value.oauthPhoneSmsCountry === '187') {
+    if (!registerForm.value.oauthPhoneSmsCountry) {
       registerForm.value.oauthPhoneSmsCountry = provider === 'smsbower'
         ? (result.smsbower_country || '187')
         : (result.hero_sms_country || '187')
     }
     if (!registerForm.value.oauthPhoneSmsMaxPrice) {
-      registerForm.value.oauthPhoneSmsMaxPrice = provider === 'smsbower'
+      const hasRememberedMaxPrice = Object.prototype.hasOwnProperty.call(savedOauthPhoneSmsMaxPrices, provider)
+      const rememberedMaxPrice = String(savedOauthPhoneSmsMaxPrices[provider] || '').trim()
+      registerForm.value.oauthPhoneSmsMaxPrice = hasRememberedMaxPrice ? rememberedMaxPrice : (provider === 'smsbower'
         ? (result.smsbower_max_price || '')
-        : (result.hero_sms_max_price || '')
+        : (result.hero_sms_max_price || ''))
     }
+    await loadOAuthPhoneSmsCountries(provider)
   } catch (e) {
     setMessage(`读取 OAuth 接码配置失败: ${e.message}`, false)
   } finally {
     oauthPhoneSmsLoading.value = false
+  }
+}
+
+function configuredOAuthPhoneCountry(provider) {
+  if (!oauthPhoneSmsConfigLoaded.value) return ''
+  const cfg = oauthPhoneSmsConfig.value || {}
+  if (provider === 'smsbower') return String(cfg.smsbower_country || '187')
+  if (provider === 'hero_sms') return String(cfg.hero_sms_country || '187')
+  return ''
+}
+
+function configuredOAuthPhoneMaxPrice(provider) {
+  if (!oauthPhoneSmsConfigLoaded.value) return ''
+  const cfg = oauthPhoneSmsConfig.value || {}
+  if (provider === 'smsbower') return String(cfg.smsbower_max_price || '')
+  if (provider === 'hero_sms') return String(cfg.hero_sms_max_price || '')
+  return ''
+}
+
+function normalizeOAuthPhoneSmsCountryOptions(options) {
+  return (Array.isArray(options) ? options : []).map(option => ({
+    value: String(option.value || ''),
+    label: String(option.label || option.value || ''),
+  })).filter(option => option.value)
+}
+
+function readOAuthPhoneSmsCountriesCache(provider) {
+  try {
+    const raw = localStorage.getItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    const entry = parsed?.[provider]
+    if (!entry || !Array.isArray(entry.options)) return null
+    if (Date.now() - Number(entry.cachedAt || 0) > OAUTH_PHONE_SMS_COUNTRIES_CACHE_TTL_MS) return null
+    const options = normalizeOAuthPhoneSmsCountryOptions(entry.options)
+    return options.length ? options : null
+  } catch {
+    return null
+  }
+}
+
+function writeOAuthPhoneSmsCountriesCache(provider, options) {
+  try {
+    const raw = localStorage.getItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    parsed[provider] = {
+      cachedAt: Date.now(),
+      options: normalizeOAuthPhoneSmsCountryOptions(options),
+    }
+    localStorage.setItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY, JSON.stringify(parsed))
+  } catch (e) {
+    console.error('writeOAuthPhoneSmsCountriesCache', e)
+  }
+}
+
+async function loadOAuthPhoneSmsCountries(provider = registerForm.value.oauthPhoneSmsProvider) {
+  const normalizedProvider = String(provider || 'phone_pool')
+  oauthPhoneSmsCountryError.value = ''
+  oauthPhoneSmsCountryDropdownOpen.value = false
+  if (normalizedProvider === 'phone_pool') {
+    oauthPhoneSmsCountryOptions.value = []
+    syncOAuthPhoneSmsCountrySearch()
+    return
+  }
+  const cachedOptions = readOAuthPhoneSmsCountriesCache(normalizedProvider)
+  if (cachedOptions) {
+    oauthPhoneSmsCountryOptions.value = cachedOptions
+    syncOAuthPhoneSmsCountrySearch()
+    return
+  }
+  oauthPhoneSmsCountriesLoading.value = true
+  let request = oauthPhoneSmsCountryRequests.get(normalizedProvider)
+  try {
+    if (!request) {
+      request = api.getOAuthPhoneSmsCountries(normalizedProvider)
+      oauthPhoneSmsCountryRequests.set(normalizedProvider, request)
+    }
+    const result = await request
+    const options = Array.isArray(result.options) && result.options.length
+      ? result.options
+      : (oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || [])
+    oauthPhoneSmsCountryOptions.value = normalizeOAuthPhoneSmsCountryOptions(options)
+    if (!result.fallback && oauthPhoneSmsCountryOptions.value.length) {
+      writeOAuthPhoneSmsCountriesCache(normalizedProvider, oauthPhoneSmsCountryOptions.value)
+    }
+    oauthPhoneSmsCountryError.value = result.fallback && result.error ? result.error : ''
+    syncOAuthPhoneSmsCountrySearch()
+  } catch (e) {
+    oauthPhoneSmsCountryOptions.value = oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || []
+    oauthPhoneSmsCountryError.value = e.message || '国家列表加载失败，已使用兜底列表'
+    syncOAuthPhoneSmsCountrySearch()
+  } finally {
+    if (oauthPhoneSmsCountryRequests.get(normalizedProvider) === request) {
+      oauthPhoneSmsCountryRequests.delete(normalizedProvider)
+    }
+    oauthPhoneSmsCountriesLoading.value = false
   }
 }
 
@@ -1169,14 +1389,36 @@ async function submitManualRegister() {
       oauth_phone_sms_max_price: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsMaxPrice : '',
       proxy_api_provider: registerForm.value.proxyApiEnabled ? registerForm.value.proxyApiProvider : '',
     }
-    const result = await api.startAdd(payload)
-    setMessage(`注册任务已提交: ${result.task_id}`)
+    await api.startAdd(payload)
     emit('task-started')
     emit('refresh')
   } catch (e) {
     setMessage(e.message, false)
   } finally {
     registeringAccount.value = false
+  }
+}
+
+async function cancelRegisterTask() {
+  if (registerCancelBusy.value || registerCancelRequested.value) return
+  const task = props.runningTask
+  if (!task?.task_id) return
+  const ok = window.confirm(`确认取消当前账号注册任务?\n\nID: ${task.task_id}\n\n已开始的单个账号步骤会在可中断点停止，后续账号不会继续提交。`)
+  if (!ok) return
+  registerCancelBusy.value = true
+  try {
+    const result = await api.cancelTask({
+      task_id: task.task_id,
+      task_group: 'register',
+    })
+    registerCancelRequested.value = true
+    message.value = result.message || '已请求取消注册任务'
+    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+    emit('refresh')
+  } catch (e) {
+    setMessage(`取消注册任务失败: ${e.message}`, false)
+  } finally {
+    registerCancelBusy.value = false
   }
 }
 
@@ -1201,6 +1443,42 @@ watch(
   }
 )
 
+watch(
+  () => registerForm.value.oauthPhoneSmsProvider,
+  async (provider, previousProvider) => {
+    const normalizedProvider = String(provider || 'phone_pool')
+    const normalizedPreviousProvider = String(previousProvider || '')
+    const currentCountry = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
+    const currentMaxPrice = String(registerForm.value.oauthPhoneSmsMaxPrice || '').trim()
+    if (normalizedPreviousProvider && normalizedPreviousProvider !== 'phone_pool' && currentCountry) {
+      savedOauthPhoneSmsCountries[normalizedPreviousProvider] = currentCountry
+    }
+    if (normalizedPreviousProvider && normalizedPreviousProvider !== 'phone_pool') {
+      savedOauthPhoneSmsMaxPrices[normalizedPreviousProvider] = currentMaxPrice
+    }
+    if (normalizedProvider === 'phone_pool') {
+      registerForm.value.oauthPhoneSmsCountry = ''
+      registerForm.value.oauthPhoneSmsMaxPrice = ''
+      oauthPhoneSmsCountryOptions.value = []
+      syncOAuthPhoneSmsCountrySearch()
+      return
+    }
+    const rememberedCountry = String(savedOauthPhoneSmsCountries[normalizedProvider] || '').trim()
+    const configuredCountry = configuredOAuthPhoneCountry(normalizedProvider)
+    const nextCountry = rememberedCountry || configuredCountry
+    if (nextCountry) {
+      registerForm.value.oauthPhoneSmsCountry = nextCountry
+    }
+    const hasRememberedMaxPrice = Object.prototype.hasOwnProperty.call(savedOauthPhoneSmsMaxPrices, normalizedProvider)
+    const rememberedMaxPrice = String(savedOauthPhoneSmsMaxPrices[normalizedProvider] || '').trim()
+    const configuredMaxPrice = configuredOAuthPhoneMaxPrice(normalizedProvider)
+    registerForm.value.oauthPhoneSmsMaxPrice = hasRememberedMaxPrice ? rememberedMaxPrice : configuredMaxPrice
+    await loadOAuthPhoneSmsCountries(normalizedProvider)
+    syncOAuthPhoneSmsCountrySearch()
+  },
+  { flush: 'sync' }
+)
+
 onMounted(reloadRegisterDomains)
 onMounted(() => {
   loadSavedRegisterForm()
@@ -1222,12 +1500,19 @@ onUnmounted(() => {
   }
 })
 watch(() => props.runningTask?.task_id, (newId, oldId) => {
+  if (newId !== oldId) {
+    registerCancelBusy.value = false
+    registerCancelRequested.value = false
+  }
   if (oldId && !newId) {
     reloadRegisterDomains()
     loadRegisterLogs()
     loadRegisterStats()
   }
 })
+watch(() => props.runningTask?.cancel_requested, value => {
+  if (value) registerCancelRequested.value = true
+}, { immediate: true })
 
 function fmtLogTime(ts) {
   if (!ts) return '-'

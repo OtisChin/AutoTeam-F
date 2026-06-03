@@ -51,6 +51,8 @@ PHONE_REJECTED_HINTS = (
     "unable to complete your request",
     "we’re unable to complete your request",
     "we’re unable to complete your request",
+    "リクエストを完了できません",
+    "別の電話番号",
 )
 ACCOUNT_LIMITED_HINTS = (
     "your account is limited",
@@ -430,17 +432,14 @@ def _bootstrap(http: Any, ba_token: str, *, locale_country: str, locale_lang: st
     _warmup_paypal_session(http, timeout=min(timeout, 15))
     time.sleep(random.uniform(0.5, 1.5))
 
-    # 请求 /agreements/approve，支持 DataDome 重试
-    resp = None
-    for attempt in range(3):
-        resp = http.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if not _is_datadome_blocked(resp):
-            break
+    # DataDome 拦截不是同一 HTTP session 原地重试能稳定解决的问题；尽快返回给上层
+    # 浏览器兜底，保留同一代理与真实页面上下文处理安全检查。
+    resp = http.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+    if _is_datadome_blocked(resp):
         logger.info(
-            "[paypal_protocol_signup] /agreements/approve DataDome blocked (attempt %d), retrying...",
-            attempt + 1,
+            "[paypal_protocol_signup] /agreements/approve DataDome blocked; switching to browser fallback",
         )
-        time.sleep(random.uniform(2.0, 4.0))
+        raise RuntimeError("paypal_human_verification|PayPal /agreements/approve 被 DataDome 风控拦截，已停止协议重试并降级浏览器处理")
     html = str(resp.text or "")
     if resp.status_code != 200:
         stage, message = _classify_error_text(html)

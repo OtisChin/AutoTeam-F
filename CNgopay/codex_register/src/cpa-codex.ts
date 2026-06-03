@@ -1,12 +1,12 @@
-﻿/**
+/**
  * CPA management codex OAuth helpers.
  *
  * 注意：这些请求必须**绕过**全局 SOCKS 代理（代理是给 OpenAI 用的美国节点），
- * 直接走默认 dispatcher 才能正常访问 YOUR_CPA_HOST。
+ * 直接走默认 dispatcher 才能正常访问 cpa.iceaix.com。
  */
 import {Agent, fetch as undiciFetch, type Dispatcher} from "undici";
 
-const CPA_BASE_DEFAULT = "";
+const CPA_BASE_DEFAULT = "https://cpa.iceaix.com";
 
 let cachedDispatcher: Dispatcher | null = null;
 

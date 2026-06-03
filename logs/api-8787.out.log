@@ -1,4 +1,4 @@
-[03:58:26] INFO     [验证] outlook 配置...                                     
+[20:30:47] INFO     [验证] outlook 配置...                                     
            INFO      已加载 26 个 Outlook 账号                                 
            INFO     [验证] outlook 登录成功                                    
            INFO     [验证] outlook 配置验证通过                                
@@ -8,19 +8,559 @@
            INFO     [API] 启动 AutoTeam API 服务器 http://127.0.0.1:8787       
            INFO     [API] 前端面板 http://127.0.0.1:8787                       
            INFO     [API] API 文档 http://127.0.0.1:8787/docs                  
-           WARNING  [启动] 已取消 1 个后端重启后残留的运行中任务快照           
-           INFO     [启动] 已修复 13 个 auths 认证文件权限                     
+           INFO     [启动] 已修复 209 个 auths 认证文件权限                    
            INFO      自动上传线程已启动: interval=300s                         
            INFO     [巡检] 自动巡检已关闭，启动时跳过后台线程                  
            INFO     [刷新凭证] 自动刷新已关闭，等待重新启用                    
-INFO:     127.0.0.1:52966 - "GET /api/accounts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53433 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53433 - "GET /assets/index-D-TCfO5E.js HTTP/1.1" 304 Not Modified
-INFO:     127.0.0.1:53434 - "GET /assets/index-miEnmses.css HTTP/1.1" 304 Not Modified
-INFO:     127.0.0.1:53434 - "GET /favicon.ico HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53434 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53433 - "GET /api/config/rekberinaja HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53433 - "GET /api/card-pool/card HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53433 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53434 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53433 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64861 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64863 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65027 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /assets/index-DWsamZCm.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:65029 - "GET /assets/index-BqXEsaZM.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:65029 - "GET /favicon.ico HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65097 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/config/register-domain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65133 - "GET /api/config/mail-provider HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65134 - "GET /api/config/oauth-phone-sms HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/config/oauth-phone-sms/countries?provider=hero_sms HTTP/1.1" 200 OK
+[20:34:35] INFO     [注册账号] OAuth 接码参数: provider=hero_sms country=73    
+                    max_price=0.05                                             
+INFO:     127.0.0.1:65137 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:34:37] INFO      登录成功 (token=eyJhbGciOi...)                            
+           INFO     [注册账号] worker-1 已启动                                 
+           INFO     [注册账号] worker-1 开始第 1/1 个 domain=@edu.rexoox.com   
+           INFO      开始手机号注册并绑定邮箱: email=<手机号注册成功后创建>    
+                    mailbox_id_present=False proxy=disabled provider=hero_sms  
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:34:58] ERROR    网络检查失败: Failed to perform, curl: (28) Connection     
+                    timed out after 20015 milliseconds. See                    
+                    https://curl.se/libcurl/c/libcurl-errors.html first for    
+                    more details.                                              
+           WARNING  网络预检查未通过，继续尝试 phone-first                     
+                    注册链路以获取精确错误...                                  
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:35:04] INFO     [Codex] add-phone hero-sms 已取号: email=                  
+                    activation=446075138 service=dr country=73 max_price=0.05  
+           INFO     [协议注册] add-phone 已取号: provider=hero_sms             
+                    phone=5512982505400                                        
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:35:25] INFO     [Codex] add-phone hero-sms 号码已释放供复用:               
+                    activation=446075138 phone=5512982505400 bound=0/3         
+                    remaining=1172s reason=phone_first_register_exception:     
+                    Failed to perform, curl: (28) Failed to connect to         
+                    chatgpt.com port 443 after 21033 ms: Could not connect to  
+                    server. See https://curl.se/libcurl/c/libcurl-errors.html  
+                    first for more details.                                    
+INFO:     127.0.0.1:65136 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:35:45] ERROR    网络检查失败: Failed to perform, curl: (28) Connection     
+                    timed out after 20010 milliseconds. See                    
+                    https://curl.se/libcurl/c/libcurl-errors.html first for    
+                    more details.                                              
+           WARNING  网络预检查未通过，继续尝试 phone-first                     
+                    注册链路以获取精确错误...                                  
+           INFO     [Codex] add-phone 复用 hero-sms 号码: email=               
+                    activation=446075138 phone=5512982505400 bound=0/3         
+                    remaining=1152s                                            
+           INFO     [协议注册] add-phone 已取号: provider=hero_sms             
+                    phone=5512982505400                                        
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65137 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65029 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65136 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65167 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65135 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65425 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+[20:36:06] INFO     [Codex] add-phone hero-sms 号码已释放供复用:               
+                    activation=446075138 phone=5512982505400 bound=0/3         
+                    remaining=1131s reason=phone_first_register_exception:     
+                    Failed to perform, curl: (28) Failed to connect to         
+                    chatgpt.com port 443 after 21027 ms: Could not connect to  
+                    server. See https://curl.se/libcurl/c/libcurl-errors.html  
+                    first for more details.                                    
+[20:36:07] INFO     [Codex] add-phone 复用 hero-sms 号码: email=               
+                    activation=446075138 phone=5512982505400 bound=0/3         
+                    remaining=1130s                                            
+           INFO     [协议注册] add-phone 已取号: provider=hero_sms             
+                    phone=5512982505400                                        
+INFO:     127.0.0.1:65425 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65427 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:36:11] INFO     Sentinel QuickJS 成功 (p_len=361 t_len=1 c_len=2148)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2604)               
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+[20:36:12] INFO     [协议注册] 提交注册密码                                    
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:36:13] INFO     Sentinel QuickJS 成功 (p_len=361 t_len=1 c_len=1848)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2310)               
+[20:36:14] INFO     [协议注册] 注册密码已提交                                  
+INFO:     127.0.0.1:49171 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49173 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:36:15] INFO     [协议注册] add-phone 等待手机验证码: provider=hero_sms     
+                    activation=446075138                                       
+[20:36:16] INFO      已通知短信供应商开始等待验证码: activation=446075138      
+                    status=ACCESS_READY                                        
+INFO:     127.0.0.1:49170 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49173 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49171 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49173 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49171 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49171 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49171 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49173 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49171 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:36:45] INFO      超过 30s 未收到新码，请求第 1 次重发                      
+INFO:     127.0.0.1:49171 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49173 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49173 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49171 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49173 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:37:18] INFO     [Codex] add-phone hero-sms 会话已取消: activation=446075138
+                    reason=phone_first_register_exception: phone-first 手机 OTP
+                    未提供                                                     
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:37:25] INFO     [Codex] add-phone hero-sms 已取号: email=                  
+                    activation=446085124 service=dr country=73 max_price=0.05  
+           INFO     [协议注册] add-phone 已取号: provider=hero_sms             
+                    phone=5598988369847                                        
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:37:28] INFO     Sentinel QuickJS 成功 (p_len=357 t_len=1 c_len=2148)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2600)               
+[20:37:29] INFO     [协议注册] 提交注册密码                                    
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+[20:37:30] INFO     Sentinel QuickJS 成功 (p_len=333 t_len=1 c_len=1868)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2302)               
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:37:31] INFO     [协议注册] 注册密码已提交                                  
+           INFO     [协议注册] add-phone 等待手机验证码: provider=hero_sms     
+                    activation=446085124                                       
+[20:37:32] INFO      已通知短信供应商开始等待验证码: activation=446085124      
+                    status=ACCESS_READY                                        
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49172 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49171 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49171 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:38:04] INFO      超过 30s 未收到新码，请求第 1 次重发                      
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:38:33] INFO     [Codex] add-phone hero-sms 会话已取消: activation=446085124
+                    reason=phone_first_register_exception: phone-first 手机 OTP
+                    未提供                                                     
+INFO:     127.0.0.1:49438 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:38:40] INFO     [Codex] add-phone hero-sms 已取号: email=                  
+                    activation=446089377 service=dr country=73 max_price=0.05  
+           INFO     [协议注册] add-phone 已取号: provider=hero_sms             
+                    phone=5512982507184                                        
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:38:43] INFO     Sentinel QuickJS 成功 (p_len=349 t_len=1 c_len=2188)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2632)               
+[20:38:44] INFO     [协议注册] 提交注册密码                                    
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:38:45] INFO     Sentinel QuickJS 成功 (p_len=361 t_len=1 c_len=1848)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2310)               
+[20:38:47] INFO     [协议注册] 注册密码已提交                                  
+           INFO     [协议注册] add-phone 等待手机验证码: provider=hero_sms     
+                    activation=446089377                                       
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:38:48] INFO      已通知短信供应商开始等待验证码: activation=446089377      
+                    status=ACCESS_READY                                        
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49801 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49175 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49174 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49170 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49438 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:39:21] INFO      超过 30s 未收到新码，请求第 1 次重发                      
+INFO:     127.0.0.1:50191 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50190 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50190 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50188 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50188 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50187 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50186 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50206 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50188 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50187 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50206 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50188 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50186 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:39:48] INFO     [Codex] add-phone hero-sms 会话已取消: activation=446089377
+                    reason=phone_first_register_exception: phone-first 手机 OTP
+                    未提供                                                     
+INFO:     127.0.0.1:50188 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50206 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50187 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:39:54] INFO     [Codex] add-phone hero-sms 已取号: email=                  
+                    activation=446094207 service=dr country=73 max_price=0.05  
+           INFO     [协议注册] add-phone 已取号: provider=hero_sms             
+                    phone=5512982507229                                        
+INFO:     127.0.0.1:50206 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50186 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:39:58] INFO     Sentinel QuickJS 成功 (p_len=357 t_len=1 c_len=2104)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2556)               
+           INFO     [协议注册] 提交注册密码                                    
+[20:39:59] INFO     Sentinel QuickJS 成功 (p_len=349 t_len=1 c_len=1892)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2342)               
+INFO:     127.0.0.1:50206 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50188 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:40:01] INFO     [协议注册] 注册密码已提交                                  
+           INFO     [协议注册] add-phone 等待手机验证码: provider=hero_sms     
+                    activation=446094207                                       
+[20:40:02] INFO      已通知短信供应商开始等待验证码: activation=446094207      
+                    status=ACCESS_READY                                        
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50187 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50206 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50186 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50188 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50187 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50206 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50186 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50188 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50187 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50186 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50206 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50188 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50187 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50189 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50186 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:40:34] INFO      超过 30s 未收到新码，请求第 1 次重发                      
+[20:41:02] INFO     [Codex] add-phone hero-sms 会话已取消: activation=446094207
+                    reason=phone_first_register_exception: phone-first 手机 OTP
+                    未提供                                                     
+[20:41:08] INFO     [Codex] add-phone hero-sms 已取号: email=                  
+                    activation=446098461 service=dr country=73 max_price=0.05  
+           INFO     [协议注册] add-phone 已取号: provider=hero_sms             
+                    phone=5512982506978                                        
+[20:41:11] INFO     Sentinel QuickJS 成功 (p_len=341 t_len=1 c_len=2168)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2604)               
+[20:41:12] INFO     [协议注册] 提交注册密码                                    
+           INFO     Sentinel QuickJS 成功 (p_len=329 t_len=1 c_len=1912)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2342)               
+[20:41:13] INFO     [协议注册] 注册密码已提交                                  
+[20:41:14] INFO     [协议注册] add-phone 等待手机验证码: provider=hero_sms     
+                    activation=446098461                                       
+[20:41:15] INFO      已通知短信供应商开始等待验证码: activation=446098461      
+                    status=ACCESS_READY                                        
+INFO:     127.0.0.1:50749 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50748 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:41:46] INFO      超过 30s 未收到新码，请求第 1 次重发                      
+INFO:     127.0.0.1:50913 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50908 - "GET /api/register-failures?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50911 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50911 - "GET /api/config/rekberinaja HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/card-pool/card HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/card-pool/card HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50908 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50928 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50944 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:42:17] INFO     [Codex] add-phone hero-sms 会话已取消: activation=446098461
+                    reason=phone_first_register_exception: phone-first 手机 OTP
+                    未提供                                                     
+INFO:     127.0.0.1:50909 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:42:23] INFO     [Codex] add-phone hero-sms 已取号: email=                  
+                    activation=446103285 service=dr country=73 max_price=0.05  
+           INFO     [协议注册] add-phone 已取号: provider=hero_sms             
+                    phone=5512982507493                                        
+INFO:     127.0.0.1:50928 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:42:26] INFO     Sentinel QuickJS 成功 (p_len=349 t_len=1 c_len=2168)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2612)               
+[20:42:27] INFO     [协议注册] 提交注册密码                                    
+[20:42:28] INFO     Sentinel QuickJS 成功 (p_len=353 t_len=1 c_len=1848)       
+           INFO     Sentinel Token 组装完成 (QuickJS 长度: 2302)               
+[20:42:29] INFO     [协议注册] 注册密码已提交                                  
+           INFO     [协议注册] add-phone 等待手机验证码: provider=hero_sms     
+INFO:     127.0.0.1:50908 - "GET /api/accounts HTTP/1.1" 200 OK
+                    activation=446103285                                       
+[20:42:30] INFO      已通知短信供应商开始等待验证码: activation=446103285      
+                    status=ACCESS_READY                                        
+INFO:     127.0.0.1:50909 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/register-failures?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50928 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50908 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50928 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/accounts HTTP/1.1" 200 OK
+[20:43:01] INFO      超过 30s 未收到新码，请求第 1 次重发                      
+INFO:     127.0.0.1:50908 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50908 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/config/mail-provider HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/config/oauth-phone-sms HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/config/register-domain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50908 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50908 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50909 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+[20:43:32] INFO     [Codex] add-phone hero-sms 会话已取消: activation=446103285
+                    reason=phone_first_register_exception: phone-first 手机 OTP
+                    未提供                                                     
+           ERROR    [注册账号] worker-1 第 1 个异常: phone-first 手机 OTP      
+                    未提供                                                     
+           INFO     [注册账号] 完成: 成功 0 / 1 (并发=1, 固定间隔=0.0s,        
+                    抖动=0.0-0.0s)                                             
+INFO:     127.0.0.1:50909 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50928 - "GET /api/config/register-domain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/logs?limit=200&since=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/config/rekberinaja HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/card-pool/card HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50912 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51232 - "GET /api/config/rekberinaja HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50913 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51234 - "GET /api/card-pool/card HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51233 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51233 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51361 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/config/rekberinaja HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/card-pool/card HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/config/gopay-auto-signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/accounts?include_session_stubs=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "POST /api/gopay-pro/task HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51316 - "GET /api/gopay-pro/status HTTP/1.1" 200 OK

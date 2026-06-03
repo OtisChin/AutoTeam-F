@@ -1,22 +1,23 @@
 {
+  "_comment": "codex_register 配置。复制为 config.json 后填值。注意只用 hotmail provider。",
+
   "provider": "hotmail",
 
-  "_comment_proxy": "codex 注册主流程的代理(US 节点常用)",
-  "defaultProxyUrl": "socks5://USERNAME-region-US:PASSWORD@HOST:PORT",
-
+  "_proxy_comment": "美国代理：注册 ChatGPT 用，避免哥伦比亚 IP 直连风控",
+  "defaultProxyUrl": "socks5://USER-region-US:PASS@HOST:PORT",
   "defaultPassword": "kuaileshifu88",
   "loopDelayMs": 30000,
 
-  "_comment_sms": "hero-sms 接码(用于 ChatGPT 手机注册)。country: 33=哥伦比亚,常用",
-  "heroSMSApiKey": "YOUR_HERO_SMS_API_KEY",
+  "_hero_comment": "hero-sms 哥伦比亚号 (country=33, service=dr=OpenAI) 用于 ChatGPT phone signup",
+  "heroSMSApiKey": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "heroSMSCountry": 33,
   "heroSMSMaxPrice": 0.08,
   "heroSMSPriceTiers": [0.045, 0.05, 0.055, 0.06, 0.065, 0.07, 0.075, 0.08],
   "heroSMSPollAttempts": 15,
   "heroSMSPollIntervalMs": 3000,
 
-  "_comment_cpa": "CPA codex 入库服务(自动上传 auth.json)",
+  "_cpa_comment": "CPA 上传 codex auth.json（带 refresh_token）",
   "cliproxyApiAutoUploadAuth": true,
-  "cliproxyApiBaseUrl": "https://your-cpa-host.example.com",
-  "cliproxyApiManagementKey": "YOUR_CPA_MANAGEMENT_KEY"
+  "cliproxyApiBaseUrl": "https://cpa.iceaix.com",
+  "cliproxyApiManagementKey": "xxxxxxxx"
 }

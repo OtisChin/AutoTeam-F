@@ -18,6 +18,7 @@ import requests
 from autoteam.auth_session_store import load_auth_session
 from autoteam.bind_executor import _build_result, _capture_screenshot
 from autoteam.chatgpt_api import ChatGPTTeamAPI
+from autoteam.config import normalize_proxy_url
 from autoteam.gopay_executor import (
     DEFAULT_STRIPE_PK,
     DEFAULT_STRIPE_RUNTIME_VERSION,
@@ -33,6 +34,7 @@ from autoteam.gopay_executor import (
     _new_http_session,
     _open_checkout_in_page,
     _poll_otp_from_sms_url,
+    _safe_proxy_summary,
     _safe_url_summary,
     _select_chatgpt_account_if_needed,
     _stripe_runtime_from_env,
@@ -68,6 +70,9 @@ DEFAULT_PAYPAL_JP_BILLING_PROFILE = {
     "address2": "",
     "phone_number": "090-1234-5678",
 }
+DEFAULT_PAYPAL_JP_BIRTH_DATE = "1985/01/15"
+DEFAULT_PAYPAL_JP_NATIVE_FIRST_NAME = "太郎"
+DEFAULT_PAYPAL_JP_NATIVE_LAST_NAME = "山田"
 DEFAULT_PAYPAL_COUNTRY_BILLING_PROFILES = {
     "JP": DEFAULT_PAYPAL_JP_BILLING_PROFILE,
 }
@@ -129,6 +134,58 @@ US_STATE_NAME_TO_CODE = {
     "wyoming": "WY",
 }
 US_STATE_CODE_TO_NAME = {code: name for name, code in US_STATE_NAME_TO_CODE.items()}
+JP_PREFECTURE_NAME_TO_JA = {
+    "hokkaido": "北海道",
+    "aomori": "青森県",
+    "iwate": "岩手県",
+    "miyagi": "宮城県",
+    "akita": "秋田県",
+    "yamagata": "山形県",
+    "fukushima": "福島県",
+    "ibaraki": "茨城県",
+    "tochigi": "栃木県",
+    "gunma": "群馬県",
+    "saitama": "埼玉県",
+    "chiba": "千葉県",
+    "tokyo": "東京都",
+    "tokyo-to": "東京都",
+    "kanagawa": "神奈川県",
+    "niigata": "新潟県",
+    "toyama": "富山県",
+    "ishikawa": "石川県",
+    "fukui": "福井県",
+    "yamanashi": "山梨県",
+    "nagano": "長野県",
+    "gifu": "岐阜県",
+    "shizuoka": "静岡県",
+    "aichi": "愛知県",
+    "mie": "三重県",
+    "shiga": "滋賀県",
+    "kyoto": "京都府",
+    "kyoto-fu": "京都府",
+    "osaka": "大阪府",
+    "osaka-fu": "大阪府",
+    "hyogo": "兵庫県",
+    "nara": "奈良県",
+    "wakayama": "和歌山県",
+    "tottori": "鳥取県",
+    "shimane": "島根県",
+    "okayama": "岡山県",
+    "hiroshima": "広島県",
+    "yamaguchi": "山口県",
+    "tokushima": "徳島県",
+    "kagawa": "香川県",
+    "ehime": "愛媛県",
+    "kochi": "高知県",
+    "fukuoka": "福岡県",
+    "saga": "佐賀県",
+    "nagasaki": "長崎県",
+    "kumamoto": "熊本県",
+    "oita": "大分県",
+    "miyazaki": "宮崎県",
+    "kagoshima": "鹿児島県",
+    "okinawa": "沖縄県",
+}
 PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 120
 PAYPAL_SIGNUP_OTP_POLL_TIMEOUT_SECONDS = 120
 PAYPAL_SIGNUP_OTP_RESEND_AFTER_SECONDS = 60
@@ -141,6 +198,7 @@ PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 120
 PAYPAL_AUTO_RESULT_MAX_TIMEOUT_SECONDS = 180
 PAYPAL_APPROVE_RETURN_TIMEOUT_SECONDS = 120
 PAYPAL_APPROVE_RETURN_SETTLE_SECONDS = 1.0
+PAYPAL_ROXYBROWSER_FAILURE_KEEPALIVE_SECONDS = 60
 PAYPAL_STRIPE_STATE_POLL_INTERVAL_SECONDS = 5.0
 PAYPAL_OTP_PHONE_LOCK_TIMEOUT_SECONDS = 120
 PAYPAL_SSL_PROTOCOL_ERROR_REFRESH_INTERVAL_SECONDS = 10
@@ -181,6 +239,10 @@ PAYPAL_PHONE_REJECTED_HINTS = (
     "unable to complete your request",
     "we're unable to complete your request",
     "we’re unable to complete your request",
+    "リクエストを完了できません",
+    "リクエストを完了できませんでした",
+    "別の電話番号",
+    "別の電話番号をお試しください",
     "换一个手机号",
     "更换手机号",
 )
@@ -243,6 +305,8 @@ PAYPAL_PHONE_REJECTED_SELECTORS = [
     'text="Try a different phone number"',
     'text="We’re unable to complete your request"',
     "text=\"We're unable to complete your request\"",
+    'text="別の電話番号をお試しください"',
+    'text="リクエストを完了できませんでした"',
 ]
 FAILURE_HINTS = (
     "card was declined",
@@ -427,6 +491,16 @@ PAYPAL_PASSWORD_SELECTORS = [
     'input[placeholder*="password" i]',
     'input[aria-label*="password" i]',
 ]
+PAYPAL_BIRTH_DATE_SELECTORS = [
+    'input[placeholder*="年/月/日"]',
+    'input[aria-label*="生年月日"]',
+    'input[placeholder*="生年月日"]',
+    'input[name*="birth" i]',
+    'input[id*="birth" i]',
+    'input[name*="dob" i]',
+    'input[id*="dob" i]',
+    'input[autocomplete="bday"]',
+]
 PAYPAL_NEXT_SELECTORS = [
     'button:has-text("Next")',
     'button:has-text("Continue")',
@@ -501,8 +575,14 @@ PAYPAL_PHONE_SELECTORS = [
     'input[autocomplete="tel"]',
     'input[placeholder*="phone" i]',
     'input[aria-label*="phone" i]',
+    'input[placeholder*="電話"]',
+    'input[aria-label*="電話"]',
+    'input[placeholder*="携帯"]',
+    'input[aria-label*="携帯"]',
     'input[id*="phone" i]',
     'input[name*="phone" i]',
+    'input[id*="tel" i]',
+    'input[name*="tel" i]',
 ]
 PAYPAL_CARD_NUMBER_SELECTORS = [
     "input#cardNumber",
@@ -600,8 +680,16 @@ PAYPAL_BILLING_STATE_SELECTORS = [
     'select[autocomplete="address-level1"]',
     'input[autocomplete="address-level1"]',
     'select[aria-label*="state" i]',
+    'select[aria-label*="都道府県"]',
+    'select[aria-label*="都道府県" i]',
+    'select[name*="prefecture" i]',
+    'select[id*="prefecture" i]',
+    'select[name*="province" i]',
+    'select[id*="province" i]',
     'input[placeholder*="state" i]',
     'input[aria-label*="state" i]',
+    'input[placeholder*="都道府県"]',
+    'input[aria-label*="都道府県"]',
 ]
 PAYPAL_CREATE_SUBMIT_SELECTORS = [
     'button:has-text("Agree & Create Account")',
@@ -627,11 +715,17 @@ PAYPAL_DISMISS_PROMPT_SELECTORS = [
     'button:has-text("Not now")',
     'button:has-text("Maybe later")',
     'button:has-text("Skip")',
+    'button:has-text("Close")',
     'button:has-text("Try another way")',
     'button:has-text("Use password instead")',
+    'button:has-text("利用しない")',
+    'button:has-text("閉じる")',
     'button:has-text("以后再说")',
     'button:has-text("暂不")',
     'button:has-text("改用密码")',
+    '[role="dialog"] button:has-text("利用しない")',
+    '[role="dialog"] button:has-text("Close")',
+    '[role="dialog"] button[aria-label="Close"]',
     '[role="dialog"] button:has-text("OK")',
 ]
 PAYPAL_CHECKOUT_SELECTORS = [
@@ -707,6 +801,7 @@ PAYPAL_AUTO_STAGE_MESSAGES = {
     "paypal_wait_result": "PayPal 已授权，等待商户页面确认结果",
     "paypal_wait_manual": "等待人工完成 PayPal 支付流程",
     "paypal_protocol_start": "协议模式：开始处理 PayPal checkout",
+    "paypal_protocol_proxy_http_fallback": "SOCKS 代理握手失败，协议模式改用 HTTP 代理重试",
     "paypal_protocol_init": "协议模式：已初始化 Stripe checkout",
     "paypal_protocol_payment_method": "协议模式：已创建 PayPal payment_method",
     "paypal_protocol_confirm": "协议模式：已确认 Stripe checkout",
@@ -959,8 +1054,14 @@ def _protocol_ensure_ok(resp: Any, stage: str) -> dict:
     if 200 <= status_code < 300:
         return _protocol_http_json(resp, stage)
     text = str(getattr(resp, "text", "") or "")
+    lowered = text.lower()
     if any(hint in text.lower() for hint in PAYPAL_DATADOME_BLOCKED_HINTS + PAYPAL_HUMAN_VERIFICATION_HINTS):
         raise RuntimeError(f"{stage} 被 PayPal/Stripe 风控拦截，需要切换浏览器模式或人工处理: HTTP {status_code}")
+    if stage == "paypal_protocol_confirm" and "payment_method_types_mismatch" in lowered:
+        raise RuntimeError(
+            f"{stage} 失败: 当前 checkout session 未启用 PayPal 支付方式，"
+            "请重新生成支持 PayPal 的 US/USD checkout 后再走协议无卡流程"
+        )
     raise RuntimeError(f"{stage} 失败: HTTP {status_code} {text[:500]}")
 
 
@@ -994,6 +1095,26 @@ def _paypal_protocol_amount_due(value: Any) -> int:
     except Exception:
         digits = re.sub(r"\D+", "", str(value or ""))
         return int(digits or "0")
+
+
+def _paypal_protocol_payment_method_types(payload: Any) -> set[str]:
+    found: set[str] = set()
+
+    def visit(value: Any, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                visit(child_value, str(child_key or ""))
+            return
+        if isinstance(value, (list, tuple)):
+            if key in {"payment_method_types", "ordered_payment_method_types", "automatic_payment_method_types"}:
+                for item in value:
+                    if isinstance(item, str):
+                        found.add(item.strip().lower())
+            for item in value:
+                visit(item)
+
+    visit(payload)
+    return found
 
 
 STRIPE_VERSION_BASE = "2025-03-31.basil"
@@ -1390,6 +1511,46 @@ def _paypal_protocol_wait_checkout_result(
     )
 
 
+def _paypal_protocol_socks_invalid_response(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "curl: (97)" in text
+        or "invalid version in initial socks5 response" in text
+        or "received invalid version in initial socks5 response" in text
+    )
+
+
+def _paypal_protocol_http_proxy_fallback_url(proxy_url: str | None) -> str:
+    try:
+        normalized = normalize_proxy_url(proxy_url)
+    except Exception:
+        return ""
+    if not normalized:
+        return ""
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"socks5", "socks5h"}:
+        return ""
+    if not (parsed.username or parsed.password):
+        return ""
+    return urlunsplit(("http", parsed.netloc, "", "", ""))
+
+
+def _paypal_protocol_transient_transport_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return any(
+        hint in lowered
+        for hint in (
+            "curl: (28)",
+            "recv failure",
+            "connection was reset",
+            "operation timed out",
+            "connection timed out",
+            "remote disconnected",
+            "connection aborted",
+        )
+    )
+
+
 def _run_paypal_protocol_flow(
     *,
     email: str,
@@ -1415,14 +1576,34 @@ def _run_paypal_protocol_flow(
     paypal_country = _normalize_paypal_country(paypal_country or str(billing_payload.get("country") or "US"))
     paypal_lang = _normalize_paypal_lang(paypal_lang, paypal_country)
 
-    http = _new_http_session(proxy_url, require_curl_cffi=False)
+    protocol_proxy_url = proxy_url
+    http = _new_http_session(protocol_proxy_url, require_curl_cffi=False)
     _emit_progress(on_progress, _progress_event("paypal_protocol_start", checkout_session_id=checkout_session_id))
     # 中间状态追踪，供浏览器降级使用
     _approve_url = ""
     _ba_token = ""
     _payment_method_id = ""
     try:
-        init_ctx = _paypal_protocol_stripe_init(http, checkout_session_id, DEFAULT_STRIPE_PK)
+        try:
+            init_ctx = _paypal_protocol_stripe_init(http, checkout_session_id, DEFAULT_STRIPE_PK)
+        except Exception as exc:
+            fallback_proxy_url = _paypal_protocol_http_proxy_fallback_url(protocol_proxy_url)
+            if not fallback_proxy_url or not _paypal_protocol_socks_invalid_response(exc):
+                raise
+            logger.warning(
+                "[paypal_protocol] SOCKS proxy handshake failed, retrying protocol flow with HTTP proxy: %s",
+                _safe_proxy_summary(fallback_proxy_url),
+            )
+            _emit_progress(
+                on_progress,
+                _progress_event(
+                    "paypal_protocol_proxy_http_fallback",
+                    proxy_url=_safe_proxy_summary(fallback_proxy_url),
+                ),
+            )
+            protocol_proxy_url = fallback_proxy_url
+            http = _new_http_session(protocol_proxy_url, require_curl_cffi=False)
+            init_ctx = _paypal_protocol_stripe_init(http, checkout_session_id, DEFAULT_STRIPE_PK)
         _emit_progress(
             on_progress,
             _progress_event(
@@ -1431,6 +1612,17 @@ def _run_paypal_protocol_flow(
                 expected_amount=init_ctx.get("expected_amount"),
             ),
         )
+        payment_method_types = _paypal_protocol_payment_method_types(init_ctx.get("raw"))
+        if payment_method_types and "paypal" not in payment_method_types:
+            return _build_result(
+                "failed",
+                failure_stage="paypal_payment_method_unavailable",
+                message=(
+                    "当前 checkout session 未启用 PayPal 支付方式 "
+                    f"(payment_method_types={','.join(sorted(payment_method_types))})，"
+                    "请重新生成支持 PayPal 的 US/USD checkout 后再走协议无卡流程"
+                ),
+            )
         if _paypal_protocol_amount_due(init_ctx.get("expected_amount")) != 0:
             return _build_result(
                 "failed",
@@ -1605,9 +1797,12 @@ def _paypal_protocol_needs_browser_fallback(result: dict) -> bool:
     if result.get("status") == "success":
         return False
     stage = str(result.get("failure_stage") or "")
+    has_fallback_target = bool(result.get("paypal_approve_url") or result.get("ba_token"))
     if stage in {"paypal_human_verification", "paypal_protocol_authorize"}:
         # 有 approve_url 才能降级
-        return bool(result.get("paypal_approve_url") or result.get("ba_token"))
+        return has_fallback_target
+    if stage == "paypal_protocol" and has_fallback_target:
+        return _paypal_protocol_transient_transport_error(str(result.get("message") or ""))
     return False
 
 
@@ -2629,6 +2824,55 @@ def _set_locator_value(locator, value: str) -> bool:
         return False
 
 
+def _set_paypal_state_locator_value(locator, value: str, *, country: str = "") -> bool:
+    normalized_country = _normalize_paypal_country(country)
+    candidates = _jp_prefecture_candidates(value) if normalized_country == "JP" else [str(value or "").strip()]
+    if not candidates:
+        return False
+    try:
+        tag_name = str(locator.evaluate("el => el.tagName") or "").lower()
+    except Exception:
+        tag_name = ""
+    if tag_name == "select":
+        for candidate in candidates:
+            for option in ({"value": candidate}, {"label": candidate}):
+                try:
+                    locator.select_option(**option, timeout=1000)
+                    return True
+                except Exception:
+                    continue
+        try:
+            selected = bool(
+                locator.evaluate(
+                    r"""(el, candidates) => {
+                      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                      const wanted = candidates.map(normalize).filter(Boolean);
+                      const option = Array.from(el.options || []).find((opt) => {
+                        const value = normalize(opt.value);
+                        const text = normalize(opt.textContent);
+                        return wanted.some((item) => value === item || text === item || text.includes(item) || item.includes(text));
+                      });
+                      if (!option) return false;
+                      el.value = option.value;
+                      el.dispatchEvent(new Event('input', { bubbles: true }));
+                      el.dispatchEvent(new Event('change', { bubbles: true }));
+                      el.dispatchEvent(new Event('blur', { bubbles: true }));
+                      return true;
+                    }""",
+                    candidates,
+                )
+            )
+            if selected:
+                return True
+        except Exception:
+            pass
+        return False
+    for candidate in candidates:
+        if _set_locator_value(locator, candidate):
+            return True
+    return False
+
+
 def _type_locator_value(locator, value: str) -> bool:
     try:
         locator.click(timeout=1200)
@@ -2670,6 +2914,17 @@ def _dispatch_locator_value(locator, value: str) -> bool:
 
 def _read_locator_value(locator) -> str:
     try:
+        tag_name = str(locator.evaluate("el => el.tagName") or "").lower()
+    except Exception:
+        tag_name = ""
+    if tag_name == "select":
+        try:
+            text = str(locator.evaluate("el => el.selectedOptions && el.selectedOptions[0] ? (el.selectedOptions[0].textContent || '') : ''") or "").strip()
+            if text:
+                return text
+        except Exception:
+            pass
+    try:
         return str(locator.input_value(timeout=800) or "").strip()
     except Exception:
         pass
@@ -2699,7 +2954,48 @@ def _normalize_us_state_value(value: str) -> str:
     return US_STATE_NAME_TO_CODE.get(normalized, upper)
 
 
+def _jp_prefecture_candidates(value: str) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    normalized = re.sub(r"\s+", "-", raw).strip().lower()
+    candidates = [raw]
+    mapped = JP_PREFECTURE_NAME_TO_JA.get(normalized) or JP_PREFECTURE_NAME_TO_JA.get(normalized.replace("-to", ""))
+    if mapped:
+        candidates.append(mapped)
+        candidates.append(mapped.removesuffix("都").removesuffix("道").removesuffix("府").removesuffix("県"))
+    elif raw in JP_PREFECTURE_NAME_TO_JA.values():
+        candidates.append(raw.removesuffix("都").removesuffix("道").removesuffix("府").removesuffix("県"))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in candidates:
+        item = str(item or "").strip()
+        if item and item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def _normalize_jp_prefecture_value(value: str) -> str:
+    raw = re.sub(r"\s+", " ", str(value or "").strip())
+    if not raw:
+        return ""
+    lowered = raw.lower().replace(" ", "-")
+    if lowered in JP_PREFECTURE_NAME_TO_JA:
+        return JP_PREFECTURE_NAME_TO_JA[lowered]
+    if raw in JP_PREFECTURE_NAME_TO_JA.values():
+        return raw
+    for ja in JP_PREFECTURE_NAME_TO_JA.values():
+        if raw == ja.removesuffix("都").removesuffix("道").removesuffix("府").removesuffix("県"):
+            return ja
+    return raw
+
+
 def _state_value_matches(expected: str, actual: str) -> bool:
+    expected_jp = _normalize_jp_prefecture_value(expected)
+    actual_jp = _normalize_jp_prefecture_value(actual)
+    if expected_jp and actual_jp and expected_jp == actual_jp:
+        return True
     expected_state = _normalize_us_state_value(expected)
     actual_state = _normalize_us_state_value(actual)
     if expected_state and actual_state and expected_state == actual_state:
@@ -3704,7 +4000,7 @@ def _click_paypal_phone_rejected_ok_in_frame(frame) -> bool:
         return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
       };
       const textOf = (el) => (el && (el.innerText || el.textContent || el.value || '') || '').replace(/\s+/g, ' ').trim();
-      const rejected = (text) => /try a different phone number|unable to complete your request/i.test(text || '');
+      const rejected = (text) => /try a different phone number|unable to complete your request|別の電話番号|リクエストを完了できません/i.test(text || '');
       const roots = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], .modal, [class*="modal" i]'))
         .filter((node) => visible(node) && rejected(textOf(node)));
       if (!roots.length && !rejected(textOf(document.body))) return false;
@@ -3776,7 +4072,17 @@ def _set_paypal_country(api: ChatGPTTeamAPI, country: str) -> bool:
     locator = _visible_locator_in_frames(api, PAYPAL_COUNTRY_SELECTORS, timeout_ms=1200)
     if not locator:
         return False
-    for option in ("US", country, "United States", "United States of America"):
+    normalized_country = _normalize_paypal_country(country)
+    country_labels = {
+        "JP": ("Japan", "日本"),
+        "US": ("United States", "United States of America"),
+    }
+    fallback_options = ["US", "United States", "United States of America"]
+    options = [normalized_country]
+    options.extend(country_labels.get(normalized_country, ()))
+    if normalized_country != "US":
+        options.extend(fallback_options)
+    for option in options:
         if not option:
             continue
         try:
@@ -3811,6 +4117,18 @@ def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[s
         "address1": str(signup_profile.get("address1") or "").strip(),
         "address2": str(signup_profile.get("address2") or "").strip(),
     }
+    if _normalize_paypal_country(str(payload.get("country") or "")) == "JP":
+        payload["birth_date"] = str(signup_profile.get("birth_date") or signup_profile.get("birthDate") or DEFAULT_PAYPAL_JP_BIRTH_DATE).strip()
+        payload["native_first_name"] = str(
+            signup_profile.get("native_first_name")
+            or signup_profile.get("nativeFirstName")
+            or DEFAULT_PAYPAL_JP_NATIVE_FIRST_NAME
+        ).strip()
+        payload["native_last_name"] = str(
+            signup_profile.get("native_last_name")
+            or signup_profile.get("nativeLastName")
+            or DEFAULT_PAYPAL_JP_NATIVE_LAST_NAME
+        ).strip()
     script = r"""(profile) => {
       const values = profile || {};
       const filled = [];
@@ -3855,8 +4173,35 @@ def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[s
         }
         return normalize(parts.filter(Boolean).join(' '));
       };
+      const directText = (el) => {
+        const parts = [
+          el.id,
+          el.name,
+          el.type,
+          el.autocomplete,
+          el.placeholder,
+          el.getAttribute('aria-label'),
+        ];
+        if (el.id) {
+          document.querySelectorAll(`label[for="${CSS.escape(el.id)}"]`).forEach((label) => parts.push(label.innerText));
+        }
+        const parent = el.parentElement;
+        if (parent) {
+          const label = parent.querySelector(':scope > label, :scope > span, :scope > div');
+          if (label) parts.push(label.innerText || label.textContent);
+        }
+        return normalize(parts.filter(Boolean).join(' '));
+      };
       const controls = Array.from(document.querySelectorAll('input, select, textarea'))
         .filter((el) => isVisible(el) && !el.disabled && !el.readOnly);
+      const controlCandidates = () => controls.map((el) => ({
+        el,
+        direct: directText(el),
+        text: textAround(el),
+        tag: String(el.tagName || '').toLowerCase(),
+        type: String(el.type || '').toLowerCase(),
+        rect: el.getBoundingClientRect(),
+      }));
       const setValue = (el, value) => {
         if (!el || value === undefined || value === null || String(value).trim() === '') return false;
         const tag = String(el.tagName || '').toLowerCase();
@@ -3882,11 +4227,11 @@ def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[s
         return true;
       };
       const findControl = (field) => {
-        const candidates = controls.map((el) => ({ el, text: textAround(el), tag: String(el.tagName || '').toLowerCase(), type: String(el.type || '').toLowerCase() }));
+        const candidates = controlCandidates();
         const by = (predicate) => candidates.find(predicate)?.el || null;
         if (field === 'country') return by((c) => c.tag === 'select' && /country|region/.test(c.text));
         if (field === 'email') return by((c) => c.type === 'email' || /\bemail\b/.test(c.text));
-        if (field === 'phone') return by((c) => c.tag !== 'select' && /phone number|mobile number|telephone|phone/.test(c.text) && !/phone type/.test(c.text));
+        if (field === 'phone') return by((c) => c.tag !== 'select' && /phone number|mobile number|telephone|phone|電話番号|電話|携帯電話|携帯/.test(c.text) && !/phone type/.test(c.text));
         if (field === 'card_number') return by((c) => /card number|cc-number|cardnumber/.test(c.text));
         if (field === 'card_expiry') return by((c) => /expiration|expiry|exp date|cc-exp/.test(c.text));
         if (field === 'card_cvv') return by((c) => /cvv|cvc|security code|cc-csc/.test(c.text));
@@ -3897,10 +4242,19 @@ def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[s
         if (field === 'city') return by((c) => /\bcity\b|address-level2/.test(c.text));
         if (field === 'state') return by((c) => /\bstate\b|address-level1/.test(c.text));
         if (field === 'zip') return by((c) => /zip code|postal code|postcode|postal-code|\bzip\b/.test(c.text));
+        if (field === 'birth_date') {
+          return (
+            by((c) => c.tag !== 'select' && /date of birth|birth date|birthday|dob|生年月日|年\/月\/日/.test(c.direct))
+            || by((c) => c.tag !== 'select' && /date of birth|birth date|birthday|dob|生年月日|年\/月\/日/.test(c.text))
+          );
+        }
         return null;
       };
       const valueMatches = (field, actual, expected) => {
         if (!expected) return true;
+        if (field === 'birth_date') {
+          return digits(actual) === digits(expected);
+        }
         if (['phone', 'card_number', 'card_cvv'].includes(field)) {
           const actualDigits = digits(actual);
           const expectedDigits = digits(expected);
@@ -3930,6 +4284,40 @@ def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[s
           if (setValue(control, expected)) filled.push(field);
         }
       }
+      const country = normalize(values.country);
+      const needsJpExtras = ['jp', 'japan', '日本'].includes(country);
+      if (needsJpExtras) {
+        const birthControl = findControl('birth_date');
+        if (!birthControl) {
+          missing.push('birth_date');
+        } else if (!valueMatches('birth_date', birthControl.value || birthControl.textContent || '', values.birth_date)) {
+          if (setValue(birthControl, values.birth_date)) filled.push('birth_date');
+        }
+        const firstControl = findControl('first_name');
+        const lastControl = findControl('last_name');
+        const minTop = Math.max(
+          firstControl ? firstControl.getBoundingClientRect().bottom : 0,
+          lastControl ? lastControl.getBoundingClientRect().bottom : 0
+        );
+        const nativeInputs = controlCandidates()
+          .filter((c) => c.tag !== 'select' && c.el !== firstControl && c.el !== lastControl)
+          .filter((c) => c.rect.top > minTop + 8)
+          .filter((c) => /(^|\s)(名|姓)(\s|$)|漢字|かな|カナ|名前/.test(c.text))
+          .sort((a, b) => (a.rect.top - b.rect.top) || (a.rect.left - b.rect.left))
+          .map((c) => c.el);
+        const nativeFirst = nativeInputs[0] || null;
+        const nativeLast = nativeInputs[1] || null;
+        if (!nativeFirst) {
+          missing.push('native_first_name');
+        } else if (!valueMatches('native_first_name', nativeFirst.value || nativeFirst.textContent || '', values.native_first_name)) {
+          if (setValue(nativeFirst, values.native_first_name)) filled.push('native_first_name');
+        }
+        if (!nativeLast) {
+          missing.push('native_last_name');
+        } else if (!valueMatches('native_last_name', nativeLast.value || nativeLast.textContent || '', values.native_last_name)) {
+          if (setValue(nativeLast, values.native_last_name)) filled.push('native_last_name');
+        }
+      }
       const required = ['email', 'phone', 'card_number', 'card_expiry', 'card_cvv', 'first_name', 'last_name', 'address1', 'city', 'state', 'zip', 'password'];
       const stillMissing = [];
       for (const field of required) {
@@ -3938,13 +4326,48 @@ def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[s
         const actual = control ? (control.value || control.textContent || '') : '';
         if (!control || !valueMatches(field, actual, expected)) stillMissing.push(field);
       }
+      if (needsJpExtras) {
+        const birthControl = findControl('birth_date');
+        if (!birthControl || !valueMatches('birth_date', birthControl.value || birthControl.textContent || '', values.birth_date)) stillMissing.push('birth_date');
+        const firstControl = findControl('first_name');
+        const lastControl = findControl('last_name');
+        const minTop = Math.max(
+          firstControl ? firstControl.getBoundingClientRect().bottom : 0,
+          lastControl ? lastControl.getBoundingClientRect().bottom : 0
+        );
+        const nativeInputs = controlCandidates()
+          .filter((c) => c.tag !== 'select' && c.el !== firstControl && c.el !== lastControl)
+          .filter((c) => c.rect.top > minTop + 8)
+          .filter((c) => /(^|\s)(名|姓)(\s|$)|漢字|かな|カナ|名前/.test(c.text))
+          .sort((a, b) => (a.rect.top - b.rect.top) || (a.rect.left - b.rect.left))
+          .map((c) => c.el);
+        const nativeFirst = nativeInputs[0] || null;
+        const nativeLast = nativeInputs[1] || null;
+        if (!nativeFirst || !valueMatches('native_first_name', nativeFirst.value || nativeFirst.textContent || '', values.native_first_name)) stillMissing.push('native_first_name');
+        if (!nativeLast || !valueMatches('native_last_name', nativeLast.value || nativeLast.textContent || '', values.native_last_name)) stillMissing.push('native_last_name');
+      }
       return { filled, missing, stillMissing };
     }"""
-    try:
-        result = api.page.evaluate(script, payload)
-        return result if isinstance(result, dict) else {"filled": [], "missing": [], "stillMissing": []}
-    except Exception as exc:
-        return {"filled": [], "missing": ["dom"], "stillMissing": ["dom"], "error": str(exc)}
+    best_result: dict[str, Any] | None = None
+    last_error = ""
+    for frame in _iter_page_frames(api):
+        try:
+            result = frame.evaluate(script, payload)
+            if not isinstance(result, dict):
+                continue
+            if not result.get("stillMissing"):
+                return result
+            score = len(result.get("filled") or []) - len(result.get("stillMissing") or [])
+            best_score = -10_000
+            if best_result is not None:
+                best_score = len(best_result.get("filled") or []) - len(best_result.get("stillMissing") or [])
+            if best_result is None or score > best_score:
+                best_result = result
+        except Exception as exc:
+            last_error = str(exc)
+    if best_result is not None:
+        return best_result
+    return {"filled": [], "missing": ["dom"], "stillMissing": ["dom"], "error": last_error}
 
 
 def _fill_paypal_signup_form(
@@ -3998,7 +4421,15 @@ def _fill_paypal_signup_form(
         locator = _visible_locator_in_frames(api, selectors, timeout_ms=1200)
         if locator is None:
             return False, f"未找到 {label} 输入框"
-        if not _set_verified_locator_value(locator, value, field=key):
+        if key == "state":
+            country = str(signup_profile.get("country") or "US")
+            did_set = _set_paypal_state_locator_value(locator, value, country=country)
+            time.sleep(0.15)
+            verified = _field_value_matches(value, _read_locator_value(locator), field=key)
+        else:
+            did_set = _set_verified_locator_value(locator, value, field=key)
+            verified = did_set
+        if not did_set or not verified:
             actual = _read_locator_value(locator)
             return False, f"{label} 填写后校验失败: 期望={value!r}, 实际={actual!r}"
         field_locators[key] = locator
@@ -4012,7 +4443,11 @@ def _fill_paypal_signup_form(
         actual = _read_locator_value(locator)
         if _field_value_matches(expected, actual, field=key):
             continue
-        if not _set_locator_value(locator, expected):
+        if key == "state":
+            rewritten = _set_paypal_state_locator_value(locator, expected, country=str(signup_profile.get("country") or "US"))
+        else:
+            rewritten = _set_locator_value(locator, expected)
+        if not rewritten:
             return False, f"{label} 自动补全后被改写，且重写失败"
         if key == "address1":
             _dismiss_address_autocomplete(api, locator)
@@ -4020,6 +4455,23 @@ def _fill_paypal_signup_form(
         actual = _read_locator_value(locator)
         if not _field_value_matches(expected, actual, field=key):
             return False, f"{label} 自动补全后校验失败: 期望={expected!r}, 实际={actual!r}"
+
+    if _normalize_paypal_country(str(signup_profile.get("country") or "")) == "JP":
+        birth_date = str(
+            signup_profile.get("birth_date")
+            or signup_profile.get("birthDate")
+            or DEFAULT_PAYPAL_JP_BIRTH_DATE
+        ).strip()
+        birth_locator = _visible_locator_in_frames(api, PAYPAL_BIRTH_DATE_SELECTORS, timeout_ms=1200)
+        if birth_locator is None:
+            logger.info("[paypal_signup] JP birth date input not found by direct selectors; DOM fallback will try")
+        else:
+            _set_locator_value(birth_locator, birth_date)
+            time.sleep(0.2)
+            actual_birth = _read_locator_value(birth_locator)
+            if re.sub(r"\D+", "", actual_birth) != re.sub(r"\D+", "", birth_date):
+                return False, f"PayPal 生年月日填写后校验失败: 期望={birth_date!r}, 实际={actual_birth!r}"
+
     dom_result = _fill_paypal_signup_visible_form(api, signup_profile)
     still_missing = [str(item) for item in dom_result.get("stillMissing") or [] if str(item) and str(item) not in _OPTIONAL_SKIP_FIELDS]
     if still_missing:
@@ -4027,7 +4479,25 @@ def _fill_paypal_signup_form(
             "[paypal_bind_executor] PayPal signup DOM validation could not confirm fields: %s",
             ", ".join(still_missing),
         )
+    if _normalize_paypal_country(str(signup_profile.get("country") or "")) == "JP":
+        jp_missing = [field for field in ("birth_date", "native_first_name", "native_last_name") if field in still_missing]
+        if jp_missing:
+            return False, f"PayPal 日区注册字段填写后校验失败: {', '.join(jp_missing)}"
     return True, ""
+
+
+def _paypal_signup_visible_validation_error(api: ChatGPTTeamAPI) -> str:
+    text = _body_excerpt(api, 12000)
+    lowered = text.lower()
+    hints = (
+        "正しい日付を入力してください",
+        "漢字を使用してください",
+        "入力内容を確認してください",
+        "please enter a valid date",
+        "please check your information",
+    )
+    matched = [hint for hint in hints if hint.lower() in lowered]
+    return " / ".join(matched)
 
 
 def _fill_paypal_otp_inputs(api: ChatGPTTeamAPI, otp_code: str) -> bool:
@@ -4870,6 +5340,10 @@ def _run_paypal_signup_flow(
         state["signup_submitted"] = True
 
     if signup_submitted:
+        validation_error = _paypal_signup_visible_validation_error(api)
+        if validation_error:
+            _release_paypal_signup_phone_lock(state, on_progress=on_progress)
+            return False, f"PayPal 注册表单校验失败: {validation_error}", True
         if state.get("card_rejected"):
             _release_paypal_signup_phone_lock(state, on_progress=on_progress)
             if card_retry_count >= 5:
@@ -5879,6 +6353,7 @@ def run_paypal_bind_task(
     paypal_card_expiry: str = "",
     paypal_card_cvv: str = "",
     paypal_browser: str = "chromium",
+    paypal_fallback_browser: str = "",
     paypal_country: str = "US",
     paypal_lang: str = "en",
     roxybrowser_workspace_id: str = "",
@@ -5890,15 +6365,24 @@ def run_paypal_bind_task(
     auto_mode = not bool(manual_confirm)
     paypal_mode = _normalize_paypal_mode(paypal_mode)
     paypal_browser = str(paypal_browser or "chromium").strip().lower()
+    paypal_fallback_browser = str(paypal_fallback_browser or "").strip().lower()
     paypal_country = _normalize_paypal_country(paypal_country)
     paypal_lang = _normalize_paypal_lang(paypal_lang, paypal_country)
     protocol_mode = paypal_browser in {"protocol", "http", "no_card", "no-card", "pure_protocol"}
     use_camoufox = paypal_browser in {"camoufox", "firefox"}
     use_roxybrowser = paypal_browser in {"roxybrowser", "roxy-browser", "roxy"}
+    fallback_use_roxybrowser = paypal_fallback_browser in {"roxybrowser", "roxy-browser", "roxy"}
+    fallback_use_camoufox = paypal_fallback_browser in {"", "protocol", "http", "no_card", "no-card", "pure_protocol", "camoufox", "firefox"}
     launch_proxy_url = str(proxy_url or "").strip() or None
     launch_proxy_bypass = str(proxy_bypass or "").strip() or None
     roxybrowser_workspace_id = str(roxybrowser_workspace_id or "").strip()
     roxybrowser_profile_id = str(roxybrowser_profile_id or "").strip()
+
+    def _preserve_roxybrowser_on_failure(result: dict):
+        if fallback_use_roxybrowser and str(result.get("status") or "") != "success":
+            setattr(api, "_preserve_roxybrowser_on_stop", True)
+            setattr(api, "_preserve_roxybrowser_on_stop_seconds", PAYPAL_ROXYBROWSER_FAILURE_KEEPALIVE_SECONDS)
+        return result
 
     def _launch_browser_for_checkout(current_proxy_url: str | None, current_proxy_bypass: str | None) -> None:
         browser_locale = f"{paypal_lang}-{paypal_country}"
@@ -5968,7 +6452,10 @@ def run_paypal_bind_task(
                 background=False,
                 locale=f"{paypal_lang}-{paypal_country}",
                 accept_language=f"{paypal_lang}-{paypal_country},{paypal_lang};q=0.9,en;q=0.8",
-                use_camoufox=True,
+                use_camoufox=fallback_use_camoufox,
+                use_roxybrowser=fallback_use_roxybrowser,
+                roxybrowser_workspace_id=roxybrowser_workspace_id,
+                roxybrowser_profile_id=roxybrowser_profile_id,
                 on_progress=on_progress,
             )
             page = api.page
@@ -5978,10 +6465,12 @@ def run_paypal_bind_task(
             _emit_progress(on_progress, _progress_event("paypal_browser_fallback_ddc_wait"))
             ddc_passed = _wait_ddc_pass(page, timeout_seconds=50, on_progress=on_progress)
             if not ddc_passed:
-                return _build_result(
-                    "failed",
-                    failure_stage="paypal_datadome_blocked",
-                    message="浏览器降级后 DataDome 滑块/风控仍未通过",
+                return _preserve_roxybrowser_on_failure(
+                    _build_result(
+                        "failed",
+                        failure_stage="paypal_datadome_blocked",
+                        message="浏览器降级后 DataDome 滑块/风控仍未通过",
+                    )
                 )
 
             _ensure_paypal_hosted_captcha_bypass(api)
@@ -6010,17 +6499,19 @@ def run_paypal_bind_task(
                 phone_accounts=phone_accounts,
             )
             if authorize_result:
-                return authorize_result
-            return _wait_for_paypal_result(
-                api,
-                checkout_url=checkout_url,
-                session_id=session_id,
-                screenshot_paths=screenshot_paths,
-                timeout_seconds=_paypal_result_timeout_seconds(timeout_seconds),
-                is_cancelled=is_cancelled,
-                on_progress=on_progress,
-                autofill_enabled=False,
-                autofill_payload=None,
+                return _preserve_roxybrowser_on_failure(authorize_result)
+            return _preserve_roxybrowser_on_failure(
+                _wait_for_paypal_result(
+                    api,
+                    checkout_url=checkout_url,
+                    session_id=session_id,
+                    screenshot_paths=screenshot_paths,
+                    timeout_seconds=_paypal_result_timeout_seconds(timeout_seconds),
+                    is_cancelled=is_cancelled,
+                    on_progress=on_progress,
+                    autofill_enabled=False,
+                    autofill_payload=None,
+                )
             )
 
         _launch_browser_for_checkout(launch_proxy_url, launch_proxy_bypass)
