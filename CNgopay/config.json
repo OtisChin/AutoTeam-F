@@ -2,7 +2,7 @@
   "gopay_pin": "558023",
   "country_code": "+62",
   "_comment_proxy": "印尼 socks5 代理(GoPay 注册/登录/钱包)。从代理商拿同账号同端口,只换 region 即可",
-  "proxy_id": "socks5://hyrj1177789-region-ID-st-Bali-city-Gilimanuk:smhwqe9f@us.arxlabs.io:3010",
+  "proxy_id": "socks5://hyrj1177789-region-ID-st-Bali-city-Bangli:smhwqe9f@us.arxlabs.io:3010",
   "_comment_proxy_jp": "日本节点(chatgpt.com / stripe / midtrans / 试用探测)",
   "proxy_jp": "socks5://hyrj1177789-region-JP-st-Tokyo-city-Tokyo:smhwqe9f@us.arxlabs.io:3010",
   "rebind_email": "oops745@gmail.com",
@@ -18,11 +18,6 @@
     "otp_timeout_sec": 60,
     "countries": [
       {
-        "id": 52,
-        "code": "+66",
-        "name": "TH"
-      },
-      {
         "id": 6,
         "code": "+62",
         "name": "ID"
@@ -31,8 +26,8 @@
   },
   "cpa": {
     "_comment": "CPA codex auth 入库服务(可选,主要给 codex_register 用)",
-    "base_url": "https://your-cpa-host.example.com",
-    "management_key": "YOUR_CPA_MANAGEMENT_KEY"
+    "base_url": "https://api.external.cc.cd",
+    "management_key": "qaz558023"
   },
   "pool": {
     "sms8": {
@@ -49,6 +44,6 @@
     "provided_tokens_file": "pool_tokens.txt",
     "balance_poll_interval_sec": 15,
     "balance_threshold_idr": 1,
-    "concurrency": 30
+    "concurrency": 5
   }
 }

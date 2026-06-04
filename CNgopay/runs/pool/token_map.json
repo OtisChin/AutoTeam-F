@@ -1,11 +1,21 @@
 {
   "version": 1,
-  "updated_at": 1780411072,
+  "updated_at": 1780452460,
   "tokens": {
-    "b7142c047c8bf3be": {
-      "email": "f1b33a6057@edu.rexoox.com",
+    "32837903ac69dae0": {
+      "email": "plassmeyerkanzler74@outlook.com",
       "account_id": "",
-      "auth_file": "D:\\code\\OpenSource\\AutoTeam-F\\data\\auths\\codex-f1b33a6057@edu.rexoox.com-free-d41d8cd9.json"
+      "auth_file": "D:\\code\\OpenSource\\AutoTeam-F\\data\\auths\\codex-plassmeyerkanzler74@outlook.com-free-d41d8cd9.json"
+    },
+    "541dec2a4d3b2d49": {
+      "email": "rolandevacio5624@outlook.com",
+      "account_id": "",
+      "auth_file": "D:\\code\\OpenSource\\AutoTeam-F\\data\\auths\\codex-rolandevacio5624@outlook.com-free-d41d8cd9.json"
+    },
+    "02c04fe74c7f5828": {
+      "email": "casimirgaudin785@outlook.com",
+      "account_id": "",
+      "auth_file": "D:\\code\\OpenSource\\AutoTeam-F\\data\\auths\\codex-casimirgaudin785@outlook.com-free-d41d8cd9.json"
     }
   }
 }
