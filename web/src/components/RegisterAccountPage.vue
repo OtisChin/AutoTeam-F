@@ -239,7 +239,21 @@
             </div>
           </div>
 
-          <div class="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-3 text-sm text-gray-300">
+          <div class="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-3 text-sm text-gray-300 space-y-3">
+            <div v-if="!registerForm.proxyApiEnabled">
+              <label class="block text-xs text-gray-500 mb-1">代理 URL</label>
+              <input
+                v-model.trim="registerForm.proxyUrl"
+                :disabled="registeringBusy"
+                type="text"
+                autocomplete="off"
+                placeholder="例如 http://user:pass@host:port 或 socks5://host:port"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
+              />
+              <div class="mt-1 text-xs text-gray-500">
+                本次注册流程共用该代理；启用动态代理 API 时，动态代理优先。
+              </div>
+            </div>
             <label class="flex items-start gap-2">
               <input
                 v-model="registerForm.proxyApiEnabled"
@@ -252,7 +266,7 @@
                 <span class="block text-xs text-gray-500">每个账号注册前提取一条美国代理；浏览器注册、协议注册和注册后 OAuth 共用本次代理。</span>
               </span>
             </label>
-            <div v-if="registerForm.proxyApiEnabled" class="mt-3">
+            <div v-if="registerForm.proxyApiEnabled">
               <label class="block text-xs text-gray-500 mb-1">代理供应商</label>
               <select
                 v-model="registerForm.proxyApiProvider"
@@ -648,6 +662,7 @@ const registerForm = ref({
   oauthPhoneSmsProvider: 'phone_pool',
   oauthPhoneSmsCountry: '187',
   oauthPhoneSmsMaxPrice: '',
+  proxyUrl: '',
   proxyApiEnabled: false,
   proxyApiProvider: '1024proxy',
 })
@@ -790,7 +805,11 @@ const registerProxyApiHelp = computed(() => {
   return '运行时使用 1024proxy 美国白名单 API，每个账号注册前提取一条。'
 })
 const registerProxyLabel = computed(() => {
-  return registerForm.value.proxyApiEnabled ? `动态 API / ${registerForm.value.proxyApiProvider || '1024proxy'}` : '未启用'
+  const fixedProxy = String(registerForm.value.proxyUrl || '').trim()
+  if (registerForm.value.proxyApiEnabled) {
+    return `动态 API / ${registerForm.value.proxyApiProvider || '1024proxy'}`
+  }
+  return fixedProxy ? '指定代理' : '未启用'
 })
 const oauthPhoneSmsCountryOptionsForSelect = computed(() => {
   const selected = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
@@ -1043,6 +1062,7 @@ function loadSavedRegisterForm() {
       oauthPhoneSmsProvider: savedOauthPhoneSmsProvider,
       oauthPhoneSmsCountry: savedOauthPhoneSmsCountry,
       oauthPhoneSmsMaxPrice: savedOauthPhoneSmsMaxPrice,
+      proxyUrl: String(saved.proxyUrl || ''),
       proxyApiEnabled: Boolean(saved.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || ''))
         ? String(saved.proxyApiProvider)
@@ -1090,6 +1110,7 @@ function saveRegisterForm() {
       oauthPhoneSmsCountryByProvider: savedOauthPhoneSmsCountries,
       oauthPhoneSmsMaxPrice: oauthMaxPrice,
       oauthPhoneSmsMaxPriceByProvider: savedOauthPhoneSmsMaxPrices,
+      proxyUrl: String(registerForm.value.proxyUrl || '').trim(),
       proxyApiEnabled: Boolean(registerForm.value.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(registerForm.value.proxyApiProvider || ''))
         ? registerForm.value.proxyApiProvider
@@ -1387,6 +1408,7 @@ async function submitManualRegister() {
       oauth_phone_sms_provider: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsProvider : '',
       oauth_phone_sms_country: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsCountry : '',
       oauth_phone_sms_max_price: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsMaxPrice : '',
+      proxy_url: registerForm.value.proxyApiEnabled ? '' : (registerForm.value.proxyUrl || ''),
       proxy_api_provider: registerForm.value.proxyApiEnabled ? registerForm.value.proxyApiProvider : '',
     }
     await api.startAdd(payload)

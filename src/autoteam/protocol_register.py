@@ -270,7 +270,9 @@ def _attach_oauth_phone_supplier(
     provider = str(provider or "").strip().lower().replace("-", "_")
     if provider in {"herosms", "hero"}:
         provider = "hero_sms"
-    if provider in {"", "pool", "phonepool", "phone_pool"}:
+    if not provider:
+        return
+    if provider in {"pool", "phonepool", "phone_pool"}:
         provider = "phone_pool"
     if provider not in {"hero_sms", "smsbower", "phone_pool"}:
         return
@@ -556,7 +558,7 @@ def phone_first_register_once(
     _attach_flow_stage_logs(flow)
     _attach_oauth_phone_supplier(
         flow,
-        provider=oauth_phone_sms_provider,
+        provider=oauth_phone_sms_provider or "phone_pool",
         country=oauth_phone_sms_country,
         email=email,
     )

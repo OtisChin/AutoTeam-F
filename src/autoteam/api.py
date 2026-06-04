@@ -3227,6 +3227,7 @@ class ManualRegisterParams(BaseModel):
         "",
         validation_alias=AliasChoices("oauth_phone_sms_max_price", "oauthPhoneSmsMaxPrice"),
     )
+    proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
 
@@ -15524,7 +15525,7 @@ def post_paypal_task(params: PayPalTaskParams):
     from autoteam.bind_audit import record_bind_audit
     from autoteam.config import normalize_proxy_url
     from autoteam.gopay_executor import _safe_email_summary, _safe_proxy_summary
-    from autoteam.paypal_bind_executor import run_paypal_bind_task
+    from autoteam.paypal_bind_executor import _extract_auth_session_context, _paypal_extract_ba_link, run_paypal_bind_task
 
     email = _normalized_email(params.email)
     account_emails = []
@@ -16344,8 +16345,10 @@ def post_paypal_task(params: PayPalTaskParams):
                 )
 
             try:
-                if not effective_checkout_url:
+                access_token = ""
+                if protocol_no_card or not effective_checkout_url:
                     access_token = _extract_account_access_token(candidate_email)
+                if not effective_checkout_url:
                     if not access_token:
                         single_result = {
                             "status": "failed",
@@ -16411,6 +16414,69 @@ def post_paypal_task(params: PayPalTaskParams):
                     single_result = None
 
                 if single_result is None:
+                    # ---- Protocol mode: try direct BA link extraction (pplink-style) ----
+                    pre_extracted_data = None
+                    if protocol_no_card and access_token:
+                        try:
+                            auth_session_context = _extract_auth_session_context(candidate_email)
+                            extract_access_token = str(auth_session_context.get("access_token") or "").strip() or access_token
+                            pre_extracted_data = _paypal_extract_ba_link(
+                                access_token=extract_access_token,
+                                session_token=str(auth_session_context.get("session_token") or ""),
+                                cookie_header=str(auth_session_context.get("cookie_header") or ""),
+                                account_id=str(auth_session_context.get("account_id") or ""),
+                                device_id=str(auth_session_context.get("device_id") or ""),
+                                user_agent=str(auth_session_context.get("user_agent") or ""),
+                                openai_sentinel_token=str(auth_session_context.get("openai_sentinel_token") or ""),
+                                oai_client_version=str(auth_session_context.get("oai_client_version") or ""),
+                                oai_client_build_number=str(auth_session_context.get("oai_client_build_number") or ""),
+                                proxy_url=selected_proxy_url,
+                                country=("US" if paypal_country == "JP" else paypal_country.upper()),
+                                currency="USD",
+                                payment_method_country=paypal_country.upper(),
+                                timeout_seconds=max(30, int(params.timeout_seconds or 90)),
+                                is_cancelled=cancel_signal.is_cancelled,
+                            )
+                            extracted_checkout_url = str(pre_extracted_data.get("checkout_url") or "").strip()
+                            if extracted_checkout_url:
+                                effective_checkout_url = extracted_checkout_url
+                                _append_task_progress_threadsafe({
+                                    "stage": "paypal_checkout_long_link_extracted",
+                                    "email": candidate_email,
+                                    "current": index,
+                                    "total": len(candidates),
+                                    "checkout_url": effective_checkout_url,
+                                    "message": "已通过 HTTP 协议获取 PayPal 可用长 checkout 链接，继续后续流程",
+                                })
+                            if pre_extracted_data.get("status") == "success":
+                                pre_extracted_data.setdefault("checkout_url", effective_checkout_url)
+                                _append_task_progress_threadsafe({
+                                    "stage": "paypal_ba_extracted",
+                                    "email": candidate_email,
+                                    "current": index,
+                                    "total": len(candidates),
+                                    "ba_token": pre_extracted_data.get("ba_token"),
+                                    "message": (
+                                        "已通过 HTTP 协议提取 PayPal BA 链接: "
+                                        + (pre_extracted_data.get("ba_token") or "")[:12] + "..."
+                                    ),
+                                })
+                            else:
+                                _append_task_progress_threadsafe({
+                                    "stage": "paypal_ba_extract_failed",
+                                    "email": candidate_email,
+                                    "current": index,
+                                    "total": len(candidates),
+                                    "message": (
+                                        "HTTP 提取 BA 链接失败: "
+                                        + str(pre_extracted_data.get("message") or "unknown")
+                                    ),
+                                    "level": "warn",
+                                })
+                        except Exception as extract_exc:
+                            logger.info("[paypal_extract] ba link extraction exception: %s", extract_exc)
+                            pre_extracted_data = None
+
                     active_phone_accounts, current_sms_url, current_otp_channel, current_candidate_phone = _lease_paypal_phone_accounts_for_item(queue_item)
                     if phone_accounts and not active_phone_accounts:
                         with phone_lock:
@@ -16484,6 +16550,7 @@ def post_paypal_task(params: PayPalTaskParams):
                             paypal_lang=paypal_lang,
                             roxybrowser_workspace_id=roxybrowser_workspace_id,
                             roxybrowser_profile_id=roxybrowser_profile_id,
+                            pre_extracted=pre_extracted_data,
                         )
             except HTTPException as exc:
                 exc_message = str(exc.detail) if getattr(exc, "detail", None) else str(exc)
@@ -16891,8 +16958,10 @@ def post_paypal_task(params: PayPalTaskParams):
                         )
                 try:
                     effective_checkout_url = checkout_url
-                    if not effective_checkout_url:
+                    access_token = ""
+                    if protocol_no_card or not effective_checkout_url:
                         access_token = _extract_account_access_token(candidate_email)
+                    if not effective_checkout_url:
                         if not access_token:
                             single_result = {
                                 "status": "failed",
@@ -16992,6 +17061,79 @@ def post_paypal_task(params: PayPalTaskParams):
                     else:
                         single_result = None
                     if single_result is None:
+                        pre_extracted_data = None
+                        if protocol_no_card and access_token:
+                            try:
+                                auth_session_context = _extract_auth_session_context(candidate_email)
+                                extract_access_token = str(auth_session_context.get("access_token") or "").strip() or access_token
+                                pre_extracted_data = _paypal_extract_ba_link(
+                                    access_token=extract_access_token,
+                                    session_token=str(auth_session_context.get("session_token") or ""),
+                                    cookie_header=str(auth_session_context.get("cookie_header") or ""),
+                                    account_id=str(auth_session_context.get("account_id") or ""),
+                                    device_id=str(auth_session_context.get("device_id") or ""),
+                                    user_agent=str(auth_session_context.get("user_agent") or ""),
+                                    openai_sentinel_token=str(auth_session_context.get("openai_sentinel_token") or ""),
+                                    oai_client_version=str(auth_session_context.get("oai_client_version") or ""),
+                                    oai_client_build_number=str(auth_session_context.get("oai_client_build_number") or ""),
+                                    proxy_url=selected_proxy_url,
+                                    country=("US" if paypal_country == "JP" else paypal_country.upper()),
+                                    currency="USD",
+                                    payment_method_country=paypal_country.upper(),
+                                    timeout_seconds=max(30, int(params.timeout_seconds or 90)),
+                                    is_cancelled=cancel_signal.is_cancelled,
+                                )
+                                extracted_checkout_url = str(pre_extracted_data.get("checkout_url") or "").strip()
+                                if extracted_checkout_url:
+                                    effective_checkout_url = extracted_checkout_url
+                                    last_checkout_url = effective_checkout_url or last_checkout_url
+                                    _append_task_progress(
+                                        task_id,
+                                        {
+                                            "stage": "paypal_checkout_long_link_extracted",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "checkout_url": effective_checkout_url,
+                                            "message": "已通过 HTTP 协议获取 PayPal 可用长 checkout 链接，继续后续流程",
+                                        },
+                                    )
+                                if pre_extracted_data.get("status") == "success":
+                                    pre_extracted_data.setdefault("checkout_url", effective_checkout_url)
+                                    _append_task_progress(
+                                        task_id,
+                                        {
+                                            "stage": "paypal_ba_extracted",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "ba_token": pre_extracted_data.get("ba_token"),
+                                            "message": (
+                                                "已通过 HTTP 协议提取 PayPal BA 链接: "
+                                                + (pre_extracted_data.get("ba_token") or "")[:12]
+                                                + "..."
+                                            ),
+                                        },
+                                    )
+                                else:
+                                    _append_task_progress(
+                                        task_id,
+                                        {
+                                            "stage": "paypal_ba_extract_failed",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "message": (
+                                                "HTTP 提取 BA 链接失败: "
+                                                + str(pre_extracted_data.get("message") or "unknown")
+                                            ),
+                                            "level": "warn",
+                                        },
+                                    )
+                            except Exception as extract_exc:
+                                logger.info("[paypal_extract] ba link extraction exception: %s", extract_exc)
+                                pre_extracted_data = None
+
                         active_phone_accounts = phone_accounts
                         current_sms_url = sms_url
                         current_otp_channel = otp_channel
@@ -17077,6 +17219,7 @@ def post_paypal_task(params: PayPalTaskParams):
                                 paypal_lang=paypal_lang,
                                 roxybrowser_workspace_id=roxybrowser_workspace_id,
                                 roxybrowser_profile_id=roxybrowser_profile_id,
+                                pre_extracted=pre_extracted_data,
                             )
                 except HTTPException as exc:
                     exc_message = str(exc.detail) if getattr(exc, "detail", None) else str(exc)
@@ -17464,12 +17607,19 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         jitter_min_seconds = 0.0
         jitter_max_seconds = 0.0
         selected_domains = [selected_domain] if selected_domain else []
+    raw_proxy_url = str(params.proxy_url or "").strip()
+    try:
+        normalized_proxy_url = normalize_proxy_url(raw_proxy_url) if raw_proxy_url else ""
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"注册代理格式错误: {raw_proxy_url} ({exc})") from exc
+
     register_proxy_selector = None
     register_proxy_meta = {}
     proxy_api_provider = _normalize_proxy_api_provider(params.proxy_api_provider) if params.proxy_api_provider else ""
     proxy_api_url = str(params.proxy_api_url or "").strip()
     if proxy_api_provider or proxy_api_url:
         register_proxy_selector, register_proxy_meta = _build_oauth_proxy_selector(
+            proxy_url=normalized_proxy_url,
             proxy_api_provider=proxy_api_provider or "1024proxy",
             proxy_api_url=proxy_api_url,
         )
@@ -17495,6 +17645,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
         "oauth_phone_sms_country": oauth_phone_sms_country or "",
         "oauth_phone_sms_max_price": oauth_phone_sms_max_price,
         "register_mode": register_mode,
+        "proxy_url_present": bool(normalized_proxy_url),
         "proxy_api_provider": proxy_api_provider,
         "proxy_api_url_present": bool(proxy_api_url),
         **register_proxy_meta,
@@ -17521,6 +17672,7 @@ def post_add(params: ManualRegisterParams = ManualRegisterParams()):
             post_register_oauth=post_register_oauth,
             registration_flow=registration_flow,
             register_mode=register_mode,
+            proxy_url=normalized_proxy_url,
             register_proxy_selector=register_proxy_selector,
             register_proxy_meta=register_proxy_meta,
             oauth_phone_sms_provider=oauth_phone_sms_provider or None,

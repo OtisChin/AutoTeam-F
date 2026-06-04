@@ -410,12 +410,28 @@ def _prime_checkout_signup(
     return signup_url, text
 
 
-def _bootstrap(http: Any, ba_token: str, *, locale_country: str, locale_lang: str, timeout: int) -> tuple[str, str, str]:
-    url = (
-        f"{PP_ORIGIN}/agreements/approve?ba_token={urllib.parse.quote(ba_token)}"
-        f"&country.x={urllib.parse.quote(locale_country)}"
-        f"&locale.x={urllib.parse.quote(f'{locale_lang}_{locale_country}')}"
-    )
+def _bootstrap(
+    http: Any,
+    ba_token: str,
+    *,
+    locale_country: str,
+    locale_lang: str,
+    timeout: int,
+    approve_url: str = "",
+) -> tuple[str, str, str]:
+    if approve_url:
+        url = _coerce_onboard_url(
+            approve_url,
+            ba_token=ba_token,
+            locale_country=locale_country,
+            locale_lang=locale_lang,
+        )
+    else:
+        url = (
+            f"{PP_ORIGIN}/agreements/approve?ba_token={urllib.parse.quote(ba_token)}"
+            f"&country.x={urllib.parse.quote(locale_country)}"
+            f"&locale.x={urllib.parse.quote(f'{locale_lang}_{locale_country}')}"
+        )
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -684,6 +700,7 @@ def run_paypal_no_card_protocol_signup(
     http: Any,
     *,
     ba_token: str,
+    approve_url: str = "",
     signup_profile: dict[str, Any],
     timeout_seconds: int,
     is_cancelled=None,
@@ -705,6 +722,7 @@ def run_paypal_no_card_protocol_signup(
             locale_country=locale_country,
             locale_lang=locale_lang,
             timeout=timeout,
+            approve_url=approve_url,
         )
         _emit(on_progress, "paypal_wait_signup_form", signup_url=signup_url)
         signup_profile = dict(signup_profile or {})

@@ -3374,8 +3374,21 @@ def create_account_direct(
                 _progress("phone_first_register_failed", f"手机号注册失败: {email or '<未创建邮箱>'}: {reason}", email=email, level="error")
                 return None
 
+            saved_session = None
             bundle = (session_data or {}).get("codex_oauth_bundle")
             if bundle:
+                saved_session = _save_auth_from_session_page(
+                    email,
+                    password,
+                    account_id,
+                    session_data,
+                    out_outcome=out_outcome,
+                    mail_provider=_mail_client_provider_name(mail_client) or None,
+                )
+                if saved_session:
+                    _progress("phone_first_auth_session_saved", f"手机号注册完成，已保存 auth_session: {email}", email=email)
+                else:
+                    logger.warning("[phone-first] OAuth bundle 已返回，但 auth_session 未保存成功: %s", email)
                 saved = _save_codex_oauth_bundle_for_account(
                     email,
                     password,
@@ -3389,14 +3402,15 @@ def create_account_direct(
                     _progress("phone_first_register_finished", f"手机号注册和 OAuth 已完成: {email}", email=email)
                     return saved
 
-            saved_session = _save_auth_from_session_page(
-                email,
-                password,
-                account_id,
-                session_data,
-                out_outcome=out_outcome,
-                mail_provider=_mail_client_provider_name(mail_client) or None,
-            )
+            if saved_session is None:
+                saved_session = _save_auth_from_session_page(
+                    email,
+                    password,
+                    account_id,
+                    session_data,
+                    out_outcome=out_outcome,
+                    mail_provider=_mail_client_provider_name(mail_client) or None,
+                )
             if saved_session:
                 _progress("phone_first_register_finished", f"手机号注册完成，已保存 auth_session: {email}", email=email)
                 return saved_session
@@ -4418,6 +4432,7 @@ def cmd_register_accounts(
     luckmail_preferred_domains=None,
     register_mode="browser",
     registration_flow="standard",
+    proxy_url=None,
     register_proxy_selector=None,
     register_proxy_meta=None,
     oauth_phone_sms_provider=None,
@@ -4471,6 +4486,7 @@ def cmd_register_accounts(
         register_mode = "browser"
     if registration_flow not in {"standard", "phone_cpa"}:
         registration_flow = "standard"
+    fixed_proxy_url = str(proxy_url or "").strip()
     register_proxy_meta = register_proxy_meta or {}
     oauth_env_overrides = {}
     oauth_provider = str(oauth_phone_sms_provider or "").strip().lower().replace("-", "_")
@@ -4525,7 +4541,16 @@ def cmd_register_accounts(
 
     def _select_working_register_proxy(job_index: int, total: int) -> str:
         if not callable(register_proxy_selector):
-            return ""
+            if fixed_proxy_url and progress_callback:
+                progress_callback(
+                    {
+                        "stage": "register_proxy_selected",
+                        "message": f"已为第 {job_index + 1}/{total} 个账号使用指定代理",
+                        "proxy_url_present": True,
+                        "email_index": job_index + 1,
+                    }
+                )
+            return fixed_proxy_url
         try:
             max_attempts = max(1, min(10, int(os.environ.get("REGISTER_PROXY_PROBE_ATTEMPTS", "5") or 5)))
         except Exception:
