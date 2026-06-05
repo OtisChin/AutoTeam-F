@@ -17,7 +17,7 @@ import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 from fastapi import FastAPI, HTTPException, Request
@@ -4009,8 +4009,23 @@ def _is_proxy_api_url(value: str) -> bool:
         return False
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
+    host = str(parsed.netloc or "").lower()
+    if "cliproxy" in host or "1024proxy" in host:
+        return True
     path = str(parsed.path or "").lower()
-    return any(marker in path for marker in ("getporxy", "getproxy", "traffic"))
+    return any(marker in path for marker in ("getporxy", "getproxy", "traffic", "/white/api"))
+
+
+def _infer_proxy_api_provider_from_url(value: str) -> str:
+    try:
+        host = str(urlsplit(str(value or "").strip()).netloc or "").lower()
+    except Exception:
+        return ""
+    if "cliproxy" in host:
+        return "cliproxy"
+    if "1024proxy" in host:
+        return "1024proxy"
+    return ""
 
 
 def _normalize_proxy_api_provider(value: str) -> str:
@@ -4031,11 +4046,49 @@ def _default_proxy_api_url(provider: str, proxy_url: str = "") -> str:
     return "https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json"
 
 
+def _default_paypal_proxy_api_url(provider: str, *, country: str = "US", protocol_no_card: bool = False) -> str:
+    normalized_provider = _normalize_proxy_api_provider(provider)
+    region = "US" if protocol_no_card else "US"
+    if normalized_provider == "1024proxy":
+        return f"https://white.1024proxy.com/white/api?region={region}&num=1&time=10&format=1&type=json"
+    return f"https://api.cliproxy.io/white/api?region={region}&num=1&time=10&format=n&type=json"
+
+
 def _default_gopay_proxy_api_url(provider: str, proxy_url: str = "") -> str:
     normalized_provider = _normalize_proxy_api_provider(provider)
     if normalized_provider == "1024proxy":
         return "https://white.1024proxy.com/white/api?region=ID&num=1&time=10&format=1&type=json"
     return "https://api.cliproxy.io/white/api?region=ID&num=1&time=10&format=n&type=txt"
+
+
+def _proxy_api_url_with_region(api_url: str, region: str) -> str:
+    raw = str(api_url or "").strip()
+    if not raw:
+        return ""
+    target_region = re.sub(r"[^A-Za-z]", "", str(region or "").strip().upper())[:2]
+    if not target_region:
+        return raw
+    parsed = urlsplit(raw)
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    replaced = False
+    updated: list[tuple[str, str]] = []
+    for key, value in pairs:
+        if key.lower() == "region":
+            updated.append((key, target_region))
+            replaced = True
+        else:
+            updated.append((key, value))
+    if not replaced:
+        updated.append(("region", target_region))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(updated), parsed.fragment))
+
+
+def _proxy_url_for_region(proxy_url: str, region: str) -> str:
+    proxy = str(proxy_url or "").strip()
+    target_region = re.sub(r"[^A-Za-z]", "", str(region or "").strip().upper())[:2]
+    if proxy and target_region and "region-" in proxy:
+        return re.sub(r"region-[A-Za-z]{2}", f"region-{target_region}", proxy)
+    return proxy
 
 
 def _random_proxy_sid() -> str:
@@ -4101,7 +4154,7 @@ def _fetch_proxy_from_api_url(api_url: str, *, default_auth_scheme: str, provide
     url = str(api_url or "").strip()
     if not url:
         return ""
-    normalized_provider = _normalize_proxy_api_provider(provider)
+    normalized_provider = _normalize_proxy_api_provider(provider or _infer_proxy_api_provider_from_url(url))
     try:
         resp = requests.get(url, timeout=30)
     except Exception as exc:
@@ -15546,6 +15599,8 @@ def post_paypal_task(params: PayPalTaskParams):
     paypal_country = re.sub(r"[^A-Za-z]", "", str(params.paypal_country or params.billing_country or "US")).upper()[:2] or "US"
     if paypal_region in {"JP", "JP_NOCARD", "JAPAN_NOCARD"}:
         paypal_country = "JP"
+        if paypal_browser in {"protocol", "http", "no_card", "no-card", "pure_protocol"} and not paypal_fallback_browser:
+            paypal_fallback_browser = "roxybrowser"
         if paypal_mode == "create_account" and not any(
             str(value or "").strip()
             for value in (params.paypal_card_number, params.paypal_card_expiry, params.paypal_card_cvv)
@@ -15565,25 +15620,45 @@ def post_paypal_task(params: PayPalTaskParams):
     if not paypal_lang:
         paypal_lang = "ja" if paypal_country == "JP" else "en"
     protocol_no_card = paypal_browser in {"protocol", "http", "no_card", "no-card", "pure_protocol"}
-    if paypal_browser == "roxybrowser" and roxybrowser_auto_create_profile:
+    paypal_ba_proxy_region = str(os.environ.get("PAYPAL_BA_PROXY_REGION") or "US")
+    if (
+        roxybrowser_auto_create_profile
+        and (
+            paypal_browser in {"roxybrowser", "roxy-browser", "roxy"}
+            or paypal_fallback_browser in {"roxybrowser", "roxy-browser", "roxy"}
+        )
+    ):
         roxybrowser_profile_id = ""
     sms_url = str(params.sms_url or "").strip()
     otp_channel = str(params.otp_channel or "sms").strip().lower() or "sms"
     proxy_url = str(params.proxy_url or "").strip()
     proxy_api_url = str(params.proxy_api_url or "").strip()
     proxy_api_provider = _normalize_proxy_api_provider(params.proxy_api_provider) if params.proxy_api_provider else ""
+    if proxy_api_url and not proxy_api_provider:
+        proxy_api_provider = _infer_proxy_api_provider_from_url(proxy_api_url)
     if proxy_api_provider and not proxy_api_url:
-        proxy_api_url = _default_proxy_api_url(proxy_api_provider, proxy_url)
+        proxy_api_url = _default_paypal_proxy_api_url(
+            proxy_api_provider,
+            country=paypal_country,
+            protocol_no_card=protocol_no_card,
+        )
     proxy_pool = _parse_proxy_pool_values(params.proxy_pool, params.proxy_pool_text)
     static_proxy_pool: list[str] = []
     for raw_proxy_entry in proxy_pool:
         if _is_proxy_api_url(raw_proxy_entry):
             if not proxy_api_url:
                 proxy_api_url = raw_proxy_entry
-                proxy_api_provider = _normalize_proxy_api_provider(params.proxy_api_provider or "1024proxy")
+                proxy_api_provider = _normalize_proxy_api_provider(
+                    params.proxy_api_provider or _infer_proxy_api_provider_from_url(proxy_api_url) or "1024proxy"
+                )
             continue
         static_proxy_pool.append(raw_proxy_entry)
     proxy_pool = static_proxy_pool
+    if protocol_no_card and proxy_api_url:
+        proxy_api_url = _proxy_api_url_with_region(
+            proxy_api_url,
+            paypal_ba_proxy_region,
+        )
     phone_accounts: list[dict] = []
     seen_phone_accounts: set[tuple[str, str, str]] = set()
 
@@ -15643,12 +15718,16 @@ def post_paypal_task(params: PayPalTaskParams):
                 normalized_proxy_url = normalize_proxy_url(default_proxy_entry)
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"默认代理格式错误: {default_proxy_entry} ({exc})") from exc
+    if protocol_no_card and normalized_proxy_url:
+        normalized_proxy_url = _proxy_url_for_region(normalized_proxy_url, paypal_ba_proxy_region)
     normalized_proxy_pool: list[str] = []
     for raw_pool_proxy in proxy_pool:
         try:
             normalized = normalize_proxy_url(raw_pool_proxy)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"动态代理池格式错误: {raw_pool_proxy} ({exc})") from exc
+        if protocol_no_card and normalized:
+            normalized = _proxy_url_for_region(normalized, paypal_ba_proxy_region)
         if normalized and normalized not in normalized_proxy_pool:
             normalized_proxy_pool.append(normalized)
     bind_proxy_url = normalized_proxy_url
@@ -15668,6 +15747,60 @@ def post_paypal_task(params: PayPalTaskParams):
         if normalized_proxy_pool:
             return random.choice(normalized_proxy_pool)
         return bind_proxy_url
+
+    def _select_paypal_provider_proxy(selected_proxy_url: str) -> str:
+        selected = str(selected_proxy_url or "").strip()
+        if not protocol_no_card:
+            return ""
+        if proxy_api_url:
+            provider_api_url = _proxy_api_url_with_region(proxy_api_url, "US")
+            fetched_proxy = _fetch_proxy_from_api_url(
+                provider_api_url,
+                default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME,
+                provider=proxy_api_provider,
+            )
+            if fetched_proxy:
+                return fetched_proxy
+        derived = _proxy_url_for_region(selected, "US")
+        return derived if derived else selected
+
+    def _paypal_ba_extract_attempts() -> int:
+        try:
+            return max(1, min(5, int(os.environ.get("PAYPAL_BA_EXTRACT_ATTEMPTS", "5") or 5)))
+        except Exception:
+            return 5
+
+    def _paypal_ba_payment_method_country() -> str:
+        override = re.sub(r"[^A-Za-z]", "", str(os.environ.get("PAYPAL_BA_PAYMENT_METHOD_COUNTRY") or "")).upper()[:2]
+        if override:
+            return override
+        if protocol_no_card:
+            return "US"
+        return paypal_country.upper()
+
+    def _paypal_ba_auth_context(email: str, fallback_access_token: str) -> dict[str, str]:
+        try:
+            session_context = _extract_auth_session_context(email)
+        except Exception as exc:
+            logger.info("[paypal_extract] auth_session context load failed, using access_token only: %s", exc)
+            session_context = {}
+        access_token_value = str(session_context.get("access_token") or "").strip() or str(fallback_access_token or "").strip()
+        use_full_context = str(os.environ.get("PAYPAL_BA_USE_AUTH_SESSION_CONTEXT") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if use_full_context:
+            merged = dict(session_context)
+            merged["access_token"] = access_token_value
+            return {str(key): str(value or "") for key, value in merged.items()}
+        return {
+            "access_token": access_token_value,
+            "session_token": "",
+            "cookie_header": "",
+            "account_id": "",
+            "device_id": "",
+            "user_agent": str(session_context.get("user_agent") or ""),
+            "openai_sentinel_token": "",
+            "oai_client_version": "",
+            "oai_client_build_number": "",
+        }
 
     def _paypal_already_paid_text(value: Any) -> bool:
         normalized = re.sub(r"\s+", " ", str(value or "")).strip().lower()
@@ -16357,6 +16490,8 @@ def post_paypal_task(params: PayPalTaskParams):
                             "screenshot_paths": [],
                             "email": candidate_email,
                         }
+                    elif protocol_no_card:
+                        single_result = None
                     else:
                         try:
                             generated = _generate_checkout_link(access_token, bind_link_payload, proxy_url=selected_proxy_url)
@@ -16418,8 +16553,38 @@ def post_paypal_task(params: PayPalTaskParams):
                     pre_extracted_data = None
                     if protocol_no_card and access_token:
                         try:
-                            auth_session_context = _extract_auth_session_context(candidate_email)
+                            auth_session_context = _paypal_ba_auth_context(candidate_email, access_token)
                             extract_access_token = str(auth_session_context.get("access_token") or "").strip() or access_token
+                            provider_proxy_url = ""
+                            try:
+                                provider_proxy_url = _select_paypal_provider_proxy(selected_proxy_url)
+                                if provider_proxy_url and provider_proxy_url != selected_proxy_url:
+                                    _append_task_progress_threadsafe({
+                                        "stage": "paypal_provider_proxy_selected",
+                                        "email": candidate_email,
+                                        "current": index,
+                                        "total": len(candidates),
+                                        "retry_round": retry_round,
+                                        "proxy_label": params.proxy_label,
+                                        "proxy_api_provider": proxy_api_provider,
+                                        "message": (
+                                            "PayPal provider 阶段已切换代理: "
+                                            f"{_safe_proxy_summary(provider_proxy_url)}"
+                                        ),
+                                    })
+                            except Exception as provider_proxy_exc:
+                                provider_proxy_url = _proxy_url_for_region(selected_proxy_url, "US") or selected_proxy_url
+                                _append_task_progress_threadsafe({
+                                    "stage": "paypal_provider_proxy_failed",
+                                    "email": candidate_email,
+                                    "current": index,
+                                    "total": len(candidates),
+                                    "retry_round": retry_round,
+                                    "proxy_label": params.proxy_label,
+                                    "proxy_api_provider": proxy_api_provider,
+                                    "message": f"PayPal provider 阶段代理获取失败，回退当前代理: {provider_proxy_exc}",
+                                    "level": "warn",
+                                })
                             pre_extracted_data = _paypal_extract_ba_link(
                                 access_token=extract_access_token,
                                 session_token=str(auth_session_context.get("session_token") or ""),
@@ -16431,12 +16596,127 @@ def post_paypal_task(params: PayPalTaskParams):
                                 oai_client_version=str(auth_session_context.get("oai_client_version") or ""),
                                 oai_client_build_number=str(auth_session_context.get("oai_client_build_number") or ""),
                                 proxy_url=selected_proxy_url,
+                                provider_proxy_url=provider_proxy_url,
+                                approve_proxy_url=provider_proxy_url,
                                 country=("US" if paypal_country == "JP" else paypal_country.upper()),
                                 currency="USD",
-                                payment_method_country=paypal_country.upper(),
-                                timeout_seconds=max(30, int(params.timeout_seconds or 90)),
+                                payment_method_country=_paypal_ba_payment_method_country(),
+                                timeout_seconds=max(30, min(90, int(params.timeout_seconds or 90))),
                                 is_cancelled=cancel_signal.is_cancelled,
                             )
+                            max_ba_attempts = _paypal_ba_extract_attempts()
+                            if pre_extracted_data.get("status") != "success":
+                                _append_task_progress_threadsafe({
+                                    "stage": "paypal_ba_extract_attempt_failed",
+                                    "email": candidate_email,
+                                    "current": index,
+                                    "total": len(candidates),
+                                    "retry_round": retry_round,
+                                    "ba_attempt": 1,
+                                    "max_ba_attempts": max_ba_attempts,
+                                    "failure_stage": pre_extracted_data.get("failure_stage") or "",
+                                    "message": (
+                                        "PayPal BA 第 1/"
+                                        f"{max_ba_attempts} 次失败: "
+                                        + str(pre_extracted_data.get("message") or "unknown")
+                                    ),
+                                    "level": "warn",
+                                })
+                            for ba_attempt in range(2, max_ba_attempts + 1):
+                                if pre_extracted_data.get("status") == "success" or cancel_signal.is_cancelled():
+                                    break
+                                _append_task_progress_threadsafe({
+                                    "stage": "paypal_ba_extract_retry",
+                                    "email": candidate_email,
+                                    "current": index,
+                                    "total": len(candidates),
+                                    "retry_round": retry_round,
+                                    "ba_attempt": ba_attempt,
+                                    "max_ba_attempts": max_ba_attempts,
+                                    "message": f"PayPal BA 第 {ba_attempt}/{max_ba_attempts} 次重试，重新获取代理和 checkout",
+                                    "level": "warn",
+                                })
+                                retry_proxy_url = selected_proxy_url
+                                try:
+                                    if proxy_api_url or normalized_proxy_pool:
+                                        retry_proxy_url = _select_paypal_proxy()
+                                        selected_proxy_url = retry_proxy_url
+                                        _append_task_progress_threadsafe({
+                                            "stage": "paypal_proxy_api_selected" if proxy_api_provider or proxy_api_url else "paypal_proxy_selected",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "retry_round": retry_round,
+                                            "ba_attempt": ba_attempt,
+                                            "proxy_label": params.proxy_label,
+                                            "proxy_pool_count": len(normalized_proxy_pool),
+                                            "proxy_api_url_present": bool(proxy_api_url),
+                                            "proxy_api_provider": proxy_api_provider,
+                                            "message": (
+                                                f"PayPal BA 重试已通过 {proxy_api_provider} API 轮换代理: {_safe_proxy_summary(retry_proxy_url)}"
+                                                if proxy_api_provider or proxy_api_url
+                                                else f"PayPal BA 重试已从动态代理池随机选择代理: {_safe_proxy_summary(retry_proxy_url)}"
+                                            ),
+                                        })
+                                except Exception as retry_proxy_exc:
+                                    logger.info("[paypal_extract] BA retry proxy selection failed: %s", retry_proxy_exc)
+                                retry_provider_proxy_url = ""
+                                try:
+                                    retry_provider_proxy_url = _select_paypal_provider_proxy(retry_proxy_url)
+                                    if retry_provider_proxy_url and retry_provider_proxy_url != retry_proxy_url:
+                                        _append_task_progress_threadsafe({
+                                            "stage": "paypal_provider_proxy_selected",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "retry_round": retry_round,
+                                            "proxy_label": params.proxy_label,
+                                            "proxy_api_provider": proxy_api_provider,
+                                            "ba_attempt": ba_attempt,
+                                            "message": (
+                                                "PayPal provider 阶段已切换代理: "
+                                                f"{_safe_proxy_summary(retry_provider_proxy_url)}"
+                                            ),
+                                        })
+                                except Exception as provider_proxy_exc:
+                                    retry_provider_proxy_url = _proxy_url_for_region(retry_proxy_url, "US") or retry_proxy_url
+                                    logger.info("[paypal_extract] BA retry provider proxy selection failed: %s", provider_proxy_exc)
+                                pre_extracted_data = _paypal_extract_ba_link(
+                                    access_token=extract_access_token,
+                                    session_token=str(auth_session_context.get("session_token") or ""),
+                                    cookie_header=str(auth_session_context.get("cookie_header") or ""),
+                                    account_id=str(auth_session_context.get("account_id") or ""),
+                                    device_id=str(auth_session_context.get("device_id") or ""),
+                                    user_agent=str(auth_session_context.get("user_agent") or ""),
+                                    openai_sentinel_token=str(auth_session_context.get("openai_sentinel_token") or ""),
+                                    oai_client_version=str(auth_session_context.get("oai_client_version") or ""),
+                                    oai_client_build_number=str(auth_session_context.get("oai_client_build_number") or ""),
+                                    proxy_url=retry_proxy_url,
+                                    provider_proxy_url=retry_provider_proxy_url,
+                                    approve_proxy_url=retry_provider_proxy_url,
+                                    country=("US" if paypal_country == "JP" else paypal_country.upper()),
+                                    currency="USD",
+                                    payment_method_country=_paypal_ba_payment_method_country(),
+                                    timeout_seconds=max(30, min(90, int(params.timeout_seconds or 90))),
+                                    is_cancelled=cancel_signal.is_cancelled,
+                                )
+                                if pre_extracted_data.get("status") != "success":
+                                    _append_task_progress_threadsafe({
+                                        "stage": "paypal_ba_extract_attempt_failed",
+                                        "email": candidate_email,
+                                        "current": index,
+                                        "total": len(candidates),
+                                        "retry_round": retry_round,
+                                        "ba_attempt": ba_attempt,
+                                        "max_ba_attempts": max_ba_attempts,
+                                        "failure_stage": pre_extracted_data.get("failure_stage") or "",
+                                        "message": (
+                                            "PayPal BA 第 "
+                                            f"{ba_attempt}/{max_ba_attempts} 次失败: "
+                                            + str(pre_extracted_data.get("message") or "unknown")
+                                        ),
+                                        "level": "warn",
+                                    })
                             extracted_checkout_url = str(pre_extracted_data.get("checkout_url") or "").strip()
                             if extracted_checkout_url:
                                 effective_checkout_url = extracted_checkout_url
@@ -16970,6 +17250,8 @@ def post_paypal_task(params: PayPalTaskParams):
                                 "screenshot_paths": [],
                                 "email": candidate_email,
                             }
+                        elif protocol_no_card:
+                            single_result = None
                         else:
                             try:
                                 generated = _generate_checkout_link(access_token, bind_link_payload, proxy_url=selected_proxy_url)
@@ -17064,8 +17346,42 @@ def post_paypal_task(params: PayPalTaskParams):
                         pre_extracted_data = None
                         if protocol_no_card and access_token:
                             try:
-                                auth_session_context = _extract_auth_session_context(candidate_email)
+                                auth_session_context = _paypal_ba_auth_context(candidate_email, access_token)
                                 extract_access_token = str(auth_session_context.get("access_token") or "").strip() or access_token
+                                provider_proxy_url = ""
+                                try:
+                                    provider_proxy_url = _select_paypal_provider_proxy(selected_proxy_url)
+                                    if provider_proxy_url and provider_proxy_url != selected_proxy_url:
+                                        _append_task_progress(
+                                            task_id,
+                                            {
+                                                "stage": "paypal_provider_proxy_selected",
+                                                "email": candidate_email,
+                                                "current": index,
+                                                "total": len(candidates),
+                                                "proxy_label": params.proxy_label,
+                                                "proxy_api_provider": proxy_api_provider,
+                                                "message": (
+                                                    "PayPal provider 阶段已切换代理: "
+                                                    f"{_safe_proxy_summary(provider_proxy_url)}"
+                                                ),
+                                            },
+                                        )
+                                except Exception as provider_proxy_exc:
+                                    provider_proxy_url = _proxy_url_for_region(selected_proxy_url, "US") or selected_proxy_url
+                                    _append_task_progress(
+                                        task_id,
+                                        {
+                                            "stage": "paypal_provider_proxy_failed",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "proxy_label": params.proxy_label,
+                                            "proxy_api_provider": proxy_api_provider,
+                                            "message": f"PayPal provider 阶段代理获取失败，回退当前代理: {provider_proxy_exc}",
+                                            "level": "warn",
+                                        },
+                                    )
                                 pre_extracted_data = _paypal_extract_ba_link(
                                     access_token=extract_access_token,
                                     session_token=str(auth_session_context.get("session_token") or ""),
@@ -17077,12 +17393,135 @@ def post_paypal_task(params: PayPalTaskParams):
                                     oai_client_version=str(auth_session_context.get("oai_client_version") or ""),
                                     oai_client_build_number=str(auth_session_context.get("oai_client_build_number") or ""),
                                     proxy_url=selected_proxy_url,
+                                    provider_proxy_url=provider_proxy_url,
+                                    approve_proxy_url=provider_proxy_url,
                                     country=("US" if paypal_country == "JP" else paypal_country.upper()),
                                     currency="USD",
-                                    payment_method_country=paypal_country.upper(),
-                                    timeout_seconds=max(30, int(params.timeout_seconds or 90)),
+                                    payment_method_country=_paypal_ba_payment_method_country(),
+                                    timeout_seconds=max(30, min(90, int(params.timeout_seconds or 90))),
                                     is_cancelled=cancel_signal.is_cancelled,
                                 )
+                                max_ba_attempts = _paypal_ba_extract_attempts()
+                                if pre_extracted_data.get("status") != "success":
+                                    _append_task_progress(
+                                        task_id,
+                                        {
+                                            "stage": "paypal_ba_extract_attempt_failed",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "ba_attempt": 1,
+                                            "max_ba_attempts": max_ba_attempts,
+                                            "failure_stage": pre_extracted_data.get("failure_stage") or "",
+                                            "message": (
+                                                "PayPal BA 第 1/"
+                                                f"{max_ba_attempts} 次失败: "
+                                                + str(pre_extracted_data.get("message") or "unknown")
+                                            ),
+                                            "level": "warn",
+                                        },
+                                    )
+                                for ba_attempt in range(2, max_ba_attempts + 1):
+                                    if pre_extracted_data.get("status") == "success" or cancel_signal.is_cancelled():
+                                        break
+                                    _append_task_progress(
+                                        task_id,
+                                        {
+                                            "stage": "paypal_ba_extract_retry",
+                                            "email": candidate_email,
+                                            "current": index,
+                                            "total": len(candidates),
+                                            "ba_attempt": ba_attempt,
+                                            "max_ba_attempts": max_ba_attempts,
+                                            "message": f"PayPal BA 第 {ba_attempt}/{max_ba_attempts} 次重试，重新获取代理和 checkout",
+                                            "level": "warn",
+                                        },
+                                    )
+                                    retry_proxy_url = selected_proxy_url
+                                    try:
+                                        if proxy_api_url or normalized_proxy_pool:
+                                            retry_proxy_url = _select_paypal_proxy()
+                                            selected_proxy_url = retry_proxy_url
+                                    except Exception as retry_proxy_exc:
+                                        logger.info("[paypal_extract] BA retry proxy selection failed: %s", retry_proxy_exc)
+                                    retry_provider_proxy_url = ""
+                                    try:
+                                        retry_provider_proxy_url = _select_paypal_provider_proxy(retry_proxy_url)
+                                        if retry_provider_proxy_url and retry_provider_proxy_url != retry_proxy_url:
+                                            _append_task_progress(
+                                                task_id,
+                                                {
+                                                    "stage": "paypal_provider_proxy_selected",
+                                                    "email": candidate_email,
+                                                    "current": index,
+                                                    "total": len(candidates),
+                                                    "proxy_label": params.proxy_label,
+                                                    "proxy_api_provider": proxy_api_provider,
+                                                    "ba_attempt": ba_attempt,
+                                                    "message": (
+                                                        "PayPal provider 阶段已切换代理: "
+                                                        f"{_safe_proxy_summary(retry_provider_proxy_url)}"
+                                                    ),
+                                                },
+                                            )
+                                    except Exception as provider_proxy_exc:
+                                        retry_provider_proxy_url = _proxy_url_for_region(retry_proxy_url, "US") or retry_proxy_url
+                                        logger.info("[paypal_extract] BA retry provider proxy selection failed: %s", provider_proxy_exc)
+                                    if retry_provider_proxy_url and retry_provider_proxy_url != retry_proxy_url:
+                                        _append_task_progress(
+                                            task_id,
+                                            {
+                                                "stage": "paypal_approve_proxy_selected",
+                                                "email": candidate_email,
+                                                "current": index,
+                                                "total": len(candidates),
+                                                "proxy_label": params.proxy_label,
+                                                "proxy_api_provider": proxy_api_provider,
+                                                "ba_attempt": ba_attempt,
+                                                "message": (
+                                                    "PayPal BA 重试将使用 provider 代理执行 ChatGPT approve: "
+                                                    f"{_safe_proxy_summary(retry_provider_proxy_url)}"
+                                                ),
+                                            },
+                                        )
+                                    pre_extracted_data = _paypal_extract_ba_link(
+                                        access_token=extract_access_token,
+                                        session_token=str(auth_session_context.get("session_token") or ""),
+                                        cookie_header=str(auth_session_context.get("cookie_header") or ""),
+                                        account_id=str(auth_session_context.get("account_id") or ""),
+                                        device_id=str(auth_session_context.get("device_id") or ""),
+                                        user_agent=str(auth_session_context.get("user_agent") or ""),
+                                        openai_sentinel_token=str(auth_session_context.get("openai_sentinel_token") or ""),
+                                        oai_client_version=str(auth_session_context.get("oai_client_version") or ""),
+                                        oai_client_build_number=str(auth_session_context.get("oai_client_build_number") or ""),
+                                        proxy_url=retry_proxy_url,
+                                        provider_proxy_url=retry_provider_proxy_url,
+                                        approve_proxy_url=retry_provider_proxy_url,
+                                        country=("US" if paypal_country == "JP" else paypal_country.upper()),
+                                        currency="USD",
+                                        payment_method_country=_paypal_ba_payment_method_country(),
+                                        timeout_seconds=max(30, min(90, int(params.timeout_seconds or 90))),
+                                        is_cancelled=cancel_signal.is_cancelled,
+                                    )
+                                    if pre_extracted_data.get("status") != "success":
+                                        _append_task_progress(
+                                            task_id,
+                                            {
+                                                "stage": "paypal_ba_extract_attempt_failed",
+                                                "email": candidate_email,
+                                                "current": index,
+                                                "total": len(candidates),
+                                                "ba_attempt": ba_attempt,
+                                                "max_ba_attempts": max_ba_attempts,
+                                                "failure_stage": pre_extracted_data.get("failure_stage") or "",
+                                                "message": (
+                                                    "PayPal BA 第 "
+                                                    f"{ba_attempt}/{max_ba_attempts} 次失败: "
+                                                    + str(pre_extracted_data.get("message") or "unknown")
+                                                ),
+                                                "level": "warn",
+                                            },
+                                        )
                                 extracted_checkout_url = str(pre_extracted_data.get("checkout_url") or "").strip()
                                 if extracted_checkout_url:
                                     effective_checkout_url = extracted_checkout_url

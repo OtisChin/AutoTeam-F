@@ -203,6 +203,10 @@ def parse_import_lines(text: str) -> list[dict[str, str]]:
             parts = re.split(r"\s*\|\s*", line, maxsplit=1)
         else:
             parts = re.split(r"\s*-{4,}\s*", line, maxsplit=1)
+            if len(parts) != 2:
+                match = re.match(r"^(.+?)\s+-\s+(https?://.+)$", line, re.I)
+                if match:
+                    parts = [match.group(1), match.group(2)]
         if len(parts) != 2:
             raise ValueError(f"导入格式无效: {line[:80]}")
         phone, sms_url = _normalize_import_phone(parts[0].strip()), parts[1].strip()

@@ -115,9 +115,16 @@ class LuckMailProvider(MailProvider):
                 token=str(item.get("token") or "").strip(),
                 purchase_id=str(item.get("purchase_id") or "").strip(),
             )
-            if account.validate():
+            if account.validate() and LuckMailProvider._is_plausible_persisted_token(account.token):
                 accounts.append(account)
         return accounts
+
+    @staticmethod
+    def _is_plausible_persisted_token(token: str) -> bool:
+        # Persisted accounts come from LuckMail purchases. Real tokens are long
+        # opaque strings such as "tok_<32 chars>"; short test placeholders like
+        # "tok_next" must not be reused in live registration.
+        return len(str(token or "").strip()) >= 16
 
     @staticmethod
     def _persist_purchased_account(account: LuckMailAccount) -> None:

@@ -808,6 +808,32 @@ def run_paypal_no_card_protocol_signup(
             is_cancelled=is_cancelled,
             progress=_otp_progress,
         )
+        def _resend_paypal_protocol_otp() -> None:
+            nonlocal auth_id, challenge_id
+            resend_payload = _gql(
+                http,
+                "InitiateRiskBasedTwoFactorPhoneConfirmationMutation",
+                {
+                    "locale": {"country": locale_country, "lang": locale_lang},
+                    "phoneCountry": PAYPAL_CALLING_CODE_COUNTRIES.get(calling_code, locale_country),
+                    "phoneNumber": subscriber,
+                    "token": ec_token,
+                },
+                Q_INIT_OTP,
+                signup_url=signup_url,
+                timeout=timeout,
+                locale_lang=locale_lang,
+            )
+            resend_data = (resend_payload.get("data") or {}).get("initiateRiskBasedTwoFactorPhoneConfirmation") or {}
+            next_auth_id = str(resend_data.get("authId") or "")
+            next_challenge_id = str(resend_data.get("challengeId") or "")
+            if not next_auth_id or not next_challenge_id:
+                raise RuntimeError("PayPal OTP resend did not return auth/challenge id")
+            auth_id = next_auth_id
+            challenge_id = next_challenge_id
+            _emit(on_progress, "paypal_otp_resend_clicked")
+
+        setattr(otp_provider, "_gopay_resend_callback", _resend_paypal_protocol_otp)
         code = otp_provider()
         _emit(on_progress, "paypal_otp_received", code=code)
         _emit(on_progress, "paypal_submit_otp")

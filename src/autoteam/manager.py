@@ -192,33 +192,9 @@ def _mail_client_provider_name(mail_client) -> str:
     return str(getattr(inner, "provider_name", "") or "").strip().lower()
 
 
-_MICROSOFT_MAIL_DOMAINS = {
-    "hotmail.com",
-    "hotmail.de",
-    "live.com",
-    "msn.com",
-    "outlook.com",
-    "outlook.de",
-    "outlook.jp",
-    "outlook.my",
-}
-
-
 def _direct_register_code_timeout(mail_client, email: str | None = None) -> int:
     provider_name = _mail_client_provider_name(mail_client)
-    email_domain = _normalized_email(email).rsplit("@", 1)[-1] if "@" in _normalized_email(email) else ""
-    inner = getattr(mail_client, "_inner", None)
-    luckmail_type = str(
-        getattr(mail_client, "email_type", "")
-        or getattr(inner, "email_type", "")
-        or ""
-    ).strip().lower()
     if provider_name == "outlook":
-        return max(5, OUTLOOK_REGISTER_CODE_TIMEOUT)
-    if provider_name == "luckmail" and (
-        email_domain in _MICROSOFT_MAIL_DOMAINS
-        or luckmail_type in {"ms_graph", "ms_imap", "microsoft"}
-    ):
         return max(5, OUTLOOK_REGISTER_CODE_TIMEOUT)
     return MAIL_TIMEOUT
 
@@ -1899,6 +1875,43 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
     }
 
 
+def _auth_session_payload_has_web_session(session_data) -> bool:
+    if not isinstance(session_data, dict):
+        return False
+    data = session_data.get("data") if isinstance(session_data.get("data"), dict) else session_data
+    if not isinstance(data, dict):
+        return False
+    session_token = str(data.get("sessionToken") or data.get("session_token") or "").strip()
+    cookie_header = str(data.get("cookie_header") or "").strip()
+    return bool(session_token or cookie_header)
+
+
+def _refresh_auth_session_via_protocol_login(
+    email,
+    password,
+    mail_client,
+    *,
+    cloudmail_account_id=None,
+    proxy_url=None,
+    oauth_phone_sms_provider=None,
+    oauth_phone_sms_country=None,
+):
+    from autoteam.protocol_register import login_once as protocol_login_once
+
+    session_data = protocol_login_once(
+        mail_client,
+        email=email,
+        password=password,
+        account_id=cloudmail_account_id,
+        proxy=proxy_url,
+        oauth_phone_sms_provider=oauth_phone_sms_provider,
+        oauth_phone_sms_country=oauth_phone_sms_country,
+    )
+    if not _auth_session_payload_has_web_session(session_data):
+        raise RuntimeError("协议登录未返回 ChatGPT Web session cookie")
+    return session_data
+
+
 def _save_codex_oauth_bundle_for_account(
     email,
     password,
@@ -3376,41 +3389,68 @@ def create_account_direct(
 
             saved_session = None
             bundle = (session_data or {}).get("codex_oauth_bundle")
+            if not _auth_session_payload_has_web_session(session_data):
+                try:
+                    logger.info("[phone-first] 注册结果缺少 ChatGPT Web session，开始协议补登录: %s", email)
+                    _progress("register_auth_session_fetch", f"正在补齐 auth_session: {email}", email=email)
+                    refreshed_session_data = _refresh_auth_session_via_protocol_login(
+                        email,
+                        password,
+                        mail_client,
+                        cloudmail_account_id=account_id,
+                        proxy_url=proxy_url,
+                        oauth_phone_sms_provider=oauth_phone_sms_provider,
+                        oauth_phone_sms_country=oauth_phone_sms_country,
+                    )
+                    if isinstance(refreshed_session_data, dict):
+                        session_data = refreshed_session_data
+                        bundle = bundle or session_data.get("codex_oauth_bundle")
+                    logger.info("[phone-first] 协议补登录已获取 ChatGPT Web session: %s", email)
+                except Exception as exc:
+                    logger.warning("[phone-first] 协议补登录未获取 ChatGPT Web session: %s", exc)
+
             if bundle:
-                saved_session = _save_auth_from_session_page(
-                    email,
-                    password,
-                    account_id,
-                    session_data,
-                    out_outcome=out_outcome,
-                    mail_provider=_mail_client_provider_name(mail_client) or None,
-                )
-                if saved_session:
-                    _progress("phone_first_auth_session_saved", f"手机号注册完成，已保存 auth_session: {email}", email=email)
+                if _auth_session_payload_has_web_session(session_data):
+                    saved_session = _save_auth_from_session_page(
+                        email,
+                        password,
+                        account_id,
+                        session_data,
+                        out_outcome=out_outcome,
+                        mail_provider=_mail_client_provider_name(mail_client) or None,
+                    )
+                    if saved_session:
+                        _progress("phone_first_auth_session_saved", f"手机号注册完成，已保存 auth_session: {email}", email=email)
+                    else:
+                        logger.warning("[phone-first] OAuth bundle 已返回，但 auth_session 未保存成功: %s", email)
                 else:
-                    logger.warning("[phone-first] OAuth bundle 已返回，但 auth_session 未保存成功: %s", email)
-                saved = _save_codex_oauth_bundle_for_account(
-                    email,
-                    password,
-                    account_id,
-                    bundle,
-                    out_outcome=out_outcome,
-                    mail_provider=_mail_client_provider_name(mail_client) or None,
-                    source="phone_first_protocol_oauth",
-                )
-                if saved:
-                    _progress("phone_first_register_finished", f"手机号注册和 OAuth 已完成: {email}", email=email)
-                    return saved
+                    logger.warning("[phone-first] OAuth bundle 已返回，但缺少 ChatGPT Web session，跳过 auth_session 保存: %s", email)
+                if saved_session:
+                    saved = _save_codex_oauth_bundle_for_account(
+                        email,
+                        password,
+                        account_id,
+                        bundle,
+                        out_outcome=out_outcome,
+                        mail_provider=_mail_client_provider_name(mail_client) or None,
+                        source="phone_first_protocol_oauth",
+                    )
+                    if saved:
+                        _progress("phone_first_register_finished", f"手机号注册和 OAuth 已完成: {email}", email=email)
+                        return saved
 
             if saved_session is None:
-                saved_session = _save_auth_from_session_page(
-                    email,
-                    password,
-                    account_id,
-                    session_data,
-                    out_outcome=out_outcome,
-                    mail_provider=_mail_client_provider_name(mail_client) or None,
-                )
+                if _auth_session_payload_has_web_session(session_data):
+                    saved_session = _save_auth_from_session_page(
+                        email,
+                        password,
+                        account_id,
+                        session_data,
+                        out_outcome=out_outcome,
+                        mail_provider=_mail_client_provider_name(mail_client) or None,
+                    )
+                else:
+                    logger.warning("[phone-first] 注册完成但缺少 ChatGPT Web session，拒绝保存 token-only auth_session: %s", email)
             if saved_session:
                 _progress("phone_first_register_finished", f"手机号注册完成，已保存 auth_session: {email}", email=email)
                 return saved_session

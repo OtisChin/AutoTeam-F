@@ -5005,7 +5005,8 @@ _SMS_DIRECT_CODE_PATTERN = re.compile(r"\s*#?(\d{5,8})\s*")
 _SMS_STATUS_CODE_PATTERN = re.compile(r"(?i)\b(?:SMS[-_\s]?OK|OK)\b\D{0,20}(\d{5,8})(?!\d)")
 _SMS_OTP_CONTEXT_PATTERN = re.compile(
     r"(?i)(otp|one[-\s]?time|verification|verify|security|auth(?:entication)?|"
-    r"passcode|code|kode|验证码|驗證碼|认证码|認證碼|确认码|確認碼|校验码|驗證|验证|短信)"
+    r"passcode|code|kode|验证码|驗證碼|认证码|認證碼|确认码|確認碼|校验码|驗證|验证|短信|"
+    r"セキュリティコード|認証コード|確認コード|コード)"
 )
 _SMS_NON_OTP_NOTICE_PATTERN = re.compile(
     r"(?i)(thanks for confirming|transaction alerts|log in or get the app|"
@@ -5099,7 +5100,10 @@ def _extract_sms_codes(text: str) -> list[str]:
                         return _dedupe_codes(codes)
             for key in text_keys:
                 if key in normalized:
-                    codes = codes_from_text(normalized.get(key))
+                    value = normalized.get(key)
+                    codes = codes_from_text(value)
+                    if not codes and isinstance(value, (dict, list)):
+                        codes = scan(value)
                     if codes:
                         return _dedupe_codes(codes)
             codes: list[str] = []

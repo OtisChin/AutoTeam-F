@@ -4,9 +4,6 @@
       <div class="grid shrink-0 grid-cols-1 gap-4 xl:grid-cols-[420px_minmax(0,1fr)] xl:items-stretch">
         <div class="flex flex-col justify-center">
           <h2 class="text-xl font-bold text-white">PayPal</h2>
-          <p class="mt-1 text-sm text-gray-400">
-            批量流程对齐 GoPay：从号池选择账号并执行 PayPal 绑定。
-          </p>
         </div>
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <div
@@ -888,7 +885,7 @@ const roxyBrowserConfigIssue = computed(() => {
 })
 const poolEditTitle = computed(() => poolEditTarget.value === 'phone' ? '编辑手机号池' : '编辑动态代理池')
 const poolEditHelp = computed(() => poolEditTarget.value === 'phone'
-  ? '逐行编辑手机号和接码 API；空行保存时会被忽略。'
+  ? '逐行编辑手机号和接码 API；支持 手机号----接码链接、手机号|接码链接、手机号 - 接码链接。'
   : '逐行编辑代理；空行保存时会被忽略。'
 )
 const poolEditPlaceholder = computed(() => poolEditTarget.value === 'phone'
@@ -896,7 +893,7 @@ const poolEditPlaceholder = computed(() => poolEditTarget.value === 'phone'
   : 'socks5://user:pass@host:port'
 )
 const poolEditImportPlaceholder = computed(() => poolEditTarget.value === 'phone'
-  ? '+18352623053----https://ithte.tgflare.com/api/record?token=...\n+18352880840----https://ithte.tgflare.com/api/record?token=...'
+  ? '+18352623053----https://ithte.tgflare.com/api/record?token=...\n12096968188|https://smscloud.sbs/api/system/get_sms/...\n08024204085 - https://api.yamasakisms.com/api/private/getphonecode?order_no=...'
   : 'socks5://user:pass@host:port\nhttp://user:pass@host:port\nhost:port:user:pass'
 )
 const poolEditAllSelected = computed(() => (
@@ -1625,13 +1622,22 @@ function parsePayPalPhonePool(text, options = {}) {
     .map(line => line.trim())
     .filter(Boolean)
     .forEach((line) => {
-      const parts = line.split('----')
+      let parts = line.split('----')
+      if (parts.length < 2 && line.includes('|')) {
+        parts = line.split('|')
+      }
+      if (parts.length < 2) {
+        const match = line.match(/^(.+?)\s+-\s+(https?:\/\/.+)$/i)
+        if (match) {
+          parts = [match[1], match[2]]
+        }
+      }
       if (parts.length < 2) {
         if (strict) throw new Error(`手机号池格式错误: ${line}`)
         return
       }
       const phone = String(parts.shift() || '').trim()
-      const smsUrl = parts.join('----').trim()
+      const smsUrl = parts.join(line.includes('----') ? '----' : '|').trim()
       if (!phone || !smsUrl) {
         if (strict) throw new Error(`手机号池格式错误: ${line}`)
         return
