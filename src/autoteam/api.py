@@ -3874,7 +3874,7 @@ def _paypal_nonzero_blocked_pool_emails(result: dict, actual_email: str) -> list
         if email and email not in seen:
             seen.add(email)
             emails.append(email)
-    if str(result.get("failure_stage") or "") == "browser_charge_guard":
+    if str(result.get("failure_stage") or "") in {"browser_charge_guard", "extract_ba_link_nonzero_amount"}:
         email = _normalized_email(actual_email)
         if email and email not in seen:
             emails.append(email)
@@ -3890,6 +3890,7 @@ def _paypal_pending_retry_reason(result: dict | None) -> str:
     normalized_message = re.sub(r"\s+", " ", message).strip().lower()
     non_retry_stages = {
         "browser_charge_guard",
+        "extract_ba_link_nonzero_amount",
         "paypal_nonzero_amount",
         "paypal_funding_rejected",
         "oauth_phone_required",

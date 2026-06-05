@@ -7405,6 +7405,25 @@ def _paypal_extract_ba_link(
     amount_str = _paypal_protocol_checkout_amount(init_payload)
     amount = int(re.sub(r"\D+", "", amount_str) or "0")
     logger.info("[paypal_extract] init ok currency=%s amount=%d", currency_resolved, amount)
+    if amount != 0:
+        nonzero_email = _email_from_access_token(access_token)
+        _emit(
+            "paypal_extract_nonzero_amount_blocked",
+            message=f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
+            expected_amount=str(amount),
+            currency=currency_resolved,
+        )
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_nonzero_amount",
+            "message": f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
+            "checkout_session_id": cs_id,
+            "pm_id": pm_id,
+            "checkout_url": long_hosted_url,
+            "hosted_checkout_url": hosted_checkout_url,
+            "nonzero_amount": amount,
+            "nonzero_blocked_emails": [nonzero_email] if nonzero_email else [],
+        }
     payment_method_types = _paypal_protocol_payment_method_types(init_payload)
     if payment_method_types and "paypal" not in payment_method_types:
         logger.info(
@@ -7455,6 +7474,25 @@ def _paypal_extract_ba_link(
             if refreshed_amount != amount:
                 logger.info("[paypal_extract] refreshed expected_amount after tax_region: %d -> %d", amount, refreshed_amount)
                 amount = refreshed_amount
+            if amount != 0:
+                nonzero_email = _email_from_access_token(access_token)
+                _emit(
+                    "paypal_extract_nonzero_amount_blocked",
+                    message=f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
+                    expected_amount=str(amount),
+                    currency=currency_resolved,
+                )
+                return {
+                    "status": "failed",
+                    "failure_stage": "extract_ba_link_nonzero_amount",
+                    "message": f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
+                    "checkout_session_id": cs_id,
+                    "pm_id": pm_id,
+                    "checkout_url": long_hosted_url,
+                    "hosted_checkout_url": hosted_checkout_url,
+                    "nonzero_amount": amount,
+                    "nonzero_blocked_emails": [nonzero_email] if nonzero_email else [],
+                }
     except Exception as exc:
         logger.info("[paypal_extract] Stripe tax region/amount refresh soft-failed: %s", exc)
 
