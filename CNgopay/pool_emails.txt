@@ -1,3 +1,0 @@
-# Hotmail 卡密池 (codex_register add-email 用)
-# 格式: email----password----client_id----refresh_token
-# 一行一条,# 开头注释
