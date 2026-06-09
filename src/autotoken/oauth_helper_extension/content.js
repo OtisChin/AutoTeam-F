@@ -1,19 +1,21 @@
 (function () {
-  const CONFIG_KEY = "autoteam_oauth_config";
+  const CONFIG_KEY = "autotoken_oauth_config";
+  const LEGACY_CONFIG_KEY = "autoteam_oauth_config";
   let lastAction = "";
   let lastActionAt = 0;
 
   function parseFragment() {
     const raw = window.location.hash || "";
-    if (!raw.includes("autoteam_token=")) return null;
+    if (!raw.includes("autotoken_token=") && !raw.includes("autoteam_token=")) return null;
     const params = new URLSearchParams(raw.slice(1));
-    const token = params.get("autoteam_token") || "";
-    const port = params.get("autoteam_port") || "";
-    const authUrl = params.get("autoteam_auth") || "";
+    const token = params.get("autotoken_token") || params.get("autoteam_token") || "";
+    const port = params.get("autotoken_port") || params.get("autoteam_port") || "";
+    const authUrl = params.get("autotoken_auth") || params.get("autoteam_auth") || "";
     if (!token || !port) return null;
     const config = { token, port, authUrl };
     try {
       window.localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+      window.localStorage.removeItem(LEGACY_CONFIG_KEY);
     } catch (e) {}
     if (authUrl) {
       setTimeout(() => window.location.replace(authUrl), 200);
@@ -25,7 +27,7 @@
     const parsed = parseFragment();
     if (parsed) return parsed;
     try {
-      const raw = window.localStorage.getItem(CONFIG_KEY) || "";
+      const raw = window.localStorage.getItem(CONFIG_KEY) || window.localStorage.getItem(LEGACY_CONFIG_KEY) || "";
       return raw ? JSON.parse(raw) : null;
     } catch (e) {
       return null;

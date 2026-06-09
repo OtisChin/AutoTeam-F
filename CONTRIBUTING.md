@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to AutoTeam.
+Thanks for contributing to AutoToken.
 
 ## Development Setup
 
@@ -27,7 +27,7 @@ Run the main local checks before opening a pull request:
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
-uv run python -m compileall -q src/autoteam
+uv run python -m compileall -q src/autotoken
 ```
 
 If formatting is required:

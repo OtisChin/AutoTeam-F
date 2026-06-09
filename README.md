@@ -1,10 +1,10 @@
 <div align="center">
 
-# AutoTeam-F
+# AutoToken-F
 
 **面向 ChatGPT Team 的账号轮转与认证同步工具 · Fix + Free 增强版**
 
-基于 [cnitlrt/AutoTeam](https://github.com/cnitlrt/AutoTeam) 的 fork，修掉若干阻塞性 bug，新增 **批量生产免费号（Personal）** 能力，改善操作体验。
+基于 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken) 的 fork，修掉若干阻塞性 bug，新增 **批量生产免费号（Personal）** 能力，改善操作体验。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33?style=for-the-badge&logo=playwright&logoColor=white)](https://playwright.dev)
@@ -20,10 +20,10 @@
 
 ## 致谢
 
-- 💚 感谢 [cnitlrt/AutoTeam](https://github.com/cnitlrt/AutoTeam) 的前置工作 —— 没有原作者搭好的轮转/同步骨架，就没有这个 fork。
+- 💚 感谢 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken) 的前置工作 —— 没有原作者搭好的轮转/同步骨架，就没有这个 fork。
 - 💙 感谢 [LinuxDo](https://linux.do/) 社区的支持 —— **"学 AI，上 L 站"**。
 
-`AutoTeam-F` 的 **F = Fix + Free**。
+`AutoToken-F` 的 **F = Fix + Free**。
 
 ---
 
@@ -48,7 +48,7 @@
 | 📤 | **导出认证** | 一键导出 Codex CLI 格式 auth.json |
 | 🐳 | **Docker** | 支持容器部署与数据持久化 |
 
-> 🆕 = 相对原仓库新增。其余承袭自 [cnitlrt/AutoTeam](https://github.com/cnitlrt/AutoTeam)。
+> 🆕 = 相对原仓库新增。其余承袭自 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken)。
 
 **首次使用建议直接看**：[从零开始部署教程](docs/getting-started.md)
 
@@ -84,27 +84,27 @@ uv run playwright install chromium
 
 ```bash
 # Web 面板 + API（推荐）
-uv run autoteam api
+uv run autotoken api
 
 # 指定端口
-uv run autoteam api --port 8899
+uv run autotoken api --port 8899
 
 # 或直接轮转
-uv run autoteam rotate
+uv run autotoken rotate
 ```
 
 首次启动会自动引导配置临时邮箱后端（`cloudflare_temp_email` 默认 / `cloud-mail` 可选）、CPA、API Key，并验证连通性。两种后端的差异见 [配置说明 · Mail Provider 切换](docs/configuration.md#mail-provider-切换)。
 
 > **强烈推荐使用 [`dreamhunter2333/cloudflare_temp_email`](https://github.com/dreamhunter2333/cloudflare_temp_email)**（对应 `MAIL_PROVIDER=cloudflare_temp_email`，默认）。它是 Cloudflare Workers 部署、被广泛验证、与 OpenAI 域名黑名单适配良好。
 >
-> ⚠️ 如果你之前用的是上游 [cnitlrt/AutoTeam](https://github.com/cnitlrt/AutoTeam) 的 “cloudmail”，那其实对应的是现在这里的 `cloud-mail` provider。建议统一写成 `MAIL_PROVIDER=cloud-mail`，并使用 `CLOUD_MAIL_*` 配置。详见 [docs/configuration.md#mail-provider-切换](docs/configuration.md#mail-provider-切换)。
+> ⚠️ 如果你之前用的是上游 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken) 的 “cloudmail”，那其实对应的是现在这里的 `cloud-mail` provider。建议统一写成 `MAIL_PROVIDER=cloud-mail`，并使用 `CLOUD_MAIL_*` 配置。详见 [docs/configuration.md#mail-provider-切换](docs/configuration.md#mail-provider-切换)。
 >
-> 启动时会做轻量协议指纹嗅探，base_url 与 `MAIL_PROVIDER` 错配会**提前 warning**，避免出现"登录成功 → 创建邮箱 401"这种半成功假象（[issue #1](https://github.com/ZRainbow1275/AutoTeam-F/issues/1)）。
+> 启动时会做轻量协议指纹嗅探，base_url 与 `MAIL_PROVIDER` 错配会**提前 warning**，避免出现"登录成功 → 创建邮箱 401"这种半成功假象（[issue #1](https://github.com/ZRainbow1275/AutoToken-F/issues/1)）。
 
 ### Docker 部署
 
 ```bash
-git clone https://github.com/ZRainbow1275/AutoTeam-F.git && cd AutoTeam-F
+git clone https://github.com/ZRainbow1275/AutoToken-F.git && cd AutoToken-F
 mkdir -p data && cp .env.example data/.env
 # 编辑 data/.env 填入配置（或启动后在 Web 页面配置）
 docker compose up -d
@@ -132,12 +132,12 @@ Linux + Docker 访问宿主机服务，详见 [Docker 部署文档](docs/docker.
 
 ## Web 管理面板
 
-启动 `uv run autoteam api` 后访问 `http://localhost:8787`。
+启动 `uv run autotoken api` 后访问 `http://localhost:8787`。
 
 ### Windows exe 打包与一键启动
 
 ```powershell
-# 构建 dist\autoteam.exe，并复制启动脚本到 dist\
+# 构建 dist\autotoken.exe，并复制启动脚本到 dist\
 .\scripts\build-exe.ps1
 
 # 启动 exe 版本（默认 127.0.0.1:8787）
@@ -147,7 +147,7 @@ Linux + Docker 访问宿主机服务，详见 [Docker 部署文档](docs/docker.
 .\dist\start-exe.cmd -Port 8899
 ```
 
-`dist\start-exe.cmd` 会在 exe 同级目录创建 `data\`，缺少 `.env` 时会从 `.env.example` 复制一份，然后执行 `autoteam.exe api --host ... --port ...`。需要对外监听时可指定 `-HostAddress 0.0.0.0`。
+`dist\start-exe.cmd` 会在 exe 同级目录创建 `data\`，缺少 `.env` 时会从 `.env.example` 复制一份，然后执行 `autotoken.exe api --host ... --port ...`。需要对外监听时可指定 `-HostAddress 0.0.0.0`。
 
 | 页面 | 功能 |
 |------|------|
@@ -169,8 +169,8 @@ Linux + Docker 访问宿主机服务，详见 [Docker 部署文档](docs/docker.
 - **批量操作 300s 硬超时** — `_PlaywrightExecutor` 加 `run_with_timeout(timeout, func)`，按批次大小动态算
 - **Team fill 后面员数 401 未触发 fail-fast** — 连续 3 次 401/403 直接中止，输出 body 片段而不是干等 180s
 - **邀请 seat 兜底失败时账号被静默丢失** 🆕 — `invite_member` POST/PATCH 都加退避重试,PATCH 失败时保留 `usage_based`(codex-only) 席位,把 `seat_type` 落到 `accounts.json` 供下游差异化对待
-- **`cmd_check` 只扫 active,standby 永远没额度数据** 🆕 — `autoteam check --include-standby`(或 `POST /api/tasks/check {include_standby:true}`)追加探测 standby 池,限速 1.5s + 24h 去重;401/403 标记为 `auth_invalid`
-- **workspace 有席位但本地 auth 缺失的"残废 / 错位 / ghost"账号无人清理** 🆕 — `autoteam reconcile [--dry-run]`(或 `POST /api/admin/reconcile?dry_run=1`)一键识别残废 / 错位 / 耗尽未抛弃 / ghost,可通过 `RECONCILE_KICK_ORPHAN` / `RECONCILE_KICK_GHOST` 控制是 KICK 还是打标记
+- **`cmd_check` 只扫 active,standby 永远没额度数据** 🆕 — `autotoken check --include-standby`(或 `POST /api/tasks/check {include_standby:true}`)追加探测 standby 池,限速 1.5s + 24h 去重;401/403 标记为 `auth_invalid`
+- **workspace 有席位但本地 auth 缺失的"残废 / 错位 / ghost"账号无人清理** 🆕 — `autotoken reconcile [--dry-run]`(或 `POST /api/admin/reconcile?dry_run=1`)一键识别残废 / 错位 / 耗尽未抛弃 / ghost,可通过 `RECONCILE_KICK_ORPHAN` / `RECONCILE_KICK_GHOST` 控制是 KICK 还是打标记
 - **子号巡检在网络抖动 / 5xx 时被错误标 auth_invalid → 整批号被踢** 🆕 — `check_codex_quota` 新增 `network_error` 分类(DNS / Timeout / SSL / 5xx / 429 / 4xx 非 401/403 / JSON 解析失败 → 临时性故障),`_probe_standby_quota` 看到 `network_error` 不写 `last_quota_check_at`、不改 status,等下一轮立即重试,不再被 24h 去重屏蔽
 
 若你遇到 401 "Must be part of this workspace"，不用 logout 重登：
@@ -214,7 +214,7 @@ curl -s -X POST -H "Authorization: Bearer $KEY" http://localhost:8787/api/admin/
 
 ## 友情链接
 
-- 原仓库 [cnitlrt/AutoTeam](https://github.com/cnitlrt/AutoTeam)
+- 原仓库 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken)
 - 认证代理 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
 感谢 **LinuxDo** 社区的支持！
@@ -225,4 +225,4 @@ curl -s -X POST -H "Authorization: Bearer $KEY" http://localhost:8787/api/admin/
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ZRainbow1275/AutoTeam-F&type=Date)](https://star-history.com/#ZRainbow1275/AutoTeam-F&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=ZRainbow1275/AutoToken-F&type=Date)](https://star-history.com/#ZRainbow1275/AutoToken-F&Date)

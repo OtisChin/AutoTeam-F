@@ -5,27 +5,35 @@
   -> signup -> send_otp -> verify_otp -> create_account
   -> redirect_chain -> auth_session -> (optional) oauth_token_exchange
 """
-import json
+
 import base64
 import hashlib
 import html
+import json
 import logging
 import os
 import random
 import re
 import secrets
+import shlex
 import subprocess
 import time
 import uuid
 from datetime import datetime
-from typing import Optional, Any
-from urllib.parse import urlparse, parse_qs, parse_qsl, urljoin, urlencode, urlunparse
+from typing import Any
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from config import Config
+from http_client import USER_AGENT, create_http_session
 from mail_provider import MailProvider
-from http_client import create_http_session, USER_AGENT
+
+from autotoken.core.jwt import decode_jwt_payload
+from autotoken.core.url_params import first_url_param
+from autotoken.services import chatgpt_session as chatgpt_session_service
 
 logger = logging.getLogger(__name__)
+
+AUTH_FLOW_B64URL_SEGMENT_MAX_CHARS = 16 * 1024
 
 
 class AuthResult:
@@ -88,7 +96,10 @@ class AuthFlow:
         self._codex_rt_attempted: bool = False
         self._trace_dump_enabled = str(os.getenv("AUTH_TRACE_DUMP", "0")).lower() in ("1", "true", "yes", "on")
         self._trace_include_cookie = str(os.getenv("AUTH_TRACE_INCLUDE_COOKIE", "0")).lower() in (
-            "1", "true", "yes", "on"
+            "1",
+            "true",
+            "yes",
+            "on",
         )
         self._trace_dump_path = ""
         self._used_email_otp_codes: set[str] = set()
@@ -105,7 +116,7 @@ class AuthFlow:
                 self._trace_dump_enabled = False
 
     def _emit_progress(self, stage: str, message: str, **extra: Any) -> None:
-        callback = getattr(self, "_autoteam_progress_callback", None)
+        callback = getattr(self, "_autotoken_progress_callback", None)
         if not callable(callback):
             return
         try:
@@ -180,9 +191,9 @@ class AuthFlow:
 
         # 兜底补齐关键 cookie，避免某些 cookiejar 迭代行为差异导致遗漏
         critical_names = [
-            "__Secure-next-auth.session-token",
-            "__Secure-next-auth.session-token.0",
-            "__Secure-next-auth.session-token.1",
+            chatgpt_session_service.CHATGPT_SESSION_COOKIE,
+            f"{chatgpt_session_service.CHATGPT_SESSION_COOKIE}.0",
+            f"{chatgpt_session_service.CHATGPT_SESSION_COOKIE}.1",
             "__Host-next-auth.csrf-token",
             "__Secure-next-auth.callback-url",
             "oai-did",
@@ -223,54 +234,15 @@ class AuthFlow:
         return "; ".join(f"{name}={value}" for name, value in cookie_pairs if name and value)
 
     def _extract_chatgpt_session_token(self) -> str:
-        try:
-            direct = self.session.cookies.get("__Secure-next-auth.session-token", "") or ""
-        except Exception:
-            direct = ""
-        if direct:
-            return str(direct)
-
-        parts: dict[int, str] = {}
-        try:
-            jar_iter = list(self.session.cookies)
-        except Exception:
-            jar_iter = []
-        for cookie in jar_iter:
-            try:
-                name = (getattr(cookie, "name", "") or "").strip()
-                value = getattr(cookie, "value", "") or ""
-                domain = (getattr(cookie, "domain", "") or "").strip().lower()
-            except Exception:
-                continue
-            if domain and "chatgpt.com" not in domain:
-                continue
-            prefix = "__Secure-next-auth.session-token."
-            if not name.startswith(prefix) or not value:
-                continue
-            suffix = name[len(prefix):]
-            if suffix.isdigit():
-                parts[int(suffix)] = value
-        if parts:
-            return "".join(parts[index] for index in sorted(parts))
+        token = chatgpt_session_service.session_token_from_cookie_jar(
+            self.session.cookies,
+            domain_contains="chatgpt.com",
+        )
+        if token:
+            return token
 
         cookie_header = self._build_chatgpt_cookie_header()
-        header_parts: dict[int, str] = {}
-        for raw_part in cookie_header.split(";"):
-            if "=" not in raw_part:
-                continue
-            name, value = raw_part.split("=", 1)
-            name = name.strip()
-            value = value.strip()
-            if name == "__Secure-next-auth.session-token" and value:
-                return value
-            prefix = "__Secure-next-auth.session-token."
-            if name.startswith(prefix) and value:
-                suffix = name[len(prefix):]
-                if suffix.isdigit():
-                    header_parts[int(suffix)] = value
-        if header_parts:
-            return "".join(header_parts[index] for index in sorted(header_parts))
-        return ""
+        return chatgpt_session_service.session_token_from_cookie_header(cookie_header)
 
     def _trace_http(self, step: str, resp, extra_request: dict | None = None):
         """可选 HTTP 细粒度追踪（用于协议调试）"""
@@ -317,7 +289,7 @@ class AuthFlow:
 
             status = getattr(resp, "status_code", "N/A")
             final_url = str(getattr(resp, "url", "") or "")
-            req_cookie = (req_headers.get("Cookie", "") or "")
+            req_cookie = req_headers.get("Cookie", "") or ""
             location = (resp.headers.get("Location", "") or "")[:180]
             req_id = (resp.headers.get("x-request-id", "") or "")[:120]
             ctype = (resp.headers.get("Content-Type", "") or "")[:120]
@@ -332,7 +304,7 @@ class AuthFlow:
             except Exception:
                 set_cookie_list = []
             if not set_cookie_list:
-                one = (resp.headers.get("Set-Cookie", "") or "")
+                one = resp.headers.get("Set-Cookie", "") or ""
                 if one:
                     set_cookie_list = [one]
             set_cookie_raw = " || ".join(set_cookie_list)
@@ -436,7 +408,9 @@ class AuthFlow:
             return
 
     @staticmethod
-    def _walk_collect_str_fields(obj: Any, wanted_keys: set[str], out: dict[str, str], depth: int = 0, max_depth: int = 6):
+    def _walk_collect_str_fields(
+        obj: Any, wanted_keys: set[str], out: dict[str, str], depth: int = 0, max_depth: int = 6
+    ):
         """递归收集目标字段（仅字符串值）。"""
         if depth > max_depth or obj is None:
             return
@@ -499,8 +473,15 @@ class AuthFlow:
             self._oauth_client_id = dump_client_id
 
         wanted = {
-            "login_verifier", "code_verifier", "verifier", "pkce_verifier", "oauth_code_verifier",
-            "refresh_token", "oauth_refresh_token", "access_token", "id_token",
+            "login_verifier",
+            "code_verifier",
+            "verifier",
+            "pkce_verifier",
+            "oauth_code_verifier",
+            "refresh_token",
+            "oauth_refresh_token",
+            "access_token",
+            "id_token",
         }
         found: dict[str, str] = {}
         self._walk_collect_str_fields(data, wanted, found)
@@ -571,8 +552,7 @@ class AuthFlow:
             return ""
         try:
             p0 = raw.split(".")[0]
-            p0 += "=" * (-len(p0) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(p0.encode("utf-8")).decode("utf-8"))
+            payload = self._safe_b64url_decode_json(p0)
             return (payload.get("login_challenge", "") or "").strip()
         except Exception:
             return ""
@@ -582,14 +562,9 @@ class AuthFlow:
         if not url:
             return ""
         try:
-            qs = parse_qs(urlparse(url).query)
+            return first_url_param(url, *keys, include_fragment=False)
         except Exception:
             return ""
-        for k in keys:
-            val = qs.get(k, [None])[0]
-            if val:
-                return val
-        return ""
 
     @staticmethod
     def _extract_page_type(resp_json: dict | None) -> str:
@@ -636,13 +611,10 @@ class AuthFlow:
             return
         self._oauth_auth_url = auth_url
         try:
-            qs = parse_qs(urlparse(auth_url).query)
-            self._oauth_client_id = (qs.get("client_id", [self._oauth_client_id])[0] or self._oauth_client_id).strip()
-            self._oauth_redirect_uri = (
-                qs.get("redirect_uri", [self._oauth_redirect_uri])[0] or self._oauth_redirect_uri
-            ).strip()
-            self._oauth_scope = (qs.get("scope", [""])[0] or "").strip()
-            self._oauth_state = (qs.get("state", [""])[0] or "").strip()
+            self._oauth_client_id = self._extract_query_first(auth_url, ["client_id"]) or self._oauth_client_id
+            self._oauth_redirect_uri = self._extract_query_first(auth_url, ["redirect_uri"]) or self._oauth_redirect_uri
+            self._oauth_scope = self._extract_query_first(auth_url, ["scope"])
+            self._oauth_state = self._extract_query_first(auth_url, ["state"])
         except Exception:
             return
 
@@ -656,13 +628,15 @@ class AuthFlow:
         challenge = self._b64url_no_pad(hashlib.sha256(verifier.encode("utf-8")).digest())
         return verifier, challenge
 
-    def _build_codex_authorize(self, prompt_override: Optional[str] = None) -> tuple[str, str, str, str, str]:
+    def _build_codex_authorize(self, prompt_override: str | None = None) -> tuple[str, str, str, str, str]:
         """
         构建用于获取 refresh_token 的 Codex OAuth 授权 URL。
         参考 any-auto-register 的实现：独立 client_id + redirect_uri + 可控 PKCE。
         """
         client_id = (os.getenv("OAUTH_CODEX_CLIENT_ID", "") or "").strip() or "app_EMoamEEZ73f0CkXaXp7hrann"
-        redirect_uri = (os.getenv("OAUTH_CODEX_REDIRECT_URI", "") or "").strip() or "http://localhost:1455/auth/callback"
+        redirect_uri = (
+            os.getenv("OAUTH_CODEX_REDIRECT_URI", "") or ""
+        ).strip() or "http://localhost:1455/auth/callback"
         scope = (os.getenv("OAUTH_CODEX_SCOPE", "") or "").strip() or "openid email profile offline_access"
         state = self._b64url_no_pad(secrets.token_bytes(24))
         verifier, challenge = self._build_pkce_pair()
@@ -695,8 +669,7 @@ class AuthFlow:
             cb_base = (redirect_uri or "").split("?", 1)[0].rstrip("/")
             target = url.split("?", 1)[0].rstrip("/")
             if cb_base and target == cb_base:
-                qs = parse_qs(urlparse(url).query)
-                return bool((qs.get("code", [""])[0] or "").strip())
+                return bool(first_url_param(url, "code", include_fragment=False))
         except Exception:
             return False
         return False
@@ -722,7 +695,7 @@ class AuthFlow:
                 timeout=30,
                 allow_redirects=False,
             )
-            self._trace_http(f"{trace_prefix}_hop_{i+1}", resp)
+            self._trace_http(f"{trace_prefix}_hop_{i + 1}", resp)
 
             # workspace/consent 页面 200 时，主动选择 workspace，拿下一跳 continue_url
             if resp.status_code == 200:
@@ -733,9 +706,7 @@ class AuthFlow:
                         continue
 
                 is_workspace_like = (
-                    ("/workspace" in current)
-                    or ("/sign-in-with-chatgpt/" in current)
-                    or ("/consent" in current)
+                    ("/workspace" in current) or ("/sign-in-with-chatgpt/" in current) or ("/consent" in current)
                 )
                 if is_workspace_like:
                     workspace_id = self._extract_workspace_id() or self._extract_workspace_id_from_html(resp.text or "")
@@ -781,9 +752,8 @@ class AuthFlow:
         redirect_uri: str,
         client_id: str,
     ) -> bool:
-        qs = parse_qs(urlparse(callback_url).query)
-        code = (qs.get("code", [""])[0] or "").strip()
-        got_state = (qs.get("state", [""])[0] or "").strip()
+        code = self._extract_query_first(callback_url, ["code"])
+        got_state = self._extract_query_first(callback_url, ["state"])
         if not code:
             logger.warning("Codex callback 缺少 code")
             return False
@@ -834,7 +804,7 @@ class AuthFlow:
         )
         return True
 
-    def _codex_drive_login_from_log_in(self, mail_provider: Optional[MailProvider] = None) -> str:
+    def _codex_drive_login_from_log_in(self, mail_provider: MailProvider | None = None) -> str:
         """
         当 Codex 授权回落到 /log-in 时，补走一次纯协议登录推进状态机。
         返回可继续跟随的 continue_url（若无则返回空字符串）。
@@ -947,7 +917,7 @@ class AuthFlow:
         if not target:
             return
         try:
-            from autoteam.register_failures import record_failure
+            from autotoken.storage.register_failures import record_failure
 
             record_failure(target, category, reason or category)
         except Exception:
@@ -1054,7 +1024,7 @@ class AuthFlow:
         except Exception:
             return {}
 
-    def _handle_add_email_verification(self, mail_provider: Optional[MailProvider], continue_url: str = "") -> str:
+    def _handle_add_email_verification(self, mail_provider: MailProvider | None, continue_url: str = "") -> str:
         """Bind an email during Codex OAuth, matching the CNgopay phone->email->OAuth flow."""
         if mail_provider is None:
             logger.warning("Codex OAuth 命中 add-email，但未提供邮箱供应商")
@@ -1068,7 +1038,7 @@ class AuthFlow:
         next_url = continue_url or ""
         for mailbox_attempt in range(1, mailbox_attempts + 1):
             if mailbox_attempt > 1 and hasattr(mail_provider, "rotate_mailbox"):
-                bind_email = getattr(mail_provider, "rotate_mailbox")()
+                bind_email = mail_provider.rotate_mailbox()
             else:
                 bind_email = mail_provider.create_mailbox()
             bind_email = str(bind_email or "").strip()
@@ -1094,10 +1064,16 @@ class AuthFlow:
                     f"绑定邮箱已提交: page={page_type or '-'} next={(next_url or '')[:120]}",
                 )
                 if not next_url:
-                    next_url = "https://auth.openai.com/email-verification" if page_type == "email_otp_verification" else (continue_url or "")
+                    next_url = (
+                        "https://auth.openai.com/email-verification"
+                        if page_type == "email_otp_verification"
+                        else (continue_url or "")
+                    )
                 if page_type == "email_otp_verification" or "/email-verification" in (next_url or ""):
                     try:
-                        email_otp_timeout = max(20, int(os.getenv("ADD_EMAIL_OTP_TIMEOUT", os.getenv("OTP_TIMEOUT", "45"))))
+                        email_otp_timeout = max(
+                            20, int(os.getenv("ADD_EMAIL_OTP_TIMEOUT", os.getenv("OTP_TIMEOUT", "45")))
+                        )
                     except Exception:
                         email_otp_timeout = 45
                     self._emit_progress("phone_first_add_email_otp_wait", "等待绑定邮箱 OTP")
@@ -1179,6 +1155,21 @@ class AuthFlow:
         m = re.search(r"(?<!\d)(\d{6})(?!\d)", text)
         return (m.group(1) if m else "").strip()
 
+    @staticmethod
+    def _phone_otp_command_args(cmd: str) -> list[str]:
+        text = str(cmd or "").strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            parsed = json.loads(text)
+            if not isinstance(parsed, list) or not all(isinstance(item, str) and item for item in parsed):
+                raise ValueError("OPENAI_PHONE_OTP_CMD JSON 必须是非空字符串数组")
+            return parsed
+        lexer = shlex.shlex(text, posix=False)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        return [part.strip().strip("\"'") for part in lexer if part.strip().strip("\"'")]
+
     def _read_phone_otp_from_cmd(self) -> str:
         """
         从环境变量 OPENAI_PHONE_OTP_CMD 指定的命令读取手机验证码（stdout）。
@@ -1188,7 +1179,10 @@ class AuthFlow:
         if not cmd:
             return ""
         try:
-            out = subprocess.check_output(cmd, shell=True, text=True, timeout=20)
+            args = self._phone_otp_command_args(cmd)
+            if not args:
+                return ""
+            out = subprocess.check_output(args, text=True, timeout=20)
             return self._extract_otp6(out or "")
         except Exception:
             return ""
@@ -1278,7 +1272,9 @@ class AuthFlow:
                 send_resp = self._add_phone_send(normalized_phone)
                 send_page_type = self._extract_page_type(send_resp)
                 send_continue = self._normalize_continue_url(self._extract_continue_url_from_step(send_resp))
-                if send_page_type not in ("phone_otp_verification", "external_url") and "phone-verification" not in (send_continue or ""):
+                if send_page_type not in ("phone_otp_verification", "external_url") and "phone-verification" not in (
+                    send_continue or ""
+                ):
                     logger.warning(
                         "add-phone/send 未进入手机验证码页: page=%s continue=%s",
                         send_page_type or "(empty)",
@@ -1341,7 +1337,7 @@ class AuthFlow:
             callback_url, final_url = self._follow_authorize_for_callback(
                 start_url,
                 redirect_uri,
-                f"codex_add_phone_refresh_retry_{i+1}",
+                f"codex_add_phone_refresh_retry_{i + 1}",
             )
             if callback_url:
                 return callback_url, final_url
@@ -1350,7 +1346,7 @@ class AuthFlow:
 
         return callback_url, final_url
 
-    def oauth_codex_rt_exchange(self, mail_provider: Optional[MailProvider] = None) -> bool:
+    def oauth_codex_rt_exchange(self, mail_provider: MailProvider | None = None) -> bool:
         """
         纯协议方式获取 RT（参考 any-auto-register）：
         - 使用独立 Codex OAuth 参数重新授权（可控 PKCE）
@@ -1374,14 +1370,14 @@ class AuthFlow:
             self._oauth_state = state
             self._manual_login_verifier = verifier
             self._captured_login_verifier = verifier
-            callback_url, final_url = self._follow_authorize_for_callback(
-                auth_url, redirect_uri, "codex_authorize"
-            )
+            callback_url, final_url = self._follow_authorize_for_callback(auth_url, redirect_uri, "codex_authorize")
 
             if (not callback_url) and self._is_add_email_state(page_type="", continue_url=final_url or ""):
                 logger.info("Codex 授权直接命中 add-email，按 phone->email->OAuth 流程绑定邮箱...")
                 self._emit_progress("phone_first_add_email_required", "Codex OAuth 要求绑定邮箱")
-                continue_url = self._handle_add_email_verification(mail_provider=mail_provider, continue_url=final_url or "")
+                continue_url = self._handle_add_email_verification(
+                    mail_provider=mail_provider, continue_url=final_url or ""
+                )
                 if continue_url:
                     callback_url, final_url = self._follow_authorize_for_callback(
                         self._normalize_continue_url(continue_url),
@@ -1446,7 +1442,9 @@ class AuthFlow:
                             retry_sleep = max(0.0, float(os.getenv("OAUTH_CODEX_ADD_PHONE_REFRESH_SLEEP", "1.2")))
                         except Exception:
                             retry_sleep = 1.2
-                        logger.info("命中 add-phone，执行 authorize 刷新重试: count=%s sleep=%.1fs", retry_count, retry_sleep)
+                        logger.info(
+                            "命中 add-phone，执行 authorize 刷新重试: count=%s sleep=%.1fs", retry_count, retry_sleep
+                        )
                         callback_url, final_url = self._codex_refresh_retry_after_add_phone(
                             auth_url=auth_url,
                             redirect_uri=redirect_uri,
@@ -1477,7 +1475,9 @@ class AuthFlow:
                     if detail
                     else f"Codex OAuth 未捕获 callback code: {(final_url or '')[:160]}"
                 )
-                logger.warning("Codex OAuth 未捕获 callback code, final=%s detail=%s", (final_url or "")[:180], detail[:220])
+                logger.warning(
+                    "Codex OAuth 未捕获 callback code, final=%s detail=%s", (final_url or "")[:180], detail[:220]
+                )
                 self._emit_progress(
                     "phone_first_codex_oauth_no_callback",
                     message,
@@ -1539,13 +1539,27 @@ class AuthFlow:
 
     @staticmethod
     def _safe_b64url_decode_text(data: str) -> str:
-        if not data:
+        compact = str(data or "").strip()
+        if not compact or len(compact) > AUTH_FLOW_B64URL_SEGMENT_MAX_CHARS:
             return ""
         try:
-            s = data + "=" * (-len(data) % 4)
-            return base64.urlsafe_b64decode(s.encode("utf-8")).decode("utf-8", errors="replace")
+            padded = compact + "=" * (-len(compact) % 4)
+            return base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True).decode(
+                "utf-8", errors="replace"
+            )
         except Exception:
             return ""
+
+    @classmethod
+    def _safe_b64url_decode_json(cls, data: str) -> dict:
+        try:
+            text = cls._safe_b64url_decode_text(data)
+            if not text:
+                return {}
+            payload = json.loads(text)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
 
     def _extract_hydra_redirect_values(self) -> list[str]:
         """从 hydra_redirect cookie 中提取可能的会话值。"""
@@ -1573,7 +1587,10 @@ class AuthFlow:
         """收集 code_verifier 候选（来源 + 值）。"""
         raw_candidates: list[tuple[str, str]] = [
             ("query", self._extract_query_first(continue_url, ["login_verifier", "code_verifier", "verifier"])),
-            ("query_callback", self._extract_query_first(callback_url, ["login_verifier", "code_verifier", "verifier"])),
+            (
+                "query_callback",
+                self._extract_query_first(callback_url, ["login_verifier", "code_verifier", "verifier"]),
+            ),
             ("dump", self._dump_login_verifier),
             ("captured", self._captured_login_verifier),
             ("manual", self._manual_login_verifier),
@@ -1689,8 +1706,7 @@ class AuthFlow:
             if resp.status_code == 200:
                 loc = re.search(r"loc=(\w+)", resp.text)
                 ip = re.search(r"ip=([^\n]+)", resp.text)
-                logger.info(f"网络正常 - IP: {ip.group(1) if ip else 'N/A'}, "
-                            f"地区: {loc.group(1) if loc else 'N/A'}")
+                logger.info(f"网络正常 - IP: {ip.group(1) if ip else 'N/A'}, 地区: {loc.group(1) if loc else 'N/A'}")
             else:
                 logger.warning(f"网络探测异常: cloudflare trace {resp.status_code}")
 
@@ -1737,6 +1753,7 @@ class AuthFlow:
                 wait = (attempt + 1) * 5
                 logger.warning(f"Cloudflare 403, {wait}s 后重试 ({attempt + 1}/3)...")
                 import time
+
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -1824,6 +1841,7 @@ class AuthFlow:
     def get_sentinel_token(self, device_id: str) -> str:
         logger.info("[4/10] 获取 Sentinel Token (PoW)...")
         from sentinel import get_sentinel_token
+
         token = get_sentinel_token(self.session, device_id=device_id, flow="authorize_continue")
         self._last_sentinel_token = token or ""
         logger.info("Sentinel Token 获取成功")
@@ -1857,9 +1875,7 @@ class AuthFlow:
         self._trace_http(trace_step or f"authorize_continue_{screen_hint}", resp)
         if resp.status_code != 200:
             body = (resp.text or "")[:360]
-            raise RuntimeError(
-                f"authorize/continue 失败(screen_hint={screen_hint}): HTTP {resp.status_code} - {body}"
-            )
+            raise RuntimeError(f"authorize/continue 失败(screen_hint={screen_hint}): HTTP {resp.status_code} - {body}")
         try:
             return resp.json() if resp is not None else {}
         except Exception:
@@ -1940,8 +1956,8 @@ class AuthFlow:
         if self.result.device_id:
             try:
                 from sentinel import get_sentinel_token as _get_st
-                token = _get_st(self.session, device_id=self.result.device_id,
-                                flow="username_password_create")
+
+                token = _get_st(self.session, device_id=self.result.device_id, flow="username_password_create")
                 self._last_sentinel_token = token or ""
                 logger.info("Sentinel Token 获取成功")
             except Exception as e:
@@ -2123,8 +2139,8 @@ class AuthFlow:
         if self.result.device_id:
             try:
                 from sentinel import get_sentinel_token as _get_st
-                token = _get_st(self.session, device_id=self.result.device_id,
-                                flow="create_account")
+
+                token = _get_st(self.session, device_id=self.result.device_id, flow="create_account")
                 self._last_sentinel_token = token or ""
                 logger.info("Sentinel Token 获取成功")
             except Exception as e:
@@ -2133,11 +2149,44 @@ class AuthFlow:
         headers["Content-Type"] = "application/json"
         if self._last_sentinel_token:
             headers["openai-sentinel-token"] = self._last_sentinel_token
-        _FIRST = ["James", "John", "Robert", "Michael", "William", "David", "Richard",
-                  "Joseph", "Thomas", "Charles", "Mary", "Patricia", "Jennifer", "Linda",
-                  "Elizabeth", "Barbara", "Susan", "Jessica", "Sarah", "Karen"]
-        _LAST = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller",
-                 "Davis", "Rodriguez", "Martinez", "Wilson", "Anderson", "Taylor", "Thomas"]
+        _FIRST = [
+            "James",
+            "John",
+            "Robert",
+            "Michael",
+            "William",
+            "David",
+            "Richard",
+            "Joseph",
+            "Thomas",
+            "Charles",
+            "Mary",
+            "Patricia",
+            "Jennifer",
+            "Linda",
+            "Elizabeth",
+            "Barbara",
+            "Susan",
+            "Jessica",
+            "Sarah",
+            "Karen",
+        ]
+        _LAST = [
+            "Smith",
+            "Johnson",
+            "Williams",
+            "Brown",
+            "Jones",
+            "Garcia",
+            "Miller",
+            "Davis",
+            "Rodriguez",
+            "Martinez",
+            "Wilson",
+            "Anderson",
+            "Taylor",
+            "Thomas",
+        ]
         name = f"{random.choice(_FIRST)} {random.choice(_LAST)}"
         birthdate = f"{random.randint(1985, 2000)}-{random.randint(1, 12):02d}-{random.randint(1, 28):02d}"
         resp = self.session.post(
@@ -2178,9 +2227,8 @@ class AuthFlow:
                     segment = (parts[idx] or "").strip()
                     if not segment:
                         continue
-                    payload_b64 = segment + "=" * (-len(segment) % 4)
-                    decoded = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8"))
-                    if not isinstance(decoded, dict):
+                    decoded = self._safe_b64url_decode_json(segment)
+                    if not decoded:
                         continue
                     wid = (decoded.get("workspace_id", "") or "").strip()
                     if wid:
@@ -2216,7 +2264,7 @@ class AuthFlow:
             return None
         decoder = json.JSONDecoder()
         try:
-            return decoder.raw_decode(text[idx + len(token):].lstrip())[0]
+            return decoder.raw_decode(text[idx + len(token) :].lstrip())[0]
         except Exception:
             return None
 
@@ -2359,14 +2407,12 @@ class AuthFlow:
                 "Referer": "https://chatgpt.com/",
                 "User-Agent": self._common_headers()["User-Agent"],
             }
-            resp = self.session.get(
-                current_url, headers=headers, timeout=30, allow_redirects=False
-            )
-            self._trace_http(f"redirect_hop_{i+1}", resp)
+            resp = self.session.get(current_url, headers=headers, timeout=30, allow_redirects=False)
+            self._trace_http(f"redirect_hop_{i + 1}", resp)
 
             if "/api/auth/callback/openai" in current_url:
                 callback_url = current_url
-                self._sniff_login_verifier(current_url, f"redirect_hop_{i+1}_callback_url")
+                self._sniff_login_verifier(current_url, f"redirect_hop_{i + 1}_callback_url")
 
             # workspace 页面常见为 200，需要主动调 workspace/select 获取下一跳
             if "/workspace" in current_url and resp.status_code == 200:
@@ -2391,7 +2437,7 @@ class AuthFlow:
                 if "/api/auth/callback/openai" in location and "code=" in location:
                     callback_url = location
                     current_url = location
-                    self._sniff_login_verifier(location, f"redirect_hop_{i+1}_location_callback")
+                    self._sniff_login_verifier(location, f"redirect_hop_{i + 1}_location_callback")
                     logger.info("捕获 callback URL（未消费）")
                     break
                 current_url = location
@@ -2415,7 +2461,8 @@ class AuthFlow:
         logger.info("[9.5/10] 重新 authorize 获取 session ...")
         try:
             # 去掉 prompt=login 参数，利用已有的 auth session cookie
-            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
             parsed = urlparse(original_auth_url)
             params = parse_qs(parsed.query, keep_blank_values=True)
             params.pop("prompt", None)
@@ -2436,7 +2483,7 @@ class AuthFlow:
             logger.info(f"reauthorize Location: {current_url[:150]}")
             if resp.status_code in (301, 302, 303, 307, 308) and current_url:
                 for hop in range(10):
-                    logger.debug(f"reauthorize redirect hop {hop+1}: {current_url[:100]}")
+                    logger.debug(f"reauthorize redirect hop {hop + 1}: {current_url[:100]}")
                     if "code=" in current_url and "state=" in current_url:
                         logger.info("reauthorize: 找到 callback URL")
                         return current_url
@@ -2446,17 +2493,18 @@ class AuthFlow:
                             allow_redirects=False,
                             timeout=15,
                         )
-                        self._trace_http(f"reauthorize_hop_{hop+1}", hop_resp)
+                        self._trace_http(f"reauthorize_hop_{hop + 1}", hop_resp)
                         next_loc = hop_resp.headers.get("Location", "")
                         if hop_resp.status_code not in (301, 302, 303, 307, 308) or not next_loc:
                             # 检查最终 URL
-                            final_url = str(getattr(hop_resp, 'url', current_url))
+                            final_url = str(getattr(hop_resp, "url", current_url))
                             if "code=" in final_url:
                                 return final_url
                             break
                         current_url = next_loc
                         if not current_url.startswith("http"):
                             from urllib.parse import urljoin
+
                             current_url = urljoin(authorize_url, current_url)
                     except Exception:
                         break
@@ -2488,8 +2536,7 @@ class AuthFlow:
             self.result.access_token = access_token
         self.result.cookie_header = self._build_chatgpt_cookie_header()
 
-        logger.info(f"session_token: {'有' if session_token else '无'}, "
-                     f"access_token: {'有' if access_token else '无'}")
+        logger.info(f"session_token: {'有' if session_token else '无'}, access_token: {'有' if access_token else '无'}")
         return session_token, access_token
 
     # ── 可选: OAuth Token 交换 ──
@@ -2499,7 +2546,9 @@ class AuthFlow:
         1) 尝试多来源 code_verifier（query/cookie/dump/hydra）
         2) 回退无 verifier
         """
-        auth_code = self._extract_query_first(callback_url, ["code"]) or self._extract_query_first(continue_url, ["code"])
+        auth_code = self._extract_query_first(callback_url, ["code"]) or self._extract_query_first(
+            continue_url, ["code"]
+        )
 
         if not auth_code:
             logger.info("缺少 auth_code，跳过 token 交换")
@@ -2649,7 +2698,7 @@ class AuthFlow:
                     timeout=30,
                     allow_redirects=False,
                 )
-                self._trace_http(f"secondary_authorize_hop_{i+1}", resp)
+                self._trace_http(f"secondary_authorize_hop_{i + 1}", resp)
 
                 loc = (resp.headers.get("Location", "") or "").strip()
                 if loc and loc.startswith("/"):
@@ -2678,7 +2727,9 @@ class AuthFlow:
         """手机号先注册 ChatGPT，再绑定当前 mail_provider 创建的邮箱。"""
         if not self.check_proxy():
             logger.warning("网络预检查未通过，继续尝试 phone-first 注册链路以获取精确错误...")
-            self._emit_progress("phone_first_network_precheck_failed", "网络预检查未通过，继续尝试 phone-first 注册链路", level="warn")
+            self._emit_progress(
+                "phone_first_network_precheck_failed", "网络预检查未通过，继续尝试 phone-first 注册链路", level="warn"
+            )
         else:
             self._emit_progress("phone_first_network_precheck_done", "网络预检查通过")
 
@@ -2707,9 +2758,7 @@ class AuthFlow:
             phone_signup_finished = False
             signup_phone_item = phone_supplier()
             phone = str(
-                (signup_phone_item or {}).get("phone_number")
-                or (signup_phone_item or {}).get("phone")
-                or ""
+                (signup_phone_item or {}).get("phone_number") or (signup_phone_item or {}).get("phone") or ""
             ).strip()
             if not phone:
                 raise RuntimeError("手机号供应商未返回 phone_number")
@@ -2751,7 +2800,9 @@ class AuthFlow:
                 if "phone_number_in_use" in detail:
                     raise RuntimeError("PHONE_NUMBER_IN_USE: 手机号已被使用")
                 if "account_creation_failed" in detail:
-                    raise RuntimeError("手机号注册 password 步骤失败: account_creation_failed: OpenAI 拒绝创建账号，请换手机号/国家/代理重试")
+                    raise RuntimeError(
+                        "手机号注册 password 步骤失败: account_creation_failed: OpenAI 拒绝创建账号，请换手机号/国家/代理重试"
+                    )
                 raise RuntimeError(f"手机号注册 password 步骤失败: {detail or 'unknown'}")
             self._emit_progress("phone_first_password_done", "手机号注册密码已提交")
             self._phone_signup_send_otp()
@@ -2778,7 +2829,9 @@ class AuthFlow:
 
             if continue_url:
                 continue_url = self._normalize_continue_url(continue_url)
-                logger.info("[phone-first] 手机号注册 create_account 完成，保留回调给后续 OAuth 流程: %s", continue_url[:180])
+                logger.info(
+                    "[phone-first] 手机号注册 create_account 完成，保留回调给后续 OAuth 流程: %s", continue_url[:180]
+                )
             logger.info("[phone-first] 手机号注册成功，准备进入 Codex OAuth 绑定邮箱: phone=%s", phone)
             phone_signup_finished = True
             if isinstance(signup_phone_item, dict):
@@ -2824,7 +2877,11 @@ class AuthFlow:
                     "http 429",
                 )
             )
-            if not should_stop_retry and not locals().get("phone_signup_finished", False) and phone_attempt < phone_attempt_limit:
+            if (
+                not should_stop_retry
+                and not locals().get("phone_signup_finished", False)
+                and phone_attempt < phone_attempt_limit
+            ):
                 logger.info(
                     "[phone-first] 手机号注册失败，切换下一个手机号重试: %s/%s (%s)",
                     phone_attempt + 1,
@@ -3029,7 +3086,6 @@ class AuthFlow:
                         if continue_url:
                             logger.info("reauthorize 兜底成功，继续后续 session 获取")
                             # 下游会走 follow_redirect_chain + get_auth_session
-                            pass
                         else:
                             raise
                     else:
@@ -3118,9 +3174,12 @@ class AuthFlow:
 
         page_type = ""
         mode = ""
-        prefer_login_screen_first = str(
-            os.getenv("LOCALAUTH_EXISTING_LOGIN_USE_LOGIN_HINT", "1")
-        ).lower() in ("1", "true", "yes", "on")
+        prefer_login_screen_first = str(os.getenv("LOCALAUTH_EXISTING_LOGIN_USE_LOGIN_HINT", "1")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         if prefer_login_screen_first:
             try:
@@ -3133,9 +3192,7 @@ class AuthFlow:
                     trace_step="authorize_continue_login_protocol",
                 )
                 page_type = (self._extract_page_type(login_step) or "").lower()
-                continue_url = self._normalize_continue_url(
-                    self._extract_continue_url_from_step(login_step)
-                )
+                continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_step))
                 page = (login_step.get("page") or {}) if isinstance(login_step, dict) else {}
                 payload = (page.get("payload") or {}) if isinstance(page, dict) else {}
                 mode = (payload.get("email_verification_mode", "") or "").lower()
@@ -3146,9 +3203,7 @@ class AuthFlow:
                     logger.info("登录分支: login_password -> password/verify")
                     login_resp = self.login_password_verify(login_password)
                     page_type = (self._extract_page_type(login_resp) or "").lower()
-                    continue_url = self._normalize_continue_url(
-                        self._extract_continue_url_from_step(login_resp)
-                    )
+                    continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_resp))
                 elif page_type == "email_otp_verification" or "/email-verification" in (continue_url or ""):
                     logger.info("登录分支: email_otp_verification")
                 else:
@@ -3272,9 +3327,7 @@ class AuthFlow:
         return self.result
 
     # ── 从已有凭证初始化 ──
-    def from_existing_credentials(
-        self, session_token: str, access_token: str, device_id: str
-    ) -> AuthResult:
+    def from_existing_credentials(self, session_token: str, access_token: str, device_id: str) -> AuthResult:
         """使用已有凭证（跳过注册）"""
         self.result.device_id = device_id or str(uuid.uuid4())
         self.session.cookies.set("oai-did", self.result.device_id, domain=".chatgpt.com")
@@ -3283,7 +3336,7 @@ class AuthFlow:
         # 如果有 session_token, 用它刷新 access_token (旧 access_token 可能已过期)
         if session_token:
             self.session.cookies.set(
-                "__Secure-next-auth.session-token",
+                chatgpt_session_service.CHATGPT_SESSION_COOKIE,
                 session_token,
                 domain=".chatgpt.com",
             )
@@ -3300,7 +3353,7 @@ class AuthFlow:
                 user_obj = session_data.get("user", {}) if isinstance(session_data, dict) else {}
                 if isinstance(user_obj, dict):
                     detected_email = detected_email or (user_obj.get("email", "") or "")
-                new_session_token = self.session.cookies.get("__Secure-next-auth.session-token", "")
+                new_session_token = self.session.cookies.get(chatgpt_session_service.CHATGPT_SESSION_COOKIE, "")
                 if new_access_token:
                     access_token = new_access_token
                     logger.info("access_token 刷新成功")
@@ -3325,7 +3378,7 @@ class AuthFlow:
                 user_obj = session_data.get("user", {}) if isinstance(session_data, dict) else {}
                 if isinstance(user_obj, dict):
                     detected_email = detected_email or (user_obj.get("email", "") or "")
-                session_token = self.session.cookies.get("__Secure-next-auth.session-token", "")
+                session_token = self.session.cookies.get(chatgpt_session_service.CHATGPT_SESSION_COOKIE, "")
                 if session_token:
                     logger.info("通过 access_token 获取 session_token 成功")
                 else:
@@ -3337,7 +3390,7 @@ class AuthFlow:
         self.result.session_token = session_token
         if session_token:
             self.session.cookies.set(
-                "__Secure-next-auth.session-token",
+                chatgpt_session_service.CHATGPT_SESSION_COOKIE,
                 session_token,
                 domain=".chatgpt.com",
             )
@@ -3345,15 +3398,10 @@ class AuthFlow:
 
         # 回填 email（skip-register 模式下常用于账单 email）
         if not detected_email and access_token and access_token.count(".") >= 2:
-            try:
-                payload_b64 = access_token.split(".")[1]
-                payload_b64 += "=" * (-len(payload_b64) % 4)
-                payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8"))
-                prof = payload.get("https://api.openai.com/profile", {}) if isinstance(payload, dict) else {}
-                if isinstance(prof, dict):
-                    detected_email = detected_email or (prof.get("email", "") or "")
-            except Exception:
-                pass
+            payload = decode_jwt_payload(access_token)
+            prof = payload.get("https://api.openai.com/profile", {}) if isinstance(payload, dict) else {}
+            if isinstance(prof, dict):
+                detected_email = detected_email or (prof.get("email", "") or "")
         self.result.email = detected_email or ""
         logger.info("使用已有凭证初始化完成")
         return self.result

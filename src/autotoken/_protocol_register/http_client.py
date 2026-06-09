@@ -3,7 +3,6 @@ HTTP 客户端 - 使用 curl_cffi 实现 TLS 指纹模拟
 支持 Cloudflare 绕过，降级到 requests
 """
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,7 @@ USER_AGENT = (
 )
 
 
-def create_http_session(proxy: Optional[str] = None, impersonate: str = "chrome136"):
+def create_http_session(proxy: str | None = None, impersonate: str = "chrome136"):
     """
     创建 HTTP 会话。优先使用 curl_cffi 模拟浏览器 TLS 指纹，
     不可用时降级到 requests。

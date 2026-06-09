@@ -45,7 +45,7 @@
     记录本次任务用了哪个代理
 
   这个仓库已经支持 Playwright 代理配置：
-  /D:/code/OpenSource/AutoTeam-F/docs/configuration.md:92
+  docs/configuration.md:92
 
   也就是现成可用的是：
 
@@ -72,7 +72,7 @@
 
   2. 新增执行器模块
      比如：
-     /D:/code/OpenSource/AutoTeam-F/src/autoteam/bind_executor.py
+     src/autotoken/payments/bind_executor.py
 
   职责：
 
@@ -149,7 +149,7 @@
      从现有账号池里选有 auth_session_file 的账号
   2. 提取 token
      前端现在已经支持从账号提取 access_token
-     /D:/code/OpenSource/AutoTeam-F/web/src/components/BindCard.vue:380
+     web/src/components/BindCard.vue:380
   3. 生成支付链接
      调现有 /api/bind/link
   4. 分配卡
@@ -169,7 +169,7 @@
   六、你仓库里最适合改的地方
 
   后端入口：
-  /D:/code/OpenSource/AutoTeam-F/src/autoteam/api.py:2012
+  src/autotoken/interfaces/api.py
 
   这里已经有 /api/bind/link，最自然的扩展是继续加：
 
@@ -177,12 +177,12 @@
   - /api/tasks/bind-card/{task_id}
 
   卡池逻辑：
-  /D:/code/OpenSource/AutoTeam-F/src/autoteam/card_pool.py:1
+  src/autotoken/payments/card_pool.py
 
   这里可以扩状态和审计字段。
 
   前端：
-  /D:/code/OpenSource/AutoTeam-F/web/src/components/BindCard.vue:1
+  web/src/components/BindCard.vue:1
 
   这里现在只有“生成链接”和“提取 token”，可以加一个“开始绑卡”面板，选择：
 

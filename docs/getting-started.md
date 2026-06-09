@@ -1,262 +1,122 @@
-# 从零开始部署 AutoTeam
+# 从零开始部署
 
-本文档带你从一台全新的 VPS 或本地机器开始，完成 AutoTeam 的安装、配置、管理员登录、首次补号与日常使用。
+## 前置要求
 
-## 前置条件
+- Python 3.10 或更高版本。
+- 推荐安装 `uv`。
+- 需要浏览器自动化时安装 Playwright Chromium。
+- 如果使用 Docker，需要 Docker Compose。
 
-在开始之前，你需要准备好以下服务：
+## 本地部署
 
-| 服务 | 说明 | 获取方式 |
-|------|------|---------|
-| **ChatGPT Team 订阅** | 管理员主号，需要有 Team 订阅 | [chatgpt.com](https://chatgpt.com) |
-| **临时邮箱** | 自动注册与收验证码,二选一 | ① **`cloudflare_temp_email`(默认)** = 自建 [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)<br>② **`cloud-mail`** = 自建 [maillab/cloud-mail](https://github.com/maillab/cloud-mail) |
-| **CLIProxyAPI** | Codex 代理与认证文件同步目标 | 自建 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
-| **VPS / 本地机器** | 推荐 Ubuntu 22.04+；也支持 Windows / macOS | 任意云服务商 / 本地电脑 |
-| **域名** | 用于临时邮箱服务与 Verified Domains | 任意域名注册商 |
+Windows 推荐：
 
-> 建议使用住宅 IP 或干净的 VPS IP，避免被 OpenAI / Cloudflare 标记。
-
-## 准备工作
-
-### 1. 搭建临时邮箱后端（二选一）
-
-> **命名说明**:历史上配置项叫 `CLOUDMAIL_*`,但它指向的是 `dreamhunter2333/cloudflare_temp_email`,
-> **不是** `maillab/cloud-mail`(社区里另一个同名项目)。两个后端 API 完全不兼容,需要按你实际部署的那一个填配置。
-
-#### 选项 A:`cloudflare_temp_email`(**默认推荐**)
-
-适配 [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email),基于 Cloudflare Workers,搭建简单。
-
-按官方文档完成部署后你会得到:
-- API 地址(如 `https://your-domain.com/api`)→ `CLOUDFLARE_TEMP_EMAIL_BASE_URL`
-- 管理员密码(`x-admin-auth`)→ `CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD`
-- 邮箱域名(如 `@your-domain.com`)→ `CLOUDFLARE_TEMP_EMAIL_DOMAIN`
-
-#### 选项 B:`cloud-mail`
-
-适配 [maillab/cloud-mail](https://github.com/maillab/cloud-mail)(参考 [官方文档](https://doc.skymail.ink/guide/dashboard))。
-
-部署完成后,在 `.env` 中显式设置:
-
-```dotenv
-MAIL_PROVIDER=cloud-mail
-CLOUD_MAIL_API_URL=https://your-cloud-mail.example.com
-CLOUD_MAIL_ADMIN_EMAIL=admin@example.com
-CLOUD_MAIL_ADMIN_PASSWORD=your_password
-CLOUD_MAIL_DOMAIN=@your-domain.com
+```powershell
+deploy-local.cmd
 ```
 
-> 切换后兼容入口仍可使用,内部推荐统一走 `TemporaryEmailClient`。详见 [配置说明](configuration.md#mail-provider-切换)。
+指定端口：
 
-### 2. 设置 OpenAI Verified Domains
+```powershell
+deploy-local.cmd -Port 8899
+```
 
-由于重复邀请有概率触发 `"unable to invite user due to an error."` 错误（[参考](https://community.openai.com/t/email-invite-error-in-chatgpt-business/1378252)），需要设置域名验证让账号自动加入 Team：
-
-1. 打开 ChatGPT → Settings → Account
-2. 找到 **Verified Domains**，点击 **Verify new domain**
-3. 输入你的域名（如 `your-domain.com`）
-4. 在 Cloudflare（或你的 DNS 服务商）添加 OpenAI 要求的 DNS 记录
-5. 回到 ChatGPT 点击 **Check**，验证通过后状态变为 verified
-6. 进入 Workspace → Identity & Access，打开 **Automatic account creation**
-
-这样使用该域名邮箱注册的 ChatGPT 账号会自动加入 Team workspace，不需要手动邀请。
-
-> 域名验证只针对 ChatGPT 侧,与你选哪个临时邮箱后端无关 — `cloudflare_temp_email` 和 `cloud-mail` 都需要。
-
-### 3. 搭建 CLIProxyAPI
-
-参考 CPA 项目文档完成搭建：https://github.com/router-for-me/CLIProxyAPI
-
-搭建完成后你会得到：
-- CPA 地址（如 `http://127.0.0.1:8317`）
-- 管理密钥（`secret-key`）
-
-## 第一步：安装
-
-### 方式一：直接部署
+macOS / Linux：
 
 ```bash
-# 克隆项目
-git clone https://github.com/cnitlrt/AutoTeam.git
-cd AutoTeam
-
-# Linux 一键安装（uv、依赖、Playwright、pre-commit）
 bash setup.sh
 ```
 
-Windows / macOS 可直接执行：
+或者手动：
 
 ```bash
 uv sync
 uv run playwright install chromium
 ```
 
-> Windows / macOS 不需要 xvfb。Linux 无图形环境时项目会自动处理虚拟显示。
+## 配置
 
-### 方式二：Docker 部署
-
-```bash
-git clone https://github.com/cnitlrt/AutoTeam.git
-cd AutoTeam
-mkdir -p data
-docker compose up -d
-```
-
-## 第二步：配置
-
-### 直接部署
-
-启动任何命令时会自动进入配置向导：
+复制配置模板：
 
 ```bash
-uv run autoteam api
+cp .env.example .env
 ```
 
-按提示依次填入(以默认的 `cloudflare_temp_email` 后端为例):
+至少填写：
+
+```env
+MAIL_PROVIDER=cloudflare_temp_email
+CLOUDFLARE_TEMP_EMAIL_BASE_URL=https://example.com/api
+CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD=your_password
+CLOUDFLARE_TEMP_EMAIL_DOMAIN=@example.com
+CPA_URL=http://127.0.0.1:8317
+CPA_KEY=your_key
+API_KEY=change-me
+```
+
+更多配置见 [配置说明](configuration.md)。
+
+## 启动
+
+Web 面板和 API：
+
+```bash
+uv run autotoken api
+```
+
+指定端口：
+
+```bash
+uv run autotoken api --port 8899
+```
+
+命令行轮转：
+
+```bash
+uv run autotoken rotate
+```
+
+打开：
 
 ```text
-=== AutoTeam 首次配置 ===
-
-  Mail Provider [cloudflare_temp_email]:         ← 回车用默认,或填 cloud-mail
-  cloudflare_temp_email API 地址: https://your-cloudmail.com/api
-  cloudflare_temp_email 管理员密码: your_password
-  cloudflare_temp_email 邮箱域名（如 @example.com）: @your-domain.com
-  CPA 管理密钥: your_cpa_key
-  API 鉴权密钥 [回车自动生成]:
+http://127.0.0.1:8787
 ```
 
-> 选 `cloud-mail` 后,直接填写 `CLOUD_MAIL_API_URL` / `CLOUD_MAIL_ADMIN_EMAIL` / `CLOUD_MAIL_ADMIN_PASSWORD` / `CLOUD_MAIL_DOMAIN`。
+如果设置了 `API_KEY`，请求 `/api/*` 时需要携带：
 
-配置会自动验证临时邮箱后端和 CPA 的连通性，失败会提示具体原因。
-
-### Docker 部署
-
-方式一：编辑配置文件
-
-```bash
-cp .env.example data/.env
-nano data/.env   # 填入实际配置
-docker compose restart
+```text
+Authorization: Bearer <API_KEY>
 ```
 
-方式二：Web 页面配置
+## 首次检查
 
-直接打开 `http://your-server:8787`，会显示配置向导页面，在浏览器中填写。
+1. 访问 Web 面板，确认配置状态正常。
+2. 执行一次账号同步，确认本地账号池可读写。
+3. 执行一次 CPA 列表读取，确认 `CPA_URL` 和 `CPA_KEY` 正确。
+4. 注册或导入一个测试账号，确认 Codex OAuth 认证文件可以生成。
 
-如果你需要让浏览器流量走宿主机 SOCKS5 代理，请先确认容器内可以解析并访问宿主机代理地址（例如 `host.docker.internal`，或你自己提供的宿主机网关别名）。
+## 常用命令
 
-然后在 `data/.env` 中加入：
+| 命令 | 说明 |
+|------|------|
+| `uv run autotoken api` | 启动 Web/API |
+| `uv run autotoken rotate` | 执行轮转 |
+| `uv run autotoken check` | 检查账号和额度 |
+| `uv run autotoken reconcile` | 对账 workspace 与本地状态 |
+| `uv run autotoken sync-cpa` | 同步 active 认证到 CPA |
 
-```dotenv
-PLAYWRIGHT_PROXY_URL=socks5://host.docker.internal:1080
-PLAYWRIGHT_PROXY_BYPASS=localhost,127.0.0.1
-```
+旧的兼容命令仍然保留，但新脚本和文档应统一使用 `autotoken`。
 
-如果代理需要认证，可以写成：
+## 数据目录
 
-```dotenv
-PLAYWRIGHT_PROXY_URL=socks5://username:password@host.docker.internal:1080
-```
+以下文件属于本地运行数据，已经被 Git 忽略：
 
-## 第三步：管理员登录
+| 路径 | 说明 |
+|------|------|
+| `.env` | 本地配置和密钥 |
+| `data/` | SQLite、邮箱池和其他持久化数据 |
+| `auths/` | Codex 认证文件 |
+| `accounts.json`, `state.json` | 本地状态 |
+| `logs/`, `outputs/`, `screenshots/` | 调试产物 |
 
-配置完成后，需要先用 ChatGPT Team 管理员账号登录。
-
-### 通过 Web 面板
-
-1. 打开 `http://your-server:8787`
-2. 输入 API Key 进入面板
-3. 进入「设置」页
-4. 输入管理员邮箱，点击「开始登录」
-5. 按提示输入密码或邮箱验证码
-6. 选择 Team workspace（如 `Idapro`）
-7. 登录成功后会自动保存到 `state.json`
-
-### 通过命令行
-
-```bash
-uv run autoteam admin-login --email your-admin@example.com
-```
-
-## 第四步：首次轮转
-
-```bash
-uv run autoteam rotate 5
-```
-
-或在 Web 面板「账号池操作」页点击「智能轮转」。
-
-首次运行会：
-1. 同步 Team 实际成员到本地
-2. 检查所有 active 账号额度
-3. 移出额度低于阈值的账号
-4. 优先复用 standby 中额度已恢复的旧号
-5. 不够时自动创建新账号
-6. 同步 active 认证文件到 CPA
-
-> **注意：**
-> `rotate 5` / `fill 5` 中的 `5` 指的是 **Team 总人数目标**，不是“本地管理账号数量”。
-> 如果 Team 中已经有 owner / 外部成员，它们也会计入总数。
-
-## 第五步：日常使用
-
-### 方式一：API 模式（推荐）
-
-```bash
-uv run autoteam api
-```
-
-API 模式下：
-- Web 面板集中管理日常操作
-- 后台自动巡检（默认每 5 分钟）
-- 可在「同步中心」中做对账与双向同步
-- 可在「OAuth 登录」页手动导入账号
-
-### 方式二：手动执行
-
-```bash
-uv run autoteam status      # 查看状态
-uv run autoteam check       # 检查额度
-uv run autoteam rotate 5    # 智能轮转
-uv run autoteam sync        # 同步到 CPA
-uv run autoteam pull-cpa    # 从 CPA 拉回本地
-```
-
-## 常见流程
-
-### 添加更多账号
-
-```bash
-uv run autoteam rotate 8   # 补满到 8 个总席位
-# 或
-uv run autoteam add        # 自动注册并添加一个
-# 或
-uv run autoteam manual-add # 手动 OAuth 导入一个账号
-```
-
-### 清理多余账号
-
-```bash
-uv run autoteam cleanup 5  # 保留 5 个总席位
-```
-
-### 从 CPA 恢复认证文件到本地
-
-```bash
-uv run autoteam pull-cpa
-```
-
-或在 Web 面板「同步中心」页点击「拉取 CPA」。
-
-该操作会：
-- 从 CPA 下载 `codex-*.json`
-- 清理同账号重复文件
-- 按本地命名规范重写到 `auths/`
-- 将新导入账号补进 `accounts.json`（默认标记为 `standby`）
-
-## 下一步
-
-- [配置详解](configuration.md)
-- [工作原理](architecture.md)
-- [API 文档](api.md)
-- [常见问题](troubleshooting.md)
+不要把这些文件提交到 Git。已经泄露过的 token 或账号凭据需要轮换。

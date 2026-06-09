@@ -1913,9 +1913,9 @@ const props = defineProps({
 })
 const emit = defineEmits(['refresh'])
 
-const BIND_HISTORY_KEY = 'autoteam_bind_history_v1'
-const GOPAY_FORM_STATE_KEY = 'autoteam_gopay_form_state_v1'
-const GOPAY_RECENT_TASK_KEY = 'autoteam_gopay_recent_task_id_v1'
+const BIND_HISTORY_KEY = 'autotoken_bind_history_v1'
+const GOPAY_FORM_STATE_KEY = 'autotoken_gopay_form_state_v1'
+const GOPAY_RECENT_TASK_KEY = 'autotoken_gopay_recent_task_id_v1'
 const luckmailEmailTypeOptions = [
   { value: 'ms_graph', label: '微软 Graph 邮箱' },
   { value: 'ms_imap', label: '微软 IMAP 邮箱' },

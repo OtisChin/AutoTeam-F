@@ -201,6 +201,10 @@ Plus 兼容旧参数：
 
 ### PayPal 绑定任务
 
+`POST /api/tasks/paypal/preflight`
+
+使用与正式任务相同的请求体做本地预检，不创建 checkout、不买号、不访问 PayPal。返回 `ok`、`mode`、`checks`、`sms_source`、`sms_provider` 和 `missing`，适合在填写 direct BA/link 后先确认账号、checkout 引用、接码配置是否齐全。
+
 `POST /api/tasks/paypal`
 
 请求体：
@@ -216,6 +220,8 @@ Plus 兼容旧参数：
   "paypal_mode": "create_account",
   "paypal_email": "",
   "paypal_password": "",
+  "paypal_approve_url": "https://www.paypal.com/pay?token=BA-...",
+  "paypal_checkout_session_id": "cs_...",
   "paypal_browser": "protocol",
   "paypal_country": "JP",
   "paypal_lang": "ja",
@@ -239,13 +245,61 @@ Plus 兼容旧参数：
 - `paypal_browser`：可选。`protocol` / `no-card` 走无卡协议模式；`chromium` / `camoufox` / `roxybrowser` 走浏览器模式
 - `paypal_country` / `paypal_lang`：可选。PayPal 注册/授权页区域与语言；日区无卡传 `JP` / `ja`，但 checkout 链接需要使用支持 PayPal 的 `US` / `USD`
 - `paypal_email` / `paypal_password`：`existing_account` 模式必填；`create_account` 模式可选，留空则自动生成。密码只用于本次执行，不会写入任务参数/审计日志
+- `paypal_approve_url` / `paypal_ba_token`：可选。已经通过其它流程拿到 PayPal BA/link 时传入；`paypal_approve_url` 中包含 `BA-...` 时可省略 `paypal_ba_token`。该模式只支持单账号任务，不会复用到 `account_emails` 批量。
+- `paypal_checkout_session_id` / `paypal_checkout_url` / `paypal_hosted_checkout_url`：直连 BA/link 模式必填其一，用于协议支付后的 checkout 状态确认；如果已传顶层 `checkout_url`，也可作为确认引用。
+- `paypal_payment_method_id`：可选。已知 Stripe PayPal payment method id 时传入，执行器会随 `pre_extracted` 透传。
 - `sms_url` / `otp_channel`：`create_account` 模式使用的接码配置；`otp_channel` 支持 `sms` 或 `whatsapp`
+- `PAYPAL_SMS_URL` / `PAYPAL_PHONE_NUMBER`：可选。`paypal_browser=protocol`、`paypal_mode=create_account` 且请求体未传 `sms_url` / `phone_accounts` 时，会从 `.env` 读取已有接码链接和手机号；这种方式不会调用接码平台买号。
+- `PAYPAL_SMS_*`：可选。没有请求体接码、也没有 `PAYPAL_SMS_URL` / `PAYPAL_PHONE_NUMBER` 时，可通过 `.env` 自动取 PayPal 注册手机号。需要配置 `PAYPAL_SMS_PROVIDER`（`hero_sms` / `smsbower` / `smscode` / `smscloud`）、对应 API Key、PayPal 商品的 `country/service`，以及 `PAYPAL_SMS_PHONE_COUNTRY_CODE=81`。这些值也可以在设置页“PayPal 日区无卡接码”中保存；不要复用 GoPay/OAuth 的 service code，除非接码平台确认该 service 就是 PayPal。
 - `paypal_card_number` / `paypal_card_expiry` / `paypal_card_cvv`：浏览器 `create_account` 模式必填，用于 PayPal 注册页的卡信息；无卡协议模式不需要
 - `autofill_enabled`：可选。开启后会自动填写 OpenAI/Stripe checkout 的账单/联系字段；若 `billing_*` 未填完整，会自动调用与 GoPay 流程相同的美国随机地址服务补齐，再提交前做一次账单地址稳定性校验
 - `billing_*`：账单/联系字段；其中 `billing_phone` 在 `create_account` 模式下同时作为 PayPal 接码手机号使用
 - `timeout_seconds`：等待最终结果的超时时间，默认 900 秒
 
 任务完成后，通过 `GET /api/tasks/{task_id}` 读取结构化结果：
+
+真实协议探测可使用脚本直接跑底层 HTTP 流程，不会打开浏览器，输出会脱敏：
+
+先用预检确认本地账号、BA/link、checkout 引用和接码配置是否齐全；该命令不会创建 checkout、不会买号、不会访问 PayPal，也不需要 `--yes-live`：
+
+```powershell
+uv run python scripts/paypal_protocol_live_probe.py `
+  --email user@example.com `
+  --check-prereqs `
+  --approve-url "https://www.paypal.com/pay?token=BA-..." `
+  --checkout-session-id cs_... `
+  --sms-url "https://sms.example/api/record?token=..." `
+  --phone-number +819012345678
+```
+
+预检输出 `ok: true` 后，再执行真实协议探测：
+
+```powershell
+uv run python scripts/paypal_protocol_live_probe.py `
+  --email user@example.com `
+  --proxy-url socks5://user:pass@jp.example:1080 `
+  --provider-proxy-url socks5://user:pass@us.example:1080 `
+  --yes-live
+```
+
+该命令会创建真实 checkout、购买/占用短信号、注册 PayPal 并确认支付状态；缺少 `--yes-live` 时会拒绝执行。
+
+如果已经通过其它流程拿到了 PayPal BA/link 和 checkout session，可以跳过 BA 提取与自动取号，直接验证“拿到链接后”的协议注册和协议支付：
+
+```powershell
+uv run python scripts/paypal_protocol_live_probe.py `
+  --email user@example.com `
+  --approve-url "https://www.paypal.com/pay?token=BA-..." `
+  --checkout-session-id cs_... `
+  --sms-url "https://sms.example/api/record?token=..." `
+  --phone-number +819012345678 `
+  --proxy-url socks5://user:pass@jp.example:1080 `
+  --yes-live
+```
+
+脚本输出会隐藏 `BA`、`cs_`、`pm_`、`sms_url`、手机号和 URL query；完整敏感值只保留在本地输入/环境变量里。
+
+`--sms-url` / `--phone-number` 也可以省略，脚本会读取 `.env` 中的 `PAYPAL_SMS_URL` / `PAYPAL_PHONE_NUMBER`。
 
 ```json
 {

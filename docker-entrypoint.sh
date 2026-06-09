@@ -22,4 +22,4 @@ for d in auths screenshots; do
     ln -s "/app/data/$d" "/app/$d"
 done
 
-exec uv run autoteam "$@"
+exec uv run autotoken "$@"

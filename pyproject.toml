@@ -1,5 +1,5 @@
 [project]
-name = "autoteam"
+name = "autotoken"
 version = "0.1.0"
 description = "ChatGPT Team 账号自动轮转管理工具"
 requires-python = ">=3.10"
@@ -18,14 +18,53 @@ appium = ["Appium-Python-Client>=4.0.0"]
 paypal = ["camoufox[geoip]>=0.4.0"]
 
 [project.scripts]
-autoteam = "autoteam.manager:main"
+autotoken = "autotoken.interfaces.manager:main"
+autoteam = "autotoken.interfaces.manager:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+artifacts = ["src/autotoken/web/dist/**"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.codex",
+    "/.codex_tmp",
+    "/.pytest_cache",
+    "/.pytest_tmp*",
+    "/.ruff_cache",
+    "/.uv-cache",
+    "/.verify",
+    "/.venv",
+    "/build",
+    "/CNgopay",
+    "/dist",
+    "/auth_state",
+    "/auths",
+    "/auths.bak-*",
+    "/data",
+    "/logs",
+    "/outputs",
+    "/screenshots",
+    "/tmp",
+    "/web/node_modules",
+    "/accounts.json",
+    "/bearer_token",
+    "/bind_audit.json",
+    "/pool.exe",
+    "/pool-linux-x64",
+    "/pool-mac-arm64",
+    "/pool-mac-intel",
+    "/register_failures.json",
+    "/runtime_config.json",
+    "/session",
+    "/state.json",
+]
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/autoteam"]
+packages = ["src/autotoken", "src/autoteam"]
 
 [dependency-groups]
 dev = [

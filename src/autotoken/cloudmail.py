@@ -1,9 +1,9 @@
-"""向后兼容 stub。
+"""Compatibility wrapper for ``autotoken.mail``."""
 
-历史代码 / 外部脚本依然可以:
-    from autoteam.cloudmail import CloudMailClient
+from __future__ import annotations
 
-实际实现已搬到 `autoteam.mail` 包,由 MAIL_PROVIDER 环境变量决定走哪个后端。
-"""
+import sys as _sys
 
-from autoteam.mail import CloudMailClient  # noqa: F401  re-export
+from autotoken import mail as _impl
+
+_sys.modules[__name__] = _impl

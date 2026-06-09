@@ -1,4 +1,4 @@
-r"""One-shot legacy data migration into data/autoteam.sqlite3.
+r"""One-shot legacy data migration into data/autotoken.sqlite3.
 
 Run manually before starting the web service when upgrading an old install:
 
@@ -23,10 +23,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from autoteam import sqlite_store  # noqa: E402
-from autoteam.accounts import ACCOUNT_TYPE_FREE, _normalize_account_record  # noqa: E402
-from autoteam.auth_session_store import _target_path as auth_session_target_path  # noqa: E402
-
+from autotoken.storage import sqlite_store  # noqa: E402
+from autotoken.storage.accounts import ACCOUNT_TYPE_FREE, _normalize_account_record  # noqa: E402
+from autotoken.storage.auth_session_store import _target_path as auth_session_target_path  # noqa: E402
 
 ACCOUNT_TYPE_RANK = {"free": 0, "team": 1, "plus": 2, "pro": 3}
 STATUS_RANK = {
@@ -311,7 +310,7 @@ def card_item_key(item: dict) -> str:
 
 
 def migrate_card_pool(conn, *, apply: bool) -> dict:
-    from autoteam.card_pool import _ensure_item_defaults, _normalize_pool_type, _normalize_status
+    from autotoken.payments.card_pool import _ensure_item_defaults, _normalize_pool_type, _normalize_status
 
     merged: dict[str, dict] = {}
     for row in conn.execute("SELECT * FROM card_pool_items").fetchall():
@@ -534,7 +533,7 @@ def verify(conn) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Migrate AutoTeam legacy JSON data into SQLite")
+    parser = argparse.ArgumentParser(description="Migrate AutoToken legacy JSON data into SQLite")
     parser.add_argument("--apply", action="store_true", help="write changes; omit for dry-run")
     parser.add_argument("--no-backup", action="store_true", help="do not create a DB backup before writing")
     args = parser.parse_args()

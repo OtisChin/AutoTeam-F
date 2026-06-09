@@ -1,44 +1,54 @@
 <template>
   <!-- 桌面端侧边栏 -->
-  <nav class="hidden md:flex w-48 shrink-0 bg-gray-900 border-r border-gray-800 min-h-screen p-4 flex-col">
-    <div class="mb-6">
-      <h1 class="text-lg font-bold text-white">AutoPro</h1>
-      <p class="text-xs text-gray-500 mt-0.5">Token自由管理系统</p>
+  <nav class="nav-shell hidden shrink-0 flex-col md:flex">
+    <div class="mb-7 flex items-center gap-3">
+      <div class="nav-mark">AT</div>
+      <div class="min-w-0">
+        <h1 class="truncate text-lg font-semibold text-white">AutoToken</h1>
+        <p class="mt-0.5 truncate text-xs text-gray-500">Token operations console</p>
+      </div>
     </div>
-    <div class="space-y-1 flex-1">
-      <button v-for="item in items" :key="item.key"
-        @click="$emit('navigate', item.key)"
-        class="w-full text-left px-3 py-2 rounded-lg text-sm transition flex items-center gap-2"
-        :class="active === item.key
-          ? 'bg-blue-600/20 text-blue-400'
-          : 'text-gray-400 hover:bg-gray-800 hover:text-white'">
-        <span class="text-base">{{ item.icon }}</span>
-        {{ item.label }}
-      </button>
+
+    <div class="flex-1 overflow-y-auto pr-1">
+      <div v-for="group in groupedItems" :key="group.label">
+        <div class="section-label">{{ group.label }}</div>
+        <div class="space-y-1">
+          <button
+            v-for="item in group.items"
+            :key="item.key"
+            @click="$emit('navigate', item.key)"
+            class="nav-item text-left text-sm"
+            :class="active === item.key ? 'nav-item-active' : ''">
+            <span class="nav-glyph">{{ item.glyph }}</span>
+            <span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+          </button>
+        </div>
+      </div>
     </div>
-    <div class="space-y-1 pt-4 border-t border-gray-800">
+
+    <div class="mt-4 space-y-1 border-t border-gray-800 pt-4">
       <button @click="$emit('refresh')" :disabled="loading"
-        class="w-full text-left px-3 py-2 rounded-lg text-sm transition flex items-center gap-2 text-gray-400 hover:bg-gray-800 hover:text-white disabled:opacity-50">
-        <span class="text-base">🔄</span>
+        class="nav-item text-left text-sm disabled:opacity-50">
+        <span class="nav-glyph">{{ loading ? '...' : 'R' }}</span>
         {{ loading ? '刷新中...' : '刷新数据' }}
       </button>
       <button v-if="authRequired" @click="$emit('logout')"
-        class="w-full text-left px-3 py-2 rounded-lg text-sm transition flex items-center gap-2 text-gray-400 hover:bg-gray-800 hover:text-red-400">
-        <span class="text-base">🚪</span>
+        class="nav-item text-left text-sm hover:text-red-300">
+        <span class="nav-glyph">Q</span>
         登出
       </button>
     </div>
   </nav>
 
   <!-- 移动端底部 tab 栏 -->
-  <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 z-50 flex overflow-x-auto">
+  <nav class="mobile-nav md:hidden">
     <button v-for="item in items" :key="item.key"
       @click="$emit('navigate', item.key)"
-      class="min-w-20 shrink-0 flex flex-col items-center px-2 py-2 text-xs transition"
+      class="flex min-w-20 shrink-0 flex-col items-center px-2 py-2 text-xs transition"
       :class="active === item.key
         ? 'text-blue-400'
-        : 'text-gray-500'">
-      <span class="text-lg">{{ item.icon }}</span>
+        : 'text-gray-500 hover:text-gray-300'">
+      <span class="nav-glyph mb-1">{{ item.glyph }}</span>
       <span class="mt-0.5">{{ item.mobileLabel || item.label }}</span>
     </button>
   </nav>
@@ -53,20 +63,25 @@ defineProps({
 defineEmits(['navigate', 'refresh', 'logout'])
 
 const items = [
-  { key: 'dashboard', icon: '📊', label: '仪表盘', mobileLabel: '仪表盘' },
-  { key: 'register', icon: '🆕', label: '注册账号', mobileLabel: '注册' },
-  { key: 'cardpool', icon: '💳', label: '卡池', mobileLabel: '卡池' },
-  { key: 'bindcard', icon: '🔗', label: '自动绑卡服务', mobileLabel: '绑卡' },
-  { key: 'gopay', icon: '💸', label: 'GoPay', mobileLabel: 'GoPay' },
-  { key: 'gopayPro', icon: '⚡', label: 'GoPay Pro', mobileLabel: 'GoPay Pro' },
-  { key: 'paypal', icon: '🅿️', label: 'PayPal', mobileLabel: 'PayPal' },
-  { key: 'oauthPhones', icon: '📱', label: 'OAuth 手机号', mobileLabel: '手机号' },
-  { key: 'oauthPhoneRecords', icon: '🧾', label: 'OAuth 取号记录', mobileLabel: '取号' },
-  { key: 'trade', icon: '🎫', label: '交易管理', mobileLabel: '交易' },
-  { key: 'cpa2sub', icon: '🧩', label: 'CPA_2_Sub2API', mobileLabel: 'CPA2Sub2API' },
-  { key: 'oauth', icon: '🔐', label: 'OAuth 登录', mobileLabel: 'OAuth' },
-  { key: 'tasks', icon: '📜', label: '任务历史', mobileLabel: '任务' },
-  { key: 'logs', icon: '📋', label: '日志', mobileLabel: '日志' },
-  { key: 'settings', icon: '⚙️', label: '设置', mobileLabel: '设置' },
+  { key: 'dashboard', group: 'Command', glyph: 'DB', label: '仪表盘', mobileLabel: '仪表盘' },
+  { key: 'register', group: 'Accounts', glyph: 'RG', label: '注册账号', mobileLabel: '注册' },
+  { key: 'cardpool', group: 'Payments', glyph: 'CP', label: '卡池', mobileLabel: '卡池' },
+  { key: 'bindcard', group: 'Payments', glyph: 'BC', label: '自动绑卡服务', mobileLabel: '绑卡' },
+  { key: 'gopay', group: 'Payments', glyph: 'GP', label: 'GoPay', mobileLabel: 'GoPay' },
+  { key: 'gopayPro', group: 'Payments', glyph: 'G+', label: 'GoPay Pro', mobileLabel: 'GoPay Pro' },
+  { key: 'paypal', group: 'Payments', glyph: 'PP', label: 'PayPal', mobileLabel: 'PayPal' },
+  { key: 'oauthPhones', group: 'OAuth', glyph: 'PH', label: 'OAuth 手机号', mobileLabel: '手机号' },
+  { key: 'oauthPhoneRecords', group: 'OAuth', glyph: 'OR', label: 'OAuth 取号记录', mobileLabel: '取号' },
+  { key: 'oauth', group: 'OAuth', glyph: 'OA', label: 'OAuth 登录', mobileLabel: 'OAuth' },
+  { key: 'trade', group: 'Commerce', glyph: 'CD', label: '交易管理', mobileLabel: '交易' },
+  { key: 'cpa2sub', group: 'Tools', glyph: 'CS', label: 'CPA_2_Sub2API', mobileLabel: 'CPA2Sub' },
+  { key: 'tasks', group: 'System', glyph: 'TS', label: '任务历史', mobileLabel: '任务' },
+  { key: 'logs', group: 'System', glyph: 'LG', label: '日志', mobileLabel: '日志' },
+  { key: 'settings', group: 'System', glyph: 'ST', label: '设置', mobileLabel: '设置' },
 ]
+
+const groupOrder = ['Command', 'Accounts', 'Payments', 'OAuth', 'Commerce', 'Tools', 'System']
+const groupedItems = groupOrder
+  .map(label => ({ label, items: items.filter(item => item.group === label) }))
+  .filter(group => group.items.length)
 </script>

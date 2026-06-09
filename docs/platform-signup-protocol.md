@@ -1,7 +1,7 @@
 # platform.openai.com Signup 协议侦察报告
 
 > **Version**: 1.0
-> **Author**: protocol-recon (AutoTeam / platform-signup)
+> **Author**: protocol-recon (AutoToken / platform-signup)
 > **Date**: 2026-04-25
 > **Scope**: 为 `platform_signup.py` 的 HTTP 注册模块实现提供协议清单。
 > **Status**: 公开资料整理完成；Arkose/签名 cookie 两处明确标记 **"需要 mitmproxy 抓包"**。
@@ -27,7 +27,7 @@
 ## 1. 完整请求序列
 
 > **约定**：
-> - `{APP_CLIENT_ID}`：Platform 前端使用的 Auth0 client_id。**公开资料中未出现明文**（参见 §5）。已知 Codex CLI 使用 `app_EMoamEEZ73f0CkXaXp7hrann`（见 `src/autoteam/codex_auth.py:32`）。
+> - `{APP_CLIENT_ID}`：Platform 前端使用的 Auth0 client_id。**公开资料中未出现明文**（参见 §5）。已知 Codex CLI 使用 `app_EMoamEEZ73f0CkXaXp7hrann`（见 `src/autotoken/auth/codex_auth.py`）。
 > - `{STATE}`：Auth0 签出的不透明 state 串，形如 `hKFo2SBxxxxxxxxxxx...`（由 `/authorize` 302 跳转到 `/u/signup?state=...` 带出）。
 > - `{CSRF}`：`auth0.openai.com` 通过 `_csrf` cookie + 页面 `<input name="_csrf">` 双向校验（非固定名字，可能是 `state` 本身；OpenAIAuth 实现里直接复用 `state` 作为 CSRF 载体）。
 
@@ -52,7 +52,7 @@
 
 ### 1.2 和现有 ChatGPT 注册的关系
 
-项目中 `src/autoteam/manager.py:1554 _register_direct_once()` 走的是 **浏览器自动化 + ChatGPT 入口**（`https://chatgpt.com/auth/login`）。Platform 注册和它的区别：
+项目中 `src/autotoken/interfaces/manager.py` 的 `_register_direct_once()` 走的是 **浏览器自动化 + ChatGPT 入口**（`https://chatgpt.com/auth/login`）。Platform 注册和它的区别：
 
 | 维度 | ChatGPT 注册（现有） | Platform 注册（本文档） |
 |------|---------------------|-------------------------|
@@ -131,7 +131,7 @@ Content-Type: application/json
 | 主题（示例） | `Verify your OpenAI email` / `[OpenAI] Please verify your email` / `Your OpenAI API verification code is: ######` |
 | 邮件正文 token 形态 | Auth0 ticket 形式：`https://auth.openai.com/u/email-verification?ticket={长随机串}&email={email_encoded}`；或 OTP 形式：6 位纯数字，写在 HTML 中心的 `<strong>` 块 |
 | 点击后的序列 | `GET verify URL` → `302 /authorize/resume?state=...` → 若已登录则继续 signup 流；否则要求重新 signin |
-| 现有代码参考 | `src/autoteam/mail/cloud_mail.py` 已经有 `extract_verification_code()`，能吃 6 位 OTP 和 ticket URL 两种 |
+| 现有代码参考 | `src/autotoken/mail/cloud_mail.py` 已经有 `extract_verification_code()`，能吃 6 位 OTP 和 ticket URL 两种 |
 
 **与 ChatGPT signup 的差异**: ChatGPT 的验证邮件直接用 6 位 OTP（当前代码就是这样拉取）；Platform 侧 **更常发 "click the link" 型 ticket 邮件**，但社区报告两种都可能出现（A/B 变体）。实现时必须同时支持两种解析。
 
@@ -160,7 +160,7 @@ Content-Type: application/json
 - **触发**: Data-center IP / 新指纹 / 高频请求
 - **输出**: `cf_clearance` cookie（一次性）
 - **绕过**: 必须走真实 Chromium + `cf_clearance` refresh，或过 `cloudscraper` / `botasaurus`（成功率取决于目标站点的 Cloudflare Enterprise 档位）
-- **现有代码**: `src/autoteam/invite.py:wait_for_cloudflare()` 已经有处理逻辑
+- **现有代码**: `src/autotoken/auth/invite.py:wait_for_cloudflare()` 已经有处理逻辑
 
 ### 4.3 TLS / HTTP/2 指纹检测
 
@@ -182,12 +182,12 @@ Content-Type: application/json
   - 回收号（recycled number）会被拒
   - 国家白名单：美国、欧洲、印度、中日韩均可；部分非洲/中东会被拒
 - **外部方案**: SMS-Activate、5sim.net、sms-man（$0.3-1 / 次）
-- **现有代码**: `src/autoteam/invite.py:detect_phone_verification()` 已经能识别这个分支并主动放弃（`RegisterBlocked(is_phone=True)`）
+- **现有代码**: `src/autotoken/auth/invite.py:detect_phone_verification()` 已经能识别这个分支并主动放弃（`RegisterBlocked(is_phone=True)`）
 
 ### 4.5 其他软防线
 
-- **生日/年龄门**（`/about-you` 页）：必须填 >=13 岁；`src/autoteam/identity.py` 已有 `random_birthday()` / `random_age()`
-- **重复邮箱**：`already have an account` 硬阻断，`src/autoteam/invite.py:detect_duplicate_email()` 已识别
+- **生日/年龄门**（`/about-you` 页）：必须填 >=13 岁；`src/autotoken/core/identity.py` 已有 `random_birthday()` / `random_age()`
+- **重复邮箱**：`already have an account` 硬阻断，`src/autotoken/auth/invite.py:detect_duplicate_email()` 已识别
 - **Account Lockout**：同一 IP 短时间 >5 次 signup 失败会进 15-30 min 黑名单
 
 ---
@@ -284,10 +284,10 @@ Content-Type: application/json
 26. https://developers.openai.com/codex/auth — Codex CLI `sign in with ChatGPT` 流程（确认 `~/.codex/auth.json` 格式）
 
 ### 项目内参考代码
-27. `src/autoteam/codex_auth.py` — PKCE、oauth/token 交换、`app_EMoamEEZ73f0CkXaXp7hrann` client_id 样本
-28. `src/autoteam/manager.py:1554 _register_direct_once` — ChatGPT 直接注册 Playwright 流程
-29. `src/autoteam/invite.py:register_with_invite` — 邀请注册 Playwright 流程 + phone/duplicate 分支识别
-30. `src/autoteam/mail/cloud_mail.py` — OTP 和 invite link 提取器
+27. `src/autotoken/auth/codex_auth.py` — PKCE、oauth/token 交换、`app_EMoamEEZ73f0CkXaXp7hrann` client_id 样本
+28. `src/autotoken/interfaces/manager.py:_register_direct_once` — ChatGPT 直接注册 Playwright 流程
+29. `src/autotoken/auth/invite.py:register_with_invite` — 邀请注册 Playwright 流程 + phone/duplicate 分支识别
+30. `src/autotoken/mail/cloud_mail.py` — OTP 和 invite link 提取器
 
 ---
 
@@ -297,7 +297,7 @@ Content-Type: application/json
 
 ## 7. 实施方案评估（CAPTCHA / 反 abuse / fallback）
 
-> **Author**: risk-watch (AutoTeam / platform-signup)
+> **Author**: risk-watch (AutoToken / platform-signup)
 > **Date**: 2026-04-25
 > **调研基准**: 2026-04 最新公开报价 + 第三方评测。所有价格以 USD 计，动态价未锁定。
 

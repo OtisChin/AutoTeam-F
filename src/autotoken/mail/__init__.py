@@ -1,11 +1,11 @@
 """Mail provider 工厂 + 向后兼容别名。
 
 调用方继续用:
-    from autoteam.mail import TemporaryEmailClient
+    from autotoken.mail import TemporaryEmailClient
     client = TemporaryEmailClient()  # 实际由 MAIL_PROVIDER 决定 provider
 
 新代码也可以用更明确的:
-    from autoteam.mail import get_mail_client
+    from autotoken.mail import get_mail_client
     client = get_mail_client()
 """
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 
-from autoteam.mail.base import Account, Email, MailProvider
+from autotoken.mail.base import Account, Email, MailProvider
 
 __all__ = [
     "Account",
@@ -39,19 +39,19 @@ def get_mail_client() -> MailProvider:
     """
     raw = (os.environ.get("MAIL_PROVIDER") or "cloudflare_temp_email").strip().lower()
     if raw in ("cf_temp_email", "cloudflare_temp_email", ""):
-        from autoteam.mail.cloudflare_temp_email import CloudflareTempEmailClient
+        from autotoken.mail.cloudflare_temp_email import CloudflareTempEmailClient
 
         return CloudflareTempEmailClient()
     if raw in ("maillab", "cloud-mail", "cloud_mail"):
-        from autoteam.mail.cloud_mail import CloudMailProviderClient
+        from autotoken.mail.cloud_mail import CloudMailProviderClient
 
         return CloudMailProviderClient()
     if raw in ("outlook", "microsoft_outlook", "hotmail"):
-        from autoteam.mail.outlook import OutlookMailProvider
+        from autotoken.mail.outlook import OutlookMailProvider
 
         return OutlookMailProvider()
     if raw in ("luckmail", "lucky_mail", "lucky-mail"):
-        from autoteam.mail.luckmail import LuckMailProvider
+        from autotoken.mail.luckmail import LuckMailProvider
 
         return LuckMailProvider()
     raise ValueError(f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | luckmail)")

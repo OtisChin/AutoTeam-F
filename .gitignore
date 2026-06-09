@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 /dist/
+/build/
 .venv/
 screenshots/
 auth_state/
@@ -12,11 +13,31 @@ session
 bearer_token
 test.py
 .env
+.env.*
+!.env.example
 web/node_modules/
+**/node_modules/
 .codex
 .codex_tmp
 .coverage
-data
+htmlcov/
+data/
+logs/
+outputs/
+*.log
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
+.paypal_realtest_task_id
+/pool.exe
+/pool-linux-x64
+/pool-mac-arm64
+/pool-mac-intel
+**/pool.exe
+**/pool-linux-x64
+**/pool-mac-arm64
+**/pool-mac-intel
 
 
 # 运行时配置 / 失败记录 / 备份(含真实邮箱与 session,严禁入库)
@@ -36,19 +57,25 @@ auths.bak-*/
 .pytest_cache/
 .pytest_tmp*/
 .uv-cache/
+.autotoken-*.log
 .autoteam-*.log
-
-# 本地测试 / 验证产物，不进入 git
-tests/
-.verify/
-*.tmp
-*.temp
-web/.vite-*.log
+*.pid
+*.task_id
 
 # Local verification / temporary artifacts
-tests/
 .verify/
 web/.vite-*.log
 tmp/
 *.tmp
 *.temp
+tests/**/__pycache__/
+tests/**/*.pyc
+tests/.tmp/
+tests/output/
+tests/outputs/
+tests/.pytest_tmp*/
+src/autotoken/web/dist/
+CNgopay/runs/
+CNgopay/**/node_modules/
+CNgopay/**/.vite/
+CNgopay/**/*.tsbuildinfo

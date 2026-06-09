@@ -1,5 +1,5 @@
-"""支持 python -m autoteam 运行"""
+"""支持 python -m autotoken 运行"""
 
-from autoteam.manager import main
+from autotoken.interfaces.manager import main
 
 main()

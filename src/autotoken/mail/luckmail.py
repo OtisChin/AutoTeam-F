@@ -15,16 +15,15 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from curl_cffi import requests as curl_requests
 
-from autoteam import sqlite_store
-from autoteam.mail.base import MailProvider, html_to_visible_text, normalize_email_addr
-from autoteam.paths import PROJECT_ROOT
-from autoteam.textio import read_text
+from autotoken.core.files import read_lines_file
+from autotoken.core.paths import PROJECT_ROOT, resolve_project_config_path
+from autotoken.mail.base import MailProvider, html_to_visible_text, normalize_email_addr
+from autotoken.storage import sqlite_store
 
 logger = logging.getLogger(__name__)
 _PERSIST_NAMESPACE = "luckmail"
@@ -74,15 +73,13 @@ class LuckMailProvider(MailProvider):
         raw = _env("LUCKMAIL_ACCOUNTS")
         file_value = _env("LUCKMAIL_ACCOUNTS_FILE")
         if file_value:
-            path = Path(file_value)
-            if not path.is_absolute():
-                path = PROJECT_ROOT / path
-            if path.exists():
-                raw += ("\n" if raw else "") + read_text(path)
+            path = resolve_project_config_path(file_value, project_root=PROJECT_ROOT)
+            if path and path.exists():
+                raw += ("\n" if raw else "") + "\n".join(read_lines_file(path))
         else:
             default_path = PROJECT_ROOT / "data" / "luckmail_accounts.txt"
             if default_path.exists():
-                raw += ("\n" if raw else "") + read_text(default_path)
+                raw += ("\n" if raw else "") + "\n".join(read_lines_file(default_path))
 
         accounts: list[LuckMailAccount] = []
         for line in raw.replace(";", "\n").splitlines():
@@ -284,7 +281,7 @@ class LuckMailProvider(MailProvider):
     @staticmethod
     def _registered_emails() -> set[str]:
         try:
-            from autoteam.accounts import load_accounts
+            from autotoken.storage.accounts import load_accounts
 
             return {normalize_email_addr(a.get("email")) for a in load_accounts() if a.get("email")}
         except Exception:

@@ -28,10 +28,17 @@
             <div class="flex flex-col gap-3 sm:flex-row">
               <button
                 @click="startTask"
-                :disabled="busy || running"
+                :disabled="busy || preflightBusy || running"
                 class="w-full px-4 py-2 rounded-lg text-sm bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50"
               >
                 {{ busy ? '提交中...' : running ? '任务运行中...' : '开始 PayPal 绑定' }}
+              </button>
+              <button
+                @click="preflightTask"
+                :disabled="busy || preflightBusy || running"
+                class="w-full px-4 py-2 rounded-lg text-sm border bg-gray-800 hover:bg-gray-700 text-gray-200 border-gray-700 transition disabled:opacity-50"
+              >
+                {{ preflightBusy ? '预检中...' : '预检配置' }}
               </button>
               <button
                 v-if="running"
@@ -41,6 +48,13 @@
               >
                 {{ busy ? '取消中...' : '取消任务' }}
               </button>
+            </div>
+            <div v-if="preflightResult" class="mt-3 rounded-lg border px-3 py-2 text-xs" :class="preflightResult.ok ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/20 bg-amber-500/10 text-amber-100'">
+              <div class="font-medium">{{ preflightResult.ok ? '预检通过' : '预检未通过' }} · {{ preflightResult.mode || '-' }}</div>
+              <div class="mt-1 text-gray-300">接码来源：{{ preflightResult.sms_source || '-' }}{{ preflightResult.sms_provider ? ` / ${preflightResult.sms_provider}` : '' }}</div>
+              <div v-if="preflightResult.missing?.length" class="mt-2 space-y-1">
+                <div v-for="item in preflightResult.missing" :key="item">· {{ item }}</div>
+              </div>
             </div>
           </div>
 
@@ -150,7 +164,7 @@
                 <div v-if="roxyBrowserConfigIssue" class="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
                   {{ roxyBrowserConfigIssue }}
                 </div>
-                <div v-if="usesRoxyBrowserForPayPal && roxyBrowserConfigured" class="mt-3 space-y-3">
+                <div v-if="requiresRoxyBrowserConfig && roxyBrowserConfigured" class="mt-3 space-y-3">
                   <label class="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-2 text-sm text-gray-300">
                     <span>
                       <span class="block font-medium text-gray-200">自动创建窗口</span>
@@ -184,6 +198,44 @@
                     </option>
                   </select>
                   </template>
+                </div>
+              </div>
+
+              <div v-if="isNoCardPayPalMode" class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
+                <label class="flex items-center justify-between gap-3 text-sm text-gray-300">
+                  <span>
+                    <span class="block font-medium text-gray-200">使用已提取 PayPal BA/link</span>
+                    <span class="mt-1 block text-xs text-gray-500">跳过 ChatGPT checkout 侧 BA 提取，直接进入 PayPal 协议注册和支付确认。</span>
+                  </span>
+                  <input v-model="form.directBaEnabled" type="checkbox" class="accent-blue-500" :disabled="busy || running || form.manualConfirm" />
+                </label>
+                <div v-if="form.directBaEnabled" class="mt-3 grid grid-cols-1 gap-3">
+                  <div>
+                    <label class="block text-xs text-gray-400 mb-1">PayPal approve URL</label>
+                    <input v-model.trim="form.paypalApproveUrl" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-white focus:border-blue-500 focus:outline-none" placeholder="https://www.paypal.com/pay?token=BA-..." :disabled="busy || running" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-400 mb-1">BA token</label>
+                    <input v-model.trim="form.paypalBaToken" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-white focus:border-blue-500 focus:outline-none" placeholder="BA-..." :disabled="busy || running" />
+                  </div>
+                  <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">Checkout session id</label>
+                      <input v-model.trim="form.paypalCheckoutSessionId" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-white focus:border-blue-500 focus:outline-none" placeholder="cs_..." :disabled="busy || running" />
+                    </div>
+                    <div>
+                      <label class="block text-xs text-gray-400 mb-1">Payment method id</label>
+                      <input v-model.trim="form.paypalPaymentMethodId" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-white focus:border-blue-500 focus:outline-none" placeholder="pm_..." :disabled="busy || running" />
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-400 mb-1">Checkout URL</label>
+                    <input v-model.trim="form.paypalCheckoutUrl" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-white focus:border-blue-500 focus:outline-none" placeholder="https://pay.openai.com/c/pay/cs_..." :disabled="busy || running" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-400 mb-1">Hosted checkout URL</label>
+                    <input v-model.trim="form.paypalHostedCheckoutUrl" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-white focus:border-blue-500 focus:outline-none" placeholder="https://checkout.stripe.com/c/pay/cs_..." :disabled="busy || running" />
+                  </div>
                 </div>
               </div>
 
@@ -708,6 +760,7 @@ import { api } from '../api.js'
 import { computeGoPayBoardView } from '../gopayBoard.js'
 
 const busy = ref(false)
+const preflightBusy = ref(false)
 const loadingAccounts = ref(false)
 const loadingAccountToken = ref(false)
 const accounts = ref([])
@@ -724,6 +777,7 @@ const poolEditImportOpen = ref(false)
 const poolEditImportText = ref('')
 const message = ref('')
 const messageClass = ref('bg-green-500/10 text-green-400 border-green-500/20')
+const preflightResult = ref(null)
 const roxyBrowserConfig = ref({})
 const roxyBrowserConfigLoading = ref(false)
 const roxyBrowserProfiles = ref([])
@@ -736,7 +790,7 @@ const lastAccountRefreshSignature = ref('')
 const currentLink = ref('')
 const restoredFormState = ref(false)
 const logsScrollRef = ref(null)
-const PAYPAL_FORM_STATE_KEY = 'autoteam_paypal_form_state_v2'
+const PAYPAL_FORM_STATE_KEY = 'autotoken_paypal_form_state_v2'
 const phonePoolStatusMap = ref({})
 
 const form = ref({
@@ -755,6 +809,13 @@ const form = ref({
   paypalMode: 'create_account',
   paypalEmail: '',
   paypalPassword: '',
+  directBaEnabled: false,
+  paypalApproveUrl: '',
+  paypalBaToken: '',
+  paypalCheckoutSessionId: '',
+  paypalCheckoutUrl: '',
+  paypalHostedCheckoutUrl: '',
+  paypalPaymentMethodId: '',
   smsUrl: '',
   phonePoolEnabled: false,
   phonePoolText: '',
@@ -835,6 +896,7 @@ const isNoCardPayPalMode = computed(() => (
   form.value.paypalRegion === 'JP_NOCARD'
   || (form.value.paypalMode === 'create_account' && form.value.paypalBrowser === 'protocol')
 ))
+const directBaActive = computed(() => Boolean(form.value.directBaEnabled && isNoCardPayPalMode.value))
 const paypalCountry = computed(() => form.value.paypalRegion === 'JP_NOCARD' ? 'JP' : String(form.value.billingCountry || 'US').trim().toUpperCase())
 const paypalLang = computed(() => paypalCountry.value === 'JP' ? 'ja' : 'en')
 const paypalRegionHelp = computed(() => (
@@ -859,10 +921,13 @@ const proxySettingSummary = computed(() => {
   return `已配置 ${proxyPoolEntries.value.length} 条代理；每个账号流程开始时随机选一条，编辑弹窗内可导入、修改和删除。`
 })
 const roxyBrowserConfigured = computed(() => Boolean(roxyBrowserConfig.value.api_token_present && roxyBrowserConfig.value.api_host_valid !== false))
-const paypalFallbackBrowser = computed(() => (form.value.paypalRegion === 'JP_NOCARD' ? 'roxybrowser' : ''))
-const usesRoxyBrowserForPayPal = computed(() => form.value.paypalBrowser === 'roxybrowser' || paypalFallbackBrowser.value === 'roxybrowser')
+const paypalFallbackBrowser = computed(() => {
+  if (directBaActive.value) return ''
+  return form.value.paypalRegion === 'JP_NOCARD' ? 'roxybrowser' : ''
+})
+const requiresRoxyBrowserConfig = computed(() => form.value.paypalBrowser === 'roxybrowser')
 const roxyBrowserConfigIssue = computed(() => {
-  if (!usesRoxyBrowserForPayPal.value) return ''
+  if (!requiresRoxyBrowserConfig.value) return ''
   if (roxyBrowserConfigLoading.value) return '正在检查 RoxyBrowser 配置...'
   if (!roxyBrowserConfigured.value) {
     if (roxyBrowserConfig.value.api_host_valid === false) {
@@ -1312,6 +1377,9 @@ function restorePayPalState() {
       if (form.value.proxyApiEnabled) {
         form.value.proxyPoolEnabled = false
       }
+      if (saved.form.directBaEnabled === undefined) {
+        form.value.directBaEnabled = false
+      }
     }
     if (saved.bindForm && typeof saved.bindForm === 'object') {
       Object.assign(bindForm.value, saved.bindForm)
@@ -1647,6 +1715,18 @@ function parsePayPalPhonePool(text, options = {}) {
   return dedupePhonePoolEntries(entries)
 }
 
+function buildDirectBaPayload() {
+  if (!directBaActive.value) return {}
+  return {
+    paypal_approve_url: String(form.value.paypalApproveUrl || '').trim(),
+    paypal_ba_token: String(form.value.paypalBaToken || '').trim(),
+    paypal_checkout_session_id: String(form.value.paypalCheckoutSessionId || '').trim(),
+    paypal_checkout_url: String(form.value.paypalCheckoutUrl || '').trim(),
+    paypal_hosted_checkout_url: String(form.value.paypalHostedCheckoutUrl || '').trim(),
+    paypal_payment_method_id: String(form.value.paypalPaymentMethodId || '').trim(),
+  }
+}
+
 function validateBeforeStart() {
   if (!form.value.batchMode && !singleSelectedEmail.value) {
     throw new Error('请先选择号池账号')
@@ -1654,7 +1734,26 @@ function validateBeforeStart() {
   if (form.value.batchMode && !selectedBatchEmails.value.length) {
     throw new Error('请先选择批量账号')
   }
-  if (usesRoxyBrowserForPayPal.value && roxyBrowserConfigIssue.value) {
+  if (directBaActive.value) {
+    if (form.value.batchMode) {
+      throw new Error('已提取 PayPal BA/link 只能用于单账号任务，不能批量复用')
+    }
+    if (form.value.paypalMode !== 'create_account' || String(form.value.paypalBrowser || '').toLowerCase() !== 'protocol') {
+      throw new Error('已提取 PayPal BA/link 只支持日区无卡协议注册')
+    }
+    const directBaPayload = buildDirectBaPayload()
+    if (!directBaPayload.paypal_approve_url && !directBaPayload.paypal_ba_token) {
+      throw new Error('直连 BA/link 模式需要填写 PayPal approve URL 或 BA token')
+    }
+    if (
+      !directBaPayload.paypal_checkout_session_id
+      && !directBaPayload.paypal_checkout_url
+      && !directBaPayload.paypal_hosted_checkout_url
+    ) {
+      throw new Error('直连 BA/link 模式需要填写 checkout session id 或 checkout URL')
+    }
+  }
+  if (requiresRoxyBrowserConfig.value && roxyBrowserConfigIssue.value) {
     throw new Error(roxyBrowserConfigIssue.value)
   }
   if (form.value.proxyApiEnabled) {
@@ -1673,8 +1772,16 @@ function validateBeforeStart() {
         if (!phonePoolEntries.value.length) throw new Error('启用手机号池后需要先导入手机号')
         if (!phoneAccounts.length) throw new Error('手机号池中没有可用号码，请先更换或编辑已失效号码')
       } else {
-        if (!String(form.value.billingPhone || '').trim()) throw new Error('自动注册模式需要填写 PayPal 注册手机号')
-        if (!String(form.value.smsUrl || '').trim()) throw new Error('自动注册模式需要填写接码 API')
+        const billingPhone = String(form.value.billingPhone || '').trim()
+        const smsUrl = String(form.value.smsUrl || '').trim()
+        if (isNoCardPayPalMode.value) {
+          if ((billingPhone && !smsUrl) || (!billingPhone && smsUrl)) {
+            throw new Error('页面接码配置需要同时填写 PayPal 注册手机号和接码 API；留空则使用设置页 PayPal 接码配置')
+          }
+        } else {
+          if (!billingPhone) throw new Error('自动注册模式需要填写 PayPal 注册手机号')
+          if (!smsUrl) throw new Error('自动注册模式需要填写接码 API')
+        }
       }
       if (!form.value.autofillEnabled) {
         if (!String(form.value.billingName || '').trim()) throw new Error('手动账单信息模式需要填写账单姓名')
@@ -1696,10 +1803,73 @@ function validateBeforeStart() {
   }
 }
 
+function buildPayPalTaskPayload() {
+  const effectiveEmail = form.value.batchMode ? selectedBatchEmails.value[0] : singleSelectedEmail.value
+  const phoneAccounts = isCreateAccountMode.value && form.value.phonePoolEnabled ? availablePhonePoolEntries.value : []
+  const firstPhoneAccount = phoneAccounts[0] || null
+  const effectivePayPalBrowser = isNoCardPayPalMode.value ? 'protocol' : form.value.paypalBrowser
+  return {
+    runner_mode: 'manual_checkout',
+    email: effectiveEmail,
+    account_emails: form.value.batchMode ? selectedBatchEmails.value : [],
+    checkout_url: '',
+    bind_link_payload: buildBindLinkBody(),
+    proxy_url: form.value.proxyUrl || null,
+    proxy_pool_text: !form.value.proxyApiEnabled && form.value.proxyPoolEnabled ? (form.value.proxyPoolText || '') : '',
+    proxy_api_provider: form.value.proxyApiEnabled ? form.value.proxyApiProvider : '',
+    pending_retry_attempts: Math.max(0, Math.min(3, Math.trunc(Number(form.value.pendingRetryAttempts) || 0))),
+    paypal_concurrency: Math.max(1, Math.min(3, Math.trunc(Number(form.value.paypalConcurrency) || 1))),
+    proxy_label: form.value.proxyLabel,
+    manual_confirm: Boolean(form.value.manualConfirm),
+    paypal_browser: effectivePayPalBrowser,
+    paypal_fallback_browser: paypalFallbackBrowser.value,
+    paypal_mode: form.value.paypalMode,
+    paypal_country: paypalCountry.value,
+    paypal_lang: paypalLang.value,
+    paypal_email: isCreateAccountMode.value ? '' : form.value.paypalEmail,
+    paypal_password: isCreateAccountMode.value ? '' : form.value.paypalPassword,
+    phone_accounts: phoneAccounts,
+    sms_url: firstPhoneAccount?.sms_url || form.value.smsUrl,
+    otp_channel: 'sms',
+    paypal_card_number: isNoCardPayPalMode.value ? '' : form.value.paypalCardNumber,
+    paypal_card_expiry: isNoCardPayPalMode.value ? '' : form.value.paypalCardExpiry,
+    paypal_card_cvv: isNoCardPayPalMode.value ? '' : form.value.paypalCardCvv,
+    autofill_enabled: Boolean(form.value.autofillEnabled),
+    auto_oauth_after_success: Boolean(form.value.autoOauthAfterSuccess),
+    roxybrowser_profile_id: form.value.roxyBrowserAutoCreateProfile ? '' : form.value.roxyBrowserProfileId,
+    roxybrowser_auto_create_profile: Boolean(form.value.roxyBrowserAutoCreateProfile),
+    billing_name: form.value.billingName,
+    billing_email: effectiveEmail,
+    billing_phone: firstPhoneAccount?.phone_number || form.value.billingPhone,
+    billing_country: paypalCountry.value,
+    billing_state: form.value.billingState,
+    billing_city: form.value.billingCity,
+    billing_zip: form.value.billingZip,
+    billing_address1: form.value.billingAddress1,
+    billing_address2: form.value.billingAddress2,
+    ...buildDirectBaPayload(),
+  }
+}
+
+async function preflightTask() {
+  preflightBusy.value = true
+  try {
+    validateBeforeStart()
+    const result = await api.preflightPayPal(buildPayPalTaskPayload())
+    preflightResult.value = result
+    setMessage(result.ok ? 'PayPal 预检通过' : 'PayPal 预检未通过', result.ok ? 'success' : 'error')
+  } catch (error) {
+    preflightResult.value = { ok: false, mode: '', sms_source: '', missing: [error.message || '预检失败'] }
+    setMessage(`PayPal 预检失败: ${error.message}`, 'error')
+  } finally {
+    preflightBusy.value = false
+  }
+}
+
 async function startTask() {
   busy.value = true
   try {
-    if (usesRoxyBrowserForPayPal.value) {
+    if (requiresRoxyBrowserConfig.value) {
       await loadRoxyBrowserConfig()
       if (!form.value.roxyBrowserAutoCreateProfile) {
         await loadRoxyBrowserProfiles()
@@ -1707,50 +1877,7 @@ async function startTask() {
     }
     validateBeforeStart()
     currentLink.value = ''
-    const effectiveEmail = form.value.batchMode ? selectedBatchEmails.value[0] : singleSelectedEmail.value
-    const phoneAccounts = isCreateAccountMode.value && form.value.phonePoolEnabled ? availablePhonePoolEntries.value : []
-    const firstPhoneAccount = phoneAccounts[0] || null
-    const effectivePayPalBrowser = isNoCardPayPalMode.value ? 'protocol' : form.value.paypalBrowser
-    const task = await api.startPayPal({
-      runner_mode: 'manual_checkout',
-      email: effectiveEmail,
-      account_emails: form.value.batchMode ? selectedBatchEmails.value : [],
-      checkout_url: '',
-      bind_link_payload: buildBindLinkBody(),
-      proxy_url: form.value.proxyUrl || null,
-      proxy_pool_text: !form.value.proxyApiEnabled && form.value.proxyPoolEnabled ? (form.value.proxyPoolText || '') : '',
-      proxy_api_provider: form.value.proxyApiEnabled ? form.value.proxyApiProvider : '',
-      pending_retry_attempts: Math.max(0, Math.min(3, Math.trunc(Number(form.value.pendingRetryAttempts) || 0))),
-      paypal_concurrency: Math.max(1, Math.min(3, Math.trunc(Number(form.value.paypalConcurrency) || 1))),
-      proxy_label: form.value.proxyLabel,
-      manual_confirm: Boolean(form.value.manualConfirm),
-      paypal_browser: effectivePayPalBrowser,
-      paypal_fallback_browser: paypalFallbackBrowser.value,
-      paypal_mode: form.value.paypalMode,
-      paypal_country: paypalCountry.value,
-      paypal_lang: paypalLang.value,
-      paypal_email: isCreateAccountMode.value ? '' : form.value.paypalEmail,
-      paypal_password: isCreateAccountMode.value ? '' : form.value.paypalPassword,
-      phone_accounts: phoneAccounts,
-      sms_url: firstPhoneAccount?.sms_url || form.value.smsUrl,
-      otp_channel: 'sms',
-      paypal_card_number: isNoCardPayPalMode.value ? '' : form.value.paypalCardNumber,
-      paypal_card_expiry: isNoCardPayPalMode.value ? '' : form.value.paypalCardExpiry,
-      paypal_card_cvv: isNoCardPayPalMode.value ? '' : form.value.paypalCardCvv,
-      autofill_enabled: Boolean(form.value.autofillEnabled),
-      auto_oauth_after_success: Boolean(form.value.autoOauthAfterSuccess),
-      roxybrowser_profile_id: form.value.roxyBrowserAutoCreateProfile ? '' : form.value.roxyBrowserProfileId,
-      roxybrowser_auto_create_profile: Boolean(form.value.roxyBrowserAutoCreateProfile),
-      billing_name: form.value.billingName,
-      billing_email: effectiveEmail,
-      billing_phone: firstPhoneAccount?.phone_number || form.value.billingPhone,
-      billing_country: paypalCountry.value,
-      billing_state: form.value.billingState,
-      billing_city: form.value.billingCity,
-      billing_zip: form.value.billingZip,
-      billing_address1: form.value.billingAddress1,
-      billing_address2: form.value.billingAddress2,
-    })
+    const task = await api.startPayPal(buildPayPalTaskPayload())
     lastTask.value = task
     selectedTask.value = task
     setMessage('')

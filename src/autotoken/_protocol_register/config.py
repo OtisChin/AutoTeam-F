@@ -1,10 +1,9 @@
 """
 自动化绑卡支付 - 配置文件
 """
-import os
+
 import json
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -18,6 +17,7 @@ class MailConfig:
     KV 凭证（api_token / account_id / kv_namespace_id）放 SQLite runtime_meta[secrets]
     的 cloudflare 段或环境变量，不在 MailConfig 里。
     """
+
     catch_all_domain: str = ""
     # 域名池：pipeline 运行时从中挑一个作为 catch_all_domain（轮换 + 根据 invite 探测结果烧掉）
     catch_all_domains: list = field(default_factory=list)
@@ -28,6 +28,7 @@ class MailConfig:
 @dataclass
 class CardInfo:
     """信用卡信息"""
+
     number: str = ""
     cvc: str = ""
     exp_month: str = ""
@@ -37,6 +38,7 @@ class CardInfo:
 @dataclass
 class BillingInfo:
     """账单信息"""
+
     name: str = "John Smith"
     email: str = ""
     country: str = "US"
@@ -51,6 +53,7 @@ class BillingInfo:
 @dataclass
 class TeamPlanConfig:
     """团队/Plus 计划配置"""
+
     plan_name: str = "chatgptteamplan"
     workspace_name: str = "MyWorkspace"
     price_interval: str = "month"
@@ -60,8 +63,8 @@ class TeamPlanConfig:
     checkout_ui_mode: str = "custom"
     output_url_mode: str = ""
     # 以下字段由 webui wizard 写入，协议注册不直接消费但需要兼容加载
-    plan_type: str = "team"           # team | plus
-    entry_point: str = ""             # team_workspace_purchase_modal | all_plans_pricing_modal
+    plan_type: str = "team"  # team | plus
+    entry_point: str = ""  # team_workspace_purchase_modal | all_plans_pricing_modal
     billing_country: str = ""
     billing_currency: str = ""
 
@@ -69,6 +72,7 @@ class TeamPlanConfig:
 @dataclass
 class CaptchaConfig:
     """验证码打码服务配置"""
+
     api_url: str = ""  # 兼容 createTask/getTaskResult 协议的打码平台 API base URL
     client_key: str = ""
 
@@ -76,16 +80,17 @@ class CaptchaConfig:
 @dataclass
 class Config:
     """总配置"""
+
     mail: MailConfig = field(default_factory=MailConfig)
     card: CardInfo = field(default_factory=CardInfo)
     billing: BillingInfo = field(default_factory=BillingInfo)
     team_plan: TeamPlanConfig = field(default_factory=TeamPlanConfig)
     captcha: CaptchaConfig = field(default_factory=CaptchaConfig)
-    proxy: Optional[str] = None
+    proxy: str | None = None
     # 已有凭证（可选，跳过注册直接支付时使用）
-    session_token: Optional[str] = None
-    access_token: Optional[str] = None
-    device_id: Optional[str] = None
+    session_token: str | None = None
+    access_token: str | None = None
+    device_id: str | None = None
     # Stripe
     stripe_build_hash: str = "f197c9c0f0"
 
@@ -100,7 +105,7 @@ class Config:
             valid_keys = {f.name for f in dataclasses.fields(dataclass_type)}
             return {k: v for k, v in (raw or {}).items() if k in valid_keys}
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         cfg = cls()
         if "mail" in data:

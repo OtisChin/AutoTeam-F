@@ -32,16 +32,16 @@ from datetime import datetime, timezone
 
 import requests
 
-from autoteam.config import (
+from autotoken.mail.base import (
+    MailProvider,
+    html_to_visible_text,
+    normalize_email_addr,
+)
+from autotoken.settings.config import (
     CLOUD_MAIL_ADMIN_EMAIL,
     CLOUD_MAIL_ADMIN_PASSWORD,
     CLOUD_MAIL_API_URL,
     CLOUD_MAIL_DOMAIN,
-)
-from autoteam.mail.base import (
-    MailProvider,
-    html_to_visible_text,
-    normalize_email_addr,
 )
 
 logger = logging.getLogger(__name__)
@@ -227,7 +227,7 @@ class CloudMailProviderClient(MailProvider):
             domain_clean = domain.lstrip("@").strip()
         else:
             try:
-                from autoteam.runtime_config import get_register_domain
+                from autotoken.settings.runtime_config import get_register_domain
 
                 domain_clean = (get_register_domain() or "").lstrip("@").strip()
             except Exception:
@@ -397,7 +397,7 @@ class CloudMailProviderClient(MailProvider):
         return None
 
     def _normalize_mail_record(self, row: dict, account_email_hint: str | None = None) -> dict:
-        """cloud-mail email 行 → AutoTeam 期望的 dict 字段集。
+        """cloud-mail email 行 → AutoToken 期望的 dict 字段集。
 
         字段映射(已验证 entity/email.js):
           emailId       → emailId

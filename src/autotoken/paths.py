@@ -1,16 +1,9 @@
-"""Runtime paths shared by source and packaged executable builds."""
+"""Compatibility wrapper for ``autotoken.core.paths``."""
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import sys as _sys
 
+from autotoken.core import paths as _impl
 
-def _project_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[2]
-
-
-PROJECT_ROOT = _project_root()
-
+_sys.modules[__name__] = _impl

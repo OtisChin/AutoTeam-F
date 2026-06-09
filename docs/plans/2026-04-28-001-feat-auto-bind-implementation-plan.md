@@ -50,20 +50,20 @@ origin: docs/auto_bind_plan.md
 
 ### Relevant Code and Patterns
 
-- `src/autoteam/api.py`
+- `src/autotoken/api.py`
   - 已有 `POST /api/bind/link`
   - 已有 `_start_task()`、`get_task()`、`get_tasks()`、`post_task_cancel()`
   - 现有任务接口已经足够复用，不需要为绑卡任务额外发明第二套调度器
-- `src/autoteam/config.py`
+- `src/autotoken/config.py`
   - `get_playwright_launch_options()` 目前只读全局 `PLAYWRIGHT_PROXY_URL`
   - 适合扩成“默认读全局配置，也允许任务传 override”的接口
-- `src/autoteam/chatgpt_api.py`
+- `src/autotoken/chatgpt_api.py`
   - `_launch_browser()` 统一承接 Playwright 启动
   - `_wait_for_cloudflare()` 可直接复用
-- `src/autoteam/card_pool.py`
+- `src/autotoken/card_pool.py`
   - 已有卡池 JSON 持久化、`used_by` / `used_at` 字段和 `meta`
   - 适合扩展为显式的绑定状态机
-- `src/autoteam/accounts.py`
+- `src/autotoken/accounts.py`
   - 已有账号元数据持久化
   - 适合补写最近一次绑卡结果字段
 - `web/src/components/BindCard.vue`
@@ -72,7 +72,7 @@ origin: docs/auto_bind_plan.md
 - `web/src/components/BindCardPool.vue`
   - 已有卡状态展示、详情面板和短信拉取
   - 需要同步扩展 `binding` / `failed` 状态显示
-- `src/autoteam/register_failures.py`
+- `src/autotoken/register_failures.py`
   - 已有“JSON 文件 + 锁 + 最近 N 条”的持久化审计模式
   - 可直接复用到绑卡审计
 
@@ -119,19 +119,19 @@ origin: docs/auto_bind_plan.md
 **Dependencies:** None
 
 **Files:**
-- Modify: `src/autoteam/api.py`
+- Modify: `src/autotoken/api.py`
 - Modify: `web/src/api.js`
 - Test: `tests/unit/test_bind_task_api.py`
 
 **Approach:**
-- 在 `src/autoteam/api.py` 中新增 `BindCardTaskParams`。
+- 在 `src/autotoken/api.py` 中新增 `BindCardTaskParams`。
 - 新增 `POST /api/tasks/bind-card`，参数至少包含 `email`、`card_item_id`、`checkout_url`、`proxy_url`、`proxy_label`、`manual_confirm`。
 - 在启动任务前做同步校验：账号存在、账号具备可用 `auth_session_file`、卡项存在且状态允许分配、`checkout_url` 非空。
 - 任务命令名统一为 `bind-card`，结果继续复用通用 `GET /api/tasks/{task_id}` 查询。
 
 **Patterns to follow:**
-- `src/autoteam/api.py` 中现有的 `POST /api/tasks/check`
-- `src/autoteam/api.py` 中现有的 `_start_task()` / `get_task()`
+- `src/autotoken/api.py` 中现有的 `POST /api/tasks/check`
+- `src/autotoken/api.py` 中现有的 `_start_task()` / `get_task()`
 
 **Test scenarios:**
 - Happy path: 传入合法参数时返回 `202`，结果中包含 `task_id`、`command=bind-card`、原始 `params`。
@@ -152,8 +152,8 @@ origin: docs/auto_bind_plan.md
 **Dependencies:** Unit 1
 
 **Files:**
-- Modify: `src/autoteam/config.py`
-- Modify: `src/autoteam/chatgpt_api.py`
+- Modify: `src/autotoken/config.py`
+- Modify: `src/autotoken/chatgpt_api.py`
 - Test: `tests/unit/test_bind_executor.py`
 
 **Approach:**
@@ -163,8 +163,8 @@ origin: docs/auto_bind_plan.md
 - 禁止在任务执行期间动态写 `.env` 或修改模块级配置。
 
 **Patterns to follow:**
-- `src/autoteam/config.py` 中现有的 `_parse_proxy_url()`
-- `src/autoteam/chatgpt_api.py` 中现有的 `_launch_browser()`
+- `src/autotoken/config.py` 中现有的 `_parse_proxy_url()`
+- `src/autotoken/chatgpt_api.py` 中现有的 `_launch_browser()`
 
 **Test scenarios:**
 - Happy path: 传入任务级 `proxy_url` 时，返回的 launch options 使用任务代理而不是全局代理。
@@ -184,9 +184,9 @@ origin: docs/auto_bind_plan.md
 **Dependencies:** Unit 1
 
 **Files:**
-- Modify: `src/autoteam/card_pool.py`
-- Modify: `src/autoteam/accounts.py`
-- Modify: `src/autoteam/api.py`
+- Modify: `src/autotoken/card_pool.py`
+- Modify: `src/autotoken/accounts.py`
+- Modify: `src/autotoken/api.py`
 - Modify: `web/src/components/BindCardPool.vue`
 - Test: `tests/unit/test_card_pool.py`
 - Test: `tests/unit/test_accounts.py`
@@ -202,8 +202,8 @@ origin: docs/auto_bind_plan.md
 - 同步扩展卡池统计与前端状态显示。
 
 **Patterns to follow:**
-- `src/autoteam/card_pool.py` 中现有的 `update_item()`
-- `src/autoteam/accounts.py` 中现有的 `update_account()`
+- `src/autotoken/card_pool.py` 中现有的 `update_item()`
+- `src/autotoken/accounts.py` 中现有的 `update_account()`
 
 **Test scenarios:**
 - Happy path: 预占一张 `unused` 卡后，状态变为 `binding`，并写入账号/代理元数据。
@@ -225,12 +225,12 @@ origin: docs/auto_bind_plan.md
 **Dependencies:** Unit 2, Unit 3
 
 **Files:**
-- Create: `src/autoteam/bind_executor.py`
-- Modify: `src/autoteam/api.py`
+- Create: `src/autotoken/bind_executor.py`
+- Modify: `src/autotoken/api.py`
 - Test: `tests/unit/test_bind_executor.py`
 
 **Approach:**
-- 在 `src/autoteam/bind_executor.py` 中提供单一入口，例如 `run_bind_task(...)`。
+- 在 `src/autotoken/bind_executor.py` 中提供单一入口，例如 `run_bind_task(...)`。
 - 复用 `ChatGPTTeamAPI` 的浏览器启动与 Cloudflare 等待逻辑，而不是在执行器里重新发明 Playwright 基础设施。
 - 执行器最少覆盖这些阶段：
   - `open_checkout`
@@ -248,8 +248,8 @@ origin: docs/auto_bind_plan.md
 **Execution note:** 先用假页面对象把阶段分类和错误收口测通，再接真实 checkout 页面选择器，避免把选择器调试和状态机调试混在一起。
 
 **Patterns to follow:**
-- `src/autoteam/api.py` 中 `POST /api/bind/link` 的页面端 fetch 结果判定
-- `src/autoteam/chatgpt_api.py` 中 `_wait_for_cloudflare()`
+- `src/autotoken/api.py` 中 `POST /api/bind/link` 的页面端 fetch 结果判定
+- `src/autotoken/chatgpt_api.py` 中 `_wait_for_cloudflare()`
 
 **Test scenarios:**
 - Happy path: 页面可打开、卡信息完整、提交成功时返回 `status=success`。
@@ -271,12 +271,12 @@ origin: docs/auto_bind_plan.md
 **Dependencies:** Unit 3, Unit 4
 
 **Files:**
-- Create: `src/autoteam/bind_audit.py`
-- Modify: `src/autoteam/api.py`
+- Create: `src/autotoken/bind_audit.py`
+- Modify: `src/autotoken/api.py`
 - Test: `tests/unit/test_bind_audit.py`
 
 **Approach:**
-- 参考 `src/autoteam/register_failures.py`，新增绑卡审计存储模块。
+- 参考 `src/autotoken/register_failures.py`，新增绑卡审计存储模块。
 - 每个任务结束时至少记录：
   - `task_id`
   - `email`
@@ -296,8 +296,8 @@ origin: docs/auto_bind_plan.md
 - 任务结果除了写审计文件，还要同步写回 `_tasks[task_id]["result"]`，保证现有任务页可见。
 
 **Patterns to follow:**
-- `src/autoteam/register_failures.py`
-- `src/autoteam/api.py` 中现有任务完成后的 `task["result"]` / `task["error"]` 约定
+- `src/autotoken/register_failures.py`
+- `src/autotoken/api.py` 中现有任务完成后的 `task["result"]` / `task["error"]` 约定
 
 **Test scenarios:**
 - Happy path: 成功任务会写入一条完整审计记录。
@@ -409,10 +409,10 @@ origin: docs/auto_bind_plan.md
 ## Sources & References
 
 - **Origin document:** `docs/auto_bind_plan.md`
-- Related code: `src/autoteam/api.py`
-- Related code: `src/autoteam/config.py`
-- Related code: `src/autoteam/chatgpt_api.py`
-- Related code: `src/autoteam/card_pool.py`
-- Related code: `src/autoteam/accounts.py`
+- Related code: `src/autotoken/api.py`
+- Related code: `src/autotoken/config.py`
+- Related code: `src/autotoken/chatgpt_api.py`
+- Related code: `src/autotoken/card_pool.py`
+- Related code: `src/autotoken/accounts.py`
 - Related code: `web/src/components/BindCard.vue`
 - Related code: `web/src/components/BindCardPool.vue`

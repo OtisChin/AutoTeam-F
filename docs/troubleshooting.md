@@ -19,7 +19,7 @@ playwright._impl._errors.Error: It looks like you are using Playwright Sync API 
 
 ```bash
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-uv run autoteam rotate
+uv run autotoken rotate
 ```
 
 ### Windows 启动时出现编码报错
@@ -43,7 +43,7 @@ AUTO_CHECK_INTERVAL=300  # 5 分钟
 1. **IP 被标记** — VPS 的 IP 被 OpenAI/Cloudflare 拦截，建议换住宅代理
 2. **Cloudflare 验证** — 浏览器环境被检测，需更新 Chromium 或切换网络
 3. **workspace 选择失败** — 页面结构变化，查看 `screenshots/codex_04_*.png`
-4. **自动回调不可达** — 如果浏览器和 AutoTeam 不在同一台机器，`localhost:1455` 回调可能不会到达 AutoTeam，此时请改用手动粘贴回调 URL
+4. **自动回调不可达** — 如果浏览器和 AutoToken 不在同一台机器，`localhost:1455` 回调可能不会到达 AutoToken，此时请改用手动粘贴回调 URL
 5. **本地回调被代理拦截** — 如果启用了 `PLAYWRIGHT_PROXY_URL`，建议同时设置 `PLAYWRIGHT_PROXY_BYPASS=localhost,127.0.0.1`
 
 ### 登录后 plan 显示 free 而不是 team
@@ -102,7 +102,7 @@ cat state.json | python -m json.tool
 `rotate` 会自动清理超员成员。如果没生效，可手动执行：
 
 ```bash
-uv run autoteam cleanup 5
+uv run autotoken cleanup 5
 ```
 
 ## CPA 同步相关
@@ -119,7 +119,7 @@ uv run autoteam cleanup 5
 如果你怀疑历史版本已经把旧 token 写回本地，可以先重新登录目标账号，再执行：
 
 ```bash
-uv run autoteam pull-cpa
+uv run autotoken pull-cpa
 ```
 
 查看日志里的：
@@ -138,7 +138,7 @@ uv run autoteam pull-cpa
 如果你怀疑之前版本遗留了重复文件，执行一次：
 
 ```bash
-uv run autoteam pull-cpa
+uv run autotoken pull-cpa
 ```
 
 ## Docker 相关

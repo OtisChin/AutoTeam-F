@@ -1,7 +1,7 @@
 """Outlook account-pool mail provider.
 
 This ports the useful parts of codex-console's Outlook registration mode into
-AutoTeam's `MailProvider` interface: pick a pre-owned Outlook/Hotmail mailbox
+AutoToken's `MailProvider` interface: pick a pre-owned Outlook/Hotmail mailbox
 for registration, then poll that same mailbox for OpenAI verification mail.
 """
 
@@ -18,14 +18,13 @@ import time
 from dataclasses import dataclass
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
-from pathlib import Path
 from typing import Any
 
 from curl_cffi import requests as curl_requests
 
-from autoteam.mail.base import MailProvider, html_to_visible_text, normalize_email_addr, parse_mime
-from autoteam.paths import PROJECT_ROOT
-from autoteam.textio import read_text
+from autotoken.core.files import read_lines_file
+from autotoken.core.paths import PROJECT_ROOT, resolve_project_config_path
+from autotoken.mail.base import MailProvider, html_to_visible_text, normalize_email_addr, parse_mime
 
 logger = logging.getLogger(__name__)
 
@@ -118,15 +117,13 @@ class OutlookMailProvider(MailProvider):
         raw = _env("OUTLOOK_ACCOUNTS")
         file_value = _env("OUTLOOK_ACCOUNTS_FILE")
         if file_value:
-            path = Path(file_value)
-            if not path.is_absolute():
-                path = PROJECT_ROOT / path
-            if path.exists():
-                raw += ("\n" if raw else "") + read_text(path)
+            path = resolve_project_config_path(file_value, project_root=PROJECT_ROOT)
+            if path and path.exists():
+                raw += ("\n" if raw else "") + "\n".join(read_lines_file(path))
         else:
             default_path = PROJECT_ROOT / "data" / "outlook_accounts.txt"
             if default_path.exists():
-                raw += ("\n" if raw else "") + read_text(default_path)
+                raw += ("\n" if raw else "") + "\n".join(read_lines_file(default_path))
 
         accounts: list[OutlookAccount] = []
         for line in raw.replace(";", "\n").splitlines():
@@ -223,19 +220,17 @@ class OutlookMailProvider(MailProvider):
         raise RuntimeError("没有可用的 Outlook 账号可用于注册（可能都已注册或已被本轮占用）")
 
     def list_accounts(self, size: int = 200) -> list[dict]:
-        result = []
-        for account in self.accounts[: max(1, int(size or 200))]:
-            result.append(
-                {
-                    "id": account.email,
-                    "email": account.email,
-                    "accountEmail": account.email,
-                    "has_oauth": account.has_oauth(),
-                    "has_mailapi": account.has_mailapi(),
-                    "provider": self.provider_name,
-                }
-            )
-        return result
+        return [
+            {
+                "id": account.email,
+                "email": account.email,
+                "accountEmail": account.email,
+                "has_oauth": account.has_oauth(),
+                "has_mailapi": account.has_mailapi(),
+                "provider": self.provider_name,
+            }
+            for account in self.accounts[: max(1, int(size or 200))]
+        ]
 
     def delete_account(self, account_id: int | str) -> dict:
         email = normalize_email_addr(account_id)
@@ -275,14 +270,14 @@ class OutlookMailProvider(MailProvider):
     @staticmethod
     def _registered_emails() -> set[str]:
         try:
-            from autoteam.accounts import load_accounts
+            from autotoken.storage.accounts import load_accounts
 
             emails = {normalize_email_addr(a.get("email")) for a in load_accounts() if a.get("email")}
         except Exception:
             logger.debug("[outlook] 读取本地账号池失败，跳过已注册过滤", exc_info=True)
             emails = set()
         try:
-            from autoteam.register_failures import list_failures
+            from autotoken.storage.register_failures import list_failures
 
             for failure in list_failures(500):
                 email = normalize_email_addr(failure.get("email"))

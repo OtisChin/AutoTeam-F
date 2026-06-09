@@ -1,0 +1,111 @@
+import pytest
+from fastapi import HTTPException
+
+from autotoken.api_routes.account_register_task import ManualRegisterParams, create_account_register_task_router
+from autotoken.services.task_runtime import TASK_GROUP_REGISTER
+
+
+def _logger():
+    return type("Logger", (), {"info": lambda *_args, **_kwargs: None})()
+
+
+def _routes(started, progress=None, *, oauth_env=None, proxy_meta=None):
+    progress = progress if progress is not None else []
+    oauth_env = oauth_env if oauth_env is not None else {}
+    proxy_meta = proxy_meta if proxy_meta is not None else {}
+
+    def start_task(command, func, params, *args, **kwargs):
+        started.append({"command": command, "func": func, "params": params, "args": args, "kwargs": kwargs})
+        return {"task_id": "task-1", "command": command, "params": params}
+
+    router = create_account_register_task_router(
+        start_task=start_task,
+        normalize_proxy_url=lambda value: f"normalized:{value}",
+        normalize_proxy_api_provider=lambda value: str(value or "").strip().lower(),
+        build_oauth_proxy_selector=lambda **_kwargs: (lambda: "http://proxy.example:8080", proxy_meta),
+        normalize_oauth_phone_sms_provider=lambda value: str(value or "").strip().lower(),
+        normalize_oauth_smsbower_country=lambda value: str(value or "").strip().upper(),
+        normalize_oauth_hero_sms_country=lambda value: str(value or "").strip().lower(),
+        oauth_phone_sms_env=lambda: oauth_env,
+        append_task_progress=lambda task_id, item: progress.append({"task_id": task_id, **item}),
+        task_group_register=TASK_GROUP_REGISTER,
+        logger=_logger(),
+    )
+    return {route.endpoint.__name__: route.endpoint for route in router.routes}
+
+
+def test_post_add_single_uses_default_domain_and_random_password(monkeypatch):
+    started = []
+    calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+
+    routes = _routes(started)
+    result = routes["post_add"](ManualRegisterParams(prefix=" demo ", password=""))
+
+    assert result["command"] == "register"
+    assert started[0]["params"]["domain"] == "example.com"
+    assert started[0]["params"]["domains"] == ["example.com"]
+    assert started[0]["params"]["password_mode"] == "random"
+    assert started[0]["kwargs"]["task_group"] == TASK_GROUP_REGISTER
+    assert started[0]["kwargs"]["pass_task_id"] is True
+
+    assert started[0]["func"]("task-register") == {"created": 1}
+    assert calls[0]["email_prefix"] == "demo"
+    assert calls[0]["password"] == "generated-pass"
+    assert calls[0]["domain"] == "example.com"
+    assert calls[0]["progress_callback"] is not None
+
+
+def test_post_add_batch_deduplicates_and_validates_domains(monkeypatch):
+    started = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["a.com", "b.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "a.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    routes = _routes(started)
+    result = routes["post_add"](ManualRegisterParams(mode="batch", count=4, concurrency=9, domains=["@a.com", "b.com", "a.com"]))
+
+    assert result["params"]["mode"] == "batch"
+    assert result["params"]["count"] == 4
+    assert result["params"]["concurrency"] == 9
+    assert result["params"]["domain"] == "a.com"
+    assert result["params"]["domains"] == ["a.com", "b.com"]
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes["post_add"](ManualRegisterParams(mode="batch", domains=["missing.com"]))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "域名 @missing.com 不在可选列表中"
+
+
+def test_post_add_rejects_invalid_registration_flow(monkeypatch):
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    routes = _routes([])
+    with pytest.raises(HTTPException) as exc_info:
+        routes["post_add"](ManualRegisterParams(registration_flow="bad"))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "registration_flow 只支持 standard 或 phone_cpa"
+
+
+def test_post_add_requires_sms_api_key_for_sms_oauth_provider(monkeypatch):
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    routes = _routes([], oauth_env={})
+    with pytest.raises(HTTPException) as exc_info:
+        routes["post_add"](ManualRegisterParams(post_register_oauth=True, oauth_phone_sms_provider="hero_sms"))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "启用 hero_sms 前需要先在设置页配置 API Key"

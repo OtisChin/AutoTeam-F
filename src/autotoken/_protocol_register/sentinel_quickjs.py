@@ -34,8 +34,9 @@ import os
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +198,8 @@ def get_sentinel_token_via_quickjs(
     *,
     flow: str = "authorize_continue",
     timeout_ms: int = 45000,
-    log: Optional[Callable[[str], None]] = None,
-) -> Optional[str]:
+    log: Callable[[str], None] | None = None,
+) -> str | None:
     """Try the QuickJS path. Return JSON string on success, None on any failure.
 
     Caller is expected to fall back to pure-Python sentinel on None.

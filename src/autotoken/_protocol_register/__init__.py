@@ -1,0 +1,1 @@
+"""Bundled protocol registration implementation."""

@@ -1,15 +1,15 @@
 const BASE = '/api'
 
 function getApiKey() {
-  return localStorage.getItem('autoteam_api_key') || ''
+  return localStorage.getItem('autotoken_api_key') || ''
 }
 
 export function setApiKey(key) {
-  localStorage.setItem('autoteam_api_key', key)
+  localStorage.setItem('autotoken_api_key', key)
 }
 
 export function clearApiKey() {
-  localStorage.removeItem('autoteam_api_key')
+  localStorage.removeItem('autotoken_api_key')
 }
 
 async function request(method, path, body = null) {
@@ -119,6 +119,7 @@ export const api = {
   startCleanup: (maxSeats = null) => request('POST', '/tasks/cleanup', { max_seats: maxSeats }),
   startBindCard: (payload) => request('POST', '/tasks/bind-card', payload),
   startGoPayBind: (payload) => request('POST', '/tasks/gopay-bind', payload),
+  preflightPayPal: (payload) => request('POST', '/tasks/paypal/preflight', payload),
   startPayPal: (payload) => request('POST', '/tasks/paypal', payload),
   getGoPayProStatus: () => request('GET', '/gopay-pro/status'),
   saveGoPayProConfig: (payload) => request('PUT', '/gopay-pro/config', payload),
@@ -153,6 +154,8 @@ export const api = {
   getOAuthPhoneSmsConfig: () => request('GET', '/config/oauth-phone-sms'),
   getOAuthPhoneSmsCountries: (provider = '') => request('GET', `/config/oauth-phone-sms/countries${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`),
   saveOAuthPhoneSmsConfig: (cfg) => request('PUT', '/config/oauth-phone-sms', cfg),
+  getPayPalSmsConfig: () => request('GET', '/config/paypal-sms'),
+  savePayPalSmsConfig: (cfg) => request('PUT', '/config/paypal-sms', cfg),
   getRekberinajaConfig: () => request('GET', '/config/rekberinaja'),
   saveRekberinajaConfig: (cfg) => request('PUT', '/config/rekberinaja', cfg),
   getRoxyBrowserConfig: () => request('GET', '/config/roxybrowser'),

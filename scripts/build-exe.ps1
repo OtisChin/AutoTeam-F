@@ -29,7 +29,7 @@ try {
         "--noconfirm",
         "--clean",
         "--onefile",
-        "--name", "autoteam",
+        "--name", "autotoken",
         $consoleMode,
         "--collect-all", "playwright",
         "--collect-all", "curl_cffi",
@@ -38,9 +38,9 @@ try {
         "--collect-submodules", "httptools",
         "--collect-submodules", "websockets",
         "--collect-submodules", "watchfiles",
-        "--add-data", "src\autoteam\web\dist;autoteam\web\dist",
-        "--add-data", "src\autoteam\oauth_helper_extension;autoteam\oauth_helper_extension",
-        "src\autoteam\__main__.py"
+        "--add-data", "src\autotoken\web\dist;autotoken\web\dist",
+        "--add-data", "src\autotoken\oauth_helper_extension;autotoken\oauth_helper_extension",
+        "src\autotoken\__main__.py"
     )
 
     uv run --with pyinstaller pyinstaller @args

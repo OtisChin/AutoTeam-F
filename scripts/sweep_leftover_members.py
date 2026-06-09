@@ -22,12 +22,12 @@ TARGETS = [
 
 
 def main() -> int:
-    # 让脚本无论从哪里起都能 import autoteam
+    # 让脚本无论从哪里起都能 import autotoken
     repo_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(repo_root / "src"))
 
-    from autoteam.chatgpt_api import ChatGPTTeamAPI
-    from autoteam.manager import remove_from_team
+    from autotoken.integrations.chatgpt_api import ChatGPTTeamAPI
+    from autotoken.interfaces.manager import remove_from_team
 
     api = ChatGPTTeamAPI()
     api.start()

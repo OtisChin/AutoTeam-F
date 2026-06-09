@@ -98,7 +98,7 @@ const loading = ref(false)
 const error = ref('')
 const removingId = ref('')
 
-const CACHE_KEY = 'autoteam_team_members'
+const CACHE_KEY = 'autotoken_team_members'
 
 function loadCache() {
   try {

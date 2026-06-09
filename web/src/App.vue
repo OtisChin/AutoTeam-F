@@ -3,74 +3,88 @@
   <SetupPage v-if="needSetup" @configured="onSetupDone" />
 
   <!-- 登录页 -->
-  <div v-else-if="!authenticated" class="min-h-screen flex items-center justify-center">
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-8 w-full max-w-sm">
-      <h1 class="text-xl font-bold text-white text-center mb-2">AutoPro</h1>
-      <p class="text-sm text-gray-400 text-center mb-6">请输入 API Key 登录</p>
-      <div v-if="authError" class="mb-4 px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">
+  <main v-else-if="!authenticated" class="auth-shell">
+    <section class="auth-card">
+      <div class="mb-7 flex items-center gap-4">
+        <div class="nav-mark">AT</div>
+        <div>
+          <h1 class="text-2xl font-semibold tracking-tight text-white">AutoToken</h1>
+          <p class="mt-1 text-sm text-gray-400">运营控制台访问验证</p>
+        </div>
+      </div>
+      <div v-if="authError" class="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
         {{ authError }}
       </div>
-      <input
-        v-model.trim="inputKey"
-        type="password"
-        placeholder="API Key"
-        @keyup.enter="doLogin"
-        class="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 mb-4"
-      />
-      <button @click="doLogin" :disabled="!inputKey || authLoading"
-        class="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition disabled:opacity-50">
-        {{ authLoading ? '验证中...' : '登录' }}
+      <label class="block">
+        <span class="mb-2 block text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">API Key</span>
+        <input
+          v-model.trim="inputKey"
+          type="password"
+          placeholder="输入控制台 API Key"
+          @keyup.enter="doLogin"
+          class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 text-sm text-white transition placeholder:text-gray-600 focus:border-blue-500 focus:outline-none"
+        />
+      </label>
+      <button
+        @click="doLogin"
+        :disabled="!inputKey || authLoading"
+        class="mt-5 w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50">
+        {{ authLoading ? '验证中...' : '进入控制台' }}
       </button>
-    </div>
-  </div>
+    </section>
+  </main>
 
   <!-- 主面板 -->
-  <div v-else class="flex min-h-screen">
+  <div v-else class="app-shell">
     <!-- 侧边栏 -->
     <Sidebar :active="currentPage" :loading="loading" :auth-required="authRequired"
       @navigate="navigateTo" @refresh="refresh" @logout="doLogout" />
 
     <!-- 主内容区 -->
-    <div class="flex-1 p-4 md:p-6 overflow-y-auto pb-20 md:pb-6">
-      <!-- 页面内容 -->
-      <Dashboard v-if="currentPage === 'dashboard'"
-        :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus"
-        @task-started="onTaskStarted" @refresh="refresh" />
+    <main class="workspace-shell">
+      <div class="workspace-chrome">
+        <div class="workspace-main">
+          <!-- 页面内容 -->
+          <Dashboard v-if="currentPage === 'dashboard'"
+            :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus"
+            @task-started="onTaskStarted" @refresh="refresh" />
 
-<RegisterAccountPage v-else-if="currentPage === 'register'"
-        :running-task="registerRunningTask" :admin-status="adminStatus"
-        @task-started="onTaskStarted" @refresh="refresh" />
+          <RegisterAccountPage v-else-if="currentPage === 'register'"
+            :running-task="registerRunningTask" :admin-status="adminStatus"
+            @task-started="onTaskStarted" @refresh="refresh" />
 
-      <BindCardPool v-else-if="currentPage === 'cardpool'" />
+          <BindCardPool v-else-if="currentPage === 'cardpool'" />
 
-      <BindCard v-else-if="currentPage === 'bindcard'" key="bindcard" @refresh="refresh" />
+          <BindCard v-else-if="currentPage === 'bindcard'" key="bindcard" @refresh="refresh" />
 
-      <BindCard v-else-if="currentPage === 'gopay'" key="gopay" initial-tab="gopay" standalone @refresh="refresh" />
+          <BindCard v-else-if="currentPage === 'gopay'" key="gopay" initial-tab="gopay" standalone @refresh="refresh" />
 
-      <GoPayProPage v-else-if="currentPage === 'gopayPro'" />
+          <GoPayProPage v-else-if="currentPage === 'gopayPro'" />
 
-      <PayPalPage v-else-if="currentPage === 'paypal'" />
+          <PayPalPage v-else-if="currentPage === 'paypal'" />
 
-      <OAuthPhonePoolPage v-else-if="currentPage === 'oauthPhones'" />
+          <OAuthPhonePoolPage v-else-if="currentPage === 'oauthPhones'" />
 
-      <OAuthPhoneRecordsPage v-else-if="currentPage === 'oauthPhoneRecords'" />
+          <OAuthPhoneRecordsPage v-else-if="currentPage === 'oauthPhoneRecords'" />
 
-      <TradeManagerPage v-else-if="currentPage === 'trade'" />
+          <TradeManagerPage v-else-if="currentPage === 'trade'" />
 
-      <CpaToSub2ApiPage v-else-if="currentPage === 'cpa2sub'" />
+          <CpaToSub2ApiPage v-else-if="currentPage === 'cpa2sub'" />
 
-      <OAuthPage v-else-if="currentPage === 'oauth'"
-        :manual-account-status="manualAccountStatus" @refresh="refresh" @progress="onAdminProgress" />
+          <OAuthPage v-else-if="currentPage === 'oauth'"
+            :manual-account-status="manualAccountStatus" @refresh="refresh" @progress="onAdminProgress" />
 
-      <TaskHistoryPage v-else-if="currentPage === 'tasks'"
-        :tasks="tasks" />
+          <TaskHistoryPage v-else-if="currentPage === 'tasks'"
+            :tasks="tasks" />
 
-      <LogViewer v-else-if="currentPage === 'logs'" />
+          <LogViewer v-else-if="currentPage === 'logs'" />
 
-      <Settings v-else-if="currentPage === 'settings'"
-        :admin-status="adminStatus" :codex-status="codexStatus"
-        @refresh="refresh" @admin-progress="onAdminProgress" />
-    </div>
+          <Settings v-else-if="currentPage === 'settings'"
+            :admin-status="adminStatus" :codex-status="codexStatus"
+            @refresh="refresh" @admin-progress="onAdminProgress" />
+        </div>
+      </div>
+    </main>
 
     <div
       v-if="busyTasks.length"
@@ -145,15 +159,14 @@ const authRequired = ref(false)
 const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
-const CURRENT_PAGE_KEY = 'autoteam_current_page'
+const CURRENT_PAGE_KEY = 'autotoken_current_page'
 const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'gopayPro', 'paypal', 'oauthPhones', 'oauthPhoneRecords', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
 const IDLE_POLLING_ENABLED = false
-const TASK_PANEL_POSITION_KEY = 'autoteam_task_panel_position'
+const TASK_PANEL_POSITION_KEY = 'autotoken_task_panel_position'
 const savedPage = localStorage.getItem(CURRENT_PAGE_KEY)
 const currentPage = ref(PAGE_KEYS.has(savedPage) ? savedPage : 'dashboard')
-
 const status = ref(null)
 const adminStatus = ref(null)
 const codexStatus = ref(null)

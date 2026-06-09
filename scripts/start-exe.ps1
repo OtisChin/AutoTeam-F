@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Resolve-AutoTeamExe {
+function Resolve-AutoTokenExe {
     param([string]$RequestedPath)
 
     if ($RequestedPath) {
@@ -18,9 +18,9 @@ function Resolve-AutoTeamExe {
     $scriptDir = $PSScriptRoot
     $parentDir = Split-Path -Parent $scriptDir
     $candidates = @(
-        (Join-Path $scriptDir "autoteam.exe"),
-        (Join-Path $scriptDir "dist\autoteam.exe"),
-        (Join-Path $parentDir "dist\autoteam.exe")
+        (Join-Path $scriptDir "autotoken.exe"),
+        (Join-Path $scriptDir "dist\autotoken.exe"),
+        (Join-Path $parentDir "dist\autotoken.exe")
     )
 
     foreach ($candidate in $candidates) {
@@ -29,10 +29,10 @@ function Resolve-AutoTeamExe {
         }
     }
 
-    throw "autoteam.exe was not found. Build it first with scripts\build-exe.ps1, or pass -ExePath."
+    throw "autotoken.exe was not found. Build it first with scripts\build-exe.ps1, or pass -ExePath."
 }
 
-$exe = Resolve-AutoTeamExe -RequestedPath $ExePath
+$exe = Resolve-AutoTokenExe -RequestedPath $ExePath
 $runDir = Split-Path -Parent $exe
 Set-Location $runDir
 
@@ -48,6 +48,6 @@ if (-not (Test-Path -LiteralPath $envFile) -and (Test-Path -LiteralPath $envExam
     Write-Host "Created .env from .env.example. You can finish setup in the web panel."
 }
 
-Write-Host "Starting AutoTeam-F: http://$HostAddress`:$Port"
+Write-Host "Starting AutoToken-F: http://$HostAddress`:$Port"
 & $exe api --host $HostAddress --port $Port
 exit $LASTEXITCODE

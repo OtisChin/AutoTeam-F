@@ -115,7 +115,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Invoke-Checked -Description "Upgrading pip tooling" -Command $VenvPython -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
-Invoke-Checked -Description "Installing AutoTeam-F with pip" -Command $VenvPython -Arguments @("-m", "pip", "install", "-e", ".")
+Invoke-Checked -Description "Installing AutoToken-F with pip" -Command $VenvPython -Arguments @("-m", "pip", "install", "-e", ".")
 
 if (-not $SkipBrowserInstall) {
     Invoke-Checked -Description "Installing Playwright Chromium" -Command $VenvPython -Arguments @("-m", "playwright", "install", "chromium")
@@ -136,7 +136,7 @@ Write-Host "Virtual environment: $VenvDir"
 Write-Host "Web panel: http://$HostAddress`:$Port"
 
 if (-not $NoStart) {
-    Write-Step "Starting AutoTeam-F API and web panel"
-    & $VenvPython -m autoteam api --host $HostAddress --port $Port
+    Write-Step "Starting AutoToken-F API and web panel"
+    & $VenvPython -m autotoken api --host $HostAddress --port $Port
     exit $LASTEXITCODE
 }

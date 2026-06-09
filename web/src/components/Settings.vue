@@ -116,6 +116,171 @@
     </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold text-white">PayPal 日区无卡接码</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            协议模式自动注册 PayPal 使用；已有接码链接不会买号，动态供应商会写入 PAYPAL_SMS_* 配置。
+          </p>
+        </div>
+        <span
+          class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
+          :class="paypalSmsConfigured
+            ? 'bg-green-500/10 text-green-400 border-green-500/20'
+            : 'bg-gray-800 text-gray-400 border-gray-700'">
+          {{ paypalSmsConfigured ? '已配置' : '未配置' }}
+        </span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">接码来源</label>
+          <select
+            v-model="paypalSmsForm.provider"
+            :disabled="paypalSmsLoading || paypalSmsSaving"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          >
+            <option value="manual">已有接码链接</option>
+            <option value="hero_sms">hero-sms</option>
+            <option value="smsbower">smsbower</option>
+            <option value="smscode">smscode.gg</option>
+            <option value="smscloud">smscloud</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">手机号国家码</label>
+          <input
+            v-model.trim="paypalSmsForm.phone_country_code"
+            type="text"
+            autocomplete="off"
+            placeholder="81"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+
+        <template v-if="paypalSmsForm.provider === 'manual'">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              接码 API
+              <span v-if="paypalSmsStatus.sms_url_present" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <input
+              v-model.trim="paypalSmsForm.sms_url"
+              type="password"
+              autocomplete="off"
+              placeholder="https://sms.example/api/record?token=..."
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              PayPal 注册手机号
+              <span v-if="paypalSmsStatus.phone_number_present" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <input
+              v-model.trim="paypalSmsForm.phone_number"
+              type="text"
+              autocomplete="off"
+              placeholder="+819012345678"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+        </template>
+
+        <template v-else>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              API Key / Token
+              <span v-if="paypalSmsProviderSecretPresent" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <input
+              v-model="paypalSmsProviderSecretValue"
+              type="password"
+              autocomplete="off"
+              :placeholder="paypalSmsProviderSecretPlaceholder"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">API 地址</label>
+            <input
+              v-model.trim="paypalSmsProviderBaseUrlValue"
+              type="text"
+              autocomplete="off"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">国家 ID</label>
+            <input
+              v-model.trim="paypalSmsProviderCountryValue"
+              type="text"
+              autocomplete="off"
+              placeholder="4"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">服务代码 / 商品</label>
+            <input
+              v-model.trim="paypalSmsProviderServiceValue"
+              type="text"
+              autocomplete="off"
+              placeholder="paypal 或 ts"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div v-if="paypalSmsForm.provider === 'smscode'">
+            <label class="block text-sm text-gray-400 mb-1">Platform ID</label>
+            <input
+              v-model.trim="paypalSmsForm.smscode_platform_id"
+              type="text"
+              autocomplete="off"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div v-if="paypalSmsForm.provider === 'smscode'">
+            <label class="block text-sm text-gray-400 mb-1">Product ID</label>
+            <input
+              v-model.trim="paypalSmsForm.smscode_product_id"
+              type="text"
+              autocomplete="off"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">最高价格</label>
+            <input
+              v-model.trim="paypalSmsProviderMaxPriceValue"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="留空不限价"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+        </template>
+      </div>
+
+      <div class="mt-3 flex justify-end gap-3">
+        <button
+          @click="loadPayPalSmsConfig"
+          :disabled="paypalSmsLoading || paypalSmsSaving"
+          class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+        >
+          {{ paypalSmsLoading ? '刷新中...' : '刷新配置' }}
+        </button>
+        <button
+          @click="savePayPalSmsConfig"
+          :disabled="paypalSmsSaving"
+          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+        >
+          {{ paypalSmsSaving ? '保存中...' : '保存 PayPal 接码配置' }}
+        </button>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-start justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-white">配置导入 / 导出</h2>
@@ -1049,6 +1214,38 @@ const oauthPhoneSmsForm = ref({
   smsbower_api_key: '',
   smsbower_max_price: '',
 })
+const paypalSmsLoading = ref(false)
+const paypalSmsSaving = ref(false)
+const paypalSmsStatus = ref({})
+const paypalSmsForm = ref({
+  provider: 'manual',
+  sms_url: '',
+  phone_number: '',
+  otp_channel: 'sms',
+  phone_country_code: '81',
+  hero_sms_api_key: '',
+  hero_sms_base_url: 'https://hero-sms.com/stubs/handler_api.php',
+  hero_sms_country: '4',
+  hero_sms_service: 'ts',
+  hero_sms_max_price: '',
+  smsbower_api_key: '',
+  smsbower_base_url: 'https://smsbower.page/stubs/handler_api.php',
+  smsbower_country: '4',
+  smsbower_service: 'ts',
+  smsbower_max_price: '',
+  smscode_api_token: '',
+  smscode_base_url: 'https://api.smscode.gg/v1',
+  smscode_country_id: '4',
+  smscode_platform_id: '',
+  smscode_platform_query: 'paypal',
+  smscode_product_id: '',
+  smscode_max_price: '',
+  smscloud_xi_token: '',
+  smscloud_base_url: 'https://smscloud.sbs/api',
+  smscloud_country: '4',
+  smscloud_service: 'paypal',
+  smscloud_max_price: '',
+})
 const rekberinajaLoading = ref(false)
 const rekberinajaSaving = ref(false)
 const rekberinajaStatus = ref({})
@@ -1083,6 +1280,72 @@ const oauthPhoneSmsConfigured = computed(() => {
     : oauthPhoneSmsForm.value.provider === 'smsbower'
       ? Boolean(oauthPhoneSmsStatus.value.smsbower_api_key_present)
       : Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
+})
+const paypalSmsConfigured = computed(() => Boolean(paypalSmsStatus.value.configured))
+const paypalSmsProviderSecretPresent = computed(() => {
+  if (paypalSmsForm.value.provider === 'hero_sms') return Boolean(paypalSmsStatus.value.hero_sms_api_key_present)
+  if (paypalSmsForm.value.provider === 'smsbower') return Boolean(paypalSmsStatus.value.smsbower_api_key_present)
+  if (paypalSmsForm.value.provider === 'smscode') return Boolean(paypalSmsStatus.value.smscode_api_token_present)
+  if (paypalSmsForm.value.provider === 'smscloud') return Boolean(paypalSmsStatus.value.smscloud_xi_token_present)
+  return false
+})
+const paypalSmsProviderSecretPlaceholder = computed(() => {
+  if (paypalSmsForm.value.provider === 'hero_sms') return paypalSmsStatus.value.hero_sms_api_key_masked || '留空则保留现有配置'
+  if (paypalSmsForm.value.provider === 'smsbower') return paypalSmsStatus.value.smsbower_api_key_masked || '留空则保留现有配置'
+  if (paypalSmsForm.value.provider === 'smscode') return paypalSmsStatus.value.smscode_api_token_masked || '留空则保留现有配置'
+  return paypalSmsStatus.value.smscloud_xi_token_masked || '留空则保留现有配置'
+})
+const paypalSmsProviderSecretValue = computed({
+  get() {
+    if (paypalSmsForm.value.provider === 'hero_sms') return paypalSmsForm.value.hero_sms_api_key
+    if (paypalSmsForm.value.provider === 'smsbower') return paypalSmsForm.value.smsbower_api_key
+    if (paypalSmsForm.value.provider === 'smscode') return paypalSmsForm.value.smscode_api_token
+    return paypalSmsForm.value.smscloud_xi_token
+  },
+  set(value) {
+    if (paypalSmsForm.value.provider === 'hero_sms') paypalSmsForm.value.hero_sms_api_key = value
+    else if (paypalSmsForm.value.provider === 'smsbower') paypalSmsForm.value.smsbower_api_key = value
+    else if (paypalSmsForm.value.provider === 'smscode') paypalSmsForm.value.smscode_api_token = value
+    else paypalSmsForm.value.smscloud_xi_token = value
+  },
+})
+const paypalSmsProviderBaseUrlValue = computed({
+  get() {
+    return paypalSmsForm.value[`${paypalSmsForm.value.provider}_base_url`] || ''
+  },
+  set(value) {
+    paypalSmsForm.value[`${paypalSmsForm.value.provider}_base_url`] = value
+  },
+})
+const paypalSmsProviderCountryValue = computed({
+  get() {
+    return paypalSmsForm.value.provider === 'smscode'
+      ? paypalSmsForm.value.smscode_country_id
+      : (paypalSmsForm.value[`${paypalSmsForm.value.provider}_country`] || '')
+  },
+  set(value) {
+    if (paypalSmsForm.value.provider === 'smscode') paypalSmsForm.value.smscode_country_id = value
+    else paypalSmsForm.value[`${paypalSmsForm.value.provider}_country`] = value
+  },
+})
+const paypalSmsProviderServiceValue = computed({
+  get() {
+    return paypalSmsForm.value.provider === 'smscode'
+      ? paypalSmsForm.value.smscode_platform_query
+      : (paypalSmsForm.value[`${paypalSmsForm.value.provider}_service`] || '')
+  },
+  set(value) {
+    if (paypalSmsForm.value.provider === 'smscode') paypalSmsForm.value.smscode_platform_query = value
+    else paypalSmsForm.value[`${paypalSmsForm.value.provider}_service`] = value
+  },
+})
+const paypalSmsProviderMaxPriceValue = computed({
+  get() {
+    return paypalSmsForm.value[`${paypalSmsForm.value.provider}_max_price`] || ''
+  },
+  set(value) {
+    paypalSmsForm.value[`${paypalSmsForm.value.provider}_max_price`] = value
+  },
 })
 const rekberinajaConfigured = computed(() => Boolean(rekberinajaStatus.value.configured))
 const roxyBrowserConfigured = computed(() => Boolean(roxyBrowserStatus.value.configured))
@@ -1130,6 +1393,7 @@ onMounted(async () => {
   loadAccountHubConfig()
   loadGoPayAutoSignupConfig()
   loadOAuthPhoneSmsConfig()
+  loadPayPalSmsConfig()
   loadRekberinajaConfig()
   loadRoxyBrowserConfig()
   loadMailProviderConfig()
@@ -1165,7 +1429,7 @@ async function exportConfig() {
     const content = JSON.stringify(result, null, 2)
     configImportText.value = content
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    downloadTextFile(`autoteam-config-${stamp}.json`, content)
+    downloadTextFile(`autotoken-config-${stamp}.json`, content)
     setMessage('配置已导出')
   } catch (e) {
     setMessage(e.message || '导出配置失败', 'error')
@@ -1184,6 +1448,7 @@ async function importConfig() {
     await Promise.allSettled([
       loadGoPayAutoSignupConfig(),
       loadOAuthPhoneSmsConfig(),
+      loadPayPalSmsConfig(),
       loadRekberinajaConfig(),
       loadRoxyBrowserConfig(),
       loadMailProviderConfig(),
@@ -1435,6 +1700,67 @@ async function saveOAuthPhoneSmsConfig() {
     setMessage(e.message || '保存 OAuth 接码配置失败', 'error')
   } finally {
     oauthPhoneSmsSaving.value = false
+  }
+}
+
+async function loadPayPalSmsConfig() {
+  paypalSmsLoading.value = true
+  try {
+    const cfg = await api.getPayPalSmsConfig()
+    paypalSmsStatus.value = cfg || {}
+    paypalSmsForm.value = {
+      provider: ['hero_sms', 'smsbower', 'smscode', 'smscloud'].includes(cfg?.provider) ? cfg.provider : 'manual',
+      sms_url: '',
+      phone_number: '',
+      otp_channel: cfg?.otp_channel || 'sms',
+      phone_country_code: cfg?.phone_country_code || '81',
+      hero_sms_api_key: '',
+      hero_sms_base_url: cfg?.hero_sms_base_url || 'https://hero-sms.com/stubs/handler_api.php',
+      hero_sms_country: cfg?.hero_sms_country || '4',
+      hero_sms_service: cfg?.hero_sms_service || 'ts',
+      hero_sms_max_price: cfg?.hero_sms_max_price || '',
+      smsbower_api_key: '',
+      smsbower_base_url: cfg?.smsbower_base_url || 'https://smsbower.page/stubs/handler_api.php',
+      smsbower_country: cfg?.smsbower_country || '4',
+      smsbower_service: cfg?.smsbower_service || 'ts',
+      smsbower_max_price: cfg?.smsbower_max_price || '',
+      smscode_api_token: '',
+      smscode_base_url: cfg?.smscode_base_url || 'https://api.smscode.gg/v1',
+      smscode_country_id: cfg?.smscode_country_id || '4',
+      smscode_platform_id: cfg?.smscode_platform_id || '',
+      smscode_platform_query: cfg?.smscode_platform_query || 'paypal',
+      smscode_product_id: cfg?.smscode_product_id || '',
+      smscode_max_price: cfg?.smscode_max_price || '',
+      smscloud_xi_token: '',
+      smscloud_base_url: cfg?.smscloud_base_url || 'https://smscloud.sbs/api',
+      smscloud_country: cfg?.smscloud_country || '4',
+      smscloud_service: cfg?.smscloud_service || 'paypal',
+      smscloud_max_price: cfg?.smscloud_max_price || '',
+    }
+  } catch (e) {
+    setMessage(e.message || '加载 PayPal 接码配置失败', 'error')
+  } finally {
+    paypalSmsLoading.value = false
+  }
+}
+
+async function savePayPalSmsConfig() {
+  paypalSmsSaving.value = true
+  try {
+    const result = await api.savePayPalSmsConfig(paypalSmsForm.value)
+    paypalSmsStatus.value = result || {}
+    paypalSmsForm.value.sms_url = ''
+    paypalSmsForm.value.phone_number = ''
+    paypalSmsForm.value.hero_sms_api_key = ''
+    paypalSmsForm.value.smsbower_api_key = ''
+    paypalSmsForm.value.smscode_api_token = ''
+    paypalSmsForm.value.smscloud_xi_token = ''
+    setMessage(result.message || 'PayPal 接码配置已保存')
+    await loadPayPalSmsConfig()
+  } catch (e) {
+    setMessage(e.message || '保存 PayPal 接码配置失败', 'error')
+  } finally {
+    paypalSmsSaving.value = false
   }
 }
 

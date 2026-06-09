@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AutoTeam OAuth Helper",
+  "name": "AutoToken OAuth Helper",
   "version": "1.0.0",
-  "description": "Locks AutoTeam OAuth automation to OpenAI auth pages.",
+  "description": "Locks AutoToken OAuth automation to OpenAI auth pages.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://auth.openai.com/*",

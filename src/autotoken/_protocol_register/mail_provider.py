@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +116,11 @@ class MailProvider:
 
     def __init__(self, catch_all_domain: str = ""):
         self.catch_all_domain = catch_all_domain
-        self._reuse_email: Optional[str] = None  # 兼容 register-only resume
+        self._reuse_email: str | None = None  # 兼容 register-only resume
         # 算法化 persona 生成器（音节合成法，详见 persona.py）
-        from persona import PersonaGenerator, Persona
+        from persona import Persona, PersonaGenerator
         self._persona_gen = PersonaGenerator(catch_all_domain)
-        self.last_persona: Optional[Persona] = None
+        self.last_persona: Persona | None = None
 
     @staticmethod
     def _random_name() -> str:
@@ -157,7 +156,7 @@ class MailProvider:
         self,
         email_addr: str,
         timeout: int = 120,
-        issued_after: Optional[float] = None,
+        issued_after: float | None = None,
     ) -> str:
         """阻塞等 OTP。直接走 CF KV，不再有 IMAP fallback。
 

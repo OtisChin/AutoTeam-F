@@ -1,4 +1,4 @@
-"""Backfill LuckMail tokens into an AutoTeam accounts.json file.
+"""Backfill LuckMail tokens into an AutoToken accounts.json file.
 
 This is for accounts imported from another node/Hub where the account record
 lost its LuckMail token. It reads LuckMail purchase history through the
@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from curl_cffi import requests as curl_requests
-
 
 DEFAULT_ROOT = Path.cwd()
 PURCHASES_PATH = "/api/v1/openapi/email/purchases"
@@ -183,7 +182,7 @@ def _is_target_account(acc: dict[str, Any], *, include_all: bool) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="补齐 accounts.json 中缺失的 LuckMail token")
-    parser.add_argument("--root", default=str(DEFAULT_ROOT), help="目标 AutoTeam 根目录，默认当前目录")
+    parser.add_argument("--root", default=str(DEFAULT_ROOT), help="目标 AutoToken 根目录，默认当前目录")
     parser.add_argument("--accounts", default="", help="账号文件路径，默认 <root>/accounts.json")
     parser.add_argument("--env", default="", help="额外 .env 路径")
     parser.add_argument("--apply", action="store_true", help="写入 accounts.json；默认只预览")

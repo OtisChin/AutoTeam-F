@@ -593,8 +593,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 
-const REGISTER_FORM_STORAGE_KEY = 'autoteam_register_form_v1'
-const OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY = 'autoteam_oauth_phone_sms_countries_v2'
+const REGISTER_FORM_STORAGE_KEY = 'autotoken_register_form_v1'
+const OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY = 'autotoken_oauth_phone_sms_countries_v2'
 const OAUTH_PHONE_SMS_COUNTRIES_CACHE_TTL_MS = 30 * 60 * 1000
 
 const props = defineProps({

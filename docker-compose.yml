@@ -1,5 +1,5 @@
 services:
-  autoteam:
+  autotoken:
     build: .
     ports:
       - "8787:8787"

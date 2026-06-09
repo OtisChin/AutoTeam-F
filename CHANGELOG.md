@@ -1,12 +1,12 @@
 # Changelog
 
-本文档记录 AutoTeam-F 相对上游 [cnitlrt/AutoTeam](https://github.com/cnitlrt/AutoTeam) 的差异以及版本演进。日期采用 ISO 8601。
+本文档记录 AutoToken-F 相对上游 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken) 的差异以及版本演进。日期采用 ISO 8601。
 
 ## [Unreleased] — 2026-04-25
 
 ### mail-provider 协议错配诊断(issue #1)
 
-> [issue #1](https://github.com/ZRainbow1275/AutoTeam-F/issues/1) 报告:从 `cnitlrt/AutoTeam` 迁过来的用户配的 `CLOUDMAIL_*` 实际指向 `maillab/cloud-mail` 服务器,但本 fork 默认 `MAIL_PROVIDER=cf_temp_email` 走的是 `dreamhunter2333/cloudflare_temp_email` 协议 → maillab 服务器把 `/admin/address` 用 catch-all 路由误回 200,login 假成功;后续 `/admin/new_address` 拿到 `{code:401, message:"身份认证失效"}` 才暴露问题。
+> [issue #1](https://github.com/ZRainbow1275/AutoToken-F/issues/1) 报告:从 `cnitlrt/AutoToken` 迁过来的用户配的 `CLOUDMAIL_*` 实际指向 `maillab/cloud-mail` 服务器,但本 fork 默认 `MAIL_PROVIDER=cf_temp_email` 走的是 `dreamhunter2333/cloudflare_temp_email` 协议 → maillab 服务器把 `/admin/address` 用 catch-all 路由误回 200,login 假成功;后续 `/admin/new_address` 拿到 `{code:401, message:"身份认证失效"}` 才暴露问题。
 
 - **fix(mail): 双向协议错配嗅探** — `CfTempEmailClient.login()` 在 `/admin/address` 响应没有 `results` 字段但有 `code/data` 时抛出明确切换提示;`create_temp_email()` 二次防御 maillab 风格 `{code, message}` 响应。`MaillabClient._parse_response` 收到 HTTP 404 时提示"看起来是 cf_temp_email 服务器"。
 - **feat(setup_wizard): 启动前路由指纹嗅探** — `_sniff_provider_mismatch` 探测 base_url 的 `/admin/address` 与 `/login` 路由活跃度,与 `MAIL_PROVIDER` 期望不一致时打 warning(不阻断启动,真正校验仍走 login/create)。
@@ -19,7 +19,7 @@
 ### invite-hardening:邀请 / 巡检 / 对账三路加固
 
 - **feat(invite): seat fallback 鲁棒性** — `chatgpt_api.invite_member` 新增 `_classify_invite_error`(rate_limited / network / domain_blocked / other) + POST `/invites` 退避重试 `[5s, 15s]`;`_update_invite_seat_type` 的 PATCH 加 1 次重试,全部失败时**保留 codex 席位**(`_seat_type="usage_based"`)而不是丢账号。响应 dict 现在一定包含 `_seat_type` ∈ {`chatgpt`, `usage_based`, `unknown`} 与 `_error_kind`,`invite.py` / `manual_account.py` / `manager._run_post_register_oauth` 都据此把席位类型落到 `accounts.json.seat_type`。
-- **feat(check): `cmd_check --include-standby`** — `cmd_check(include_standby=False)` 默认行为不变;传 `True` 时调用新增的 `_probe_standby_quota` 遍历 standby 池,限速 `STANDBY_PROBE_INTERVAL_SEC=1.5s`、去重 `STANDBY_PROBE_DEDUP_SEC=86400s`(24h 内已探测过的跳过)。探到 401/403 → 标 `STATUS_AUTH_INVALID`,仍 exhausted → 刷新 `quota_exhausted_at/resets_at`,ok → 写回 `last_quota` + `last_quota_check_at`(不动 status)。CLI `autoteam check --include-standby`,API `POST /api/tasks/check` 接受 `{"include_standby": true}`。
+- **feat(check): `cmd_check --include-standby`** — `cmd_check(include_standby=False)` 默认行为不变;传 `True` 时调用新增的 `_probe_standby_quota` 遍历 standby 池,限速 `STANDBY_PROBE_INTERVAL_SEC=1.5s`、去重 `STANDBY_PROBE_DEDUP_SEC=86400s`(24h 内已探测过的跳过)。探到 401/403 → 标 `STATUS_AUTH_INVALID`,仍 exhausted → 刷新 `quota_exhausted_at/resets_at`,ok → 写回 `last_quota` + `last_quota_check_at`(不动 status)。CLI `autotoken check --include-standby`,API `POST /api/tasks/check` 接受 `{"include_standby": true}`。
 - **feat(reconcile): 残废 / 错位 / 耗尽未抛弃 + dry-run** — `_reconcile_team_members` 从原先 3 类扩到 8 类分支,覆盖:
   - **残废**(workspace 有 active + 本地 `auth_file` 缺失)→ 先尝试从 `auths/codex-{email}-team-*.json` 兜底补齐;找不到则按 `RECONCILE_KICK_ORPHAN` 决定 KICK 或标 `STATUS_ORPHAN`
   - **错位**(workspace active + 本地 standby)→ 改回 active + 补齐 auth_file(找不到 auth 则降级残废路径)
@@ -27,9 +27,9 @@
   - **ghost**(workspace 有 + 本地完全无记录)→ 按 `RECONCILE_KICK_GHOST` 决定 KICK 或留给 `sync_account_states` 补录
   - `auth_invalid` / `exhausted` / `personal` → 同样 KICK
   - `orphan` → 已标记,跳过,等人工
-- **feat(reconcile): dry-run 模式** — `cmd_reconcile(dry_run=True)` / `cmd_reconcile_dry_run()` 只诊断不动账户;CLI `autoteam reconcile [--dry-run]`,API `POST /api/admin/reconcile?dry_run=1`。`_reconcile_team_members` 返回结构化 dict(`kicked` / `orphan_kicked` / `orphan_marked` / `misaligned_fixed` / `exhausted_marked` / `ghost_kicked` / `ghost_seen` / `over_cap_kicked` / `flipped_to_active`),第二轮 over-cap kick 优先级改为 `orphan → auth_invalid → exhausted → personal → standby → 额度最低 active`。
+- **feat(reconcile): dry-run 模式** — `cmd_reconcile(dry_run=True)` / `cmd_reconcile_dry_run()` 只诊断不动账户;CLI `autotoken reconcile [--dry-run]`,API `POST /api/admin/reconcile?dry_run=1`。`_reconcile_team_members` 返回结构化 dict(`kicked` / `orphan_kicked` / `orphan_marked` / `misaligned_fixed` / `exhausted_marked` / `ghost_kicked` / `ghost_seen` / `over_cap_kicked` / `flipped_to_active`),第二轮 over-cap kick 优先级改为 `orphan → auth_invalid → exhausted → personal → standby → 额度最低 active`。
 - **新增字段 / 状态**:
-  - `accounts.json.seat_type` ∈ `SEAT_CHATGPT` / `SEAT_CODEX` / `SEAT_UNKNOWN`,常量在 `autoteam.accounts`
+  - `accounts.json.seat_type` ∈ `SEAT_CHATGPT` / `SEAT_CODEX` / `SEAT_UNKNOWN`,常量在 `autotoken.accounts`
   - `accounts.json.last_quota_check_at`(epoch 秒)— standby 探测去重依据
   - `STATUS_ORPHAN` — workspace 占席 + 本地 auth 丢失,等人工补登或 kick
   - `STATUS_AUTH_INVALID` — `auth_file` token 已不可用(401/403),待 reconcile 清理或重登
@@ -126,11 +126,11 @@
 
 ### 新增 `maillab` 邮件后端 + provider 抽象层
 
-- **新增 `MAIL_PROVIDER` 环境变量** — 在 `cf_temp_email`(默认,即 `dreamhunter2333/cloudflare_temp_email`)和 `maillab`(即 `maillab/cloud-mail`)之间切换。**业务调用方零改动**,旧的 `from autoteam.cloudmail import CloudMailClient` 仍然有效,工厂会按 provider dispatch。
-- **拆分 `cloudmail.py`** → 新增 `src/autoteam/mail/` 包:
+- **新增 `MAIL_PROVIDER` 环境变量** — 在 `cf_temp_email`(默认,即 `dreamhunter2333/cloudflare_temp_email`)和 `maillab`(即 `maillab/cloud-mail`)之间切换。**业务调用方零改动**,旧的 `from autotoken.cloudmail import CloudMailClient` 仍然有效,工厂会按 provider dispatch。
+- **拆分 `cloudmail.py`** → 新增 `src/autotoken/mail/` 包:
   - `base.py` — 定义 `MailProvider` ABC + `decode_jwt_payload` / `parse_mime` / `normalize_email_addr` 等公共辅助。
-  - `cf_temp_email.py` — `dreamhunter2333/cloudflare_temp_email` 实现(`/admin/*` + `x-admin-auth` header + MIME 解析)。
-  - `maillab.py` — `maillab/cloud-mail` 实现(`/login` + `/email/list` + 裸 JWT Authorization + 字段映射)。
+  - `cloudflare_temp_email.py` — `dreamhunter2333/cloudflare_temp_email` 实现(`/admin/*` + `x-admin-auth` header + MIME 解析)。
+  - `cloud_mail.py` — `maillab/cloud-mail` 实现(`/login` + `/email/list` + 裸 JWT Authorization + 字段映射)。
   - `factory.py` — 单例工厂,按 `MAIL_PROVIDER` 实例化具体 provider。
 - **`cloudmail.py` 退化为兼容 shim** — 不破坏导入路径,`CloudMailClient = get_mail_provider()` 即可。
 - **新增 `MAILLAB_*` 配置** — `MAILLAB_API_URL` / `MAILLAB_USERNAME` / `MAILLAB_PASSWORD` / `MAILLAB_DOMAIN`(缺省回落 `CLOUDMAIL_DOMAIN`)。
@@ -150,7 +150,7 @@
 
 ### 测试
 
-- 新增 `tests/unit/test_maillab.py`(16 个用例),覆盖字段映射、auth header、createTime 解析、type=0 防御、翻页边界、phantom 字段排除。
+- 新增 `tests/unit/test_cloud_mail.py`(16 个用例),覆盖字段映射、auth header、createTime 解析、type=0 防御、翻页边界、phantom 字段排除。
 
 ---
 
@@ -171,4 +171,4 @@
 | 2026-04-23 | `e760be9`    | fix(codex-oauth): personal 模式拒收 team-plan 的 bundle + kick 后等同步 |
 | 2026-04-23 | `1963072`    | feat(check): 让 cmd_check 扫描 Personal 号的额度             |
 | 2026-04-23 | `07ef29f`    | fix(fill-personal): 修复账号实际未被踢出 Team 的问题         |
-| 2026-04-22 | `3df0958`    | feat: AutoTeam-F 首发 — fork of cnitlrt/AutoTeam,引入 Free-account pipeline |
+| 2026-04-22 | `3df0958`    | feat: AutoToken-F 首发 — fork of cnitlrt/AutoToken,引入 Free-account pipeline |

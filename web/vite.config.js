@@ -5,7 +5,7 @@ import path from 'path'
 export default defineConfig({
   plugins: [vue()],
   build: {
-    outDir: path.resolve(__dirname, '../src/autoteam/web/dist'),
+    outDir: path.resolve(__dirname, '../src/autotoken/web/dist'),
     emptyOutDir: true,
   },
   server: {

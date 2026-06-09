@@ -30,9 +30,9 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(repo_root / "src"))
 
-    from autoteam.accounts import STATUS_STANDBY, update_account
-    from autoteam.chatgpt_api import ChatGPTTeamAPI
-    from autoteam.manager import remove_from_team
+    from autotoken.integrations.chatgpt_api import ChatGPTTeamAPI
+    from autotoken.interfaces.manager import remove_from_team
+    from autotoken.storage.accounts import STATUS_STANDBY, update_account
 
     api = ChatGPTTeamAPI()
     api.start()

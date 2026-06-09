@@ -3,6 +3,9 @@
 > 说明：这是历史设计文档，当前仓库已进一步把对外命名统一为
 > `cloudflare_temp_email` / `cloud-mail` 与 `CLOUDFLARE_TEMP_EMAIL_*` / `CLOUD_MAIL_*`。
 > 文中旧术语仅用于描述兼容层与演进背景，不代表当前推荐用法。
+> 当前实现文件为 `src/autotoken/mail/cloudflare_temp_email.py` 和
+> `src/autotoken/mail/cloud_mail.py`；`cf_temp_email` / `maillab` 仅作为
+> `MAIL_PROVIDER` 的历史别名保留。
 
 ---
 
@@ -19,7 +22,7 @@
 
 ## 1. MailProvider 抽象基类
 
-放在新文件 `src/autoteam/mail/base.py`，使用 `abc.ABC`。
+放在新文件 `src/autotoken/mail/base.py`，使用 `abc.ABC`。
 方法集**严格覆盖** `cloudmail.py` 现有公开方法，不增不减。
 
 ```python
@@ -180,21 +183,21 @@ MAILLAB_DOMAIN=@xxx                  # 创建邮箱时用
 
 ### 3.2 工厂函数
 
-新文件 `src/autoteam/mail/__init__.py`：
+新文件 `src/autotoken/mail/__init__.py`：
 
 ```python
 import os
-from autoteam.mail.base import MailProvider
+from autotoken.mail.base import MailProvider
 
 def get_mail_client() -> MailProvider:
-    provider = (os.environ.get("MAIL_PROVIDER") or "cf_temp_email").strip().lower()
+    provider = (os.environ.get("MAIL_PROVIDER") or "cloudflare_temp_email").strip().lower()
     if provider in ("cf_temp_email", "cloudflare_temp_email"):
-        from autoteam.mail.cf_temp_email import CfTempEmailClient
-        return CfTempEmailClient()
-    if provider == "maillab":
-        from autoteam.mail.maillab import MaillabClient
-        return MaillabClient()
-    raise ValueError(f"未知 MAIL_PROVIDER={provider}（可选: cf_temp_email | maillab）")
+        from autotoken.mail.cloudflare_temp_email import CloudflareTempEmailClient
+        return CloudflareTempEmailClient()
+    if provider in ("maillab", "cloud-mail", "cloud_mail"):
+        from autotoken.mail.cloud_mail import CloudMailProviderClient
+        return CloudMailProviderClient()
+    raise ValueError(f"未知 MAIL_PROVIDER={provider}（可选: cloudflare_temp_email | cloud-mail）")
 
 # 向后兼容别名 — 现有 31 处 `CloudMailClient()` 调用零改动
 CloudMailClient = get_mail_client
@@ -207,23 +210,23 @@ CloudMailClient = get_mail_client
 
 ## 4. 命名争议解决（采纳方案 A：拆包）
 
-**方案 A（采纳）**：拆 `src/autoteam/mail/` 包
+**方案 A（采纳）**：拆 `src/autotoken/mail/` 包
 
 ```
-src/autoteam/mail/
+src/autotoken/mail/
 ├── __init__.py        # 工厂 + CloudMailClient 别名
 ├── base.py            # MailProvider ABC + Email/Account dataclass + wait/extract 默认实现
-├── cf_temp_email.py   # 从现 cloudmail.py 拆出，重命名为 CfTempEmailClient
-└── maillab.py         # 新写
+├── cloudflare_temp_email.py   # dreamhunter2333/cloudflare_temp_email provider
+└── cloud_mail.py              # maillab/cloud-mail provider
 ```
 
-`cloudmail.py` 改为 1 行 stub：`from autoteam.mail import CloudMailClient  # noqa`，
-保留是为了任何还没迁移的外部脚本可以继续 `from autoteam.cloudmail import CloudMailClient`。
+`cloudmail.py` 改为 1 行 stub：`from autotoken.mail import CloudMailClient  # noqa`，
+保留是为了任何还没迁移的外部脚本可以继续 `from autotoken.cloudmail import CloudMailClient`。
 
 **理由**（vs 方案 B 单文件多 class）：
 1. **关注点分离**：cf_temp_email 现在 ~520 行，再塞一个 maillab provider 单文件会 > 1000 行难维护。
-2. **测试可读性**：现 `tests/unit/test_cloudmail.py` 测的全是 cf 的 admin 路由；拆包后可
-   并行新增 `test_maillab.py`，测试边界清晰。
+2. **测试可读性**：现 `tests/unit/test_cloudflare_temp_email.py` 测的是 cloudflare_temp_email
+   admin 路由；`tests/unit/test_cloud_mail.py` 覆盖 cloud-mail，测试边界清晰。
 3. **延迟 import**：工厂用 `if` 内 import，仅按需加载对应 provider 的依赖。
 
 ---
@@ -234,25 +237,25 @@ src/autoteam/mail/
 
 | 文件                                  | 行数估算 | 意图                                     |
 | ------------------------------------- | -------- | ---------------------------------------- |
-| `src/autoteam/mail/__init__.py`       | ~30      | 工厂 + 兼容别名                          |
-| `src/autoteam/mail/base.py`           | ~150     | ABC、dataclass、wait/OTP/link 默认实现   |
-| `src/autoteam/mail/cf_temp_email.py`  | ~430     | 把现 cloudmail.py 业务搬过来，重命名类   |
-| `src/autoteam/mail/maillab.py`        | ~350     | 新写：login/email/list/delete + 字段映射 |
-| `tests/unit/test_maillab.py`          | ~200     | 新增：覆盖 maillab provider              |
+| `src/autotoken/mail/__init__.py`       | ~30      | 工厂 + 兼容别名                          |
+| `src/autotoken/mail/base.py`           | ~150     | ABC、dataclass、wait/OTP/link 默认实现   |
+| `src/autotoken/mail/cloudflare_temp_email.py` | ~430     | dreamhunter2333/cloudflare_temp_email provider |
+| `src/autotoken/mail/cloud_mail.py`            | ~350     | maillab/cloud-mail provider                    |
+| `tests/unit/test_cloud_mail.py`               | ~200     | 覆盖 cloud-mail provider                       |
 
 ### 5.2 修改文件（4 个）
 
 | 文件                                  | 行数估算 | 意图                                                              |
 | ------------------------------------- | -------- | ----------------------------------------------------------------- |
-| `src/autoteam/cloudmail.py`           | -510     | 缩为 1 行 re-export（删除业务代码，保 import 兼容）               |
-| `src/autoteam/config.py`              | +10      | 新增 `MAIL_PROVIDER` / `MAILLAB_*` 读取；标记 `CLOUDMAIL_EMAIL` 废弃 |
+| `src/autotoken/mail/__init__.py`       | +兼容导出 | 统一 provider 工厂与历史 `CloudMailClient` 兼容入口               |
+| `src/autotoken/settings/config.py`     | +10      | 新增 `MAIL_PROVIDER` / `MAILLAB_*` 读取；标记 `CLOUDMAIL_EMAIL` 废弃 |
 | `.env.example`                        | +6 / -1  | 加 `MAIL_PROVIDER=cf_temp_email` 注释块 + maillab 段              |
-| `src/autoteam/setup_wizard.py`        | ~10      | 不再强制要求 `CLOUDMAIL_EMAIL`；按 provider 走 if 分支             |
-| `tests/unit/test_cloudmail.py`        | ~5       | 改 import 路径为 `autoteam.mail.cf_temp_email`，断言不变           |
+| `src/autotoken/settings/setup_wizard.py` | ~10    | 不再强制要求 `CLOUDMAIL_EMAIL`；按 provider 走 if 分支             |
+| `tests/unit/test_cloudflare_temp_email.py` | ~5   | 覆盖 `autotoken.mail.cloudflare_temp_email`，断言不变              |
 | `docs/configuration.md`               | +20      | 加 mail provider 章节                                             |
 | `README.md`                           | +5       | 修正"cloudmail 不等于 maillab/cloud-mail"的脚注                   |
 
-**业务调用方零改动**（31 个调用点全部保持 `from autoteam.cloudmail import CloudMailClient` +
+**业务调用方零改动**（31 个调用点全部保持 `from autotoken.cloudmail import CloudMailClient` +
 `CloudMailClient()` 语法不变）。
 
 ### 5.3 风险点
@@ -260,8 +263,8 @@ src/autoteam/mail/
 | 风险                                                               | 缓解                                                               |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
 | `CloudMailClient = get_mail_client`（class 实例化变函数调用）有副作用 | 工厂函数返回的对象就是 provider 实例；语法 `CloudMailClient()` 完全兼容 |
-| `tests/unit/test_cloudmail.py` 直接 patch `cloudmail.requests`     | cf_temp_email.py 内的 `requests` 路径变了，需要把 patch target 改名 |
-| 旧 `cloudmail.py` 留 stub 期间，`from autoteam.cloudmail import _parse_mime` 等私有函数可能有人引用 | grep 全仓 `_parse_mime / _decode_jwt_payload`：仅 cloudmail.py 内部用，**确认安全**（已查） |
+| 旧测试直接 patch `cloudmail.requests`     | `cloudflare_temp_email.py` 内的 `requests` 路径变了，需要把 patch target 改名 |
+| 旧 `cloudmail.py` 留 stub 期间，`from autotoken.cloudmail import _parse_mime` 等私有函数可能有人引用 | grep 全仓 `_parse_mime / _decode_jwt_payload`：仅 cloudmail.py 内部用，**确认安全**（已查） |
 | `MAIL_PROVIDER` 拼错（如 `MAILAB`）→ 启动崩 ValueError              | 错误信息列出可选值；setup_wizard 加交互式选择                       |
 | maillab 后端字段差异未 100% 摸清（见 §6）                          | 保留 `extra` / `raw` dict 兜底，先实现 80% 路径，发布前小步对齐     |
 
@@ -323,10 +326,10 @@ extract_invite_link(email_data) -> str | None
 ## 附录 B：实施顺序建议
 
 1. 拉新分支 `feat/mail-provider-abstraction`。
-2. 建 `src/autoteam/mail/` 目录骨架（base.py + 工厂 + stub cf/maillab）。
-3. 把 cloudmail.py 业务搬到 `mail/cf_temp_email.py`，跑 `tests/unit/test_cloudmail.py` 全绿。
+2. 建 `src/autotoken/mail/` 目录骨架（base.py + 工厂 + provider 实现）。
+3. 把 cloudmail.py 业务搬到 `mail/cloudflare_temp_email.py`，跑 `tests/unit/test_cloudflare_temp_email.py` 全绿。
 4. 改 `cloudmail.py` 为 1 行 re-export，再跑测试。
-5. 实现 `mail/maillab.py`，按 §6 清单先做现场验证。
-6. 写 `tests/unit/test_maillab.py`。
+5. 实现 `mail/cloud_mail.py`，按 §6 清单先做现场验证。
+6. 写 `tests/unit/test_cloud_mail.py`。
 7. 更新 `setup_wizard.py` 走 provider 分支，更新 `.env.example` / `docs/configuration.md`。
 8. 全量 e2e：在两个 provider 各跑一遍 manager 的注册流程。

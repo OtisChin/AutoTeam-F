@@ -19,4 +19,4 @@ ignore = [
 ]
 
 [lint.isort]
-known-first-party = ["autoteam"]
+known-first-party = ["autotoken"]

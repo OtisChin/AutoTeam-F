@@ -1,40 +1,34 @@
 <template>
   <div v-if="status">
-    <div class="mb-6 flex flex-wrap gap-2">
+    <div class="dashboard-tabs">
       <button
         v-for="tab in dashboardTabs"
         :key="tab.value"
         @click="activeDashboardTab = tab.value"
-        class="px-4 py-2 rounded-lg text-sm border transition"
+        class="dashboard-tab"
         :class="activeDashboardTab === tab.value
-          ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-          : 'bg-gray-900 text-gray-300 border-gray-700 hover:bg-gray-800'">
+          ? 'dashboard-tab-active'
+          : 'dashboard-tab-idle'">
         {{ tab.label }}
       </button>
     </div>
 
     <template v-if="activeDashboardTab === 'chatgpt'">
-    <!-- 统计卡片 -->
-    <div class="flex items-center justify-between gap-3 mb-3">
-      <h2 class="text-lg font-semibold text-white">统计面板</h2>
-      <button @click="emit('refresh')"
-        class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
-        刷新
-      </button>
-    </div>
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-      <div v-for="card in cards" :key="card.label"
-        class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div class="text-sm text-gray-400">{{ card.label }}</div>
-        <div class="text-3xl font-bold mt-1" :class="card.color">{{ card.value }}</div>
+    <div class="dashboard-summary-grid">
+      <div v-for="card in cards" :key="card.label" class="dashboard-summary-card">
+        <div class="dashboard-summary-label">{{ card.label }}</div>
+        <div class="dashboard-summary-value" :class="card.color">{{ card.value }}</div>
       </div>
     </div>
 
     <!-- 账号表格 -->
-    <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-      <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3 flex-wrap">
-        <h2 class="text-lg font-semibold text-white">账号列表</h2>
-        <div class="flex items-center gap-2">
+    <div class="dashboard-table-shell">
+      <div class="dashboard-table-header">
+        <div>
+          <h2 class="text-lg font-semibold text-white">账号列表</h2>
+          <p class="mt-1 text-xs text-gray-500">批量导出、补登录、刷新额度和清理无效凭证。</p>
+        </div>
+        <div class="dashboard-actions">
           <button
             @click="exportAccounts"
             :disabled="!exportableAccounts.length"
@@ -77,7 +71,7 @@
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
             :class="!sessionCpaConvertibleAccounts.length || sessionCpaConverting
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-              : 'bg-teal-600/10 text-teal-300 border-teal-500/30 hover:bg-teal-600/20'">
+              : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
             {{ sessionCpaConverting ? '转换中...' : `直接转换CPA认证 (${sessionCpaConvertibleAccounts.length})` }}
           </button>
           <button
@@ -251,8 +245,8 @@
           </div>
         </div>
       </div>
-      <div class="px-4 py-3 border-b border-gray-800 bg-gray-950/30 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <div class="dashboard-filter-bar">
+        <div class="dashboard-filters">
           <label class="relative block">
             <input
               v-model.trim="emailFilter"
@@ -362,7 +356,7 @@
         </div>
         <div class="text-xs text-gray-500">
           显示 <span class="text-gray-300 font-mono">{{ filteredAccounts.length }}</span> / <span class="font-mono">{{ allAccounts.length }}</span>
-          <span v-if="selectedEmails.length">，已选 <span class="text-cyan-300 font-mono">{{ selectedEmails.length }}</span></span>
+          <span v-if="selectedEmails.length">，已选 <span class="text-blue-400 font-mono">{{ selectedEmails.length }}</span></span>
         </div>
       </div>
       <div v-if="message" class="mx-4 mt-4 px-4 py-3 rounded-lg text-sm border" :class="messageClass">
@@ -879,7 +873,7 @@ const failuresItems = ref([])
 const failuresCounts = ref({})
 const failuresLoading = ref(false)
 
-const OAUTH_PROXY_STORAGE_KEY = 'autoteam.dashboard.oauthProxy'
+const OAUTH_PROXY_STORAGE_KEY = 'autotoken.dashboard.oauthProxy'
 
 function loadOauthProxyConfig() {
   try {
@@ -1447,7 +1441,7 @@ const cards = computed(() => {
     { label: 'Free', value: s.free || 0, color: 'text-fuchsia-400' },
     { label: 'Team', value: s.team || 0, color: 'text-violet-400' },
     { label: 'Plus', value: s.plus || 0, color: 'text-sky-400' },
-    { label: 'Pro', value: s.pro || 0, color: 'text-cyan-400' },
+    { label: 'Pro', value: s.pro || 0, color: 'text-blue-400' },
     { label: '总计', value: s.total, color: 'text-white' },
   ]
 })

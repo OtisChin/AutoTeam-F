@@ -9,10 +9,8 @@
 
 from __future__ import annotations
 
-import base64
 import email as email_pkg
 import html as html_lib
-import json
 import logging
 import re
 import time
@@ -21,7 +19,9 @@ from dataclasses import dataclass, field
 from email.header import decode_header, make_header
 from typing import Any
 
-from autoteam.config import EMAIL_POLL_INTERVAL, EMAIL_POLL_TIMEOUT
+from autotoken.core.jwt import decode_jwt_payload as _decode_jwt_payload
+from autotoken.core.normalization import normalized_email
+from autotoken.settings.config import EMAIL_POLL_INTERVAL, EMAIL_POLL_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -71,15 +71,7 @@ def decode_mime_header(value: str | None) -> str:
 
 
 def decode_jwt_payload(jwt: str) -> dict:
-    try:
-        parts = jwt.split(".")
-        if len(parts) < 2:
-            return {}
-        payload = parts[1]
-        payload += "=" * (-len(payload) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload.encode()).decode("utf-8", errors="replace"))
-    except Exception:
-        return {}
+    return _decode_jwt_payload(jwt)
 
 
 def _part_to_text(part) -> str:
@@ -152,7 +144,7 @@ def html_to_visible_text(value: Any) -> str:
 
 
 def normalize_email_addr(value: Any) -> str:
-    return str(value or "").strip().lower()
+    return normalized_email(value)
 
 
 # ----------------------------------------------------------------------- ABC

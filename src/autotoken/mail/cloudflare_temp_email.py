@@ -1,6 +1,6 @@
 """dreamhunter2333/cloudflare_temp_email 后端的 MailProvider 实现。
 
-直接搬运历史 `autoteam.cloudmail.CloudMailClient` 的逻辑,所有公开方法行为保持原样
+直接搬运历史 `autotoken.cloudmail.CloudMailClient` 的逻辑,所有公开方法行为保持原样
 (包括 retry/timeout/jwt 解析/MIME 兜底等细节),不做语义重写。
 
 - 鉴权:`x-admin-auth: {CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD}` header
@@ -17,16 +17,15 @@ import uuid
 
 import requests
 
-from autoteam.config import (
-    CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD,
-    CLOUDFLARE_TEMP_EMAIL_BASE_URL,
-    CLOUDFLARE_TEMP_EMAIL_DOMAIN,
-)
-from autoteam.mail.base import (
+from autotoken.mail.base import (
     MailProvider,
     decode_jwt_payload,
     normalize_email_addr,
     parse_mime,
+)
+from autotoken.settings.config import (
+    CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD,
+    CLOUDFLARE_TEMP_EMAIL_BASE_URL,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,7 +127,7 @@ class CloudflareTempEmailClient(MailProvider):
         if domain:
             domain = domain.lstrip("@").strip()
         else:
-            from autoteam.runtime_config import get_register_domain
+            from autotoken.settings.runtime_config import get_register_domain
 
             domain = get_register_domain()
         if not domain:
@@ -154,7 +153,7 @@ class CloudflareTempEmailClient(MailProvider):
         if isinstance(data, dict) and "address" not in data and ("code" in data and "message" in data):
             raise Exception(
                 f"创建邮箱响应不像 dreamhunter2333/cloudflare_temp_email(收到 cloud-mail 风格 {data})。"
-                "请在 .env 里设置 MAIL_PROVIDER=cloud-mail — cnitlrt/AutoTeam 原版的"
+                "请在 .env 里设置 MAIL_PROVIDER=cloud-mail — cnitlrt/AutoToken 原版的"
                 "'cloudmail' 实际就是 cloud-mail。"
             )
 
@@ -197,22 +196,20 @@ class CloudflareTempEmailClient(MailProvider):
         except Exception:
             return []
 
-        out = []
-        for row in data.get("results", []):
-            out.append(
-                {
-                    "accountId": row.get("id"),
-                    "email": row.get("name"),
-                    "password": row.get("password"),
-                    "createTime": row.get("created_at"),
-                    "updateTime": row.get("updated_at"),
-                    "mailCount": row.get("mail_count"),
-                    "sendCount": row.get("send_count"),
-                    "sourceMeta": row.get("source_meta"),
-                    "raw": row,
-                }
-            )
-        return out
+        return [
+            {
+                "accountId": row.get("id"),
+                "email": row.get("name"),
+                "password": row.get("password"),
+                "createTime": row.get("created_at"),
+                "updateTime": row.get("updated_at"),
+                "mailCount": row.get("mail_count"),
+                "sendCount": row.get("send_count"),
+                "sourceMeta": row.get("source_meta"),
+                "raw": row,
+            }
+            for row in data.get("results", [])
+        ]
 
     def delete_account(self, account_id):
         """删除临时邮箱账户。account_id 可以是数字 id,也可以是 email(自动查 id)。"""
@@ -279,7 +276,7 @@ class CloudflareTempEmailClient(MailProvider):
         return None
 
     def _normalize_mail_record(self, row):
-        """把 /admin/mails 返回的一条 raw MIME 记录转成 AutoTeam 期望的字典。"""
+        """把 /admin/mails 返回的一条 raw MIME 记录转成 AutoToken 期望的字典。"""
         raw = row.get("raw") or ""
         subject, text, html_body, from_addr, to_addr, message_id = parse_mime(raw)
 

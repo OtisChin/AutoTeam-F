@@ -2,168 +2,88 @@
 
 ## 总体目标
 
-AutoTeam 的目标不是单纯“多开号”，而是：
+AutoToken-F 用来维护 ChatGPT Team 账号池、认证文件和 CPA 同步状态。核心目标是：
 
-1. 维护 **Team 总人数** 在目标值附近
-2. 让 active 账号尽量保持可用额度
-3. 将可用认证文件同步到 CPA
-4. 在需要时从 CPA 反向恢复认证文件到本地
+1. 让 Team 席位数量接近目标值。
+2. 在账号额度不足或认证失效时及时轮转。
+3. 将可用认证文件同步到 CPA，并支持从 CPA 反向恢复。
+4. 将注册、OAuth、支付绑定和账号清理这些高风险流程拆到清晰模块中维护。
+
+## 目录结构
+
+运行时代码以 `src/autotoken/` 为唯一 canonical 包。根层 `.py` 文件除 `__init__.py` 和 `__main__.py` 外，都是兼容 wrapper；真实实现按职责放在子目录中：
+
+| 目录 | 职责 |
+|------|------|
+| `interfaces/` | CLI、历史 manager 入口、FastAPI app 组合 |
+| `api_routes/` | HTTP 路由分组 |
+| `auth/` | Codex OAuth、协议注册、邀请注册、手动账号导入 |
+| `core/` | 路径、文本 IO、环境兼容、浏览器指纹、取消信号等基础能力 |
+| `settings/` | 静态配置、运行时配置、管理员状态、首次配置向导 |
+| `storage/` | 账号池、认证文件、SQLite、失败记录持久化 |
+| `payments/` | 绑卡、GoPay、PayPal、WhatsApp OTP 等支付相关流程 |
+| `integrations/` | ChatGPT API、CPA、RoxyBrowser、代理桥、Rekberinaja、导入导出转换 |
+| `services/` | 可复用业务决策和任务运行时逻辑 |
+| `mail/` | 临时邮箱与账号池邮箱 provider |
+| `commerce/` | 交易和库存类辅助逻辑 |
+| `_protocol_register/` | 纯协议注册的底层实现和 JS 指纹脚本 |
+| `oauth_helper_extension/` | OAuth 本地回调辅助扩展 |
+| `web/dist/` | 前端生产构建产物，发布包需要但不进入 Git |
+
+旧包名只保留最小兼容入口，便于历史脚本在迁移期继续启动；新代码和文档应统一使用 canonical 包与 `autotoken` 命令。
 
 ## 轮转流程
 
 ```text
 同步 Team 实际状态
         ↓
-检查 active 账号额度
+检查 active 账号额度和认证状态
         ↓
-额度不足 → 标记 exhausted → 移出 Team → standby
+额度不足或认证失效 → 标记 exhausted/auth_invalid
         ↓
-优先复用 standby 旧号
+按策略移出 Team 或等待重试
         ↓
-不够再创建新号
+优先复用 standby 账号
+        ↓
+不足时注册新号并执行 Codex OAuth
         ↓
 同步 active 认证文件到 CPA
 ```
 
-> 轮转目标是 **Team 总人数**。
-> Team 中已有的 owner / 外部成员也会计入目标人数。
-
-## 账号状态机
-
-```text
-             ┌───────────── 额度恢复 / 登录成功 ──────────────┐
-             │                                                │
-             ↓                                                │
-pending ──> active ──额度不足──> exhausted ──移出 Team──> standby
-             │                                                │
-             │                                      ┌─ 401/403 探测
-             │                                      ↓
-             │                               auth_invalid ──对账 KICK──> (删除 / 重登)
-             │
-             └── 对账发现本地 auth_file 缺失 ──> orphan ──人工补登──> active
-                                                   │
-                                                   └── RECONCILE_KICK_ORPHAN=true ──> KICK
-```
+## 账号状态
 
 | 状态 | 含义 |
 |------|------|
 | `active` | 当前在 Team 中，且本地认为可用 |
-| `exhausted` | 当前在 Team 中，但额度不足，等待移出 |
-| `standby` | 已不在当前轮转席位中，等待后续复用 |
-| `pending` | 注册 / 创建流程尚未完成 |
-| `personal` | 已主动退出 Team，走个人号 Codex OAuth，不再参与 Team 轮转 |
-| `auth_invalid` | `auth_file` token 已不可用(401/403)。`cmd_check --include-standby` 探测或主动使用时落入此态,等对账 KICK 或重登 |
-| `orphan` | workspace 仍占席 + 本地 `auth_file` 缺失。默认 `RECONCILE_KICK_ORPHAN=true` 直接 KICK;关掉则打此标记等人工 |
-
-### 对账(reconcile)分支
-
-`_reconcile_team_members` 在 `cmd_check` 入口和独立命令 `autoteam reconcile [--dry-run]` 都会执行,对齐 workspace `/users` 的事实与本地 `accounts.json`:
-
-| workspace ↔ 本地 | 处置 |
-|-------------------|------|
-| active + auth_file 存在 | 正常 |
-| active + auth_file 缺失 | **残废**:先找 `auths/codex-{email}-team-*.json` 兜底,找不到按 `RECONCILE_KICK_ORPHAN` 决定 KICK 或标 `orphan` |
-| active + `last_quota` 5h/周均 100% | **耗尽未抛弃**:标 `exhausted` + `quota_exhausted_at=now`,**不立即 kick**(避开 token_revoked 风控) |
-| active ↔ pending | 升 `active` |
-| active ↔ standby | **错位**:改回 `active` + 补齐 auth_file |
-| active ↔ exhausted / personal / auth_invalid | KICK |
-| active ↔ orphan | 已标记,跳过 |
-| active ↔ 本地无记录 | **ghost**:按 `RECONCILE_KICK_GHOST` 决定 KICK 或留给 `sync_account_states` 补录 |
+| `exhausted` | 当前在 Team 中，但额度不足，等待移出或复核 |
+| `standby` | 已不在当前轮转席位中，后续可复用 |
+| `pending` | 注册、创建或 OAuth 流程尚未完成 |
+| `personal` | 已转为个人号 Codex OAuth，不再参与 Team 轮转 |
+| `auth_invalid` | 认证文件 token 不可用，等待对账、重登或清理 |
+| `orphan` | workspace 仍占席，但本地认证文件缺失 |
 
 ## 同步模型
 
-项目中有三类“同步”：
-
 | 动作 | 方向 | 用途 |
 |------|------|------|
-| `同步账号` | Team / `auths/` → `accounts.json` | 修复本地账号池记录 |
-| `同步 CPA` | 本地 active → CPA | 只把 active 认证文件同步到 CPA |
-| `拉取 CPA` | CPA → 本地 | 从 CPA 反向恢复 / 导入认证文件 |
+| 同步账号 | Team / `auths/` → `accounts.json` 或 SQLite | 修复本地账号池记录 |
+| 同步 CPA | 本地 active → CPA | 上传可用认证文件 |
+| 从 CPA 同步 | CPA → 本地 | 恢复本地缺失认证文件 |
+| 对账 | Team API ↔ 本地状态 | 清理 ghost、orphan、错位席位 |
 
-### 反向同步特点
+## 运行数据边界
 
-- 同账号去重（CPA 与本地都只保留一份）
-- 按本地命名规范重写文件名
-- 比较 `last_refresh` / `expired`，避免用旧 CPA 文件覆盖本地新 token
-- 新导入账号默认标记为 `standby`
+以下路径是本地运行数据或可再生成产物，不应进入 Git：
 
-## OAuth 导入模型
-
-手动 OAuth 导入支持两种回调方式：
-
-### 1. 自动回调
-
-系统尝试在本机启动：
-
-```text
-http://localhost:1455/auth/callback
-```
-
-如果浏览器和 AutoTeam 在同一台机器上，OpenAI 成功回跳后可自动完成认证。
-
-### 2. 手动回调
-
-如果浏览器不在同一台机器上，或 `localhost:1455` 无法回到 AutoTeam：
-
-- 用户在浏览器完成登录
-- 再把最终回调 URL 粘贴给 AutoTeam
-- 系统提取 `code/state` 完成 token 交换
-
-## 核心模块
-
-| 模块 | 作用 |
+| 路径 | 说明 |
 |------|------|
-| `manager.py` | CLI 入口与核心轮转逻辑 |
-| `api.py` | HTTP API、鉴权、后台任务、自动巡检 |
-| `accounts.py` | 本地账号池持久化 |
-| `chatgpt_api.py` | 通过浏览器上下文调用 ChatGPT 内部接口 |
-| `codex_auth.py` | Codex OAuth、refresh、额度检查 |
-| `invite.py` | 自动注册流程 |
-| `cloudmail.py` | 临时邮箱客户端兼容入口 |
-| `cpa_sync.py` | CPA 双向同步与去重 |
-| `manual_account.py` | 手动 OAuth 导入（自动 / 手动回调） |
+| `.env*` | 本地配置和密钥 |
+| `accounts.json`, `state.json`, `runtime_config.json` | 本地运行状态 |
+| `auths/`, `auth_state/`, `data/` | 认证文件和持久化数据 |
+| `logs/`, `outputs/`, `screenshots/` | 调试输出 |
+| `web/node_modules/`, `CNgopay/**/node_modules/` | 前端依赖 |
+| `CNgopay/runs/`, `CNgopay/*tokens*`, `CNgopay/*.history.txt` | GoPay 运行态和账号/token 池 |
+| `src/autotoken/web/dist/` | 本地 Web 构建产物 |
+| `dist/` | Python 构建产物 |
 
-## 项目结构
-
-```text
-autoteam/
-├── docs/                       # 文档
-├── src/autoteam/
-│   ├── manager.py              # CLI 入口
-│   ├── api.py                  # HTTP API + 后台任务 + 自动巡检
-│   ├── setup_wizard.py         # 首次配置向导
-│   ├── admin_state.py          # 管理员登录态 (state.json)
-│   ├── config.py               # 配置加载
-│   ├── accounts.py             # 账号池持久化
-│   ├── account_ops.py          # 删除 / 清理 / 对账
-│   ├── chatgpt_api.py          # ChatGPT Team 内部 API 调用
-│   ├── cloudmail.py            # 临时邮箱客户端兼容入口
-│   ├── codex_auth.py           # Codex OAuth 与 token 管理
-│   ├── cpa_sync.py             # CPA 正反向同步
-│   ├── manual_account.py       # 手动 OAuth 导入
-│   ├── invite.py               # 自动注册流程
-│   └── web/dist/               # 前端构建产物
-└── web/src/components/         # 仪表盘 / 同步中心 / OAuth 登录 / 任务历史等页面
-```
-
-## 前端结构
-
-当前 Web 面板已按职责拆分为：
-
-- 仪表盘
-- Team 成员
-- 账号池操作
-- 同步中心
-- OAuth 登录
-- 任务历史
-- 日志
-- 设置
-
-## 开发
-
-```bash
-cd web
-npm install
-npm run dev
-npm run build
-```
+发布前需要确认 `git ls-files` 不包含上述运行数据，并确认 sdist/wheel 不包含本地密钥、日志、账号池或生成依赖。

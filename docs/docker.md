@@ -1,112 +1,92 @@
 # Docker 部署
 
-## 快速开始
+## 快速启动
 
 ```bash
-git clone https://github.com/cnitlrt/AutoTeam.git
-cd AutoTeam
-
+git clone https://github.com/ZRainbow1275/AutoToken-F.git
+cd AutoToken-F
 mkdir -p data
 cp .env.example data/.env
-
-# 编辑 data/.env
 docker compose up -d
 ```
 
-常用命令：
+启动后访问：
+
+```text
+http://127.0.0.1:8787
+```
+
+## 配置文件
+
+Docker Compose 将本地 `./data` 挂载到容器 `/app/data`。建议只在 `data/.env` 中保存配置：
+
+```env
+MAIL_PROVIDER=cloudflare_temp_email
+CLOUDFLARE_TEMP_EMAIL_BASE_URL=https://example.com/api
+CLOUDFLARE_TEMP_EMAIL_ADMIN_PASSWORD=your_password
+CLOUDFLARE_TEMP_EMAIL_DOMAIN=@example.com
+CPA_URL=http://host.docker.internal:8317
+CPA_KEY=your_key
+API_KEY=change-me
+```
+
+Linux 上如果容器不能解析 `host.docker.internal`，可以改成宿主机网关 IP，或在 compose 中添加 `extra_hosts`。
+
+## 常用命令
 
 ```bash
+docker compose up -d
 docker compose logs -f
 docker compose restart
 docker compose down
 ```
 
+进入容器：
+
+```bash
+docker compose exec autotoken bash
+```
+
+执行 CLI：
+
+```bash
+docker compose exec autotoken uv run autotoken check
+docker compose exec autotoken uv run autotoken reconcile
+```
+
 ## 数据持久化
 
-所有运行数据都存储在 `data/` 目录，通过 volume 挂载到容器：
+`data/` 中会保存运行数据和本地配置，包括：
 
-| 文件 / 目录 | 说明 |
-|-------------|------|
-| `data/.env` | 配置文件 |
-| `data/accounts.json` | 账号池状态 |
-| `data/state.json` | 管理员登录态 |
-| `data/auths/` | Codex 认证文件 |
-| `data/screenshots/` | 调试截图 |
+| 路径 | 说明 |
+|------|------|
+| `data/.env` | 容器内配置 |
+| `data/*.sqlite3` | SQLite 数据库 |
+| `data/auths/` | 认证文件 |
+| `data/screenshots/` | 浏览器调试截图 |
+| `data/outlook_accounts.txt` | Outlook 账号池 |
+| `data/luckmail_accounts.txt` | LuckMail 账号池 |
 
-重建容器不会丢失这些数据。
+这些文件包含敏感信息，应只保存在部署机器上。
 
-> 如果你使用了 `pull-cpa`，从 CPA 导入的认证文件也会落在 `data/auths/` 中。
+## 构建上下文
 
-## 手动构建
-
-```bash
-docker build -t autoteam .
-docker run -d -p 8787:8787 -v $(pwd)/data:/app/data autoteam
-```
-
-## 配置方式
-
-### 方式一：预先编辑 `.env`
-
-启动前编辑 `data/.env`，容器启动后即可直接使用。
-
-### 方式二：Web 页面配置
-
-不预先配置直接启动，打开：
-
-```text
-http://host:8787
-```
-
-浏览器中会显示配置向导页面，填写后自动验证连通性。
-
-## 容器中的文件权限
-
-容器以 root 运行，`docker-entrypoint.sh` 会把 `/app/data` 下的文件设为可写。
-
-如果你在宿主机上看到部分认证文件类似：
-- `nobody:nogroup`
-- `600`
-
-通常不影响容器内运行；如需宿主机直接查看，可手动调整权限。
-
-## 常见问题
-
-### 容器一直重启
-
-查看日志：
+`.dockerignore` 已排除本地密钥、日志、输出、账号池、`node_modules`、CNgopay 运行数据和本地构建产物。构建镜像前仍建议检查：
 
 ```bash
-docker compose logs
+git status --short
+git ls-files
 ```
 
-通常是：
-- 配置缺失
-- 临时邮箱服务 / CPA 连通性验证失败
+确认没有将 `.env`、账号池、token、日志或认证文件加入 Git。
 
-### `data` 目录没有写权限
+## 重新构建
 
-容器入口会自动 `chmod -R 777 /app/data`。如果宿主机仍无法访问：
+依赖或前端代码变更后：
 
 ```bash
-sudo chmod -R 777 data/
+docker compose build --no-cache
+docker compose up -d
 ```
 
-### 重建后配置丢失
-
-确保 `docker-compose.yml` 中有 volume 挂载：
-
-```yaml
-volumes:
-  - ./data:/app/data
-```
-
-### 反向同步后 `data/auths` 里出现重复文件名风格
-
-新版本会在同步时自动做去重，并统一为本地命名规范。若你怀疑历史版本留下了旧文件，执行一次：
-
-```bash
-uv run autoteam pull-cpa
-```
-
-即可重新整理。
+Dockerfile 会在镜像构建过程中执行 `npm ci && npm run build`，前端产物写入 `src/autotoken/web/dist/`。

@@ -307,7 +307,7 @@
 import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { api } from '../api.js'
 
-const selectedAccountsStorageKey = 'autoteam_gopay_pro_selected_accounts'
+const selectedAccountsStorageKey = 'autotoken_gopay_pro_selected_accounts'
 
 const slotStates = [
   'EMPTY',
