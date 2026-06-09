@@ -23,6 +23,15 @@ def test_paypal_ba_payment_method_country_prefers_override_then_protocol_rules()
             protocol_no_card=True,
             paypal_country="JP",
         )
+        == "JP"
+    )
+    assert (
+        paypal_ba.paypal_ba_payment_method_country(
+            override="",
+            protocol_no_card=True,
+            paypal_country="JP",
+            paypal_ba_mode="us",
+        )
         == "US"
     )
     assert (
@@ -83,6 +92,7 @@ def test_paypal_ba_extract_kwargs_normalizes_protocol_request_fields():
         "country": "US",
         "currency": "USD",
         "payment_method_country": "US",
+        "paypal_ba_mode": "eu",
         "timeout_seconds": 90,
         "is_cancelled": is_cancelled,
     }

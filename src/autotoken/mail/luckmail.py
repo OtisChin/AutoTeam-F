@@ -15,6 +15,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -403,6 +404,34 @@ class LuckMailProvider(MailProvider):
         return self._mail_item_to_legacy(token, email, item)
 
     @staticmethod
+    def _received_at_timestamp(value: Any) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            return ts / 1000 if ts > 10_000_000_000 else ts
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        if text.isdigit():
+            ts = float(text)
+            return ts / 1000 if ts > 10_000_000_000 else ts
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+        ):
+            try:
+                parsed = datetime.strptime(text.replace("Z", "+0000"), fmt)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.timestamp()
+            except Exception:
+                continue
+        return 0.0
+
+    @staticmethod
     def _mail_item_to_legacy(token: str, email: str, item: dict[str, Any]) -> dict:
         raw_item = item if isinstance(item, dict) else {}
         nested_mail = raw_item.get("mail") if isinstance(raw_item.get("mail"), dict) else {}
@@ -434,6 +463,7 @@ class LuckMailProvider(MailProvider):
             first_value(
                 "text",
                 "plain_text",
+                "body_text",
                 "text_body",
                 "mail_text",
                 "mail_body",
@@ -462,6 +492,7 @@ class LuckMailProvider(MailProvider):
             "code_time",
             "codeTime",
         )
+        received_at_ts = LuckMailProvider._received_at_timestamp(received_at)
         text_parts = [subject, html_to_visible_text(body), html_to_visible_text(html)]
         if code:
             text_parts.insert(0, f"verification code: {code}")
@@ -474,10 +505,12 @@ class LuckMailProvider(MailProvider):
             "toEmail": email,
             "sendEmail": sender,
             "subject": subject,
+            "verification_code": code,
             "text": text,
             "content": html or body or text,
             "html": html,
             "message": html or body or text,
+            "received_at": received_at_ts or 0,
             "createTime": received_at or 0,
             "createdAt": received_at or 0,
             "raw": raw_item,

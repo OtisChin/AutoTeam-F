@@ -2712,7 +2712,10 @@ def handle_paypal_pre_extracted_checkout_without_ba(
 ) -> dict[str, Any] | None:
     pre_extracted_checkout_url = str((pre_extracted or {}).get("checkout_url") or "").strip()
     pre_extracted_ba_token = str((pre_extracted or {}).get("ba_token") or "").strip()
-    if not (pre_extracted_checkout_url and not pre_extracted_ba_token):
+    if not pre_extracted or pre_extracted_ba_token:
+        return None
+    pre_extracted_status = str(pre_extracted.get("status") or "").strip().lower()
+    if not pre_extracted_checkout_url and pre_extracted_status in {"", "success"}:
         return None
 
     if on_progress:

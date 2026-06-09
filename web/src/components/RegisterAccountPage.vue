@@ -652,7 +652,7 @@ const registerForm = ref({
   domain: '',
   selectedDomains: [],
   mailProvider: '',
-  luckmailEmailType: 'ms_graph',
+  luckmailEmailType: '',
   luckmailPreferredDomain: '',
   luckmailPreferredDomains: [],
   prefix: '',
@@ -673,8 +673,8 @@ let savedLuckmailPreferredDomain = false
 let savedOauthPhoneSmsCountries = {}
 let savedOauthPhoneSmsMaxPrices = {}
 const luckmailEmailTypeOptions = [
-  { value: 'ms_graph', label: '微软 Graph 邮箱' },
   { value: 'ms_imap', label: '微软 IMAP 邮箱' },
+  { value: 'ms_graph', label: '微软 Graph 邮箱' },
   { value: 'microsoft', label: '微软邮箱' },
   { value: 'self_built', label: '自建邮箱' },
 ]
@@ -786,7 +786,7 @@ const registerPreviewEmail = computed(() => {
   return `${prefix}@${domain}`
 })
 const luckmailPurchaseLabel = computed(() => {
-  const emailType = registerForm.value.luckmailEmailType || 'ms_graph'
+  const emailType = registerForm.value.luckmailEmailType || 'ms_imap'
   const preferredDomain = String(registerForm.value.luckmailPreferredDomain || '').trim().replace(/^@/, '')
   const domain = preferredDomain ? `@${preferredDomain}` : '自动分配'
   return `${emailType} / ${domain}`
@@ -1044,8 +1044,8 @@ function loadSavedRegisterForm() {
         : [],
       mailProvider: String(saved.mailProvider || registerForm.value.mailProvider || ''),
       luckmailEmailType: savedLuckmailEmailType
-        ? String(saved.luckmailEmailType || 'ms_graph')
-        : String(registerForm.value.luckmailEmailType || 'ms_graph'),
+        ? String(saved.luckmailEmailType || 'ms_imap')
+        : String(registerForm.value.luckmailEmailType || ''),
       luckmailPreferredDomain: savedLuckmailPreferredDomain
         ? String(saved.luckmailPreferredDomain || '')
         : (Array.isArray(saved.luckmailPreferredDomains) && saved.luckmailPreferredDomains.length
@@ -1153,8 +1153,9 @@ async function loadMailProviderOptions() {
     const luckmailFields = result.provider_fields?.luckmail || []
     const emailTypeField = luckmailFields.find(field => field.key === 'LUCKMAIL_EMAIL_TYPE')
     const domainField = luckmailFields.find(field => field.key === 'LUCKMAIL_PREFERRED_DOMAIN')
-    if (!savedLuckmailEmailType && !registerForm.value.luckmailEmailType && emailTypeField?.value) {
-      registerForm.value.luckmailEmailType = emailTypeField.value
+    const configuredLuckmailEmailType = String(emailTypeField?.value || '').trim()
+    if (!savedLuckmailEmailType && !registerForm.value.luckmailEmailType) {
+      registerForm.value.luckmailEmailType = configuredLuckmailEmailType || registerForm.value.luckmailEmailType || 'ms_imap'
     }
     if (!savedLuckmailPreferredDomain && !registerForm.value.luckmailPreferredDomain && domainField?.value) {
       registerForm.value.luckmailPreferredDomain = domainField.value
@@ -1398,7 +1399,7 @@ async function submitManualRegister() {
       domain: registerProviderUsesDomains.value ? registerForm.value.domain : '',
       domains: registerProviderUsesDomains.value && registerForm.value.mode === 'batch' ? selectedRegisterDomains.value : [],
       mail_provider: registerForm.value.mailProvider || null,
-      luckmail_email_type: isLuckMailProvider.value ? registerForm.value.luckmailEmailType : null,
+      luckmail_email_type: isLuckMailProvider.value ? (registerForm.value.luckmailEmailType || 'ms_imap') : null,
       luckmail_preferred_domain: isLuckMailProvider.value ? registerForm.value.luckmailPreferredDomain : null,
       luckmail_preferred_domains: isLuckMailProvider.value && registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
       prefix: registerForm.value.prefix || null,

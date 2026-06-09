@@ -202,6 +202,17 @@
               </div>
 
               <div v-if="isNoCardPayPalMode" class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
+                <label class="mb-1 block text-sm font-medium text-gray-200">BA 提取模式</label>
+                <select v-model="form.paypalBaMode" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
+                  <option value="eu">EU 模式（FR/EUR/custom）</option>
+                  <option value="us">US 模式（US/USD/hosted）</option>
+                </select>
+                <div class="mt-2 text-xs text-gray-500">
+                  {{ paypalBaModeHelp }}
+                </div>
+              </div>
+
+              <div v-if="isNoCardPayPalMode" class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
                 <label class="flex items-center justify-between gap-3 text-sm text-gray-300">
                   <span>
                     <span class="block font-medium text-gray-200">使用已提取 PayPal BA/link</span>
@@ -809,6 +820,7 @@ const form = ref({
   paypalMode: 'create_account',
   paypalEmail: '',
   paypalPassword: '',
+  paypalBaMode: 'eu',
   directBaEnabled: false,
   paypalApproveUrl: '',
   paypalBaToken: '',
@@ -901,8 +913,13 @@ const paypalCountry = computed(() => form.value.paypalRegion === 'JP_NOCARD' ? '
 const paypalLang = computed(() => paypalCountry.value === 'JP' ? 'ja' : 'en')
 const paypalRegionHelp = computed(() => (
   form.value.paypalRegion === 'JP_NOCARD'
-    ? '使用支持 PayPal 的 US/USD checkout，并按 JP/ja 进行 PayPal 协议无卡注册；不需要填写卡片信息。'
+    ? '按所选 BA 提取模式获取 PayPal BA，并按 JP/ja 进行 PayPal 协议无卡注册；不需要填写卡片信息。'
     : '保留现有美区流程，可用浏览器或协议模式，自动注册时按原规则使用卡片。'
+))
+const paypalBaModeHelp = computed(() => (
+  form.value.paypalBaMode === 'us'
+    ? '使用 pplink US 模式，checkout 和 Stripe 阶段走 US 配置。'
+    : '使用 pplink EU 模式，FR/EUR/custom checkout，默认走 JP 代理。'
 ))
 const singleSelectedEmail = computed(() => String(selectedAccountEmail.value || '').trim().toLowerCase())
 const phonePoolEntries = computed(() => parsePayPalPhonePool(form.value.phonePoolText, { strict: false }))
@@ -1035,6 +1052,9 @@ function applyPayPalRegionDefaults() {
   if (form.value.paypalRegion === 'JP_NOCARD') {
     form.value.paypalMode = 'create_account'
     form.value.paypalBrowser = 'protocol'
+    if (!['eu', 'us'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
+      form.value.paypalBaMode = 'eu'
+    }
     form.value.billingCountry = 'JP'
     bindForm.value.country = 'US'
     bindForm.value.currency = 'USD'
@@ -1379,6 +1399,11 @@ function restorePayPalState() {
       }
       if (saved.form.directBaEnabled === undefined) {
         form.value.directBaEnabled = false
+      }
+      if (!['eu', 'us'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
+        form.value.paypalBaMode = 'eu'
+      } else {
+        form.value.paypalBaMode = String(form.value.paypalBaMode || 'eu').toLowerCase()
       }
     }
     if (saved.bindForm && typeof saved.bindForm === 'object') {
@@ -1824,6 +1849,7 @@ function buildPayPalTaskPayload() {
     paypal_browser: effectivePayPalBrowser,
     paypal_fallback_browser: paypalFallbackBrowser.value,
     paypal_mode: form.value.paypalMode,
+    paypal_ba_mode: form.value.paypalBaMode,
     paypal_country: paypalCountry.value,
     paypal_lang: paypalLang.value,
     paypal_email: isCreateAccountMode.value ? '' : form.value.paypalEmail,

@@ -6137,12 +6137,43 @@ def test_handle_paypal_protocol_mode_dispatch_builds_pre_extracted_without_ba_re
     ]
 
 
+def test_handle_paypal_pre_extracted_checkout_without_ba_stops_failed_ba_without_checkout_url():
+    events = []
+
+    result = payment_checkout_browser.handle_paypal_pre_extracted_checkout_without_ba(
+        {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_poll",
+            "message": "setup_intent requires_payment_method",
+        },
+        safe_url_summary=lambda value: f"safe:{value}",
+        progress_event=lambda stage, message="", **kwargs: {"stage": stage, "message": message, **kwargs},
+        on_progress=events.append,
+    )
+
+    assert result == {
+        "action": "failed",
+        "failure_stage": "extract_ba_link_poll",
+        "message": "setup_intent requires_payment_method",
+        "checkout_url": "",
+    }
+    assert events == [
+        {
+            "stage": "paypal_protocol_checkout_without_ba",
+            "message": "协议模式已获取长 checkout 链接但未拿到 BA 链接，已停止浏览器回退",
+            "checkout_url": "safe:",
+            "reason": "extract_ba_link_poll",
+            "level": "warn",
+        }
+    ]
+
+
 def test_handle_paypal_protocol_mode_dispatch_runs_browser_fallback():
     api = object()
     progress_events = []
     screenshot_paths = []
     phone_accounts = [{"phone": "+819012345678"}]
-    pre_extracted = {"ba_token": "BA-DEMO"}
+    pre_extracted = None
     autofill_payload = {"name": "Taro Yamada"}
     signup_billing_payload = {"country": "JP"}
     protocol_result = {"status": "needs_review", "paypal_approve_url": "https://www.paypal.com/approve"}
@@ -6286,7 +6317,7 @@ def test_handle_paypal_protocol_mode_dispatch_skips_browser_fallback_when_disabl
 
 def test_handle_paypal_protocol_mode_dispatch_skips_browser_fallback_for_pre_extracted_ba():
     api = object()
-    pre_extracted = None
+    pre_extracted = {"ba_token": "BA-DEMO"}
     protocol_result = {"status": "needs_review", "paypal_approve_url": "https://www.paypal.com/approve"}
     calls = []
 

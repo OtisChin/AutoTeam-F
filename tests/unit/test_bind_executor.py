@@ -53,6 +53,7 @@ from autotoken.gopay_executor import (
 def _fast_gopay_sms_resend(monkeypatch):
     monkeypatch.setenv("GOPAY_SMS_OTP_DELAY_SECONDS", "0")
     monkeypatch.setenv("GOPAY_SMS_CHANNEL_SWITCH_ENABLED", "0")
+    monkeypatch.setenv("PAYPAL_BA_PPLINK_EXE", "disabled")
 
 
 class FakeResponse:
@@ -1787,83 +1788,54 @@ def test_paypal_checkout_payload_defaults_to_usd_for_paypal():
     assert payload["checkout_ui_mode"] == "hosted"
 
 
-def test_paypal_extract_ba_link_continues_polling_when_approve_blocked(monkeypatch):
+def test_paypal_extract_ba_link_uses_pplink_eu_mode_and_approve_poll(monkeypatch):
     chat_http = FakeHttp(
         [
-            ("GET", "chatgpt.com/api/auth/session", FakeResponse(json_data={"ok": True})),
+            ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
             (
                 "POST",
-                "chatgpt.com/backend-api/payments/checkout",
+                "chatgpt.com/backend-api/payments/checkouts",
                 FakeResponse(
                     json_data={
                         "checkout_session_id": "cs_live_test",
-                        "processor_entity": "openai_llc",
                         "url": "https://pay.openai.com/c/pay/cs_live_test",
                     }
                 ),
+            ),
+            (
+                "POST",
+                "chatgpt.com/backend-api/payments/checkout/approve",
+                FakeResponse(json_data={"result": "approved"}),
             ),
         ]
     )
     stripe_http = FakeHttp(
         [
             (
-                "POST",
-                "/v1/payment_methods",
-                FakeResponse(json_data={"id": "pm_test"}),
+                "GET",
+                "https://pay.openai.com/c/pay/cs_live_test",
+                FakeResponse(text='window.__stripe="pk_live_TEST"; var cs="seti_test_secret_secret"; "amount_due":0'),
+            ),
+            ("POST", "/v1/payment_methods", FakeResponse(json_data={"id": "pm_test"})),
+            ("POST", "/v1/setup_intents/seti_test/confirm", FakeResponse(json_data={"status": "requires_action"})),
+            (
+                "GET",
+                "/v1/payment_pages/seti_test_secret_secret",
+                FakeResponse(json_data={"setup_intent": {"status": "requires_payment_method"}}),
             ),
             (
-                "POST",
-                "/v1/payment_pages/cs_live_test/init",
+                "GET",
+                "/v1/payment_pages/seti_test_secret_secret",
                 FakeResponse(
                     json_data={
-                        "init_checksum": "checksum_test",
-                        "currency": "usd",
-                        "amount_due": 0,
-                        "config_id": "checkout_config_real",
+                        "setup_intent": {
+                            "status": "requires_action",
+                            "next_action": {
+                                "type": "redirect_to_url",
+                                "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"},
+                            },
+                        }
                     }
-                ),
-            ),
-            (
-                "POST",
-                "/v1/payment_pages/cs_live_test",
-                FakeResponse(json_data={"ok": True}),
-            ),
-            (
-                "GET",
-                "/v1/payment_pages/cs_live_test",
-                FakeResponse(json_data={"total_summary": {"due": 0}}),
-            ),
-            (
-                "POST",
-                "/v1/payment_pages/cs_live_test/confirm",
-                FakeResponse(
-                    json_data={
-                        "setup_intent": {"status": "requires_confirmation"},
-                        "submission_attempt": {"state": "requires_approval"},
-                    },
-                    text=json.dumps(
-                        {
-                            "setup_intent": {"status": "requires_confirmation"},
-                            "submission_attempt": {"state": "requires_approval"},
-                        }
-                    ),
-                ),
-            ),
-            (
-                "GET",
-                "/v1/payment_pages/cs_live_test",
-                FakeResponse(
-                    text=json.dumps(
-                        {
-                            "setup_intent": {
-                                "status": "requires_action",
-                                "next_action": {
-                                    "type": "redirect_to_url",
-                                    "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"},
-                                },
-                            }
-                        }
-                    )
                 ),
             ),
             (
@@ -1882,19 +1854,14 @@ def test_paypal_extract_ba_link_continues_polling_when_approve_blocked(monkeypat
 
     monkeypatch.setattr(paypal_bind_executor, "_new_http_session", fake_new_http_session)
     monkeypatch.setattr(paypal_bind_executor, "_configure_chatgpt_http_session", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        paypal_bind_executor,
-        "_paypal_approve_checkout_http",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            GoPayFlowError("ChatGPT approve 未通过: {'result': 'blocked'}", stage="chatgpt_approve")
-        ),
-    )
     monkeypatch.setattr(paypal_bind_executor.time, "sleep", lambda *_args, **_kwargs: None)
+
     result = paypal_bind_executor._paypal_extract_ba_link(
         access_token="token",
         proxy_url="socks5h://jp.example:1080",
         provider_proxy_url="socks5h://us.example:1080",
-        timeout_seconds=30,
+        paypal_ba_mode="eu",
+        timeout_seconds=1,
     )
 
     assert result["status"] == "success"
@@ -1902,54 +1869,119 @@ def test_paypal_extract_ba_link_continues_polling_when_approve_blocked(monkeypat
     assert result["approve_url"] == "https://www.paypal.com/pay?token=BA-DEMO"
     assert result["checkout_session_id"] == "cs_live_test"
     assert result["pm_id"] == "pm_test"
-    assert result["checkout_url"].startswith("https://pay.openai.com/c/pay/cs_live_test#")
+    assert result["checkout_url"] == "https://pay.openai.com/c/pay/cs_live_test"
     assert result["hosted_checkout_url"] == "https://pay.openai.com/c/pay/cs_live_test"
-    assert session_proxy_urls == ["socks5h://jp.example:1080", "socks5h://us.example:1080"]
-    assert not hasattr(chat_http, "proxies")
-    assert [request["url"] for request in stripe_http.requests[:5]] == [
-        "https://api.stripe.com/v1/payment_methods",
-        "https://api.stripe.com/v1/payment_pages/cs_live_test/init",
-        "https://api.stripe.com/v1/payment_pages/cs_live_test",
-        "https://api.stripe.com/v1/payment_pages/cs_live_test",
-        "https://api.stripe.com/v1/payment_pages/cs_live_test/confirm",
-    ]
+    assert result["paypal_ba_mode"] == "eu"
+    assert session_proxy_urls == ["socks5h://jp.example:1080", "socks5h://jp.example:1080"]
+
+    checkout_request = next(request for request in chat_http.requests if request["url"].endswith("/payments/checkouts"))
+    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "FR", "currency": "EUR"}
+    assert checkout_request["kwargs"]["json"]["checkout_ui_mode"] == "custom"
+    approve_request = next(request for request in chat_http.requests if request["url"].endswith("/checkout/approve"))
+    assert approve_request["kwargs"]["data"]["processor_entity"] == "openai_ie"
+    assert approve_request["kwargs"]["data"]["client_attribution_metadata[merchant_integration_source]"] == "custom_checkout_manual_approval_1"
+
     payment_method_request = next(
         request for request in stripe_http.requests if request["url"].endswith("/v1/payment_methods")
     )
-    confirm_request = next(request for request in stripe_http.requests if request["url"].endswith("/confirm"))
-    assert (
-        payment_method_request["kwargs"]["data"]["client_attribution_metadata[checkout_config_id]"]
-        == "30777f36-1141-46bc-a435-f4bec3472ed5"
-    )
-    assert (
-        payment_method_request["kwargs"]["data"]["client_attribution_metadata[merchant_integration_version]"]
-        == "hosted_checkout"
-    )
-    assert (
-        confirm_request["kwargs"]["data"]["client_attribution_metadata[checkout_config_id]"]
-        == "30777f36-1141-46bc-a435-f4bec3472ed5"
-    )
-    assert (
-        confirm_request["kwargs"]["data"]["client_attribution_metadata[merchant_integration_version]"]
-        == "hosted_checkout"
-    )
-    assert confirm_request["kwargs"]["data"]["return_url"].startswith(
-        "https://checkout.stripe.com/c/pay/cs_live_test?redirect_pm_type=paypal"
-    )
+    confirm_request = next(request for request in stripe_http.requests if "/v1/setup_intents/" in request["url"])
+    assert payment_method_request["kwargs"]["data"]["billing_details[address][country]"] == "JP"
+    assert payment_method_request["kwargs"]["data"]["expected_payment_method_type"] == "paypal"
+    assert confirm_request["kwargs"]["data"]["payment_method"] == "pm_test"
+    assert confirm_request["kwargs"]["data"]["client_secret"] == "seti_test_secret_secret"
+    assert not any("/v1/payment_pages/cs_live_test/init" in request["url"] for request in stripe_http.requests)
+    assert not any(request["url"].endswith("/v1/payment_pages/cs_live_test/confirm") for request in stripe_http.requests)
+    assert len(chat_http.responses) == 0
     assert len(stripe_http.responses) == 0
 
 
-def test_paypal_extract_ba_link_blocks_nonzero_amount_before_confirm(monkeypatch):
+def test_paypal_extract_ba_link_uses_pplink_us_mode(monkeypatch):
     chat_http = FakeHttp(
         [
-            ("GET", "chatgpt.com/api/auth/session", FakeResponse(json_data={"ok": True})),
+            ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
             (
                 "POST",
-                "chatgpt.com/backend-api/payments/checkout",
+                "chatgpt.com/backend-api/payments/checkouts",
+                FakeResponse(
+                    json_data={
+                        "checkout_session_id": "cs_live_us",
+                        "url": "https://pay.openai.com/c/pay/cs_live_us",
+                    }
+                ),
+            ),
+        ]
+    )
+    stripe_http = FakeHttp(
+        [
+            (
+                "GET",
+                "https://pay.openai.com/c/pay/cs_live_us",
+                FakeResponse(text='"pk_live_US" "seti_us_secret_secret" "amount_due":0'),
+            ),
+            ("POST", "/v1/payment_methods", FakeResponse(json_data={"id": "pm_us"})),
+            (
+                "POST",
+                "/v1/setup_intents/seti_us/confirm",
+                FakeResponse(
+                    json_data={
+                        "next_action": {
+                            "type": "redirect_to_url",
+                            "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/us"},
+                        }
+                    }
+                ),
+            ),
+            (
+                "GET",
+                "pm-redirects.stripe.com/authorize/us",
+                FakeResponse(status_code=302, headers={"location": "https://www.paypal.com/pay?token=BA-US"}),
+            ),
+        ]
+    )
+    sessions = [chat_http, stripe_http]
+    session_proxy_urls = []
+
+    def fake_new_http_session(proxy_url, **kwargs):
+        session_proxy_urls.append(proxy_url)
+        return sessions.pop(0)
+
+    monkeypatch.setattr(paypal_bind_executor, "_new_http_session", fake_new_http_session)
+    monkeypatch.setattr(paypal_bind_executor, "_configure_chatgpt_http_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(paypal_bind_executor.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = paypal_bind_executor._paypal_extract_ba_link(
+        access_token="token",
+        proxy_url="socks5h://jp.example:1080",
+        provider_proxy_url="socks5h://us.example:1080",
+        paypal_ba_mode="us",
+        timeout_seconds=1,
+    )
+
+    assert result["status"] == "success"
+    assert result["ba_token"] == "BA-US"
+    assert result["paypal_ba_mode"] == "us"
+    assert session_proxy_urls == ["socks5h://jp.example:1080", "socks5h://us.example:1080"]
+    checkout_request = next(request for request in chat_http.requests if request["url"].endswith("/payments/checkouts"))
+    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "US", "currency": "USD"}
+    assert checkout_request["kwargs"]["json"]["checkout_ui_mode"] == "hosted"
+    payment_method_request = next(
+        request for request in stripe_http.requests if request["url"].endswith("/v1/payment_methods")
+    )
+    assert payment_method_request["kwargs"]["data"]["billing_details[address][country]"] == "US"
+    assert len(chat_http.responses) == 0
+    assert len(stripe_http.responses) == 0
+
+
+def test_paypal_extract_ba_link_blocks_nonzero_amount_before_pm(monkeypatch):
+    chat_http = FakeHttp(
+        [
+            ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
+            (
+                "POST",
+                "chatgpt.com/backend-api/payments/checkouts",
                 FakeResponse(
                     json_data={
                         "checkout_session_id": "cs_live_test",
-                        "processor_entity": "openai_llc",
                         "url": "https://pay.openai.com/c/pay/cs_live_test",
                     }
                 ),
@@ -1959,21 +1991,9 @@ def test_paypal_extract_ba_link_blocks_nonzero_amount_before_confirm(monkeypatch
     stripe_http = FakeHttp(
         [
             (
-                "POST",
-                "/v1/payment_methods",
-                FakeResponse(json_data={"id": "pm_test"}),
-            ),
-            (
-                "POST",
-                "/v1/payment_pages/cs_live_test/init",
-                FakeResponse(
-                    json_data={
-                        "init_checksum": "checksum_test",
-                        "currency": "usd",
-                        "total_summary": {"due": 2000},
-                        "config_id": "checkout_config_real",
-                    }
-                ),
+                "GET",
+                "https://pay.openai.com/c/pay/cs_live_test",
+                FakeResponse(text='"pk_live_TEST" "seti_test_secret_secret" "amount_due":2000'),
             ),
         ]
     )
@@ -1990,6 +2010,7 @@ def test_paypal_extract_ba_link_blocks_nonzero_amount_before_confirm(monkeypatch
         access_token="token",
         proxy_url="socks5h://jp.example:1080",
         provider_proxy_url="socks5h://jp.example:1080",
+        paypal_ba_mode="eu",
         timeout_seconds=30,
         on_progress=progress_events.append,
     )
@@ -1998,9 +2019,9 @@ def test_paypal_extract_ba_link_blocks_nonzero_amount_before_confirm(monkeypatch
     assert result["failure_stage"] == "extract_ba_link_nonzero_amount"
     assert result["nonzero_amount"] == 2000
     assert result["checkout_session_id"] == "cs_live_test"
-    assert result["pm_id"] == "pm_test"
+    assert result["paypal_ba_mode"] == "eu"
     assert any(event["stage"] == "paypal_extract_nonzero_amount_blocked" for event in progress_events)
-    assert not any(request["url"].endswith("/confirm") for request in stripe_http.requests)
+    assert not any(request["url"].endswith("/v1/payment_methods") for request in stripe_http.requests)
     assert stripe_http.responses == []
 
 

@@ -441,15 +441,18 @@ def _attach_oauth_phone_supplier(
 def _session_data_from_auth_result(result) -> dict:
     data = result.to_dict() if hasattr(result, "to_dict") else {}
     session_token = str(data.get("session_token") or "").strip()
-    access_token = str(data.get("access_token") or "").strip()
+    oauth_access_token = str(data.get("access_token") or "").strip()
+    chatgpt_access_token = str(data.get("chatgpt_access_token") or "").strip()
+    session_access_token = chatgpt_access_token or oauth_access_token
     refresh_token = str(data.get("refresh_token") or "").strip()
     id_token = str(data.get("id_token") or "").strip()
     device_id = str(data.get("device_id") or "").strip()
     cookie_header = str(data.get("cookie_header") or "").strip()
     email = str(data.get("email") or "").strip()
     session = {
-        "accessToken": access_token,
-        "access_token": access_token,
+        "accessToken": session_access_token,
+        "access_token": session_access_token,
+        "chatgpt_access_token": chatgpt_access_token,
         "refreshToken": refresh_token,
         "refresh_token": refresh_token,
         "idToken": id_token,
@@ -462,7 +465,7 @@ def _session_data_from_auth_result(result) -> dict:
         "user": {"email": email},
     }
     payload = {
-        "status": 200 if access_token else 0,
+        "status": 200 if session_access_token or oauth_access_token else 0,
         "data": session,
         "raw": "",
         "auth_context": {
@@ -471,13 +474,13 @@ def _session_data_from_auth_result(result) -> dict:
             "oai_device_id": device_id,
         },
     }
-    if access_token and refresh_token:
+    if oauth_access_token and refresh_token:
         try:
             from autotoken.auth.codex_auth import _build_bundle_from_token_response
 
             payload["codex_oauth_bundle"] = _build_bundle_from_token_response(
                 {
-                    "access_token": access_token,
+                    "access_token": oauth_access_token,
                     "refresh_token": refresh_token,
                     "id_token": id_token,
                     "expires_in": 3600,

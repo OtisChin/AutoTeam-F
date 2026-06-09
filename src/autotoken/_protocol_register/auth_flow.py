@@ -43,6 +43,7 @@ class AuthResult:
         self.email: str = ""
         self.password: str = ""
         self.session_token: str = ""
+        self.chatgpt_access_token: str = ""
         self.access_token: str = ""
         self.device_id: str = ""
         self.csrf_token: str = ""
@@ -58,6 +59,7 @@ class AuthResult:
             "email": self.email,
             "password": self.password,
             "session_token": self.session_token,
+            "chatgpt_access_token": self.chatgpt_access_token,
             "access_token": self.access_token,
             "device_id": self.device_id,
             "csrf_token": self.csrf_token,
@@ -2533,7 +2535,9 @@ class AuthFlow:
         if session_token:
             self.result.session_token = session_token
         if access_token:
-            self.result.access_token = access_token
+            self.result.chatgpt_access_token = access_token
+            if not self.result.refresh_token:
+                self.result.access_token = access_token
         self.result.cookie_header = self._build_chatgpt_cookie_header()
 
         logger.info(f"session_token: {'有' if session_token else '无'}, access_token: {'有' if access_token else '无'}")
@@ -2846,6 +2850,25 @@ class AuthFlow:
 
             phone_login = phone
             phone_password = self.result.password
+            web_session_snapshot = {}
+            try:
+                if continue_url:
+                    self.follow_redirect_chain(self._normalize_continue_url(continue_url))
+                self.get_auth_session()
+                web_session_snapshot = {
+                    "session_token": self.result.session_token,
+                    "chatgpt_access_token": self.result.chatgpt_access_token or self.result.access_token,
+                    "cookie_header": self.result.cookie_header,
+                    "device_id": self.result.device_id,
+                }
+                logger.info(
+                    "[phone-first] 手机号注册原始会话 auth_session: session_token=%s access_token=%s cookie=%s",
+                    "有" if web_session_snapshot.get("session_token") else "无",
+                    "有" if web_session_snapshot.get("chatgpt_access_token") else "无",
+                    "有" if web_session_snapshot.get("cookie_header") else "无",
+                )
+            except Exception as exc:
+                logger.warning("[phone-first] 手机号注册原始会话未获取 auth_session，继续 Codex OAuth: %s", exc)
             self.session = create_http_session(
                 proxy=self.config.proxy,
                 impersonate=self._impersonate_candidates[self._impersonate_idx],
@@ -2860,6 +2883,13 @@ class AuthFlow:
                 raise RuntimeError("phone-first Codex OAuth 未完成")
             if not (self.result.access_token and self.result.refresh_token):
                 raise RuntimeError("phone-first Codex OAuth 未获取有效 token")
+            if web_session_snapshot:
+                self.result.session_token = web_session_snapshot.get("session_token") or self.result.session_token
+                self.result.chatgpt_access_token = (
+                    web_session_snapshot.get("chatgpt_access_token") or self.result.chatgpt_access_token
+                )
+                self.result.cookie_header = web_session_snapshot.get("cookie_header") or self.result.cookie_header
+                self.result.device_id = web_session_snapshot.get("device_id") or self.result.device_id
             logger.info("[phone-first] 注册流程完成: %s", self.result.email)
             return self.result
         except Exception as exc:

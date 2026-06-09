@@ -236,7 +236,7 @@ def test_phone_first_oauth_saves_auth_session_before_codex_bundle(monkeypatch):
     ]
 
 
-def test_phone_first_token_only_refreshes_web_auth_before_save(monkeypatch):
+def test_phone_first_token_only_saves_bundle_without_refreshing_web_auth(monkeypatch):
     events = []
 
     class FakeMailClient:
@@ -258,20 +258,11 @@ def test_phone_first_token_only_refreshes_web_auth_before_save(monkeypatch):
             },
         }
 
-    def fake_refresh(email, password, mail_client, **kwargs):
-        events.append(("refresh", email, kwargs.get("cloudmail_account_id")))
-        return {
-            "status": 200,
-            "data": {
-                "accessToken": "fresh-chatgpt-access",
-                "sessionToken": "fresh-chatgpt-session",
-                "cookie_header": "__Secure-next-auth.session-token=fresh-chatgpt-session",
-            },
-        }
+    def fake_refresh(*args, **kwargs):
+        raise AssertionError("phone-first 注册不应通过协议补登录刷新 auth_session")
 
     def fake_save_session(email, password, cloudmail_account_id, session_data, **kwargs):
-        events.append(("session", email, cloudmail_account_id, session_data["data"]["sessionToken"]))
-        return {"email": email, "auth_file": f"data/auth_session/{email}.json"}
+        raise AssertionError("缺少 Web session 时不应保存 token-only auth_session")
 
     def fake_save_bundle(email, password, cloudmail_account_id, bundle, **kwargs):
         events.append(("bundle", email, cloudmail_account_id, kwargs.get("source")))
@@ -292,10 +283,41 @@ def test_phone_first_token_only_refreshes_web_auth_before_save(monkeypatch):
 
     assert result["source"] == "phone_first_protocol_oauth"
     assert events == [
-        ("refresh", "phone-first@example.com", "mail-1"),
-        ("session", "phone-first@example.com", "mail-1", "fresh-chatgpt-session"),
         ("bundle", "phone-first@example.com", "mail-1", "phone_first_protocol_oauth"),
     ]
+
+
+def test_session_data_keeps_chatgpt_access_separate_from_codex_bundle(monkeypatch):
+    from autotoken.auth import protocol_register as protocol_register_module
+
+    captured = {}
+
+    class FakeResult:
+        def to_dict(self):
+            return {
+                "email": "phone-first@example.com",
+                "session_token": "chatgpt-session",
+                "chatgpt_access_token": "chatgpt-access",
+                "access_token": "codex-access",
+                "refresh_token": "codex-refresh",
+                "id_token": "codex-id",
+                "cookie_header": "__Secure-next-auth.session-token=chatgpt-session",
+            }
+
+    def fake_build_bundle(token_response, fallback_email):
+        captured["token_response"] = token_response
+        captured["fallback_email"] = fallback_email
+        return {"access_token": token_response["access_token"], "refresh_token": token_response["refresh_token"]}
+
+    monkeypatch.setattr("autotoken.auth.codex_auth._build_bundle_from_token_response", fake_build_bundle)
+
+    payload = protocol_register_module._session_data_from_auth_result(FakeResult())
+
+    assert payload["data"]["accessToken"] == "chatgpt-access"
+    assert payload["data"]["access_token"] == "chatgpt-access"
+    assert payload["codex_oauth_bundle"]["access_token"] == "codex-access"
+    assert captured["token_response"]["access_token"] == "codex-access"
+    assert captured["fallback_email"] == "phone-first@example.com"
 
 
 def test_post_register_session_oauth_updates_account_with_codex_auth(monkeypatch):

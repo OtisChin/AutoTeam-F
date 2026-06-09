@@ -2683,9 +2683,9 @@ def test_paypal_protocol_cliproxy_api_uses_us_provider_stage_proxy(monkeypatch):
     def fake_extract(**kwargs):
         captured["extract_kwargs"] = kwargs
         return {
-            "status": "needs_review",
-            "failure_stage": "extract_ba_link_poll",
-            "message": "poll timeout",
+            "status": "success",
+            "ba_token": "BA-US",
+            "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-US",
             "checkout_url": "https://pay.openai.com/c/pay/cs_demo#hash",
         }
 
@@ -2720,6 +2720,7 @@ def test_paypal_protocol_cliproxy_api_uses_us_provider_stage_proxy(monkeypatch):
             proxy_api_url="https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=txt",
             paypal_browser="protocol",
             paypal_country="JP",
+            paypal_ba_mode="us",
             manual_confirm=False,
             paypal_mode="create_account",
             autofill_enabled=True,
@@ -2737,6 +2738,7 @@ def test_paypal_protocol_cliproxy_api_uses_us_provider_stage_proxy(monkeypatch):
     ]
     assert captured["extract_kwargs"]["proxy_url"] == "socks5h://107.150.109.49:7104"
     assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://107.150.109.49:7104"
+    assert captured["extract_kwargs"]["paypal_ba_mode"] == "us"
     assert captured["params"]["proxy_api_provider"] == "cliproxy"
     assert not any(event.get("stage") == "paypal_provider_proxy_selected" for event in captured["progress"])
 
@@ -2834,11 +2836,12 @@ def test_paypal_protocol_cliproxy_provider_defaults_to_jp_then_us_provider(monke
 
     assert result["status"] == "success"
     assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json", 30),
         ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json", 30),
     ]
-    assert captured["extract_kwargs"]["proxy_url"] == "socks5h://107.150.109.49:7104"
+    assert captured["extract_kwargs"]["proxy_url"] == "socks5h://103.49.62.181:19004"
     assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://107.150.109.49:7104"
+    assert captured["extract_kwargs"]["paypal_ba_mode"] == "eu"
     assert captured["params"]["proxy_api_provider"] == "cliproxy"
     assert captured["params"]["proxy_api_url_present"] is True
 

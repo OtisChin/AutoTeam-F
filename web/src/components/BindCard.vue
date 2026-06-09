@@ -1917,8 +1917,8 @@ const BIND_HISTORY_KEY = 'autotoken_bind_history_v1'
 const GOPAY_FORM_STATE_KEY = 'autotoken_gopay_form_state_v1'
 const GOPAY_RECENT_TASK_KEY = 'autotoken_gopay_recent_task_id_v1'
 const luckmailEmailTypeOptions = [
-  { value: 'ms_graph', label: '微软 Graph 邮箱' },
   { value: 'ms_imap', label: '微软 IMAP 邮箱' },
+  { value: 'ms_graph', label: '微软 Graph 邮箱' },
   { value: 'microsoft', label: '微软邮箱' },
   { value: 'self_built', label: '自建邮箱' },
 ]
@@ -2010,7 +2010,7 @@ const gopayForm = ref({
   gopayAutoSignupSmscodeTimeout: 120,
   gopayBalanceWaitFallbackTransfer: false,
   autoRegisterMailProvider: '',
-  autoRegisterLuckmailEmailType: 'ms_graph',
+  autoRegisterLuckmailEmailType: '',
   autoRegisterLuckmailPreferredDomain: '',
   autoRegisterLuckmailPreferredDomains: [],
   autoRegisterDomains: [],
@@ -2206,7 +2206,7 @@ const gopayAutoRegisterProviderLabel = computed(() => {
 const gopayLuckmailPurchaseLabel = computed(() => {
   const emailType = luckmailEmailTypeOptions.find(option => option.value === gopayForm.value.autoRegisterLuckmailEmailType)?.label
     || gopayForm.value.autoRegisterLuckmailEmailType
-    || '微软 Graph 邮箱'
+    || '微软 IMAP 邮箱'
   const domain = gopayForm.value.autoRegisterLuckmailPreferredDomain || '自动分配'
   const domains = Array.isArray(gopayForm.value.autoRegisterLuckmailPreferredDomains)
     ? gopayForm.value.autoRegisterLuckmailPreferredDomains.filter(Boolean)
@@ -3364,8 +3364,9 @@ async function loadGoPayAutoRegisterMailProviders() {
     const luckmailFields = result.provider_fields?.luckmail || []
     const emailTypeField = luckmailFields.find(field => field.key === 'LUCKMAIL_EMAIL_TYPE')
     const domainField = luckmailFields.find(field => field.key === 'LUCKMAIL_PREFERRED_DOMAIN')
-    if (!gopayForm.value.autoRegisterLuckmailEmailType && emailTypeField?.value) {
-      gopayForm.value.autoRegisterLuckmailEmailType = emailTypeField.value
+    const configuredLuckmailEmailType = String(emailTypeField?.value || '').trim()
+    if (!gopayForm.value.autoRegisterLuckmailEmailType) {
+      gopayForm.value.autoRegisterLuckmailEmailType = configuredLuckmailEmailType || gopayForm.value.autoRegisterLuckmailEmailType || 'ms_imap'
     }
     if (!gopayForm.value.autoRegisterLuckmailPreferredDomain && domainField?.value) {
       gopayForm.value.autoRegisterLuckmailPreferredDomain = domainField.value
@@ -3535,7 +3536,7 @@ function getRememberedGoPayForm() {
     gopayAutoSignupSmscodeMaxPrice: String(gopayForm.value.gopayAutoSignupSmscodeMaxPrice || '').trim(),
     gopayBalanceWaitFallbackTransfer: Boolean(gopayForm.value.gopayBalanceWaitFallbackTransfer),
     autoRegisterMailProvider: String(gopayForm.value.autoRegisterMailProvider || ''),
-    autoRegisterLuckmailEmailType: String(gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
+    autoRegisterLuckmailEmailType: String(gopayForm.value.autoRegisterLuckmailEmailType || 'ms_imap'),
     autoRegisterLuckmailPreferredDomain: String(gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
     autoRegisterLuckmailPreferredDomains: Array.isArray(gopayForm.value.autoRegisterLuckmailPreferredDomains)
       ? gopayForm.value.autoRegisterLuckmailPreferredDomains
@@ -3614,7 +3615,7 @@ function loadGoPayFormState() {
       gopayAutoSignupSmscodeTimeout: 120,
       gopayBalanceWaitFallbackTransfer: Boolean(saved.gopayBalanceWaitFallbackTransfer),
       autoRegisterMailProvider: String(saved.autoRegisterMailProvider || gopayForm.value.autoRegisterMailProvider || ''),
-      autoRegisterLuckmailEmailType: String(saved.autoRegisterLuckmailEmailType || gopayForm.value.autoRegisterLuckmailEmailType || 'ms_graph'),
+      autoRegisterLuckmailEmailType: String(saved.autoRegisterLuckmailEmailType || gopayForm.value.autoRegisterLuckmailEmailType || 'ms_imap'),
       autoRegisterLuckmailPreferredDomain: String(saved.autoRegisterLuckmailPreferredDomain || gopayForm.value.autoRegisterLuckmailPreferredDomain || ''),
       autoRegisterLuckmailPreferredDomains: Array.isArray(saved.autoRegisterLuckmailPreferredDomains)
         ? saved.autoRegisterLuckmailPreferredDomains.map(domain => String(domain || '').trim().replace(/^@/, '')).filter(Boolean)
@@ -4474,7 +4475,7 @@ async function startGoPayBind() {
         && !rekberinajaTransferEnabled.value
         && Boolean(gopayForm.value.gopayBalanceWaitFallbackTransfer),
       auto_register_mail_provider: gopayForm.value.autoRegisterMailProvider || null,
-      auto_register_luckmail_email_type: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailEmailType : null,
+      auto_register_luckmail_email_type: gopayAutoRegisterUsesLuckMail.value ? (gopayForm.value.autoRegisterLuckmailEmailType || 'ms_imap') : null,
       auto_register_luckmail_preferred_domain: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailPreferredDomain : null,
       auto_register_luckmail_preferred_domains: gopayAutoRegisterUsesLuckMail.value ? gopayForm.value.autoRegisterLuckmailPreferredDomains : [],
       auto_register_domain: gopayAutoRegisterUsesDomains.value ? (gopaySelectedAutoRegisterDomains.value[0] || '') : '',

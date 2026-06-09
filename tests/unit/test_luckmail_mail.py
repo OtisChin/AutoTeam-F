@@ -60,6 +60,7 @@ def test_create_temp_email_purchases_when_loaded_pool_is_reserved(monkeypatch):
 def test_luckmail_persists_api_purchased_account(monkeypatch, tmp_path):
     from autotoken import sqlite_store
 
+    monkeypatch.setattr("autotoken.mail.luckmail.PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
     monkeypatch.delenv("LUCKMAIL_ACCOUNTS", raising=False)
     monkeypatch.delenv("LUCKMAIL_ACCOUNTS_FILE", raising=False)
@@ -191,6 +192,73 @@ def test_search_extracts_code_from_luckmail_mail_text_alias(monkeypatch):
     assert len(messages) == 1
     assert messages[0]["createTime"] == "2026-06-02 12:38:05"
     assert client.extract_verification_code(messages[0]) == "789012"
+
+
+def test_search_normalizes_luckmail_naive_received_at_as_utc(monkeypatch):
+    client = LuckMailProvider()
+    client.accounts = [LuckMailProvider._parse_account_line("user@outlook.my----tok_abc")]
+    client._tokens_by_email = {"user@outlook.my": "tok_abc"}
+    client._emails_by_token = {"tok_abc": "user@outlook.my"}
+
+    def fake_request(self, method, path, **kwargs):
+        if path.endswith("/code"):
+            return FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "email_address": "user@outlook.my",
+                        "verification_code": "456789",
+                        "mail": {
+                            "message_id": "m-utc",
+                            "subject": "Your temporary OpenAI verification code",
+                            "received_at": "2026-06-09 09:11:46",
+                        },
+                    },
+                }
+            )
+        return FakeResponse({"code": 0, "data": {"mails": [], "email_address": "user@outlook.my"}})
+
+    monkeypatch.setattr(LuckMailProvider, "_request", fake_request)
+
+    messages = client.search_emails_by_recipient("user@outlook.my", account_id="tok_abc")
+
+    assert messages[0]["received_at"] == 1780996306.0
+    assert messages[0]["verification_code"] == "456789"
+    assert client.extract_verification_code(messages[0]) == "456789"
+
+
+def test_search_extracts_code_from_luckmail_body_text_alias(monkeypatch):
+    client = LuckMailProvider()
+    client.accounts = [LuckMailProvider._parse_account_line("user@outlook.my----tok_abc")]
+    client._tokens_by_email = {"user@outlook.my": "tok_abc"}
+    client._emails_by_token = {"tok_abc": "user@outlook.my"}
+
+    def fake_request(self, method, path, **kwargs):
+        if path.endswith("/code"):
+            return FakeResponse({"code": 0, "data": {"alive": True, "email_address": "user@outlook.my"}})
+        return FakeResponse(
+            {
+                "code": 0,
+                "data": {
+                    "alive": True,
+                    "email_address": "user@outlook.my",
+                    "mails": [
+                        {
+                            "message_id": "m-body-text",
+                            "subject": "Your temporary OpenAI verification code",
+                            "body_text": "Your temporary OpenAI verification code is 234567.",
+                            "received_at": "2026-06-09 09:11:46",
+                        }
+                    ],
+                },
+            }
+        )
+
+    monkeypatch.setattr(LuckMailProvider, "_request", fake_request)
+
+    messages = client.search_emails_by_recipient("user@outlook.my", account_id="tok_abc")
+
+    assert client.extract_verification_code(messages[0]) == "234567"
 
 
 def test_search_extracts_code_from_nested_luckmail_mail_payload(monkeypatch):

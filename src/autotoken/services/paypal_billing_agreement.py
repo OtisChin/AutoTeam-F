@@ -20,14 +20,22 @@ def paypal_ba_payment_method_country(
     override: str | None,
     protocol_no_card: bool,
     paypal_country: str,
+    paypal_ba_mode: str = "eu",
 ) -> str:
     normalized_override = re.sub(r"[^A-Za-z]", "", str(override or "")).upper()[:2]
     if normalized_override:
         return normalized_override
     if protocol_no_card:
+        if paypal_ba_extract_mode(paypal_ba_mode) == "eu":
+            return "JP"
         return "US"
     normalized_country = re.sub(r"[^A-Za-z]", "", str(paypal_country or "")).upper()[:2]
     return normalized_country or "US"
+
+
+def paypal_ba_extract_mode(value: Any) -> str:
+    normalized = re.sub(r"[^A-Za-z]", "", str(value or "").lower())
+    return "us" if normalized == "us" else "eu"
 
 
 def paypal_ba_checkout_country(paypal_country: str) -> str:
@@ -308,6 +316,7 @@ def paypal_ba_extract_kwargs(
     payment_method_country: str,
     timeout_seconds: Any,
     is_cancelled: Callable[[], bool],
+    paypal_ba_mode: str = "eu",
 ) -> dict[str, Any]:
     context = dict(auth_session_context or {})
     return {
@@ -326,6 +335,7 @@ def paypal_ba_extract_kwargs(
         "country": paypal_ba_checkout_country(paypal_country),
         "currency": "USD",
         "payment_method_country": str(payment_method_country or ""),
+        "paypal_ba_mode": paypal_ba_extract_mode(paypal_ba_mode),
         "timeout_seconds": paypal_ba_timeout_seconds(timeout_seconds),
         "is_cancelled": is_cancelled,
     }

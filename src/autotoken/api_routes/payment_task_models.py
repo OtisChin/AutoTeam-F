@@ -288,6 +288,7 @@ class PayPalTaskParams(BaseModel):
         "",
         validation_alias=AliasChoices("paypal_payment_method_id", "paypalPaymentMethodId"),
     )
+    paypal_ba_mode: str = Field("eu", validation_alias=AliasChoices("paypal_ba_mode", "paypalBaMode"))
     phone_accounts: list[GoPayPhoneAccountParams] = Field(
         default_factory=list,
         validation_alias=AliasChoices("phone_accounts", "phoneAccounts"),

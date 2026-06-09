@@ -8,6 +8,7 @@ import os
 import random
 import re
 import secrets
+import subprocess
 import threading
 import time
 import uuid
@@ -6998,10 +6999,8 @@ def _paypal_result_timeout_seconds(timeout_seconds: int | None) -> int:
 def _paypal_checkout_payload(*, country: str = "US", currency: str = "USD", checkout_ui_mode: str = "hosted"):
     """Generate a checkout payload for PayPal extraction.
 
-    PayPal is only exposed on OpenAI's US/USD checkout in the observed
-    zero-amount trial flow. JP no-card signup still uses JP/ja later on the
-    PayPal side; the checkout session itself must stay US/USD.
-    Ref: pplink-src stripe.go createCheckout()
+    The BA extraction path follows pplink: EU mode uses FR/EUR/custom
+    with openai_ie, while US mode uses US/USD/hosted with openai_llc.
     """
     return paypal_billing_agreement_service.paypal_checkout_payload(
         country=country,
@@ -7022,6 +7021,318 @@ def _paypal_extract_result_from_redirect(
     )
 
 
+def _paypal_pplink_extract_mode(value: str | None) -> str:
+    normalized = re.sub(r"[^A-Za-z]", "", str(value or "").lower())
+    return "us" if normalized == "us" else "eu"
+
+
+def _paypal_pplink_checkout_config(mode: str) -> dict[str, str]:
+    if _paypal_pplink_extract_mode(mode) == "us":
+        return {
+            "mode": "us",
+            "country": "US",
+            "currency": "USD",
+            "checkout_ui_mode": "hosted",
+            "processor_entity": "openai_llc",
+            "payment_method_country": "US",
+        }
+    return {
+        "mode": "eu",
+        "country": "FR",
+        "currency": "EUR",
+        "checkout_ui_mode": "custom",
+        "processor_entity": "openai_ie",
+        "payment_method_country": "JP",
+    }
+
+
+def _paypal_pplink_extract_html_context(text: str) -> dict[str, Any]:
+    body = str(text or "")
+    pk_match = re.search(r"pk_live_[A-Za-z0-9_]+", body)
+    secret_match = re.search(r"seti_[A-Za-z0-9_]+_secret_[A-Za-z0-9_]+", body)
+    amount = 0
+    for key in ("amount_total", "amount_due", "total_amount_due"):
+        match = re.search(rf'{key}"?\s*:?\s*([0-9]+)', body)
+        if match:
+            amount = int(match.group(1) or "0")
+            break
+    return {
+        "publishable_key": pk_match.group(0) if pk_match else "",
+        "client_secret": secret_match.group(0) if secret_match else "",
+        "amount": amount,
+    }
+
+
+def _paypal_pplink_billing_profile(*, country: str, access_token: str) -> dict[str, str]:
+    normalized_country = re.sub(r"[^A-Za-z]", "", str(country or "")).upper()[:2] or "JP"
+    email = _email_from_access_token(access_token) or f"buyer{random.randint(100000, 999999)}@example.com"
+    if normalized_country == "JP":
+        profiles = [
+            {
+                "name": "Taro Yamada",
+                "email": email,
+                "country": "JP",
+                "state": "Tokyo",
+                "city": "Tokyo",
+                "postal_code": "101-8656",
+                "line1": "1-1 Kanda Ogawamachi",
+            },
+            {
+                "name": "Ken Sato",
+                "email": email,
+                "country": "JP",
+                "state": "Aichi",
+                "city": "Nagoya",
+                "postal_code": "460-0002",
+                "line1": "1-1 Marunouchi",
+            },
+        ]
+        return dict(random.choice(profiles))
+    return {
+        "name": "James Smith",
+        "email": email,
+        "country": normalized_country,
+        "state": "CA",
+        "city": "Los Angeles",
+        "postal_code": "90026",
+        "line1": "3110 Sunset Boulevard",
+    }
+
+
+def _paypal_pplink_redirect_from_response(resp: Any) -> str:
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    redirect_url = _find_paypal_redirect_url(payload) if payload is not None else ""
+    if redirect_url:
+        return redirect_url
+    text = str(getattr(resp, "text", "") or "")
+    return _find_paypal_redirect_url(text)
+
+
+def _paypal_pplink_approve_checkout(
+    http: Any,
+    *,
+    access_token: str,
+    checkout_session_id: str,
+    processor_entity: str,
+    client_session_id: str,
+    cookie_header: str = "",
+    account_id: str = "",
+    device_id: str = "",
+) -> dict[str, Any]:
+    approve_path = "/backend-api/payments/checkout/approve"
+    headers = _chatgpt_checkout_headers(
+        access_token=access_token,
+        checkout_session_id=checkout_session_id,
+        processor_entity=processor_entity,
+        cookie_header=cookie_header or _cookie_header_from_http_session(http),
+        account_id=account_id,
+        device_id=device_id,
+        target_path=approve_path,
+        openai_sentinel_token="",
+    )
+    headers["content-type"] = "application/x-www-form-urlencoded"
+    data = {
+        "checkout_session_id": checkout_session_id,
+        "processor_entity": processor_entity,
+        "client_attribution_metadata[client_session_id]": client_session_id,
+        "client_attribution_metadata[merchant_integration_source]": "custom_checkout_manual_approval_1",
+        "client_attribution_metadata[merchant_integration_version]": "2020-08-27;custom_checkout_beta=v1",
+    }
+    resp = http.post(
+        "https://chatgpt.com/backend-api/payments/checkout/approve",
+        data=data,
+        headers=headers,
+        timeout=30,
+    )
+    if int(getattr(resp, "status_code", 0) or 0) >= 300:
+        raise GoPayFlowError(
+            f"ChatGPT approve 失败: HTTP {resp.status_code} {str(getattr(resp, 'text', '') or '')[:500]}",
+            stage="chatgpt_approve",
+        )
+    payload = _response_json(resp, "paypal_chatgpt_approve")
+    if payload.get("result") not in (None, "approved"):
+        raise GoPayFlowError(f"ChatGPT approve 未通过: {payload}", stage="chatgpt_approve")
+    return payload
+
+
+def _paypal_pplink_exe_path() -> str:
+    configured = str(os.environ.get("PAYPAL_BA_PPLINK_EXE") or "").strip()
+    if configured.lower() in {"0", "false", "off", "none", "disabled"}:
+        return ""
+    candidates = [
+        configured,
+        r"D:\code\my\PayPalLink\pplink-win\pplink.exe",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def _paypal_pplink_output_text(proc: subprocess.CompletedProcess[bytes]) -> str:
+    output = (proc.stdout or b"") + b"\n" + (proc.stderr or b"")
+    return output.decode("utf-8", errors="replace")
+
+
+def _paypal_pplink_result_from_output(
+    *,
+    output: str,
+    mode: str,
+    returncode: int,
+    is_cancelled=None,
+) -> dict[str, Any]:
+    if callable(is_cancelled) and is_cancelled():
+        return {"status": "failed", "failure_stage": "extract_ba_link", "message": "Task cancelled"}
+    amount = 0
+    currency = ""
+    amount_match = re.search(r"init:\s*currency=([a-zA-Z]+)\s+amount=([0-9]+)", output)
+    if amount_match:
+        currency = amount_match.group(1).lower()
+        amount = int(amount_match.group(2) or "0")
+    cs_match = re.search(r"checkout session:\s*(cs_[A-Za-z0-9_]+)", output)
+    checkout_session_id = cs_match.group(1) if cs_match else ""
+    pm_match = re.search(r"\b(pm_[A-Za-z0-9_]+)\b", output)
+    pm_id = pm_match.group(1) if pm_match else ""
+    url = ""
+    for pattern in (
+        r"(?:Authorize URL|PayPal URL):\s*(https?://[^\s]+)",
+        r"(https://www\.paypal\.com/[^\s]+)",
+        r"(https://pm-redirects\.stripe\.com/[^\s]+)",
+    ):
+        match = re.search(pattern, output)
+        if match:
+            url = _paypal_protocol_unescape_url(match.group(1).strip())
+            break
+    ba_token = _paypal_protocol_extract_ba_token(url)
+    hosted_checkout_url = f"https://pay.openai.com/c/pay/{checkout_session_id}" if checkout_session_id else ""
+
+    if amount != 0:
+        nonzero_email = ""
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_nonzero_amount",
+            "message": f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
+            "checkout_session_id": checkout_session_id,
+            "pm_id": pm_id,
+            "checkout_url": hosted_checkout_url,
+            "hosted_checkout_url": hosted_checkout_url,
+            "nonzero_amount": amount,
+            "nonzero_blocked_emails": [nonzero_email] if nonzero_email else [],
+            "paypal_ba_mode": mode,
+        }
+    if returncode != 0:
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_pplink",
+            "message": f"pplink exited with {returncode}: {output[-800:]}",
+            "checkout_session_id": checkout_session_id,
+            "checkout_url": hosted_checkout_url,
+            "hosted_checkout_url": hosted_checkout_url,
+            "paypal_ba_mode": mode,
+        }
+    if not url or not ba_token:
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_parse",
+            "message": f"pplink did not return a PayPal BA URL: {output[-800:]}",
+            "checkout_session_id": checkout_session_id,
+            "pm_id": pm_id,
+            "approve_url": url,
+            "checkout_url": hosted_checkout_url,
+            "hosted_checkout_url": hosted_checkout_url,
+            "paypal_ba_mode": mode,
+        }
+    return {
+        "status": "success",
+        "ba_token": ba_token,
+        "approve_url": url,
+        "checkout_session_id": checkout_session_id,
+        "pm_id": pm_id,
+        "checkout_url": hosted_checkout_url,
+        "hosted_checkout_url": hosted_checkout_url,
+        "paypal_ba_mode": mode,
+        "currency": currency,
+    }
+
+
+def _paypal_extract_ba_link_with_pplink_exe(
+    *,
+    access_token: str,
+    proxy_url: str | None,
+    provider_proxy_url: str | None,
+    paypal_ba_mode: str,
+    timeout_seconds: int,
+    is_cancelled=None,
+    on_progress=None,
+) -> dict[str, Any] | None:
+    exe = _paypal_pplink_exe_path()
+    if not exe:
+        return None
+    mode = _paypal_pplink_extract_mode(paypal_ba_mode)
+    proxy = str(proxy_url or "").strip()
+    provider_proxy = str(provider_proxy_url or "").strip()
+    if not proxy and provider_proxy:
+        proxy = provider_proxy
+    if not proxy:
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_proxy",
+            "message": "pplink BA 提取需要代理",
+            "paypal_ba_mode": mode,
+        }
+    _emit = _progress_adapter(on_progress)
+    _emit("paypal_extract_pplink", message=f"Running pplink {mode.upper()} BA extractor")
+    cmd = [exe, "-mode", mode, "-proxy", proxy, "-max-retry", "1"]
+    if mode == "us" and provider_proxy:
+        cmd.extend(["-us-proxy", provider_proxy])
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=(str(access_token or "").strip() + "\n").encode("utf-8"),
+            capture_output=True,
+            timeout=max(60, min(240, int(timeout_seconds or 90) + 90)),
+            cwd=str(os.path.dirname(exe) or None),
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_pplink_timeout",
+            "message": "pplink BA 提取超时",
+            "paypal_ba_mode": mode,
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_pplink",
+            "message": f"pplink BA 提取启动失败: {exc}",
+            "paypal_ba_mode": mode,
+        }
+    result = _paypal_pplink_result_from_output(
+        output=_paypal_pplink_output_text(proc),
+        mode=mode,
+        returncode=int(proc.returncode or 0),
+        is_cancelled=is_cancelled,
+    )
+    if result.get("status") == "success":
+        _emit(
+            "paypal_extract_done",
+            message=f"Extracted BA token: {result.get('ba_token')}",
+            ba_token=result.get("ba_token"),
+            approve_url=result.get("approve_url"),
+        )
+    elif result.get("failure_stage") == "extract_ba_link_nonzero_amount":
+        _emit(
+            "paypal_extract_nonzero_amount_blocked",
+            message=str(result.get("message") or ""),
+            expected_amount=str(result.get("nonzero_amount") or ""),
+            currency=str(result.get("currency") or ""),
+        )
+    return result
+
+
 def _paypal_extract_ba_link(
     *,
     access_token: str,
@@ -7039,49 +7350,55 @@ def _paypal_extract_ba_link(
     country: str = "US",
     currency: str = "USD",
     payment_method_country: str | None = None,
+    paypal_ba_mode: str = "eu",
     timeout_seconds: int = 90,
     is_cancelled=None,
     on_progress=None,
 ):
-    """Extract a PayPal BA (Billing Agreement) link from a ChatGPT account.
-
-    Pure HTTP protocol flow -- no browser required.  Closely follows the
-    pplink-src Go implementation (stripe.go ExtractPayPalLink).
-
-    Flow:
-      1. Create ChatGPT checkout session  ->  cs_xxx
-      2. Stripe init                      ->  init_checksum / amount
-      3. Create PayPal payment method     ->  pm_xxx
-      4. Stripe confirm                   ->  binds PM to checkout
-      5. ChatGPT approve: POST /backend-api/payments/checkout/approve
-      6. Poll payment_pages               ->  wait for setup_intent requires_action
-      7. Follow pm-redirects             ->  extract PayPal URL with BA token
-
-    Returns dict with keys: status, ba_token, approve_url,
-      checkout_session_id, pm_id, failure_stage, message
-    """
+    """Extract a PayPal BA link with the pplink-style protocol flow."""
     if callable(is_cancelled) and is_cancelled():
         return {"status": "failed", "failure_stage": "extract_ba_link", "message": "Task cancelled"}
 
+    mode = _paypal_pplink_extract_mode(paypal_ba_mode)
+    pplink_result = _paypal_extract_ba_link_with_pplink_exe(
+        access_token=access_token,
+        proxy_url=proxy_url,
+        provider_proxy_url=provider_proxy_url,
+        paypal_ba_mode=mode,
+        timeout_seconds=timeout_seconds,
+        is_cancelled=is_cancelled,
+        on_progress=on_progress,
+    )
+    if pplink_result is not None:
+        return pplink_result
+
+    config = _paypal_pplink_checkout_config(mode)
+    checkout_country = str(os.environ.get("PAYPAL_BA_CHECKOUT_COUNTRY") or config["country"]).strip().upper()
+    checkout_currency = str(os.environ.get("PAYPAL_BA_CHECKOUT_CURRENCY") or config["currency"]).strip().upper()
+    checkout_ui_mode = str(os.environ.get("PAYPAL_BA_CHECKOUT_UI_MODE") or config["checkout_ui_mode"]).strip().lower()
+    processor_entity = str(os.environ.get("PAYPAL_BA_PROCESSOR_ENTITY") or config["processor_entity"]).strip()
+    pm_country = str(payment_method_country or config["payment_method_country"]).strip().upper()
+    if mode == "eu" and not payment_method_country:
+        pm_country = "JP"
+    if mode == "us" and not payment_method_country:
+        pm_country = "US"
+
     chrome_ua = (
         str(user_agent or "").strip()
-        or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/148.0.0.0 Safari/537.36"
+        or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
     )
-    stripe_pk = DEFAULT_STRIPE_PK
-    stripe_version = STRIPE_VERSION_FULL
-    paypal_stripe_version = "2020-08-27;custom_checkout_beta=v1"
-    paypal_checkout_config_id = (
-        str(os.environ.get("PAYPAL_BA_CHECKOUT_CONFIG_ID") or "").strip() or "30777f36-1141-46bc-a435-f4bec3472ed5"
-    )
-    stripe_runtime = _stripe_runtime_from_env()
-    stripe_runtime_version = stripe_runtime.get("version") or DEFAULT_STRIPE_RUNTIME_VERSION
+    resolved_device_id = str(device_id or "").strip() or str(uuid.uuid4())
+    client_session_id = str(uuid.uuid4())
+    stripe_runtime_version = "30777f36-1141-46bc-a435-f4bec3472ed5"
     _emit = _progress_adapter(on_progress)
 
-    # ---- Step 0: build HTTP session ----
-    http = _new_http_session(str(proxy_url or "").strip() or None, require_curl_cffi=False)
-    resolved_device_id = str(device_id or "").strip() or str(uuid.uuid4())
+    chat_proxy = str(proxy_url or "").strip() or None
+    stripe_proxy = str(provider_proxy_url or "").strip() if mode == "us" else ""
+    if not stripe_proxy:
+        stripe_proxy = str(proxy_url or "").strip()
+
+    http = _new_http_session(chat_proxy, require_curl_cffi=False)
     _configure_chatgpt_http_session(
         http,
         access_token=access_token,
@@ -7102,455 +7419,207 @@ def _paypal_extract_ba_link(
             "Referer": "https://chatgpt.com/",
         }
     )
+    stripe_http = _new_http_session(stripe_proxy or None, require_curl_cffi=False)
+    stripe_http.headers.update({"User-Agent": chrome_ua, "Accept": "application/json"})
 
-    def _apply_http_session_proxy(session: Any, proxy: str) -> None:
-        normalized = str(proxy or "").strip()
-        if not normalized:
-            return
-        try:
-            session.proxies = {"http": normalized, "https": normalized}
-        except Exception:
-            logger.debug("[paypal_extract] failed to switch ChatGPT approve proxy", exc_info=True)
-
-    # ---- Step 1: warmup ----
-    _emit("paypal_extract_warmup", message="Warming up ChatGPT session")
+    _emit("paypal_extract_warmup", message=f"Warming up ChatGPT session ({mode.upper()})")
     try:
-        http.get("https://chatgpt.com/api/auth/session", timeout=30, allow_redirects=True)
-    except Exception as exc:
-        logger.info("[paypal_extract] warmup soft-failed: %s", exc)
-
-    # ---- Step 2: create checkout ----
-    _emit("paypal_extract_checkout", message="Creating Stripe checkout session")
-    # pplink/opll both keep the ChatGPT checkout on US/USD for PayPal BA
-    # extraction, then create the PayPal payment_method with JP billing data.
-    # JP/JPY checkout sessions currently initialize without PayPal enabled.
-    checkout_country = str(os.environ.get("PAYPAL_BA_CHECKOUT_COUNTRY") or "US").strip().upper() or "US"
-    checkout_currency = str(os.environ.get("PAYPAL_BA_CHECKOUT_CURRENCY") or "USD").strip().upper() or "USD"
-    payload = _paypal_checkout_payload(country=checkout_country, currency=checkout_currency)
-    try:
-        resp = http.post(
-            "https://chatgpt.com/backend-api/payments/checkout",
-            json=payload,
+        http.get(
+            "https://chatgpt.com/backend-api/sentinel/ping",
+            headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": "/backend-api/sentinel/ping"},
             timeout=30,
         )
+    except Exception as exc:
+        logger.info("[paypal_extract] pplink warmup soft-failed: %s", exc)
+
+    _emit("paypal_extract_checkout", message=f"Creating pplink {mode.upper()} checkout session")
+    payload = _paypal_checkout_payload(
+        country=checkout_country,
+        currency=checkout_currency,
+        checkout_ui_mode=checkout_ui_mode,
+    )
+    try:
+        resp = http.post("https://chatgpt.com/backend-api/payments/checkouts", json=payload, timeout=30)
     except Exception as exc:
         return {
             "status": "failed",
             "failure_stage": "extract_ba_link_checkout",
             "message": f"ChatGPT checkout request failed: {exc}",
         }
-    if resp.status_code != 200:
-        text = str(getattr(resp, "text", "") or "")[:500]
+    if int(getattr(resp, "status_code", 0) or 0) >= 300:
         return {
             "status": "failed",
             "failure_stage": "extract_ba_link_checkout",
-            "message": f"ChatGPT checkout HTTP {resp.status_code}: {text}",
+            "message": f"ChatGPT checkout HTTP {resp.status_code}: {str(getattr(resp, 'text', '') or '')[:500]}",
         }
     data = _response_json(resp, "paypal_extract_checkout")
-    cs_id = _extract_checkout_session_id(raw=data)
-    if not cs_id or not cs_id.startswith("cs_"):
+    cs_id = str(data.get("checkout_session_id") or data.get("id") or "").strip()
+    if not cs_id.startswith("cs_"):
         return {
             "status": "failed",
             "failure_stage": "extract_ba_link_checkout",
             "message": f"Invalid checkout session id: {cs_id}",
         }
-    processor_entity = str(data.get("processor_entity") or "openai_llc").strip() or "openai_llc"
-    hosted_checkout_url = (
-        str(data.get("url") or "").strip() or f"https://chatgpt.com/checkout/{processor_entity}/{cs_id}"
-    )
-    # Build the FULL hosted checkout URL with Stripe Elements hash fragment
-    _checkout_hash_config = json.dumps(
-        {
-            "borderStyle": "default",
-            "locale": "en",
-            "subscriptionUniquenessEnabled": False,
-            "apiKey": stripe_pk,
-            "fromServer": True,
-            "backgroundColor": "#ffffff",
-            "layoutType": "single_item",
-            "enablePlaceholders": True,
-        },
-        separators=(",", ":"),
-    )
-    import base64 as _b64
-    from urllib.parse import quote as _url_quote
-
-    _hash_padded = _checkout_hash_config + " " * ((3 - len(_checkout_hash_config) % 3) % 3)
-    _hash_xored = "".join(chr(ord(c) ^ 5) for c in _hash_padded)
-    _hash_b64 = _b64.b64encode(_hash_xored.encode("utf-8")).decode("ascii")
-    _hash_fragment = _url_quote(_hash_b64, safe="-_.!~*'()")
-    if not hosted_checkout_url.startswith("https://pay.openai.com/c/pay/"):
+    hosted_checkout_url = str(
+        data.get("stripe_hosted_url") or data.get("url") or data.get("paypal_redirect_url") or ""
+    ).strip()
+    if not hosted_checkout_url:
         hosted_checkout_url = f"https://pay.openai.com/c/pay/{cs_id}"
-    long_hosted_url = f"{hosted_checkout_url}#{_hash_fragment}"
-    logger.info("[paypal_extract] checkout cs=%s entity=%s", cs_id, processor_entity)
-
-    # ---- Stripe/PayPal provider stage can use a different proxy, matching opll. ----
-    provider_proxy = str(provider_proxy_url or "").strip() or str(proxy_url or "").strip()
-    if provider_proxy and provider_proxy != str(proxy_url or "").strip():
-        _emit("paypal_extract_provider_proxy", message="Switching PayPal provider-stage proxy")
-
-    # ---- Stripe API uses its own HTTP session (no chatgpt Authorization header) ----
-    stripe_http = _new_http_session(provider_proxy or None, require_curl_cffi=False)
-    stripe_http.headers.update(
-        {
-            "User-Agent": chrome_ua,
-            "Accept": "application/json",
-        }
+    client_secret = str(data.get("client_secret") or "").strip()
+    logger.info(
+        "[paypal_extract] pplink mode=%s cs=%s entity=%s checkout=%s/%s/%s",
+        mode,
+        cs_id,
+        processor_entity,
+        checkout_country,
+        checkout_currency,
+        checkout_ui_mode,
     )
 
-    # ---- Step 3: create PayPal payment method (pplink order) ----
-    _emit("paypal_extract_pm", message="Creating PayPal payment method")
-    pm_country = str(payment_method_country or country or "US").strip().upper()
-    client_session_id = str(uuid.uuid4())
-    elements_session_id = f"elements_session_{uuid.uuid4().hex[:11]}"
-    elements_session_config_id = str(uuid.uuid4())
-    billing_profile = (
-        {
-            "name": "Taro Yamada",
-            "email": f"taro.yamada{random.randint(1000, 9999)}@example.com",
-            "country": "JP",
-            "postal_code": "100-0001",
-            "city": "Chiyoda",
-            "state": "Tokyo",
-            "line1": "1-1 Chiyoda",
-        }
-        if pm_country == "JP"
-        else {
-            "name": "James Smith",
-            "email": _email_from_access_token(access_token) or "buyer@example.com",
-            "country": pm_country,
-            "postal_code": "10001",
-            "city": "New York",
-            "state": "NY",
-            "line1": "123 Main St",
-        }
-    )
-    pm_data = {
-        "type": "paypal",
-        "billing_details[name]": billing_profile["name"],
-        "billing_details[email]": billing_profile["email"],
-        "billing_details[address][country]": billing_profile["country"],
-        "billing_details[address][postal_code]": billing_profile["postal_code"],
-        "billing_details[address][city]": billing_profile["city"],
-        "billing_details[address][state]": billing_profile["state"],
-        "billing_details[address][line1]": billing_profile["line1"],
-        "guid": uuid.uuid4().hex,
-        "muid": uuid.uuid4().hex,
-        "sid": uuid.uuid4().hex,
-        "_stripe_version": paypal_stripe_version,
-        "key": stripe_pk,
-        "payment_user_agent": (f"stripe.js/{stripe_runtime_version}; stripe-js-v3/{stripe_runtime_version}; checkout"),
-        "referrer": "https://chatgpt.com",
-        "time_on_page": str(random.randint(25000, 55000)),
-        "client_attribution_metadata[client_session_id]": client_session_id,
-        "client_attribution_metadata[checkout_session_id]": cs_id,
-        "client_attribution_metadata[checkout_config_id]": paypal_checkout_config_id,
-        "client_attribution_metadata[merchant_integration_source]": "checkout",
-        "client_attribution_metadata[merchant_integration_version]": "hosted_checkout",
-        "client_attribution_metadata[payment_method_selection_flow]": "automatic",
-    }
+    _emit("paypal_extract_stripe_init", message="Loading hosted checkout for Stripe context")
     try:
-        resp = stripe_http.post(f"{STRIPE_API}/v1/payment_methods", data=pm_data, timeout=30)
-    except Exception as exc:
-        return {"status": "failed", "failure_stage": "extract_ba_link_pm", "message": f"Create PayPal PM failed: {exc}"}
-    if resp.status_code != 200:
-        text = str(getattr(resp, "text", "") or "")[:300]
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_pm",
-            "message": f"Create PayPal PM HTTP {resp.status_code}: {text}",
-        }
-    pm_payload = _response_json(resp, "paypal_extract_pm")
-    pm_id = str(pm_payload.get("id") or "")
-    if not pm_id.startswith("pm_"):
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_pm",
-            "message": f"Invalid payment method id: {pm_id}",
-        }
-    logger.info("[paypal_extract] pm=%s", pm_id)
-
-    # ---- Step 4: Stripe init ----
-    _emit("paypal_extract_stripe_init", message="Initializing Stripe payment page")
-    stripe_js_id = str(uuid.uuid4())
-    init_data = {
-        "browser_locale": "en-US",
-        "browser_timezone": "Asia/Shanghai",
-        "eid": "NA",
-        "redirect_type": "url",
-        "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
-        "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
-        "elements_session_client[elements_init_source]": "custom_checkout",
-        "elements_session_client[referrer_host]": "chatgpt.com",
-        "elements_session_client[stripe_js_id]": stripe_js_id,
-        "elements_session_client[locale]": "en",
-        "elements_session_client[is_aggregation_expected]": "false",
-        "_stripe_version": stripe_version,
-        "key": stripe_pk,
-    }
-    try:
-        resp = stripe_http.post(f"{STRIPE_API}/v1/payment_pages/{cs_id}/init", data=init_data, timeout=30)
+        hosted_resp = stripe_http.get(hosted_checkout_url, timeout=30, allow_redirects=True)
     except Exception as exc:
         return {
             "status": "failed",
             "failure_stage": "extract_ba_link_stripe_init",
-            "message": f"Stripe init failed: {exc}",
+            "message": f"Stripe hosted checkout failed: {exc}",
+            "checkout_session_id": cs_id,
+            "checkout_url": hosted_checkout_url,
+            "hosted_checkout_url": hosted_checkout_url,
         }
-    if resp.status_code != 200:
-        text = str(getattr(resp, "text", "") or "")[:300]
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_stripe_init",
-            "message": f"Stripe init HTTP {resp.status_code}: {text}",
-        }
-    init_payload = _response_json(resp, "paypal_extract_stripe_init")
-    init_checksum = str(init_payload.get("init_checksum") or "")
-    if not init_checksum:
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_stripe_init",
-            "message": "Stripe init returned no init_checksum",
-        }
-    config_id = str(init_payload.get("config_id") or "")
-    if config_id:
-        elements_session_config_id = config_id
-    if init_payload.get("elements_session_config_id"):
-        elements_session_config_id = str(init_payload.get("elements_session_config_id") or elements_session_config_id)
-    currency_resolved = str(init_payload.get("currency") or currency).lower()
-    amount_str = _paypal_protocol_checkout_amount(init_payload)
-    amount = int(re.sub(r"\D+", "", amount_str) or "0")
-    logger.info("[paypal_extract] init ok currency=%s amount=%d", currency_resolved, amount)
+    hosted_text = str(getattr(hosted_resp, "text", "") or "")
+    html_context = _paypal_pplink_extract_html_context(hosted_text)
+    stripe_pk = str(html_context.get("publishable_key") or "").strip() or DEFAULT_STRIPE_PK
+    client_secret = client_secret or str(html_context.get("client_secret") or "").strip()
+    amount = int(html_context.get("amount") or 0)
+    logger.info("[paypal_extract] pplink init pk=%s client_secret=%s amount=%d", stripe_pk[:18], client_secret[:18], amount)
     if amount != 0:
         nonzero_email = _email_from_access_token(access_token)
         _emit(
             "paypal_extract_nonzero_amount_blocked",
             message=f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
             expected_amount=str(amount),
-            currency=currency_resolved,
+            currency=checkout_currency.lower(),
         )
         return {
             "status": "failed",
             "failure_stage": "extract_ba_link_nonzero_amount",
             "message": f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
             "checkout_session_id": cs_id,
-            "pm_id": pm_id,
-            "checkout_url": long_hosted_url,
+            "checkout_url": hosted_checkout_url,
             "hosted_checkout_url": hosted_checkout_url,
             "nonzero_amount": amount,
             "nonzero_blocked_emails": [nonzero_email] if nonzero_email else [],
+            "paypal_ba_mode": mode,
         }
-    payment_method_types = _paypal_protocol_payment_method_types(init_payload)
-    if payment_method_types and "paypal" not in payment_method_types:
-        logger.info(
-            "[paypal_extract] init payment_method_types does not list paypal; continuing with manual PM flow: %s",
-            ",".join(sorted(payment_method_types)),
-        )
-        _emit(
-            "paypal_extract_payment_method_types_warning",
-            message=(
-                "Stripe init 未列出 PayPal，继续尝试手动创建 PayPal payment_method "
-                f"(payment_method_types={','.join(sorted(payment_method_types))})"
-            ),
-        )
-
-    try:
-        stripe_http.post(
-            f"{STRIPE_API}/v1/payment_pages/{cs_id}",
-            data={
-                "eid": "NA",
-                "tax_region[country]": billing_profile["country"],
-                "tax_region[state]": billing_profile["state"],
-                "tax_region[postal_code]": billing_profile["postal_code"],
-                "tax_region[line1]": billing_profile["line1"],
-                "tax_region[city]": billing_profile["city"],
-                "key": stripe_pk,
-                "_stripe_version": stripe_version,
-            },
-            timeout=30,
-        )
-        amount_refresh_params = {
-            "key": stripe_pk,
-            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
-            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
-            "elements_session_client[elements_init_source]": "custom_checkout",
-            "elements_session_client[referrer_host]": "chatgpt.com",
-            "elements_session_client[session_id]": elements_session_id,
-            "elements_session_client[stripe_js_id]": stripe_js_id,
-            "elements_session_client[locale]": "en",
-            "elements_session_client[is_aggregation_expected]": "false",
-            "elements_options_client[saved_payment_method][enable_save]": "never",
-            "elements_options_client[saved_payment_method][enable_redisplay]": "never",
-            "_stripe_version": stripe_version,
+    if not client_secret:
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_stripe_init",
+            "message": "Hosted checkout did not expose setup_intent client_secret",
+            "checkout_session_id": cs_id,
+            "checkout_url": hosted_checkout_url,
+            "hosted_checkout_url": hosted_checkout_url,
+            "paypal_ba_mode": mode,
         }
-        amount_resp = stripe_http.get(
-            f"{STRIPE_API}/v1/payment_pages/{cs_id}", params=amount_refresh_params, timeout=30
-        )
-        if amount_resp.status_code == 200:
-            amount_payload = _response_json(amount_resp, "paypal_extract_amount_refresh")
-            refreshed_amount = int(re.sub(r"\D+", "", _paypal_protocol_checkout_amount(amount_payload)) or "0")
-            if refreshed_amount != amount:
-                logger.info(
-                    "[paypal_extract] refreshed expected_amount after tax_region: %d -> %d", amount, refreshed_amount
-                )
-                amount = refreshed_amount
-            if amount != 0:
-                nonzero_email = _email_from_access_token(access_token)
-                _emit(
-                    "paypal_extract_nonzero_amount_blocked",
-                    message=f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
-                    expected_amount=str(amount),
-                    currency=currency_resolved,
-                )
-                return {
-                    "status": "failed",
-                    "failure_stage": "extract_ba_link_nonzero_amount",
-                    "message": f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
-                    "checkout_session_id": cs_id,
-                    "pm_id": pm_id,
-                    "checkout_url": long_hosted_url,
-                    "hosted_checkout_url": hosted_checkout_url,
-                    "nonzero_amount": amount,
-                    "nonzero_blocked_emails": [nonzero_email] if nonzero_email else [],
-                }
-    except Exception as exc:
-        logger.info("[paypal_extract] Stripe tax region/amount refresh soft-failed: %s", exc)
 
-    # ---- Step 5: Stripe confirm ----
-    _emit("paypal_extract_confirm", message="Confirming Stripe checkout")
-    return_url = f"https://checkout.stripe.com/c/pay/{cs_id}?redirect_pm_type=paypal&lid={uuid.uuid4()}&ui_mode=custom"
-    confirm_data = {
-        "eid": "NA",
-        "payment_method": pm_id,
-        "expected_amount": str(amount),
-        "consent[terms_of_service]": "accepted",
-        "expected_payment_method_type": "paypal",
-        "return_url": return_url,
-        "_stripe_version": paypal_stripe_version,
+    billing_profile = _paypal_pplink_billing_profile(country=pm_country, access_token=access_token)
+    _emit("paypal_extract_pm", message=f"Creating PayPal payment method ({billing_profile['country']})")
+    pm_data = {
+        "type": "paypal",
+        "billing_details[name]": billing_profile["name"],
+        "billing_details[email]": billing_profile["email"],
+        "billing_details[address][country]": billing_profile["country"],
+        "billing_details[address][state]": billing_profile["state"],
+        "billing_details[address][city]": billing_profile["city"],
+        "billing_details[address][postal_code]": billing_profile["postal_code"],
+        "billing_details[address][line1]": billing_profile["line1"],
         "guid": uuid.uuid4().hex,
         "muid": uuid.uuid4().hex,
         "sid": uuid.uuid4().hex,
+        "payment_user_agent": f"stripe.js/{stripe_runtime_version}; stripe-js-v3/{stripe_runtime_version}",
+        "expected_payment_method_type": "paypal",
         "key": stripe_pk,
-        "version": stripe_runtime_version,
-        "init_checksum": init_checksum,
-        "client_attribution_metadata[client_session_id]": str(uuid.uuid4()),
-        "client_attribution_metadata[checkout_session_id]": cs_id,
-        "client_attribution_metadata[checkout_config_id]": paypal_checkout_config_id,
-        "client_attribution_metadata[merchant_integration_source]": "checkout",
-        "client_attribution_metadata[merchant_integration_version]": "hosted_checkout",
-        "client_attribution_metadata[payment_method_selection_flow]": "automatic",
-        "link_brand": "link",
     }
     try:
-        resp = stripe_http.post(f"{STRIPE_API}/v1/payment_pages/{cs_id}/confirm", data=confirm_data, timeout=30)
+        resp = stripe_http.post(f"{STRIPE_API}/v1/payment_methods", data=pm_data, timeout=30)
     except Exception as exc:
         return {
             "status": "failed",
-            "failure_stage": "extract_ba_link_confirm",
-            "message": f"Stripe confirm failed: {exc}",
+            "failure_stage": "extract_ba_link_pm",
+            "message": f"Create PayPal PM failed: {exc}",
+            "checkout_session_id": cs_id,
+            "checkout_url": hosted_checkout_url,
+            "hosted_checkout_url": hosted_checkout_url,
+            "paypal_ba_mode": mode,
         }
-    if resp.status_code != 200:
-        text = str(getattr(resp, "text", "") or "")[:500]
+    redirect_url = _paypal_pplink_redirect_from_response(resp)
+    if redirect_url:
+        result = _paypal_extract_result_from_redirect(stripe_http, redirect_url, cs_id, "")
+        result.setdefault("checkout_url", hosted_checkout_url)
+        result.setdefault("hosted_checkout_url", hosted_checkout_url)
+        result.setdefault("paypal_ba_mode", mode)
+        return result
+    if int(getattr(resp, "status_code", 0) or 0) >= 300:
         return {
             "status": "failed",
-            "failure_stage": "extract_ba_link_confirm",
-            "message": f"Stripe confirm HTTP {resp.status_code}: {text}",
+            "failure_stage": "extract_ba_link_pm",
+            "message": f"Create PayPal PM HTTP {resp.status_code}: {str(getattr(resp, 'text', '') or '')[:500]}",
+            "checkout_session_id": cs_id,
+            "checkout_url": hosted_checkout_url,
+            "hosted_checkout_url": hosted_checkout_url,
+            "paypal_ba_mode": mode,
         }
-    logger.info("[paypal_extract] confirm ok")
-    logger.info(
-        "[paypal_extract] confirm response has setup_intent=%s",
-        str("setup_intent" in str(getattr(resp, "text", "") or "{}")),
-    )
-    # ---- Step 5.5: confirm setup_intent to trigger PayPal redirect (pplink-src) ----
-    try:
-        _confirm_body = str(getattr(resp, "text", "") or "{}")
-        pp_body = json.loads(_confirm_body)
-    except Exception as e:
-        logger.warning("[paypal_extract] confirm body parse failed: %s", e)
-        pp_body = {}
-    redirect_url = _find_paypal_redirect_url(pp_body)
-    if redirect_url:
-        logger.info("[paypal_extract] confirm response included redirect")
-        result = _paypal_extract_result_from_redirect(stripe_http, redirect_url, cs_id, pm_id)
-        result.setdefault("checkout_url", long_hosted_url)
-        result.setdefault("hosted_checkout_url", hosted_checkout_url)
-        return result
+    pm_payload = _response_json(resp, "paypal_extract_pm")
+    pm_id = str(pm_payload.get("id") or "").strip()
+    if not pm_id.startswith("pm_"):
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_pm",
+            "message": f"Invalid payment method id: {pm_id}",
+            "checkout_session_id": cs_id,
+            "checkout_url": hosted_checkout_url,
+            "hosted_checkout_url": hosted_checkout_url,
+            "paypal_ba_mode": mode,
+        }
 
-    si = pp_body.get("setup_intent")
-    _perform_si_confirm = False
-    si_details = si if isinstance(si, dict) else {}
-    if isinstance(si, str) and si.startswith("seti_"):
-        logger.info("[paypal_extract] setup_intent is id, retrieving %s", si[:20])
+    setup_intent_id = client_secret.split("_secret_", 1)[0]
+    if setup_intent_id:
+        _emit("paypal_extract_confirm", message="Confirming setup_intent with PayPal PM")
+        confirm_data = {
+            "payment_method": pm_id,
+            "expected_payment_method_type": "paypal",
+            "use_stripe_sdk": "true",
+            "client_secret": client_secret,
+            "key": stripe_pk,
+            "client_attribution_metadata[client_session_id]": client_session_id,
+            "client_attribution_metadata[merchant_integration_source]": "custom_checkout_manual_approval_1",
+            "client_attribution_metadata[merchant_integration_version]": "2020-08-27;custom_checkout_beta=v1",
+        }
         try:
-            si_resp = stripe_http.get(
-                f"{STRIPE_API}/v1/setup_intents/{si}?key={stripe_pk}",
+            confirm_resp = stripe_http.post(
+                f"{STRIPE_API}/v1/setup_intents/{quote(setup_intent_id, safe='')}/confirm",
+                data=confirm_data,
                 timeout=30,
             )
-            if si_resp.status_code == 200:
-                si_details = json.loads(str(getattr(si_resp, "text", "") or "{}"))
-                redirect_url = _find_paypal_redirect_url(si_details)
-                if redirect_url:
-                    _perform_si_confirm = True
-                    logger.info("[paypal_extract] retrieve setup_intent included redirect")
-            else:
-                logger.info(
-                    "[paypal_extract] retrieve setup_intent HTTP %s: %s",
-                    si_resp.status_code,
-                    str(getattr(si_resp, "text", "") or "")[:200],
-                )
-        except Exception as si_retrieve_exc:
-            logger.info("[paypal_extract] retrieve setup_intent soft-failed: %s", si_retrieve_exc)
-    if isinstance(si_details, dict):
-        si_id = str(si_details.get("id") or (si if isinstance(si, str) else ""))
-        si_secret = str(si_details.get("client_secret") or "")
-        si_status = str(si_details.get("status") or "")
-        if si_id and si_secret and not _perform_si_confirm:
-            logger.info("[paypal_extract] confirming setup_intent %s (status=%s)", si_id[:20], si_status)
-            si_confirm_data = {
-                "payment_method": pm_id,
-                "client_secret": si_secret,
-                "return_url": return_url,
-                "key": stripe_pk,
-                "_stripe_version": "2020-08-27;custom_checkout_beta=v1",
-                "payment_method_data[type]": "paypal",
-                "mandate_data[customer_acceptance][type]": "online",
-                "mandate_data[customer_acceptance][online][infer_from_client]": "true",
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "failure_stage": "extract_ba_link_confirm",
+                "message": f"Stripe setup_intent confirm failed: {exc}",
+                "checkout_session_id": cs_id,
+                "pm_id": pm_id,
+                "checkout_url": hosted_checkout_url,
+                "hosted_checkout_url": hosted_checkout_url,
+                "paypal_ba_mode": mode,
             }
-            try:
-                si_resp = stripe_http.post(
-                    f"{STRIPE_API}/v1/setup_intents/{si_id}/confirm", data=si_confirm_data, timeout=30
-                )
-                if si_resp.status_code == 200:
-                    try:
-                        si_result = json.loads(str(getattr(si_resp, "text", "") or "{}"))
-                    except Exception:
-                        si_result = {}
-                    redirect_url = _find_paypal_redirect_url(si_result)
-                    if redirect_url:
-                        logger.info("[paypal_extract] setup_intent confirm gave redirect!")
-                        _perform_si_confirm = True
-                    # Also deep search raw text in case Stripe escaped the URL.
-                    if not _perform_si_confirm:
-                        si_body_str = str(getattr(si_resp, "text", "") or "")
-                        if "paypal.com" in si_body_str.lower() or "pm-redirects" in si_body_str:
-                            for _m in re.finditer(r'https?://[^\s"<>\\]+', si_body_str, re.I):
-                                u = _m.group(0).rstrip("),.;")
-                                if "paypal.com" in u.lower() or "pm-redirects.stripe.com" in u.lower():
-                                    redirect_url = u
-                                    _perform_si_confirm = True
-                                    logger.info("[paypal_extract] deep search found redirect in setup_intent confirm!")
-                                    break
-                    si_status_new = str(si_result.get("status") or "")
-                    logger.info("[paypal_extract] setup_intent confirm status=%s", si_status_new)
-                else:
-                    si_text = str(getattr(si_resp, "text", "") or "")[:200]
-                    logger.info("[paypal_extract] setup_intent confirm HTTP %s: %s", si_resp.status_code, si_text)
-            except Exception as si_exc:
-                logger.info("[paypal_extract] setup_intent confirm soft-failed: %s", si_exc)
-        if _perform_si_confirm:
-            logger.info("[paypal_extract] got PayPal redirect from setup_intent confirm, skipping approve + poll")
+        redirect_url = _paypal_pplink_redirect_from_response(confirm_resp)
+        if redirect_url:
             result = _paypal_extract_result_from_redirect(stripe_http, redirect_url, cs_id, pm_id)
-            result.setdefault("checkout_url", long_hosted_url)
+            result.setdefault("checkout_url", hosted_checkout_url)
             result.setdefault("hosted_checkout_url", hosted_checkout_url)
+            result.setdefault("paypal_ba_mode", mode)
             if result.get("status") == "success":
                 _emit(
                     "paypal_extract_done",
@@ -7559,236 +7628,108 @@ def _paypal_extract_ba_link(
                     approve_url=result.get("approve_url"),
                 )
             return result
+        if int(getattr(confirm_resp, "status_code", 0) or 0) >= 300:
+            return {
+                "status": "failed",
+                "failure_stage": "extract_ba_link_confirm",
+                "message": f"Stripe setup_intent confirm HTTP {confirm_resp.status_code}: {str(getattr(confirm_resp, 'text', '') or '')[:500]}",
+                "checkout_session_id": cs_id,
+                "pm_id": pm_id,
+                "checkout_url": hosted_checkout_url,
+                "hosted_checkout_url": hosted_checkout_url,
+                "paypal_ba_mode": mode,
+            }
 
-    # ---- Step 6: ChatGPT approve, only when Stripe asks for manual merchant approval. ----
-    submission_attempt = pp_body.get("submission_attempt") if isinstance(pp_body, dict) else None
-    submission_state = ""
-    if isinstance(submission_attempt, dict):
-        submission_state = str(submission_attempt.get("state") or "")
-    approve_result = ""
-    approve_blocked_result: dict[str, Any] | None = None
-    should_approve = submission_state == "requires_approval" or not submission_state
-    if should_approve:
+    def poll_for_redirect(stage: str) -> str:
+        _emit(stage, message="Polling Stripe payment page for PayPal redirect")
+        attempts = max(1, min(60, int(timeout_seconds or 30)))
+        for attempt in range(attempts):
+            if callable(is_cancelled) and is_cancelled():
+                return ""
+            if "pm-redirects.stripe.com" in hosted_checkout_url:
+                return hosted_checkout_url
+            try:
+                poll_resp = stripe_http.get(
+                    f"{STRIPE_API}/v1/payment_pages/{quote(client_secret, safe='')}",
+                    timeout=30,
+                )
+            except Exception as exc:
+                logger.info("[paypal_extract] pplink poll #%d failed: %s", attempt, exc)
+                time.sleep(1.0)
+                continue
+            redirect = _paypal_pplink_redirect_from_response(poll_resp)
+            if redirect:
+                logger.info("[paypal_extract] pplink poll #%d redirect=%s", attempt, redirect[:120])
+                return redirect
+            try:
+                poll_payload = poll_resp.json()
+            except Exception:
+                poll_payload = {}
+            status = ""
+            setup_intent = poll_payload.get("setup_intent") if isinstance(poll_payload, dict) else None
+            if isinstance(setup_intent, dict):
+                status = str(setup_intent.get("status") or "")
+            logger.info("[paypal_extract] pplink poll #%d setup_intent.status=%s", attempt, status or "<empty>")
+            time.sleep(1.0)
+        return ""
+
+    redirect_url = poll_for_redirect("paypal_extract_poll")
+    if not redirect_url:
         _emit("paypal_extract_approve", message="Approving checkout on ChatGPT")
         approve_proxy = str(approve_proxy_url or "").strip()
-        if approve_proxy and approve_proxy != str(proxy_url or "").strip():
-            _emit("paypal_extract_approve_proxy", message="Switching ChatGPT approve proxy")
-            _apply_http_session_proxy(http, approve_proxy)
+        if approve_proxy and mode == "us" and approve_proxy != str(proxy_url or "").strip():
+            try:
+                http.proxies = {"http": approve_proxy, "https": approve_proxy}
+            except Exception:
+                logger.debug("[paypal_extract] failed to switch approve proxy", exc_info=True)
         try:
-            approve_payload = _paypal_approve_checkout_http(
+            _paypal_pplink_approve_checkout(
                 http,
                 access_token=access_token,
                 checkout_session_id=cs_id,
                 processor_entity=processor_entity,
-                session_token=session_token,
+                client_session_id=client_session_id,
                 cookie_header=cookie_header,
                 account_id=account_id,
                 device_id=resolved_device_id,
-                user_agent=chrome_ua,
-                openai_sentinel_token=openai_sentinel_token,
-                oai_client_version=oai_client_version,
-                oai_client_build_number=oai_client_build_number,
             )
-            approve_result = str((approve_payload or {}).get("result") or "approved")
-            logger.info("[paypal_extract] approve result=%s", approve_result)
         except GoPayFlowError as exc:
             message = str(exc)
-            if "blocked" in message.lower():
-                logger.info("[paypal_extract] approve blocked; continuing Stripe poll before failing: %s", message)
-                approve_blocked_result = {
+            logger.info("[paypal_extract] pplink approve failed; polling once more: %s", message)
+            redirect_url = poll_for_redirect("paypal_extract_poll")
+            if not redirect_url:
+                return {
                     "status": "failed",
-                    "failure_stage": "extract_ba_link_approve_blocked",
-                    "message": "ChatGPT approve blocked",
+                    "failure_stage": "extract_ba_link_approve_blocked" if "blocked" in message.lower() else "extract_ba_link_approve",
+                    "message": "ChatGPT approve blocked" if "blocked" in message.lower() else message,
                     "checkout_session_id": cs_id,
                     "pm_id": pm_id,
-                    "checkout_url": long_hosted_url,
+                    "checkout_url": hosted_checkout_url,
                     "hosted_checkout_url": hosted_checkout_url,
+                    "paypal_ba_mode": mode,
                 }
-            else:
-                logger.info("[paypal_extract] approve failed (continuing): %s", message)
         except Exception as exc:
-            logger.info("[paypal_extract] approve soft-failed (continuing): %s", exc)
-    else:
-        logger.info("[paypal_extract] skip ChatGPT approve; submission_state=%s", submission_state or "<none>")
-
-    # ---- Step 7: poll for PayPal redirect ----
-    time.sleep(3.0)
-    _emit("paypal_extract_poll", message="Polling for PayPal redirect URL")
-    poll_params_parts = [
-        f"key={stripe_pk}",
-        "elements_session_client[client_betas][0]=custom_checkout_server_updates_1",
-        "elements_session_client[client_betas][1]=custom_checkout_manual_approval_1",
-        "elements_session_client[elements_init_source]=custom_checkout",
-        "elements_session_client[referrer_host]=chatgpt.com",
-        f"elements_session_client[session_id]={elements_session_id}",
-        f"elements_session_client[stripe_js_id]={stripe_js_id}",
-        "elements_session_client[locale]=en",
-        "elements_session_client[is_aggregation_expected]=false",
-        "elements_options_client[saved_payment_method][enable_save]=never",
-        "elements_options_client[saved_payment_method][enable_redisplay]=never",
-        f"_stripe_version={quote(stripe_version, safe='')}",
-    ]
-    poll_urls = [
-        f"{STRIPE_API}/v1/payment_pages/{cs_id}?{'&'.join(poll_params_parts)}",
-        f"{STRIPE_API}/v1/payment_pages/{cs_id}/poll?{'&'.join(poll_params_parts)}",
-    ]
-    redirect_url = ""
-    requires_payment_method_stuck = 0
-
-    def _stripe_setup_intent_diag(page_payload: Any, setup_intent: Any) -> str:
-        diag: dict[str, Any] = {}
-        if isinstance(setup_intent, dict):
-            for key in (
-                "id",
-                "status",
-                "cancellation_reason",
-                "payment_method",
-                "usage",
-            ):
-                value = setup_intent.get(key)
-                if value not in (None, "", [], {}):
-                    diag[key] = value
-            for error_key in ("last_setup_error", "last_payment_error", "error"):
-                error_value = setup_intent.get(error_key)
-                if isinstance(error_value, dict):
-                    diag[error_key] = {
-                        k: error_value.get(k)
-                        for k in ("type", "code", "decline_code", "message", "payment_method_type")
-                        if error_value.get(k) not in (None, "", [], {})
-                    }
-            next_action = setup_intent.get("next_action")
-            if isinstance(next_action, dict):
-                diag["next_action"] = {
-                    k: next_action.get(k)
-                    for k in ("type", "redirect_to_url", "paypal_handle_redirect")
-                    if next_action.get(k) not in (None, "", [], {})
-                }
-        if isinstance(page_payload, dict):
-            for key in ("payment_status", "status"):
-                value = page_payload.get(key)
-                if value not in (None, "", [], {}):
-                    diag[f"page_{key}"] = value
-            submission_attempt = page_payload.get("submission_attempt")
-            if isinstance(submission_attempt, dict):
-                diag["submission_attempt"] = {
-                    k: submission_attempt.get(k)
-                    for k in ("state", "status", "error", "failure_code", "failure_message")
-                    if submission_attempt.get(k) not in (None, "", [], {})
-                }
-        if not diag:
-            return ""
-        try:
-            return json.dumps(diag, ensure_ascii=False, default=str)[:600]
-        except Exception:
-            return str(diag)[:600]
-
-    deadline = time.time() + max(30, min(timeout_seconds, 120))
-    poll_attempt = 0
-    while time.time() < deadline:
-        if callable(is_cancelled) and is_cancelled():
-            return {"status": "failed", "failure_stage": "extract_ba_link", "message": "Task cancelled"}
-        time.sleep(1.0)
-        poll_attempt += 1
-        for poll_url in poll_urls:
-            try:
-                resp = stripe_http.get(poll_url, timeout=30)
-            except Exception:
-                continue
-            if resp.status_code != 200:
-                continue
-
-            body_str = str(getattr(resp, "text", "") or "")
-            if "iteration==0" in str(globals().get("_poll_diag", 0)):
-                logger.info("[paypal_extract] poll body preview=%s", body_str[:200])
-                globals()["_poll_diag"] = 1
-            # Check raw body for pm-redirects / paypal URLs (before JSON parse)
-            if "pm-redirects.stripe.com" in body_str:
-                idx = body_str.find("https://pm-redirects")
-                if idx >= 0:
-                    end = idx
-                    while end < len(body_str) and body_str[end] not in ('"', "'", " ", "\n"):
-                        end += 1
-                    redirect_url = body_str[idx:end]
-                    logger.info("[paypal_extract] found pm-redirects in body: %s", redirect_url[:120])
-                    break
-
-            try:
-                pp = json.loads(body_str)
-            except Exception:
-                continue
-
-            si = pp.get("setup_intent")
-            if isinstance(si, dict):
-                si_status = str(si.get("status") or "")
-                if si_status == "requires_payment_method":
-                    requires_payment_method_stuck += 1
-                    if requires_payment_method_stuck >= 5:
-                        diag = _stripe_setup_intent_diag(pp, si)
-                        logger.info("[paypal_extract] setup_intent requires_payment_method diag=%s", diag or "<empty>")
-                        message = "setup_intent stuck in requires_payment_method (PayPal PM 被 Stripe 拒绝)"
-                        if diag:
-                            message = f"{message}; stripe_diag={diag}"
-                        return {
-                            "status": "failed",
-                            "failure_stage": "extract_ba_link_poll",
-                            "message": message,
-                            "checkout_session_id": cs_id,
-                            "pm_id": pm_id,
-                            "checkout_url": long_hosted_url,
-                            "hosted_checkout_url": hosted_checkout_url,
-                        }
-                elif si_status:
-                    requires_payment_method_stuck = 0
-                na = si.get("next_action")
-                if si_status == "requires_action" and isinstance(na, dict):
-                    na_type = str(na.get("type") or "")
-                    # Case 1: redirect_to_url
-                    if na_type == "redirect_to_url":
-                        rtu = na.get("redirect_to_url")
-                        if isinstance(rtu, dict):
-                            redirect_url = str(rtu.get("url") or "") or redirect_url
-                    # Case 2: paypal_handle_redirect
-                    if not redirect_url:
-                        phr = na.get("paypal_handle_redirect")
-                        if isinstance(phr, dict):
-                            redirect_url = str(phr.get("url") or "") or redirect_url
-                    # Case 3: direct url on next_action
-                    if not redirect_url:
-                        redirect_url = str(na.get("url") or "") or redirect_url
-                    # Case 4: deep-search for paypal in the entire response
-                    if not redirect_url and "paypal.com" in body_str.lower():
-                        for match in re.finditer(r'https?://[^\s"' "<>\\]+", body_str, re.I):
-                            u = match.group(0).rstrip("),.;")
-                            if "paypal.com" in u.lower():
-                                redirect_url = u
-                                break
-                    if redirect_url:
-                        logger.info(
-                            "[paypal_extract] polled redirect from setup_intent: %s",
-                            redirect_url[:120],
-                        )
-                        break
-        if redirect_url:
-            break
+            logger.info("[paypal_extract] pplink approve soft-failed; polling once more: %s", exc)
+        if not redirect_url:
+            redirect_url = poll_for_redirect("paypal_extract_poll")
 
     if not redirect_url:
-        if approve_blocked_result:
-            return approve_blocked_result
         return {
-            "status": "needs_review",
+            "status": "failed",
             "failure_stage": "extract_ba_link_poll",
-            "message": "已获取长 checkout 链接，但轮询 Stripe 未拿到 PayPal BA redirect",
+            "message": "PayPal redirect not found after pplink poll",
             "checkout_session_id": cs_id,
             "pm_id": pm_id,
-            "checkout_url": long_hosted_url,
+            "checkout_url": hosted_checkout_url,
             "hosted_checkout_url": hosted_checkout_url,
+            "paypal_ba_mode": mode,
         }
 
-    # ---- Step 8: follow pm-redirects to final PayPal URL ----
     _emit("paypal_extract_resolve", message="Resolving final PayPal URL")
     result = _paypal_extract_result_from_redirect(stripe_http, redirect_url, cs_id, pm_id)
-    result.setdefault("checkout_url", long_hosted_url)
+    result.setdefault("checkout_url", hosted_checkout_url)
     result.setdefault("hosted_checkout_url", hosted_checkout_url)
+    result.setdefault("paypal_ba_mode", mode)
     if result.get("status") == "success":
         _emit(
             "paypal_extract_done",

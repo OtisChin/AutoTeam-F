@@ -8730,13 +8730,14 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
     paypal_country = paypal_options["paypal_country"]
     paypal_lang = paypal_options["paypal_lang"]
     protocol_no_card = paypal_options["protocol_no_card"]
+    paypal_ba_mode = paypal_ba_service.paypal_ba_extract_mode(getattr(params, "paypal_ba_mode", "eu"))
     if direct_ba_pre_extracted and (paypal_mode != "create_account" or not protocol_no_card):
         raise HTTPException(status_code=400, detail="直连 PayPal BA/link 模式只支持 create_account + protocol/no-card")
     if direct_ba_pre_extracted:
         paypal_fallback_browser = ""
     sms_url = paypal_inputs["sms_url"]
     otp_channel = paypal_inputs["otp_channel"]
-    paypal_ba_proxy_region = str(os.environ.get("PAYPAL_BA_PROXY_REGION") or "US")
+    paypal_ba_proxy_region = str(os.environ.get("PAYPAL_BA_PROXY_REGION") or ("US" if paypal_ba_mode == "us" else "JP"))
     try:
         paypal_proxy_runtime = paypal_proxy_service.prepare_paypal_proxy_runtime(
             proxy_url=params.proxy_url,
@@ -8841,10 +8842,13 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
             override=os.environ.get("PAYPAL_BA_PAYMENT_METHOD_COUNTRY"),
             protocol_no_card=protocol_no_card,
             paypal_country=paypal_country,
+            paypal_ba_mode=paypal_ba_mode,
         )
 
     def _paypal_ba_auth_context(email: str, fallback_access_token: str) -> dict[str, str]:
-        use_full_context = str(os.environ.get("PAYPAL_BA_USE_AUTH_SESSION_CONTEXT") or "").strip().lower() in {
+        use_full_context = protocol_no_card or str(
+            os.environ.get("PAYPAL_BA_USE_AUTH_SESSION_CONTEXT") or ""
+        ).strip().lower() in {
             "1",
             "true",
             "yes",
@@ -9506,6 +9510,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                     provider_proxy_url=provider_proxy_url,
                                     paypal_country=paypal_country,
                                     payment_method_country=_paypal_ba_payment_method_country(),
+                                    paypal_ba_mode=paypal_ba_mode,
                                     timeout_seconds=params.timeout_seconds or 90,
                                     is_cancelled=cancel_signal.is_cancelled,
                                 )
@@ -9591,6 +9596,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                         provider_proxy_url=retry_provider_proxy_url,
                                         paypal_country=paypal_country,
                                         payment_method_country=_paypal_ba_payment_method_country(),
+                                        paypal_ba_mode=paypal_ba_mode,
                                         timeout_seconds=params.timeout_seconds or 90,
                                         is_cancelled=cancel_signal.is_cancelled,
                                     )
@@ -9687,34 +9693,42 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                 {**event, "email": candidate_email, "current": index, "total": len(candidates)}
                             )
 
-                        single_result = run_paypal_bind_task(
-                            email=candidate_email,
-                            checkout_url=effective_checkout_url,
-                            proxy_url=selected_proxy_url,
-                            proxy_bypass=params.proxy_bypass,
-                            manual_confirm=params.manual_confirm,
-                            timeout_seconds=max(60, int(params.timeout_seconds or 60)),
-                            is_cancelled=cancel_signal.is_cancelled,
-                            on_progress=_handle_paypal_progress,
-                            autofill_enabled=bool(params.autofill_enabled),
-                            autofill_payload=current_autofill_payload,
-                            paypal_mode=paypal_mode,
-                            paypal_email=params.paypal_email,
-                            paypal_password=params.paypal_password,
-                            sms_url=current_sms_url,
-                            otp_channel=current_otp_channel,
-                            phone_accounts=active_phone_accounts,
-                            paypal_card_number=params.paypal_card_number,
-                            paypal_card_expiry=params.paypal_card_expiry,
-                            paypal_card_cvv=params.paypal_card_cvv,
-                            paypal_browser=paypal_browser,
-                            paypal_fallback_browser=paypal_fallback_browser,
-                            paypal_country=paypal_country,
-                            paypal_lang=paypal_lang,
-                            roxybrowser_workspace_id=roxybrowser_workspace_id,
-                            roxybrowser_profile_id=roxybrowser_profile_id,
-                            pre_extracted=pre_extracted_data,
-                        )
+                        if (
+                            protocol_no_card
+                            and pre_extracted_data
+                            and pre_extracted_data.get("status") != "success"
+                            and not pre_extracted_data.get("ba_token")
+                        ):
+                            single_result = dict(pre_extracted_data)
+                        else:
+                            single_result = run_paypal_bind_task(
+                                email=candidate_email,
+                                checkout_url=effective_checkout_url,
+                                proxy_url=selected_proxy_url,
+                                proxy_bypass=params.proxy_bypass,
+                                manual_confirm=params.manual_confirm,
+                                timeout_seconds=max(60, int(params.timeout_seconds or 60)),
+                                is_cancelled=cancel_signal.is_cancelled,
+                                on_progress=_handle_paypal_progress,
+                                autofill_enabled=bool(params.autofill_enabled),
+                                autofill_payload=current_autofill_payload,
+                                paypal_mode=paypal_mode,
+                                paypal_email=params.paypal_email,
+                                paypal_password=params.paypal_password,
+                                sms_url=current_sms_url,
+                                otp_channel=current_otp_channel,
+                                phone_accounts=active_phone_accounts,
+                                paypal_card_number=params.paypal_card_number,
+                                paypal_card_expiry=params.paypal_card_expiry,
+                                paypal_card_cvv=params.paypal_card_cvv,
+                                paypal_browser=paypal_browser,
+                                paypal_fallback_browser=paypal_fallback_browser,
+                                paypal_country=paypal_country,
+                                paypal_lang=paypal_lang,
+                                roxybrowser_workspace_id=roxybrowser_workspace_id,
+                                roxybrowser_profile_id=roxybrowser_profile_id,
+                                pre_extracted=pre_extracted_data,
+                            )
             except HTTPException as exc:
                 exc_message = str(exc.detail) if getattr(exc, "detail", None) else str(exc)
                 single_result = (
@@ -10226,6 +10240,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                         provider_proxy_url=provider_proxy_url,
                                         paypal_country=paypal_country,
                                         payment_method_country=_paypal_ba_payment_method_country(),
+                                        paypal_ba_mode=paypal_ba_mode,
                                         timeout_seconds=params.timeout_seconds or 90,
                                         is_cancelled=cancel_signal.is_cancelled,
                                     )
@@ -10310,6 +10325,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                             provider_proxy_url=retry_provider_proxy_url,
                                             paypal_country=paypal_country,
                                             payment_method_country=_paypal_ba_payment_method_country(),
+                                            paypal_ba_mode=paypal_ba_mode,
                                             timeout_seconds=params.timeout_seconds or 90,
                                             is_cancelled=cancel_signal.is_cancelled,
                                         )
@@ -10431,34 +10447,42 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                     },
                                 )
 
-                            single_result = run_paypal_bind_task(
-                                email=candidate_email,
-                                checkout_url=effective_checkout_url,
-                                proxy_url=selected_proxy_url,
-                                proxy_bypass=params.proxy_bypass,
-                                manual_confirm=params.manual_confirm,
-                                timeout_seconds=max(60, int(params.timeout_seconds or 60)),
-                                is_cancelled=cancel_signal.is_cancelled,
-                                on_progress=_handle_paypal_progress,
-                                autofill_enabled=bool(params.autofill_enabled),
-                                autofill_payload=current_autofill_payload,
-                                paypal_mode=paypal_mode,
-                                paypal_email=params.paypal_email,
-                                paypal_password=params.paypal_password,
-                                sms_url=current_sms_url,
-                                otp_channel=current_otp_channel,
-                                phone_accounts=active_phone_accounts,
-                                paypal_card_number=params.paypal_card_number,
-                                paypal_card_expiry=params.paypal_card_expiry,
-                                paypal_card_cvv=params.paypal_card_cvv,
-                                paypal_browser=paypal_browser,
-                                paypal_fallback_browser=paypal_fallback_browser,
-                                paypal_country=paypal_country,
-                                paypal_lang=paypal_lang,
-                                roxybrowser_workspace_id=roxybrowser_workspace_id,
-                                roxybrowser_profile_id=roxybrowser_profile_id,
-                                pre_extracted=pre_extracted_data,
-                            )
+                            if (
+                                protocol_no_card
+                                and pre_extracted_data
+                                and pre_extracted_data.get("status") != "success"
+                                and not pre_extracted_data.get("ba_token")
+                            ):
+                                single_result = dict(pre_extracted_data)
+                            else:
+                                single_result = run_paypal_bind_task(
+                                    email=candidate_email,
+                                    checkout_url=effective_checkout_url,
+                                    proxy_url=selected_proxy_url,
+                                    proxy_bypass=params.proxy_bypass,
+                                    manual_confirm=params.manual_confirm,
+                                    timeout_seconds=max(60, int(params.timeout_seconds or 60)),
+                                    is_cancelled=cancel_signal.is_cancelled,
+                                    on_progress=_handle_paypal_progress,
+                                    autofill_enabled=bool(params.autofill_enabled),
+                                    autofill_payload=current_autofill_payload,
+                                    paypal_mode=paypal_mode,
+                                    paypal_email=params.paypal_email,
+                                    paypal_password=params.paypal_password,
+                                    sms_url=current_sms_url,
+                                    otp_channel=current_otp_channel,
+                                    phone_accounts=active_phone_accounts,
+                                    paypal_card_number=params.paypal_card_number,
+                                    paypal_card_expiry=params.paypal_card_expiry,
+                                    paypal_card_cvv=params.paypal_card_cvv,
+                                    paypal_browser=paypal_browser,
+                                    paypal_fallback_browser=paypal_fallback_browser,
+                                    paypal_country=paypal_country,
+                                    paypal_lang=paypal_lang,
+                                    roxybrowser_workspace_id=roxybrowser_workspace_id,
+                                    roxybrowser_profile_id=roxybrowser_profile_id,
+                                    pre_extracted=pre_extracted_data,
+                                )
                 except HTTPException as exc:
                     exc_message = str(exc.detail) if getattr(exc, "detail", None) else str(exc)
                     if _paypal_already_paid_text(exc_message):
