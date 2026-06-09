@@ -6012,6 +6012,80 @@ def test_handle_paypal_protocol_browser_fallback_dispatch_returns_preserved_ddc_
     assert calls[-1] == ("preserve", result)
 
 
+def test_handle_paypal_protocol_browser_fallback_dispatch_relaunches_closed_roxy_page():
+    class Api:
+        page = None
+
+    api = Api()
+    calls = []
+    progress_events = []
+
+    def launch_browser(**kwargs):
+        calls.append(("launch", kwargs))
+        api.page = f"page-{len([call for call in calls if call[0] == 'launch'])}"
+
+    def goto_paypal_page_with_retries(page, url, **kwargs):
+        calls.append(("goto", page, url, kwargs))
+        if page == "page-1":
+            raise RuntimeError("Page.goto: Target page, context or browser has been closed")
+
+    result = payment_checkout_browser.handle_paypal_protocol_browser_fallback_dispatch(
+        api,
+        fallback_context={},
+        fallback_approve_url="https://www.paypal.com/agreements/approve?ba_token=BA-DEMO",
+        fallback_ba_token="BA-DEMO",
+        proxy_url=None,
+        proxy_bypass=None,
+        fallback_use_camoufox=False,
+        fallback_use_roxybrowser=True,
+        roxybrowser_workspace_id="workspace-1",
+        roxybrowser_profile_id="stale-profile",
+        paypal_mode="create_account",
+        paypal_country="JP",
+        paypal_lang="ja",
+        paypal_email="paypal@example.com",
+        paypal_password="secret",
+        sms_url="",
+        otp_channel="sms",
+        paypal_card_number="",
+        paypal_card_expiry="",
+        paypal_card_cvv="",
+        phone_accounts=[],
+        signup_billing_payload={},
+        checkout_url="https://pay.openai.com/c/pay/cs_demo",
+        session_id="session-1",
+        screenshot_paths=[],
+        timeout_seconds=120,
+        is_cancelled=None,
+        launch_browser=launch_browser,
+        emit_progress=lambda callback, event: progress_events.append(event),
+        progress_event=lambda stage, **kwargs: {"stage": stage, **kwargs},
+        goto_paypal_page_with_retries=goto_paypal_page_with_retries,
+        handle_browser_fallback_ddc_wait=lambda page, **kwargs: calls.append(("ddc", page, kwargs)) or {"action": "continue"},
+        build_result=lambda *args, **kwargs: {"status": "failed"},
+        preserve_roxybrowser_on_failure=lambda result: result,
+        ensure_captcha_bypass=lambda _api: calls.append(("captcha", _api)),
+        normalize_paypal_credentials=lambda email, password: {"email": email, "password": password},
+        build_paypal_signup_profile=lambda **kwargs: {},
+        run_paypal_authorize_flow=lambda *args, **kwargs: None,
+        paypal_authorize_timeout_seconds=lambda seconds: seconds,
+        wait_for_paypal_result=lambda *args, **kwargs: {"status": "success"},
+        paypal_result_timeout_seconds=lambda seconds: seconds,
+        on_progress=progress_events.append,
+    )
+
+    assert result == {"status": "success"}
+    launch_calls = [call for call in calls if call[0] == "launch"]
+    assert len(launch_calls) == 2
+    assert launch_calls[0][1]["roxybrowser_profile_id"] == "stale-profile"
+    assert launch_calls[1][1]["roxybrowser_profile_id"] == ""
+    assert "roxybrowser_force_new_profile" not in launch_calls[1][1]
+    assert ("goto", "page-1", "https://www.paypal.com/agreements/approve?ba_token=BA-DEMO", {"on_progress": progress_events.append, "attempts": 3, "timeout_ms": 60000}) in calls
+    assert ("goto", "page-2", "https://www.paypal.com/agreements/approve?ba_token=BA-DEMO", {"on_progress": progress_events.append, "attempts": 3, "timeout_ms": 60000}) in calls
+    assert any(event.get("stage") == "paypal_roxybrowser_closed_relaunch" for event in progress_events)
+    assert ("ddc", "page-2", {"on_progress": progress_events.append}) in calls
+
+
 def test_handle_paypal_protocol_mode_dispatch_skips_when_not_protocol_mode():
     assert (
         payment_checkout_browser.handle_paypal_protocol_mode_dispatch(
@@ -6047,6 +6121,9 @@ def test_handle_paypal_protocol_mode_dispatch_skips_when_not_protocol_mode():
                 AssertionError("pre-extracted should not run")
             ),
             build_result=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("build should not run")),
+            prepare_auto_flow_payloads=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("payload prep should not run")
+            ),
             handle_protocol_flow_dispatch=lambda **_kwargs: (_ for _ in ()).throw(
                 AssertionError("protocol flow should not run")
             ),
@@ -6107,6 +6184,9 @@ def test_handle_paypal_protocol_mode_dispatch_builds_pre_extracted_without_ba_re
             }
         ),
         build_result=lambda *args, **kwargs: calls.append(("build", args, kwargs)) or {"status": args[0], **kwargs},
+        prepare_auto_flow_payloads=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("payload prep should not run")
+        ),
         handle_protocol_flow_dispatch=lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("protocol flow should not run")
         ),
@@ -6216,6 +6296,9 @@ def test_handle_paypal_protocol_mode_dispatch_runs_browser_fallback():
         roxybrowser_profile_id="profile-1",
         handle_pre_extracted_checkout_without_ba=lambda value, **kwargs: calls.append(("pre", value, kwargs)) or None,
         build_result=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("build should not run")),
+        prepare_auto_flow_payloads=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("normal fallback receives payloads from protocol dispatch")
+        ),
         handle_protocol_flow_dispatch=lambda **kwargs: (
             calls.append(("protocol", kwargs))
             or {"signup_billing_payload": signup_billing_payload, "protocol_result": protocol_result}
@@ -6297,6 +6380,9 @@ def test_handle_paypal_protocol_mode_dispatch_skips_browser_fallback_when_disabl
         roxybrowser_profile_id="",
         handle_pre_extracted_checkout_without_ba=lambda value, **kwargs: calls.append(("pre", value, kwargs)) or None,
         build_result=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("build should not run")),
+        prepare_auto_flow_payloads=lambda **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("disabled fallback must not prepare browser payloads"))
+        ),
         handle_protocol_flow_dispatch=lambda **kwargs: (
             calls.append(("protocol", kwargs))
             or {"signup_billing_payload": {"country": "JP"}, "protocol_result": protocol_result}
@@ -6315,10 +6401,9 @@ def test_handle_paypal_protocol_mode_dispatch_skips_browser_fallback_when_disabl
     assert calls[-1] == ("needs_fallback", protocol_result)
 
 
-def test_handle_paypal_protocol_mode_dispatch_skips_browser_fallback_for_pre_extracted_ba():
+def test_handle_paypal_protocol_mode_dispatch_hands_pre_extracted_ba_to_browser_fallback():
     api = object()
     pre_extracted = {"ba_token": "BA-DEMO"}
-    protocol_result = {"status": "needs_review", "paypal_approve_url": "https://www.paypal.com/approve"}
     calls = []
 
     result = payment_checkout_browser.handle_paypal_protocol_mode_dispatch(
@@ -6352,24 +6437,41 @@ def test_handle_paypal_protocol_mode_dispatch_skips_browser_fallback_for_pre_ext
         roxybrowser_profile_id="profile-1",
         handle_pre_extracted_checkout_without_ba=lambda value, **kwargs: calls.append(("pre", value, kwargs)) or None,
         build_result=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("build should not run")),
-        handle_protocol_flow_dispatch=lambda **kwargs: (
-            calls.append(("protocol", kwargs))
-            or {"signup_billing_payload": {"country": "JP"}, "protocol_result": protocol_result}
+        prepare_auto_flow_payloads=lambda **kwargs: (
+            calls.append(("prepare", kwargs))
+            or {"signup_billing_payload": {"country": "JP", "city": "Tokyo"}}
+        ),
+        handle_protocol_flow_dispatch=lambda **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("pre-extracted BA must not run protocol flow"))
         ),
         paypal_protocol_needs_browser_fallback=lambda value: calls.append(("needs_fallback", value)) or True,
-        handle_protocol_browser_fallback_context=lambda *_args, **_kwargs: (
-            (_ for _ in ()).throw(AssertionError("pre-extracted BA must not build browser context"))
+        handle_protocol_browser_fallback_context=lambda result, **kwargs: (
+            calls.append(("context", result, kwargs))
+            or {
+                "action": "fallback",
+                "paypal_approve_url": result["paypal_approve_url"],
+                "ba_token": result["ba_token"],
+                "browser_entry_url": "https://www.paypal.com/signup?ba_token=BA-DEMO",
+            }
         ),
-        handle_protocol_browser_fallback_dispatch=lambda *_args, **_kwargs: (
-            (_ for _ in ()).throw(AssertionError("pre-extracted BA must not run browser fallback"))
+        handle_protocol_browser_fallback_dispatch=lambda _api, **kwargs: (
+            calls.append(("fallback", _api, kwargs)) or {"status": "needs_review", "via": "browser"}
         ),
     )
 
-    assert result is protocol_result
+    assert result == {"status": "needs_review", "via": "browser"}
     assert calls[0][0] == "pre"
-    assert calls[1][0] == "protocol"
-    assert calls[1][1]["pre_extracted"] is pre_extracted
-    assert calls[2] == ("needs_fallback", protocol_result)
+    assert calls[1][0] == "prepare"
+    assert calls[2][0] == "context"
+    assert calls[2][1]["paypal_approve_url"] == "https://www.paypal.com/agreements/approve?ba_token=BA-DEMO"
+    assert calls[3][0] == "fallback"
+    assert calls[3][1] is api
+    fallback_kwargs = calls[3][2]
+    assert fallback_kwargs["fallback_use_roxybrowser"] is True
+    assert fallback_kwargs["roxybrowser_workspace_id"] == "workspace-1"
+    assert fallback_kwargs["roxybrowser_profile_id"] == "profile-1"
+    assert fallback_kwargs["fallback_ba_token"] == "BA-DEMO"
+    assert fallback_kwargs["signup_billing_payload"] == {"country": "JP", "city": "Tokyo"}
 
 
 def test_handle_paypal_signup_stop_before_otp_authorize_result_skips_without_flag():

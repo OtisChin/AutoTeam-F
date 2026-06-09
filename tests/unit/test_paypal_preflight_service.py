@@ -241,7 +241,7 @@ def test_paypal_locale_redirect_url_updates_country_and_locale_query():
     )
 
 
-def test_normalize_paypal_runtime_options_applies_jp_nocard_compatibility():
+def test_normalize_paypal_runtime_options_defaults_jp_nocard_to_pure_protocol():
     result = paypal_preflight.normalize_paypal_runtime_options(
         paypal_mode="create_account",
         paypal_browser="protocol",
@@ -260,7 +260,7 @@ def test_normalize_paypal_runtime_options_applies_jp_nocard_compatibility():
     )
 
     assert result["paypal_browser"] == "protocol"
-    assert result["paypal_fallback_browser"] == "roxybrowser"
+    assert result["paypal_fallback_browser"] == ""
     assert result["paypal_region"] == "JP_NOCARD"
     assert result["paypal_country"] == "JP"
     assert result["paypal_lang"] == "ja"
@@ -389,6 +389,29 @@ def test_normalize_paypal_bind_task_runtime_options_defaults_to_chromium_camoufo
     assert result["fallback_use_camoufox"] is True
     assert result["launch_proxy_url"] is None
     assert result["launch_proxy_bypass"] is None
+
+
+def test_normalize_paypal_bind_task_runtime_options_defaults_protocol_to_no_browser_fallback():
+    result = paypal_preflight.normalize_paypal_bind_task_runtime_options(
+        manual_confirm=False,
+        paypal_mode="create_account",
+        paypal_browser="protocol",
+        paypal_fallback_browser="",
+        paypal_country="JP",
+        paypal_lang="ja",
+        proxy_url="",
+        proxy_bypass=None,
+        roxybrowser_workspace_id="",
+        roxybrowser_profile_id="",
+        paypal_card_number="",
+        paypal_card_expiry="",
+        paypal_card_cvv="",
+    )
+
+    assert result["protocol_mode"] is True
+    assert result["browser_fallback_enabled"] is False
+    assert result["fallback_use_roxybrowser"] is False
+    assert result["fallback_use_camoufox"] is False
 
 
 def test_normalize_paypal_bind_task_runtime_options_disables_browser_fallback():

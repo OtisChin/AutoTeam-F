@@ -78,6 +78,23 @@ def _emit_browser_progress(on_progress, stage: str, message: str, **kwargs) -> N
         on_progress(payload)
 
 
+def _inspect_runtime_fingerprint(page) -> dict[str, object]:
+    try:
+        result = page.evaluate(
+            """() => ({
+              user_agent: navigator.userAgent,
+              platform: navigator.platform,
+              max_touch_points: navigator.maxTouchPoints,
+              mobile_user_agent: /iPhone|iPad|iPod|Android/i.test(navigator.userAgent),
+              viewport_width: window.innerWidth,
+              viewport_height: window.innerHeight
+            })"""
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+    return result if isinstance(result, dict) else {}
+
+
 class ChatGPTTeamAPI:
     """通过浏览器内 fetch 调用 ChatGPT Team 内部 API。"""
 
@@ -182,6 +199,7 @@ class ChatGPTTeamAPI:
         use_roxybrowser: bool = False,
         roxybrowser_workspace_id: str | None = None,
         roxybrowser_profile_id: str | None = None,
+        roxybrowser_force_new_profile: bool = False,
         on_progress=None,
     ):
         SCREENSHOT_DIR.mkdir(exist_ok=True)
@@ -194,6 +212,7 @@ class ChatGPTTeamAPI:
                 locale=locale,
                 workspace_id=roxybrowser_workspace_id,
                 profile_id=roxybrowser_profile_id,
+                force_new_profile=roxybrowser_force_new_profile,
                 on_progress=on_progress,
             )
             return
@@ -401,8 +420,10 @@ class ChatGPTTeamAPI:
         accept_language: str = "en-US,en;q=0.9",
         workspace_id: str | None = None,
         profile_id: str | None = None,
+        force_new_profile: bool = False,
         on_progress=None,
     ) -> None:
+        self._cleanup_active_roxybrowser_runtime(on_progress=on_progress)
         if headless:
             logger.info("[ChatGPT] RoxyBrowser ignores headless=True and will open a visible window")
         if proxy_bypass:
@@ -425,24 +446,60 @@ class ChatGPTTeamAPI:
             _emit_browser_progress(
                 on_progress,
                 "paypal_roxybrowser_fresh_profile",
-                "RoxyBrowser：未指定窗口，将优先复用空闲窗口，没有空闲窗口时再新建",
+                (
+                    "RoxyBrowser：未指定窗口，将自动创建新窗口"
+                    if force_new_profile
+                    else "RoxyBrowser：未指定窗口，将优先复用空闲窗口，没有空闲窗口时再新建"
+                ),
                 browser="RoxyBrowser",
             )
-        launch = client.launch(
-            window_name=window_name,
-            proxy_url=proxy_url,
-            workspace_id=resolved_workspace_id,
-            dir_id=resolved_profile_id,
-            clear_profile_data=True,
-        )
+        try:
+            launch = client.launch(
+                window_name=window_name,
+                proxy_url=proxy_url,
+                workspace_id=resolved_workspace_id,
+                dir_id=resolved_profile_id,
+                clear_profile_data=True,
+                force_new_profile=force_new_profile,
+            )
+        except Exception as exc:
+            _emit_browser_progress(
+                on_progress,
+                "paypal_roxybrowser_launch_failed",
+                f"RoxyBrowser：启动窗口失败: {str(exc)[:220]}",
+                level="warn",
+                browser="RoxyBrowser",
+                workspace_id=resolved_workspace_id,
+                dir_id=resolved_profile_id,
+            )
+            raise
         if getattr(launch, "reused_existing_profile", False):
             _emit_browser_progress(
                 on_progress,
                 "paypal_roxybrowser_reused_idle_profile",
-                "RoxyBrowser：已自动复用空闲窗口并清空缓存",
+                (
+                    "RoxyBrowser：已自动复用空闲窗口并清空缓存，"
+                    f"目标指纹 {launch.requested_os or 'unknown'} {launch.requested_os_version or ''}".rstrip()
+                ),
                 browser="RoxyBrowser",
                 workspace_id=launch.workspace_id,
                 dir_id=launch.dir_id,
+                os=launch.requested_os,
+                os_version=launch.requested_os_version,
+            )
+        elif launch.created_profile:
+            _emit_browser_progress(
+                on_progress,
+                "paypal_roxybrowser_created_profile",
+                (
+                    "RoxyBrowser：已自动创建新窗口，"
+                    f"目标指纹 {launch.requested_os or 'unknown'} {launch.requested_os_version or ''}".rstrip()
+                ),
+                browser="RoxyBrowser",
+                workspace_id=launch.workspace_id,
+                dir_id=launch.dir_id,
+                os=launch.requested_os,
+                os_version=launch.requested_os_version,
             )
         if resolved_profile_id:
             _emit_browser_progress(
@@ -481,6 +538,16 @@ class ChatGPTTeamAPI:
                 break
             except Exception as exc:
                 connect_error = exc
+                _emit_browser_progress(
+                    on_progress,
+                    "paypal_roxybrowser_connect_failed",
+                    f"RoxyBrowser：连接调试端口失败: {str(exc)[:220]}",
+                    level="warn",
+                    browser="RoxyBrowser",
+                    workspace_id=launch.workspace_id,
+                    dir_id=launch.dir_id,
+                    endpoint=endpoint,
+                )
                 logger.warning("[ChatGPT] RoxyBrowser connect_over_cdp failed for %s: %s", endpoint, exc)
         if connect_error:
             try:
@@ -510,6 +577,33 @@ class ChatGPTTeamAPI:
         self._clear_browser_runtime_data(
             reason="roxybrowser launch", browser_label="RoxyBrowser", on_progress=on_progress
         )
+        runtime_fingerprint = _inspect_runtime_fingerprint(self.page)
+        runtime_platform = str(runtime_fingerprint.get("platform") or "")
+        runtime_user_agent = str(runtime_fingerprint.get("user_agent") or "")
+        expected_ios = str(launch.requested_os or "").strip().upper() == "IOS"
+        runtime_is_ios = runtime_platform.lower() in {"iphone", "ipad", "ipod"} or any(
+            marker in runtime_user_agent for marker in ("iPhone", "iPad", "iPod")
+        )
+        runtime_level = "INFO" if not expected_ios or runtime_is_ios else "warn"
+        runtime_message = (
+            f"RoxyBrowser：实际运行指纹 platform={runtime_platform or 'unknown'}, "
+            f"touch={runtime_fingerprint.get('max_touch_points', 'unknown')}, "
+            f"viewport={runtime_fingerprint.get('viewport_width', 'unknown')}x"
+            f"{runtime_fingerprint.get('viewport_height', 'unknown')}"
+        )
+        _emit_browser_progress(
+            on_progress,
+            "paypal_roxybrowser_runtime_fingerprint",
+            runtime_message,
+            level=runtime_level,
+            browser="RoxyBrowser",
+            workspace_id=launch.workspace_id,
+            dir_id=launch.dir_id,
+            requested_os=launch.requested_os,
+            requested_os_version=launch.requested_os_version,
+            runtime_is_ios=runtime_is_ios,
+            **runtime_fingerprint,
+        )
         self._browser_fingerprint = None
         logger.info(
             "[ChatGPT] RoxyBrowser browser launched | workspace_id=%s | dir_id=%s | endpoint=%s | locale=%s | accept_language=%s",
@@ -519,6 +613,67 @@ class ChatGPTTeamAPI:
             locale,
             accept_language,
         )
+
+    def _cleanup_active_roxybrowser_runtime(self, *, on_progress=None) -> None:
+        has_active_runtime = any(
+            (
+                getattr(self, "page", None),
+                getattr(self, "context", None),
+                getattr(self, "browser", None),
+                getattr(self, "playwright", None),
+                getattr(self, "_roxybrowser_client", None),
+                getattr(self, "_roxybrowser_dir_id", None),
+            )
+        )
+        if not has_active_runtime:
+            return
+
+        roxybrowser_client = getattr(self, "_roxybrowser_client", None)
+        dir_id = getattr(self, "_roxybrowser_dir_id", None)
+        workspace_id = getattr(self, "_roxybrowser_workspace_id", None)
+        created_dir = bool(getattr(self, "_roxybrowser_created_dir", False))
+        _emit_browser_progress(
+            on_progress,
+            "paypal_roxybrowser_relaunch_cleanup",
+            "RoxyBrowser：正在释放旧窗口会话后重新启动",
+            level="warn",
+            browser="RoxyBrowser",
+            workspace_id=workspace_id,
+            dir_id=dir_id,
+        )
+        try:
+            if self.context:
+                self.context.close()
+        except Exception:
+            pass
+        try:
+            if self.browser:
+                self.browser.close()
+        except Exception:
+            pass
+        if roxybrowser_client and dir_id:
+            try:
+                roxybrowser_client.browser_close(dir_id)
+            except Exception:
+                pass
+            if created_dir and workspace_id:
+                try:
+                    roxybrowser_client.browser_delete(workspace_id, [dir_id])
+                except Exception:
+                    pass
+        try:
+            if self.playwright:
+                self.playwright.stop()
+        except Exception:
+            pass
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.playwright = None
+        self._roxybrowser_client = None
+        self._roxybrowser_dir_id = None
+        self._roxybrowser_workspace_id = None
+        self._roxybrowser_created_dir = False
 
     def _log_login_state(self, label):
         try:

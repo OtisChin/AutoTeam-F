@@ -682,6 +682,76 @@ PAYPAL_APPROVE_SELECTORS = [
     'button:has-text("繼續")',
     'button[type="submit"]',
 ]
+PAYPAL_COOKIE_BANNER_DISMISS_SCRIPT = r"""() => {
+  const visible = (node) => Boolean(node && (node.offsetParent || node.getClientRects?.().length));
+  const textOf = (node) => String(node?.innerText || node?.textContent || '').replace(/\s+/g, ' ').trim();
+  const cookieRe = /cookie|cookies|クッキー|プライバシー|privacy|個人情報|personal data/i;
+  const acceptRe = /accept all|accept|agree|got it|ok|yes|はい|同意|承諾|すべて同意|許可|close|閉じる/i;
+  const candidates = Array.from(document.querySelectorAll(
+    '[id*="cookie" i], [class*="cookie" i], [data-testid*="cookie" i], [aria-label*="cookie" i], [role="dialog"], [aria-modal="true"], aside, section, div'
+  )).filter((node) => {
+    if (!visible(node)) return false;
+    const text = textOf(node);
+    if (!cookieRe.test(text)) return false;
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    const anchored = style.position === 'fixed' || style.position === 'sticky' || rect.bottom > window.innerHeight * 0.65;
+    return anchored && rect.width > 180 && rect.height > 40;
+  });
+  for (const container of candidates) {
+    const controls = Array.from(container.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"], a'))
+      .filter(visible)
+      .filter((node) => acceptRe.test([textOf(node), String(node.value || ''), String(node.getAttribute('aria-label') || '')].join(' ')));
+    for (const control of controls) {
+      try {
+        control.click();
+        return { dismissed: true, method: 'click' };
+      } catch {}
+    }
+  }
+  const bottomCookie = candidates
+    .sort((a, b) => (b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom))[0];
+  if (bottomCookie) {
+    bottomCookie.setAttribute('data-autotoken-hidden', 'paypal-cookie-banner');
+    bottomCookie.style.setProperty('display', 'none', 'important');
+    bottomCookie.style.setProperty('pointer-events', 'none', 'important');
+    return { dismissed: true, method: 'hide' };
+  }
+  return { dismissed: false };
+}"""
+PAYPAL_COOKIE_BANNER_ACCEPT_SELECTORS = [
+    '[role="dialog"]:has-text("Cookie") button:has-text("はい")',
+    '[role="dialog"]:has-text("Cookie") [role="button"]:has-text("はい")',
+    'div:has-text("Cookie") button:has-text("はい")',
+    'section:has-text("Cookie") button:has-text("はい")',
+    'div:has-text("Cookie") button:has-text("Accept")',
+    'div:has-text("Cookie") button:has-text("Agree")',
+    'div:has-text("Cookie") button:has-text("Close")',
+    'div:has-text("クッキー") button:has-text("はい")',
+    'div:has-text("プライバシー") button:has-text("はい")',
+]
+PAYPAL_SIGNUP_SUBMIT_CLICK_SCRIPT = r"""() => {
+  const visible = (node) => Boolean(node && (node.offsetParent || node.getClientRects?.().length));
+  const textOf = (node) => String(node?.innerText || node?.textContent || node?.value || node?.getAttribute?.('aria-label') || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const submitRe = /agree\s*&?\s*continue|agree\s*&?\s*create account|create account|continue payment|同意して続行|同意して続ける|続行|アカウントを作成|创建账户|建立帳戶|继续付款|繼續付款/i;
+  const blockedRe = /login|ログイン|cancel|キャンセル|戻る|back|english|利用しない|保存|close/i;
+  const nodes = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"], a'));
+  const matches = nodes
+    .filter(visible)
+    .map((node) => ({ node, text: textOf(node), rect: node.getBoundingClientRect() }))
+    .filter((item) => submitRe.test(item.text) && !blockedRe.test(item.text))
+    .sort((a, b) => (b.rect.width * b.rect.height - a.rect.width * a.rect.height) || (b.rect.top - a.rect.top));
+  for (const item of matches) {
+    try {
+      item.node.scrollIntoView({ block: 'center', inline: 'nearest' });
+      item.node.click();
+      return { clicked: true, text: item.text };
+    } catch {}
+  }
+  return { clicked: false };
+}"""
 PAYPAL_COUNTRY_SELECTORS = [
     "select#country",
     'select[name="country"]',
@@ -837,6 +907,8 @@ PAYPAL_CREATE_SUBMIT_SELECTORS = [
     'button:has-text("Agree and Create Account")',
     'button:has-text("Create Account")',
     'button:has-text("Agree & Continue")',
+    'button:has-text("同意して続行")',
+    'button:has-text("同意して続ける")',
     'button:has-text("Continue Payment")',
     'button:has-text("继续付款")',
     'button:has-text("繼續付款")',
@@ -1870,7 +1942,7 @@ def _goto_paypal_page_with_retries(
                 on_progress,
                 _progress_event(
                     "paypal_browser_navigation_retry",
-                    f"PayPal 页面打开失败，正在重试 {attempt + 1}/{max_attempts}",
+                    f"PayPal 页面打开失败，正在重试 {attempt + 1}/{max_attempts}: {_safe_error_summary(exc)}",
                     level="warn",
                 ),
             )
@@ -2588,6 +2660,11 @@ def _wait_ddc_pass(page, *, timeout_seconds: int = 50, on_progress=None, max_blo
         if _is_ddc_blocked_page(page):
             logger.info("[paypal_ddc] blocked page detected on entry")
             return None
+
+        cur = page.url
+        if any(kw in cur for kw in ["/signin", "/authflow", "/webapps/hermes", "/pay", "chatgpt.com", "/checkoutweb"]):
+            logger.info("[paypal_ddc] DDC passed → %s", cur[:80])
+            return True
 
         # 检测可见滑块
         if _ddc_slider_visible(page):
@@ -3542,6 +3619,64 @@ def _set_paypal_country(api: ChatGPTTeamAPI, country: str) -> bool:
     )
 
 
+def _dismiss_paypal_cookie_banner(api: ChatGPTTeamAPI) -> bool:
+    dismissed = _click_first(api, PAYPAL_COOKIE_BANNER_ACCEPT_SELECTORS, timeout_ms=700)
+    for frame in _iter_page_frames(api):
+        try:
+            result = frame.evaluate(PAYPAL_COOKIE_BANNER_DISMISS_SCRIPT)
+        except Exception:
+            continue
+        if result is True or (isinstance(result, dict) and result.get("dismissed")):
+            dismissed = True
+    if dismissed:
+        try:
+            api.page.wait_for_timeout(300)
+        except Exception:
+            time.sleep(0.3)
+    return dismissed
+
+
+def _press_escape_to_dismiss_browser_bubbles(api: ChatGPTTeamAPI) -> None:
+    try:
+        api.page.keyboard.press("Escape")
+        api.page.wait_for_timeout(200)
+    except Exception:
+        time.sleep(0.2)
+
+
+def _js_click_paypal_signup_submit(api: ChatGPTTeamAPI) -> bool:
+    clicked = False
+    for frame in _iter_page_frames(api):
+        try:
+            result = frame.evaluate(PAYPAL_SIGNUP_SUBMIT_CLICK_SCRIPT)
+        except Exception:
+            continue
+        if result is True or (isinstance(result, dict) and result.get("clicked")):
+            clicked = True
+            break
+    if clicked:
+        try:
+            api.page.wait_for_timeout(500)
+        except Exception:
+            time.sleep(0.5)
+    return clicked
+
+
+def _click_paypal_signup_submit(api: ChatGPTTeamAPI, *, on_progress=None) -> bool:
+    _dismiss_paypal_cookie_banner(api)
+    _dismiss_paypal_prompts(api, on_progress=on_progress)
+    _press_escape_to_dismiss_browser_bubbles(api)
+    _dismiss_paypal_cookie_banner(api)
+    if _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=3000):
+        return True
+    _dismiss_paypal_cookie_banner(api)
+    _dismiss_paypal_prompts(api, on_progress=on_progress)
+    _press_escape_to_dismiss_browser_bubbles(api)
+    if _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=1500):
+        return True
+    return _js_click_paypal_signup_submit(api)
+
+
 def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[str, str | bool]) -> dict[str, Any]:
     payload = payment_form_fields_service.build_signup_visible_form_payload(
         signup_profile,
@@ -3925,6 +4060,7 @@ def _fill_paypal_otp_inputs(api: ChatGPTTeamAPI, otp_code: str) -> bool:
     digits = re.sub(r"\D+", "", str(otp_code or ""))[:8]
     if len(digits) < 5:
         return False
+    _dismiss_paypal_cookie_banner(api)
     script = """(code) => {
       const digits = String(code || '').replace(/\\D+/g, '').slice(0, 8).split('');
       if (digits.length < 5) return { filled: false, count: 0 };
@@ -4013,6 +4149,8 @@ def _fill_paypal_otp_inputs(api: ChatGPTTeamAPI, otp_code: str) -> bool:
         const br = b.getBoundingClientRect();
         return (ar.top - br.top) || (ar.left - br.left);
       });
+      const scrollTarget = otpDialog || orderedTargets[0]?.closest?.('form') || orderedTargets[0] || candidates[0] || null;
+      try { scrollTarget?.scrollIntoView?.({ block: 'center', inline: 'nearest' }); } catch {}
       if (orderedTargets.length >= digits.length) {
         orderedTargets.slice(0, digits.length).forEach((node, index) => {
           node.focus();
@@ -4091,8 +4229,9 @@ def _fill_paypal_otp_inputs(api: ChatGPTTeamAPI, otp_code: str) -> bool:
             except Exception:
                 viewport = {"width": 1280, "height": 800}
             try:
-                # The PayPal OTP modal renders six unlabeled boxes in the lower-middle of the viewport.
-                api.page.mouse.click(float(viewport["width"]) * 0.39, float(viewport["height"]) * 0.79)
+                # The PayPal OTP modal can be partially covered by the bottom cookie banner.
+                # Click above the bottom overlay zone when no concrete input box was detected.
+                api.page.mouse.click(float(viewport["width"]) * 0.39, float(viewport["height"]) * 0.58)
                 api.page.keyboard.type(digits, delay=50)
                 time.sleep(0.3)
                 return True
@@ -4334,7 +4473,7 @@ def _retry_paypal_signup_after_card_rejected(
         ensure_phone_lock=_ensure_paypal_signup_phone_lock,
         release_phone_lock=_release_paypal_signup_phone_lock,
         verify_required_values=_verify_paypal_signup_required_values,
-        click_submit=lambda api: _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=2500),
+        click_submit=lambda api: _click_paypal_signup_submit(api, on_progress=on_progress),
         progress_event=_progress_event,
         on_progress=on_progress,
         now=time.time,
@@ -4363,7 +4502,7 @@ def _retry_paypal_signup_after_phone_rejected(
         replace_signup_phone=_replace_paypal_signup_phone,
         release_phone_lock=_release_paypal_signup_phone_lock,
         verify_required_values=_verify_paypal_signup_required_values,
-        click_submit=lambda api: _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=2500),
+        click_submit=lambda api: _click_paypal_signup_submit(api, on_progress=on_progress),
         progress_event=_progress_event,
         on_progress=on_progress,
         now=time.time,
@@ -4400,7 +4539,7 @@ def _submit_paypal_signup_registration_form(
         fill_signup_form=_fill_paypal_signup_form,
         release_phone_lock=_release_paypal_signup_phone_lock,
         verify_required_values=_verify_paypal_signup_required_values,
-        click_submit=lambda api: _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=2500),
+        click_submit=lambda api: _click_paypal_signup_submit(api, on_progress=on_progress),
         progress_event=_progress_event,
         on_progress=on_progress,
         logger=logger,
@@ -5237,7 +5376,7 @@ def _launch_paypal_checkout_browser(
     use_roxybrowser: bool,
     fallback_use_camoufox: bool,
     fallback_use_roxybrowser: bool,
-    browser_fallback_enabled: bool,
+    browser_fallback_enabled: bool = False,
     roxybrowser_workspace_id: str,
     roxybrowser_profile_id: str,
     on_progress=None,
@@ -5731,6 +5870,7 @@ def _handle_paypal_protocol_mode_dispatch(
         roxybrowser_profile_id=roxybrowser_profile_id,
         handle_pre_extracted_checkout_without_ba=_handle_paypal_pre_extracted_checkout_without_ba,
         build_result=_build_result,
+        prepare_auto_flow_payloads=_prepare_paypal_auto_flow_payloads,
         handle_protocol_flow_dispatch=_handle_paypal_protocol_flow_dispatch,
         paypal_protocol_needs_browser_fallback=_paypal_protocol_needs_browser_fallback,
         handle_protocol_browser_fallback_context=_handle_paypal_protocol_browser_fallback_context,

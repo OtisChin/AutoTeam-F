@@ -204,15 +204,8 @@ def normalize_paypal_runtime_options(
 
     if normalized_region in {"JP", "JP_NOCARD", "JAPAN_NOCARD"}:
         normalized_country = "JP"
-        if normalized_browser in PROTOCOL_NO_CARD_BROWSERS and not normalized_fallback:
-            normalized_fallback = "roxybrowser"
         card_values = (paypal_card_number, paypal_card_expiry, paypal_card_cvv)
-        if (
-            paypal_mode == "create_account"
-            and normalized_fallback not in DISABLED_BROWSER_FALLBACKS
-            and not any(str(value or "").strip() for value in card_values)
-        ):
-            normalized_fallback = "roxybrowser"
+        if paypal_mode == "create_account" and not any(str(value or "").strip() for value in card_values):
             normalized_browser = "protocol"
         if payload:
             checkout_billing = dict(payload.get("billing_details") or {})
@@ -346,7 +339,10 @@ def normalize_paypal_bind_task_runtime_options(
     )
     normalized_browser = str(runtime["paypal_browser"] or "chromium").strip().lower()
     normalized_fallback = str(runtime["paypal_fallback_browser"] or "").strip().lower()
-    browser_fallback_enabled = normalized_fallback not in DISABLED_BROWSER_FALLBACKS
+    protocol_mode = normalized_browser in PROTOCOL_NO_CARD_BROWSERS
+    browser_fallback_enabled = normalized_fallback not in DISABLED_BROWSER_FALLBACKS and (
+        bool(normalized_fallback) or not protocol_mode
+    )
     return {
         "auto_mode": not bool(manual_confirm),
         "paypal_mode": normalized_mode,
@@ -354,7 +350,7 @@ def normalize_paypal_bind_task_runtime_options(
         "paypal_fallback_browser": normalized_fallback,
         "paypal_country": runtime["paypal_country"],
         "paypal_lang": runtime["paypal_lang"],
-        "protocol_mode": normalized_browser in PROTOCOL_NO_CARD_BROWSERS,
+        "protocol_mode": protocol_mode,
         "use_camoufox": normalized_browser in {"camoufox", "firefox"},
         "use_roxybrowser": normalized_browser in ROXYBROWSER_BROWSERS,
         "browser_fallback_enabled": browser_fallback_enabled,

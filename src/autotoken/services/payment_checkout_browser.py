@@ -3443,28 +3443,55 @@ def handle_paypal_protocol_browser_fallback_dispatch(
     paypal_result_timeout_seconds: Callable[[int], int],
     on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    launch_browser(
-        proxy_url=proxy_url,
-        proxy_bypass=proxy_bypass,
-        background=False,
-        locale=f"{paypal_lang}-{paypal_country}",
-        accept_language=f"{paypal_lang}-{paypal_country},{paypal_lang};q=0.9,en;q=0.8",
-        use_camoufox=fallback_use_camoufox,
-        use_roxybrowser=fallback_use_roxybrowser,
-        roxybrowser_workspace_id=roxybrowser_workspace_id,
-        roxybrowser_profile_id=roxybrowser_profile_id,
-        on_progress=on_progress,
-    )
+    launch_kwargs = {
+        "proxy_url": proxy_url,
+        "proxy_bypass": proxy_bypass,
+        "background": False,
+        "locale": f"{paypal_lang}-{paypal_country}",
+        "accept_language": f"{paypal_lang}-{paypal_country},{paypal_lang};q=0.9,en;q=0.8",
+        "use_camoufox": fallback_use_camoufox,
+        "use_roxybrowser": fallback_use_roxybrowser,
+        "roxybrowser_workspace_id": roxybrowser_workspace_id,
+        "roxybrowser_profile_id": roxybrowser_profile_id,
+        "on_progress": on_progress,
+    }
+    launch_browser(**launch_kwargs)
     page = getattr(api, "page", None)
     emit_progress(on_progress, progress_event("paypal_browser_fallback_navigate"))
     browser_entry_url = str(fallback_context.get("browser_entry_url") or fallback_approve_url)
-    goto_paypal_page_with_retries(
-        page,
-        browser_entry_url,
-        on_progress=on_progress,
-        attempts=3,
-        timeout_ms=60000,
-    )
+    try:
+        goto_paypal_page_with_retries(
+            page,
+            browser_entry_url,
+            on_progress=on_progress,
+            attempts=3,
+            timeout_ms=60000,
+        )
+    except Exception as exc:
+        closed_target = "target page, context or browser has been closed" in str(exc or "").lower()
+        if not fallback_use_roxybrowser or not closed_target:
+            raise
+        emit_progress(
+            on_progress,
+            progress_event(
+                "paypal_roxybrowser_closed_relaunch",
+                message="RoxyBrowser 页面上下文已关闭，正在重新启动窗口后继续",
+                level="warn",
+            ),
+        )
+        relaunch_kwargs = {
+            **launch_kwargs,
+            "roxybrowser_profile_id": "",
+        }
+        launch_browser(**relaunch_kwargs)
+        page = getattr(api, "page", None)
+        goto_paypal_page_with_retries(
+            page,
+            browser_entry_url,
+            on_progress=on_progress,
+            attempts=3,
+            timeout_ms=60000,
+        )
     emit_progress(on_progress, progress_event("paypal_browser_fallback_ddc_wait"))
     fallback_ddc_result = handle_browser_fallback_ddc_wait(page, on_progress=on_progress)
     if fallback_ddc_result.get("action") == "failed":
@@ -3552,6 +3579,7 @@ def handle_paypal_protocol_mode_dispatch(
     roxybrowser_profile_id: str,
     handle_pre_extracted_checkout_without_ba: Callable[..., dict[str, Any] | None],
     build_result: Callable[..., dict[str, Any]],
+    prepare_auto_flow_payloads: Callable[..., dict[str, Any]],
     handle_protocol_flow_dispatch: Callable[..., dict[str, Any]],
     paypal_protocol_needs_browser_fallback: Callable[[dict[str, Any]], bool],
     handle_protocol_browser_fallback_context: Callable[..., dict[str, Any]],
@@ -3576,6 +3604,68 @@ def handle_paypal_protocol_mode_dispatch(
         )
         result["checkout_url"] = str(checkout_without_ba_result.get("checkout_url") or "")
         return result
+
+    pre_extracted_ba_token = str((pre_extracted or {}).get("ba_token") or "").strip()
+    if pre_extracted_ba_token and browser_fallback_enabled:
+        auto_flow_payloads = prepare_auto_flow_payloads(
+            autofill_payload=autofill_payload,
+            autofill_enabled=autofill_enabled,
+            paypal_country=paypal_country,
+            proxy_url=proxy_url,
+        )
+        signup_billing_payload = auto_flow_payloads["signup_billing_payload"]
+        fallback_approve_url = str((pre_extracted or {}).get("approve_url") or "").strip()
+        if not fallback_approve_url:
+            fallback_approve_url = f"https://www.paypal.com/agreements/approve?ba_token={pre_extracted_ba_token}"
+        fallback_context = handle_protocol_browser_fallback_context(
+            {
+                "status": "needs_review",
+                "failure_stage": "paypal_browser_handoff",
+                "message": "已提取 PayPal BA，后半段切换到浏览器完成",
+                "paypal_approve_url": fallback_approve_url,
+                "ba_token": pre_extracted_ba_token,
+            },
+            paypal_mode=paypal_mode,
+            paypal_country=paypal_country,
+            paypal_lang=paypal_lang,
+            on_progress=on_progress,
+        )
+        if fallback_context.get("action") == "return_protocol_result":
+            return build_result(
+                "failed",
+                failure_stage="paypal_browser_handoff",
+                message="已提取 PayPal BA，但无法构造浏览器授权入口",
+            )
+        return handle_protocol_browser_fallback_dispatch(
+            api,
+            fallback_context=fallback_context,
+            fallback_approve_url=str(fallback_context.get("paypal_approve_url") or fallback_approve_url),
+            fallback_ba_token=str(fallback_context.get("ba_token") or pre_extracted_ba_token),
+            proxy_url=proxy_url,
+            proxy_bypass=proxy_bypass,
+            fallback_use_camoufox=fallback_use_camoufox,
+            fallback_use_roxybrowser=fallback_use_roxybrowser,
+            roxybrowser_workspace_id=roxybrowser_workspace_id,
+            roxybrowser_profile_id=roxybrowser_profile_id,
+            paypal_mode=paypal_mode,
+            paypal_country=paypal_country,
+            paypal_lang=paypal_lang,
+            paypal_email=paypal_email,
+            paypal_password=paypal_password,
+            sms_url=sms_url,
+            otp_channel=otp_channel,
+            paypal_card_number=paypal_card_number,
+            paypal_card_expiry=paypal_card_expiry,
+            paypal_card_cvv=paypal_card_cvv,
+            phone_accounts=phone_accounts,
+            signup_billing_payload=signup_billing_payload,
+            checkout_url=checkout_url,
+            session_id=session_id,
+            screenshot_paths=screenshot_paths,
+            timeout_seconds=timeout_seconds,
+            is_cancelled=is_cancelled,
+            on_progress=on_progress,
+        )
 
     protocol_dispatch = handle_protocol_flow_dispatch(
         email=email,

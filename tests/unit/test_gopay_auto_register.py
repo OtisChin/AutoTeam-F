@@ -487,7 +487,7 @@ def test_hero_get_number_filters_min_price_and_prefers_configured_tier(monkeypat
         ("getPricesForVerification", {"service": "ni", "country": 6}),
         ("getTopCountriesByService", {"service": "ni", "freePrice": "true"}),
         ("getPricesVerification", {"service": "ni", "country": 6}),
-        ("getNumber", {"service": "ni", "country": 6, "price": "0.08", "fixedPrice": "true"}),
+        ("getNumber", {"service": "ni", "price": "0.08", "country": 6}),
     ]
 
 
@@ -603,8 +603,8 @@ def test_hero_get_number_uses_price_plan_when_only_max_price_is_configured(monke
     assert phone == "6287712345678"
     get_number_requests = [params for action, params in requests if action == "getNumber"]
     assert get_number_requests == [
-        {"service": "ni", "country": 6, "price": "0.045", "fixedPrice": "true"},
-        {"service": "ni", "country": 6, "price": "0.0618", "fixedPrice": "true"},
+        {"service": "ni", "price": "0.045", "country": 6},
+        {"service": "ni", "price": "0.0618", "country": 6},
     ]
 
 

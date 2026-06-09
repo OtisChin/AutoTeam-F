@@ -73,6 +73,7 @@ LUCKMAIL_ACCOUNTS_FILE=data/luckmail_accounts.txt
 LUCKMAIL_API_KEY=
 LUCKMAIL_PROJECT_CODE=openai
 LUCKMAIL_EMAIL_TYPE=ms_graph
+LUCKMAIL_REUSE_PURCHASED_CACHE=0
 ```
 
 账号池格式：
@@ -80,6 +81,8 @@ LUCKMAIL_EMAIL_TYPE=ms_graph
 ```text
 email@outlook.my----tok_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
+
+默认不会复用 SQLite 里历史自动购买的 LuckMail 缓存，避免旧缓存邮箱再次进入注册池。确认缓存属于当前 LuckMail 账号时，可设置 `LUCKMAIL_REUSE_PURCHASED_CACHE=1`。
 
 ## CPA
 

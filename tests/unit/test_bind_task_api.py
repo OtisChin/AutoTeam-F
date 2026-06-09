@@ -571,6 +571,7 @@ def test_post_paypal_task_protocol_jp_create_account_allows_no_card(monkeypatch)
             manual_confirm=False,
             paypal_mode="create_account",
             paypal_browser="protocol",
+            paypal_fallback_browser="roxybrowser",
             paypal_country="JP",
             paypal_lang="ja",
             billing_name="James Smith",
@@ -637,6 +638,7 @@ def test_post_paypal_task_protocol_auto_provisions_sms_from_env(monkeypatch):
             manual_confirm=False,
             paypal_mode="create_account",
             paypal_browser="protocol",
+            paypal_fallback_browser="roxybrowser",
             paypal_country="JP",
             paypal_lang="ja",
             billing_name="James Smith",
@@ -699,6 +701,7 @@ def test_post_paypal_task_protocol_uses_explicit_paypal_sms_env(monkeypatch):
             manual_confirm=False,
             paypal_mode="create_account",
             paypal_browser="protocol",
+            paypal_fallback_browser="roxybrowser",
             paypal_country="JP",
             paypal_lang="ja",
             billing_name="James Smith",
@@ -879,6 +882,7 @@ def test_post_paypal_task_protocol_uses_direct_ba_link_without_checkout_generati
             manual_confirm=False,
             paypal_mode="create_account",
             paypal_browser="protocol",
+            paypal_fallback_browser="roxybrowser",
             paypal_country="JP",
             paypal_lang="ja",
             autofill_enabled=True,
@@ -893,11 +897,11 @@ def test_post_paypal_task_protocol_uses_direct_ba_link_without_checkout_generati
 
     assert result["status"] == "success"
     assert captured["params"]["checkout_url"] == ""
-    assert captured["params"].get("paypal_fallback_browser", "") == ""
+    assert captured["params"].get("paypal_fallback_browser", "") == "roxybrowser"
     assert captured["params"]["paypal_direct_ba_link_present"] is True
     assert captured["params"]["paypal_direct_ba_checkout_reference_present"] is True
     assert captured["bind_kwargs"]["checkout_url"] == ""
-    assert captured["bind_kwargs"]["paypal_fallback_browser"] == ""
+    assert captured["bind_kwargs"]["paypal_fallback_browser"] == "roxybrowser"
     assert captured["bind_kwargs"]["pre_extracted"] == {
         "status": "success",
         "ba_token": "BA-DIRECT123",
@@ -1078,7 +1082,7 @@ def test_post_paypal_task_legacy_jp_nocard_region_forces_protocol(monkeypatch):
 
     assert result["task_id"] == "task-paypal-jp-nocard-legacy"
     assert captured["params"]["paypal_browser"] == "protocol"
-    assert captured["params"]["paypal_fallback_browser"] == "roxybrowser"
+    assert captured["params"].get("paypal_fallback_browser", "") == ""
     assert captured["params"]["paypal_region"] == "JP_NOCARD"
     assert captured["params"]["paypal_country"] == "JP"
     assert captured["params"]["paypal_lang"] == "ja"

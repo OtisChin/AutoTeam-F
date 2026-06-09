@@ -1223,8 +1223,7 @@ def _hero_get_number(
         for price in price_plan["filtered_prices"]:
             candidate = {
                 "service": service_code,
-                "maxPrice": str(price),
-                "fixedPrice": "true",
+                "price": str(price),
             }
             if limited_country:
                 candidate["country"] = int(float(country_text))

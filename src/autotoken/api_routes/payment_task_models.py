@@ -250,6 +250,14 @@ class PayPalTaskParams(BaseModel):
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_label: str = Field("", validation_alias=AliasChoices("proxy_label", "proxyLabel"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
+    paypal_jp_proxy_url: str = Field(
+        "",
+        validation_alias=AliasChoices("paypal_jp_proxy_url", "paypalJpProxyUrl"),
+    )
+    paypal_us_proxy_url: str = Field(
+        "",
+        validation_alias=AliasChoices("paypal_us_proxy_url", "paypalUsProxyUrl"),
+    )
     paypal_browser: str = Field("chromium", validation_alias=AliasChoices("paypal_browser", "paypalBrowser"))
     paypal_fallback_browser: str = Field(
         "",

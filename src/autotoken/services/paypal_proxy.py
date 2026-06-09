@@ -24,6 +24,7 @@ class PayPalProxyRuntime:
     normalized_proxy_url: str
     normalized_proxy_pool: list[str]
     bind_proxy_url: str
+    provider_proxy_url: str = ""
 
 
 def is_paypal_tunnel_connection_error(value: Any) -> bool:
@@ -114,6 +115,8 @@ def prepare_paypal_proxy_runtime(
     protocol_no_card: bool,
     paypal_ba_proxy_region: str,
     default_proxy_entry: Callable[[str], str],
+    paypal_jp_proxy_url: str | None = None,
+    paypal_us_proxy_url: str | None = None,
 ) -> PayPalProxyRuntime:
     raw_proxy_url = str(proxy_url or "").strip()
     api_url = str(proxy_api_url or "").strip()
@@ -147,6 +150,33 @@ def prepare_paypal_proxy_runtime(
     except Exception as exc:
         raise ValueError(f"代理格式错误: {raw_proxy_url} ({exc})") from exc
 
+    def normalize_sticky_proxy(raw_value: str | None, label: str) -> str:
+        raw = str(raw_value or "").strip()
+        if not raw:
+            return ""
+        try:
+            return normalize_proxy_url(raw)
+        except Exception as exc:
+            raise ValueError(f"{label} sticky 代理格式错误: {raw} ({exc})") from exc
+
+    jp_proxy_url = normalize_sticky_proxy(paypal_jp_proxy_url, "JP")
+    us_proxy_url = normalize_sticky_proxy(paypal_us_proxy_url, "US")
+    provider_proxy_url = ""
+    explicit_selected_proxy = ""
+    if protocol_no_card:
+        ba_region = str(paypal_ba_proxy_region or "").strip().upper()
+        explicit_selected_proxy = us_proxy_url if ba_region == "US" else jp_proxy_url
+        provider_proxy_url = us_proxy_url
+    else:
+        country = str(paypal_country or "").strip().upper()
+        if country == "JP":
+            explicit_selected_proxy = jp_proxy_url
+        elif country == "US":
+            explicit_selected_proxy = us_proxy_url
+
+    if explicit_selected_proxy:
+        normalized_proxy_url = explicit_selected_proxy
+
     if not normalized_proxy_url and provider:
         default_entry = default_proxy_entry(provider)
         if default_entry:
@@ -175,6 +205,7 @@ def prepare_paypal_proxy_runtime(
         normalized_proxy_url=normalized_proxy_url,
         normalized_proxy_pool=normalized_proxy_pool,
         bind_proxy_url=normalized_proxy_url,
+        provider_proxy_url=provider_proxy_url,
     )
 
 
@@ -211,6 +242,8 @@ def select_paypal_provider_proxy(
     selected = str(selected_proxy_url or "").strip()
     if not protocol_no_card:
         return ""
+    if runtime.provider_proxy_url:
+        return runtime.provider_proxy_url
     if runtime.proxy_api_url:
         provider_api_url = proxy_runtime.proxy_api_url_with_region(runtime.proxy_api_url, "US")
         fetched_proxy = fetch_proxy_from_api_url(

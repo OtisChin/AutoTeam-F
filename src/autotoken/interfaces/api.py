@@ -471,13 +471,11 @@ def _paypal_task_preflight_payload(params: PayPalTaskParams) -> dict[str, Any]:
         missing.append(str(exc))
     protocol_no_card = bool(paypal_options.get("protocol_no_card"))
     bind_link_payload = paypal_options.get("bind_link_payload") or {}
-    if direct_ba_pre_extracted:
-        paypal_options["paypal_fallback_browser"] = ""
     checks["email"] = bool(email)
     if not email:
         missing.append("email")
     checks["direct_ba_link"] = bool(direct_ba_pre_extracted)
-    checks["browser_fallback"] = bool(paypal_options.get("paypal_fallback_browser")) and not bool(direct_ba_pre_extracted)
+    checks["browser_fallback"] = bool(paypal_options.get("paypal_fallback_browser"))
     checks["checkout_reference"] = bool(
         direct_ba_pre_extracted
         and (
@@ -8733,8 +8731,6 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
     paypal_ba_mode = paypal_ba_service.paypal_ba_extract_mode(getattr(params, "paypal_ba_mode", "eu"))
     if direct_ba_pre_extracted and (paypal_mode != "create_account" or not protocol_no_card):
         raise HTTPException(status_code=400, detail="直连 PayPal BA/link 模式只支持 create_account + protocol/no-card")
-    if direct_ba_pre_extracted:
-        paypal_fallback_browser = ""
     sms_url = paypal_inputs["sms_url"]
     otp_channel = paypal_inputs["otp_channel"]
     paypal_ba_proxy_region = str(os.environ.get("PAYPAL_BA_PROXY_REGION") or ("US" if paypal_ba_mode == "us" else "JP"))
@@ -8745,6 +8741,8 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
             proxy_pool_text=params.proxy_pool_text,
             proxy_api_provider=params.proxy_api_provider,
             proxy_api_url=params.proxy_api_url,
+            paypal_jp_proxy_url=params.paypal_jp_proxy_url,
+            paypal_us_proxy_url=params.paypal_us_proxy_url,
             paypal_country=paypal_country,
             protocol_no_card=protocol_no_card,
             paypal_ba_proxy_region=paypal_ba_proxy_region,

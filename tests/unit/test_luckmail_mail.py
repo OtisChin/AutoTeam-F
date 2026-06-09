@@ -57,13 +57,34 @@ def test_create_temp_email_purchases_when_loaded_pool_is_reserved(monkeypatch):
     assert "next@outlook.com" in client._reserved
 
 
-def test_luckmail_persists_api_purchased_account(monkeypatch, tmp_path):
+def test_luckmail_does_not_reuse_persisted_cache_by_default(monkeypatch, tmp_path):
     from autotoken import sqlite_store
 
     monkeypatch.setattr("autotoken.mail.luckmail.PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
     monkeypatch.delenv("LUCKMAIL_ACCOUNTS", raising=False)
     monkeypatch.delenv("LUCKMAIL_ACCOUNTS_FILE", raising=False)
+    monkeypatch.delenv("LUCKMAIL_REUSE_PURCHASED_CACHE", raising=False)
+    monkeypatch.setenv("LUCKMAIL_API_KEY", "luck-key")
+    sqlite_store.set_json(
+        "luckmail",
+        "accounts",
+        [{"email": "cached@example.com", "token": "tok_cached_1234567890abcdef", "purchase_id": "old"}],
+    )
+
+    client = LuckMailProvider()
+
+    assert client.accounts == []
+
+
+def test_luckmail_reuses_persisted_api_purchased_account_when_enabled(monkeypatch, tmp_path):
+    from autotoken import sqlite_store
+
+    monkeypatch.setattr("autotoken.mail.luckmail.PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.delenv("LUCKMAIL_ACCOUNTS", raising=False)
+    monkeypatch.delenv("LUCKMAIL_ACCOUNTS_FILE", raising=False)
+    monkeypatch.setenv("LUCKMAIL_REUSE_PURCHASED_CACHE", "1")
     monkeypatch.setenv("LUCKMAIL_API_KEY", "luck-key")
     sqlite_store.set_json("luckmail", "accounts", [])
 

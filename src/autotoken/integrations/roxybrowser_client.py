@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 _RESERVED_PROFILE_LOCK = threading.RLock()
 _RESERVED_PROFILE_IDS: set[str] = set()
+DEFAULT_ROXYBROWSER_OS = "IOS"
+DEFAULT_ROXYBROWSER_OS_VERSION = "18.2"
 
 
 def _normalize_api_host(api_host: str | None) -> str:
@@ -219,6 +222,17 @@ def _coerce_workspace_id(value: str | int) -> int | str:
         return raw
 
 
+def _default_roxybrowser_fingerprint() -> dict[str, str]:
+    os_name = str(os.environ.get("ROXYBROWSER_DEFAULT_OS") or DEFAULT_ROXYBROWSER_OS).strip()
+    os_version = str(os.environ.get("ROXYBROWSER_DEFAULT_OS_VERSION") or DEFAULT_ROXYBROWSER_OS_VERSION).strip()
+    result: dict[str, str] = {}
+    if os_name:
+        result["os"] = os_name
+    if os_version:
+        result["osVersion"] = os_version
+    return result
+
+
 @dataclass(slots=True)
 class RoxyBrowserLaunchResult:
     workspace_id: str
@@ -226,6 +240,8 @@ class RoxyBrowserLaunchResult:
     connection: dict[str, Any]
     created_profile: bool
     reused_existing_profile: bool = False
+    requested_os: str = ""
+    requested_os_version: str = ""
 
 
 class RoxyBrowserClient:
@@ -490,10 +506,10 @@ class RoxyBrowserClient:
             "workspaceId": _coerce_workspace_id(workspace_id),
             "windowName": window_name,
         }
+        payload.update(_default_roxybrowser_fingerprint())
         proxy_info = _normalize_proxy_info(proxy_url)
         if proxy_info:
             payload["proxyInfo"] = proxy_info
-        # 让 RoxyBrowser 自己补齐随机指纹和默认配置即可；这里不强行指定 profile 细节。
         payload["fingerInfo"] = {
             "clearCacheFile": False,
             "clearCookie": False,
@@ -512,11 +528,14 @@ class RoxyBrowserClient:
         dir_id: str,
         window_name: str | None = None,
         proxy_url: str | None = None,
+        apply_default_fingerprint: bool = True,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "workspaceId": _coerce_workspace_id(workspace_id),
             "dirId": dir_id,
         }
+        if apply_default_fingerprint:
+            payload.update(_default_roxybrowser_fingerprint())
         if window_name:
             payload["windowName"] = window_name
         proxy_info = _normalize_proxy_info(proxy_url)
@@ -593,9 +612,11 @@ class RoxyBrowserClient:
         dir_id: str | None = None,
         args: list[str] | None = None,
         clear_profile_data: bool = False,
+        force_new_profile: bool = False,
     ) -> RoxyBrowserLaunchResult:
         resolved_dir_id = str(dir_id or "").strip()
         reserved_profile_id = ""
+        requested_fingerprint = _default_roxybrowser_fingerprint()
         if resolved_dir_id:
             resolved_workspace_id = self.resolve_profile(resolved_dir_id, workspace_id)[0]
         else:
@@ -611,7 +632,7 @@ class RoxyBrowserClient:
                     except Exception:
                         pass
                     self.clear_profile_cache(resolved_workspace_id, [resolved_dir_id])
-                if str(proxy_url or "").strip():
+                if str(proxy_url or "").strip() or _default_roxybrowser_fingerprint():
                     self.browser_mdf(
                         workspace_id=resolved_workspace_id,
                         dir_id=resolved_dir_id,
@@ -619,7 +640,7 @@ class RoxyBrowserClient:
                     )
             else:
                 with _RESERVED_PROFILE_LOCK:
-                    reusable_profile = self.reserve_available_profile(resolved_workspace_id)
+                    reusable_profile = None if force_new_profile else self.reserve_available_profile(resolved_workspace_id)
                     if reusable_profile:
                         resolved_dir_id = str(reusable_profile.get("id") or "").strip()
                         reserved_profile_id = resolved_dir_id
@@ -635,7 +656,7 @@ class RoxyBrowserClient:
                             except Exception:
                                 pass
                             self.clear_profile_cache(resolved_workspace_id, [resolved_dir_id])
-                        if str(proxy_url or "").strip():
+                        if str(proxy_url or "").strip() or _default_roxybrowser_fingerprint():
                             self.browser_mdf(
                                 workspace_id=resolved_workspace_id,
                                 dir_id=resolved_dir_id,
@@ -679,6 +700,8 @@ class RoxyBrowserClient:
                 connection=connection,
                 created_profile=created_profile,
                 reused_existing_profile=reused_existing_profile,
+                requested_os=str(requested_fingerprint.get("os") or ""),
+                requested_os_version=str(requested_fingerprint.get("osVersion") or ""),
             )
         except Exception:
             if reserved_profile_id:

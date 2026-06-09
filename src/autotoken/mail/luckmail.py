@@ -87,7 +87,8 @@ class LuckMailProvider(MailProvider):
             account = self._parse_account_line(line)
             if account and account.validate():
                 accounts.append(account)
-        accounts.extend(self._load_persisted_accounts())
+        if self._reuse_persisted_accounts_enabled():
+            accounts.extend(self._load_persisted_accounts())
 
         seen: set[str] = set()
         unique: list[LuckMailAccount] = []
@@ -98,6 +99,10 @@ class LuckMailProvider(MailProvider):
             seen.add(key)
             unique.append(account)
         return unique
+
+    @staticmethod
+    def _reuse_persisted_accounts_enabled() -> bool:
+        return _env("LUCKMAIL_REUSE_PURCHASED_CACHE", "0").lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _load_persisted_accounts() -> list[LuckMailAccount]:
@@ -127,6 +132,8 @@ class LuckMailProvider(MailProvider):
     @staticmethod
     def _persist_purchased_account(account: LuckMailAccount) -> None:
         if not account.validate():
+            return
+        if not LuckMailProvider._is_plausible_persisted_token(account.token):
             return
         data = sqlite_store.get_json(_PERSIST_NAMESPACE, _PERSIST_KEY, default=[])
         items = data if isinstance(data, list) else []

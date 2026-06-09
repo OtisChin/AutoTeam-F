@@ -1212,6 +1212,117 @@ def test_submit_paypal_signup_otp_wrapper_passes_browser_dependencies(monkeypatc
     assert captured["sleep"] is paypal_bind_executor.time.sleep
 
 
+def test_dismiss_paypal_cookie_banner_evaluates_frames_and_waits(monkeypatch):
+    calls = []
+    waits = []
+    click_calls = []
+
+    class FakeFrame:
+        def __init__(self, dismissed):
+            self.dismissed = dismissed
+
+        def evaluate(self, script):
+            calls.append(script)
+            return {"dismissed": self.dismissed}
+
+    class FakePage:
+        def wait_for_timeout(self, timeout):
+            waits.append(timeout)
+
+    class FakeApi:
+        page = FakePage()
+
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_iter_page_frames",
+        lambda _api: [FakeFrame(False), FakeFrame(True)],
+    )
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_click_first",
+        lambda api, selectors, timeout_ms: click_calls.append((selectors, timeout_ms)) or False,
+    )
+
+    assert paypal_bind_executor._dismiss_paypal_cookie_banner(FakeApi()) is True
+    assert click_calls == [(paypal_bind_executor.PAYPAL_COOKIE_BANNER_ACCEPT_SELECTORS, 700)]
+    assert calls == [paypal_bind_executor.PAYPAL_COOKIE_BANNER_DISMISS_SCRIPT] * 2
+    assert waits == [300]
+
+
+def test_click_paypal_signup_submit_clears_overlays_before_click(monkeypatch):
+    calls = []
+    progress_events = []
+    api = object()
+
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_dismiss_paypal_cookie_banner",
+        lambda _api: calls.append("cookie") or False,
+    )
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_dismiss_paypal_prompts",
+        lambda _api, on_progress=None: calls.append(("prompts", on_progress)) or False,
+    )
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_press_escape_to_dismiss_browser_bubbles",
+        lambda _api: calls.append("escape"),
+    )
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_click_first",
+        lambda _api, selectors, timeout_ms: calls.append((selectors, timeout_ms)) or True,
+    )
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_js_click_paypal_signup_submit",
+        lambda _api: (_ for _ in ()).throw(AssertionError("JS fallback should not be needed")),
+    )
+
+    assert paypal_bind_executor._click_paypal_signup_submit(api, on_progress=progress_events.append) is True
+    assert calls == [
+        "cookie",
+        ("prompts", progress_events.append),
+        "escape",
+        "cookie",
+        (paypal_bind_executor.PAYPAL_CREATE_SUBMIT_SELECTORS, 3000),
+    ]
+
+
+def test_click_paypal_signup_submit_uses_js_fallback_after_overlay_retries(monkeypatch):
+    calls = []
+    api = object()
+
+    monkeypatch.setattr(paypal_bind_executor, "_dismiss_paypal_cookie_banner", lambda _api: calls.append("cookie") or False)
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_dismiss_paypal_prompts",
+        lambda _api, on_progress=None: calls.append("prompts") or False,
+    )
+    monkeypatch.setattr(paypal_bind_executor, "_press_escape_to_dismiss_browser_bubbles", lambda _api: calls.append("escape"))
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_click_first",
+        lambda _api, selectors, timeout_ms: calls.append(("click", timeout_ms)) or False,
+    )
+    monkeypatch.setattr(paypal_bind_executor, "_js_click_paypal_signup_submit", lambda _api: calls.append("js") or True)
+
+    assert paypal_bind_executor._click_paypal_signup_submit(api) is True
+    assert calls == [
+        "cookie",
+        "prompts",
+        "escape",
+        "cookie",
+        ("click", 3000),
+        "cookie",
+        "prompts",
+        "escape",
+        ("click", 1500),
+        "js",
+    ]
+
+
 def test_handle_paypal_signup_submitted_phase_wrapper_passes_browser_dependencies(monkeypatch):
     captured = {}
     progress_events = []
@@ -2552,6 +2663,9 @@ def test_roxybrowser_launch_connects_with_python_playwright_keyword(monkeypatch)
         dir_id = "dir-1"
         workspace_id = "workspace-1"
         created_profile = False
+        reused_existing_profile = False
+        requested_os = "IOS"
+        requested_os_version = "18.2"
         connection = {"http": "127.0.0.1:54510"}
 
     class FakeClient:
@@ -2603,8 +2717,102 @@ def test_roxybrowser_launch_connects_with_python_playwright_keyword(monkeypatch)
         "paypal_roxybrowser_cache_clear_done",
         "paypal_browser_data_clear_started",
         "paypal_browser_data_clear_done",
+        "paypal_roxybrowser_runtime_fingerprint",
     ]
     assert api.context is not None
+    assert api.page is not None
+
+
+def test_roxybrowser_relaunch_cleans_active_runtime_before_start(monkeypatch):
+    calls = []
+
+    class OldContext:
+        def close(self):
+            calls.append("old_context_close")
+
+    class OldBrowser:
+        def close(self):
+            calls.append("old_browser_close")
+
+    class OldPlaywright:
+        def stop(self):
+            calls.append("old_playwright_stop")
+
+    class OldClient:
+        def browser_close(self, dir_id):
+            calls.append(("old_roxy_close", dir_id))
+
+        def browser_delete(self, workspace_id, dir_ids):
+            calls.append(("old_roxy_delete", workspace_id, dir_ids))
+
+    class FakeLaunch:
+        dir_id = "new-dir"
+        workspace_id = "new-workspace"
+        created_profile = True
+        reused_existing_profile = False
+        requested_os = "IOS"
+        requested_os_version = "18.2"
+        connection = {"http": "127.0.0.1:54510"}
+
+    class FakeClient:
+        def __init__(self, api_host, api_token):
+            pass
+
+        def launch(self, **kwargs):
+            calls.append("new_roxy_launch")
+            return FakeLaunch()
+
+    class FakePage:
+        def evaluate(self, _script):
+            return {"platform": "iPhone", "user_agent": "iPhone", "max_touch_points": 5}
+
+    class FakeContext:
+        pages = [FakePage()]
+
+    class FakeBrowser:
+        contexts = [FakeContext()]
+
+    class FakeChromium:
+        def connect_over_cdp(self, **kwargs):
+            calls.append("new_roxy_connect")
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    def start_playwright():
+        calls.append("new_playwright_start")
+        assert "old_playwright_stop" in calls
+        return FakePlaywright()
+
+    monkeypatch.setattr(
+        chatgpt_api, "get_roxybrowser_config", lambda: {"api_host": "http://roxy", "api_token": "token"}
+    )
+    monkeypatch.setattr(chatgpt_api, "RoxyBrowserClient", FakeClient)
+    monkeypatch.setattr(chatgpt_api, "sync_playwright", lambda: types.SimpleNamespace(start=start_playwright))
+
+    api = chatgpt_api.ChatGPTTeamAPI()
+    api.context = OldContext()
+    api.browser = OldBrowser()
+    api.page = object()
+    api.playwright = OldPlaywright()
+    api._roxybrowser_client = OldClient()
+    api._roxybrowser_dir_id = "old-dir"
+    api._roxybrowser_workspace_id = "old-workspace"
+    api._roxybrowser_created_dir = True
+
+    api._launch_browser_roxybrowser(force_new_profile=True)
+
+    assert calls[:6] == [
+        "old_context_close",
+        "old_browser_close",
+        ("old_roxy_close", "old-dir"),
+        ("old_roxy_delete", "old-workspace", ["old-dir"]),
+        "old_playwright_stop",
+        "new_roxy_launch",
+    ]
+    assert calls.index("old_playwright_stop") < calls.index("new_playwright_start")
+    assert api._roxybrowser_dir_id == "new-dir"
     assert api.page is not None
 
 
@@ -6793,6 +7001,7 @@ def test_handle_paypal_protocol_mode_dispatch_wrapper_passes_browser_dependencie
         paypal_bind_executor._handle_paypal_pre_extracted_checkout_without_ba
     )
     assert captured["build_result"] is paypal_bind_executor._build_result
+    assert captured["prepare_auto_flow_payloads"] is paypal_bind_executor._prepare_paypal_auto_flow_payloads
     assert captured["handle_protocol_flow_dispatch"] is paypal_bind_executor._handle_paypal_protocol_flow_dispatch
     assert (
         captured["paypal_protocol_needs_browser_fallback"]
@@ -7359,6 +7568,44 @@ def test_paypal_ddc_wrappers_delegate_text_and_frame_classification():
         )
         is False
     )
+
+
+def test_wait_ddc_pass_accepts_checkoutweb_before_invisible_iframe_detection(monkeypatch):
+    class FakePage:
+        url = "https://www.paypal.com/checkoutweb/signup?ba_token=BA-DEMO"
+
+        def inner_text(self, selector):
+            assert selector == "body"
+            return ""
+
+    monkeypatch.setattr(paypal_bind_executor.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_ddc_slider_visible",
+        lambda _page: (_ for _ in ()).throw(AssertionError("slider detection should not run on checkoutweb")),
+    )
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_has_ddc_iframe",
+        lambda _page: (_ for _ in ()).throw(AssertionError("iframe detection should not run on checkoutweb")),
+    )
+    events = []
+
+    assert paypal_bind_executor._wait_ddc_pass(FakePage(), on_progress=events.append) is True
+    assert events == []
+
+
+def test_wait_ddc_pass_still_rejects_blocked_checkoutweb(monkeypatch):
+    class FakePage:
+        url = "https://www.paypal.com/checkoutweb/signup?ba_token=BA-DEMO"
+
+        def inner_text(self, selector):
+            assert selector == "body"
+            return "Your request has been blocked"
+
+    monkeypatch.setattr(paypal_bind_executor.time, "sleep", lambda _seconds: None)
+
+    assert paypal_bind_executor._wait_ddc_pass(FakePage(), max_blocked_retries=0) is False
 
 
 def test_run_paypal_signup_flow_prefers_otp_over_registration(monkeypatch):
