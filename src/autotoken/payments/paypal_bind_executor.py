@@ -9,9 +9,11 @@ import random
 import re
 import secrets
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -7158,177 +7160,216 @@ def _paypal_pplink_approve_checkout(
     return payload
 
 
-def _paypal_pplink_exe_path() -> str:
-    configured = str(os.environ.get("PAYPAL_BA_PPLINK_EXE") or "").strip()
-    if configured.lower() in {"0", "false", "off", "none", "disabled"}:
+def _paypal_pplink_exe_path() -> Path:
+    override = str(os.environ.get("PAYPAL_BA_PPLINK_EXE") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parents[3] / "vendor" / "pplink" / "pplink.exe"
+
+
+def _paypal_pplink_parse_authorize_url(output: str) -> str:
+    match = re.search(r"Authorize URL:\s*(\S+)", str(output or ""), flags=re.IGNORECASE)
+    if match:
+        return _paypal_protocol_unescape_url(match.group(1).strip())
+    return _find_paypal_redirect_url(output)
+
+
+def _paypal_pplink_parse_checkout_session_id(output: str) -> str:
+    match = re.search(r"\b(cs_(?:live|test)_[A-Za-z0-9_]+|cs_[A-Za-z0-9_]+)\b", str(output or ""))
+    return match.group(1) if match else ""
+
+
+def _paypal_pplink_normalize_proxy_url(value: str | None) -> str:
+    proxy = str(value or "").strip()
+    if not proxy:
         return ""
-    candidates = [
-        configured,
-        r"D:\code\my\PayPalLink\pplink-win\pplink.exe",
-    ]
-    for candidate in candidates:
-        if candidate and os.path.exists(candidate):
-            return candidate
-    return ""
+    scheme_idx = proxy.find("://")
+    at_idx = proxy.rfind("@")
+    if scheme_idx > 0 and at_idx > scheme_idx:
+        userinfo_start = scheme_idx + 3
+        userinfo = proxy[userinfo_start:at_idx]
+        return proxy[:userinfo_start] + quote(userinfo, safe=":%") + proxy[at_idx:]
+    return proxy.replace(" ", "%20")
 
 
-def _paypal_pplink_output_text(proc: subprocess.CompletedProcess[bytes]) -> str:
-    output = (proc.stdout or b"") + b"\n" + (proc.stderr or b"")
-    return output.decode("utf-8", errors="replace")
-
-
-def _paypal_pplink_result_from_output(
+def _paypal_pplink_proxy_config(
     *,
-    output: str,
     mode: str,
-    returncode: int,
-    is_cancelled=None,
-) -> dict[str, Any]:
-    if callable(is_cancelled) and is_cancelled():
-        return {"status": "failed", "failure_stage": "extract_ba_link", "message": "Task cancelled"}
-    amount = 0
-    currency = ""
-    amount_match = re.search(r"init:\s*currency=([a-zA-Z]+)\s+amount=([0-9]+)", output)
-    if amount_match:
-        currency = amount_match.group(1).lower()
-        amount = int(amount_match.group(2) or "0")
-    cs_match = re.search(r"checkout session:\s*(cs_[A-Za-z0-9_]+)", output)
-    checkout_session_id = cs_match.group(1) if cs_match else ""
-    pm_match = re.search(r"\b(pm_[A-Za-z0-9_]+)\b", output)
-    pm_id = pm_match.group(1) if pm_match else ""
-    url = ""
-    for pattern in (
-        r"(?:Authorize URL|PayPal URL):\s*(https?://[^\s]+)",
-        r"(https://www\.paypal\.com/[^\s]+)",
-        r"(https://pm-redirects\.stripe\.com/[^\s]+)",
-    ):
-        match = re.search(pattern, output)
-        if match:
-            url = _paypal_protocol_unescape_url(match.group(1).strip())
-            break
-    ba_token = _paypal_protocol_extract_ba_token(url)
-    hosted_checkout_url = f"https://pay.openai.com/c/pay/{checkout_session_id}" if checkout_session_id else ""
-
-    if amount != 0:
-        nonzero_email = ""
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_nonzero_amount",
-            "message": f"BA 提取检测到 checkout 今日应付金额非 0 ({amount})，已停止",
-            "checkout_session_id": checkout_session_id,
-            "pm_id": pm_id,
-            "checkout_url": hosted_checkout_url,
-            "hosted_checkout_url": hosted_checkout_url,
-            "nonzero_amount": amount,
-            "nonzero_blocked_emails": [nonzero_email] if nonzero_email else [],
-            "paypal_ba_mode": mode,
-        }
-    if returncode != 0:
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_pplink",
-            "message": f"pplink exited with {returncode}: {output[-800:]}",
-            "checkout_session_id": checkout_session_id,
-            "checkout_url": hosted_checkout_url,
-            "hosted_checkout_url": hosted_checkout_url,
-            "paypal_ba_mode": mode,
-        }
-    if not url or not ba_token:
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_parse",
-            "message": f"pplink did not return a PayPal BA URL: {output[-800:]}",
-            "checkout_session_id": checkout_session_id,
-            "pm_id": pm_id,
-            "approve_url": url,
-            "checkout_url": hosted_checkout_url,
-            "hosted_checkout_url": hosted_checkout_url,
-            "paypal_ba_mode": mode,
-        }
-    return {
-        "status": "success",
-        "ba_token": ba_token,
-        "approve_url": url,
-        "checkout_session_id": checkout_session_id,
-        "pm_id": pm_id,
-        "checkout_url": hosted_checkout_url,
-        "hosted_checkout_url": hosted_checkout_url,
-        "paypal_ba_mode": mode,
-        "currency": currency,
-    }
+    proxy_url: str | None,
+    provider_proxy_url: str | None,
+    approve_proxy_url: str | None,
+) -> dict[str, str]:
+    primary_proxy = _paypal_pplink_normalize_proxy_url(proxy_url)
+    provider_proxy = _paypal_pplink_normalize_proxy_url(provider_proxy_url)
+    approve_proxy = _paypal_pplink_normalize_proxy_url(approve_proxy_url)
+    if mode == "us":
+        us_proxy = provider_proxy or approve_proxy or primary_proxy
+        return {"proxy_jp": primary_proxy or us_proxy, "proxy_us": us_proxy}
+    return {"proxy_jp": primary_proxy, "proxy_us": provider_proxy or approve_proxy}
 
 
-def _paypal_extract_ba_link_with_pplink_exe(
+def _paypal_pplink_run_exe(
     *,
     access_token: str,
     proxy_url: str | None,
     provider_proxy_url: str | None,
+    approve_proxy_url: str | None,
     paypal_ba_mode: str,
     timeout_seconds: int,
     is_cancelled=None,
     on_progress=None,
-) -> dict[str, Any] | None:
-    exe = _paypal_pplink_exe_path()
-    if not exe:
-        return None
-    mode = _paypal_pplink_extract_mode(paypal_ba_mode)
-    proxy = str(proxy_url or "").strip()
-    provider_proxy = str(provider_proxy_url or "").strip()
-    if not proxy and provider_proxy:
-        proxy = provider_proxy
-    if not proxy:
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_proxy",
-            "message": "pplink BA 提取需要代理",
-            "paypal_ba_mode": mode,
-        }
-    _emit = _progress_adapter(on_progress)
-    _emit("paypal_extract_pplink", message=f"Running pplink {mode.upper()} BA extractor")
-    cmd = [exe, "-mode", mode, "-proxy", proxy, "-max-retry", "1"]
-    if mode == "us" and provider_proxy:
-        cmd.extend(["-us-proxy", provider_proxy])
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=(str(access_token or "").strip() + "\n").encode("utf-8"),
-            capture_output=True,
-            timeout=max(60, min(240, int(timeout_seconds or 90) + 90)),
-            cwd=str(os.path.dirname(exe) or None),
-        )
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "failed",
-            "failure_stage": "extract_ba_link_pplink_timeout",
-            "message": "pplink BA 提取超时",
-            "paypal_ba_mode": mode,
-        }
-    except Exception as exc:
+) -> dict[str, Any]:
+    if callable(is_cancelled) and is_cancelled():
+        return {"status": "failed", "failure_stage": "extract_ba_link", "message": "Task cancelled"}
+
+    token = str(access_token or "").strip()
+    if not token:
         return {
             "status": "failed",
             "failure_stage": "extract_ba_link_pplink",
-            "message": f"pplink BA 提取启动失败: {exc}",
+            "message": "pplink 缺少 ChatGPT access_token",
+        }
+
+    exe_path = _paypal_pplink_exe_path()
+    if not exe_path.exists():
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_pplink",
+            "message": f"未找到项目内 pplink.exe: {exe_path}",
+        }
+
+    mode = _paypal_pplink_extract_mode(paypal_ba_mode)
+    config = _paypal_pplink_checkout_config(mode)
+    processor_entity = str(os.environ.get("PAYPAL_BA_PROCESSOR_ENTITY") or config["processor_entity"]).strip()
+    proxy_config = _paypal_pplink_proxy_config(
+        mode=mode,
+        proxy_url=proxy_url,
+        provider_proxy_url=provider_proxy_url,
+        approve_proxy_url=approve_proxy_url,
+    )
+    if not proxy_config.get("proxy_jp") and not proxy_config.get("proxy_us"):
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_pplink",
+            "message": "pplink 缺少代理配置",
             "paypal_ba_mode": mode,
         }
-    result = _paypal_pplink_result_from_output(
-        output=_paypal_pplink_output_text(proc),
-        mode=mode,
-        returncode=int(proc.returncode or 0),
-        is_cancelled=is_cancelled,
+
+    _emit = _progress_adapter(on_progress)
+    _emit("paypal_extract_pplink_start", message=f"Running bundled pplink.exe ({mode.upper()})")
+    max_retry = str(os.environ.get("PAYPAL_BA_PPLINK_MAX_RETRY") or "1").strip() or "1"
+    retry_wait = str(os.environ.get("PAYPAL_BA_PPLINK_RETRY_WAIT") or "0").strip() or "0"
+    stop_at_pm = str(os.environ.get("PAYPAL_BA_PPLINK_STOP_PM") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    run_timeout = max(90, int(timeout_seconds or 90) + 90)
+
+    with tempfile.TemporaryDirectory(prefix="autotoken-pplink-") as tmp:
+        config_path = Path(tmp) / "config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "proxy_jp": proxy_config.get("proxy_jp", ""),
+                    "proxy_us": proxy_config.get("proxy_us", ""),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        args = [
+            str(exe_path),
+            "-config",
+            str(config_path),
+            "-mode",
+            mode,
+            "-max-retry",
+            max_retry,
+            "-retry-wait",
+            retry_wait,
+        ]
+        if stop_at_pm:
+            args.append("-stop-at-pm-redirects")
+        if processor_entity:
+            args.extend(["-entity", processor_entity])
+        args.extend(["-token", token])
+        env = os.environ.copy()
+        env["PP_MODE"] = mode
+        if processor_entity:
+            env["PP_ENTITY"] = processor_entity
+        env["PP_MAX_RETRY"] = max_retry
+        env["PP_RETRY_WAIT"] = retry_wait
+        env["PP_STOP_PM"] = "1" if stop_at_pm else "0"
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            proc = subprocess.run(
+                args,
+                cwd=tmp,
+                env=env,
+                text=True,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=run_timeout,
+                creationflags=creationflags,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "status": "failed",
+                "failure_stage": "extract_ba_link_pplink_timeout",
+                "message": f"pplink.exe 超时: {exc}",
+                "paypal_ba_mode": mode,
+            }
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "failure_stage": "extract_ba_link_pplink",
+                "message": f"pplink.exe 启动失败: {exc}",
+                "paypal_ba_mode": mode,
+            }
+
+    output = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+    checkout_session_id = _paypal_pplink_parse_checkout_session_id(output)
+    authorize_url = _paypal_pplink_parse_authorize_url(output)
+    if proc.returncode != 0 or not authorize_url:
+        excerpt = _compact_log_text(output[-1200:], limit=1200)
+        message = f"pplink.exe 提取失败: exit={proc.returncode}"
+        if excerpt:
+            message = f"{message}; output={excerpt}"
+        return {
+            "status": "failed",
+            "failure_stage": "extract_ba_link_pplink",
+            "message": message,
+            "checkout_session_id": checkout_session_id,
+            "paypal_ba_mode": mode,
+        }
+
+    _emit(
+        "paypal_extract_pplink_url",
+        message="pplink.exe extracted PayPal authorize URL",
+        url=_safe_url_summary(authorize_url),
+        checkout_session_id=checkout_session_id,
     )
+    resolver_proxy = (
+        str(provider_proxy_url or "").strip()
+        or str(approve_proxy_url or "").strip()
+        or str(proxy_url or "").strip()
+        or None
+    )
+    resolve_http = _new_http_session(resolver_proxy, require_curl_cffi=False)
+    result = _paypal_extract_result_from_redirect(resolve_http, authorize_url, checkout_session_id, "")
+    result.setdefault("approve_url", authorize_url)
+    result.setdefault("checkout_url", f"https://pay.openai.com/c/pay/{checkout_session_id}" if checkout_session_id else "")
+    result.setdefault("hosted_checkout_url", result.get("checkout_url", ""))
+    result.setdefault("paypal_ba_mode", mode)
     if result.get("status") == "success":
         _emit(
             "paypal_extract_done",
             message=f"Extracted BA token: {result.get('ba_token')}",
             ba_token=result.get("ba_token"),
             approve_url=result.get("approve_url"),
-        )
-    elif result.get("failure_stage") == "extract_ba_link_nonzero_amount":
-        _emit(
-            "paypal_extract_nonzero_amount_blocked",
-            message=str(result.get("message") or ""),
-            expected_amount=str(result.get("nonzero_amount") or ""),
-            currency=str(result.get("currency") or ""),
         )
     return result
 
@@ -7355,26 +7396,72 @@ def _paypal_extract_ba_link(
     is_cancelled=None,
     on_progress=None,
 ):
+    backend = str(os.environ.get("PAYPAL_BA_EXTRACT_BACKEND") or "pplink_exe").strip().lower()
+    if backend in {"python", "internal", "py"}:
+        return _paypal_extract_ba_link_python(
+            access_token=access_token,
+            session_token=session_token,
+            account_id=account_id,
+            device_id=device_id,
+            cookie_header=cookie_header,
+            user_agent=user_agent,
+            openai_sentinel_token=openai_sentinel_token,
+            oai_client_version=oai_client_version,
+            oai_client_build_number=oai_client_build_number,
+            proxy_url=proxy_url,
+            provider_proxy_url=provider_proxy_url,
+            approve_proxy_url=approve_proxy_url,
+            country=country,
+            currency=currency,
+            payment_method_country=payment_method_country,
+            paypal_ba_mode=paypal_ba_mode,
+            timeout_seconds=timeout_seconds,
+            is_cancelled=is_cancelled,
+            on_progress=on_progress,
+        )
+    return _paypal_pplink_run_exe(
+        access_token=access_token,
+        proxy_url=proxy_url,
+        provider_proxy_url=provider_proxy_url,
+        approve_proxy_url=approve_proxy_url,
+        paypal_ba_mode=paypal_ba_mode,
+        timeout_seconds=timeout_seconds,
+        is_cancelled=is_cancelled,
+        on_progress=on_progress,
+    )
+
+
+
+def _paypal_extract_ba_link_python(
+    *,
+    access_token: str,
+    session_token: str = "",
+    account_id: str = "",
+    device_id: str = "",
+    cookie_header: str = "",
+    user_agent: str = "",
+    openai_sentinel_token: str = "",
+    oai_client_version: str = "",
+    oai_client_build_number: str = "",
+    proxy_url: str | None = None,
+    provider_proxy_url: str | None = None,
+    approve_proxy_url: str | None = None,
+    country: str = "US",
+    currency: str = "USD",
+    payment_method_country: str | None = None,
+    paypal_ba_mode: str = "eu",
+    timeout_seconds: int = 90,
+    is_cancelled=None,
+    on_progress=None,
+):
     """Extract a PayPal BA link with the pplink-style protocol flow."""
     if callable(is_cancelled) and is_cancelled():
         return {"status": "failed", "failure_stage": "extract_ba_link", "message": "Task cancelled"}
 
     mode = _paypal_pplink_extract_mode(paypal_ba_mode)
-    pplink_result = _paypal_extract_ba_link_with_pplink_exe(
-        access_token=access_token,
-        proxy_url=proxy_url,
-        provider_proxy_url=provider_proxy_url,
-        paypal_ba_mode=mode,
-        timeout_seconds=timeout_seconds,
-        is_cancelled=is_cancelled,
-        on_progress=on_progress,
-    )
-    if pplink_result is not None:
-        return pplink_result
-
     config = _paypal_pplink_checkout_config(mode)
     checkout_country = str(os.environ.get("PAYPAL_BA_CHECKOUT_COUNTRY") or config["country"]).strip().upper()
-    checkout_currency = str(os.environ.get("PAYPAL_BA_CHECKOUT_CURRENCY") or config["currency"]).strip().upper()
+    checkout_currency = str(os.environ.get("PAYPAL_BA_CHECKOUT_CURRENCY") or config["currency"]).strip().lower()
     checkout_ui_mode = str(os.environ.get("PAYPAL_BA_CHECKOUT_UI_MODE") or config["checkout_ui_mode"]).strip().lower()
     processor_entity = str(os.environ.get("PAYPAL_BA_PROCESSOR_ENTITY") or config["processor_entity"]).strip()
     pm_country = str(payment_method_country or config["payment_method_country"]).strip().upper()

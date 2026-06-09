@@ -461,7 +461,7 @@ def test_hero_get_number_filters_min_price_and_prefers_configured_tier(monkeypat
                 },
             )
         if action == "getNumber":
-            if str((params or {}).get("maxPrice")) == "0.08":
+            if str((params or {}).get("price")) == "0.08":
                 return True, "ACCESS_NUMBER:activation-hero:6287712345678", None
             return False, "NO_NUMBERS", None
         raise AssertionError(action)
@@ -487,7 +487,7 @@ def test_hero_get_number_filters_min_price_and_prefers_configured_tier(monkeypat
         ("getPricesForVerification", {"service": "ni", "country": 6}),
         ("getTopCountriesByService", {"service": "ni", "freePrice": "true"}),
         ("getPricesVerification", {"service": "ni", "country": 6}),
-        ("getNumber", {"service": "ni", "country": 6, "maxPrice": "0.08", "fixedPrice": "true"}),
+        ("getNumber", {"service": "ni", "country": 6, "price": "0.08", "fixedPrice": "true"}),
     ]
 
 
@@ -581,9 +581,9 @@ def test_hero_get_number_uses_price_plan_when_only_max_price_is_configured(monke
                 }
             }
         if action == "getNumber":
-            if str((params or {}).get("maxPrice")) == "0.045":
+            if str((params or {}).get("price")) == "0.045":
                 return False, "NO_NUMBERS", None
-            if str((params or {}).get("maxPrice")) == "0.0618":
+            if str((params or {}).get("price")) == "0.0618":
                 return True, "ACCESS_NUMBER:activation-hero:6287712345678", None
             return False, "NO_NUMBERS", None
         raise AssertionError(action)
@@ -603,8 +603,8 @@ def test_hero_get_number_uses_price_plan_when_only_max_price_is_configured(monke
     assert phone == "6287712345678"
     get_number_requests = [params for action, params in requests if action == "getNumber"]
     assert get_number_requests == [
-        {"service": "ni", "country": 6, "maxPrice": "0.045", "fixedPrice": "true"},
-        {"service": "ni", "country": 6, "maxPrice": "0.0618", "fixedPrice": "true"},
+        {"service": "ni", "country": 6, "price": "0.045", "fixedPrice": "true"},
+        {"service": "ni", "country": 6, "price": "0.0618", "fixedPrice": "true"},
     ]
 
 

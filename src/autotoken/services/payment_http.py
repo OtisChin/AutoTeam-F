@@ -35,6 +35,7 @@ def new_http_session(
 ) -> Any:
     if _CurlCffiSession is not None:
         session = _CurlCffiSession(impersonate=os.environ.get(tls_impersonate_env, "chrome136"))
+        session.trust_env = False
         try:
             session._autotoken_transport = "curl_cffi"  # type: ignore[attr-defined]
         except Exception:
@@ -69,6 +70,11 @@ def new_http_session(
             session.proxies = {"http": normalized_proxy_url, "https": normalized_proxy_url}
         except Exception:
             logger.exception("HTTP session proxy assignment failed")
+    else:
+        try:
+            session.proxies = {"http": "", "https": ""}
+        except Exception:
+            pass
     return session
 
 

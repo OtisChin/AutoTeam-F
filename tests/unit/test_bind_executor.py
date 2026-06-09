@@ -53,7 +53,6 @@ from autotoken.gopay_executor import (
 def _fast_gopay_sms_resend(monkeypatch):
     monkeypatch.setenv("GOPAY_SMS_OTP_DELAY_SECONDS", "0")
     monkeypatch.setenv("GOPAY_SMS_CHANNEL_SWITCH_ENABLED", "0")
-    monkeypatch.setenv("PAYPAL_BA_PPLINK_EXE", "disabled")
 
 
 class FakeResponse:
@@ -1856,7 +1855,7 @@ def test_paypal_extract_ba_link_uses_pplink_eu_mode_and_approve_poll(monkeypatch
     monkeypatch.setattr(paypal_bind_executor, "_configure_chatgpt_http_session", lambda *args, **kwargs: None)
     monkeypatch.setattr(paypal_bind_executor.time, "sleep", lambda *_args, **_kwargs: None)
 
-    result = paypal_bind_executor._paypal_extract_ba_link(
+    result = paypal_bind_executor._paypal_extract_ba_link_python(
         access_token="token",
         proxy_url="socks5h://jp.example:1080",
         provider_proxy_url="socks5h://us.example:1080",
@@ -1875,7 +1874,7 @@ def test_paypal_extract_ba_link_uses_pplink_eu_mode_and_approve_poll(monkeypatch
     assert session_proxy_urls == ["socks5h://jp.example:1080", "socks5h://jp.example:1080"]
 
     checkout_request = next(request for request in chat_http.requests if request["url"].endswith("/payments/checkouts"))
-    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "FR", "currency": "EUR"}
+    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "FR", "currency": "eur"}
     assert checkout_request["kwargs"]["json"]["checkout_ui_mode"] == "custom"
     approve_request = next(request for request in chat_http.requests if request["url"].endswith("/checkout/approve"))
     assert approve_request["kwargs"]["data"]["processor_entity"] == "openai_ie"
@@ -1949,7 +1948,7 @@ def test_paypal_extract_ba_link_uses_pplink_us_mode(monkeypatch):
     monkeypatch.setattr(paypal_bind_executor, "_configure_chatgpt_http_session", lambda *args, **kwargs: None)
     monkeypatch.setattr(paypal_bind_executor.time, "sleep", lambda *_args, **_kwargs: None)
 
-    result = paypal_bind_executor._paypal_extract_ba_link(
+    result = paypal_bind_executor._paypal_extract_ba_link_python(
         access_token="token",
         proxy_url="socks5h://jp.example:1080",
         provider_proxy_url="socks5h://us.example:1080",
@@ -1962,7 +1961,7 @@ def test_paypal_extract_ba_link_uses_pplink_us_mode(monkeypatch):
     assert result["paypal_ba_mode"] == "us"
     assert session_proxy_urls == ["socks5h://jp.example:1080", "socks5h://us.example:1080"]
     checkout_request = next(request for request in chat_http.requests if request["url"].endswith("/payments/checkouts"))
-    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "US", "currency": "USD"}
+    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "US", "currency": "usd"}
     assert checkout_request["kwargs"]["json"]["checkout_ui_mode"] == "hosted"
     payment_method_request = next(
         request for request in stripe_http.requests if request["url"].endswith("/v1/payment_methods")
@@ -2006,7 +2005,7 @@ def test_paypal_extract_ba_link_blocks_nonzero_amount_before_pm(monkeypatch):
     monkeypatch.setattr(paypal_bind_executor, "_new_http_session", fake_new_http_session)
     monkeypatch.setattr(paypal_bind_executor, "_configure_chatgpt_http_session", lambda *args, **kwargs: None)
 
-    result = paypal_bind_executor._paypal_extract_ba_link(
+    result = paypal_bind_executor._paypal_extract_ba_link_python(
         access_token="token",
         proxy_url="socks5h://jp.example:1080",
         provider_proxy_url="socks5h://jp.example:1080",
@@ -2023,6 +2022,80 @@ def test_paypal_extract_ba_link_blocks_nonzero_amount_before_pm(monkeypatch):
     assert any(event["stage"] == "paypal_extract_nonzero_amount_blocked" for event in progress_events)
     assert not any(request["url"].endswith("/v1/payment_methods") for request in stripe_http.requests)
     assert stripe_http.responses == []
+
+
+def test_paypal_extract_ba_link_defaults_to_bundled_pplink_exe(monkeypatch):
+    captured = {}
+
+    def fake_run_exe(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "success",
+            "ba_token": "BA-EXE",
+            "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-EXE",
+            "paypal_ba_mode": "eu",
+        }
+
+    monkeypatch.delenv("PAYPAL_BA_EXTRACT_BACKEND", raising=False)
+    monkeypatch.setattr(paypal_bind_executor, "_paypal_pplink_run_exe", fake_run_exe)
+
+    result = paypal_bind_executor._paypal_extract_ba_link(
+        access_token="token",
+        proxy_url="socks5://jp.example:1080",
+        provider_proxy_url="socks5://us.example:1080",
+        paypal_ba_mode="eu",
+        timeout_seconds=30,
+    )
+
+    assert result["status"] == "success"
+    assert result["ba_token"] == "BA-EXE"
+    assert captured["access_token"] == "token"
+    assert captured["proxy_url"] == "socks5://jp.example:1080"
+    assert captured["provider_proxy_url"] == "socks5://us.example:1080"
+    assert captured["paypal_ba_mode"] == "eu"
+
+
+def test_paypal_pplink_run_exe_writes_config_and_parses_authorize_url(monkeypatch):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        config_path = args[args.index("-config") + 1]
+        with open(config_path, encoding="utf-8") as fh:
+            captured["config"] = json.load(fh)
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "[stripe] checkout session: cs_live_exe, body={}\n"
+                "Authorize URL: https://www.paypal.com/agreements/approve?ba_token=BA-EXE&country.x=US\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setenv("PAYPAL_BA_PPLINK_MAX_RETRY", "1")
+    monkeypatch.setattr(paypal_bind_executor.subprocess, "run", fake_run)
+    monkeypatch.setattr(paypal_bind_executor, "_new_http_session", lambda *_args, **_kwargs: FakeHttp([]))
+
+    result = paypal_bind_executor._paypal_pplink_run_exe(
+        access_token="token",
+        proxy_url="socks5://jp.example:1080",
+        provider_proxy_url="socks5://user-city-Los Angeles:pass@us.example:1080",
+        approve_proxy_url="",
+        paypal_ba_mode="us",
+        timeout_seconds=30,
+    )
+
+    assert result["status"] == "success"
+    assert result["ba_token"] == "BA-EXE"
+    assert result["checkout_session_id"] == "cs_live_exe"
+    assert result["paypal_ba_mode"] == "us"
+    assert captured["config"] == {
+        "proxy_jp": "socks5://jp.example:1080",
+        "proxy_us": "socks5://user-city-Los%20Angeles:pass@us.example:1080",
+    }
+    assert "-stop-at-pm-redirects" in captured["args"]
+    assert captured["args"][captured["args"].index("-mode") + 1] == "us"
 
 
 def test_paypal_protocol_signup_keeps_onboard_referer_off_hermes(monkeypatch):
