@@ -267,6 +267,12 @@ def test_datadome_text_and_frame_helpers_match_paypal_ddc_artifacts():
 def test_paypal_signup_otp_text_hint_detects_strict_and_loose_prompts():
     assert payment_checkout_state.paypal_signup_otp_text_hint("Enter your code We sent a 6-digit code") is True
     assert payment_checkout_state.paypal_signup_otp_text_hint("セキュリティコードを送信しました") is True
+    assert (
+        payment_checkout_state.paypal_signup_otp_text_hint(
+            "この番号を確認するためのセキュリティコードをSMSでお客さまに送信します。"
+        )
+        is False
+    )
     assert payment_checkout_state.paypal_signup_otp_text_hint("check your phone") is False
     assert payment_checkout_state.paypal_signup_otp_text_hint("check your phone", loose=True) is True
     assert payment_checkout_state.paypal_signup_otp_entry_text_hint("Security code") is True

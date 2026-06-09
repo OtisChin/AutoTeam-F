@@ -412,7 +412,7 @@ JP_PREFECTURE_NAME_TO_JA = {
 PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 120
 PAYPAL_SIGNUP_OTP_POLL_TIMEOUT_SECONDS = 120
 PAYPAL_SIGNUP_OTP_RESEND_AFTER_SECONDS = 60
-PAYPAL_SIGNUP_OTP_MAX_RESEND_ATTEMPTS = 1
+PAYPAL_SIGNUP_OTP_MAX_RESEND_ATTEMPTS = 0
 PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 120
 PAYPAL_SIGNUP_EMAIL_STUCK_RECOVER_DELAY_SECONDS = 30
 PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = payment_checkout_state_service.PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS
@@ -686,7 +686,14 @@ PAYPAL_COOKIE_BANNER_DISMISS_SCRIPT = r"""() => {
   const visible = (node) => Boolean(node && (node.offsetParent || node.getClientRects?.().length));
   const textOf = (node) => String(node?.innerText || node?.textContent || '').replace(/\s+/g, ' ').trim();
   const cookieRe = /cookie|cookies|クッキー|プライバシー|privacy|個人情報|personal data/i;
-  const acceptRe = /accept all|accept|agree|got it|ok|yes|はい|同意|承諾|すべて同意|許可|close|閉じる/i;
+  const closeRe = /^(close|閉じる|关闭|關閉|×|x)$/i;
+  const hasCookieMarker = (node) => /cookie|onetrust|privacy|クッキー/i.test([
+    node.id || '',
+    node.className || '',
+    node.getAttribute?.('data-testid') || '',
+    node.getAttribute?.('aria-label') || '',
+    node.getAttribute?.('role') || '',
+  ].join(' '));
   const candidates = Array.from(document.querySelectorAll(
     '[id*="cookie" i], [class*="cookie" i], [data-testid*="cookie" i], [aria-label*="cookie" i], [role="dialog"], [aria-modal="true"], aside, section, div'
   )).filter((node) => {
@@ -695,13 +702,15 @@ PAYPAL_COOKIE_BANNER_DISMISS_SCRIPT = r"""() => {
     if (!cookieRe.test(text)) return false;
     const rect = node.getBoundingClientRect();
     const style = window.getComputedStyle(node);
-    const anchored = style.position === 'fixed' || style.position === 'sticky' || rect.bottom > window.innerHeight * 0.65;
-    return anchored && rect.width > 180 && rect.height > 40;
+    const fixedLike = style.position === 'fixed' || style.position === 'sticky';
+    const modalLike = node.getAttribute?.('role') === 'dialog' || String(node.getAttribute?.('aria-modal') || '').toLowerCase() === 'true';
+    const bottomPanel = rect.top > window.innerHeight * 0.45 && rect.bottom > window.innerHeight * 0.72 && rect.height <= window.innerHeight * 0.55;
+    return (hasCookieMarker(node) || modalLike || fixedLike || bottomPanel) && rect.width > 180 && rect.height > 40;
   });
   for (const container of candidates) {
     const controls = Array.from(container.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"], a'))
       .filter(visible)
-      .filter((node) => acceptRe.test([textOf(node), String(node.value || ''), String(node.getAttribute('aria-label') || '')].join(' ')));
+      .filter((node) => closeRe.test([textOf(node), String(node.value || ''), String(node.getAttribute('aria-label') || '')].join(' ').trim()));
     for (const control of controls) {
       try {
         control.click();
@@ -720,17 +729,23 @@ PAYPAL_COOKIE_BANNER_DISMISS_SCRIPT = r"""() => {
   return { dismissed: false };
 }"""
 PAYPAL_COOKIE_BANNER_ACCEPT_SELECTORS = [
-    '[role="dialog"]:has-text("Cookie") button:has-text("はい")',
-    '[role="dialog"]:has-text("Cookie") [role="button"]:has-text("はい")',
-    'div:has-text("Cookie") button:has-text("はい")',
-    'section:has-text("Cookie") button:has-text("はい")',
-    'div:has-text("Cookie") button:has-text("Accept")',
-    'div:has-text("Cookie") button:has-text("Agree")',
     'div:has-text("Cookie") button:has-text("Close")',
-    'div:has-text("クッキー") button:has-text("はい")',
-    'div:has-text("プライバシー") button:has-text("はい")',
+    '[role="dialog"]:has-text("Cookie") button:has-text("Close")',
+    '[role="dialog"]:has-text("Cookie") [role="button"]:has-text("Close")',
+    '[role="dialog"]:has-text("Cookie") button[aria-label*="close" i]',
+    '[role="dialog"]:has-text("Cookie") [role="button"][aria-label*="close" i]',
+    '[role="dialog"]:has-text("クッキー") button:has-text("閉じる")',
+    '[role="dialog"]:has-text("プライバシー") button:has-text("閉じる")',
+    'div:has-text("Cookie") button[aria-label*="close" i]',
+    'div:has-text("クッキー") button:has-text("閉じる")',
+    'div:has-text("プライバシー") button:has-text("閉じる")',
 ]
 PAYPAL_SIGNUP_SUBMIT_CLICK_SCRIPT = r"""() => {
+  const now = Date.now();
+  const lastClickedAt = Number(window.__autotokenPayPalSignupSubmitClickedAt || 0);
+  if (lastClickedAt && now - lastClickedAt < 15000) {
+    return { clicked: false, skipped: true, reason: 'recent_submit' };
+  }
   const visible = (node) => Boolean(node && (node.offsetParent || node.getClientRects?.().length));
   const textOf = (node) => String(node?.innerText || node?.textContent || node?.value || node?.getAttribute?.('aria-label') || '')
     .replace(/\s+/g, ' ')
@@ -746,11 +761,16 @@ PAYPAL_SIGNUP_SUBMIT_CLICK_SCRIPT = r"""() => {
   for (const item of matches) {
     try {
       item.node.scrollIntoView({ block: 'center', inline: 'nearest' });
+      window.__autotokenPayPalSignupSubmitClickedAt = now;
       item.node.click();
       return { clicked: true, text: item.text };
     } catch {}
   }
   return { clicked: false };
+}"""
+PAYPAL_SIGNUP_SUBMIT_MARK_SCRIPT = r"""() => {
+  window.__autotokenPayPalSignupSubmitClickedAt = Date.now();
+  return true;
 }"""
 PAYPAL_COUNTRY_SELECTORS = [
     "select#country",
@@ -3651,7 +3671,9 @@ def _js_click_paypal_signup_submit(api: ChatGPTTeamAPI) -> bool:
             result = frame.evaluate(PAYPAL_SIGNUP_SUBMIT_CLICK_SCRIPT)
         except Exception:
             continue
-        if result is True or (isinstance(result, dict) and result.get("clicked")):
+        if result is True or (
+            isinstance(result, dict) and (result.get("clicked") or result.get("skipped"))
+        ):
             clicked = True
             break
     if clicked:
@@ -3662,19 +3684,37 @@ def _js_click_paypal_signup_submit(api: ChatGPTTeamAPI) -> bool:
     return clicked
 
 
+def _mark_paypal_signup_submit_clicked(api: ChatGPTTeamAPI) -> None:
+    try:
+        api._paypal_signup_submit_clicked_at = time.monotonic()
+    except Exception:
+        pass
+    for frame in _iter_page_frames(api):
+        try:
+            frame.evaluate(PAYPAL_SIGNUP_SUBMIT_MARK_SCRIPT)
+        except Exception:
+            continue
+
+
 def _click_paypal_signup_submit(api: ChatGPTTeamAPI, *, on_progress=None) -> bool:
-    _dismiss_paypal_cookie_banner(api)
-    _dismiss_paypal_prompts(api, on_progress=on_progress)
-    _press_escape_to_dismiss_browser_bubbles(api)
-    _dismiss_paypal_cookie_banner(api)
-    if _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=3000):
+    try:
+        last_clicked_at = float(getattr(api, "_paypal_signup_submit_clicked_at", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        last_clicked_at = 0.0
+    if last_clicked_at and time.monotonic() - last_clicked_at < 15.0:
         return True
+
     _dismiss_paypal_cookie_banner(api)
     _dismiss_paypal_prompts(api, on_progress=on_progress)
     _press_escape_to_dismiss_browser_bubbles(api)
+    _dismiss_paypal_cookie_banner(api)
+    if _js_click_paypal_signup_submit(api):
+        _mark_paypal_signup_submit_clicked(api)
+        return True
     if _click_first(api, PAYPAL_CREATE_SUBMIT_SELECTORS, timeout_ms=1500):
+        _mark_paypal_signup_submit_clicked(api)
         return True
-    return _js_click_paypal_signup_submit(api)
+    return False
 
 
 def _fill_paypal_signup_visible_form(api: ChatGPTTeamAPI, signup_profile: dict[str, str | bool]) -> dict[str, Any]:

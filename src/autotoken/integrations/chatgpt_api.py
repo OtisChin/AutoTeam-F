@@ -95,6 +95,20 @@ def _inspect_runtime_fingerprint(page) -> dict[str, object]:
     return result if isinstance(result, dict) else {}
 
 
+def _live_roxybrowser_pages(context) -> list:
+    pages = []
+    for page in list(getattr(context, "pages", []) or []):
+        try:
+            if page.is_closed():
+                continue
+        except Exception:
+            pass
+        if str(getattr(page, "url", "") or "").startswith("devtools://"):
+            continue
+        pages.append(page)
+    return pages
+
+
 class ChatGPTTeamAPI:
     """通过浏览器内 fetch 调用 ChatGPT Team 内部 API。"""
 
@@ -570,10 +584,12 @@ class ChatGPTTeamAPI:
         self.context = self.browser.contexts[0] if self.browser and self.browser.contexts else None
         if not self.context:
             raise RuntimeError("RoxyBrowser 未返回可用的浏览器上下文")
-        if self.context.pages:
-            self.page = self.context.pages[0]
+        live_pages = _live_roxybrowser_pages(self.context)
+        if live_pages:
+            self.page = live_pages[-1]
         else:
             self.page = self.context.new_page()
+        self._wait_for_roxybrowser_page_stable(launch=launch, on_progress=on_progress)
         self._clear_browser_runtime_data(
             reason="roxybrowser launch", browser_label="RoxyBrowser", on_progress=on_progress
         )
@@ -612,6 +628,67 @@ class ChatGPTTeamAPI:
             endpoint_candidates[0],
             locale,
             accept_language,
+        )
+
+    def _wait_for_roxybrowser_page_stable(self, *, launch, on_progress=None, timeout_seconds: float = 15.0) -> None:
+        expected_ios = str(getattr(launch, "requested_os", "") or "").strip().upper() == "IOS"
+        deadline = time.time() + max(0.0, float(timeout_seconds))
+        previous_page = None
+        stable_checks = 0
+        waiting_emitted = False
+        last_fingerprint: dict[str, object] = {}
+        while time.time() < deadline:
+            live_pages = _live_roxybrowser_pages(self.context)
+            candidate = live_pages[-1] if live_pages else getattr(self, "page", None)
+            if candidate is not None:
+                try:
+                    if candidate.is_closed():
+                        candidate = None
+                except Exception:
+                    pass
+            if candidate is None:
+                stable_checks = 0
+                time.sleep(0.5)
+                continue
+            fingerprint = _inspect_runtime_fingerprint(candidate)
+            last_fingerprint = fingerprint
+            try:
+                viewport_width = int(fingerprint.get("viewport_width") or 0)
+            except (TypeError, ValueError):
+                viewport_width = 0
+            if viewport_width <= 0:
+                self.page = candidate
+                return
+            mobile_viewport_ready = not expected_ios or viewport_width == 0 or viewport_width <= 600
+            if candidate is previous_page and mobile_viewport_ready:
+                stable_checks += 1
+            else:
+                stable_checks = 1 if mobile_viewport_ready else 0
+            self.page = candidate
+            if stable_checks >= 2:
+                return
+            previous_page = candidate
+            if not waiting_emitted:
+                _emit_browser_progress(
+                    on_progress,
+                    "paypal_roxybrowser_waiting_page_stable",
+                    "RoxyBrowser：正在等待 iOS 页面窗口初始化完成",
+                    browser="RoxyBrowser",
+                    workspace_id=getattr(launch, "workspace_id", None),
+                    dir_id=getattr(launch, "dir_id", None),
+                    **fingerprint,
+                )
+                waiting_emitted = True
+            time.sleep(0.8)
+        _emit_browser_progress(
+            on_progress,
+            "paypal_roxybrowser_page_stable_timeout",
+            "RoxyBrowser：等待页面窗口稳定超时，将使用当前存活页面继续",
+            level="warn",
+            browser="RoxyBrowser",
+            workspace_id=getattr(launch, "workspace_id", None),
+            dir_id=getattr(launch, "dir_id", None),
+            **last_fingerprint,
         )
 
     def _cleanup_active_roxybrowser_runtime(self, *, on_progress=None) -> None:

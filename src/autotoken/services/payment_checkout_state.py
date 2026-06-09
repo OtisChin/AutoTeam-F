@@ -269,7 +269,7 @@ def paypal_signup_otp_text_hint(text: str, *, loose: bool = False) -> bool:
     if "security code" in lowered and any(hint in lowered for hint in ("enter", "sent", "verification", "phone")):
         return True
     return "セキュリティコード" in raw and any(
-        hint in raw for hint in ("コードを入力", "送信しました", "6桁", "確認", "認証")
+        hint in raw for hint in ("コードを入力", "送信しました", "6桁", "確認コード", "認証コード")
     )
 
 
