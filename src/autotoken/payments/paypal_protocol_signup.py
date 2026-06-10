@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html as html_lib
 import logging
 import os
 import random
@@ -11,15 +12,22 @@ from collections.abc import Callable
 from typing import Any
 
 from autotoken.services import payment_errors as payment_errors_service
+from autotoken.services import payment_form_fields as payment_form_fields_service
 from autotoken.services import sms_otp as sms_otp_service
 
 logger = logging.getLogger(__name__)
 
 PP_ORIGIN = "https://www.paypal.com"
-PAYPAL_PROTOCOL_OTP_TIMEOUT_SECONDS = 120
+PAYPAL_PROTOCOL_OTP_TIMEOUT_SECONDS = 300
 PAYPAL_PROTOCOL_OTP_RESEND_AFTER_SECONDS = 60
-PAYPAL_PROTOCOL_OTP_MAX_RESEND_ATTEMPTS = 1
+PAYPAL_PROTOCOL_OTP_MAX_RESEND_ATTEMPTS = 0
+PAYPAL_PROTOCOL_OTP_CONFIRM_MAX_ATTEMPTS = 2
 GoPayOTPCancelled = payment_errors_service.PaymentOTPCancelled
+DEFAULT_PAYPAL_JP_BIRTH_DATE = "1985/01/15"
+DEFAULT_PAYPAL_JP_NATIVE_FIRST_NAME = "太郎"
+DEFAULT_PAYPAL_JP_NATIVE_LAST_NAME = "山田"
+DEFAULT_PAYPAL_JP_KANA_FIRST_NAME = "タロウ"
+DEFAULT_PAYPAL_JP_KANA_LAST_NAME = "ヤマダ"
 PAYPAL_CALLING_CODE_COUNTRIES = {
     "1": "US",
     "33": "FR",
@@ -42,8 +50,17 @@ PAYPAL_CALLING_CODE_COUNTRIES = {
     "852": "HK",
     "91": "IN",
 }
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+USER_AGENT = str(
+    os.environ.get("PAYPAL_PROTOCOL_USER_AGENT")
+    or "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) CriOS/147.0.7727.25 Mobile/15E148 Safari/537.36"
+)
+PAYPAL_PROTOCOL_ACCEPT_LANGUAGE = str(
+    os.environ.get("PAYPAL_PROTOCOL_ACCEPT_LANGUAGE") or "en-US,en;q=0.9"
+)
+PAYPAL_PROTOCOL_NAV_ACCEPT = (
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,"
+    "*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
 )
 
 
@@ -66,7 +83,21 @@ def _poll_otp_from_sms_url(
         is_cancelled=is_cancelled,
         progress=progress,
         cancelled_error_factory=lambda message: GoPayOTPCancelled(message, stage="fetch_otp"),
+        otp_label="PayPal OTP",
     )
+
+
+def _snapshot_existing_sms_otps(sms_url: str) -> set[str]:
+    url = str(sms_url or "").strip()
+    if not url:
+        return set()
+    try:
+        code = sms_otp_service.fetch_sms_code(url)
+    except Exception as exc:
+        logger.info("[paypal_protocol_signup] SMS pre-snapshot has no reusable code: %s", exc)
+        return set()
+    code = str(code or "").strip()
+    return {code} if code else set()
 
 
 PHONE_REJECTED_HINTS = (
@@ -103,6 +134,14 @@ DATADOME_HINTS = (
 )
 # captcha 单独作为 hint 误报率太高（很多正常 PayPal 页面包含这个词），移到更精确的检测
 DATADOME_RESPONSE_HINTS = DATADOME_HINTS + ("captcha",)
+DATADOME_INTERSTITIAL_HINTS = (
+    "ads-dd-captcha",
+    "adsddtoken",
+    "adsddcaptcha",
+    "ct.ddc.paypal.com/i.js",
+    "geo.ddc.paypal.com",
+    "please enable js and disable any ad blocker",
+)
 
 Q_DEFERRED = """query DeferredFeature($channel: String!, $countryCodeAsString: String!, $isBaslAsString: String!, $isForcedGuest: String!, $token: String!, $integrationType: String!) {
   otpLoginContext(token: $token, integrationType: $integrationType) { __typename context }
@@ -163,44 +202,212 @@ Q_CONFIRM_OTP = """mutation ConfirmRiskBasedTwoFactorPhoneConfirmationMutation($
 }"""
 
 Q_SIGNUP = """mutation SignUpNewMemberMutation(
+  $bank: BankAccountInput
   $billingAddress: AddressInput
+  $card: CardInput
   $contentIdentifier: String
   $country: CountryCodes
+  $countrySpecificFirstName: String
+  $countrySpecificLastName: String
   $crsData: CommonReportingStandardsInput
+  $currencyConversionType: CheckoutCurrencyConversionType
+  $dateOfBirth: DateOfBirth
   $email: String!
   $firstName: String!
+  $gender: Gender
+  $identityDocument: IdentityDocumentInput
   $lastName: String!
+  $middleName: String
   $marketingOptOut: Boolean
+  $nationality: CountryCodes
+  $occupation: Occupation
   $password: String
   $phone: PhoneInput!
+  $placeOfBirth: CountryCodes
+  $secondaryIdentityDocument: IdentityDocumentInput
+  $selectedInstallmentOption: InstallmentsInput
+  $shareAddressWithDonatee: Boolean
   $shippingAddress: AddressInput
   $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
   $token: String!
+  $residentialAddress: AddressInput
+  $isSignupIncentiveOptIn: Boolean
+  $isSignupIncentiveOptInStretch: Boolean
   $legalAgreements: LegalAgreementsInput
+  $collectedConsents: [CollectedConsent]
 ) {
   onboardAccount: signUpNewMember(
+    bank: $bank
     billingAddress: $billingAddress
+    card: $card
     contentIdentifier: $contentIdentifier
+    countrySpecificFirstName: $countrySpecificFirstName
+    countrySpecificLastName: $countrySpecificLastName
     country: $country
     crsData: $crsData
+    currencyConversionType: $currencyConversionType
+    dateOfBirth: $dateOfBirth
     email: $email
     firstName: $firstName
+    gender: $gender
+    identityDocument: $identityDocument
     lastName: $lastName
+    middleName: $middleName
     marketingOptOut: $marketingOptOut
+    nationality: $nationality
+    occupation: $occupation
     password: $password
     phone: $phone
+    placeOfBirth: $placeOfBirth
+    secondaryIdentityDocument: $secondaryIdentityDocument
+    selectedInstallmentOption: $selectedInstallmentOption
+    shareAddressWithDonatee: $shareAddressWithDonatee
     shippingAddress: $shippingAddress
-    supportedThreeDsExperiences: $supportedThreeDsExperiences
     token: $token
+    residentialAddress: $residentialAddress
+    isSignupIncentiveOptIn: $isSignupIncentiveOptIn
+    isSignupIncentiveOptInStretch: $isSignupIncentiveOptInStretch
     legalAgreements: $legalAgreements
+    collectedConsents: $collectedConsents
   ) {
-    buyer {
-      auth { accessToken __typename }
-      userId
+    ...buyer
+    flags {
+      is3DSecureRequired
+      __typename
+    }
+    ...fundingOptions
+    paymentContingencies {
+      ...threeDomainSecure
+      ...threeDSContingencyData
       __typename
     }
     __typename
   }
+}
+
+fragment buyer on CheckoutSession {
+  buyer {
+    auth {
+      accessToken
+      __typename
+    }
+    userId
+    __typename
+  }
+  __typename
+}
+
+fragment fundingOptions on CheckoutSession {
+  fundingOptions {
+    allPlans {
+      fundingSources {
+        fundingInstrument {
+          id
+          __typename
+        }
+        amount {
+          currencyCode
+          currencyValue
+          __typename
+        }
+        __typename
+      }
+      fundingContingencies {
+        ... on OpenBankingContingency {
+          encryptedId
+          contingencyReasons
+          contingencyType
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    fundingInstrument {
+      id
+      lastDigits
+      name
+      nameDescription
+      type
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment threeDomainSecure on PaymentContingencies {
+  threeDomainSecure(experiences: $supportedThreeDsExperiences) {
+    status
+    redirectUrl {
+      href
+      __typename
+    }
+    method
+    parameter
+    experience
+    requestParams {
+      key
+      value
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+
+fragment threeDSContingencyData on PaymentContingencies {
+  threeDSContingencyData {
+    name
+    causeName
+    resolution {
+      type
+      resolutionName
+      paymentCard {
+        billingAddress {
+          line1
+          line2
+          city
+          state
+          country
+          postalCode
+          __typename
+        }
+        expireYear
+        expireMonth
+        currencyCode
+        cardProductClass
+        id
+        encryptedNumber
+        type
+        number
+        bankIdentificationNumber
+        __typename
+      }
+      contingencyContext {
+        deviceDataCollectionUrl {
+          href
+          __typename
+        }
+        jwtSpecification {
+          jwtDuration
+          jwtIssuer
+          jwtOrgUnitId
+          type
+          __typename
+        }
+        authenticationProvider
+        cardBrandProcessed
+        reason
+        referenceId
+        source
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  __typename
 }"""
 
 Q_AUTHORIZE = (
@@ -257,25 +464,35 @@ def _is_datadome_blocked(resp: Any) -> bool:
     # DataDome 通常返回 403 + JS challenge，或 200 + 拦截页面
     if status == 403:
         return True
+    if any(hint in text for hint in DATADOME_INTERSTITIAL_HINTS):
+        return True
     if any(hint in text for hint in DATADOME_RESPONSE_HINTS):
         # 排除包含正常 PayPal 内容的页面（如 signup form 中提到 captcha 的正常文本）
         return not ("EC-" in str(getattr(resp, "text", "") or "") or "checkoutweb" in text)
     return False
 
 
-def _warmup_paypal_session(http: Any, *, timeout: int = 15) -> None:
+def _warmup_paypal_session(
+    http: Any,
+    *,
+    timeout: int = 15,
+    locale_country: str = "US",
+    locale_lang: str = "en",
+) -> None:
     """预热 PayPal session，获取 DataDome 和基础 cookies"""
+    country = str(locale_country or "US").strip().upper() or "US"
+    lang = str(locale_lang or "en").strip().lower() or "en"
+    path = "/jp/home" if country == "JP" and lang == "ja" else "/"
     try:
         http.get(
-            f"{PP_ORIGIN}/",
+            f"{PP_ORIGIN}{path}",
             headers={
                 "User-Agent": USER_AGENT,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": PAYPAL_PROTOCOL_NAV_ACCEPT,
+                "Accept-Language": PAYPAL_PROTOCOL_ACCEPT_LANGUAGE,
                 "Sec-Fetch-Site": "none",
                 "Sec-Fetch-Mode": "navigate",
                 "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-User": "?1",
                 "Upgrade-Insecure-Requests": "1",
             },
             timeout=timeout,
@@ -339,7 +556,6 @@ def _build_onboard_url(ba_token: str, locale_country: str, locale_lang: str, sou
             ("country.x", locale_country),
             ("locale.x", f"{locale_lang}_{locale_country}"),
             ("modxo_redirect_reason", "guest_user"),
-            ("ulOnboardRedirect", "true"),
             ("ba_token", ba_token),
         ]
     )
@@ -370,7 +586,7 @@ def _coerce_onboard_url(onboard_url: str, *, ba_token: str, locale_country: str,
         set_param("locale.x", f"{locale_lang}_{locale_country}")
         if "modxo_redirect_reason" not in seen:
             params.append(("modxo_redirect_reason", "guest_user"))
-        set_param("ulOnboardRedirect", "true")
+        params = [(key, current) for key, current in params if key != "ulOnboardRedirect"]
         set_param("ba_token", ba_token)
         return f"{PP_ORIGIN}/agreements/approve?{urllib.parse.urlencode(params)}"
     return _build_onboard_url(ba_token, locale_country, locale_lang, source_url=url)
@@ -394,14 +610,12 @@ def _prime_checkout_signup(
 ) -> tuple[str, str]:
     headers = {
         "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": f"{locale_lang}-{locale_country},{locale_lang};q=0.9,en;q=0.8",
-        "Referer": referer,
+        "Accept": PAYPAL_PROTOCOL_NAV_ACCEPT,
+        "Accept-Language": PAYPAL_PROTOCOL_ACCEPT_LANGUAGE,
         "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Site": "none",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-User": "?1",
     }
     try:
         resp = http.get(signup_url, headers=headers, timeout=timeout, allow_redirects=False)
@@ -457,18 +671,21 @@ def _bootstrap(
         )
     headers = {
         "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": f"{locale_lang}-{locale_country},{locale_lang};q=0.9,en;q=0.8",
-        "Referer": "https://chatgpt.com/",
+        "Accept": PAYPAL_PROTOCOL_NAV_ACCEPT,
+        "Accept-Language": PAYPAL_PROTOCOL_ACCEPT_LANGUAGE,
         "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Site": "none",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-User": "?1",
     }
 
     # 预热 — 提前访问 paypal.com 获取 DataDome 基础 cookies
-    _warmup_paypal_session(http, timeout=min(timeout, 15))
+    _warmup_paypal_session(
+        http,
+        timeout=min(timeout, 15),
+        locale_country=locale_country,
+        locale_lang=locale_lang,
+    )
     time.sleep(random.uniform(0.5, 1.5))
 
     # DataDome 拦截不是同一 HTTP session 原地重试能稳定解决的问题；尽快返回给上层
@@ -492,36 +709,22 @@ def _bootstrap(
         raise RuntimeError("paypal_protocol|/agreements/approve 未返回 EC token")
     ec_token = match_ec.group(0)
     onboarding_match = _ONBOARD_RE.search(html) or _UL_ONBOARD_RE.search(html)
+    onboard_source_url = ""
     onboard_url = _build_onboard_url(ba_token, locale_country, locale_lang, source_url=url)
     if onboarding_match:
-        onboard_url = _unescape_url(onboarding_match.group(1))
-        if onboard_url.startswith("/"):
-            onboard_url = PP_ORIGIN + onboard_url
+        onboard_source_url = _unescape_url(onboarding_match.group(1))
+        if onboard_source_url.startswith("/"):
+            onboard_source_url = PP_ORIGIN + onboard_source_url
+        onboard_url = onboard_source_url
     onboard_url = _coerce_onboard_url(
         onboard_url, ba_token=ba_token, locale_country=locale_country, locale_lang=locale_lang
     )
-    resp2 = http.get(
-        onboard_url,
-        headers={
-            **headers,
-            "Referer": _paypal_pay_url(ba_token, onboard_url=onboard_url),
-            "Sec-Fetch-Site": "same-origin",
-        },
-        timeout=timeout,
-        allow_redirects=False,
-    )
-    if resp2.status_code not in {200, 301, 302, 303, 307, 308}:
-        raise RuntimeError(f"paypal_protocol|/checkoutweb/signup 跳转失败: HTTP {resp2.status_code}")
-    location = resp2.headers.get("location") or resp2.headers.get("Location") or ""
-    location = (
-        urllib.parse.urljoin(str(getattr(resp2, "url", onboard_url) or onboard_url), _unescape_url(location))
-        if location
-        else ""
-    )
-    signup_url = (
-        location
-        if "/checkoutweb/signup" in location
-        else _build_signup_url(ba_token, ec_token, locale_country, locale_lang, source_url=location or onboard_url)
+    signup_url = _build_signup_url(
+        ba_token,
+        ec_token,
+        locale_country,
+        locale_lang,
+        source_url=onboard_source_url or onboard_url or url,
     )
     signup_url, signup_html = _prime_checkout_signup(
         http,
@@ -531,7 +734,7 @@ def _bootstrap(
         locale_lang=locale_lang,
         timeout=timeout,
     )
-    match_ec2 = _EC_RE.search(f"{signup_url}\n{signup_html}\n{getattr(resp2, 'text', '') or ''}")
+    match_ec2 = _EC_RE.search(f"{signup_url}\n{signup_html}")
     if match_ec2:
         ec_token = match_ec2.group(0)
         signup_url = _build_signup_url(ba_token, ec_token, locale_country, locale_lang, source_url=signup_url)
@@ -566,7 +769,7 @@ def _gql(
             "User-Agent": USER_AGENT,
             "Content-Type": "application/json",
             "Accept": "*/*",
-            "Accept-Language": f"{locale_lang}-{country.upper()},{locale_lang};q=0.9,en;q=0.8",
+            "Accept-Language": PAYPAL_PROTOCOL_ACCEPT_LANGUAGE,
             "Origin": PP_ORIGIN,
             "Referer": signup_url,
             "X-Requested-With": "fetch",
@@ -598,28 +801,89 @@ def _gql(
     return payload
 
 
-def _phone_split(phone: str) -> tuple[str, str]:
+def _gql_with_retry(
+    http: Any,
+    op_name: str,
+    variables: dict[str, Any],
+    query: str,
+    *,
+    signup_url: str,
+    timeout: int,
+    locale_lang: str = "en",
+    extra_body: dict[str, Any] | None = None,
+    attempts: int = 2,
+) -> dict[str, Any]:
+    last_exc: Exception | None = None
+    for attempt in range(1, max(1, int(attempts or 1)) + 1):
+        try:
+            return _gql(
+                http,
+                op_name,
+                variables,
+                query,
+                signup_url=signup_url,
+                timeout=timeout,
+                locale_lang=locale_lang,
+                extra_body=extra_body,
+            )
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= max(1, int(attempts or 1)):
+                break
+            message = str(exc)
+            if "timeout" not in message.lower() and "request canceled" not in message.lower():
+                break
+            logger.info("[paypal_protocol_signup] GraphQL %s timed out, retrying %s/%s", op_name, attempt + 1, attempts)
+            time.sleep(2.0)
+    raise last_exc or RuntimeError(f"paypal_protocol|GraphQL {op_name} failed")
+
+
+def _phone_split(phone: str, *, country: str = "") -> tuple[str, str]:
     digits = re.sub(r"\D+", "", str(phone or ""))
     if str(phone or "").strip().startswith("+"):
         for code in sorted(PAYPAL_CALLING_CODE_COUNTRIES, key=len, reverse=True):
             if digits.startswith(code) and len(digits) - len(code) >= 7:
                 return code, digits[len(code) :]
+    normalized_country = str(country or "").strip().upper()
+    if normalized_country == "JP":
+        if digits.startswith("0081") and len(digits) >= 12:
+            digits = digits[2:]
+        if digits.startswith("81") and len(digits) - 2 >= 9:
+            subscriber = digits[2:]
+            return "81", subscriber[1:] if subscriber.startswith("0") else subscriber
+        if digits.startswith("0") and len(digits) in {10, 11}:
+            return "81", digits[1:]
+        if len(digits) in {9, 10} and digits.startswith(("70", "80", "90")):
+            return "81", digits
+    if normalized_country == "US" and len(digits) == 11 and digits.startswith("1"):
+        return "1", digits[1:]
     if len(digits) == 10:
         return "1", digits
     raise ValueError(f"unparseable phone: {phone}")
 
 
 def _extract_content_identifier(html: str, locale_country: str, locale_lang: str) -> str:
+    raw_html = str(html or "")
+    decoded_html = urllib.parse.unquote(html_lib.unescape(raw_html))
+    decoded_html = re.sub(
+        r"\\+u003a",
+        ":",
+        decoded_html,
+        flags=re.I,
+    )
     for pattern in (
         r'"contentIdentifier"\s*:\s*"([^"]*signupTerms[^"]*)"',
         r'\\"contentIdentifier\\"\s*:\s*\\"([^"\\]*signupTerms[^"\\]*)\\"',
         r"([A-Z]{2}:[a-z]{2}:[0-9a-f]{16,64}:compliance\.signupTerms)",
     ):
-        match = re.search(pattern, html or "", re.I)
-        if match:
-            return match.group(1).replace("\\/", "/")
+        for candidate in (raw_html, decoded_html):
+            match = re.search(pattern, candidate, re.I)
+            if match:
+                return match.group(1).replace("\\/", "/")
     if locale_country.upper() == "US" and locale_lang.lower() == "en":
         return "US:en:f411614ea3eaac38abc54763fcfca00e:compliance.signupTerms"
+    if locale_country.upper() == "JP" and locale_lang.lower() == "ja":
+        return "JP:ja:7b6ca42fbd7ddea17db0dcd181eeb3a4:compliance.signupTerms"
     return f"{locale_country}:{locale_lang}:compliance.signupTerms"
 
 
@@ -640,28 +904,109 @@ def _state_code(value: str) -> str:
     return mapping.get(raw.lower(), raw)
 
 
+def _date_of_birth(value: Any, *, country: str) -> dict[str, str] | None:
+    raw = str(value or "").strip()
+    if not raw and str(country or "").strip().upper() == "JP":
+        raw = DEFAULT_PAYPAL_JP_BIRTH_DATE
+    digits = re.findall(r"\d+", raw)
+    if len(digits) >= 3:
+        year, month, day = digits[0], digits[1], digits[2]
+        if len(year) == 4:
+            return {"day": day.zfill(2), "month": month.zfill(2), "year": year}
+        if len(digits[2]) == 4:
+            return {"day": digits[0].zfill(2), "month": digits[1].zfill(2), "year": digits[2]}
+    return None
+
+
+def _card_type(card_number: str) -> str:
+    digits = re.sub(r"\D+", "", str(card_number or ""))
+    if digits.startswith(("34", "37")):
+        return "AMEX"
+    if digits.startswith("5") or (len(digits) >= 4 and 2221 <= int(digits[:4]) <= 2720):
+        return "MASTER_CARD"
+    return "VISA"
+
+
+def _paypal_protocol_card(signup_profile: dict[str, Any]) -> dict[str, str]:
+    card_number = payment_form_fields_service.normalize_or_generate_paypal_card_number(
+        str(signup_profile.get("card_number") or "")
+    )
+    raw_expiry = str(signup_profile.get("card_expiry") or "").strip()
+    if raw_expiry:
+        expiry = payment_form_fields_service.normalize_paypal_card_expiry(raw_expiry)
+    else:
+        expiry = payment_form_fields_service.generate_paypal_card_expiry()
+    expiry_digits = re.sub(r"\D+", "", expiry)
+    if len(expiry_digits) == 4:
+        expiry = f"{expiry_digits[:2]}/20{expiry_digits[2:]}"
+    elif len(expiry_digits) == 6:
+        expiry = f"{expiry_digits[:2]}/{expiry_digits[2:]}"
+    cvv = re.sub(r"\D+", "", str(signup_profile.get("card_cvv") or ""))
+    if not cvv:
+        cvv = payment_form_fields_service.generate_paypal_card_cvv(card_number)
+    return {
+        "cardNumber": card_number,
+        "expirationDate": expiry,
+        "securityCode": cvv,
+        "type": _card_type(card_number),
+    }
+
+
+def _contains_japanese_kana(value: str) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff]", str(value or "")))
+
+
 def _signup_variables(
     *, signup_profile: dict[str, Any], ec_token: str, locale_country: str, locale_lang: str
 ) -> dict[str, Any]:
-    calling_code, subscriber = _phone_split(str(signup_profile.get("phone") or ""))
+    country = str(signup_profile.get("country") or locale_country or "US").strip().upper() or "US"
+    calling_code, subscriber = _phone_split(str(signup_profile.get("phone") or ""), country=country)
     first_name = str(signup_profile.get("first_name") or "").strip()
     last_name = str(signup_profile.get("last_name") or "").strip()
     if not first_name or not last_name:
         first_name, last_name = _split_name(signup_profile.get("name") or "")
-    country = str(signup_profile.get("country") or locale_country or "US").strip().upper() or "US"
+    native_first_name = str(
+        signup_profile.get("native_first_name") or signup_profile.get("nativeFirstName") or ""
+    ).strip()
+    native_last_name = str(
+        signup_profile.get("native_last_name") or signup_profile.get("nativeLastName") or ""
+    ).strip()
+    if country == "JP":
+        kana_first_name = first_name if _contains_japanese_kana(first_name) else DEFAULT_PAYPAL_JP_KANA_FIRST_NAME
+        kana_last_name = last_name if _contains_japanese_kana(last_name) else DEFAULT_PAYPAL_JP_KANA_LAST_NAME
+        first_name = native_first_name or (first_name if first_name and not _contains_japanese_kana(first_name) else "")
+        last_name = native_last_name or (last_name if last_name and not _contains_japanese_kana(last_name) else "")
+        first_name = first_name or DEFAULT_PAYPAL_JP_NATIVE_FIRST_NAME
+        last_name = last_name or DEFAULT_PAYPAL_JP_NATIVE_LAST_NAME
+        native_first_name = kana_first_name
+        native_last_name = kana_last_name
     address = {
         "line1": str(signup_profile.get("address1") or "").strip(),
-        "city": str(signup_profile.get("city") or "").strip(),
         "postalCode": str(signup_profile.get("zip") or "").strip(),
+        "accountQuality": {"autoCompleteType": "MANUAL", "isUserModified": True},
+        "country": country,
+        "familyName": last_name,
+        "givenName": first_name,
+    }
+    city = str(signup_profile.get("city") or "").strip()
+    if city:
+        address["city"] = city
+    state = _state_code(signup_profile.get("state") or "")
+    if state:
+        address["state"] = state
+    shipping_address = {
+        "line1": str(address.get("line1") or ""),
+        "state": str(address.get("state") or ""),
+        "postalCode": str(address.get("postalCode") or ""),
         "accountQuality": {"autoCompleteType": "MANUAL", "isUserModified": False},
         "country": country,
         "familyName": last_name,
         "givenName": first_name,
     }
-    state = _state_code(signup_profile.get("state") or "")
-    if country == "US" and state:
-        address["state"] = state
-    return {
+    if country != "JP":
+        shipping_address["city"] = str(address.get("city") or "")
+    variables = {
+        "card": _paypal_protocol_card(signup_profile),
         "country": locale_country,
         "email": str(signup_profile.get("email") or "").strip(),
         "firstName": first_name,
@@ -670,24 +1015,23 @@ def _signup_variables(
         "supportedThreeDsExperiences": ["IFRAME"],
         "token": ec_token,
         "billingAddress": address,
-        "shippingAddress": {
-            "line1": "",
-            "city": "",
-            "state": "",
-            "postalCode": "",
-            "accountQuality": {"autoCompleteType": "MANUAL", "isUserModified": False},
-            "country": country,
-            "familyName": last_name,
-            "givenName": first_name,
-        },
+        "shippingAddress": shipping_address,
         "contentIdentifier": _extract_content_identifier(
             str(signup_profile.get("_signup_html") or ""), locale_country, locale_lang
         ),
         "marketingOptOut": False,
+        "nationality": country,
         "password": str(signup_profile.get("password") or "").strip(),
         "crsData": None,
         "legalAgreements": {},
     }
+    dob = _date_of_birth(signup_profile.get("birth_date") or signup_profile.get("birthDate"), country=country)
+    if dob:
+        variables["dateOfBirth"] = dob
+    if country == "JP":
+        variables["countrySpecificFirstName"] = native_first_name
+        variables["countrySpecificLastName"] = native_last_name
+    return variables
 
 
 def _signup_response_parts(signup_payload: dict[str, Any]) -> dict[str, Any]:
@@ -707,15 +1051,73 @@ def _signup_response_parts(signup_payload: dict[str, Any]) -> dict[str, Any]:
         or first_error.get("message")
         or "UNKNOWN"
     )
-    onboard = (signup_payload.get("data") or {}).get("onboardAccount") or {}
+    data = signup_payload.get("data") or {}
+    onboard = data.get("signUpNewMember") or data.get("onboardAccount") or {}
     buyer = onboard.get("buyer") or {}
+    error_metadata = _signup_error_metadata(first_error)
     return {
         "errors": errors,
         "first_error": first_error,
         "error_code": error_code,
+        "error_metadata": error_metadata,
         "euat": ((buyer.get("auth") or {}).get("accessToken") or first_error_data.get("accessToken")),
         "user_id": buyer.get("userId"),
     }
+
+
+def _signup_error_metadata(first_error: Any) -> dict[str, Any]:
+    if not isinstance(first_error, dict):
+        return {}
+    allowed_scalar_keys = {
+        "classification",
+        "code",
+        "correlationId",
+        "correlationID",
+        "debugId",
+        "issue",
+        "name",
+        "status",
+        "statusCode",
+    }
+    metadata: dict[str, Any] = {}
+    for key in ("checkpoints", "path"):
+        value = first_error.get(key)
+        if isinstance(value, list):
+            metadata[key] = [str(item)[:160] for item in value[:10] if isinstance(item, (str, int, float))]
+
+    def visit(value: Any, *, depth: int = 0) -> None:
+        if depth >= 4:
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                name = str(key or "")
+                if name in allowed_scalar_keys and isinstance(child, (str, int, float, bool)):
+                    metadata.setdefault(name, str(child)[:200])
+                elif name not in {"accessToken", "email", "password", "token"}:
+                    visit(child, depth=depth + 1)
+        elif isinstance(value, list):
+            for child in value[:10]:
+                visit(child, depth=depth + 1)
+
+    visit(first_error)
+    return metadata
+
+
+def _classify_signup_error(signup_parts: dict[str, Any]) -> tuple[str, str]:
+    first_error = signup_parts.get("first_error") or {}
+    error_code = str(signup_parts.get("error_code") or "").strip()
+    metadata = signup_parts.get("error_metadata") or {}
+    checkpoints = {str(item or "") for item in metadata.get("checkpoints") or []}
+    if error_code.upper() == "OAS_ERROR" and "createMemberAccount" in checkpoints:
+        return (
+            "paypal_browser_context_required",
+            "PayPal 在 createMemberAccount 阶段拒绝纯协议请求，需要真实浏览器风险上下文",
+        )
+    raw_message = json.dumps(signup_parts.get("errors") or [], ensure_ascii=False)
+    stage, message = _classify_error_text(raw_message)
+    if stage != "paypal_protocol":
+        return stage, message
+    return "paypal_signup", str(first_error.get("message") or error_code or "PayPal 注册失败")
 
 
 def _paypal_fn_sync_data(ec_token: str) -> str:
@@ -802,9 +1204,11 @@ def run_paypal_no_card_protocol_signup(
             except Exception as exc:
                 logger.info("[paypal_protocol_signup] warmup %s soft-failed: %s", op_name, exc)
 
+        sms_url = str(signup_profile.get("sms_url") or "")
+        ignored_otps = _snapshot_existing_sms_otps(sms_url)
         _emit(on_progress, "paypal_wait_signup_otp", phone=rejected_phone)
-        calling_code, subscriber = _phone_split(rejected_phone)
-        init_payload = _gql(
+        calling_code, subscriber = _phone_split(rejected_phone, country=locale_country)
+        init_payload = _gql_with_retry(
             http,
             "InitiateRiskBasedTwoFactorPhoneConfirmationMutation",
             {
@@ -849,7 +1253,7 @@ def run_paypal_no_card_protocol_signup(
                 _emit(on_progress, mapped, **extra)
 
         otp_provider = _poll_otp_from_sms_url(
-            str(signup_profile.get("sms_url") or ""),
+            sms_url,
             timeout_seconds=PAYPAL_PROTOCOL_OTP_TIMEOUT_SECONDS,
             initial_delay_seconds=0,
             resend_after_seconds=PAYPAL_PROTOCOL_OTP_RESEND_AFTER_SECONDS,
@@ -857,10 +1261,12 @@ def run_paypal_no_card_protocol_signup(
             is_cancelled=is_cancelled,
             progress=_otp_progress,
         )
+        if ignored_otps:
+            otp_provider._gopay_ignored_otps = set(ignored_otps)
 
         def _resend_paypal_protocol_otp() -> None:
             nonlocal auth_id, challenge_id
-            resend_payload = _gql(
+            resend_payload = _gql_with_retry(
                 http,
                 "InitiateRiskBasedTwoFactorPhoneConfirmationMutation",
                 {
@@ -884,31 +1290,41 @@ def run_paypal_no_card_protocol_signup(
             _emit(on_progress, "paypal_otp_resend_clicked")
 
         otp_provider._gopay_resend_callback = _resend_paypal_protocol_otp
-        code = otp_provider()
-        _emit(on_progress, "paypal_otp_received", code=code)
-        _emit(on_progress, "paypal_submit_otp")
-        confirm_payload = _gql(
-            http,
-            "ConfirmRiskBasedTwoFactorPhoneConfirmationMutation",
-            {"authId": auth_id, "challengeId": challenge_id, "pin": code, "token": ec_token},
-            Q_CONFIRM_OTP,
-            signup_url=signup_url,
-            timeout=timeout,
-            locale_lang=locale_lang,
-        )
-        confirm_state = (
-            (confirm_payload.get("data") or {}).get("confirmRiskBasedTwoFactorPhoneConfirmation") or {}
-        ).get("state")
-        if str(confirm_state or "").upper() != "CONFIRMED":
-            return {
-                "status": "failed",
-                "failure_stage": "paypal_signup",
-                "message": f"PayPal 短信验证码确认失败: {confirm_state or 'unknown'}",
-                "rejected_phone": rejected_phone,
-            }
+        confirm_state = ""
+        for confirm_attempt in range(1, max(1, PAYPAL_PROTOCOL_OTP_CONFIRM_MAX_ATTEMPTS) + 1):
+            code = otp_provider()
+            _emit(on_progress, "paypal_otp_received", code=code, attempt=confirm_attempt)
+            _emit(on_progress, "paypal_submit_otp", attempt=confirm_attempt)
+            confirm_payload = _gql_with_retry(
+                http,
+                "ConfirmRiskBasedTwoFactorPhoneConfirmationMutation",
+                {"authId": auth_id, "challengeId": challenge_id, "pin": code, "token": ec_token},
+                Q_CONFIRM_OTP,
+                signup_url=signup_url,
+                timeout=timeout,
+                locale_lang=locale_lang,
+            )
+            confirm_state = (
+                (confirm_payload.get("data") or {}).get("confirmRiskBasedTwoFactorPhoneConfirmation") or {}
+            ).get("state")
+            if str(confirm_state or "").upper() == "CONFIRMED":
+                break
+            if str(confirm_state or "").upper() != "VALIDATION_FAILED" or confirm_attempt >= max(
+                1, PAYPAL_PROTOCOL_OTP_CONFIRM_MAX_ATTEMPTS
+            ):
+                return {
+                    "status": "failed",
+                    "failure_stage": "paypal_signup",
+                    "message": f"PayPal 短信验证码确认失败: {confirm_state or 'unknown'}",
+                    "rejected_phone": rejected_phone,
+                }
+            ignored = set(getattr(otp_provider, "_gopay_ignored_otps", set()))
+            ignored.add(str(code or "").strip())
+            otp_provider._gopay_ignored_otps = ignored
+            _emit(on_progress, "paypal_otp_invalid_retry", attempt=confirm_attempt)
 
         _emit(on_progress, "paypal_submit_signup")
-        signup_payload = _gql(
+        signup_payload = _gql_with_retry(
             http,
             "SignUpNewMemberMutation",
             _signup_variables(
@@ -921,20 +1337,18 @@ def run_paypal_no_card_protocol_signup(
             signup_url=signup_url,
             timeout=timeout,
             locale_lang=locale_lang,
-            extra_body={"fn_sync_data": _paypal_fn_sync_data(ec_token)},
+            attempts=2,
         )
         signup_parts = _signup_response_parts(signup_payload)
         if signup_parts["errors"] and not signup_parts["euat"]:
-            raw_message = json.dumps(signup_parts["errors"], ensure_ascii=False)
-            stage, message = _classify_error_text(raw_message)
+            stage, message = _classify_signup_error(signup_parts)
             return {
                 "status": "failed",
-                "failure_stage": stage if stage != "paypal_protocol" else "paypal_signup",
-                "message": message
-                if stage != "paypal_protocol"
-                else str(signup_parts["first_error"].get("message") or signup_parts["error_code"]),
+                "failure_stage": stage,
+                "message": message,
                 "rejected_phone": rejected_phone,
                 "ec_token": ec_token,
+                "paypal_error": signup_parts["error_metadata"],
             }
         euat = str(signup_parts["euat"] or "")
         if not euat:
@@ -950,6 +1364,7 @@ def run_paypal_no_card_protocol_signup(
         headers_html = {
             "User-Agent": USER_AGENT,
             "Accept": "text/html,*/*;q=0.8",
+            "Accept-Language": PAYPAL_PROTOCOL_ACCEPT_LANGUAGE,
             "Referer": signup_url,
             "X-PayPal-Internal-EUAT": euat,
         }
@@ -990,7 +1405,7 @@ def run_paypal_no_card_protocol_signup(
                     "operationName": "authorize",
                     "variables": {
                         "billingAgreementId": ec_token,
-                        "fundingPreference": {"balancePreference": "OPT_OUT"},
+                        "fundingPreference": {"balancePreference": "OPT_IN"},
                         "legalAgreements": {},
                     },
                     "query": Q_AUTHORIZE,
@@ -1000,6 +1415,7 @@ def run_paypal_no_card_protocol_signup(
                 "User-Agent": USER_AGENT,
                 "Content-Type": "application/json",
                 "Accept": "*/*",
+                "Accept-Language": PAYPAL_PROTOCOL_ACCEPT_LANGUAGE,
                 "Origin": PP_ORIGIN,
                 "Referer": hermes_url,
                 "X-Requested-With": "fetch",

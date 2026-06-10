@@ -146,3 +146,30 @@ def test_poll_paypal_signup_otp_clamps_timeout_binds_resend_and_progress():
         {"stage": "adapted:fetch_otp"},
         {"stage": "paypal_otp_received", "otp": "******"},
     ]
+
+
+def test_poll_paypal_signup_otp_passes_ignored_existing_codes_to_provider():
+    captured = {}
+
+    def fake_poll_otp_from_sms_url(_sms_url, **_kwargs):
+        def provider():
+            captured["ignored"] = set(getattr(provider, "_gopay_ignored_otps", set()))
+            return "222222"
+
+        return provider
+
+    otp = sms_otp.poll_paypal_signup_otp(
+        {"sms_url": "https://sms.example.test", "_ignored_otps": ["111111", ""]},
+        timeout_seconds=60,
+        otp_poll_timeout_seconds=180,
+        resend_after_seconds=60,
+        max_resend_attempts=0,
+        progress_event=lambda stage, **extra: {"stage": stage, **extra},
+        url_summary=lambda url: url,
+        progress_adapter=lambda _on_progress: None,
+        poll_otp_from_sms_url_fn=fake_poll_otp_from_sms_url,
+        click_resend=lambda: True,
+    )
+
+    assert otp == "222222"
+    assert captured["ignored"] == {"111111"}

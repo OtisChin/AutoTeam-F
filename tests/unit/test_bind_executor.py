@@ -2260,6 +2260,20 @@ def test_paypal_pplink_run_exe_writes_config_and_parses_authorize_url(monkeypatc
     assert captured["args"][captured["args"].index("-mode") + 1] == "us"
 
 
+def test_paypal_pplink_proxy_config_keeps_authenticated_socks_proxy():
+    config = paypal_bind_executor._paypal_pplink_proxy_config(
+        mode="eu",
+        proxy_url="socks5://user:pass@jp.example:1080",
+        provider_proxy_url="socks5h://us-user:us-pass@us.example:1080",
+        approve_proxy_url="",
+    )
+
+    assert config == {
+        "proxy_jp": "socks5://user:pass@jp.example:1080",
+        "proxy_us": "socks5h://us-user:us-pass@us.example:1080",
+    }
+
+
 def test_paypal_protocol_signup_keeps_onboard_referer_off_hermes(monkeypatch):
     monkeypatch.setattr(paypal_protocol_signup.time, "sleep", lambda *_args, **_kwargs: None)
     approve_html = (
@@ -2289,12 +2303,11 @@ def test_paypal_protocol_signup_keeps_onboard_referer_off_hermes(monkeypatch):
 
     assert ec_token == "EC-ABCDEFGHIJKLMNOPQ"
     assert "/checkoutweb/signup" in signup_url
-    onboard_request = http.requests[2]
-    assert "/agreements/approve" in onboard_request["url"]
-    assert "/webapps/hermes" not in onboard_request["url"]
-    assert onboard_request["kwargs"]["headers"]["Referer"].startswith("https://www.paypal.com/pay?")
-    prime_request = http.requests[3]
+    prime_request = http.requests[2]
+    assert "/checkoutweb/signup" in prime_request["url"]
+    assert "Referer" not in prime_request["kwargs"]["headers"]
     assert prime_request["kwargs"]["allow_redirects"] is False
+    assert len(http.requests) == 3
 
 
 def test_paypal_protocol_signup_stops_approve_datadome_for_browser_fallback(monkeypatch):
@@ -3295,6 +3308,10 @@ def test_classify_paypal_checkout_state_and_stage():
         "https://www.paypal.com/checkoutweb/genericError?code=UkVTVFJJQ1RFRF9VU0VS",
         "Your account is limited. Please check your PayPal Account Overview page for information on how to resolve this problem. Return to merchant",
     )
+    limited_by_code = paypal_bind_executor.classify_paypal_checkout_state(
+        "https://www.paypal.com/checkoutweb/genericError?code=UkVTVFJJQ1RFRF9VU0VS",
+        "",
+    )
     phone_rejected = paypal_bind_executor.classify_paypal_checkout_state(
         "https://www.paypal.com/checkoutweb/signup",
         "We're unable to complete your request Try a different phone number.",
@@ -3362,6 +3379,7 @@ def test_classify_paypal_checkout_state_and_stage():
         "failure_stage": "paypal_account_limited",
         "message": "PayPal 账号受限，无法完成授权",
     }
+    assert limited_by_code == limited
     assert phone_rejected == {
         "status": "failed",
         "failure_stage": "paypal_phone_rejected",
@@ -4064,6 +4082,233 @@ def test_set_paypal_country_prefers_requested_country_before_us_fallback(monkeyp
 
 def test_paypal_protocol_signup_splits_japanese_phone_number():
     assert paypal_protocol_signup._phone_split("+819012345678") == ("81", "9012345678")
+    assert paypal_protocol_signup._phone_split("09040524462", country="JP") == ("81", "9040524462")
+    assert paypal_protocol_signup._phone_split("819040524462", country="JP") == ("81", "9040524462")
+    assert paypal_protocol_signup._phone_split("7094219236", country="JP") == ("81", "7094219236")
+
+
+def test_paypal_browser_signup_accepts_japanese_subscriber_without_leading_zero():
+    assert paypal_bind_executor._paypal_phone_value_valid("7094219236", country="JP") is True
+
+
+def test_paypal_protocol_signup_snapshots_existing_sms_otp(monkeypatch):
+    monkeypatch.setattr(paypal_protocol_signup.sms_otp_service, "fetch_sms_code", lambda _url: "051637")
+
+    assert paypal_protocol_signup._snapshot_existing_sms_otps("https://sms.example.test") == {"051637"}
+
+
+def test_paypal_protocol_signup_builds_jp_signup_variables_like_protocol_reference():
+    variables = paypal_protocol_signup._signup_variables(
+        signup_profile={
+            "email": "pp-demo@example.com",
+            "password": "Secret123!",
+            "phone": "09040524462",
+            "first_name": "タロウ",
+            "last_name": "ヤマダ",
+            "native_first_name": "太郎",
+            "native_last_name": "山田",
+            "country": "JP",
+            "state": "東京都",
+            "city": "千代田区",
+            "zip": "100-0001",
+            "address1": "千代田1-1",
+            "birth_date": "1985/01/15",
+            "card_number": "5555555555554444",
+            "card_expiry": "03 / 30",
+            "card_cvv": "123",
+        },
+        ec_token="EC-12345678901234567",
+        locale_country="JP",
+        locale_lang="ja",
+    )
+
+    assert variables["phone"] == {"countryCode": "81", "number": "9040524462", "type": "MOBILE"}
+    assert variables["dateOfBirth"] == {"day": "15", "month": "01", "year": "1985"}
+    assert variables["firstName"] == "太郎"
+    assert variables["lastName"] == "山田"
+    assert variables["countrySpecificFirstName"] == "タロウ"
+    assert variables["countrySpecificLastName"] == "ヤマダ"
+    assert variables["card"] == {
+        "cardNumber": "5555555555554444",
+        "expirationDate": "03/2030",
+        "securityCode": "123",
+        "type": "MASTER_CARD",
+    }
+    assert "bank" not in variables
+    assert variables["nationality"] == "JP"
+    assert variables["billingAddress"]["state"] == "東京都"
+    assert variables["billingAddress"]["city"] == "千代田区"
+    assert variables["shippingAddress"]["line1"] == "千代田1-1"
+    assert variables["shippingAddress"]["state"] == "東京都"
+    assert variables["shippingAddress"]["postalCode"] == "100-0001"
+    assert "city" not in variables["shippingAddress"]
+    assert variables["billingAddress"]["accountQuality"]["isUserModified"] is True
+    assert variables["contentIdentifier"] == "JP:ja:7b6ca42fbd7ddea17db0dcd181eeb3a4:compliance.signupTerms"
+    assert variables["supportedThreeDsExperiences"] == ["IFRAME"]
+    assert "threeDomainSecure(experiences: $supportedThreeDsExperiences)" in paypal_protocol_signup.Q_SIGNUP
+    assert "signUpNewMember(" in paypal_protocol_signup.Q_SIGNUP
+    assert "onboardAccount:" in paypal_protocol_signup.Q_SIGNUP
+    assert "$password: String" in paypal_protocol_signup.Q_SIGNUP
+    assert "$password: String!" not in paypal_protocol_signup.Q_SIGNUP
+
+
+def test_paypal_protocol_signup_extracts_encoded_content_identifier():
+    assert paypal_protocol_signup._extract_content_identifier(
+        "JP%3Aja%3Aabc123abc123abc1%3Acompliance.signupTerms",
+        "JP",
+        "ja",
+    ) == "JP:ja:abc123abc123abc1:compliance.signupTerms"
+    assert paypal_protocol_signup._extract_content_identifier(
+        r"JP\\u003Aja\\u003Aabc123abc123abc1\\u003Acompliance.signupTerms",
+        "JP",
+        "ja",
+    ) == "JP:ja:abc123abc123abc1:compliance.signupTerms"
+
+
+def test_paypal_protocol_signup_error_metadata_is_allowlisted():
+    metadata = paypal_protocol_signup._signup_error_metadata(
+        {
+            "message": "OAS_ERROR",
+            "checkpoints": ["RISK_DECLINED"],
+            "path": ["signUpNewMember"],
+            "extensions": {"code": "OAS_ERROR", "correlationId": "corr-123"},
+            "errorData": {"accessToken": "secret", "email": "private@example.com", "statusCode": 403},
+        }
+    )
+
+    assert metadata == {
+        "checkpoints": ["RISK_DECLINED"],
+        "path": ["signUpNewMember"],
+        "code": "OAS_ERROR",
+        "correlationId": "corr-123",
+        "statusCode": "403",
+    }
+    assert "secret" not in json.dumps(metadata)
+    assert "private@example.com" not in json.dumps(metadata)
+
+
+def test_paypal_protocol_signup_classifies_create_member_oas_as_browser_context_required():
+    assert paypal_protocol_signup._classify_signup_error(
+        {
+            "errors": [{"message": "OAS_ERROR"}],
+            "first_error": {"message": "OAS_ERROR"},
+            "error_code": "OAS_ERROR",
+            "error_metadata": {"checkpoints": ["createMemberAccount"], "statusCode": "200"},
+        }
+    ) == (
+        "paypal_browser_context_required",
+        "PayPal 在 createMemberAccount 阶段拒绝纯协议请求，需要真实浏览器风险上下文",
+    )
+
+
+def test_paypal_protocol_signup_warmup_uses_jp_home_for_jp_locale():
+    calls = []
+
+    class FakeHttp:
+        def get(self, url, *, headers=None, timeout=None, allow_redirects=None):
+            calls.append((url, headers or {}, timeout, allow_redirects))
+
+    paypal_protocol_signup._warmup_paypal_session(
+        FakeHttp(),
+        timeout=9,
+        locale_country="JP",
+        locale_lang="ja",
+    )
+
+    assert calls[0][0] == "https://www.paypal.com/jp/home"
+    assert calls[0][1]["User-Agent"].startswith("Mozilla/5.0 (iPhone; CPU iPhone OS 18_2")
+    assert calls[0][1]["Accept-Language"] == "en-US,en;q=0.9"
+    assert "image/avif" in calls[0][1]["Accept"]
+
+
+def test_paypal_protocol_signup_prime_matches_roxy_ios_navigation_headers():
+    calls = []
+
+    class FakeHttp:
+        def get(self, url, *, headers=None, timeout=None, allow_redirects=None):
+            calls.append((url, headers or {}, timeout, allow_redirects))
+            return FakeResponse(text="<html>EC-12345678901234567 checkoutweb signup</html>", url=url)
+
+    paypal_protocol_signup._prime_checkout_signup(
+        FakeHttp(),
+        signup_url="https://www.paypal.com/checkoutweb/signup?token=EC-12345678901234567",
+        referer="https://www.paypal.com/agreements/approve?ba_token=BA-DEMO",
+        locale_country="JP",
+        locale_lang="ja",
+        timeout=10,
+    )
+
+    headers = calls[0][1]
+    assert headers["User-Agent"].startswith("Mozilla/5.0 (iPhone; CPU iPhone OS 18_2")
+    assert headers["Accept-Language"] == "en-US,en;q=0.9"
+    assert headers["Sec-Fetch-Site"] == "none"
+    assert "Sec-Fetch-User" not in headers
+
+
+def test_paypal_protocol_signup_coerce_removes_ul_onboard_redirect():
+    url = paypal_protocol_signup._coerce_onboard_url(
+        "https://www.paypal.com/agreements/approve?ba_token=BA-DEMO&ulOnboardRedirect=true&ssrt=123",
+        ba_token="BA-DEMO",
+        locale_country="JP",
+        locale_lang="ja",
+    )
+
+    assert "ulOnboardRedirect" not in url
+    assert "ssrt=123" in url
+    assert "locale.x=ja_JP" in url
+
+
+def test_paypal_protocol_signup_prime_rejects_datadome_interstitial_with_ec_context():
+    class FakeHttp:
+        def get(self, url, **_kwargs):
+            return FakeResponse(
+                status_code=403,
+                text='<html><script src="https://ct.ddc.paypal.com/i.js"></script>'
+                '<form id="ads-dd-captcha">EC-12345678901234567</form></html>',
+                url=url,
+            )
+
+    with pytest.raises(RuntimeError, match="DataDome"):
+        paypal_protocol_signup._prime_checkout_signup(
+            FakeHttp(),
+            signup_url="https://www.paypal.com/checkoutweb/signup?token=EC-12345678901234567",
+            referer="https://www.paypal.com/agreements/approve?ba_token=BA-DEMO",
+            locale_country="JP",
+            locale_lang="ja",
+            timeout=10,
+        )
+
+
+def test_tls_client_http_session_adapter_maps_requests_timeout_keyword():
+    calls = []
+
+    class FakeTlsSession:
+        headers = {}
+        cookies = {}
+
+        def get(self, url, **kwargs):
+            calls.append(("GET", url, kwargs))
+            return types.SimpleNamespace(status_code=200)
+
+        def post(self, url, **kwargs):
+            calls.append(("POST", url, kwargs))
+            return types.SimpleNamespace(status_code=200)
+
+    adapter = paypal_bind_executor._TlsClientHttpSessionAdapter(FakeTlsSession())
+
+    adapter.get("https://www.paypal.com/jp/home", timeout=12, allow_redirects=True)
+    adapter.post("https://www.paypal.com/graphql", json={"ok": True}, timeout=13)
+
+    assert calls[0] == (
+        "GET",
+        "https://www.paypal.com/jp/home",
+        {"allow_redirects": True, "timeout_seconds": 12},
+    )
+    assert calls[1] == (
+        "POST",
+        "https://www.paypal.com/graphql",
+        {"json": {"ok": True}, "timeout_seconds": 13},
+    )
 
 
 def test_paypal_protocol_signup_uses_jp_locale_and_phone_country(monkeypatch):
@@ -4823,6 +5068,37 @@ def test_prepare_paypal_authorize_flow_context_wrapper_passes_browser_dependenci
     assert captured["normalize_paypal_lang"] is paypal_bind_executor._normalize_paypal_lang
     assert captured["signup_profiles_for_phone_pool"] is paypal_bind_executor._paypal_signup_profiles_for_phone_pool
     assert captured["now"] is paypal_bind_executor.time.time
+
+
+def test_prepare_paypal_authorize_flow_context_snapshots_existing_signup_otp(monkeypatch):
+    def fake_prepare(**_kwargs):
+        profile = {"phone": "09040524462", "sms_url": "https://sms.example.test"}
+        return {
+            "deadline": 123.0,
+            "signup_profile_index": 0,
+            "signup_profiles": [profile],
+            "active_signup_profile": profile,
+        }
+
+    monkeypatch.setattr(
+        paypal_bind_executor.payment_checkout_browser_service,
+        "prepare_paypal_authorize_flow_context",
+        fake_prepare,
+    )
+    monkeypatch.setattr(paypal_bind_executor.sms_otp_service, "fetch_sms_code", lambda _url: "328238")
+
+    context = paypal_bind_executor._prepare_paypal_authorize_flow_context(
+        paypal_mode="create_account",
+        credentials={},
+        signup_profile={},
+        phone_accounts=[],
+        timeout_seconds=120,
+        paypal_country="JP",
+        paypal_lang="ja",
+    )
+
+    assert context["signup_profiles"][0]["_ignored_otps"] == ["328238"]
+    assert context["active_signup_profile"]["_ignored_otps"] == ["328238"]
 
 
 def test_handle_paypal_authorize_cancelled_wrapper_passes_browser_dependencies(monkeypatch):
@@ -7762,7 +8038,7 @@ def test_run_paypal_signup_flow_polls_otp_when_prompt_detected_without_input_fla
         paypal_bind_executor, "_fill_paypal_otp_inputs", lambda *_args, **_kwargs: calls.append("fill_otp") or True
     )
     monkeypatch.setattr(
-        paypal_bind_executor, "_click_first", lambda *_args, **_kwargs: calls.append("submit_otp") or True
+        paypal_bind_executor, "_click_paypal_otp_submit", lambda *_args, **_kwargs: calls.append("submit_otp") or True
     )
     monkeypatch.setattr(
         paypal_bind_executor,
@@ -7819,7 +8095,7 @@ def test_run_paypal_signup_flow_polls_otp_when_jp_prompt_detected_from_page(monk
         paypal_bind_executor, "_fill_paypal_otp_inputs", lambda *_args, **_kwargs: calls.append("fill_otp") or True
     )
     monkeypatch.setattr(
-        paypal_bind_executor, "_click_first", lambda *_args, **_kwargs: calls.append("submit_otp") or True
+        paypal_bind_executor, "_click_paypal_otp_submit", lambda *_args, **_kwargs: calls.append("submit_otp") or True
     )
     monkeypatch.setattr(
         paypal_bind_executor,
@@ -8122,6 +8398,16 @@ def test_click_paypal_signup_otp_resend_supports_japanese_selectors(monkeypatch)
     assert any("コードを再送信" in selector for selector in captured["selectors"])
 
 
+def _mock_paypal_signup_submit_click(monkeypatch, calls):
+    def fake_click_first(_api, selectors, **_kwargs):
+        if selectors is paypal_bind_executor.PAYPAL_CREATE_SUBMIT_SELECTORS:
+            calls.append("submit_signup")
+            return True
+        return False
+
+    monkeypatch.setattr(paypal_bind_executor, "_click_first", fake_click_first)
+
+
 def test_run_paypal_signup_flow_does_not_poll_otp_before_signup_submit(monkeypatch):
     calls = []
 
@@ -8143,9 +8429,7 @@ def test_run_paypal_signup_flow_does_not_poll_otp_before_signup_submit(monkeypat
     monkeypatch.setattr(
         paypal_bind_executor, "_verify_paypal_signup_required_values", lambda *_args, **_kwargs: (True, "")
     )
-    monkeypatch.setattr(
-        paypal_bind_executor, "_click_first", lambda *_args, **_kwargs: calls.append("submit_signup") or True
-    )
+    _mock_paypal_signup_submit_click(monkeypatch, calls)
     monkeypatch.setattr(paypal_bind_executor.time, "sleep", lambda _seconds: None)
 
     class FakePage:
@@ -8187,9 +8471,7 @@ def test_run_paypal_signup_flow_ignores_otp_hint_before_signup_submit(monkeypatc
     monkeypatch.setattr(
         paypal_bind_executor, "_verify_paypal_signup_required_values", lambda *_args, **_kwargs: (True, "")
     )
-    monkeypatch.setattr(
-        paypal_bind_executor, "_click_first", lambda *_args, **_kwargs: calls.append("submit_signup") or True
-    )
+    _mock_paypal_signup_submit_click(monkeypatch, calls)
     monkeypatch.setattr(paypal_bind_executor.time, "sleep", lambda _seconds: None)
 
     class FakePage:
@@ -8225,9 +8507,7 @@ def test_run_paypal_signup_flow_rejects_country_code_only_phone_before_submit(mo
         "_fill_paypal_signup_form",
         lambda *_args, **_kwargs: calls.append("fill_signup") or (True, ""),
     )
-    monkeypatch.setattr(
-        paypal_bind_executor, "_click_first", lambda *_args, **_kwargs: calls.append("submit_signup") or True
-    )
+    _mock_paypal_signup_submit_click(monkeypatch, calls)
 
     class FakePage:
         url = "https://www.paypal.com/checkoutweb/signup"
@@ -8272,9 +8552,7 @@ def test_run_paypal_signup_flow_does_not_click_create_entry_on_registration_form
     monkeypatch.setattr(
         paypal_bind_executor, "_verify_paypal_signup_required_values", lambda *_args, **_kwargs: (True, "")
     )
-    monkeypatch.setattr(
-        paypal_bind_executor, "_click_first", lambda *_args, **_kwargs: calls.append("submit_signup") or True
-    )
+    _mock_paypal_signup_submit_click(monkeypatch, calls)
 
     class FakePage:
         url = "https://www.paypal.com/checkoutweb/signup"
@@ -8470,11 +8748,7 @@ def test_run_paypal_signup_flow_phone_pool_retry_replaces_only_phone(monkeypatch
     monkeypatch.setattr(
         paypal_bind_executor, "_verify_paypal_signup_required_values", lambda *_args, **_kwargs: (True, "")
     )
-    monkeypatch.setattr(
-        paypal_bind_executor,
-        "_click_first",
-        lambda *_args, **_kwargs: calls.append("submit_signup") or True,
-    )
+    _mock_paypal_signup_submit_click(monkeypatch, calls)
 
     class FakePage:
         url = "https://www.paypal.com/checkoutweb/signup"
@@ -8534,11 +8808,7 @@ def test_run_paypal_signup_flow_card_rejection_replaces_only_card(monkeypatch):
     monkeypatch.setattr(
         paypal_bind_executor, "_verify_paypal_signup_required_values", lambda *_args, **_kwargs: (True, "")
     )
-    monkeypatch.setattr(
-        paypal_bind_executor,
-        "_click_first",
-        lambda *_args, **_kwargs: calls.append("submit_signup") or True,
-    )
+    _mock_paypal_signup_submit_click(monkeypatch, calls)
 
     class FakePage:
         url = "https://www.paypal.com/checkoutweb/signup"
@@ -8736,6 +9006,35 @@ def test_fill_paypal_otp_inputs_scans_frames(monkeypatch):
     monkeypatch.setattr(paypal_bind_executor, "_iter_page_frames", lambda _api: [main_frame, child_frame])
 
     assert paypal_bind_executor._fill_paypal_otp_inputs(api, "123456") is True
+    assert main_frame.calls == 1
+    assert child_frame.calls == 1
+
+
+def test_click_paypal_otp_submit_scans_frames():
+    class FakeFrame:
+        def __init__(self, result):
+            self.result = result
+            self.calls = 0
+
+        def evaluate(self, _script):
+            self.calls += 1
+            return self.result
+
+    class FakeApi:
+        pass
+
+    api = FakeApi()
+    main_frame = FakeFrame(False)
+    child_frame = FakeFrame(True)
+    api.page = object()
+
+    original_iter = paypal_bind_executor._iter_page_frames
+    try:
+        paypal_bind_executor._iter_page_frames = lambda _api: [main_frame, child_frame]
+        assert paypal_bind_executor._click_paypal_otp_submit(api) is True
+    finally:
+        paypal_bind_executor._iter_page_frames = original_iter
+
     assert main_frame.calls == 1
     assert child_frame.calls == 1
 
@@ -8971,6 +9270,25 @@ def test_poll_otp_stops_after_max_resend_attempts(monkeypatch):
         raise AssertionError("expected OTP polling to stop after max resend attempts")
 
     assert resend_calls == [60.0, 120.0, 180.0]
+
+
+def test_paypal_protocol_otp_timeout_uses_paypal_label(monkeypatch):
+    now = [0.0]
+
+    monkeypatch.setattr(paypal_protocol_signup.time, "time", lambda: now[0])
+    monkeypatch.setattr(paypal_protocol_signup.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    monkeypatch.setattr(paypal_protocol_signup.sms_otp_service, "fetch_sms_code", lambda *_args, **_kwargs: "")
+
+    provider = paypal_protocol_signup._poll_otp_from_sms_url(
+        "https://sms.example.test",
+        timeout_seconds=60,
+        initial_delay_seconds=0,
+        resend_after_seconds=1,
+        max_resend_attempts=0,
+    )
+
+    with pytest.raises(GoPayOTPCancelled, match="PayPal OTP"):
+        provider()
 
 
 def test_extract_checkout_session_id_from_response_or_url():

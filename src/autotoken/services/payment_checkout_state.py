@@ -58,6 +58,9 @@ PAYPAL_ACCOUNT_LIMITED_HINTS = (
     "account limited",
     "paypal account overview",
     "resolve this problem",
+    "account は制限されています",
+    "アカウントは制限されています",
+    "問題の解決に関する情報",
     "账户受限",
     "账号受限",
 )
@@ -450,6 +453,7 @@ def classify_paypal_checkout_state(url: str, body_text: str):
     query_params = dict(parse_qsl(parsed_url.query, keep_blank_values=True))
     fragment_params = dict(parse_qsl(parsed_url.fragment, keep_blank_values=True))
     redirect_status = str(query_params.get("redirect_status") or fragment_params.get("redirect_status") or "").lower()
+    generic_error_code = str(query_params.get("code") or fragment_params.get("code") or "").strip().lower()
     stripe_return_success = (
         parsed_url.netloc.endswith("pm-redirects.stripe.com")
         and "/return" in parsed_url.path
@@ -461,7 +465,7 @@ def classify_paypal_checkout_state(url: str, body_text: str):
     )
     chatgpt_success = parsed_url.netloc in {"chatgpt.com", "chat.openai.com"} and "/payments/success" in parsed_url.path
 
-    if any(hint in haystack for hint in PAYPAL_ACCOUNT_LIMITED_HINTS):
+    if generic_error_code == "ukvtvfjjq1rfrf9vu0vs" or any(hint in haystack for hint in PAYPAL_ACCOUNT_LIMITED_HINTS):
         return {
             "status": "failed",
             "failure_stage": "paypal_account_limited",

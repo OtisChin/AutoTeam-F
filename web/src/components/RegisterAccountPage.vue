@@ -263,11 +263,11 @@
               />
               <span>
                 <span class="text-gray-100">启用动态代理 API</span>
-                <span class="block text-xs text-gray-500">每个账号注册前提取一条美国代理；浏览器注册、协议注册和注册后 OAuth 共用本次代理。</span>
+                <span class="block text-xs text-gray-500">每个账号注册前提取一条日本代理；浏览器注册、协议注册和注册后 OAuth 共用本次代理。</span>
               </span>
             </label>
-            <div v-if="registerForm.proxyApiEnabled">
-              <label class="block text-xs text-gray-500 mb-1">代理供应商</label>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">动态代理供应商</label>
               <select
                 v-model="registerForm.proxyApiProvider"
                 :disabled="registeringBusy"
@@ -276,7 +276,9 @@
                 <option value="1024proxy">1024proxy</option>
                 <option value="cliproxy">Cliproxy</option>
               </select>
-              <div class="mt-1 text-xs text-gray-500">{{ registerProxyApiHelp }}</div>
+              <div class="mt-1 text-xs text-gray-500">
+                {{ registerForm.proxyApiEnabled ? registerProxyApiHelp : '启用动态代理 API 后会使用这里选择的供应商。' }}
+              </div>
             </div>
           </div>
 
@@ -800,9 +802,9 @@ const registerBehaviorLabel = computed(() => {
 })
 const registerProxyApiHelp = computed(() => {
   if (registerForm.value.proxyApiProvider === 'cliproxy') {
-    return '运行时使用 Cliproxy 美国白名单 API，每个账号注册前提取一条。'
+    return '运行时使用 Cliproxy 日本白名单 API，每个账号注册前提取一条。'
   }
-  return '运行时使用 1024proxy 美国白名单 API，每个账号注册前提取一条。'
+  return '运行时使用 1024proxy 日本白名单 API，每个账号注册前提取一条。'
 })
 const registerProxyLabel = computed(() => {
   const fixedProxy = String(registerForm.value.proxyUrl || '').trim()

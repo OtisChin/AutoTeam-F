@@ -1,4 +1,6 @@
-from autotoken.services import payment_checkout_browser
+import json
+
+from autotoken.services import payment_checkout_browser, payment_form_fields
 
 
 class FakeKeyboard:
@@ -2031,6 +2033,50 @@ def test_maybe_wait_for_paypal_signup_otp_times_out_waiting_for_inputs():
     assert result == (False, "等待 PayPal 验证码超时", False)
 
 
+def test_maybe_wait_for_paypal_signup_otp_waits_after_otp_submit_without_resubmitting():
+    sleeps = []
+    result = payment_checkout_browser.maybe_wait_for_paypal_signup_otp(
+        FakeApi(FakePage()),
+        state={"needs_otp": True, "otp_submitted_at": 100.0},
+        signup_profile={},
+        current_url="https://www.paypal.com/checkoutweb/signup",
+        otp_wait_timeout_seconds=120,
+        body_excerpt=lambda _api, limit: (_ for _ in ()).throw(AssertionError("body should not be read")),
+        has_otp_inputs=lambda _api: (_ for _ in ()).throw(AssertionError("inputs should not be checked")),
+        signup_otp_text_hint=lambda _text: False,
+        click_create_submit=lambda _api: (_ for _ in ()).throw(AssertionError("submit should not run")),
+        progress_event=lambda stage, **extra: {"stage": stage, **extra},
+        now=lambda: 120.0,
+        sleep=sleeps.append,
+    )
+
+    assert result == (True, "", True)
+    assert sleeps == [1.5]
+
+
+def test_maybe_wait_for_paypal_signup_otp_fails_when_otp_still_visible_after_submit_timeout():
+    result = payment_checkout_browser.maybe_wait_for_paypal_signup_otp(
+        FakeApi(FakePage()),
+        state={"needs_otp": True, "otp_submitted_at": 100.0},
+        signup_profile={},
+        current_url="https://www.paypal.com/checkoutweb/signup",
+        otp_wait_timeout_seconds=120,
+        body_excerpt=lambda _api, limit: "",
+        has_otp_inputs=lambda _api: False,
+        signup_otp_text_hint=lambda _text: False,
+        click_create_submit=lambda _api: False,
+        progress_event=lambda stage, **extra: {"stage": stage, **extra},
+        now=lambda: 131.0,
+        sleep=lambda _seconds: (_ for _ in ()).throw(AssertionError("sleep should not run")),
+    )
+
+    assert result == (
+        False,
+        "PayPal OTP 提交后页面仍停留在验证码输入，可能验证码失效或未被页面接受",
+        False,
+    )
+
+
 def test_maybe_wait_for_paypal_signup_otp_clicks_agree_create_when_approve_ready():
     api = FakeApi(FakePage(url="https://www.paypal.com/checkoutweb/signup"))
     state = {"signup_submitted_at": 100.0, "approve_ready": True}
@@ -2117,6 +2163,37 @@ def test_submit_paypal_signup_otp_polls_fills_clicks_and_releases_lock():
     assert sleeps == [2.0]
 
 
+def test_submit_paypal_signup_registration_form_waits_when_page_is_loading():
+    state = {"_fill_retry_count": 2}
+    calls = []
+    sleeps = []
+
+    result = payment_form_fields.submit_paypal_signup_registration_form(
+        FakeApi(FakePage()),
+        signup_profile={"phone": "09040524462"},
+        state=state,
+        phone_key="819040524462",
+        submitted_phone_keys=set(),
+        current_url="https://www.paypal.com/checkoutweb/signup",
+        wait_dom_loaded=lambda _api: calls.append("wait_dom"),
+        ensure_phone_lock=lambda _state, signup_profile=None, on_progress=None: (True, ""),
+        fill_signup_form=lambda _api, signup_profile=None, on_progress=None: (False, "未找到 PayPal 注册手机号 输入框"),
+        release_phone_lock=lambda _state, on_progress=None: calls.append("release"),
+        verify_required_values=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("verify should not run")
+        ),
+        click_submit=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("click should not run")),
+        progress_event=lambda stage, **extra: {"stage": stage, **extra},
+        is_loading_state=lambda _api: True,
+        sleep=sleeps.append,
+    )
+
+    assert result == (True, "", True)
+    assert state["_fill_retry_count"] == 0
+    assert calls == ["wait_dom", "release"]
+    assert sleeps == [1.5, 3.0]
+
+
 def test_submit_paypal_signup_otp_returns_timeout_message_on_cancelled_poll():
     result = payment_checkout_browser.submit_paypal_signup_otp(
         FakeApi(FakePage()),
@@ -2177,6 +2254,61 @@ def test_submit_paypal_signup_otp_returns_error_when_next_and_enter_fail():
     )
 
     assert result == (False, "未找到 PayPal 验证码提交按钮", False)
+
+
+def test_install_paypal_risk_network_capture_redacts_signup_graphql(monkeypatch, tmp_path):
+    capture_path = tmp_path / "paypal-risk.jsonl"
+    monkeypatch.setenv(payment_checkout_browser.PAYPAL_RISK_CAPTURE_ENV, "1")
+    monkeypatch.setenv(payment_checkout_browser.PAYPAL_RISK_CAPTURE_PATH_ENV, str(capture_path))
+
+    class CapturePage:
+        def __init__(self):
+            self.handlers = {}
+
+        def on(self, name, callback):
+            self.handlers[name] = callback
+
+    class Request:
+        method = "POST"
+        resource_type = "fetch"
+
+        def __init__(self, url, body):
+            self.url = url
+            self.post_data = body
+
+        def all_headers(self):
+            return {"content-type": "application/json", "cookie": "secret-cookie"}
+
+    api = FakeApi(CapturePage())
+    assert payment_checkout_browser.install_paypal_risk_network_capture(api) == str(capture_path)
+
+    signup_request = Request(
+        "https://www.paypal.com/graphql?SignUpNewMemberMutation",
+        json.dumps(
+            {
+                "operationName": "SignUpNewMemberMutation",
+                "variables": {"email": "private@example.test", "password": "private"},
+                "query": "mutation SignUpNewMemberMutation($email: String!) { signUpNewMember(email: $email) { state } }",
+            }
+        ),
+    )
+    risk_request = Request("https://c.paypal.com/v1/r/d/b/p", "risk-payload")
+    api.page.handlers["request"](signup_request)
+    api.page.handlers["request"](risk_request)
+
+    capture_text = capture_path.read_text(encoding="utf-8")
+    events = [json.loads(line) for line in capture_text.splitlines()]
+    assert events[0]["body"] == {
+        "operationName": "SignUpNewMemberMutation",
+        "variableKeys": ["email", "password"],
+        "variableShape": {"email": "str", "password": "str"},
+        "safeVariables": {"email": "<redacted>", "password": "<redacted>"},
+        "query": "mutation SignUpNewMemberMutation($email: String!) { signUpNewMember(email: $email) { state } }",
+    }
+    assert "private@example.test" not in capture_text
+    assert "secret-cookie" not in events[0]["headers"].values()
+    assert events[1]["body"] == "risk-payload"
+    assert events[1]["headers"]["cookie"] == "secret-cookie"
 
 
 def test_paypal_signup_email_step_advanced_uses_url_and_state_signals():

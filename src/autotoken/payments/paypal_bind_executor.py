@@ -199,6 +199,53 @@ def _new_http_session(proxy_url: str | None = None, *, require_curl_cffi: bool =
         raise GoPayFlowError(str(exc), stage=getattr(exc, "stage", "chatgpt_http_session")) from exc
 
 
+class _TlsClientHttpSessionAdapter:
+    def __init__(self, session: Any):
+        self._session = session
+        self.headers = getattr(session, "headers", {})
+        self.cookies = getattr(session, "cookies", None)
+
+    @staticmethod
+    def _request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+        converted = dict(kwargs)
+        timeout = converted.pop("timeout", None)
+        if timeout is not None and "timeout_seconds" not in converted:
+            converted["timeout_seconds"] = int(timeout)
+        return converted
+
+    def get(self, url: str, **kwargs: Any):
+        return self._session.get(url, **self._request_kwargs(kwargs))
+
+    def post(self, url: str, **kwargs: Any):
+        return self._session.post(url, **self._request_kwargs(kwargs))
+
+
+def _new_paypal_protocol_http_session(proxy_url: str | None = None) -> Any:
+    try:
+        import tls_client  # type: ignore
+
+        session = tls_client.Session(
+            client_identifier=str(os.environ.get("PAYPAL_PROTOCOL_TLS_CLIENT_ID") or "chrome_146").strip(),
+            random_tls_extension_order=False,
+        )
+        session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
+            }
+        )
+        normalized_proxy = _paypal_pplink_normalize_proxy_url(proxy_url)
+        if normalized_proxy:
+            session.proxies = {"http": normalized_proxy, "https": normalized_proxy}
+        return _TlsClientHttpSessionAdapter(session)
+    except Exception as exc:
+        logger.info("[paypal_protocol] tls_client session unavailable, using shared HTTP session: %s", exc)
+        return _new_http_session(proxy_url, require_curl_cffi=False)
+
+
 def _response_json(resp, stage: str) -> dict:
     return payment_http_service.response_json(
         resp,
@@ -300,6 +347,7 @@ def _poll_otp_from_sms_url(
         is_cancelled=is_cancelled,
         progress=progress,
         cancelled_error_factory=lambda message: GoPayOTPCancelled(message, stage="fetch_otp"),
+        otp_label="PayPal OTP",
     )
 
 
@@ -410,7 +458,7 @@ JP_PREFECTURE_NAME_TO_JA = {
     "okinawa": "沖縄県",
 }
 PAYPAL_SIGNUP_OTP_WAIT_TIMEOUT_SECONDS = 120
-PAYPAL_SIGNUP_OTP_POLL_TIMEOUT_SECONDS = 120
+PAYPAL_SIGNUP_OTP_POLL_TIMEOUT_SECONDS = 300
 PAYPAL_SIGNUP_OTP_RESEND_AFTER_SECONDS = 60
 PAYPAL_SIGNUP_OTP_MAX_RESEND_ATTEMPTS = 0
 PAYPAL_SIGNUP_EMAIL_STEP_WAIT_TIMEOUT_SECONDS = 120
@@ -1553,7 +1601,7 @@ def _run_paypal_protocol_flow(
                 ),
             )
             protocol_signup_result = run_paypal_no_card_protocol_signup(
-                http,
+                _new_paypal_protocol_http_session(protocol_proxy_url),
                 ba_token=_ba_token,
                 approve_url=_approve_url,
                 signup_profile=current_profile,
@@ -1765,7 +1813,7 @@ def _run_paypal_protocol_flow(
                 ),
             )
             protocol_signup_result = run_paypal_no_card_protocol_signup(
-                http,
+                _new_paypal_protocol_http_session(protocol_proxy_url),
                 ba_token=ba_token,
                 approve_url=approve_url,
                 signup_profile=current_profile,
@@ -4238,7 +4286,7 @@ def _fill_paypal_otp_inputs(api: ChatGPTTeamAPI, otp_code: str) -> bool:
                         api.page.mouse.click(float(first["x"]), float(first["y"]))
                         api.page.keyboard.type(digits, delay=50)
                         time.sleep(0.5)
-                        return True
+                        continue
                 except Exception:
                     pass
                 try:
@@ -4246,7 +4294,7 @@ def _fill_paypal_otp_inputs(api: ChatGPTTeamAPI, otp_code: str) -> bool:
                         api.page.mouse.click(float(box["x"]), float(box["y"]))
                         api.page.keyboard.type(digits[index], delay=30)
                     time.sleep(0.5)
-                    return True
+                    continue
                 except Exception:
                     pass
             try:
@@ -4256,7 +4304,8 @@ def _fill_paypal_otp_inputs(api: ChatGPTTeamAPI, otp_code: str) -> bool:
                 if locator.is_visible(timeout=250):
                     locator.click(timeout=1000)
                     locator.type(digits, delay=40, timeout=5000)
-                    return True
+                    time.sleep(0.5)
+                    continue
             except Exception:
                 pass
         try:
@@ -4274,10 +4323,55 @@ def _fill_paypal_otp_inputs(api: ChatGPTTeamAPI, otp_code: str) -> bool:
                 api.page.mouse.click(float(viewport["width"]) * 0.39, float(viewport["height"]) * 0.58)
                 api.page.keyboard.type(digits, delay=50)
                 time.sleep(0.3)
-                return True
+                continue
             except Exception:
                 pass
         time.sleep(0.5)
+    return False
+
+
+def _click_paypal_otp_submit(api: ChatGPTTeamAPI) -> bool:
+    script = """() => {
+      const isVisible = (node) => Boolean(node && (node.offsetParent || node.getClientRects?.().length));
+      const dialogs = Array.from(document.querySelectorAll(
+        '[role="dialog"], [aria-modal="true"], .modal, [class*="modal" i]'
+      )).filter(isVisible);
+      const dialog = dialogs.find((node) => {
+        const text = String(node.innerText || '').toLowerCase();
+        return (
+          text.includes('enter your code') ||
+          text.includes('6-digit code') ||
+          text.includes('verification code') ||
+          text.includes('security code') ||
+          text.includes('コードを入力') ||
+          text.includes('セキュリティコード') ||
+          text.includes('確認コード') ||
+          text.includes('認証コード')
+        );
+      });
+      if (!dialog) return false;
+      const controls = Array.from(dialog.querySelectorAll(
+        'button, input[type="submit"], input[type="button"], [role="button"]'
+      )).filter((node) => {
+        if (!isVisible(node) || node.disabled) return false;
+        const text = String(node.innerText || node.value || node.getAttribute('aria-label') || '').trim();
+        return !/resend|send again|close|cancel|再送|閉じる|キャンセル|取消|关闭|關閉/i.test(text);
+      });
+      const preferred = controls.find((node) => {
+        const text = String(node.innerText || node.value || node.getAttribute('aria-label') || '').trim();
+        return /continue|next|submit|confirm|verify|done|続行|次へ|送信|確認|完了|继续|提交|确认|驗證/i.test(text);
+      });
+      const target = preferred || (controls.length === 1 ? controls[0] : null);
+      if (!target) return false;
+      target.click();
+      return true;
+    }"""
+    for frame in _iter_page_frames(api):
+        try:
+            if frame.evaluate(script):
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -4557,6 +4651,29 @@ def _wait_paypal_signup_registration_dom(api: ChatGPTTeamAPI) -> None:
         pass
 
 
+def _paypal_signup_loading_state(api: ChatGPTTeamAPI) -> bool:
+    script = """() => {
+      const visible = (node) => Boolean(node && (node.offsetParent || node.getClientRects?.().length));
+      const selectors = [
+        '[role="progressbar"]',
+        '[aria-busy="true"]',
+        '[data-testid*="spinner" i]',
+        '[data-testid*="loading" i]',
+        '[class*="spinner" i]',
+        '[class*="loading" i]',
+        '[class*="progress" i]'
+      ];
+      return selectors.some((selector) => Array.from(document.querySelectorAll(selector)).some(visible));
+    }"""
+    for frame in _iter_page_frames(api):
+        try:
+            if frame.evaluate(script):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _submit_paypal_signup_registration_form(
     api: ChatGPTTeamAPI,
     *,
@@ -4581,6 +4698,7 @@ def _submit_paypal_signup_registration_form(
         verify_required_values=_verify_paypal_signup_required_values,
         click_submit=lambda api: _click_paypal_signup_submit(api, on_progress=on_progress),
         progress_event=_progress_event,
+        is_loading_state=_paypal_signup_loading_state,
         on_progress=on_progress,
         logger=logger,
         now=time.time,
@@ -4713,7 +4831,7 @@ def _prepare_paypal_authorize_flow_context(
     paypal_country: str,
     paypal_lang: str,
 ) -> dict[str, Any]:
-    return payment_checkout_browser_service.prepare_paypal_authorize_flow_context(
+    context = payment_checkout_browser_service.prepare_paypal_authorize_flow_context(
         paypal_mode=paypal_mode,
         credentials=credentials,
         signup_profile=signup_profile,
@@ -4726,6 +4844,26 @@ def _prepare_paypal_authorize_flow_context(
         signup_profiles_for_phone_pool=_paypal_signup_profiles_for_phone_pool,
         now=time.time,
     )
+    if paypal_mode == "create_account":
+        signup_profiles = [dict(item or {}) for item in list(context.get("signup_profiles") or [])]
+        for profile in signup_profiles:
+            sms_url = str(profile.get("sms_url") or "").strip()
+            if not sms_url:
+                continue
+            try:
+                existing_code = str(sms_otp_service.fetch_sms_code(sms_url) or "").strip()
+            except Exception as exc:
+                logger.info("[paypal_signup] existing OTP snapshot skipped: %s", exc)
+                existing_code = ""
+            if existing_code:
+                ignored = {str(item or "").strip() for item in (profile.get("_ignored_otps") or [])}
+                ignored.add(existing_code)
+                profile["_ignored_otps"] = sorted(item for item in ignored if item)
+        if signup_profiles:
+            context["signup_profiles"] = signup_profiles
+            index = int(context.get("signup_profile_index") or 0)
+            context["active_signup_profile"] = signup_profiles[max(0, min(index, len(signup_profiles) - 1))]
+    return context
 
 
 def _handle_paypal_authorize_cancelled(
@@ -6438,7 +6576,7 @@ def _submit_paypal_signup_otp(
         is_cancelled=is_cancelled,
         poll_signup_otp=_poll_paypal_signup_otp,
         fill_otp_inputs=_fill_paypal_otp_inputs,
-        click_next=lambda api: _click_first(api, PAYPAL_NEXT_SELECTORS, timeout_ms=2500),
+        click_next=_click_paypal_otp_submit,
         release_phone_lock=_release_paypal_signup_phone_lock,
         progress_event=_progress_event,
         on_progress=on_progress,

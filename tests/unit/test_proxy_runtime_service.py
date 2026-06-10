@@ -30,6 +30,12 @@ def test_proxy_api_url_detection_and_provider_defaults():
 
     assert proxy_runtime.is_proxy_api_url(api_url) is True
     assert proxy_runtime.infer_proxy_api_provider_from_url(api_url) == "1024proxy"
+    assert proxy_runtime.default_proxy_api_url("1024") == (
+        "https://white.1024proxy.com/white/api?region=JP&num=1&time=10&format=1&type=json"
+    )
+    assert proxy_runtime.default_proxy_api_url("cliproxy") == (
+        "https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json"
+    )
     assert proxy_runtime.default_paypal_proxy_api_url("1024") == (
         "https://white.1024proxy.com/white/api?region=US&num=1&time=10&format=1&type=json"
     )

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -15,11 +17,288 @@ PAYPAL_HOSTED_CAPTCHA_ARTIFACT_SELECTORS = (
     ".captcha-overlay",
     ".captcha-container",
 )
+PAYPAL_RISK_CAPTURE_ENV = "AUTOTOKEN_PAYPAL_RISK_CAPTURE"
+PAYPAL_RISK_CAPTURE_PATH_ENV = "AUTOTOKEN_PAYPAL_RISK_CAPTURE_PATH"
+PAYPAL_RISK_CAPTURE_MAX_BODY_CHARS = 200_000
+PAYPAL_RISK_HOSTS = {
+    "c.paypal.com",
+    "c6.paypal.com",
+    "ct.ddc.paypal.com",
+    "ddbm2.paypal.com",
+    "geo.ddc.paypal.com",
+}
+PAYPAL_SEQUENCE_PATH_HINTS = (
+    "/agreements/approve",
+    "/auth/",
+    "/checkoutweb/signup",
+    "/graphql",
+    "/signin",
+    "/webapps/",
+    "/xoplatform/logger/api/logger",
+)
+PAYPAL_RISK_HEADER_ALLOWLIST = {
+    "accept",
+    "accept-language",
+    "content-type",
+    "cookie",
+    "origin",
+    "paypal-client-context",
+    "paypal-client-metadata-id",
+    "referer",
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
+    "set-cookie",
+    "user-agent",
+    "x-app-name",
+    "x-country",
+    "x-locale",
+    "x-paypal-internal-euat",
+    "x-requested-with",
+}
 
 
 def _safe_text(value: Any, *, limit: int = 300) -> str:
     text = str(value or "")
     return text[:limit]
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _paypal_capture_url_kind(url: str) -> str:
+    try:
+        parsed = urlsplit(str(url or ""))
+    except Exception:
+        return ""
+    host = parsed.netloc.lower().split("@")[-1].split(":")[0]
+    path = parsed.path.lower()
+    if host in PAYPAL_RISK_HOSTS:
+        return "risk"
+    if host.endswith("paypal.com") and any(hint in path for hint in PAYPAL_SEQUENCE_PATH_HINTS):
+        return "sequence"
+    return ""
+
+
+def _paypal_capture_path(api: Any) -> Path:
+    configured = str(os.environ.get(PAYPAL_RISK_CAPTURE_PATH_ENV) or "").strip()
+    if configured:
+        return Path(configured)
+    existing = str(getattr(api, "_paypal_risk_capture_path", "") or "")
+    if existing:
+        return Path(existing)
+    return Path("data") / f"paypal_risk_capture_{int(time.time())}.jsonl"
+
+
+def _safe_header_subset(headers: Any, *, include_sensitive: bool) -> dict[str, str]:
+    if not isinstance(headers, dict):
+        return {}
+    subset: dict[str, str] = {}
+    for key, value in headers.items():
+        name = str(key or "").strip().lower()
+        if name not in PAYPAL_RISK_HEADER_ALLOWLIST:
+            continue
+        if not include_sensitive and name in {"cookie", "set-cookie", "x-paypal-internal-euat"}:
+            continue
+        subset[name] = _safe_text(value, limit=4096)
+    return subset
+
+
+def _paypal_capture_variable_shape(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 4:
+        return type(value).__name__
+    if isinstance(value, dict):
+        return {
+            str(key): _paypal_capture_variable_shape(item, depth=depth + 1)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "length": len(value),
+            "itemShape": _paypal_capture_variable_shape(value[0], depth=depth + 1) if value else None,
+        }
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+PAYPAL_CAPTURE_VALUE_REDACT_KEYS = {
+    "accessToken",
+    "authId",
+    "cardNumber",
+    "challengeId",
+    "city",
+    "credentialValue",
+    "ctxId",
+    "dateOfBirth",
+    "email",
+    "expirationDate",
+    "familyName",
+    "firstName",
+    "givenName",
+    "lastName",
+    "line1",
+    "line2",
+    "number",
+    "password",
+    "phoneNumber",
+    "pin",
+    "postalCode",
+    "rData",
+    "securityCode",
+    "state",
+    "token",
+}
+
+
+def _paypal_capture_safe_variables(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    if depth >= 4:
+        return type(value).__name__
+    if key in PAYPAL_CAPTURE_VALUE_REDACT_KEYS:
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {
+            str(child_key): _paypal_capture_safe_variables(child_value, key=str(child_key), depth=depth + 1)
+            for child_key, child_value in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, list):
+        return [_paypal_capture_safe_variables(item, key=key, depth=depth + 1) for item in value[:5]]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _safe_text(value, limit=120)
+    return type(value).__name__
+
+
+def _paypal_capture_graphql_item(item: dict[str, Any]) -> dict[str, Any]:
+    variables = item.get("variables")
+    return {
+        "operationName": str(item.get("operationName") or ""),
+        "variableKeys": sorted(variables.keys()) if isinstance(variables, dict) else [],
+        "variableShape": _paypal_capture_variable_shape(variables) if isinstance(variables, dict) else {},
+        "safeVariables": _paypal_capture_safe_variables(variables) if isinstance(variables, dict) else {},
+        "query": _safe_text(item.get("query"), limit=PAYPAL_RISK_CAPTURE_MAX_BODY_CHARS),
+    }
+
+
+def _paypal_capture_body(url: str, body: Any) -> Any:
+    kind = _paypal_capture_url_kind(url)
+    text = str(body or "")
+    if not text:
+        return ""
+    if kind == "risk":
+        return text[:PAYPAL_RISK_CAPTURE_MAX_BODY_CHARS]
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {"length": len(text)}
+    if isinstance(payload, list):
+        return [_paypal_capture_graphql_item(item) for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        return _paypal_capture_graphql_item(payload)
+    return {"jsonType": type(payload).__name__}
+
+
+def install_paypal_risk_network_capture(
+    api: Any,
+    *,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> str:
+    if not _env_truthy(PAYPAL_RISK_CAPTURE_ENV):
+        return ""
+    page = getattr(api, "page", None)
+    if not page:
+        return ""
+    attached_pages = getattr(api, "_paypal_risk_capture_pages", None)
+    if not isinstance(attached_pages, set):
+        attached_pages = set()
+        setattr(api, "_paypal_risk_capture_pages", attached_pages)
+    page_id = id(page)
+    if page_id in attached_pages:
+        return str(getattr(api, "_paypal_risk_capture_path", "") or "")
+
+    capture_path = _paypal_capture_path(api)
+    capture_path.parent.mkdir(parents=True, exist_ok=True)
+    setattr(api, "_paypal_risk_capture_path", str(capture_path))
+
+    def write_event(payload: dict[str, Any]) -> None:
+        try:
+            payload["ts"] = time.time()
+            with capture_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except Exception:
+            logging.getLogger(__name__).debug("PayPal risk capture write failed", exc_info=True)
+
+    def on_request(request: Any) -> None:
+        url = str(getattr(request, "url", "") or "")
+        kind = _paypal_capture_url_kind(url)
+        if not kind:
+            return
+        include_sensitive = kind == "risk"
+        try:
+            headers = request.all_headers()
+        except Exception:
+            headers = getattr(request, "headers", {}) or {}
+        try:
+            post_data = request.post_data
+        except Exception:
+            post_data = ""
+        write_event(
+            {
+                "type": "request",
+                "kind": kind,
+                "method": str(getattr(request, "method", "") or ""),
+                "url": url,
+                "resourceType": str(getattr(request, "resource_type", "") or ""),
+                "headers": _safe_header_subset(headers, include_sensitive=include_sensitive),
+                "body": _paypal_capture_body(url, post_data),
+            }
+        )
+
+    def on_response(response: Any) -> None:
+        try:
+            request = response.request
+        except Exception:
+            request = None
+        url = str(getattr(response, "url", "") or getattr(request, "url", "") or "")
+        kind = _paypal_capture_url_kind(url)
+        if not kind:
+            return
+        include_sensitive = kind == "risk"
+        try:
+            headers = response.all_headers()
+        except Exception:
+            headers = getattr(response, "headers", {}) or {}
+        write_event(
+            {
+                "type": "response",
+                "kind": kind,
+                "method": str(getattr(request, "method", "") or ""),
+                "url": url,
+                "status": int(getattr(response, "status", 0) or 0),
+                "headers": _safe_header_subset(headers, include_sensitive=include_sensitive),
+            }
+        )
+
+    try:
+        page.on("request", on_request)
+        page.on("response", on_response)
+    except Exception:
+        logging.getLogger(__name__).debug("PayPal risk capture attach failed", exc_info=True)
+        return ""
+    attached_pages.add(page_id)
+    if callable(on_progress):
+        on_progress(
+            {
+                "stage": "paypal_risk_capture_enabled",
+                "level": "INFO",
+                "message": f"PayPal 风控网络抓取已开启: {capture_path}",
+                "capture_path": str(capture_path),
+            }
+        )
+    return str(capture_path)
 
 
 def iter_page_frames(api: Any) -> list[Any]:
@@ -663,6 +942,7 @@ PAYPAL_SIGNUP_RECOVER_STATE_KEYS = (
     "_email_reload_cycle_count",
     "_email_first_submitted_at",
     "_fill_retry_count",
+    "otp_submitted_at",
 )
 
 
@@ -1125,6 +1405,13 @@ def maybe_wait_for_paypal_signup_otp(
         else:
             state["_last_signup_otp_wait_excerpt"] = excerpt[:500]
     if state.get("otp_inputs_ready") or state.get("needs_otp"):
+        otp_submitted_at = float(state.get("otp_submitted_at") or 0)
+        if otp_submitted_at > 0:
+            elapsed = now() - otp_submitted_at
+            if elapsed < 30:
+                sleep(1.5)
+                return True, "", True
+            return False, "PayPal OTP 提交后页面仍停留在验证码输入，可能验证码失效或未被页面接受", False
         return None
 
     submitted_at = float(state.get("signup_submitted_at") or 0)
@@ -1206,6 +1493,7 @@ def submit_paypal_signup_otp(
         except Exception:
             return False, "未找到 PayPal 验证码提交按钮", False
     release_phone_lock(state, on_progress=on_progress)
+    state["otp_submitted_at"] = time.time()
     sleep(2.0)
     return True, "", True
 
@@ -3457,6 +3745,7 @@ def handle_paypal_protocol_browser_fallback_dispatch(
     }
     launch_browser(**launch_kwargs)
     page = getattr(api, "page", None)
+    install_paypal_risk_network_capture(api, on_progress=on_progress)
     emit_progress(on_progress, progress_event("paypal_browser_fallback_navigate"))
     browser_entry_url = str(fallback_context.get("browser_entry_url") or fallback_approve_url)
     try:
@@ -3485,6 +3774,7 @@ def handle_paypal_protocol_browser_fallback_dispatch(
         }
         launch_browser(**relaunch_kwargs)
         page = getattr(api, "page", None)
+        install_paypal_risk_network_capture(api, on_progress=on_progress)
         goto_paypal_page_with_retries(
             page,
             browser_entry_url,

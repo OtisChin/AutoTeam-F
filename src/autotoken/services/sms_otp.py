@@ -329,6 +329,7 @@ def poll_otp_from_sms_url(
     sleep_fn: Callable[[float], None] | None = None,
     time_fn: Callable[[], float] | None = None,
     env_float_fn: Callable[[str, float], float] | None = None,
+    otp_label: str = "GoPay OTP",
 ) -> Callable[[], str]:
     make_cancelled = cancelled_error_factory or _cancelled_error
     fetch_code = fetch_sms_code_fn or fetch_sms_code
@@ -386,7 +387,7 @@ def poll_otp_from_sms_url(
                 resend_url = bridge_resend_url(sms_url)
                 if callable(resend_callback) or resend_url:
                     if resend_limit is not None and resend_attempts >= resend_limit:
-                        raise make_cancelled(f"未收到 GoPay OTP，重新发送验证码已达到上限 {resend_limit} 次")
+                        raise make_cancelled(f"未收到 {otp_label}，重新发送验证码已达到上限 {resend_limit} 次")
                     if callable(progress):
                         progress("sms_otp_resend_due", wait_seconds=int(resend_interval))
                     resend_attempts += 1
@@ -415,7 +416,7 @@ def poll_otp_from_sms_url(
                                 progress("sms_otp_resend_failed", reason=_safe_error_summary(exc))
                 next_resend_at = now() + max(0.0, resend_interval)
             sleep(5)
-        raise make_cancelled("等待 GoPay OTP 超时")
+        raise make_cancelled(f"等待 {otp_label} 超时")
 
     try:
         provider._gopay_sms_url = sms_url
@@ -462,6 +463,13 @@ def poll_paypal_signup_otp(
         is_cancelled=is_cancelled,
         progress=progress_adapter(on_progress),
     )
+    ignored_otps = {
+        str(item or "").strip()
+        for item in (signup_profile.get("_ignored_otps") or [])
+        if str(item or "").strip()
+    }
+    if ignored_otps:
+        provider._gopay_ignored_otps = ignored_otps
     provider._gopay_resend_callback = click_resend
     otp = str(provider() or "").strip()
     if otp and on_progress:

@@ -270,7 +270,7 @@ def paypal_phone_value_valid(phone: str, *, country: str = "", normalize_country
     normalized_phone = normalize_phone(phone)
     digits = re.sub(r"\D+", "", normalized_phone)
     if normalized_country == "JP":
-        return len(digits) in {10, 11} and digits.startswith("0")
+        return (len(digits) == 11 and digits.startswith("0")) or len(digits) == 10
     if normalized_country == "US":
         return len(digits) == 10
     return len(digits) >= 7
@@ -1625,6 +1625,7 @@ def submit_paypal_signup_registration_form(
     verify_required_values,
     click_submit,
     progress_event,
+    is_loading_state=None,
     on_progress=None,
     logger: logging.Logger | None = None,
     now=time.time,
@@ -1638,6 +1639,12 @@ def submit_paypal_signup_registration_form(
     ok, error = fill_signup_form(api, signup_profile=signup_profile, on_progress=on_progress)
     if not ok:
         release_phone_lock(state, on_progress=on_progress)
+        if callable(is_loading_state) and is_loading_state(api):
+            state["_fill_retry_count"] = 0
+            if logger:
+                logger.info("[paypal_signup] signup page is still loading, waiting before fill retry")
+            sleep(3.0)
+            return True, "", True
         fill_retry_count = int(state.get("_fill_retry_count") or 0)
         if fill_retry_count < 3:
             state["_fill_retry_count"] = fill_retry_count + 1

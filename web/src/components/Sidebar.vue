@@ -70,6 +70,7 @@ const items = [
   { key: 'gopay', group: 'Payments', glyph: 'GP', label: 'GoPay', mobileLabel: 'GoPay' },
   { key: 'gopayPro', group: 'Payments', glyph: 'G+', label: 'GoPay Pro', mobileLabel: 'GoPay Pro' },
   { key: 'paypal', group: 'Payments', glyph: 'PP', label: 'PayPal', mobileLabel: 'PayPal' },
+  { key: 'paypalIce', group: 'Payments', glyph: 'PI', label: 'PayPal ICE', mobileLabel: 'ICE' },
   { key: 'oauthPhones', group: 'OAuth', glyph: 'PH', label: 'OAuth 手机号', mobileLabel: '手机号' },
   { key: 'oauthPhoneRecords', group: 'OAuth', glyph: 'OR', label: 'OAuth 取号记录', mobileLabel: '取号' },
   { key: 'oauth', group: 'OAuth', glyph: 'OA', label: 'OAuth 登录', mobileLabel: 'OAuth' },

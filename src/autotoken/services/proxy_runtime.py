@@ -88,8 +88,8 @@ def normalize_proxy_api_provider(value: str) -> str:
 def default_proxy_api_url(provider: str, _proxy_url: str = "") -> str:
     normalized_provider = normalize_proxy_api_provider(provider)
     if normalized_provider == "1024proxy":
-        return "https://white.1024proxy.com/white/api?region=US&num=1&time=10&format=1&type=json"
-    return "https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json"
+        return "https://white.1024proxy.com/white/api?region=JP&num=1&time=10&format=1&type=json"
+    return "https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json"
 
 
 def default_paypal_proxy_api_url(provider: str, *, country: str = "US", protocol_no_card: bool = False) -> str:

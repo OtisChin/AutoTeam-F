@@ -141,6 +141,7 @@ from autotoken.api_routes.payment_task_models import (
 from autotoken.api_routes.payment_task_models import (
     PayPalTaskParams as _PayPalTaskParams,
 )
+from autotoken.api_routes.paypal_ice import create_paypal_ice_router
 from autotoken.api_routes.paypal_sms_config import create_paypal_sms_config_router
 from autotoken.api_routes.register_domain import create_register_domain_router
 from autotoken.api_routes.rekberinaja_config import create_rekberinaja_config_router
@@ -684,6 +685,7 @@ app.include_router(create_rekberinaja_config_router(mask_secret=_mask_secret_for
 app.include_router(create_oauth_phone_sms_config_router(mask_secret=_mask_secret_for_config))
 app.include_router(create_gopay_auto_signup_config_router(mask_secret=_mask_secret_for_config))
 app.include_router(create_paypal_sms_config_router(mask_secret=_mask_secret_for_config))
+app.include_router(create_paypal_ice_router(mask_secret=_mask_secret_for_config))
 
 
 # ---------------------------------------------------------------------------
