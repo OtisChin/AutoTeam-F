@@ -33,6 +33,18 @@ LUCKMAIL_PURCHASES_PATH = "/api/v1/openapi/email/purchases"
 LUCKMAIL_TOKEN_LOOKUP_MAX_PAGES = 30
 LUCKMAIL_TOKEN_LOOKUP_PAGE_SIZE = 100
 
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)) or str(default))
+    except (TypeError, ValueError):
+        return default
+    return max(1, value)
+
+
+UPLOAD_BATCH_MAX_ACCOUNTS = _positive_int_env("ACCOUNT_HUB_UPLOAD_BATCH_MAX_ACCOUNTS", 25)
+UPLOAD_BATCH_MAX_BYTES = _positive_int_env("ACCOUNT_HUB_UPLOAD_BATCH_MAX_BYTES", 900 * 1024)
+
 _auto_upload_stop = threading.Event()
 _auto_upload_lock = threading.Lock()
 _auto_upload_thread_lock = threading.Lock()
@@ -458,6 +470,76 @@ def build_upload_payload(
     }
 
 
+def _payload_size_bytes(payload: dict) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except Exception:
+        return UPLOAD_BATCH_MAX_BYTES + 1
+
+
+def _copy_payload_with_items(payload: dict, accounts: list[dict], auths: list[dict], auth_sessions: list[dict]) -> dict:
+    return {
+        "source": dict(payload.get("source") or {}),
+        "accounts": accounts,
+        "auths": auths,
+        "auth_sessions": auth_sessions,
+    }
+
+
+def _split_upload_payload_batches(payload: dict) -> list[dict]:
+    accounts = [item for item in payload.get("accounts") or [] if isinstance(item, dict)]
+    if not accounts:
+        return [_copy_payload_with_items(payload, [], [], [])]
+
+    auths_by_email: dict[str, list[dict]] = {}
+    for item in payload.get("auths") or []:
+        if not isinstance(item, dict):
+            continue
+        auths_by_email.setdefault(_normalized_email(item.get("email")), []).append(item)
+
+    sessions_by_email: dict[str, list[dict]] = {}
+    for item in payload.get("auth_sessions") or []:
+        if not isinstance(item, dict):
+            continue
+        sessions_by_email.setdefault(_normalized_email(item.get("email")), []).append(item)
+
+    batches: list[dict] = []
+    current_accounts: list[dict] = []
+    current_auths: list[dict] = []
+    current_sessions: list[dict] = []
+
+    for account in accounts:
+        email = _normalized_email(account.get("email"))
+        account_auths = auths_by_email.get(email, [])
+        account_sessions = sessions_by_email.get(email, [])
+        candidate = _copy_payload_with_items(
+            payload,
+            [*current_accounts, account],
+            [*current_auths, *account_auths],
+            [*current_sessions, *account_sessions],
+        )
+        account_limit_reached = len(current_accounts) >= max(1, UPLOAD_BATCH_MAX_ACCOUNTS)
+        size_limit_reached = current_accounts and _payload_size_bytes(candidate) > max(1, UPLOAD_BATCH_MAX_BYTES)
+        if account_limit_reached or size_limit_reached:
+            batches.append(_copy_payload_with_items(payload, current_accounts, current_auths, current_sessions))
+            current_accounts = [account]
+            current_auths = list(account_auths)
+            current_sessions = list(account_sessions)
+        else:
+            current_accounts.append(account)
+            current_auths.extend(account_auths)
+            current_sessions.extend(account_sessions)
+
+    if current_accounts:
+        batches.append(_copy_payload_with_items(payload, current_accounts, current_auths, current_sessions))
+
+    total = len(batches)
+    for index, batch in enumerate(batches, start=1):
+        batch["source"]["batch_index"] = index
+        batch["source"]["batch_count"] = total
+    return batches
+
+
 def _mark_accounts_synced(accounts_payload: list[dict], *, synced_at: float | None = None):
     from autotoken.storage.accounts import find_account, load_accounts, save_accounts
 
@@ -503,25 +585,41 @@ def upload_to_hub(
         syncable_only=syncable_only,
         selected_emails=selected_emails,
     )
-    resp = requests.post(
-        _hub_endpoint(cfg["url"], "/api/account-hub/ingest"),
-        headers=_auth_headers(cfg["token"]),
-        json=payload,
-        timeout=60,
-    )
-    if resp.status_code >= 400:
-        raise RuntimeError(f"上传到账号 Hub 失败: HTTP {resp.status_code} {resp.text[:500]}")
-    result = resp.json()
-    marked = _mark_accounts_synced(
-        payload.get("accounts") or [],
-        synced_at=float(payload.get("source", {}).get("uploaded_at") or time.time()),
-    )
-    result.setdefault("uploaded_accounts", len(payload.get("accounts") or []))
-    result.setdefault("uploaded_auths", len(payload.get("auths") or []))
-    result.setdefault("uploaded_auth_sessions", len(payload.get("auth_sessions") or []))
-    result.setdefault("marked_synced_accounts", marked)
-    result.setdefault("syncable_only", syncable_only)
-    return result
+    batches = _split_upload_payload_batches(payload)
+    totals = {
+        "uploaded_accounts": 0,
+        "uploaded_auths": 0,
+        "uploaded_auth_sessions": 0,
+        "marked_synced_accounts": 0,
+        "batch_count": len(batches),
+        "syncable_only": syncable_only,
+    }
+    endpoint = _hub_endpoint(cfg["url"], "/api/account-hub/ingest")
+    headers = _auth_headers(cfg["token"])
+    for index, batch in enumerate(batches, start=1):
+        resp = requests.post(
+            endpoint,
+            headers=headers,
+            json=batch,
+            timeout=60,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"上传到账号 Hub 失败: batch={index}/{len(batches)} HTTP {resp.status_code} {resp.text[:500]}"
+            )
+        try:
+            resp.json()
+        except Exception:
+            pass
+        marked = _mark_accounts_synced(
+            batch.get("accounts") or [],
+            synced_at=float(batch.get("source", {}).get("uploaded_at") or time.time()),
+        )
+        totals["uploaded_accounts"] += len(batch.get("accounts") or [])
+        totals["uploaded_auths"] += len(batch.get("auths") or [])
+        totals["uploaded_auth_sessions"] += len(batch.get("auth_sessions") or [])
+        totals["marked_synced_accounts"] += marked
+    return totals
 
 
 def auto_upload_if_enabled(reason: str = "") -> dict | None:

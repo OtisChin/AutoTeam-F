@@ -50,6 +50,8 @@ class AuthResult:
         self.id_token: str = ""
         self.refresh_token: str = ""
         self.cookie_header: str = ""
+        self.account_id: str = ""
+        self.plan_type: str = ""
 
     def is_valid(self) -> bool:
         return bool(self.session_token and self.access_token)
@@ -66,6 +68,8 @@ class AuthResult:
             "id_token": self.id_token,
             "refresh_token": self.refresh_token,
             "cookie_header": self.cookie_header,
+            "account_id": self.account_id,
+            "plan_type": self.plan_type,
         }
 
 
@@ -2530,7 +2534,12 @@ class AuthFlow:
         resp.raise_for_status()
 
         session_token = self._extract_chatgpt_session_token()
-        access_token = resp.json().get("accessToken", "")
+        session_data = resp.json()
+        access_token = session_data.get("accessToken", "")
+        account = session_data.get("account") if isinstance(session_data, dict) else {}
+        if isinstance(account, dict):
+            self.result.account_id = str(account.get("id") or account.get("account_id") or "").strip()
+            self.result.plan_type = str(account.get("planType") or account.get("plan_type") or "").strip().lower()
 
         if session_token:
             self.result.session_token = session_token
@@ -2727,8 +2736,8 @@ class AuthFlow:
             return False
 
     # ── 手机号优先注册流程 ──
-    def run_phone_first_register(self, mail_provider: MailProvider) -> AuthResult:
-        """手机号先注册 ChatGPT，再绑定当前 mail_provider 创建的邮箱。"""
+    def run_phone_first_register(self, mail_provider: MailProvider | None = None, phone_only: bool = False) -> AuthResult:
+        """手机号先注册 ChatGPT，再绑定当前 mail_provider 创建的邮箱（phone_only 时跳过邮箱绑定和 OAuth）。"""
         if not self.check_proxy():
             logger.warning("网络预检查未通过，继续尝试 phone-first 注册链路以获取精确错误...")
             self._emit_progress(
@@ -2869,6 +2878,31 @@ class AuthFlow:
                 )
             except Exception as exc:
                 logger.warning("[phone-first] 手机号注册原始会话未获取 auth_session，继续 Codex OAuth: %s", exc)
+
+            if phone_only:
+                logger.info("[phone-only] 手机号注册完成，跳过绑定邮箱和 OAuth: %s", phone_login)
+                if web_session_snapshot:
+                    self.result.session_token = web_session_snapshot.get("session_token") or self.result.session_token
+                    self.result.chatgpt_access_token = (
+                        web_session_snapshot.get("chatgpt_access_token") or self.result.chatgpt_access_token
+                    )
+                    self.result.cookie_header = web_session_snapshot.get("cookie_header") or self.result.cookie_header
+                    self.result.device_id = web_session_snapshot.get("device_id") or self.result.device_id
+                else:
+                    # get_auth_session 失败时尝试从当前会话提取 cookie header
+                    try:
+                        self.result.cookie_header = self._build_chatgpt_cookie_header()
+                        if self.result.cookie_header:
+                            logger.info(
+                                "[phone-only] get_auth_session 失败，已从当前会话提取 cookie_header"
+                            )
+                    except Exception:
+                        pass
+                self.result.email = phone_login
+                self.result.password = phone_password
+                logger.info("[phone-only] 手机号注册流程完成: %s", self.result.email)
+                return self.result
+
             self.session = create_http_session(
                 proxy=self.config.proxy,
                 impersonate=self._impersonate_candidates[self._impersonate_idx],
@@ -2918,7 +2952,7 @@ class AuthFlow:
                     phone_attempt_limit,
                     exc_text.splitlines()[0][:160],
                 )
-                return self.run_phone_first_register(mail_provider)
+                return self.run_phone_first_register(mail_provider, phone_only=phone_only)
             raise
 
     # ── 完整注册流程 ──
@@ -3362,6 +3396,8 @@ class AuthFlow:
         self.result.device_id = device_id or str(uuid.uuid4())
         self.session.cookies.set("oai-did", self.result.device_id, domain=".chatgpt.com")
         detected_email = ""
+        detected_account_id = ""
+        detected_plan_type = ""
 
         # 如果有 session_token, 用它刷新 access_token (旧 access_token 可能已过期)
         if session_token:
@@ -3383,6 +3419,14 @@ class AuthFlow:
                 user_obj = session_data.get("user", {}) if isinstance(session_data, dict) else {}
                 if isinstance(user_obj, dict):
                     detected_email = detected_email or (user_obj.get("email", "") or "")
+                account_obj = session_data.get("account", {}) if isinstance(session_data, dict) else {}
+                if isinstance(account_obj, dict):
+                    detected_account_id = detected_account_id or str(
+                        account_obj.get("id") or account_obj.get("account_id") or ""
+                    ).strip()
+                    detected_plan_type = detected_plan_type or str(
+                        account_obj.get("planType") or account_obj.get("plan_type") or ""
+                    ).strip().lower()
                 new_session_token = self.session.cookies.get(chatgpt_session_service.CHATGPT_SESSION_COOKIE, "")
                 if new_access_token:
                     access_token = new_access_token
@@ -3408,6 +3452,14 @@ class AuthFlow:
                 user_obj = session_data.get("user", {}) if isinstance(session_data, dict) else {}
                 if isinstance(user_obj, dict):
                     detected_email = detected_email or (user_obj.get("email", "") or "")
+                account_obj = session_data.get("account", {}) if isinstance(session_data, dict) else {}
+                if isinstance(account_obj, dict):
+                    detected_account_id = detected_account_id or str(
+                        account_obj.get("id") or account_obj.get("account_id") or ""
+                    ).strip()
+                    detected_plan_type = detected_plan_type or str(
+                        account_obj.get("planType") or account_obj.get("plan_type") or ""
+                    ).strip().lower()
                 session_token = self.session.cookies.get(chatgpt_session_service.CHATGPT_SESSION_COOKIE, "")
                 if session_token:
                     logger.info("通过 access_token 获取 session_token 成功")
@@ -3425,6 +3477,8 @@ class AuthFlow:
                 domain=".chatgpt.com",
             )
         self.result.cookie_header = self._build_chatgpt_cookie_header()
+        self.result.account_id = detected_account_id
+        self.result.plan_type = detected_plan_type
 
         # 回填 email（skip-register 模式下常用于账单 email）
         if not detected_email and access_token and access_token.count(".") >= 2:

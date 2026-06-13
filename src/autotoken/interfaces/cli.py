@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     api_p = sub.add_parser("api", help="启动 HTTP API 服务器")
     api_p.add_argument("--host", default="0.0.0.0", help="监听地址（默认 0.0.0.0）")
     api_p.add_argument("--port", type=int, default=8787, help="监听端口（默认 8787）")
+    api_p.add_argument("--build", "-b", action="store_true", help="启动前重新编译前端")
     return parser
 
 
@@ -104,7 +105,7 @@ def dispatch(args: argparse.Namespace):
     if args.command == "api":
         from autotoken.interfaces.api import start_server
 
-        return start_server(host=args.host, port=args.port)
+        return start_server(host=args.host, port=args.port, build=getattr(args, "build", False))
     raise SystemExit(f"unknown command: {args.command}")
 
 

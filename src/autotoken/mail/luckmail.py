@@ -29,6 +29,8 @@ from autotoken.storage import sqlite_store
 logger = logging.getLogger(__name__)
 _PERSIST_NAMESPACE = "luckmail"
 _PERSIST_KEY = "accounts"
+_GLOBAL_RESERVATION_LOCK = threading.Lock()
+_GLOBAL_RESERVED_EMAILS: set[str] = set()
 
 
 def _env(name: str, default: str = "") -> str:
@@ -192,11 +194,12 @@ class LuckMailProvider(MailProvider):
         if not self.accounts and self.api_key:
             account = self._purchase_account(domain=domain)
             self._persist_purchased_account(account)
-            with self._lock:
+            with _GLOBAL_RESERVATION_LOCK, self._lock:
                 self.accounts.append(account)
                 self._tokens_by_email[account.email.lower()] = account.token
                 self._emails_by_token[account.token] = account.email
                 self._reserved.add(account.email.lower())
+                _GLOBAL_RESERVED_EMAILS.add(account.email.lower())
             logger.info("[luckmail] 购买并选择 LuckMail 邮箱: %s", account.email)
             return account.token, account.email
 
@@ -205,13 +208,13 @@ class LuckMailProvider(MailProvider):
 
         registered = self._registered_emails() if self.skip_registered else set()
         wanted_domain = str(domain or "").strip().lstrip("@").lower()
-        with self._lock:
+        with _GLOBAL_RESERVATION_LOCK, self._lock:
             total = len(self.accounts)
             for offset in range(total):
                 idx = (self._account_index + offset) % total
                 account = self.accounts[idx]
                 email = account.email.lower()
-                if email in self._reserved:
+                if email in self._reserved or email in _GLOBAL_RESERVED_EMAILS:
                     continue
                 if self.skip_registered and email in registered:
                     continue
@@ -219,17 +222,19 @@ class LuckMailProvider(MailProvider):
                     continue
                 self._account_index = (idx + 1) % total
                 self._reserved.add(email)
+                _GLOBAL_RESERVED_EMAILS.add(email)
                 logger.info("[luckmail] 选择 LuckMail 注册邮箱: %s", account.email)
                 return account.token, account.email
 
         if self.api_key:
             account = self._purchase_account(domain=domain)
             self._persist_purchased_account(account)
-            with self._lock:
+            with _GLOBAL_RESERVATION_LOCK, self._lock:
                 self.accounts.append(account)
                 self._tokens_by_email[account.email.lower()] = account.token
                 self._emails_by_token[account.token] = account.email
                 self._reserved.add(account.email.lower())
+                _GLOBAL_RESERVED_EMAILS.add(account.email.lower())
             logger.info("[luckmail] 已购邮箱池无可用账号，重新购买并选择 LuckMail 邮箱: %s", account.email)
             return account.token, account.email
 
@@ -249,8 +254,9 @@ class LuckMailProvider(MailProvider):
     def delete_account(self, account_id: int | str) -> dict:
         value = str(account_id or "").strip()
         email = self._emails_by_token.get(value) or normalize_email_addr(value)
-        with self._lock:
+        with _GLOBAL_RESERVATION_LOCK, self._lock:
             self._reserved.discard(email)
+            _GLOBAL_RESERVED_EMAILS.discard(email)
         logger.info("[luckmail] LuckMail provider 不删除真实邮箱，仅释放本地占用: %s", email or value)
         return {"code": 0, "message": "luckmail account retained"}
 

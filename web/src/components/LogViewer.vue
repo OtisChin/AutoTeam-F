@@ -47,6 +47,8 @@ const autoScroll = ref(true)
 const logContainer = ref(null)
 let pollTimer = null
 let lastTime = 0
+const LOG_FETCH_LIMIT = 2000
+const LOG_KEEP_LIMIT = 5000
 
 function formatTime(ts) {
   const d = new Date(ts * 1000)
@@ -56,15 +58,14 @@ function formatTime(ts) {
 async function fetchLogs() {
   loading.value = true
   try {
-    const result = await api.getLogs(500, lastTime)
+    const result = await api.getLogs(LOG_FETCH_LIMIT, lastTime)
     if (result.logs.length > 0) {
       if (lastTime === 0) {
         logs.value = result.logs
       } else {
         logs.value.push(...result.logs)
-        // 保留最新 1000 条
-        if (logs.value.length > 1000) {
-          logs.value = logs.value.slice(-1000)
+        if (logs.value.length > LOG_KEEP_LIMIT) {
+          logs.value = logs.value.slice(-LOG_KEEP_LIMIT)
         }
       }
       lastTime = result.logs[result.logs.length - 1].time

@@ -164,6 +164,30 @@ def _collect_cpa_auth_import_sources(params: AccountCpaAuthImportParams):
     return sources, invalid
 
 
+def _auth_file_declares_plan(auth_file: str, expected_plan: str) -> bool:
+    path = trusted_auth_file_path(auth_file)
+    if not path:
+        return False
+    try:
+        payload = json.loads(read_text(path))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    target = str(expected_plan or "").strip().lower()
+    if not target:
+        return False
+    values = [
+        payload.get("plan_type"),
+        payload.get("chatgpt_plan_type"),
+    ]
+    for key in ("credentials", "providerSpecificData", "account"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            values.extend([nested.get("plan_type"), nested.get("chatgpt_plan_type")])
+    return any(str(value or "").strip().lower() == target for value in values)
+
+
 def create_account_cpa_auths_router(
     *,
     normalize_email: Callable[[str | None], str] | None = None,
@@ -315,27 +339,28 @@ def create_account_cpa_auths_router(
                 missing.append(email)
                 continue
             if str(account.get("account_type") or "").strip().lower() == ACCOUNT_TYPE_PLUS:
-                verification = verify_plus_plan(
-                    {
-                        "email": email,
-                        "auth_file": auth_file,
-                    }
-                )
-                if not verification.get("ok"):
-                    message = str(verification.get("message") or "OpenAI Plus 状态未确认")
-                    normalize_observed_auth_plan(email, auth_file, str(verification.get("plan_type") or ""))
-                    summary = safe_email_summary(email) if safe_email_summary else email
-                    logger.warning("[API] CPA auth 导出跳过未确认 Plus: email=%s message=%s", summary, message)
-                    mark_failed_account(
-                        email,
-                        task_id="export-cpa-auths",
-                        status="pending_manual",
-                        message=f"导出前检测到 {message}",
-                        failure_stage="export_plan_verify",
+                if not _auth_file_declares_plan(auth_file, ACCOUNT_TYPE_PLUS):
+                    verification = verify_plus_plan(
+                        {
+                            "email": email,
+                            "auth_file": auth_file,
+                        }
                     )
-                    missing.append(email)
-                    unconfirmed_plus.append({"email": email, "message": message})
-                    continue
+                    if not verification.get("ok"):
+                        message = str(verification.get("message") or "OpenAI Plus 状态未确认")
+                        normalize_observed_auth_plan(email, auth_file, str(verification.get("plan_type") or ""))
+                        summary = safe_email_summary(email) if safe_email_summary else email
+                        logger.warning("[API] CPA auth 导出跳过未确认 Plus: email=%s message=%s", summary, message)
+                        mark_failed_account(
+                            email,
+                            task_id="export-cpa-auths",
+                            status="pending_manual",
+                            message=f"导出前检测到 {message}",
+                            failure_stage="export_plan_verify",
+                        )
+                        missing.append(email)
+                        unconfirmed_plus.append({"email": email, "message": message})
+                        continue
                 plan_update = update_account_cpa_auth_plan_type(email, account=account, plan_type=ACCOUNT_TYPE_PLUS)
                 auth_file = str(plan_update.get("auth_file") or auth_file)
             path = trusted_auth_file_path(auth_file)

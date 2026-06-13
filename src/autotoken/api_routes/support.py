@@ -39,9 +39,10 @@ def create_support_router(
         }
 
     @router.get("/api/logs")
-    def get_logs(limit: int = 100, since: float = 0):
+    def get_logs(limit: int = 1000, since: float = 0):
         """Return recent in-memory API logs."""
         entries: Sequence[dict]
+        limit = max(1, min(int(limit or 1000), 5000))
         if since > 0:
             entries = [entry for entry in log_buffer if entry["time"] > since]
         else:

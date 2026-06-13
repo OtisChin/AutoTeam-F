@@ -155,6 +155,42 @@ def test_free_codex_oauth_bundle_can_force_registration_email():
     assert bundle["chatgpt_plan_type"] == "free"
 
 
+def test_account_codex_oauth_bundle_fills_plus_metadata_and_account_id():
+    original = {
+        "email": "plus@example.com",
+        "access_token": "access",
+        "refresh_token": "refresh",
+        "plan_type": "unknown",
+        "account_id": "",
+    }
+
+    bundle = registration.account_codex_oauth_bundle(
+        original,
+        account_type="plus",
+        account_id="acct-plus",
+    )
+
+    assert bundle["plan_type"] == "plus"
+    assert bundle["chatgpt_plan_type"] == "plus"
+    assert bundle["account_id"] == "acct-plus"
+    assert original["plan_type"] == "unknown"
+    assert original["account_id"] == ""
+
+
+def test_account_codex_oauth_bundle_does_not_downgrade_known_plus_to_stale_free():
+    bundle = registration.account_codex_oauth_bundle(
+        {
+            "email": "plus@example.com",
+            "plan_type": "free",
+            "chatgpt_plan_type": "free",
+        },
+        account_type="plus",
+    )
+
+    assert bundle["plan_type"] == "plus"
+    assert bundle["chatgpt_plan_type"] == "plus"
+
+
 def test_free_codex_oauth_result_omits_none_optional_fields():
     assert registration.free_codex_oauth_result(
         email="user@example.com",

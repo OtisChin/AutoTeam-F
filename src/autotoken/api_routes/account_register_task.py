@@ -32,6 +32,7 @@ class ManualRegisterParams(BaseModel):
         validation_alias=AliasChoices("luckmail_preferred_domains", "luckmailPreferredDomains"),
     )
     post_register_oauth: bool = False
+    phone_only: bool = False
     protocol_register: bool = Field(False, validation_alias=AliasChoices("protocol_register", "protocolRegister"))
     oauth_phone_sms_provider: str = Field(
         "",
@@ -102,7 +103,8 @@ def create_account_register_task_router(
         if registration_flow not in {"standard", "phone_cpa"}:
             raise HTTPException(status_code=400, detail="registration_flow 只支持 standard 或 phone_cpa")
         register_mode = "protocol" if registration_flow == "phone_cpa" or bool(params.protocol_register) else "browser"
-        post_register_oauth = registration_flow == "phone_cpa" or bool(params.post_register_oauth)
+        phone_only = bool(params.phone_only)
+        post_register_oauth = (registration_flow == "phone_cpa" and not phone_only) or bool(params.post_register_oauth)
         oauth_phone_sms_provider = (
             normalize_oauth_phone_sms_provider(params.oauth_phone_sms_provider)
             if params.oauth_phone_sms_provider
@@ -143,7 +145,7 @@ def create_account_register_task_router(
             raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
 
         configured_domains = get_register_domains()
-        domain_required = mail_provider not in {"luckmail", "outlook"}
+        domain_required = mail_provider not in {"luckmail", "outlook"} and not phone_only
 
         def _clean_domain(value) -> str:
             return str(value or "").strip().lstrip("@").strip()
@@ -222,6 +224,7 @@ def create_account_register_task_router(
             "luckmail_preferred_domain": luckmail_preferred_domain or "",
             "luckmail_preferred_domains": luckmail_preferred_domains,
             "post_register_oauth": post_register_oauth,
+            "phone_only": phone_only,
             "oauth_phone_sms_provider": oauth_phone_sms_provider or "<default>",
             "oauth_phone_sms_country": oauth_phone_sms_country or "",
             "oauth_phone_sms_max_price": oauth_phone_sms_max_price,
@@ -251,6 +254,7 @@ def create_account_register_task_router(
                 luckmail_preferred_domain=luckmail_preferred_domain,
                 luckmail_preferred_domains=luckmail_preferred_domains,
                 post_register_oauth=post_register_oauth,
+                phone_only=phone_only,
                 registration_flow=registration_flow,
                 register_mode=register_mode,
                 proxy_url=normalized_proxy_url,
@@ -280,6 +284,7 @@ def create_account_register_task_router(
             luckmail_preferred_domain=luckmail_preferred_domain,
             luckmail_preferred_domains=luckmail_preferred_domains,
             post_register_oauth=post_register_oauth,
+            phone_only=phone_only,
             registration_flow=registration_flow,
             oauth_phone_sms_provider=oauth_phone_sms_provider or None,
             oauth_phone_sms_country=oauth_phone_sms_country or None,

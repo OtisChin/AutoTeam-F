@@ -87,6 +87,7 @@ from autotoken.storage.auth_files import read_auth_json_file
 from autotoken.storage.register_failures import record_failure
 
 logger = logging.getLogger(__name__)
+_TEMPORARY_MAIL_PROVIDER_LOCK = threading.RLock()
 
 MAIL_TIMEOUT = int(os.environ.get("MAIL_TIMEOUT", "180"))
 OUTLOOK_REGISTER_CODE_TIMEOUT = int(os.environ.get("OUTLOOK_REGISTER_CODE_TIMEOUT", "90"))
@@ -115,20 +116,21 @@ def _temporary_mail_provider(provider: str | None, overrides: dict[str, str] | N
     if not selected and not override_values:
         yield
         return
-    previous = {"MAIL_PROVIDER": os.environ.get("MAIL_PROVIDER")}
-    previous.update({key: os.environ.get(key) for key in override_values})
-    if selected:
-        os.environ["MAIL_PROVIDER"] = selected
-    for key, value in override_values.items():
-        os.environ[key] = value
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    with _TEMPORARY_MAIL_PROVIDER_LOCK:
+        previous = {"MAIL_PROVIDER": os.environ.get("MAIL_PROVIDER")}
+        previous.update({key: os.environ.get(key) for key in override_values})
+        if selected:
+            os.environ["MAIL_PROVIDER"] = selected
+        for key, value in override_values.items():
+            os.environ[key] = value
+        try:
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def _normalized_email(value: str | None) -> str:
@@ -1460,6 +1462,7 @@ def _run_post_register_oauth(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    phone_only=False,
 ):
     """
     注册（加入 Team）成功后统一的收尾流程：
@@ -1875,6 +1878,7 @@ def _refresh_auth_session_via_protocol_login(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    phone_only=False,
 ):
     from autotoken.auth.protocol_register import login_once as protocol_login_once
 
@@ -1958,6 +1962,7 @@ def _run_post_register_session_oauth(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    phone_only=False,
 ):
     """Use the just-created ChatGPT session to finish Codex OAuth, codex-console style."""
 
@@ -2147,6 +2152,7 @@ def _run_post_register_relogin_oauth(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    phone_only=False,
 ):
     """Finish post-register Codex OAuth by logging in again, not by reusing the register session."""
 
@@ -2836,6 +2842,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
     """
     from playwright.sync_api import sync_playwright
 
+    import sys; print("DEBUG: create_account_direct registration_flow=", repr(registration_flow), "phone_only=", repr(phone_only), "oauth_phone_sms_provider=", repr(oauth_phone_sms_provider), flush=True)
     from autotoken.auth.invite import RegisterBlocked, assert_not_blocked
 
     logger.info("[直接注册] %s", email)
@@ -3212,6 +3219,7 @@ def create_account_direct(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    phone_only=False,
 ):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
@@ -3226,6 +3234,7 @@ def create_account_direct(
     - is_duplicate=True: 换个临时邮箱继续尝试，独立计数不消耗 register_attempts
     - 其他异常:          归入现有 retry 计数
     """
+    import sys; print("DEBUG: create_account_direct registration_flow=", repr(registration_flow), "phone_only=", repr(phone_only), "oauth_phone_sms_provider=", repr(oauth_phone_sms_provider), flush=True)
     from autotoken.auth.invite import RegisterBlocked
 
     def _progress(stage, message, **extra):
@@ -3268,91 +3277,153 @@ def create_account_direct(
         )
 
     if registration_flow == "phone_cpa":
+        import sys
+        print(f"DEBUG: phone_only={phone_only} phone_only_check={bool(phone_only)}", flush=True)
         provider_label = str(oauth_phone_sms_provider or os.environ.get("OAUTH_PHONE_SMS_PROVIDER") or "phone_pool")
-        _progress(
-            "phone_first_register_started",
-            "开始手机号注册，成功后再创建并绑定邮箱",
-            oauth_phone_sms_provider=provider_label,
-        )
 
-        def _create_phone_first_mailbox():
-            nonlocal account_id, email
-            _progress("register_email_creating", f"手机号注册成功，正在创建绑定邮箱: domain=@{domain or '<default>'}")
-            account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
-            _progress("register_email_created", f"已创建绑定邮箱: {email}", email=email)
-            return account_id, email
-
-        try:
-            from autotoken.auth.protocol_register import phone_first_register_once
-
-            success, session_data = phone_first_register_once(
-                mail_client,
-                email="",
-                password=password,
-                account_id=None,
-                mailbox_factory=_create_phone_first_mailbox,
-                proxy=proxy_url,
+        if phone_only:
+            _progress(
+                "phone_only_register_started",
+                "开始纯手机号注册（不绑定邮箱和 OAuth）",
                 oauth_phone_sms_provider=provider_label,
-                oauth_phone_sms_country=oauth_phone_sms_country,
-                progress_callback=progress_callback,
             )
-            if isinstance(session_data, dict):
-                email = str(session_data.get("mailbox_email") or email or "").strip()
-                account_id = session_data.get("mailbox_account_id") or account_id
-            if not success:
-                reason = str((session_data or {}).get("raw") or "phone-first 注册未成功")
-                record_failure(email, "phone_first_failed", reason)
-                _record_outcome("phone_first_failed", reason=reason)
-                _progress("phone_first_register_failed", f"手机号注册失败: {email or '<未创建邮箱>'}: {reason}", email=email, level="error")
-                return None
+            try:
+                from autotoken.auth.protocol_register import phone_only_register_once
 
-            saved_session = None
-            bundle = (session_data or {}).get("codex_oauth_bundle")
-            if _auth_session_payload_has_web_session(session_data):
-                saved_session = _save_auth_from_session_page(
-                    email,
-                    password,
-                    account_id,
-                    session_data,
-                    out_outcome=out_outcome,
-                    mail_provider=_mail_client_provider_name(mail_client) or None,
+                success, session_data = phone_only_register_once(
+                    password=password,
+                    proxy=proxy_url,
+                    oauth_phone_sms_provider=provider_label,
+                    oauth_phone_sms_country=oauth_phone_sms_country,
+                    progress_callback=progress_callback,
                 )
+                if isinstance(session_data, dict):
+                    email = str(session_data.get("email") or session_data.get("mailbox_email") or "").strip()
+                if not success:
+                    reason = str((session_data or {}).get("raw") or "phone-only 注册未成功")
+                    record_failure(email, "phone_only_failed", reason)
+                    _record_outcome("phone_only_failed", reason=reason)
+                    _progress("phone_only_register_failed", f"纯手机号注册失败: {reason}", level="error")
+                    return None
+
+                saved_session = None
+                if _auth_session_payload_has_web_session(session_data):
+                    saved_session = _save_auth_from_session_page(
+                        email,
+                        password,
+                        account_id,
+                        session_data,
+                        out_outcome=out_outcome,
+                        mail_provider=_mail_client_provider_name(mail_client) or None,
+                    )
                 if saved_session:
-                    _progress("phone_first_auth_session_saved", f"手机号注册完成，已保存 auth_session: {email}", email=email)
-                else:
-                    logger.warning("[phone-first] 注册结果包含 ChatGPT Web session，但 auth_session 未保存成功: %s", email)
-            else:
-                logger.warning("[phone-first] 注册结果未包含 ChatGPT Web session，跳过 auth_session 保存: %s", email)
+                    _progress("phone_only_register_finished", f"纯手机号注册完成，已保存 auth_session: {email}", email=email)
+                    return saved_session
+                # phone_only 注册成功但未获取到 Web 会话 cookie/accessToken 时，
+                # 保存 session-only 存根确保账号出现在仪表盘
+                if email:
+                    from autotoken.services.account_session_stubs import session_only_account_stub
+                    from autotoken.storage.accounts import ensure_session_only_account
+                    ensure_session_only_account(email)
+                    saved_stub = session_only_account_stub(email)
+                    _progress("phone_only_register_finished", f"纯手机号注册完成（已保存会话存根）: {email}", email=email)
+                    return saved_stub
+                reason = str((out_outcome or {}).get("reason") or "phone-only 注册完成但未保存有效凭证")
+                record_failure(email, "phone_only_auth_failed", reason)
+                _record_outcome("phone_only_auth_failed", reason=reason)
+                _progress("phone_only_register_failed", f"纯手机号注册完成但凭证保存失败: {reason}", level="error")
+                return None
+            except Exception as exc:
+                reason = str(exc)
+                record_failure(email, "phone_only_exception", reason)
+                _record_outcome("phone_only_exception", reason=reason)
+                _progress("phone_only_register_failed", f"纯手机号注册异常: {reason}", level="error")
+                raise
+        else:
+            _progress(
+                "phone_first_register_started",
+                "开始手机号注册，成功后再创建并绑定邮箱",
+                oauth_phone_sms_provider=provider_label,
+            )
 
-            if bundle:
-                saved = _save_codex_oauth_bundle_for_account(
-                    email,
-                    password,
-                    account_id,
-                    bundle,
-                    out_outcome=out_outcome,
-                    mail_provider=_mail_client_provider_name(mail_client) or None,
-                    source="phone_first_protocol_oauth",
+            def _create_phone_first_mailbox():
+                nonlocal account_id, email
+                _progress("register_email_creating", f"手机号注册成功，正在创建绑定邮箱: domain=@{domain or '<default>'}")
+                account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
+                _progress("register_email_created", f"已创建绑定邮箱: {email}", email=email)
+                return account_id, email
+
+            try:
+                from autotoken.auth.protocol_register import phone_first_register_once
+
+                success, session_data = phone_first_register_once(
+                    mail_client,
+                    email="",
+                    password=password,
+                    account_id=None,
+                    mailbox_factory=_create_phone_first_mailbox,
+                    proxy=proxy_url,
+                    oauth_phone_sms_provider=provider_label,
+                    oauth_phone_sms_country=oauth_phone_sms_country,
+                    progress_callback=progress_callback,
                 )
-                if saved:
-                    _progress("phone_first_register_finished", f"手机号注册和 OAuth 已完成: {email}", email=email)
-                    return saved
+                if isinstance(session_data, dict):
+                    email = str(session_data.get("mailbox_email") or email or "").strip()
+                    account_id = session_data.get("mailbox_account_id") or account_id
+                if not success:
+                    reason = str((session_data or {}).get("raw") or "phone-first 注册未成功")
+                    record_failure(email, "phone_first_failed", reason)
+                    _record_outcome("phone_first_failed", reason=reason)
+                    _progress("phone_first_register_failed", f"手机号注册失败: {email or '<未创建邮箱>'}: {reason}", email=email, level="error")
+                    return None
 
-            if saved_session:
-                _progress("phone_first_register_finished", f"手机号注册完成，已保存 auth_session: {email}", email=email)
-                return saved_session
+                saved_session = None
+                bundle = (session_data or {}).get("codex_oauth_bundle")
+                if _auth_session_payload_has_web_session(session_data):
+                    saved_session = _save_auth_from_session_page(
+                        email,
+                        password,
+                        account_id,
+                        session_data,
+                        out_outcome=out_outcome,
+                        mail_provider=_mail_client_provider_name(mail_client) or None,
+                    )
+                    if saved_session:
+                        _progress("phone_first_auth_session_saved", f"手机号注册完成，已保存 auth_session: {email}", email=email)
+                    else:
+                        logger.warning("[phone-first] 注册结果包含 ChatGPT Web session，但 auth_session 未保存成功: %s", email)
+                else:
+                    logger.warning("[phone-first] 注册结果未包含 ChatGPT Web session，跳过 auth_session 保存: %s", email)
 
-            reason = str((out_outcome or {}).get("reason") or "phone-first 注册完成但未保存有效凭证")
-            record_failure(email, "phone_first_auth_failed", reason)
-            _record_outcome("phone_first_auth_failed", reason=reason)
-            _progress("phone_first_register_failed", f"手机号注册完成但凭证保存失败: {email}", email=email, level="error")
-            return None
-        except Exception as exc:
-            reason = str(exc)
-            record_failure(email, "phone_first_exception", reason)
-            _record_outcome("phone_first_exception", reason=reason)
-            _progress("phone_first_register_failed", f"手机号注册异常: {email}: {reason}", email=email, level="error")
-            raise
+                if bundle:
+                    saved = _save_codex_oauth_bundle_for_account(
+                        email,
+                        password,
+                        account_id,
+                        bundle,
+                        out_outcome=out_outcome,
+                        mail_provider=_mail_client_provider_name(mail_client) or None,
+                        source="phone_first_protocol_oauth",
+                    )
+                    if saved:
+                        _progress("phone_first_register_finished", f"手机号注册和 OAuth 已完成: {email}", email=email)
+                        return saved
+
+                if saved_session:
+                    _progress("phone_first_register_finished", f"手机号注册完成，已保存 auth_session: {email}", email=email)
+                    return saved_session
+
+                reason = str((out_outcome or {}).get("reason") or "phone-first 注册完成但未保存有效凭证")
+                record_failure(email, "phone_first_auth_failed", reason)
+                _record_outcome("phone_first_auth_failed", reason=reason)
+                _progress("phone_first_register_failed", f"手机号注册完成但凭证保存失败: {email}", email=email, level="error")
+                return None
+            except Exception as exc:
+                reason = str(exc)
+                record_failure(email, "phone_first_exception", reason)
+                _record_outcome("phone_first_exception", reason=reason)
+                _progress("phone_first_register_failed", f"手机号注册异常: {email}: {reason}", email=email, level="error")
+                raise
 
     def _discard_email(reason):
         logger.info("[直接注册] %s，保留临时邮箱服务账号: %s id=%s", reason, email, account_id)
@@ -4359,6 +4430,7 @@ def cmd_register_accounts(
     register_proxy_meta=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    phone_only=False,
     oauth_phone_sms_max_price=None,
     progress_callback=None,
 ):
@@ -4587,6 +4659,7 @@ def cmd_register_accounts(
                         proxy_url=selected_proxy_url,
                         oauth_phone_sms_provider=oauth_phone_sms_provider,
                         oauth_phone_sms_country=oauth_phone_sms_country,
+                        phone_only=phone_only,
                         progress_callback=progress_callback,
                     )
                 if isinstance(raw_result, str):

@@ -63,7 +63,7 @@
 
           <PayPalPage v-else-if="currentPage === 'paypal'" />
 
-          <PayPalIcePage v-else-if="currentPage === 'paypalIce'" />
+          <PayPalIcePage v-else-if="currentPage === 'paypalIce'" @refresh="refresh" />
 
           <OAuthPhonePoolPage v-else-if="currentPage === 'oauthPhones'" />
 
@@ -406,7 +406,17 @@ function withTimeout(promise, ms, label) {
 }
 
 function buildDashboardStatusFromAccounts(accounts) {
-  const rows = Array.isArray(accounts) ? accounts : []
+  const rows = (Array.isArray(accounts) ? accounts : []).map(acc => {
+    const status = String(acc?.status || '').trim().toLowerCase()
+    const normalized = ['personal', 'plus', 'paypal_ice'].includes(status) ? 'active' : status
+    const lastBindProvider = String(acc?.last_bind_provider || '').trim().toLowerCase()
+    return {
+      ...acc,
+      raw_status: acc?.raw_status || status,
+      status: normalized,
+      last_bind_provider: lastBindProvider || (status === 'paypal_ice' ? 'paypal_ice' : ''),
+    }
+  })
   const summary = {
     active: 0,
     standby: 0,

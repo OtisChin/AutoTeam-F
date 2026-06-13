@@ -401,6 +401,31 @@ def test_account_cpa_auth_export_cpa_sanitizes_duplicate_zip_member_names(monkey
     assert all("/" not in name and "\\" not in name and ".." not in name for name in names)
 
 
+def test_account_cpa_auth_export_cpa_skips_plus_verify_when_auth_declares_plus(monkeypatch, tmp_path):
+    auth_file = tmp_path / "codex-plus@example.com-plus-deadbeef.json"
+    payload = {"email": "plus@example.com", "access_token": "token", "plan_type": "plus"}
+    auth_file.write_text(json.dumps(payload), encoding="utf-8")
+    app = _app(
+        normalize_email=lambda value: (value or "").strip().lower(),
+        resolve_codex_auth_file=lambda _account: str(auth_file),
+        update_account_cpa_auth_plan_type=lambda *_args, **_kwargs: {"auth_file": str(auth_file)},
+        verify_plus_plan=lambda _item: (_ for _ in ()).throw(AssertionError("should not verify known plus auth")),
+        normalize_observed_auth_plan=lambda *_args: None,
+        mark_failed_account=lambda *_args, **_kwargs: None,
+    )
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "plus@example.com", "account_type": "plus"}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "plus@example.com" else None)
+    monkeypatch.setattr(accounts, "update_account", lambda *_args, **_kwargs: None)
+
+    result = _endpoint(app, "/api/accounts/export-cpa-auths", "POST")(
+        AccountEmailBatchParams(emails=["plus@example.com"])
+    )
+
+    assert result["count"] == 1
+    assert json.loads(base64.b64decode(result["content_base64"]).decode("utf-8")) == payload
+
+
 def test_account_cpa_auth_export_cpa_rejects_unconfirmed_plus(monkeypatch, tmp_path):
     auth_file = tmp_path / "codex-plus@example.com-plus-deadbeef.json"
     auth_file.write_text(json.dumps({"email": "plus@example.com"}), encoding="utf-8")

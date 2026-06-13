@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from autotoken.services import chatgpt_session as chatgpt_session_service
+
 logger = logging.getLogger(__name__)
 
 
@@ -449,6 +451,8 @@ def _session_data_from_auth_result(result) -> dict:
     device_id = str(data.get("device_id") or "").strip()
     cookie_header = str(data.get("cookie_header") or "").strip()
     email = str(data.get("email") or "").strip()
+    account_id = str(data.get("account_id") or "").strip()
+    plan_type = str(data.get("plan_type") or "").strip().lower()
     session = {
         "accessToken": session_access_token,
         "access_token": session_access_token,
@@ -464,10 +468,16 @@ def _session_data_from_auth_result(result) -> dict:
         "cookie_header": cookie_header,
         "user": {"email": email},
     }
+    if account_id:
+        session["accountId"] = account_id
+        session["account"] = {"id": account_id}
+    if plan_type:
+        session.setdefault("account", {})["planType"] = plan_type
     payload = {
         "status": 200 if session_access_token or oauth_access_token else 0,
         "data": session,
         "raw": "",
+        "email": email,
         "auth_context": {
             "cookie_header": cookie_header,
             "device_id": device_id,
@@ -487,6 +497,13 @@ def _session_data_from_auth_result(result) -> dict:
                 },
                 fallback_email=email,
             )
+            bundle = payload["codex_oauth_bundle"]
+            if account_id and not str(bundle.get("account_id") or "").strip():
+                bundle["account_id"] = account_id
+            bundle_plan = str(bundle.get("plan_type") or "").strip().lower()
+            if plan_type and bundle_plan in {"", "unknown"}:
+                bundle["plan_type"] = plan_type
+                bundle["chatgpt_plan_type"] = plan_type
         except Exception as exc:
             logger.warning("[协议注册] 构建协议 OAuth bundle 失败，仍保留 auth_session: %s", exc)
     return payload
@@ -600,6 +617,134 @@ def phone_first_register_once(
     return True, session_data
 
 
+def _merged_auth_session_payload(session_data: dict) -> dict:
+    if not isinstance(session_data, dict):
+        return {}
+    raw = session_data.get("data") if isinstance(session_data.get("data"), dict) else session_data
+    context = session_data.get("auth_context") if isinstance(session_data.get("auth_context"), dict) else {}
+    merged = {}
+    if isinstance(raw, dict):
+        merged.update(raw)
+    merged.update({key: value for key, value in context.items() if value})
+    return merged
+
+
+def _auth_session_token_from_payload(payload: dict) -> str:
+    token = chatgpt_session_service.session_token_from_cookie_header(str((payload or {}).get("cookie_header") or ""))
+    if token:
+        return token
+    return str((payload or {}).get("sessionToken") or (payload or {}).get("session_token") or "").strip()
+
+
+def oauth_from_auth_session_once(
+    mail_client,
+    *,
+    session_data: dict,
+    email: str = "",
+    password: str = "",
+    account_id: str | int | None = None,
+    mailbox_factory=None,
+    proxy: str | None = None,
+    oauth_phone_sms_provider: str | None = None,
+    oauth_phone_sms_country: str | None = None,
+    progress_callback=None,
+) -> dict:
+    """Pure protocol Codex OAuth from an existing ChatGPT auth_session.
+
+    This is the dashboard counterpart of the phone->email->OAuth registration
+    flow: it seeds AuthFlow with the saved ChatGPT session and lets the protocol
+    OAuth path bind an email if OpenAI returns add-email.
+    """
+
+    AuthFlow, Config = _load_protocol_classes()
+    cfg = Config()
+    cfg.proxy = proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None
+    flow = AuthFlow(cfg)
+    if callable(progress_callback):
+        flow._autotoken_progress_callback = progress_callback
+    _attach_flow_stage_logs(flow)
+    _attach_oauth_phone_supplier(
+        flow,
+        provider=oauth_phone_sms_provider or "phone_pool",
+        country=oauth_phone_sms_country,
+        email=email,
+    )
+    if password:
+        flow._default_password_from_email = lambda _email: password  # type: ignore[attr-defined]
+
+    payload = _merged_auth_session_payload(session_data)
+    session_token = _auth_session_token_from_payload(payload)
+    access_token = str(payload.get("accessToken") or payload.get("access_token") or "").strip()
+    device_id = str(payload.get("oai_device_id") or payload.get("device_id") or "").strip()
+    if not session_token and not access_token:
+        raise RuntimeError(f"auth_session 缺少可复用凭证: {email or '<phone-only>'}")
+
+    adapter = ProtocolMailAdapter(
+        mail_client,
+        email="" if callable(mailbox_factory) else email,
+        account_id=account_id,
+        mailbox_factory=mailbox_factory,
+    )
+    logger.info(
+        "[协议补登录] 使用 auth_session 执行 Codex OAuth: email=%s mailbox_factory=%s proxy=%s provider=%s",
+        email or "<phone-only>",
+        bool(mailbox_factory),
+        "enabled" if cfg.proxy else "disabled",
+        oauth_phone_sms_provider or "<default>",
+    )
+    flow.from_existing_credentials(session_token, access_token, device_id)
+    if email and not str(flow.result.email or "").strip():
+        flow.result.email = email
+    if password:
+        flow.result.password = password
+    if not flow.oauth_codex_rt_exchange(mail_provider=adapter):
+        raise RuntimeError(f"协议 Codex OAuth 未返回 refresh_token: {email or '<phone-only>'}")
+    session_payload = _session_data_from_auth_result(flow.result)
+    session_payload["mailbox_email"] = adapter.email
+    session_payload["mailbox_account_id"] = adapter.account_id
+    logger.info("[协议补登录] Codex OAuth 完成: %s", session_payload.get("email") or adapter.email or email)
+    return session_payload
+
+
+def phone_only_register_once(
+    *,
+    password: str,
+    proxy: str | None = None,
+    oauth_phone_sms_provider: str | None = None,
+    oauth_phone_sms_country: str | None = None,
+    progress_callback=None,
+) -> tuple[bool, dict]:
+    """手机号仅注册（跳过绑定邮箱和 OAuth），返回 ChatGPT Web session。"""
+    AuthFlow, Config = _load_protocol_classes()
+    cfg = Config()
+    cfg.proxy = proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None
+    flow = AuthFlow(cfg)
+    if callable(progress_callback):
+        flow._autotoken_progress_callback = progress_callback
+    _attach_flow_stage_logs(flow)
+    _attach_oauth_phone_supplier(
+        flow,
+        provider=oauth_phone_sms_provider or "phone_pool",
+        country=oauth_phone_sms_country,
+        email="",
+    )
+    if password:
+        flow._default_password_from_email = lambda _email: password  # type: ignore[attr-defined]
+    logger.info(
+        "[phone-only] 开始手机号注册（跳过邮箱绑定和 OAuth）: proxy=%s provider=%s",
+        "enabled" if cfg.proxy else "disabled",
+        oauth_phone_sms_provider or "<default>",
+    )
+    result = flow.run_phone_first_register(mail_provider=None, phone_only=True)
+    if not result or not result.is_valid():
+        logger.error("[phone-only] 未返回有效 auth_session: %s", result)
+        return False, {"status": 0, "data": {}, "raw": "phone-only 未返回有效 auth_session"}
+    session_data = _session_data_from_auth_result(result)
+    logger.info("[phone-only] 注册完成（仅手机）: %s", session_data.get("email", result.email))
+    return True, session_data
+
+
+
 def login_once(
     mail_client,
     *,
@@ -609,6 +754,7 @@ def login_once(
     proxy: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    progress_callback=None,
 ) -> dict:
     """Pure protocol login for an existing account; returns auth_session and optional Codex OAuth bundle."""
 
@@ -616,6 +762,8 @@ def login_once(
     cfg = Config()
     cfg.proxy = proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None
     flow = AuthFlow(cfg)
+    if callable(progress_callback):
+        flow._autotoken_progress_callback = progress_callback
     _attach_flow_stage_logs(flow)
     _attach_oauth_phone_supplier(
         flow,

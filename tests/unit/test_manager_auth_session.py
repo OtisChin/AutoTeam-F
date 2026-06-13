@@ -1,3 +1,7 @@
+import os
+import threading
+import time
+
 from autotoken import accounts, manager
 
 
@@ -63,6 +67,44 @@ class FakeAuthSessionPage:
 
     def wait_for_load_state(self, *args, **kwargs):
         self.load_state_waits.append((args, kwargs))
+
+
+def test_temporary_mail_provider_serializes_environment_overrides(monkeypatch):
+    monkeypatch.setenv("MAIL_PROVIDER", "cloudflare_temp_email")
+    entered = threading.Event()
+    release = threading.Event()
+    events = []
+
+    def first_worker():
+        with manager._temporary_mail_provider("luckmail"):
+            events.append(("first_enter", os.environ.get("MAIL_PROVIDER")))
+            entered.set()
+            release.wait(timeout=2)
+            events.append(("first_exit", os.environ.get("MAIL_PROVIDER")))
+
+    def second_worker():
+        entered.wait(timeout=2)
+        with manager._temporary_mail_provider("outlook"):
+            events.append(("second_enter", os.environ.get("MAIL_PROVIDER")))
+
+    first = threading.Thread(target=first_worker)
+    second = threading.Thread(target=second_worker)
+    first.start()
+    assert entered.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+
+    assert events == [("first_enter", "luckmail")]
+
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert events == [
+        ("first_enter", "luckmail"),
+        ("first_exit", "luckmail"),
+        ("second_enter", "outlook"),
+    ]
 
 
 def test_auth_context_capture_saves_sentinel_metadata():
@@ -318,6 +360,43 @@ def test_session_data_keeps_chatgpt_access_separate_from_codex_bundle(monkeypatc
     assert payload["codex_oauth_bundle"]["access_token"] == "codex-access"
     assert captured["token_response"]["access_token"] == "codex-access"
     assert captured["fallback_email"] == "phone-first@example.com"
+
+
+def test_session_data_preserves_chatgpt_account_metadata_in_codex_bundle(monkeypatch):
+    from autotoken.auth import protocol_register as protocol_register_module
+
+    class FakeResult:
+        def to_dict(self):
+            return {
+                "email": "plus@example.com",
+                "session_token": "chatgpt-session",
+                "chatgpt_access_token": "chatgpt-access",
+                "access_token": "codex-access",
+                "refresh_token": "codex-refresh",
+                "id_token": "codex-id",
+                "account_id": "acct-plus",
+                "plan_type": "plus",
+            }
+
+    monkeypatch.setattr(
+        "autotoken.auth.codex_auth._build_bundle_from_token_response",
+        lambda *_args, **_kwargs: {
+            "email": "plus@example.com",
+            "access_token": "codex-access",
+            "refresh_token": "codex-refresh",
+            "account_id": "",
+            "plan_type": "unknown",
+        },
+    )
+
+    payload = protocol_register_module._session_data_from_auth_result(FakeResult())
+
+    assert payload["data"]["accountId"] == "acct-plus"
+    assert payload["data"]["account"]["id"] == "acct-plus"
+    assert payload["data"]["account"]["planType"] == "plus"
+    assert payload["codex_oauth_bundle"]["account_id"] == "acct-plus"
+    assert payload["codex_oauth_bundle"]["plan_type"] == "plus"
+    assert payload["codex_oauth_bundle"]["chatgpt_plan_type"] == "plus"
 
 
 def test_post_register_session_oauth_updates_account_with_codex_auth(monkeypatch):

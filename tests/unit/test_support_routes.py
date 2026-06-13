@@ -70,6 +70,19 @@ def test_logs_route_supports_limit_and_since_filters():
     assert _endpoint(app, "/api/logs", "GET")(since=1.5) == {"logs": log_buffer[1:], "total": 3}
 
 
+def test_logs_route_defaults_to_deeper_history_and_clamps_limit():
+    log_buffer = [{"time": float(i), "level": "INFO", "message": str(i)} for i in range(6000)]
+    app = _app(log_buffer=log_buffer)
+
+    default_result = _endpoint(app, "/api/logs", "GET")()
+    clamped_result = _endpoint(app, "/api/logs", "GET")(limit=999999)
+
+    assert len(default_result["logs"]) == 1000
+    assert default_result["logs"] == log_buffer[-1000:]
+    assert len(clamped_result["logs"]) == 5000
+    assert clamped_result["logs"] == log_buffer[-5000:]
+
+
 def test_main_codex_compat_route_uses_injected_callback():
     app = _app(start_main_codex_sync=lambda: {"task_id": "task-main", "command": "main-codex-sync"})
 

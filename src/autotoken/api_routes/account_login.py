@@ -13,6 +13,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from autotoken.services.task_runtime import TASK_GROUP_OAUTH
 
 ACCOUNT_LOGIN_BATCH_MAX_EMAILS = 1_000
+ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY = 10
 
 
 class LoginAccountParams(BaseModel):
@@ -23,6 +24,24 @@ class LoginAccountParams(BaseModel):
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
+    protocol_only: bool = Field(True, validation_alias=AliasChoices("protocol_only", "protocolOnly"))
+    bind_email: bool = Field(True, validation_alias=AliasChoices("bind_email", "bindEmail"))
+    mail_provider: str = Field("", validation_alias=AliasChoices("mail_provider", "mailProvider"))
+    luckmail_email_type: str = Field("", validation_alias=AliasChoices("luckmail_email_type", "luckmailEmailType"))
+    luckmail_preferred_domain: str = Field(
+        "",
+        validation_alias=AliasChoices("luckmail_preferred_domain", "luckmailPreferredDomain"),
+    )
+    email_domain: str = Field("", validation_alias=AliasChoices("email_domain", "emailDomain", "domain"))
+    oauth_phone_sms_provider: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_provider", "oauthPhoneSmsProvider", "phone_provider", "phoneProvider"),
+    )
+    oauth_phone_sms_country: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_country", "oauthPhoneSmsCountry", "phone_country", "phoneCountry"),
+    )
+    exclusive: bool = Field(True, validation_alias=AliasChoices("exclusive", "task_exclusive", "taskExclusive"))
 
 
 class AccountEmailBatchParams(BaseModel):
@@ -33,6 +52,45 @@ class AccountEmailBatchParams(BaseModel):
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
+    protocol_only: bool = Field(True, validation_alias=AliasChoices("protocol_only", "protocolOnly"))
+    bind_email: bool = Field(True, validation_alias=AliasChoices("bind_email", "bindEmail"))
+    mail_provider: str = Field("", validation_alias=AliasChoices("mail_provider", "mailProvider"))
+    luckmail_email_type: str = Field("", validation_alias=AliasChoices("luckmail_email_type", "luckmailEmailType"))
+    luckmail_preferred_domain: str = Field(
+        "",
+        validation_alias=AliasChoices("luckmail_preferred_domain", "luckmailPreferredDomain"),
+    )
+    email_domain: str = Field("", validation_alias=AliasChoices("email_domain", "emailDomain", "domain"))
+    oauth_phone_sms_provider: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_provider", "oauthPhoneSmsProvider", "phone_provider", "phoneProvider"),
+    )
+    oauth_phone_sms_country: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_country", "oauthPhoneSmsCountry", "phone_country", "phoneCountry"),
+    )
+
+
+def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "headless": False,
+        "protocol_only": bool(params.protocol_only),
+        "bind_email": bool(params.bind_email),
+    }
+    text_fields = {
+        "mail_provider": params.mail_provider,
+        "luckmail_email_type": params.luckmail_email_type,
+        "luckmail_preferred_domain": params.luckmail_preferred_domain,
+        "email_domain": params.email_domain,
+        "oauth_phone_sms_provider": params.oauth_phone_sms_provider,
+        "oauth_phone_sms_country": params.oauth_phone_sms_country,
+        "proxy_bypass": params.proxy_bypass,
+    }
+    for key, value in text_fields.items():
+        cleaned = str(value or "").strip()
+        if cleaned:
+            kwargs[key] = cleaned
+    return kwargs
 
 
 def create_account_login_router(
@@ -103,11 +161,16 @@ def create_account_login_router(
                             "message": "OAuth 补登录已选择代理",
                         },
                     )
-                login_kwargs: dict[str, Any] = {"headless": False}
+                login_kwargs: dict[str, Any] = _oauth_login_kwargs(params)
+                login_kwargs["progress_callback"] = lambda event: append_task_progress(
+                    task_id,
+                    {
+                        **dict(event or {}),
+                        "email": str((event or {}).get("email") or email),
+                    },
+                )
                 if selected_oauth_proxy:
                     login_kwargs["proxy_url"] = selected_oauth_proxy
-                if params.proxy_bypass:
-                    login_kwargs["proxy_bypass"] = params.proxy_bypass
                 return run_account_codex_login_once(email, acc, **login_kwargs)
             except CodexOAuthPhoneRequired as exc:
                 result = oauth_phone_required_result(email, exc)
@@ -160,7 +223,14 @@ def create_account_login_router(
                 )
                 raise task_result_error(result["message"], task_result=result) from exc
 
-        return start_task(f"login:{email}", _run, {"email": email}, task_group=TASK_GROUP_OAUTH, pass_task_id=True)
+        return start_task(
+            f"login:{email}",
+            _run,
+            {"email": email},
+            task_group=TASK_GROUP_OAUTH,
+            pass_task_id=True,
+            exclusive=bool(params.exclusive),
+        )
 
     @router.post("/api/accounts/login-batch", status_code=202)
     def post_accounts_login_batch(params: AccountEmailBatchParams):
@@ -290,11 +360,18 @@ def create_account_login_router(
                                 "message": "OAuth 补登录已选择代理",
                             },
                         )
-                    login_kwargs: dict[str, Any] = {"headless": False}
+                    login_kwargs: dict[str, Any] = _oauth_login_kwargs(params)
+                    login_kwargs["progress_callback"] = lambda event: append_task_progress(
+                        task_id,
+                        {
+                            **dict(event or {}),
+                            "email": str((event or {}).get("email") or email),
+                            "current": index,
+                            "total": total,
+                        },
+                    )
                     if selected_oauth_proxy:
                         login_kwargs["proxy_url"] = selected_oauth_proxy
-                    if params.proxy_bypass:
-                        login_kwargs["proxy_bypass"] = params.proxy_bypass
                     login_result = run_account_codex_login_once(email, acc, **login_kwargs)
                     logger.info(
                         "[账号登录] 批量 worker 成功: email=%s elapsed=%.1fs thread=%s",
@@ -324,9 +401,15 @@ def create_account_login_router(
                     return {"kind": "failed", "email": email, "index": index, "error": str(exc), "exception": exc}
 
             try:
-                configured_workers = int(os.environ.get("CODEX_OAUTH_BATCH_CONCURRENCY", "3") or "3")
+                configured_workers = int(
+                    os.environ.get(
+                        "CODEX_OAUTH_BATCH_CONCURRENCY",
+                        str(ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY),
+                    )
+                    or str(ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY)
+                )
             except (TypeError, ValueError):
-                configured_workers = 3
+                configured_workers = ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY
             max_workers = max(1, min(total, configured_workers))
             logger.info("[账号登录] 批量补登录并发启动: total=%s max_workers=%s", total, max_workers)
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="codex-oauth") as executor:

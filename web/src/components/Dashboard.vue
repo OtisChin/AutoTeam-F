@@ -93,12 +93,12 @@
             {{ batchLoggingIn ? '提交中...' : `批量OAuth补登录 (${batchLoginableAccounts.length})` }}
           </button>
           <button
-            @click="oauthProxyPanelOpen = !oauthProxyPanelOpen"
+            @click="oauthConfigOpen = true"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
             :class="oauthProxyEnabled
               ? 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'
               : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700 hover:text-white'">
-            OAuth代理{{ oauthProxyEnabled ? '已启用' : '配置' }}
+            OAuth配置
           </button>
           <button
             @click="refreshAllQuota"
@@ -171,79 +171,127 @@
           </button>
         </div>
       </div>
-      <div
-        v-if="oauthProxyPanelOpen"
-        class="mx-4 mt-4 rounded-xl border border-cyan-500/20 bg-cyan-950/10 p-4">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div class="text-sm font-semibold text-cyan-100">OAuth 补登录代理</div>
-            <div class="mt-1 text-xs text-gray-500">用于仪表盘单个补登录和批量 OAuth 补登录；不开启时保持直连。</div>
-          </div>
-          <label class="inline-flex items-center gap-2 text-sm text-gray-300">
-            <input v-model="oauthProxyEnabled" type="checkbox" class="h-4 w-4 rounded border-gray-700 bg-gray-950 text-cyan-500 focus:ring-cyan-500/30" />
-            启用代理
-          </label>
-        </div>
-
-        <div v-if="oauthProxyEnabled" class="mt-4 grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
-          <div>
-            <label class="text-xs text-gray-500">代理模式</label>
-            <select
-              v-model="oauthProxyMode"
-              class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
-              <option value="single">单条代理</option>
-              <option value="pool">动态代理池</option>
-              <option value="api">代理 API 轮换</option>
-            </select>
-          </div>
-
-          <div v-if="oauthProxyMode === 'single'">
-            <label class="text-xs text-gray-500">代理地址</label>
-            <input
-              v-model.trim="oauthProxyUrl"
-              type="text"
-              placeholder="hostname:port:username:password / socks5://user:pass@host:port"
-              class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
-          </div>
-
-          <div v-else-if="oauthProxyMode === 'pool'">
-            <label class="text-xs text-gray-500">代理池，一行一个</label>
-            <textarea
-              v-model.trim="oauthProxyPoolText"
-              rows="3"
-              placeholder="hostname:port:username:password&#10;socks5://user:pass@host:port"
-              class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60"></textarea>
-          </div>
-
-          <div v-else class="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+      <!-- OAuth 配置弹窗 -->
+      <div v-if="oauthConfigOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" @click.self="oauthConfigOpen = false">
+        <div class="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-gray-800 bg-gray-900 shadow-2xl">
+          <!-- Header -->
+          <div class="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-4">
             <div>
-              <label class="text-xs text-gray-500">供应商</label>
-              <select
-                v-model="oauthProxyApiProvider"
-                class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
-                <option value="cliproxy">cliproxy</option>
-                <option value="1024proxy">1024proxy</option>
-              </select>
+              <h3 class="text-lg font-semibold text-white">OAuth 配置</h3>
+              <p class="mt-1 text-xs text-gray-500">配置补登录代理和邮箱绑定相关参数</p>
             </div>
-            <div>
-              <label class="text-xs text-gray-500">连接入口代理，可选</label>
-              <input
-                v-model.trim="oauthProxyUrl"
-                type="text"
-                placeholder="API 未返回可直接连接地址时，用这里的代理入口"
-                class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
-            </div>
+            <button @click="oauthConfigOpen = false" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700">关闭</button>
           </div>
-
-          <div class="lg:col-span-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
-            <span>{{ oauthProxySummary }}</span>
+          <!-- Tabs -->
+          <div class="flex border-b border-gray-800 px-5 pt-3">
             <button
-              @click="resetOauthProxyConfig"
-              class="px-2.5 py-1 rounded-md border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800 transition">
-              清空代理配置
+              @click="oauthConfigTab = 'proxy'"
+              class="px-4 py-2 text-sm font-medium border-b-2 transition"
+              :class="oauthConfigTab === 'proxy' ? 'text-cyan-300 border-cyan-500' : 'text-gray-500 border-transparent hover:text-gray-300'">
+              补登录代理
+            </button>
+            <button
+              @click="oauthConfigTab = 'email'"
+              class="px-4 py-2 text-sm font-medium border-b-2 transition"
+              :class="oauthConfigTab === 'email' ? 'text-cyan-300 border-cyan-500' : 'text-gray-500 border-transparent hover:text-gray-300'">
+              邮箱绑定
             </button>
           </div>
+          <!-- Body -->
+          <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+            <!-- Proxy Tab -->
+            <div v-if="oauthConfigTab === 'proxy'">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div class="text-sm font-semibold text-cyan-100">OAuth 补登录代理</div>
+                  <div class="mt-1 text-xs text-gray-500">用于仪表盘单个补登录和批量 OAuth 补登录；不开启时保持直连。</div>
+                </div>
+                <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                  <input v-model="oauthProxyEnabled" type="checkbox" class="h-4 w-4 rounded border-gray-700 bg-gray-950 text-cyan-500 focus:ring-cyan-500/30" />
+                  启用代理
+                </label>
+              </div>
+              <div v-if="oauthProxyEnabled" class="mt-4 grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
+                <div>
+                  <label class="text-xs text-gray-500">代理模式</label>
+                  <select v-model="oauthProxyMode" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                    <option value="single">单条代理</option>
+                    <option value="pool">动态代理池</option>
+                    <option value="api">代理 API 轮换</option>
+                  </select>
+                </div>
+                <div v-if="oauthProxyMode === 'single'">
+                  <label class="text-xs text-gray-500">代理地址</label>
+                  <input v-model.trim="oauthProxyUrl" type="text" placeholder="hostname:port:username:password / socks5://user:pass@host:port" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
+                </div>
+                <div v-else-if="oauthProxyMode === 'pool'">
+                  <label class="text-xs text-gray-500">代理池，一行一个</label>
+                  <textarea v-model.trim="oauthProxyPoolText" rows="3" placeholder="hostname:port:username:password&#10;socks5://user:pass@host:port" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60"></textarea>
+                </div>
+                <div v-else class="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+                  <div>
+                    <label class="text-xs text-gray-500">供应商</label>
+                    <select v-model="oauthProxyApiProvider" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                      <option value="cliproxy">cliproxy</option>
+                      <option value="1024proxy">1024proxy</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-xs text-gray-500">连接入口代理，可选</label>
+                    <input v-model.trim="oauthProxyUrl" type="text" placeholder="API 未返回可直接连接地址时，用这里的代理入口" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
+                  </div>
+                </div>
+                <div class="lg:col-span-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+                  <span>{{ oauthProxySummary }}</span>
+                  <button @click="resetOauthProxyConfig" class="px-2.5 py-1 rounded-md border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800 transition">清空代理配置</button>
+                </div>
+              </div>
+            </div>
+            <!-- Email Binding Tab -->
+            <div v-if="oauthConfigTab === 'email'">
+              <div class="text-sm font-semibold text-amber-100">邮箱绑定配置</div>
+              <div class="mt-1 text-xs text-gray-500">配置注册后用于邮箱绑定的邮件供应商和域名参数，与注册模块对齐。</div>
+              <div class="mt-4 space-y-4">
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">邮件供应商</label>
+                  <select v-model="oauthEmailMailProvider" :disabled="oauthEmailLoading" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
+                    <option v-for="opt in oauthEmailMailProviderOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                  </select>
+                  <div class="mt-1 text-xs text-gray-500">选择注册后用于绑定邮箱的邮件供应商；具体 API Key / token 在"设置 → 邮件 Provider"里配置。</div>
+                </div>
+                <template v-if="oauthEmailMailProvider === 'luckmail'">
+                  <div class="grid grid-cols-2 gap-3">
+                    <div>
+                      <label class="block text-xs text-gray-500 mb-1">LuckMail 邮箱类型</label>
+                      <select v-model="oauthEmailLuckmailEmailType" :disabled="oauthEmailLoading" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
+                        <option v-for="opt in luckmailEmailTypeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs text-gray-500 mb-1">LuckMail 首选域名</label>
+                      <select v-model="oauthEmailLuckmailDomain" :disabled="oauthEmailLoading" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
+                        <option v-for="opt in luckmailDomainOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="text-xs text-gray-500">选择 LuckMail 的邮箱类型和首选域名；账号池为空时按这里的配置自动购买。</div>
+                </template>
+                <div v-if="oauthEmailMailProvider && oauthEmailMailProvider !== 'luckmail' && oauthEmailMailProvider !== 'outlook'">
+                  <label class="block text-xs text-gray-500 mb-1">注册域名</label>
+                  <select v-model="oauthEmailDomain" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/60">
+                    <option v-for="domain in oauthEmailDomainOptions" :key="domain" :value="domain">@{{ domain }}</option>
+                  </select>
+                  <div class="mt-1 text-xs text-gray-500">注册临时邮箱使用的域名。</div>
+                </div>
+              </div>
+            </div>
+          <!-- Footer -->
+          <div class="flex justify-end gap-3 border-t border-gray-800 px-5 py-4">
+            <button @click="oauthConfigOpen = false" class="px-4 py-2 text-sm rounded-lg border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 transition">关闭</button>
+            <button @click="saveOauthEmailConfig" :disabled="oauthEmailSaving" class="px-4 py-2 text-sm rounded-lg bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50 transition">{{ oauthEmailSaving ? '保存中...' : '保存配置' }}</button>
+          </div>
         </div>
+      </div>
       </div>
       <div class="dashboard-filter-bar">
         <div class="dashboard-filters">
@@ -856,7 +904,35 @@ const exportStatusUpdating = ref(false)
 const batchLoggingIn = ref(false)
 const quotaRefreshing = ref(false)
 const invalidDeleting = ref(false)
-const oauthProxyPanelOpen = ref(false)
+const oauthConfigOpen = ref(false)
+const oauthConfigTab = ref('proxy')
+const luckmailEmailTypeOptions = [
+  { value: 'ms_imap', label: '微软 IMAP 邮箱' },
+  { value: 'ms_graph', label: '微软 Graph 邮箱' },
+  { value: 'microsoft', label: '微软邮箱' },
+  { value: 'self_built', label: '自建邮箱' },
+]
+
+const luckmailDomainOptions = [
+  { value: '', label: '自动分配' },
+  { value: 'outlook.com', label: 'outlook.com' },
+  { value: 'outlook.de', label: 'outlook.de' },
+  { value: 'outlook.fr', label: 'outlook.fr' },
+  { value: 'outlook.jp', label: 'outlook.jp' },
+  { value: 'outlook.my', label: 'outlook.my' },
+  { value: 'hotmail.com', label: 'hotmail.com' },
+  { value: 'hotmail.de', label: 'hotmail.de' },
+  { value: 'live.com', label: 'live.com' },
+]
+const oauthEmailMailProvider = ref('')
+const oauthEmailLuckmailEmailType = ref('ms_imap')
+const oauthEmailLuckmailDomain = ref('')
+const oauthEmailMailProviderOptions = ref([])
+const oauthEmailDomain = ref('')
+const oauthEmailDomainOptions = ref([])
+const oauthEmailLoading = ref(false)
+const oauthEmailSaving = ref(false)
+const oauthEmailLoaded = ref(false)
 const oauthProxyEnabled = ref(false)
 const oauthProxyMode = ref('single')
 const oauthProxyUrl = ref('')
@@ -874,7 +950,46 @@ const failuresCounts = ref({})
 const failuresLoading = ref(false)
 
 const OAUTH_PROXY_STORAGE_KEY = 'autotoken.dashboard.oauthProxy'
+const OAUTH_EMAIL_STORAGE_KEY = 'autotoken.dashboard.oauthEmailCfg'
 
+function loadOauthEmailConfig() {
+  if (oauthEmailLoaded.value) return
+  oauthEmailLoading.value = true
+  Promise.all([
+    api.getMailProviderConfig().catch(() => ({ provider_options: [] })),
+    api.getRegisterDomain().catch(() => ({ domain: '', domains: [] })),
+  ]).then(([mailCfg, domainCfg]) => {
+    let saved = {}
+    try {
+      saved = JSON.parse(localStorage.getItem(OAUTH_EMAIL_STORAGE_KEY) || '{}')
+    } catch (_) {
+      saved = {}
+    }
+    oauthEmailMailProviderOptions.value = (mailCfg.provider_options || []).map(p => ({ value: p.value, label: p.label || p.value }))
+    oauthEmailMailProvider.value = saved.mail_provider || mailCfg.provider || mailCfg.provider_options?.[0]?.value || ''
+    oauthEmailLuckmailEmailType.value = saved.luckmail_email_type || oauthEmailLuckmailEmailType.value
+    oauthEmailLuckmailDomain.value = saved.luckmail_preferred_domain || oauthEmailLuckmailDomain.value
+    const domains = domainCfg.domains?.length ? domainCfg.domains : (domainCfg.domain ? [domainCfg.domain] : [])
+    oauthEmailDomainOptions.value = domains
+    oauthEmailDomain.value = saved.email_domain || saved.domain || oauthEmailDomainOptions.value[0] || ''
+    oauthEmailLoaded.value = true
+  }).finally(() => { oauthEmailLoading.value = false })
+}
+async function saveOauthEmailConfig() {
+  oauthEmailSaving.value = true
+  try {
+    localStorage.setItem(OAUTH_EMAIL_STORAGE_KEY, JSON.stringify({
+      mail_provider: oauthEmailMailProvider.value,
+      luckmail_email_type: oauthEmailLuckmailEmailType.value,
+      luckmail_preferred_domain: oauthEmailLuckmailDomain.value,
+      email_domain: oauthEmailDomain.value,
+    }))
+    message.value = 'OAuth 邮箱绑定配置已保存'
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    setTimeout(() => { message.value = '' }, 5000)
+  } catch (e) { console.error(e) }
+  oauthEmailSaving.value = false
+}
 function loadOauthProxyConfig() {
   try {
     const saved = JSON.parse(localStorage.getItem(OAUTH_PROXY_STORAGE_KEY) || '{}')
@@ -921,6 +1036,30 @@ function buildOauthProxyPayload() {
   return {
     proxy_api_provider: oauthProxyApiProvider.value || 'cliproxy',
     ...(oauthProxyUrl.value ? { proxy_url: oauthProxyUrl.value } : {}),
+  }
+}
+
+function buildOauthEmailPayload() {
+  return {
+    protocol_only: true,
+    bind_email: true,
+    ...(oauthEmailMailProvider.value ? { mail_provider: oauthEmailMailProvider.value } : {}),
+    ...(oauthEmailMailProvider.value === 'luckmail' && oauthEmailLuckmailEmailType.value
+      ? { luckmail_email_type: oauthEmailLuckmailEmailType.value }
+      : {}),
+    ...(oauthEmailMailProvider.value === 'luckmail' && oauthEmailLuckmailDomain.value
+      ? { luckmail_preferred_domain: oauthEmailLuckmailDomain.value }
+      : {}),
+    ...(oauthEmailMailProvider.value && oauthEmailMailProvider.value !== 'luckmail' && oauthEmailMailProvider.value !== 'outlook' && oauthEmailDomain.value
+      ? { email_domain: oauthEmailDomain.value }
+      : {}),
+  }
+}
+
+function buildDashboardOauthPayload() {
+  return {
+    ...buildOauthProxyPayload(),
+    ...buildOauthEmailPayload(),
   }
 }
 
@@ -977,6 +1116,7 @@ function fmtFailureExtra(f) {
 
 onMounted(() => {
   loadOauthProxyConfig()
+  watch(oauthConfigOpen, (open) => { if (open) loadOauthEmailConfig() })
   loadFailures()
 })
 watch(
@@ -1125,7 +1265,7 @@ const filteredAccounts = computed(() => {
     .map((acc, index) => ({ acc, index }))
     .filter(({ acc }) => {
     const email = String(acc?.email || '').toLowerCase()
-    const status = String(acc?.status || '')
+    const status = normalizedStatus(acc?.status)
     const accountType = String(acc?.account_type || 'unknown')
     const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
     const hubSyncStatus = acc?.account_hub_synced ? 'synced' : 'unsynced'
@@ -1167,7 +1307,7 @@ const filteredAccounts = computed(() => {
 const accountStatusOptions = computed(() => {
   const counts = new Map()
   for (const acc of allAccounts.value) {
-    const status = String(acc?.status || '')
+    const status = normalizedStatus(acc?.status)
     if (!status) continue
     counts.set(status, (counts.get(status) || 0) + 1)
   }
@@ -1454,6 +1594,7 @@ const kiroCards = [
 ]
 
 function statusClass(s) {
+  s = normalizedStatus(s)
   return {
     active: 'bg-green-500/10 text-green-400',
     exhausted: 'bg-red-500/10 text-red-400',
@@ -1467,6 +1608,7 @@ function statusClass(s) {
 }
 
 function dotClass(s) {
+  s = normalizedStatus(s)
   return {
     active: 'bg-green-400',
     exhausted: 'bg-red-400',
@@ -1480,6 +1622,7 @@ function dotClass(s) {
 }
 
 function statusLabel(s) {
+  s = normalizedStatus(s)
   return {
     active: 'Active',
     exhausted: 'Used up',
@@ -1490,6 +1633,11 @@ function statusLabel(s) {
     orphan: '孤立',
     fail: 'Fail/废弃',
   }[s] || s
+}
+
+function normalizedStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  return ['personal', 'plus', 'paypal_ice'].includes(normalized) ? 'active' : normalized
 }
 
 function accountTypeClass(type) {
@@ -1514,6 +1662,7 @@ function accountTypeLabel(type) {
 function bindProviderLabel(provider) {
   return {
     paypal: 'PayPal',
+    paypal_ice: 'PayPal ICE',
     gopay: 'GoPay',
     gopay_pro: 'GoPay Pro',
     card: 'Card',
@@ -1523,12 +1672,18 @@ function bindProviderLabel(provider) {
 function effectiveBindProvider(acc) {
   const accountType = String(acc?.account_type || '').toLowerCase()
   if (!['plus', 'pro', 'team'].includes(accountType)) return ''
-  return acc?.last_bind_provider || ''
+  const provider = String(acc?.last_bind_provider || '').trim().toLowerCase()
+  if (provider) return provider
+  const rawStatus = String(acc?.raw_status || acc?.status || '').trim().toLowerCase()
+  if (rawStatus === 'paypal_ice') return 'paypal_ice'
+  const bindMessage = String(acc?.last_bind_message || '').trim().toLowerCase()
+  return bindMessage.includes('paypal ice') ? 'paypal_ice' : ''
 }
 
 function bindProviderClass(provider) {
   return {
     paypal: 'bg-blue-500/10 text-blue-300',
+    paypal_ice: 'bg-blue-500/10 text-blue-300',
     gopay: 'bg-emerald-500/10 text-emerald-300',
     gopay_pro: 'bg-cyan-500/10 text-cyan-300',
     card: 'bg-amber-500/10 text-amber-300',
@@ -1830,10 +1985,11 @@ async function batchLoginAccounts() {
   batchLoggingIn.value = true
   message.value = ''
   try {
-    const proxyPayload = buildOauthProxyPayload()
-    const result = await api.loginAccountsBatch(emails, proxyPayload)
-    const proxyText = Object.keys(proxyPayload).length ? '，OAuth代理已启用' : ''
-    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}`
+    const oauthPayload = buildDashboardOauthPayload()
+    const result = await api.loginAccountsBatch(emails, oauthPayload)
+    const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+    const bindText = batchLoginableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
+    message.value = `已提交批量协议补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
     emit('refresh')
@@ -1977,7 +2133,13 @@ function canLogin(acc) {
   return needsCodexLogin(acc)
 }
 
+function isPhoneOnlyAccount(acc) {
+  const email = String(acc?.email || '').trim()
+  return Boolean(email) && !email.includes('@')
+}
+
 function loginLabel(acc) {
+  if (isPhoneOnlyAccount(acc)) return '补登录/绑邮箱'
   if (Boolean(acc.codex_auth_synthetic)) return '重新补登录'
   if (needsCodexLogin(acc) || acc.status === 'auth_invalid' || acc.status === 'orphan') return '补登录'
   return '补登录'
@@ -2002,10 +2164,11 @@ async function loginAccount(email) {
   actionType.value = 'login'
   message.value = ''
   try {
-    const proxyPayload = buildOauthProxyPayload()
-    const result = await api.loginAccount(email, proxyPayload)
-    const proxyText = Object.keys(proxyPayload).length ? '，OAuth代理已启用' : ''
-    message.value = `已提交 ${email} 的登录任务: ${result.task_id}${proxyText}`
+    const oauthPayload = buildDashboardOauthPayload()
+    const result = await api.loginAccount(email, oauthPayload)
+    const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+    const bindText = email.includes('@') ? '' : '，成功后会绑定邮箱并迁移账号'
+    message.value = `已提交 ${email} 的协议补登录任务: ${result.task_id}${proxyText}${bindText}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
     emit('refresh')

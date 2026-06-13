@@ -2,6 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 from autotoken.api_routes.account_login import (
+    ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY,
     ACCOUNT_LOGIN_BATCH_MAX_EMAILS,
     AccountEmailBatchParams,
     LoginAccountParams,
@@ -10,9 +11,19 @@ from autotoken.api_routes.account_login import (
 from autotoken.services.task_runtime import TASK_GROUP_OAUTH
 
 
-def _routes(started, *, accounts=None, main_email="owner@example.com", build_oauth_proxy_selector=None):
+def _routes(
+    started,
+    *,
+    accounts=None,
+    main_email="owner@example.com",
+    build_oauth_proxy_selector=None,
+    run_account_codex_login_once=None,
+):
     accounts = accounts if accounts is not None else [{"email": "user@example.com"}]
     build_oauth_proxy_selector = build_oauth_proxy_selector or (lambda **_kwargs: (lambda: "", {}))
+    run_account_codex_login_once = run_account_codex_login_once or (
+        lambda email, _acc, **_kwargs: {"email": email, "plan": "free"}
+    )
 
     def start_task(command, func, params, *args, **kwargs):
         started.append({"command": command, "func": func, "params": params, "args": args, "kwargs": kwargs})
@@ -23,7 +34,7 @@ def _routes(started, *, accounts=None, main_email="owner@example.com", build_oau
         normalize_email=lambda value: str(value or "").strip().lower(),
         is_main_account_email=lambda email: str(email or "").strip().lower() == main_email,
         build_oauth_proxy_selector=build_oauth_proxy_selector,
-        run_account_codex_login_once=lambda email, _acc, **_kwargs: {"email": email, "plan": "free"},
+        run_account_codex_login_once=run_account_codex_login_once,
         append_task_progress=lambda _task_id, _progress: None,
         oauth_phone_required_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
         oauth_phone_rate_limited_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
@@ -70,7 +81,22 @@ def test_post_account_login_starts_oauth_task(monkeypatch):
     assert result == {"task_id": "task-1", "command": "login:user@example.com", "params": {"email": "user@example.com"}}
     assert started[0]["kwargs"]["task_group"] == TASK_GROUP_OAUTH
     assert started[0]["kwargs"]["pass_task_id"] is True
+    assert started[0]["kwargs"]["exclusive"] is True
     assert started[0]["func"]("task-1") == {"email": "user@example.com", "plan": "free"}
+
+
+def test_post_account_login_can_start_nonexclusive_oauth_task(monkeypatch):
+    started = []
+    account = {"email": "user@example.com"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "user@example.com" else None)
+
+    routes, _accounts = _routes(started)
+    routes["post_account_login"](LoginAccountParams(email="USER@example.com", exclusive=False))
+
+    assert started[0]["kwargs"]["task_group"] == TASK_GROUP_OAUTH
+    assert started[0]["kwargs"]["pass_task_id"] is True
+    assert started[0]["kwargs"]["exclusive"] is False
 
 
 def test_post_account_login_translates_proxy_pool_errors(monkeypatch):
@@ -88,6 +114,45 @@ def test_post_account_login_translates_proxy_pool_errors(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "代理池文本过大"
+
+
+def test_post_account_login_passes_protocol_oauth_config(monkeypatch):
+    started = []
+    account = {"email": "+27734762109"}
+    captured = {}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "+27734762109" else None)
+
+    def fake_run(email, acc, **kwargs):
+        captured.update({"email": email, "acc": acc, "kwargs": kwargs})
+        return {"email": "bound@example.com", "plan": "plus"}
+
+    routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_run)
+    routes["post_account_login"](
+        LoginAccountParams(
+            email="+27734762109",
+            mail_provider="luckmail",
+            luckmail_email_type="ms_imap",
+            luckmail_preferred_domain="outlook.com",
+            oauth_phone_sms_provider="phone_pool",
+            oauth_phone_sms_country="187",
+        )
+    )
+
+    assert started[0]["func"]("task-1") == {"email": "bound@example.com", "plan": "plus"}
+    assert captured["email"] == "+27734762109"
+    progress_callback = captured["kwargs"].pop("progress_callback")
+    assert callable(progress_callback)
+    assert captured["kwargs"] == {
+        "headless": False,
+        "protocol_only": True,
+        "bind_email": True,
+        "mail_provider": "luckmail",
+        "luckmail_email_type": "ms_imap",
+        "luckmail_preferred_domain": "outlook.com",
+        "oauth_phone_sms_provider": "phone_pool",
+        "oauth_phone_sms_country": "187",
+    }
 
 
 def test_post_accounts_login_batch_requires_emails():
@@ -132,3 +197,54 @@ def test_post_accounts_login_batch_starts_single_task(monkeypatch):
     run_result = started[0]["func"]("task-batch")
     assert run_result["total"] == 2
     assert sorted(item["email"] for item in run_result["ok"]) == ["first@example.com", "second@example.com"]
+
+
+def test_post_accounts_login_batch_defaults_to_ten_workers(monkeypatch):
+    started = []
+    rows = [{"email": f"user{index}@example.com"} for index in range(12)]
+    monkeypatch.delenv("CODEX_OAUTH_BATCH_CONCURRENCY", raising=False)
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda accounts, email: next((account for account in accounts if account["email"] == email), None),
+    )
+
+    routes, _accounts = _routes(started, accounts=rows)
+    routes["post_accounts_login_batch"](AccountEmailBatchParams(emails=[row["email"] for row in rows]))
+
+    result = started[0]["func"]("task-batch")
+
+    assert result["total"] == 12
+    assert result["concurrency"] == ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY
+
+
+def test_post_accounts_login_batch_passes_protocol_email_domain(monkeypatch):
+    started = []
+    rows = [{"email": "first@example.com"}]
+    captured = []
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: rows[0] if email == "first@example.com" else None)
+
+    def fake_run(email, acc, **kwargs):
+        captured.append((email, acc, kwargs))
+        return {"email": email, "plan": "free"}
+
+    routes, _accounts = _routes(started, accounts=rows, run_account_codex_login_once=fake_run)
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(
+            emails=["first@example.com"],
+            mail_provider="cloud-mail",
+            email_domain="example.com",
+            oauth_phone_sms_provider="smsbower",
+            oauth_phone_sms_country="187",
+        )
+    )
+
+    result = started[0]["func"]("task-batch")
+    assert result["total"] == 1
+    assert captured[0][2]["protocol_only"] is True
+    assert captured[0][2]["bind_email"] is True
+    assert captured[0][2]["mail_provider"] == "cloud-mail"
+    assert captured[0][2]["email_domain"] == "example.com"
+    assert captured[0][2]["oauth_phone_sms_provider"] == "smsbower"
+    assert captured[0][2]["oauth_phone_sms_country"] == "187"

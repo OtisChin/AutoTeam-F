@@ -143,6 +143,33 @@ def free_codex_oauth_bundle(
     return normalized
 
 
+def account_codex_oauth_bundle(
+    bundle: dict[str, Any],
+    *,
+    account_type: str | None = None,
+    account_id: str | None = None,
+) -> dict[str, Any]:
+    """Align OAuth metadata with the locally confirmed account state."""
+    normalized = dict(bundle)
+    local_plan = str(account_type or "").strip().lower()
+    token_plan = str(
+        normalized.get("plan_type") or normalized.get("chatgpt_plan_type") or ""
+    ).strip().lower()
+    known_plans = {"free", "team", "plus", "pro"}
+
+    effective_plan = token_plan if token_plan in known_plans else local_plan
+    if local_plan in {"plus", "pro"} and effective_plan == "free":
+        effective_plan = local_plan
+    if effective_plan not in known_plans:
+        effective_plan = "unknown"
+
+    normalized["plan_type"] = effective_plan
+    normalized["chatgpt_plan_type"] = effective_plan
+    if not str(normalized.get("account_id") or "").strip() and str(account_id or "").strip():
+        normalized["account_id"] = str(account_id).strip()
+    return normalized
+
+
 def free_codex_oauth_result(
     *,
     email: str,

@@ -364,6 +364,17 @@ def test_redeem_cdk_accepts_gopay_plus_status_stock(trade_env):
     assert result["emails"] == ["synced-plus@example.com"]
 
 
+def test_redeem_cdk_accepts_paypal_ice_bound_active_plus_stock(trade_env):
+    auth_dir = trade_env["auth_dir"]
+    _add_plus_account(auth_dir, "paypal-ice@example.com", status="active", account_type="plus")
+    accounts.update_account("paypal-ice@example.com", last_bind_provider="paypal_ice")
+    cdk = trade.create_cdk(1)
+
+    result = trade.redeem_cdk(cdk["code"], "secret", 1, "cpa")
+
+    assert result["emails"] == ["paypal-ice@example.com"]
+
+
 def test_redeem_cdk_credentials_requires_auth_file(trade_env):
     _add_plus_account(trade_env["auth_dir"], "missing-auth@example.com", with_auth=False)
     cdk = trade.create_cdk(1)

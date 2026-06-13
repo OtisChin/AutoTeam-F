@@ -59,6 +59,42 @@ def test_read_phone_otp_from_cmd_executes_without_shell(monkeypatch):
     assert captured["kwargs"] == {"text": True, "timeout": 20}
 
 
+def test_get_auth_session_captures_account_metadata():
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "accessToken": "chatgpt-access",
+                "account": {
+                    "id": "acct-plus",
+                    "planType": "plus",
+                },
+            }
+
+    class FakeSession:
+        def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow.session = FakeSession()
+    flow._extract_chatgpt_session_token = lambda: "chatgpt-session"
+    flow._build_chatgpt_cookie_header = lambda: "session-cookie"
+    flow._trace_http = lambda *_args, **_kwargs: None
+
+    flow.get_auth_session()
+
+    assert flow.result.account_id == "acct-plus"
+    assert flow.result.plan_type == "plus"
+    assert flow.result.chatgpt_access_token == "chatgpt-access"
+
+
 def test_phone_first_oauth_failure_preserves_specific_error(monkeypatch):
     auth_flow = _load_auth_flow_module()
 

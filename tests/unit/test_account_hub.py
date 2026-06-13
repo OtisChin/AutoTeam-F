@@ -140,6 +140,58 @@ def test_auto_upload_only_syncs_plus_team_pro_and_marks_uploaded(tmp_path, monke
     assert not saved["bad@example.com"].get("account_hub_synced")
 
 
+def test_upload_to_hub_splits_large_payload_into_batches(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(account_hub, "UPLOAD_BATCH_MAX_ACCOUNTS", 2)
+    monkeypatch.setattr(account_hub, "UPLOAD_BATCH_MAX_BYTES", 1024 * 1024)
+
+    rows = [
+        {"email": f"user{index}@example.com", "status": "active", "account_type": "plus"}
+        for index in range(5)
+    ]
+    accounts_mod.save_accounts(rows)
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    for row in rows:
+        (auth_dir / f"codex-{row['email']}-plus.json").write_text(
+            json.dumps({"email": row["email"], "plan_type": "plus"}),
+            encoding="utf-8",
+        )
+
+    posted = []
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_post(url, headers, json, timeout):
+        posted.append(json)
+        return FakeResponse()
+
+    monkeypatch.setattr(account_hub.requests, "post", fake_post)
+
+    result = account_hub.upload_to_hub(
+        {"url": "http://hub.local", "token": "secret", "name": "pc-01"},
+        syncable_only=True,
+    )
+
+    assert [len(payload["accounts"]) for payload in posted] == [2, 2, 1]
+    assert [payload["source"]["batch_index"] for payload in posted] == [1, 2, 3]
+    assert all(payload["source"]["batch_count"] == 3 for payload in posted)
+    assert result["batch_count"] == 3
+    assert result["uploaded_accounts"] == 5
+    assert result["uploaded_auths"] == 5
+    assert result["marked_synced_accounts"] == 5
+
+    saved = {acc["email"]: acc for acc in accounts_mod.load_accounts()}
+    assert all(saved[row["email"]]["account_hub_synced"] is True for row in rows)
+
+
 def test_upload_to_hub_can_limit_to_selected_emails(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     auth_dir = tmp_path / "data" / "auths"

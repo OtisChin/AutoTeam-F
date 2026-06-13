@@ -21,6 +21,13 @@ def quota_snapshot_status(quota_info: dict | None) -> str:
     return "exhausted" if any(value >= 100 for value in values) else "active"
 
 
+def normalize_display_status(status: object) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"personal", "plus", "paypal_ice"}:
+        return "active"
+    return normalized
+
+
 def resolve_status_auth_file(acc: dict, *, is_main_account_email: Callable[[str | None], bool]) -> str:
     auth_file = (acc.get("auth_file") or "").strip()
     if auth_file:
@@ -116,9 +123,7 @@ def display_account_status(
     is_main_account_email: Callable[[str | None], bool],
     resolve_status_auth_file_func: Callable[[dict], str],
 ) -> str:
-    status = acc.get("status", "")
-    if status in ("personal", "plus"):
-        status = "active"
+    status = normalize_display_status(acc.get("status"))
     if not is_main_account_email(acc.get("email")):
         return status
 
@@ -242,14 +247,18 @@ def sanitize_account_with_indexes(
     email = normalize_email(acc.get("email"))
     is_main = bool(email and main_email and email == main_email)
     sanitized["is_main_account"] = is_main
-    status = acc.get("status", "")
-    if status in ("personal", "plus"):
-        status = "active"
+    raw_status = str(acc.get("status") or "").strip().lower()
+    status = normalize_display_status(raw_status)
     if is_main:
         quota_status = quota_snapshot_status(quota_snapshot) or quota_snapshot_status(acc.get("last_quota"))
         status = quota_status or ("active" if resolve_status_auth_file_func(acc) else status)
+    sanitized["raw_status"] = raw_status
     sanitized["status"] = status
     sanitized["account_type"] = display_account_type(acc)
+    bind_provider = str(acc.get("last_bind_provider") or "").strip().lower()
+    if not bind_provider and raw_status == "paypal_ice":
+        bind_provider = "paypal_ice"
+    sanitized["last_bind_provider"] = bind_provider
     sanitized["credentials_exported"] = bool(acc.get("credentials_exported"))
     sanitized["credentials_exported_at"] = acc.get("credentials_exported_at")
     sanitized["account_hub_synced"] = bool(acc.get("account_hub_synced"))

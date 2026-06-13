@@ -125,12 +125,31 @@
             </div>
           </div>
 
-          <div v-if="isPhoneCpaFlow" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-100 space-y-1">
+          <div v-if="isPhoneCpaFlow && !registerForm.phoneOnly" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-100 space-y-1">
             <div class="font-medium">手机→邮箱→OAuth 注册</div>
             <div class="text-xs text-emerald-200/80">
               先使用下方手机号供应商注册 ChatGPT，再绑定当前邮件供应商邮箱，最后生成 OAuth 凭证并写入当前账号池。
             </div>
           </div>
+          <div v-if="isPhoneCpaFlow && registerForm.phoneOnly" class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-3 text-sm text-amber-100 space-y-1">
+            <div class="font-medium">仅手机注册（不绑定邮箱、不 OAuth）</div>
+            <div class="text-xs text-amber-200/80">
+              仅使用手机号注册 ChatGPT，不绑定邮箱、不执行 Codex OAuth，注册后仅保存 auth_session。
+            </div>
+          </div>
+
+          <label v-if="isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300 cursor-pointer hover:bg-gray-800/50">
+            <input
+              v-model="registerForm.phoneOnly"
+              type="checkbox"
+              :disabled="registeringBusy"
+              class="mt-1 rounded border-gray-600 bg-gray-800"
+            />
+            <span>
+              <span class="text-gray-100">仅手机注册</span>
+              <span class="block text-xs text-gray-500">勾选后仅通过手机号注册账号，不绑定邮箱和 OAuth 登录。</span>
+            </span>
+          </label>
 
           <label v-if="!isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
             <input
@@ -661,6 +680,7 @@ const registerForm = ref({
   password: '',
   protocolRegister: false,
   postRegisterOauth: false,
+  phoneOnly: false,
   oauthPhoneSmsProvider: 'phone_pool',
   oauthPhoneSmsCountry: '187',
   oauthPhoneSmsMaxPrice: '',
@@ -796,9 +816,12 @@ const luckmailPurchaseLabel = computed(() => {
 const registerBehaviorLabel = computed(() => {
   if (isPhoneCpaFlow.value) return '先用手机号注册 ChatGPT，再绑定当前邮件供应商邮箱并生成 OAuth 凭证'
   const registerMode = registerForm.value.protocolRegister ? '协议注册' : '浏览器注册'
-  return registerForm.value.postRegisterOauth
-    ? `${registerMode}免费账号，随后执行 OAuth 并保留凭证`
-    : `${registerMode}免费账号并保存 auth_session`
+  const flowDesc = registerForm.value.phoneOnly && isPhoneCpaFlow.value
+    ? '仅手机注册，不绑定邮箱、不 OAuth'
+    : registerForm.value.postRegisterOauth
+      ? '免费账号，随后执行 OAuth 并保留凭证'
+      : '免费账号并保存 auth_session'
+  return `${registerMode}${flowDesc}`
 })
 const registerProxyApiHelp = computed(() => {
   if (registerForm.value.proxyApiProvider === 'cliproxy') {
@@ -1061,6 +1084,7 @@ function loadSavedRegisterForm() {
       password: '',
       protocolRegister: Boolean(saved.protocolRegister),
       postRegisterOauth: Boolean(saved.postRegisterOauth),
+      phoneOnly: Boolean(saved.phoneOnly),
       oauthPhoneSmsProvider: savedOauthPhoneSmsProvider,
       oauthPhoneSmsCountry: savedOauthPhoneSmsCountry,
       oauthPhoneSmsMaxPrice: savedOauthPhoneSmsMaxPrice,
@@ -1107,6 +1131,7 @@ function saveRegisterForm() {
       prefix: registerForm.value.prefix,
       protocolRegister: Boolean(registerForm.value.protocolRegister),
       postRegisterOauth: Boolean(registerForm.value.postRegisterOauth),
+      phoneOnly: Boolean(registerForm.value.phoneOnly),
       oauthPhoneSmsProvider: oauthProvider,
       oauthPhoneSmsCountry: oauthCountry || '187',
       oauthPhoneSmsCountryByProvider: savedOauthPhoneSmsCountries,
@@ -1307,7 +1332,7 @@ async function loadOAuthPhoneSmsCountries(provider = registerForm.value.oauthPho
 async function loadRegisterLogs() {
   logsLoading.value = true
   try {
-    const result = await api.getLogs(200)
+    const result = await api.getLogs(1000)
     registerLogs.value = (result.logs || []).filter(entry => {
       const msg = String(entry.message || '')
       return msg.includes('[注册账号]') || msg.includes('[直接注册]') || msg.includes('[注册]') || msg.includes('[协议注册]') || msg.includes('[phone-first]') || msg.includes('[Codex]')
@@ -1407,7 +1432,8 @@ async function submitManualRegister() {
       prefix: registerForm.value.prefix || null,
       password: registerForm.value.password || null,
       protocol_register: isPhoneCpaFlow.value || Boolean(registerForm.value.protocolRegister),
-      post_register_oauth: isPhoneCpaFlow.value || Boolean(registerForm.value.postRegisterOauth),
+      phone_only: isPhoneCpaFlow.value && Boolean(registerForm.value.phoneOnly),
+      post_register_oauth: (isPhoneCpaFlow.value && !Boolean(registerForm.value.phoneOnly)) || Boolean(registerForm.value.postRegisterOauth),
       oauth_phone_sms_provider: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsProvider : '',
       oauth_phone_sms_country: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsCountry : '',
       oauth_phone_sms_max_price: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsMaxPrice : '',

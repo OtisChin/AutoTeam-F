@@ -141,7 +141,8 @@ from autotoken.api_routes.payment_task_models import (
 from autotoken.api_routes.payment_task_models import (
     PayPalTaskParams as _PayPalTaskParams,
 )
-from autotoken.api_routes.paypal_ice import create_paypal_ice_router
+from autotoken.api_routes.paypal_ice import create_paypal_ice_router, repair_paypal_ice_account_bind_metadata
+from autotoken.api_routes.paypal_ice_phone_pool import create_paypal_ice_phone_pool_router
 from autotoken.api_routes.paypal_sms_config import create_paypal_sms_config_router
 from autotoken.api_routes.register_domain import create_register_domain_router
 from autotoken.api_routes.rekberinaja_config import create_rekberinaja_config_router
@@ -685,7 +686,18 @@ app.include_router(create_rekberinaja_config_router(mask_secret=_mask_secret_for
 app.include_router(create_oauth_phone_sms_config_router(mask_secret=_mask_secret_for_config))
 app.include_router(create_gopay_auto_signup_config_router(mask_secret=_mask_secret_for_config))
 app.include_router(create_paypal_sms_config_router(mask_secret=_mask_secret_for_config))
-app.include_router(create_paypal_ice_router(mask_secret=_mask_secret_for_config))
+app.include_router(
+    create_paypal_ice_router(
+        mask_secret=_mask_secret_for_config,
+        start_oauth_login=lambda payload: post_account_login(_LoginAccountParams(**payload)),
+        get_task=lambda task_id: _tasks.get(task_id)
+        or next(
+            (task for task in _merged_task_snapshots(compact=False) if str(task.get("task_id") or "") == task_id),
+            None,
+        ),
+    )
+)
+app.include_router(create_paypal_ice_phone_pool_router())
 
 
 # ---------------------------------------------------------------------------
@@ -1665,6 +1677,7 @@ def _session_only_account_stub(email: str) -> dict:
 
 
 def _load_accounts_with_session_stubs(*, include_session_stubs: bool = True) -> list[dict]:
+    repair_paypal_ice_account_bind_metadata()
     return account_session_stubs_service.load_accounts_with_session_stubs(
         include_session_stubs=include_session_stubs,
         normalize_email=_normalized_email,
@@ -4038,11 +4051,22 @@ def _run_account_codex_login_once(
     refresh_auth_session: bool = False,
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
+    protocol_only: bool = False,
+    bind_email: bool = False,
+    mail_provider: str | None = None,
+    luckmail_email_type: str | None = None,
+    luckmail_preferred_domain: str | None = None,
+    email_domain: str | None = None,
+    oauth_phone_sms_provider: str | None = None,
+    oauth_phone_sms_country: str | None = None,
+    progress_callback: Callable[[dict], Any] | None = None,
 ) -> dict:
     from autotoken.auth.codex_auth import (
         CodexOAuthAccountDeactivated,
         CodexOAuthPhoneRequired,
         CodexProtocolOAuthError,
+        _extract_account_id_from_auth_session,
+        _normalize_auth_session_payload,
         check_codex_quota,
         login_codex_via_auth_session_protocol,
         login_codex_via_browser,
@@ -4058,9 +4082,11 @@ def _run_account_codex_login_once(
         ACCOUNT_TYPE_TEAM,
         STATUS_ACTIVE,
         STATUS_PERSONAL,
+        STATUS_PLUS,
+        replace_account_email,
         update_account,
     )
-    from autotoken.storage.auth_session_store import load_auth_session
+    from autotoken.storage.auth_session_store import delete_auth_session, load_auth_session, save_auth_session
 
     try:
         from autotoken.integrations.account_hub import _restore_luckmail_tokens_for_accounts
@@ -4086,13 +4112,20 @@ def _run_account_codex_login_once(
         ACCOUNT_TYPE_PRO,
     }
 
-    mail_provider = str(acc.get("mail_provider") or "").strip().lower()
-    if not mail_provider and str(acc.get("cloudmail_account_id") or "").strip().startswith("tok_"):
-        mail_provider = "luckmail"
-    if mail_provider:
+    requested_mail_provider = str(mail_provider or "").strip().lower()
+    effective_mail_provider = requested_mail_provider or str(acc.get("mail_provider") or "").strip().lower()
+    if not effective_mail_provider and str(acc.get("cloudmail_account_id") or "").strip().startswith("tok_"):
+        effective_mail_provider = "luckmail"
+    mail_provider_overrides = {}
+    if effective_mail_provider == "luckmail":
+        if luckmail_email_type:
+            mail_provider_overrides["LUCKMAIL_EMAIL_TYPE"] = str(luckmail_email_type).strip()
+        if luckmail_preferred_domain is not None:
+            mail_provider_overrides["LUCKMAIL_PREFERRED_DOMAIN"] = str(luckmail_preferred_domain).strip().lstrip("@")
+    if effective_mail_provider or mail_provider_overrides:
         from autotoken.interfaces.manager import _temporary_mail_provider
 
-        with _temporary_mail_provider(mail_provider):
+        with _temporary_mail_provider(effective_mail_provider, mail_provider_overrides):
             mail_client = TemporaryEmailClient()
     else:
         mail_client = TemporaryEmailClient()
@@ -4109,8 +4142,71 @@ def _run_account_codex_login_once(
     auth_session_data = load_auth_session(email)
     oauth_proxy_url = str(proxy_url or "").strip()
     oauth_proxy_bypass = str(proxy_bypass or "").strip() or None
+    phone_only_target = "@" not in str(email or "")
+    session_payload: dict | None = None
+
+    if protocol_only:
+        try:
+            if phone_only_target:
+                if not auth_session_data:
+                    raise RuntimeError(f"手机号账号缺少 auth_session，无法协议补登录/绑邮箱: {email}")
+                if not bind_email:
+                    raise RuntimeError(f"手机号账号补登录必须启用邮箱绑定: {email}")
+
+                bind_account_id = None
+                bind_email_value = ""
+
+                def _create_bind_mailbox():
+                    nonlocal bind_account_id, bind_email_value
+                    bind_account_id, bind_email_value = mail_client.create_temp_email(
+                        prefix="oauth",
+                        domain=str(email_domain or "").strip().lstrip("@") or None,
+                    )
+                    return bind_account_id, bind_email_value
+
+                from autotoken.auth.protocol_register import oauth_from_auth_session_once
+
+                session_payload = oauth_from_auth_session_once(
+                    mail_client,
+                    session_data=auth_session_data,
+                    email=email,
+                    password=acc.get("password", ""),
+                    account_id=acc.get("cloudmail_account_id"),
+                    mailbox_factory=_create_bind_mailbox,
+                    proxy=oauth_proxy_url or None,
+                    oauth_phone_sms_provider=oauth_phone_sms_provider,
+                    oauth_phone_sms_country=oauth_phone_sms_country,
+                    progress_callback=progress_callback,
+                )
+                if session_payload.get("mailbox_account_id"):
+                    acc["cloudmail_account_id"] = session_payload.get("mailbox_account_id")
+                if effective_mail_provider:
+                    acc["mail_provider"] = effective_mail_provider
+            else:
+                from autotoken.auth.protocol_register import login_once as protocol_login_once
+
+                session_payload = protocol_login_once(
+                    mail_client,
+                    email=email,
+                    password=acc.get("password", ""),
+                    account_id=acc.get("cloudmail_account_id"),
+                    proxy=oauth_proxy_url or None,
+                    oauth_phone_sms_provider=oauth_phone_sms_provider,
+                    oauth_phone_sms_country=oauth_phone_sms_country,
+                    progress_callback=progress_callback,
+                )
+            bundle = (session_payload or {}).get("codex_oauth_bundle")
+            if not isinstance(bundle, dict):
+                raise RuntimeError(f"协议补登录未返回 Codex OAuth bundle: {email}")
+        except (CodexOAuthPhoneRequired, CodexOAuthAccountDeactivated):
+            raise
+        except Exception:
+            logger.exception("[账号登录] 协议补登录失败: %s", email)
+            raise
+
     use_protocol_oauth = (
         (not refresh_auth_session)
+        and (not protocol_only)
         and not oauth_proxy_url
         and str(os.environ.get("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL") or "").strip().lower()
         in {
@@ -4210,6 +4306,19 @@ def _run_account_codex_login_once(
     if refresh_auth_session and auth_session_refresh_outcome.get("status") != "success":
         raise RuntimeError(auth_session_refresh_outcome.get("reason") or f"刷新 auth_session 失败: {email}")
 
+    session_account_id = ""
+    for source in (session_payload, auth_session_data):
+        candidate = _extract_account_id_from_auth_session(_normalize_auth_session_payload(source or {}))
+        if candidate:
+            session_account_id = candidate
+            break
+    from autotoken.services.registration import account_codex_oauth_bundle
+
+    bundle = account_codex_oauth_bundle(
+        bundle,
+        account_type=account_type,
+        account_id=session_account_id,
+    )
     auth_file = save_auth_file(bundle)
     plan_type = (bundle.get("plan_type") or "").lower()
     next_account_type = {
@@ -4218,27 +4327,60 @@ def _run_account_codex_login_once(
         "plus": ACCOUNT_TYPE_PLUS,
         "pro": ACCOUNT_TYPE_PRO,
     }.get(plan_type, account_type)
+    if account_type in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO} and next_account_type == ACCOUNT_TYPE_FREE:
+        next_account_type = account_type
 
-    update_account(
-        email,
-        status=STATUS_ACTIVE,
-        account_type=next_account_type,
-        auth_file=auth_file,
-        last_active_at=time.time(),
-    )
+    actual_email = _normalized_email((bundle or {}).get("email") or (session_payload or {}).get("email") or email)
+    target_email = email
+    current_status = str(acc.get("status") or "").strip().lower()
+    current_bind_provider = str(acc.get("last_bind_provider") or "").strip().lower()
+    if (
+        next_account_type == ACCOUNT_TYPE_PLUS
+        and current_status == STATUS_ACTIVE
+        and current_bind_provider in {"paypal", "paypal_ice"}
+    ):
+        next_status = STATUS_ACTIVE
+    else:
+        next_status = STATUS_PLUS if next_account_type == ACCOUNT_TYPE_PLUS else STATUS_ACTIVE
+    update_fields = {
+        "status": next_status,
+        "account_type": next_account_type,
+        "auth_file": auth_file,
+        "last_active_at": time.time(),
+    }
+    if acc.get("cloudmail_account_id"):
+        update_fields["cloudmail_account_id"] = acc.get("cloudmail_account_id")
+    if effective_mail_provider:
+        update_fields["mail_provider"] = effective_mail_provider
+    if protocol_only and session_payload:
+        if actual_email:
+            try:
+                save_auth_session(actual_email, session_payload)
+            except Exception as exc:
+                logger.warning("[账号登录] 保存协议 auth_session 失败: %s error=%s", actual_email, exc)
+    if phone_only_target and actual_email and "@" in actual_email and actual_email != email:
+        replace_account_email(email, actual_email, **update_fields)
+        try:
+            delete_auth_session(email)
+        except Exception as exc:
+            logger.warning("[账号登录] 清理手机号旧 auth_session 失败: %s error=%s", email, exc)
+        target_email = actual_email
+        logger.info("[账号登录] 手机号账号已绑定邮箱并迁移: %s -> %s", email, actual_email)
+    else:
+        update_account(email, **update_fields)
 
     token = bundle.get("access_token")
     account_id = bundle.get("account_id")
     if token and account_id:
         st, info = check_codex_quota(token, account_id=account_id)
         if st == "ok" and isinstance(info, dict):
-            update_account(email, last_quota=info)
+            update_account(target_email, last_quota=info)
         elif st == "exhausted":
             quota_info = quota_result_quota_info(info)
             if quota_info:
-                update_account(email, last_quota=quota_info)
+                update_account(target_email, last_quota=quota_info)
             update_account(
-                email,
+                target_email,
                 status="exhausted",
                 quota_exhausted_at=time.time(),
                 quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
@@ -4246,11 +4388,13 @@ def _run_account_codex_login_once(
 
     logger.info("[账号登录] 自动 CPA 同步已禁用，需要时请手动执行“同步 CPA”")
     result_payload = {
-        "email": email,
+        "email": target_email,
         "plan": bundle.get("plan_type"),
         "auth_file": auth_file,
         "mode": "native" if native_oauth else "team",
     }
+    if target_email != email:
+        result_payload["previous_email"] = email
     if refresh_auth_session and auth_session_refresh_outcome.get("auth_session_file"):
         result_payload["auth_session_file"] = auth_session_refresh_outcome.get("auth_session_file")
     return result_payload
@@ -4351,7 +4495,7 @@ app.include_router(create_oauth_phone_pool_router())
 # ---------------------------------------------------------------------------
 
 _log_buffer: list[dict] = []
-_LOG_BUFFER_MAX = 500
+_LOG_BUFFER_MAX = 5000
 
 
 class _LogCollector(logging.Handler):
@@ -11070,8 +11214,9 @@ if DIST_DIR.exists():
         """兜底路由：serve 前端 SPA"""
         file = DIST_DIR / path
         if file.is_file() and ".." not in path:
-            return FileResponse(str(file))
-        return FileResponse(str(DIST_DIR / "index.html"))
+            headers = {"Cache-Control": "no-store"} if file.name == "index.html" else None
+            return FileResponse(str(file), headers=headers)
+        return FileResponse(str(DIST_DIR / "index.html"), headers={"Cache-Control": "no-store"})
 
 
 class _QuietAccessLog(logging.Filter):
@@ -11093,9 +11238,26 @@ class _QuietAccessLog(logging.Filter):
         return not any(p in msg for p in self._quiet_paths)
 
 
-def start_server(host: str = "0.0.0.0", port: int = 8787):
+def start_server(host: str = "0.0.0.0", port: int = 8787, build: bool = False):
     """启动 API 服务器"""
     import uvicorn
+
+    if build:
+        import subprocess
+        web_dir = Path(__file__).resolve().parents[3] / "web"
+        logger.info("[API] --build 已指定，正在编译前端...")
+        result = subprocess.run(
+            "npm run build",
+            cwd=str(web_dir),
+            shell=True,
+            capture_output=True,
+            text=False,
+        )
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode("utf-8", errors="replace")
+            logger.error("[API] 前端编译失败:\n%s", stderr_text[:2000])
+            raise RuntimeError("前端编译失败")
+        logger.info("[API] 前端编译完成")
 
     if not os.environ.get("AUTOTOKEN_LOCAL_BASE_URL"):
         local_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host

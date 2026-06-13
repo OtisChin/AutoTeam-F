@@ -15,9 +15,19 @@ def test_quota_snapshot_status_uses_primary_and_weekly_percentages():
     assert account_presentation.quota_snapshot_status({"primary_pct": 40, "weekly_pct": 100}) == "exhausted"
 
 
-def test_display_account_status_normalizes_legacy_main_account_status():
+def test_display_account_status_normalizes_account_type_like_legacy_statuses():
     assert account_presentation.display_account_status(
         {"email": "member@example.com", "status": "plus"},
+        is_main_account_email=lambda _email: False,
+        resolve_status_auth_file_func=lambda _account: "auth.json",
+    ) == "active"
+    assert account_presentation.display_account_status(
+        {"email": "member@example.com", "status": "personal"},
+        is_main_account_email=lambda _email: False,
+        resolve_status_auth_file_func=lambda _account: "auth.json",
+    ) == "active"
+    assert account_presentation.display_account_status(
+        {"email": "member@example.com", "status": "paypal_ice"},
         is_main_account_email=lambda _email: False,
         resolve_status_auth_file_func=lambda _account: "auth.json",
     ) == "active"
@@ -32,6 +42,25 @@ def test_display_account_status_normalizes_legacy_main_account_status():
         is_main_account_email=lambda _email: True,
         resolve_status_auth_file_func=lambda _account: "auth.json",
     ) == "active"
+
+
+def test_sanitize_account_with_indexes_normalizes_legacy_plus_statuses():
+    for status in ("personal", "plus", "paypal_ice"):
+        sanitized = account_presentation.sanitize_account_with_indexes(
+            {"email": f"{status}@example.com", "status": status, "account_type": "plus"},
+            None,
+            {},
+            {},
+            "",
+            normalize_email=_normalize_email,
+            resolve_status_auth_file_func=lambda _account: "",
+            resolve_codex_auth_file_func=lambda _account: "",
+        )
+
+        assert sanitized["status"] == "active"
+        assert sanitized["raw_status"] == status
+        assert sanitized["account_type"] == "plus"
+        assert sanitized["last_bind_provider"] == ("paypal_ice" if status == "paypal_ice" else "")
 
 
 def test_display_account_type_preserves_explicit_type_and_falls_back_from_status():

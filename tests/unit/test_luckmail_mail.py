@@ -1,7 +1,7 @@
 import pytest
 
 from autotoken.core.files import READ_LINES_FILE_MAX_BYTES
-from autotoken.mail.luckmail import LuckMailProvider
+from autotoken.mail.luckmail import _GLOBAL_RESERVED_EMAILS, LuckMailProvider
 
 
 class FakeResponse:
@@ -12,6 +12,13 @@ class FakeResponse:
 
     def json(self):
         return self._payload
+
+
+@pytest.fixture(autouse=True)
+def clear_luckmail_global_reservations():
+    _GLOBAL_RESERVED_EMAILS.clear()
+    yield
+    _GLOBAL_RESERVED_EMAILS.clear()
 
 
 def test_parse_luckmail_account_line_supports_token_format():
@@ -55,6 +62,30 @@ def test_create_temp_email_purchases_when_loaded_pool_is_reserved(monkeypatch):
     assert account_id == "tok_next"
     assert email == "next@outlook.com"
     assert "next@outlook.com" in client._reserved
+
+
+def test_create_temp_email_reserves_loaded_pool_across_provider_instances(monkeypatch):
+    first = LuckMailProvider()
+    second = LuckMailProvider()
+    accounts = [
+        LuckMailProvider._parse_account_line("first@outlook.com----tok_first"),
+        LuckMailProvider._parse_account_line("second@outlook.com----tok_second"),
+    ]
+    first.accounts = list(accounts)
+    second.accounts = list(accounts)
+    first._tokens_by_email = {account.email: account.token for account in accounts}
+    second._tokens_by_email = {account.email: account.token for account in accounts}
+    first._emails_by_token = {account.token: account.email for account in accounts}
+    second._emails_by_token = {account.token: account.email for account in accounts}
+    monkeypatch.setattr(LuckMailProvider, "_registered_emails", staticmethod(lambda: set()))
+
+    first_account_id, first_email = first.create_temp_email()
+    second_account_id, second_email = second.create_temp_email()
+
+    assert first_account_id == "tok_first"
+    assert first_email == "first@outlook.com"
+    assert second_account_id == "tok_second"
+    assert second_email == "second@outlook.com"
 
 
 def test_luckmail_does_not_reuse_persisted_cache_by_default(monkeypatch, tmp_path):

@@ -4,6 +4,20 @@ import time
 from autotoken import accounts
 
 
+def test_legacy_paypal_ice_status_normalizes_to_active_plus_channel():
+    normalized = accounts._normalize_account_record(
+        {
+            "email": "ice@example.com",
+            "status": accounts.STATUS_PAYPAL_ICE,
+            "account_type": accounts.ACCOUNT_TYPE_FREE,
+        }
+    )
+
+    assert normalized["status"] == accounts.STATUS_ACTIVE
+    assert normalized["account_type"] == accounts.ACCOUNT_TYPE_PLUS
+    assert normalized["last_bind_provider"] == "paypal_ice"
+
+
 def test_add_and_update_account_persists_data(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)

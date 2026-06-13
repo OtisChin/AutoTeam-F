@@ -5861,7 +5861,7 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
     monkeypatch.setattr(
         api,
         "_run_account_codex_login_once",
-        lambda email, _acc, *, headless=False: {
+        lambda email, _acc, **_kwargs: {
             "email": email,
             "plan": "plus",
             "auth_file": f"data/auths/{email}.json",
@@ -5898,7 +5898,7 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
         "fourth@example.com",
     ]
     assert captured["result"]["total"] == 4
-    assert captured["result"]["concurrency"] == 3
+    assert captured["result"]["concurrency"] == 4
     assert sorted(item["email"] for item in captured["result"]["ok"]) == [
         "first@example.com",
         "fourth@example.com",
@@ -6228,7 +6228,7 @@ def test_post_accounts_login_batch_continues_after_phone_required(monkeypatch):
     )
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
 
-    def fake_codex_login(email, _acc, *, headless=False):
+    def fake_codex_login(email, _acc, **_kwargs):
         if email == "phone@example.com":
             raise CodexOAuthPhoneRequired("https://auth.openai.com/add-phone")
         return {"email": email, "plan": "plus", "auth_file": f"data/auths/{email}.json"}
