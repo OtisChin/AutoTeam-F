@@ -215,6 +215,12 @@ def test_codex_oauth_hero_sms_preserves_numeric_country_id(monkeypatch):
     assert codex_auth._oauth_hero_sms_config()["country"] == "12"
 
 
+def test_codex_oauth_hero_sms_config_accepts_max_price_override(monkeypatch):
+    monkeypatch.setenv("OAUTH_HERO_SMS_MAX_PRICE", "0.10")
+
+    assert codex_auth._oauth_hero_sms_config(max_price="0.05")["max_price"] == "0.05"
+
+
 def test_codex_oauth_smsbower_preserves_numeric_country_id(monkeypatch):
     monkeypatch.setenv("OAUTH_SMSBOWER_COUNTRY", "1")
 
@@ -414,6 +420,173 @@ def test_protocol_hero_sms_reuses_only_before_phone_first_submission(monkeypatch
     assert calls["get_number"] == 2
     assert calls["cancel"] == 1
     codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+
+
+def test_protocol_hero_sms_early_cancel_is_delayed_until_minimum_age(monkeypatch, tmp_path):
+    from autotoken import gopay_auto_register
+
+    delayed = {}
+
+    class DummyActivation:
+        def cancel(self):
+            raise RuntimeError(
+                '{"title":"EARLY_CANCEL_DENIED","details":"Activation cannot be cancelled at this time.",'
+                '"info":{"minActivationTime":120}}'
+            )
+
+    def fake_delayed_cancel(activation, **kwargs):
+        delayed["activation"] = activation
+        delayed.update(kwargs)
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setattr(codex_auth.time, "time", lambda: 1_050.0)
+    monkeypatch.setattr(gopay_auto_register, "_delayed_cancel_activation", fake_delayed_cancel)
+    codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+    item = {
+        "id": "hero_sms:act-early",
+        "record_id": "hero_sms:act-early",
+        "source": "hero_sms",
+        "activation_id": "act-early",
+        "activation": DummyActivation(),
+        "created_at": 1_000.0,
+        "hero_reserved_by": "owner",
+    }
+    from autotoken.auth.oauth_phone_records import record_acquired, list_records
+
+    record_acquired(item)
+    codex_auth._OAUTH_HERO_SMS_REUSE["current"] = dict(item)
+
+    codex_auth._release_oauth_hero_sms_phone(
+        item,
+        cancel=True,
+        reason="account_creation_failed",
+        reservation_owner="owner",
+    )
+
+    assert delayed["delay_seconds"] == 71
+    assert list_records(1)[0]["status"] == "cancel_pending"
+    codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+
+
+def test_reconcile_pending_hero_sms_cancel_retries_due_record(monkeypatch, tmp_path):
+    from autotoken import gopay_auto_register
+    from autotoken.auth.oauth_phone_records import list_records, record_acquired
+
+    calls = []
+
+    class DummyActivation:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def cancel(self):
+            calls.append(self.kwargs["activation_id"])
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setenv("OAUTH_HERO_SMS_API_KEY", "hero-key")
+    monkeypatch.setattr(gopay_auto_register, "SmsActivation", DummyActivation)
+    monkeypatch.setattr(
+        gopay_auto_register,
+        "_hero_request",
+        lambda *_args, **_kwargs: (True, "STATUS_WAIT_CODE", None),
+    )
+    record_acquired(
+        {
+            "id": "hero_sms:act-reconcile",
+            "provider": "hero_sms",
+            "activation_id": "act-reconcile",
+            "phone_number": "573229728478",
+            "country": "33",
+            "status": "cancel_pending",
+            "created_at": 1_000.0,
+        }
+    )
+
+    result = codex_auth._reconcile_pending_oauth_hero_sms_cancels_once(now=1_121.0)
+
+    assert result["cancelled"] == 1
+    assert calls == ["act-reconcile"]
+    assert list_records(1)[0]["status"] == "cancelled"
+
+
+def test_reconcile_pending_hero_sms_cancel_archives_provider_terminal_errors(monkeypatch, tmp_path):
+    from autotoken import gopay_auto_register
+    from autotoken.auth.oauth_phone_records import list_records, record_acquired
+
+    class DummyActivation:
+        def __init__(self, **kwargs):
+            self.activation_id = kwargs["activation_id"]
+
+        def cancel(self):
+            if self.activation_id == "act-not-active":
+                raise RuntimeError('{"title":"ACTIVATION_NOT_ACTIVE","details":"Activation is terminated."}')
+            raise RuntimeError('{"title":"OTP_RECEIVED","details":"Cannot terminate activation - OTP has been received"}')
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setenv("OAUTH_HERO_SMS_API_KEY", "hero-key")
+    monkeypatch.setattr(gopay_auto_register, "SmsActivation", DummyActivation)
+    monkeypatch.setattr(
+        gopay_auto_register,
+        "_hero_request",
+        lambda *_args, **_kwargs: (True, "STATUS_WAIT_CODE", None),
+    )
+    for activation_id in ("act-not-active", "act-otp"):
+        record_acquired(
+            {
+                "id": f"hero_sms:{activation_id}",
+                "provider": "hero_sms",
+                "activation_id": activation_id,
+                "phone_number": "573229728478",
+                "country": "33",
+                "status": "cancel_failed",
+                "created_at": 1_000.0,
+            }
+        )
+
+    result = codex_auth._reconcile_pending_oauth_hero_sms_cancels_once(now=1_121.0)
+
+    records = {item["activation_id"]: item["status"] for item in list_records(10)}
+    assert result["cancelled"] == 1
+    assert result["finished"] == 1
+    assert records["act-not-active"] == "cancelled"
+    assert records["act-otp"] == "finished"
+
+
+def test_protocol_hero_sms_otp_wait_uses_remaining_order_budget(monkeypatch):
+    class DummyActivation:
+        def __init__(self):
+            self.wait_kwargs = None
+
+        def wait_code(self, **kwargs):
+            self.wait_kwargs = kwargs
+            return ""
+
+    class DummyFlow:
+        pass
+
+    activation = DummyActivation()
+    monkeypatch.setattr(protocol_register.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(
+        codex_auth,
+        "_acquire_oauth_hero_sms_phone",
+        lambda *args, **kwargs: (
+            {
+                "id": "hero_sms:act-budget",
+                "source": "hero_sms",
+                "phone_number": "27655370996",
+                "activation_id": "act-budget",
+                "activation": activation,
+                "created_at": 970.0,
+            },
+            "",
+        ),
+    )
+
+    flow = DummyFlow()
+    protocol_register._attach_oauth_phone_supplier(flow, provider="hero_sms", email="")
+    item = flow._openai_phone_supplier()
+
+    assert flow._openai_phone_otp_reader(item, 60) == ""
+    assert activation.wait_kwargs["timeout_sec"] == 30
 
 
 def test_protocol_phone_supplier_not_attached_without_provider():

@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from autotoken import gopay_auto_register
@@ -129,6 +131,136 @@ def test_sms_activation_marks_ready_before_waiting_code(monkeypatch):
         )
     ]
     assert request_calls == [("getStatus", {"id": "activation-ready"})]
+
+
+@pytest.mark.parametrize(
+    ("ok", "response"),
+    [
+        (False, "REQUEST_ERROR:timed out"),
+        (True, "BAD_STATUS"),
+        (True, "NO_ACTIVATION"),
+    ],
+)
+def test_hero_set_status_raises_when_provider_rejects_update(monkeypatch, ok, response):
+    monkeypatch.setattr(
+        gopay_auto_register,
+        "_hero_request",
+        lambda *_args, **_kwargs: (ok, response, None),
+    )
+
+    with pytest.raises(RuntimeError, match=response):
+        gopay_auto_register._hero_set_status(
+            "https://hero-sms.example.test",
+            "hero-key",
+            "activation-timeout",
+            gopay_auto_register.STATUS_CANCEL,
+        )
+
+
+def test_sms_activation_cancel_retries_transient_status_failure(monkeypatch):
+    calls = []
+
+    def fake_set_status(base_url, api_key, activation_id, status):
+        calls.append((base_url, api_key, activation_id, status))
+        if len(calls) == 1:
+            raise RuntimeError("temporary failure")
+        return "ACCESS_CANCEL"
+
+    monkeypatch.setattr(gopay_auto_register, "_hero_set_status", fake_set_status)
+    monkeypatch.setattr(gopay_auto_register.time, "sleep", lambda _seconds: None)
+    activation = gopay_auto_register.SmsActivation(
+        activation_id="activation-cancel",
+        phone="27655370996",
+        country_id=16,
+        base_url="https://hero-sms.example.test",
+        api_key="hero-key",
+        log=lambda _message: None,
+    )
+
+    activation.cancel()
+
+    assert len(calls) == 2
+    assert calls[-1][-1] == gopay_auto_register.STATUS_SMSBOWER_CANCEL
+
+
+def test_sms_activation_cancel_does_not_retry_early_cancel_denied(monkeypatch):
+    calls = []
+
+    def fake_set_status(*args):
+        calls.append(args)
+        raise RuntimeError(
+            '{"title":"EARLY_CANCEL_DENIED","details":"Activation cannot be cancelled at this time.",'
+            '"info":{"minActivationTime":120}}'
+        )
+
+    monkeypatch.setattr(gopay_auto_register, "_hero_set_status", fake_set_status)
+    activation = gopay_auto_register.SmsActivation(
+        activation_id="activation-early-cancel",
+        phone="27619766274",
+        country_id=31,
+        base_url="https://hero-sms.example.test",
+        api_key="hero-key",
+        provider="hero_sms",
+        log=lambda _message: None,
+    )
+
+    with pytest.raises(RuntimeError, match="EARLY_CANCEL_DENIED"):
+        activation.cancel()
+
+    assert len(calls) == 1
+
+
+def test_sms_activation_cancel_uses_sms_activate_cancel_status_for_hero_sms(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        gopay_auto_register,
+        "_hero_set_status",
+        lambda *args: calls.append(args),
+    )
+
+    activation = gopay_auto_register.SmsActivation(
+        activation_id="activation-hero-cancel",
+        phone="27619766274",
+        country_id=31,
+        base_url="https://hero-sms.example.test",
+        api_key="hero-key",
+        provider="hero_sms",
+        log=lambda _message: None,
+    )
+
+    activation.cancel()
+
+    assert calls[0][-1] == gopay_auto_register.STATUS_SMSBOWER_CANCEL
+
+
+def test_delayed_cancel_retries_when_provider_still_denies_early_cancel(monkeypatch):
+    calls = {"cancel": 0}
+    sleeps = []
+    done = threading.Event()
+
+    class DummyActivation:
+        provider = "hero_sms"
+        activation_id = "activation-delayed-early"
+
+        def cancel(self):
+            calls["cancel"] += 1
+            if calls["cancel"] == 1:
+                raise RuntimeError(
+                    '{"title":"EARLY_CANCEL_DENIED","details":"Activation cannot be cancelled at this time.",'
+                    '"info":{"minActivationTime":120}}'
+                )
+
+    monkeypatch.setattr(gopay_auto_register.time, "sleep", lambda seconds: sleeps.append(seconds))
+    gopay_auto_register._delayed_cancel_activation(
+        DummyActivation(),
+        delay_seconds=1,
+        log=lambda _message: None,
+        on_success=done.set,
+    )
+
+    assert done.wait(1)
+    assert calls["cancel"] == 2
+    assert sleeps == [1, 10]
 
 
 def test_register_gopay_wallet_uses_smsbower_config(monkeypatch):

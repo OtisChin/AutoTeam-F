@@ -89,6 +89,9 @@
                         <option value="disabled">停用</option>
                         <option value="error">错误</option>
                       </select>
+                      <div v-if="item.last_failure_code" class="mt-2 max-w-48 rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-[10px] font-medium text-rose-200">
+                        {{ phoneFailureLabel(item) }}
+                      </div>
                     </td>
                     <td class="px-3 py-3">
                       <input v-model.trim="drafts[item.id].phone_number" :disabled="item.status === 'in_use'" class="w-40 rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 font-mono text-xs text-white outline-none focus:border-blue-500 disabled:opacity-50" />
@@ -99,6 +102,7 @@
                     <td class="px-3 py-3">
                       <input v-model.trim="drafts[item.id].note" :disabled="item.status === 'in_use'" class="w-40 rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-white outline-none focus:border-blue-500 disabled:opacity-50" />
                       <div v-if="item.error_message" class="mt-1 max-w-40 text-[11px] text-rose-300">{{ item.error_message }}</div>
+                      <div v-if="item.failure_count" class="mt-1 text-[10px] text-gray-500">累计 {{ item.failure_count }} 次</div>
                     </td>
                     <td class="px-3 py-3 font-mono text-xs text-gray-500">{{ item.current_job_id || '-' }}</td>
                     <td class="px-3 py-3">
@@ -173,6 +177,12 @@ function applyPayload(payload) {
 function notify(text, ok = true) {
   message.value = text
   messageOk.value = ok
+}
+
+function phoneFailureLabel(item) {
+  if (item.last_failure_code === 'SMS_OTP_TIMEOUT') return 'SMS OTP 超时'
+  if (item.last_failure_code === 'PHONE_CONFIRMATION_REQUIRED') return '需手机确认'
+  return item.last_failure_code
 }
 
 async function loadPool() {

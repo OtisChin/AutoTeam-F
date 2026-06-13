@@ -600,9 +600,13 @@ def _safe_url_for_log(url: str) -> str:
 @asynccontextmanager
 async def _api_lifespan(_app: FastAPI):
     _start_auto_check()
+    from autotoken.auth.codex_auth import start_oauth_hero_sms_cancel_reconciler, stop_oauth_hero_sms_cancel_reconciler
+
+    start_oauth_hero_sms_cancel_reconciler()
     try:
         yield
     finally:
+        stop_oauth_hero_sms_cancel_reconciler()
         _stop_auto_check()
 
 

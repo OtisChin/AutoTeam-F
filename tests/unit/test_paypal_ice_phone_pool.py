@@ -88,3 +88,42 @@ def test_phone_is_exclusive_until_current_job_releases_it(monkeypatch):
     assert second is None
     assert paypal_ice_phone_pool.phone_for_job("job-1") is None
     assert third["id"] == "phone-1"
+
+
+def test_phone_failure_marker_does_not_disable_phone(monkeypatch):
+    stored = [
+        {
+            "id": "phone-1",
+            "phone_number": "08080051197",
+            "sms_api": "https://sms.example.test/code",
+            "status": "available",
+        }
+    ]
+    monkeypatch.setattr(paypal_ice_phone_pool, "_raw_items", lambda: [dict(item) for item in stored])
+    monkeypatch.setattr(
+        paypal_ice_phone_pool,
+        "_save_items",
+        lambda items: stored.__setitem__(slice(None), [dict(item) for item in items]) or items,
+    )
+    paypal_ice_phone_pool._IN_USE.clear()
+    paypal_ice_phone_pool._PHONE_TO_JOB.clear()
+    paypal_ice_phone_pool._JOB_TO_PHONE.clear()
+
+    marked = paypal_ice_phone_pool.mark_phone_error(
+        "phone-1",
+        "SMS OTP 超时未收到",
+        code="SMS_OTP_TIMEOUT",
+    )
+    cleared = paypal_ice_phone_pool.clear_phone_failure_marker("phone-1")
+    acquired = paypal_ice_phone_pool.acquire_phone()
+
+    assert marked["status"] == "available"
+    assert marked["last_failure_code"] == "SMS_OTP_TIMEOUT"
+    assert marked["failure_count"] == 1
+    assert cleared["status"] == "available"
+    assert cleared["error_message"] == ""
+    assert cleared["last_failure_code"] == ""
+    assert cleared["last_failure_reason"] == ""
+    assert cleared["last_failure_at"] is None
+    assert cleared["failure_count"] == 0
+    assert acquired["id"] == "phone-1"

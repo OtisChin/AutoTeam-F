@@ -1737,7 +1737,7 @@ def _normalize_oauth_smsbower_country(value: str | None = None) -> str:
     return text
 
 
-def _oauth_hero_sms_config(country: str | None = None) -> dict[str, str]:
+def _oauth_hero_sms_config(country: str | None = None, max_price: str | None = None) -> dict[str, str]:
     return {
         "base_url": str(
             os.environ.get("OAUTH_HERO_SMS_BASE_URL")
@@ -1747,11 +1747,11 @@ def _oauth_hero_sms_config(country: str | None = None) -> dict[str, str]:
         "api_key": str(os.environ.get("OAUTH_HERO_SMS_API_KEY") or "").strip(),
         "country": _normalize_oauth_hero_sms_country(country or os.environ.get("OAUTH_HERO_SMS_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_HERO_SMS_SERVICE")),
-        "max_price": str(os.environ.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip(),
+        "max_price": str(max_price if max_price is not None else os.environ.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip(),
     }
 
 
-def _oauth_smsbower_config(country: str | None = None) -> dict[str, str]:
+def _oauth_smsbower_config(country: str | None = None, max_price: str | None = None) -> dict[str, str]:
     return {
         "base_url": str(
             os.environ.get("OAUTH_SMSBOWER_BASE_URL") or "https://smsbower.page/stubs/handler_api.php"
@@ -1759,7 +1759,7 @@ def _oauth_smsbower_config(country: str | None = None) -> dict[str, str]:
         "api_key": str(os.environ.get("OAUTH_SMSBOWER_API_KEY") or "").strip(),
         "country": _normalize_oauth_smsbower_country(country or os.environ.get("OAUTH_SMSBOWER_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_SMSBOWER_SERVICE")),
-        "max_price": str(os.environ.get("OAUTH_SMSBOWER_MAX_PRICE") or "").strip(),
+        "max_price": str(max_price if max_price is not None else os.environ.get("OAUTH_SMSBOWER_MAX_PRICE") or "").strip(),
     }
 
 
@@ -1767,6 +1767,9 @@ _OAUTH_HERO_SMS_REUSE_LOCK = threading.Lock()
 _OAUTH_HERO_SMS_REUSE: dict[str, Any] = {}
 _OAUTH_HERO_SMS_REUSE_NAMESPACE = "oauth_hero_sms"
 _OAUTH_HERO_SMS_REUSE_KEY = "current"
+_OAUTH_HERO_SMS_CANCEL_RECONCILER_LOCK = threading.Lock()
+_OAUTH_HERO_SMS_CANCEL_RECONCILER_STOP: threading.Event | None = None
+_OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD: threading.Thread | None = None
 _OAUTH_SMSBOWER_REUSE_LOCK = threading.Lock()
 _OAUTH_SMSBOWER_REUSE: dict[str, Any] = {}
 _OAUTH_SMSBOWER_REUSE_NAMESPACE = "oauth_smsbower"
@@ -1817,6 +1820,143 @@ def _oauth_hero_sms_config_fingerprint(cfg: dict[str, str] | None = None) -> str
     data = cfg or _oauth_hero_sms_config()
     raw = "|".join(str(data.get(key) or "") for key in ("base_url", "api_key", "country", "service", "max_price"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _reconcile_pending_oauth_hero_sms_cancels_once(*, now: float | None = None, limit: int = 100) -> dict[str, int]:
+    try:
+        from autotoken.auth.oauth_phone_records import list_records, update_record
+        from autotoken.payments.gopay_auto_register import (
+            DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC,
+            SmsActivation,
+            _hero_request,
+            _is_early_cancel_denied,
+        )
+    except Exception as exc:
+        logger.debug("[Codex] add-phone hero-sms 取消补偿器初始化失败: %s", exc)
+        return {"checked": 0, "cancelled": 0, "finished": 0, "pending": 0, "failed": 0}
+
+    cfg = _oauth_hero_sms_config()
+    if not cfg.get("api_key"):
+        return {"checked": 0, "cancelled": 0, "finished": 0, "pending": 0, "failed": 0}
+    current = time.time() if now is None else float(now)
+    checked = cancelled = finished = pending = failed = 0
+    for record in list_records(1000):
+        if checked >= max(1, int(limit or 100)):
+            break
+        if str(record.get("provider") or "").strip().lower() != "hero_sms":
+            continue
+        status = str(record.get("status") or "").strip().lower()
+        if status not in {"cancel_pending", "cancel_failed"}:
+            continue
+        try:
+            created_at = float(record.get("created_at") or current)
+        except Exception:
+            created_at = current
+        if current - created_at < DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC:
+            continue
+        activation_id = str(record.get("activation_id") or "").strip()
+        record_id = str(record.get("id") or "").strip()
+        if not activation_id or not record_id:
+            continue
+        checked += 1
+        try:
+            ok, text, _ = _hero_request(
+                cfg["base_url"],
+                cfg["api_key"],
+                "getStatus",
+                {"id": activation_id},
+                timeout=10,
+            )
+            provider_status = str(text or "").strip().upper()
+            if ok and provider_status in {"STATUS_CANCEL", "STATUS_FINISH", "NO_ACTIVATION"}:
+                update_record(record_id, status="cancelled", reason=record.get("reason") or "")
+                cancelled += 1
+                continue
+            country_raw = str(record.get("country") or cfg.get("country") or "187").strip()
+            try:
+                country_id: int | str = int(float(country_raw))
+            except Exception:
+                country_id = country_raw or 187
+            activation = SmsActivation(
+                activation_id=activation_id,
+                phone=str(record.get("phone_number") or ""),
+                country_id=country_id,
+                base_url=cfg["base_url"],
+                api_key=cfg["api_key"],
+                provider="hero_sms",
+                log=logger.info,
+            )
+            activation.cancel()
+            update_record(record_id, status="cancelled", reason=record.get("reason") or "")
+            cancelled += 1
+        except Exception as exc:
+            error_text = str(exc or "")
+            error_upper = error_text.upper()
+            if "ACTIVATION_NOT_ACTIVE" in error_upper or "NO_ACTIVATION" in error_upper:
+                update_record(record_id, status="cancelled", reason=record.get("reason") or "")
+                cancelled += 1
+                continue
+            if "OTP_RECEIVED" in error_upper:
+                update_record(record_id, status="finished", reason=f"{record.get('reason') or ''}; otp_received")
+                finished += 1
+                continue
+            if _is_early_cancel_denied(exc):
+                update_record(record_id, status="cancel_pending", reason=record.get("reason") or "")
+                pending += 1
+                continue
+            failed += 1
+            update_record(
+                record_id,
+                status="cancel_failed",
+                reason=f"{record.get('reason') or ''}; reconcile_cancel_error={exc}",
+            )
+            logger.info("[Codex] add-phone hero-sms 取消补偿失败: activation=%s error=%s", activation_id, exc)
+    if checked:
+        logger.info(
+            "[Codex] add-phone hero-sms 取消补偿完成: checked=%s cancelled=%s pending=%s failed=%s",
+            checked,
+            cancelled,
+            pending,
+            failed,
+        )
+    return {"checked": checked, "cancelled": cancelled, "finished": finished, "pending": pending, "failed": failed}
+
+
+def start_oauth_hero_sms_cancel_reconciler(*, interval_seconds: int = 15) -> None:
+    global _OAUTH_HERO_SMS_CANCEL_RECONCILER_STOP, _OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD
+    with _OAUTH_HERO_SMS_CANCEL_RECONCILER_LOCK:
+        if _OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD and _OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD.is_alive():
+            return
+        stop_event = threading.Event()
+        _OAUTH_HERO_SMS_CANCEL_RECONCILER_STOP = stop_event
+
+        def worker() -> None:
+            while not stop_event.is_set():
+                try:
+                    _reconcile_pending_oauth_hero_sms_cancels_once()
+                except Exception:
+                    logger.debug("[Codex] add-phone hero-sms 取消补偿循环异常", exc_info=True)
+                stop_event.wait(max(1, int(interval_seconds or 15)))
+
+        _OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD = threading.Thread(
+            target=worker,
+            name="oauth-hero-sms-cancel-reconciler",
+            daemon=True,
+        )
+        _OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD.start()
+
+
+def stop_oauth_hero_sms_cancel_reconciler() -> None:
+    global _OAUTH_HERO_SMS_CANCEL_RECONCILER_STOP, _OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD
+    with _OAUTH_HERO_SMS_CANCEL_RECONCILER_LOCK:
+        stop_event = _OAUTH_HERO_SMS_CANCEL_RECONCILER_STOP
+        thread = _OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD
+        _OAUTH_HERO_SMS_CANCEL_RECONCILER_STOP = None
+        _OAUTH_HERO_SMS_CANCEL_RECONCILER_THREAD = None
+    if stop_event:
+        stop_event.set()
+    if thread and thread.is_alive():
+        thread.join(timeout=2)
 
 
 def _oauth_hero_sms_persist_entry(entry: dict[str, Any] | None) -> None:
@@ -1918,6 +2058,8 @@ def _oauth_hero_sms_item_from_entry(entry: dict[str, Any], email: str = "") -> d
         "activation": entry.get("activation"),
         "activation_id": entry.get("activation_id") or "",
         "country_id": str(entry.get("country_id") or ""),
+        "created_at": float(entry.get("created_at") or time.time()),
+        "expires_at": float(entry.get("expires_at") or 0),
         "hero_reuse": True,
         "hero_remaining_seconds": _oauth_hero_sms_remaining_seconds(entry),
         "hero_bound_count": int(entry.get("bound_count") or 0),
@@ -1926,25 +2068,34 @@ def _oauth_hero_sms_item_from_entry(entry: dict[str, Any], email: str = "") -> d
 
 
 def _oauth_hero_sms_finish_or_cancel(
-    entry: dict[str, Any] | None, *, finish: bool = False, cancel: bool = False, reason: str = ""
-) -> None:
+    entry: dict[str, Any] | None,
+    *,
+    finish: bool = False,
+    cancel: bool = False,
+    reason: str = "",
+    record_id: str = "",
+) -> str:
     if not entry:
-        return
+        return "noop"
     activation = entry.get("activation")
     if not activation:
-        return
+        return "noop"
     try:
         if finish:
             activation.finish()
             logger.info(
                 "[Codex] add-phone hero-sms 会话已完成: activation=%s reason=%s", entry.get("activation_id"), reason
             )
+            return "updated"
         elif cancel:
             activation.cancel()
             logger.info(
                 "[Codex] add-phone hero-sms 会话已取消: activation=%s reason=%s", entry.get("activation_id"), reason
             )
+            return "updated"
     except Exception as exc:
+        if cancel and _schedule_oauth_hero_sms_delayed_cancel(entry, exc, reason=reason, record_id=record_id):
+            return "pending"
         logger.info(
             "[Codex] add-phone hero-sms 会话状态更新失败: activation=%s finish=%s cancel=%s reason=%s error=%s",
             entry.get("activation_id"),
@@ -1953,6 +2104,71 @@ def _oauth_hero_sms_finish_or_cancel(
             reason,
             exc,
         )
+        return "failed"
+    return "noop"
+
+
+def _schedule_oauth_hero_sms_delayed_cancel(
+    entry: dict[str, Any],
+    exc: Exception,
+    *,
+    reason: str = "",
+    record_id: str = "",
+) -> bool:
+    try:
+        from autotoken.payments.gopay_auto_register import _delayed_cancel_activation, _early_cancel_min_activation_time
+
+        min_activation_time = _early_cancel_min_activation_time(exc)
+    except Exception:
+        return False
+    if min_activation_time <= 0:
+        return False
+    activation = entry.get("activation")
+    if not activation:
+        return False
+    try:
+        created_at = float(entry.get("created_at") or 0)
+    except Exception:
+        created_at = 0
+    elapsed = max(0, int(time.time() - created_at)) if created_at > 0 else 0
+    delay_seconds = max(1, min_activation_time - elapsed + 1)
+
+    def mark_success() -> None:
+        if not record_id:
+            return
+        try:
+            from autotoken.auth.oauth_phone_records import update_record
+
+            update_record(record_id, status="cancelled", reason=reason)
+        except Exception:
+            logger.debug("[Codex] add-phone 更新 hero-sms 延迟取消成功记录失败", exc_info=True)
+
+    def mark_failure(failure: Exception) -> None:
+        if not record_id:
+            return
+        try:
+            from autotoken.auth.oauth_phone_records import update_record
+
+            update_record(record_id, status="cancel_failed", reason=f"{reason}; delayed_cancel_error={failure}")
+        except Exception:
+            logger.debug("[Codex] add-phone 更新 hero-sms 延迟取消失败记录失败", exc_info=True)
+
+    _delayed_cancel_activation(
+        activation,
+        delay_seconds=delay_seconds,
+        log=logger.info,
+        reason=reason or "early_cancel_denied",
+        on_success=mark_success,
+        on_failure=mark_failure,
+    )
+    logger.info(
+        "[Codex] add-phone hero-sms 取消过早，已安排延迟取消: activation=%s delay=%ss reason=%s error=%s",
+        entry.get("activation_id"),
+        delay_seconds,
+        reason,
+        exc,
+    )
+    return True
 
 
 def _oauth_smsbower_remaining_seconds(entry: dict[str, Any], *, now: float | None = None) -> int:
@@ -2108,6 +2324,8 @@ def _oauth_smsbower_item_from_entry(entry: dict[str, Any], email: str = "") -> d
         "activation": entry.get("activation"),
         "activation_id": entry.get("activation_id") or "",
         "country_id": str(entry.get("country_id") or ""),
+        "created_at": float(entry.get("created_at") or time.time()),
+        "expires_at": float(entry.get("expires_at") or 0),
         "smsbower_reuse": True,
         "smsbower_remaining_seconds": _oauth_smsbower_remaining_seconds(entry),
         "smsbower_bound_count": int(entry.get("bound_count") or 0),
@@ -2119,6 +2337,7 @@ def _acquire_oauth_hero_sms_phone(
     email: str = "",
     *,
     country: str | None = None,
+    max_price: str | None = None,
     reservation_owner: str | None = None,
     allow_reuse: bool = True,
 ) -> tuple[dict | None, str]:
@@ -2127,7 +2346,7 @@ def _acquire_oauth_hero_sms_phone(
     except Exception as exc:
         return None, f"hero-sms 模块不可用: {exc}"
 
-    cfg = _oauth_hero_sms_config(country)
+    cfg = _oauth_hero_sms_config(country, max_price=max_price)
     if not cfg["api_key"]:
         return None, "缺少 OAUTH_HERO_SMS_API_KEY 配置"
     country_raw = str(cfg["country"] or "187").strip().lower()
@@ -2244,6 +2463,7 @@ def _acquire_oauth_smsbower_phone(
     email: str = "",
     *,
     country: str | None = None,
+    max_price: str | None = None,
     reservation_owner: str | None = None,
     allow_reuse: bool = True,
 ) -> tuple[dict | None, str]:
@@ -2252,7 +2472,7 @@ def _acquire_oauth_smsbower_phone(
     except Exception as exc:
         return None, f"smsbower 模块不可用: {exc}"
 
-    cfg = _oauth_smsbower_config(country)
+    cfg = _oauth_smsbower_config(country, max_price=max_price)
     if not cfg["api_key"]:
         return None, "缺少 OAUTH_SMSBOWER_API_KEY 配置"
     country_raw = str(cfg["country"] or "187").strip().lower()
@@ -2617,12 +2837,26 @@ def _release_oauth_hero_sms_phone(
                         logger.debug("[Codex] add-phone 更新 hero-sms 释放记录失败", exc_info=True)
                 return
     if entry_to_close:
-        _oauth_hero_sms_finish_or_cancel(entry_to_close, finish=close_finish, cancel=close_cancel, reason=reason)
+        update_result = _oauth_hero_sms_finish_or_cancel(
+            entry_to_close,
+            finish=close_finish,
+            cancel=close_cancel,
+            reason=reason,
+            record_id=record_id,
+        )
         if record_id:
             try:
                 from autotoken.auth.oauth_phone_records import update_record
 
-                update_record(record_id, status="success" if close_finish else "cancelled", reason=reason)
+                if close_finish:
+                    status = "success"
+                elif update_result == "pending":
+                    status = "cancel_pending"
+                elif update_result == "updated":
+                    status = "cancelled"
+                else:
+                    status = "cancel_failed"
+                update_record(record_id, status=status, reason=reason)
             except Exception:
                 logger.debug("[Codex] add-phone 更新 hero-sms 记录失败", exc_info=True)
         return
@@ -2630,15 +2864,30 @@ def _release_oauth_hero_sms_phone(
     fallback = {
         "activation": phone_item.get("activation"),
         "activation_id": activation_id,
+        "created_at": phone_item.get("created_at"),
     }
-    _oauth_hero_sms_finish_or_cancel(fallback, finish=finish, cancel=cancel, reason=reason)
+    update_result = _oauth_hero_sms_finish_or_cancel(
+        fallback,
+        finish=finish,
+        cancel=cancel,
+        reason=reason,
+        record_id=record_id,
+    )
     if record_id:
         try:
             from autotoken.auth.oauth_phone_records import update_record
 
-            update_record(
-                record_id, status="success" if finish else "cancelled" if cancel else "released", reason=reason
-            )
+            if finish:
+                status = "success"
+            elif cancel and update_result == "pending":
+                status = "cancel_pending"
+            elif cancel and update_result == "updated":
+                status = "cancelled"
+            elif cancel:
+                status = "cancel_failed"
+            else:
+                status = "released"
+            update_record(record_id, status=status, reason=reason)
         except Exception:
             logger.debug("[Codex] add-phone 更新 hero-sms fallback 记录失败", exc_info=True)
 

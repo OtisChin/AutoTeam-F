@@ -25,7 +25,7 @@
             <button @click="checkTrials" :disabled="busy || activationLocked || !selectedItems.length || !config.configured" class="rounded-lg border border-emerald-500/30 bg-emerald-600/15 px-4 py-2.5 text-sm text-emerald-200 transition hover:bg-emerald-600/25 disabled:opacity-50">
               {{ trialBusy ? `检测中... (${selectedItems.length})` : `检测 Plus 试用资格 (${selectedItems.length})` }}
             </button>
-            <button v-if="activationBusy" @click="cancelActivationRun" :disabled="activationCancelRequested" class="rounded-lg border border-amber-500/30 bg-amber-600/15 px-4 py-2.5 text-sm text-amber-200 transition hover:bg-amber-600/25 disabled:opacity-50">
+            <button v-if="activationBusy || activeJobCount || currentActivationOpen" @click="cancelActivationRun" :disabled="activationCancelRequested" class="rounded-lg border border-amber-500/30 bg-amber-600/15 px-4 py-2.5 text-sm text-amber-200 transition hover:bg-amber-600/25 disabled:opacity-50">
               {{ activationCancelRequested ? '取消中...' : '取消任务' }}
             </button>
             <button @click="activatePlus" :disabled="busy || activationLocked || !selectedItems.length || !config.configured" class="rounded-lg bg-blue-600 px-4 py-2.5 text-sm text-white transition hover:bg-blue-500 disabled:opacity-50">
@@ -204,7 +204,7 @@
               <div>
                 <label class="mb-1 block text-xs text-gray-400">任务失败重试</label>
                 <input v-model.number="options.job_retry" type="number" min="0" max="5" class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-blue-500" />
-                <div class="mt-1 text-xs text-gray-500">ICE job 最终失败后重新提交该账号；手机号池模式会先等待号码释放。</div>
+                <div class="mt-1 text-xs text-gray-500">本轮全部结束后，将失败账号整轮重新提交；手机号池模式会先等待号码释放。</div>
               </div>
               <label class="flex items-start gap-3 rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-3 sm:col-span-2" :class="inputSource === 'token' ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'">
                 <input v-model="options.auto_oauth_login" type="checkbox" :disabled="inputSource === 'token'" class="mt-0.5 h-4 w-4 accent-blue-500" />
@@ -298,6 +298,19 @@
               <span class="text-amber-300">运行 {{ overallProgress.running }}</span>
               <span class="text-rose-300">失败 {{ overallProgress.failed }}</span>
             </div>
+            <div v-if="failureReasonStats.length" class="mt-3 border-t border-gray-800 pt-3">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <span class="text-xs font-medium text-gray-400">失败原因统计</span>
+                <span class="text-xs text-gray-500">{{ failureReasonStats.length }} 类原因</span>
+              </div>
+              <div class="max-h-32 space-y-1 overflow-auto pr-1">
+                <div v-for="item in failureReasonStats" :key="item.reason" class="grid grid-cols-[4.5rem_3.5rem_minmax(0,1fr)] items-start gap-2 text-xs">
+                  <span class="font-mono text-rose-300">{{ item.count }} 个</span>
+                  <span class="font-mono text-gray-500">{{ item.percent }}%</span>
+                  <span class="break-words text-gray-300" :title="item.reason">{{ item.reason }}</span>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="mt-4 min-h-0 flex-1 overflow-auto">
@@ -384,6 +397,28 @@
               placeholder="搜索邮箱，例如 openaibus.com"
               class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
             />
+            <div class="flex flex-wrap items-end gap-2">
+              <label class="min-w-[132px] flex-1">
+                <span class="mb-1 block text-xs text-gray-400">选择数量</span>
+                <input
+                  v-model.number="batchSelectCount"
+                  type="number"
+                  min="1"
+                  :max="Math.max(1, filteredAccounts.length)"
+                  :disabled="loadingAccounts || !filteredAccounts.length"
+                  class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-blue-500 disabled:opacity-50"
+                  @keydown.enter.prevent="selectAccountsByCount"
+                />
+              </label>
+              <button
+                type="button"
+                @click="selectAccountsByCount"
+                :disabled="loadingAccounts || !filteredAccounts.length"
+                class="h-[38px] rounded-lg border border-blue-500/30 bg-blue-600/20 px-4 text-sm text-blue-300 transition hover:bg-blue-600/30 disabled:opacity-50"
+              >
+                按数量选择
+              </button>
+            </div>
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div class="text-xs text-gray-400">
                 {{ loadingAccounts ? '加载账号中...' : filteredAccounts.length ? `当前筛选 ${filteredAccounts.length} 个账号` : '没有匹配账号' }}
@@ -428,7 +463,8 @@ const OAUTH_EMAIL_STORAGE_KEY = 'autotoken.dashboard.oauthEmailCfg'
 const PAYPAL_ICE_POLL_INTERVAL_MS = 1500
 const PAYPAL_ICE_ACCOUNT_REFRESH_INTERVAL_MS = 5000
 const PAYPAL_ICE_SCHEDULER_INTERVAL_MS = 500
-const PAYPAL_ICE_ROWS_LIMIT = 100
+const PAYPAL_ICE_EARLY_RETRY_REMAINING = 10
+const PAYPAL_ICE_ROWS_LIMIT = 500
 const rememberedFormState = loadPayPalIceFormState()
 const rememberedActivationRun = loadStoredActivationRunState()
 
@@ -442,6 +478,7 @@ const singleEmail = ref(rememberedFormState.singleEmail)
 const batchEmails = ref(rememberedFormState.batchEmails)
 const accessTokenText = ref('')
 const accountKeyword = ref('')
+const batchSelectCount = ref(rememberedFormState.batchSelectCount)
 const pickerOpen = ref(false)
 const phonePoolOpen = ref(false)
 const phonePoolLoading = ref(false)
@@ -468,8 +505,10 @@ const resultRows = ref(loadStoredResultRows())
 const options = ref(rememberedFormState.options)
 const currentActivationRunId = ref(rememberedActivationRun.runId)
 const currentActivationTotal = ref(rememberedActivationRun.total)
+const currentActivationRetryRound = ref(rememberedActivationRun.retryRound)
 const currentActivationInputSource = ref(rememberedActivationRun.inputSource)
 const restoredActivationItems = ref(rememberedActivationRun.items.length ? rememberedActivationRun.items : null)
+const cancelledActivationRunIds = new Set()
 let pollTimer = null
 let iceAccountRefreshPromise = null
 let lastIceAccountRefreshAt = 0
@@ -509,11 +548,24 @@ const displayedResultRows = computed(() => normalizeResultRows(resultRows.value)
 const activeJobCount = computed(() => resultRows.value.filter(rowNeedsRefresh).length)
 const currentActivationRows = computed(() => {
   const runId = currentActivationRunId.value
-  return runId ? resultRows.value.filter(row => row.activationRunId === runId) : []
+  if (!runId) return []
+  const latestByAccount = new Map()
+  for (const row of resultRows.value) {
+    if (row.activationRunId !== runId) continue
+    const key = String(row.activationItemKey || row.email || '').trim().toLowerCase()
+    if (!key) continue
+    const existing = latestByAccount.get(key)
+    const rowTimestamp = normalizeRowTimestamp(row.updatedAt || row.createdAt || row.sortAt)
+    const existingTimestamp = normalizeRowTimestamp(existing?.updatedAt || existing?.createdAt || existing?.sortAt)
+    if (!existing || preferActivationProgressRow(row, existing, rowTimestamp, existingTimestamp)) {
+      latestByAccount.set(key, row)
+    }
+  }
+  return [...latestByAccount.values()]
 })
 const currentActivationOpen = computed(() => currentActivationRows.value.some(row => !isTerminalActivationStatus(row.status)))
 const activationLocked = computed(() => activationBusy.value || currentActivationOpen.value)
-const successCount = computed(() => currentActivationRows.value.filter(row => row.status === 'success').length)
+const successCount = computed(() => currentActivationRows.value.filter(activationRowSucceeded).length)
 const jobRows = computed(() => currentActivationRows.value.filter(row => row.activationRunId))
 const overallProgress = computed(() => {
   const rows = jobRows.value
@@ -530,7 +582,7 @@ const overallProgress = computed(() => {
       barClass: 'bg-gray-600',
     }
   }
-  const success = rows.filter(row => String(row.status || '').toLowerCase() === 'success').length
+  const success = rows.filter(activationRowSucceeded).length
   const failed = rows.filter(row => String(row.status || '').toLowerCase() === 'failed').length
   const skipped = rows.filter(row => String(row.status || '').toLowerCase() === 'skipped').length
   const running = rows.filter(row => {
@@ -539,6 +591,7 @@ const overallProgress = computed(() => {
   }).length
   const percent = Math.max(0, Math.min(100, Math.round(rows.reduce((sum, row) => sum + jobProgressPercent(row), 0) / total)))
   const done = success + failed + skipped
+  const waiting = Math.max(0, total - done - running)
   const hasFailures = failed > 0
   return {
     total,
@@ -546,11 +599,28 @@ const overallProgress = computed(() => {
     failed,
     skipped,
     running,
+    waiting,
     percent,
-    summary: `${done}/${total} 完成 · ${running} 运行中${skipped ? ` · ${skipped} 已跳过` : ''}${hasFailures ? ` · ${failed} 失败` : ''}`,
+    summary: `成功 ${success}/${total} · 失败 ${failed} · 运行中 ${running}${waiting ? ` · 等待 ${waiting}` : ''}${skipped ? ` · 已跳过 ${skipped}` : ''}`,
     color: hasFailures ? 'text-rose-300' : (done === total ? 'text-emerald-300' : 'text-blue-300'),
     barClass: hasFailures ? 'bg-rose-400' : (done === total ? 'bg-emerald-400' : 'bg-blue-400'),
   }
+})
+const failureReasonStats = computed(() => {
+  const counts = new Map()
+  for (const row of currentActivationRows.value) {
+    if (String(row.status || '').toLowerCase() !== 'failed') continue
+    const reason = failureReasonText(row)
+    counts.set(reason, (counts.get(reason) || 0) + 1)
+  }
+  const total = [...counts.values()].reduce((sum, count) => sum + count, 0)
+  return [...counts.entries()]
+    .map(([reason, count]) => ({
+      reason,
+      count,
+      percent: total ? Math.round((count / total) * 100) : 0,
+    }))
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason, 'zh-CN'))
 })
 const configStatusText = computed(() => config.value.configured ? `已配置 · ${config.value.api_key_masked || 'API Key 已保存'}` : '尚未配置 API Key')
 const configuredConcurrency = computed(() => clampNumber(options.value?.concurrency, 1, 99, defaultPayPalIceOptions().concurrency))
@@ -728,6 +798,19 @@ function resultRowSortTimestamp(row) {
     || 0
 }
 
+function activationRowSucceeded(row) {
+  return String(row?.status || '').toLowerCase() === 'success'
+    || String(row?.resultCode || '').toUpperCase() === 'SUCCESS'
+}
+
+function preferActivationProgressRow(candidate, existing, candidateTimestamp, existingTimestamp) {
+  const candidateSuccess = activationRowSucceeded(candidate)
+  const existingSuccess = activationRowSucceeded(existing)
+  if (candidateSuccess !== existingSuccess) return candidateSuccess
+  if (Boolean(candidate?.jobId) !== Boolean(existing?.jobId)) return Boolean(candidate?.jobId)
+  return candidateTimestamp >= existingTimestamp
+}
+
 function normalizeResultRows(rows) {
   return (Array.isArray(rows) ? rows : [])
     .map(normalizeResultRow)
@@ -750,6 +833,7 @@ function loadPayPalIceFormState() {
       mode: nextMode,
       singleEmail: String(parsed?.singleEmail || '').trim().toLowerCase(),
       batchEmails: normalizeStoredEmails(parsed?.batchEmails),
+      batchSelectCount: clampNumber(parsed?.batchSelectCount, 1, 10000, 10),
       options: normalizePayPalIceOptions(parsed?.options),
     }
   } catch (_) {
@@ -758,6 +842,7 @@ function loadPayPalIceFormState() {
       mode: 'single',
       singleEmail: '',
       batchEmails: [],
+      batchSelectCount: 10,
       options: defaultPayPalIceOptions(),
     }
   }
@@ -772,6 +857,7 @@ function savePayPalIceFormState() {
         mode: mode.value === 'batch' ? 'batch' : 'single',
         singleEmail: String(singleEmail.value || '').trim().toLowerCase(),
         batchEmails: normalizeStoredEmails(batchEmails.value),
+        batchSelectCount: clampNumber(batchSelectCount.value, 1, 10000, 10),
         options: normalizePayPalIceOptions(options.value),
       }),
     )
@@ -794,6 +880,7 @@ function normalizeResultRow(row) {
     finishedAt: normalizeRowTimestamp(source.finishedAt || source.finished_at),
     activationRunId: String(source.activationRunId || ''),
     activationItemKey: String(source.activationItemKey || ''),
+    activationRetryCount: clampNumber(source.activationRetryCount, 0, 5, 0),
     trialStatus: String(source.trialStatus || ''),
     status: String(source.status || ''),
     billingStatus: String(source.billingStatus || ''),
@@ -806,6 +893,7 @@ function normalizeResultRow(row) {
     otpPending: Boolean(source.otpPending),
     error: String(source.error || ''),
     jobId: String(source.jobId || ''),
+    localCancelled: Boolean(source.localCancelled || source.local_cancelled),
     autoOauthLogin: Boolean(source.autoOauthLogin),
     oauthLoginTaskId: String(source.oauthLoginTaskId || ''),
     oauthLoginStatus: String(source.oauthLoginStatus || ''),
@@ -871,6 +959,7 @@ function loadStoredActivationRunState() {
     return {
       runId,
       total: Math.max(0, Number(parsed?.total || 0)),
+      retryRound: Math.max(0, Number(parsed?.retryRound || 0)),
       inputSource: parsed?.inputSource === 'account' ? 'account' : '',
       items: parsed?.inputSource === 'account' ? normalizeActivationRunItems(parsed?.items) : [],
     }
@@ -890,19 +979,25 @@ function inferStoredActivationRunState() {
       current.total += 1
       current.latest = Math.max(current.latest, Number(row.sortAt || row.updatedAt || row.createdAt || 0))
       current.items.push({ key: row.activationItemKey || row.email, label: row.email, clientRef: row.email, email: row.activationItemKey || row.email })
+      if (!row.localCancelled && String(row.status || '').toLowerCase() !== 'cancelled') {
+        current.displayable = true
+      }
       byRun.set(runId, current)
     }
-    const latest = [...byRun.values()].sort((a, b) => b.latest - a.latest)[0]
-    if (!latest) return { runId: '', total: 0, inputSource: '', items: [] }
+    const latest = [...byRun.values()]
+      .filter(run => run.displayable)
+      .sort((a, b) => b.latest - a.latest)[0]
+    if (!latest) return { runId: '', total: 0, retryRound: 0, inputSource: '', items: [] }
     const formState = loadPayPalIceFormState()
     return {
       runId: latest.runId,
       total: latest.total,
+      retryRound: 0,
       inputSource: formState.inputSource === 'account' ? 'account' : '',
       items: formState.inputSource === 'account' ? normalizeActivationRunItems(latest.items) : [],
     }
   } catch (_) {
-    return { runId: '', total: 0, inputSource: '', items: [] }
+    return { runId: '', total: 0, retryRound: 0, inputSource: '', items: [] }
   }
 }
 
@@ -917,11 +1012,25 @@ function saveActivationRunState(items = null) {
       JSON.stringify({
         runId,
         total: Number(currentActivationTotal.value || 0),
+        retryRound: Number(currentActivationRetryRound.value || 0),
         inputSource: runInputSource,
         items: runInputSource === 'account' ? normalizeActivationRunItems(sourceItems) : [],
         updatedAt: Date.now(),
       }),
     )
+  } catch (_) {
+    // localStorage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function discardActivationRunState() {
+  currentActivationRunId.value = ''
+  currentActivationTotal.value = 0
+  currentActivationRetryRound.value = 0
+  currentActivationInputSource.value = ''
+  restoredActivationItems.value = null
+  try {
+    localStorage.removeItem(PAYPAL_ICE_RUN_STATE_KEY)
   } catch (_) {
     // localStorage can be unavailable in private or restricted browser contexts.
   }
@@ -1002,6 +1111,7 @@ function ensureRow(email) {
       otpPending: false,
       error: '',
       jobId: '',
+      localCancelled: false,
       autoOauthLogin: false,
       oauthLoginTaskId: '',
       oauthLoginStatus: '',
@@ -1047,6 +1157,7 @@ function rowFromJob(item) {
     otpPending: Boolean(item.otp_pending),
     error: item.error_message || '',
     jobId: item.job_id || '',
+    localCancelled: Boolean(item.local_cancelled),
     autoOauthLogin: Boolean(item.auto_oauth_login),
     oauthLoginTaskId: item.oauth_login_task_id || '',
     oauthLoginStatus: item.oauth_login_status || '',
@@ -1065,6 +1176,7 @@ function isTerminalActivationStatus(status) {
 
 function rowNeedsRefresh(row) {
   if (!row?.jobId) return false
+  if (row.localCancelled) return false
   if (!isTerminalActivationStatus(row.status)) return true
   return row.autoOauthLogin && ['pending', 'queued', 'submitted', 'running', 'waiting', 'retrying'].includes(row.oauthLoginStatus)
 }
@@ -1138,14 +1250,16 @@ async function loadJobHistory() {
       return !labels.has(row.email)
     })
     resultRows.value = normalizeResultRows([...rows, ...existingRows])
+    reconcileCurrentActivationState()
   } catch (error) {
     setMessage(`读取 ICE 任务历史失败: ${error.message}`, false)
   }
 }
 
 function mergeJobHistoryRow(row, existingByJobId, existingByEmail) {
-  const existing = (row.jobId && existingByJobId.get(row.jobId))
-    || existingByEmail.get(String(row.email || '').trim().toLowerCase())
+  const existingByExactJob = row.jobId ? existingByJobId.get(row.jobId) : null
+  const existingByLabel = existingByEmail.get(String(row.email || '').trim().toLowerCase())
+  const existing = existingByExactJob || (!existingByLabel?.jobId ? existingByLabel : null)
   if (!existing) return row
   return {
     ...existing,
@@ -1155,6 +1269,10 @@ function mergeJobHistoryRow(row, existingByJobId, existingByEmail) {
     finishedAt: existing.finishedAt || row.finishedAt,
     activationRunId: existing.activationRunId || row.activationRunId,
     activationItemKey: existing.activationItemKey || row.activationItemKey,
+    activationRetryCount: Math.max(
+      Number(existing.activationRetryCount || 0),
+      Number(row.activationRetryCount || 0),
+    ),
     trialStatus: existing.trialStatus || row.trialStatus,
   }
 }
@@ -1294,11 +1412,75 @@ async function refreshIceAccountSilently(options = {}) {
   }
 }
 
+function activationRunStartedAt(runId) {
+  const match = /^ice-(\d+)/.exec(String(runId || '').trim())
+  return match ? Math.floor(Number(match[1]) / 1000) : 0
+}
+
+function reconcileCurrentActivationState() {
+  const runId = String(currentActivationRunId.value || '').trim()
+  if (!runId) return
+  const runItems = activationSchedulerItems()
+  const itemKeys = new Set(runItems.map(activationItemKey).filter(Boolean))
+  const runStartedAt = activationRunStartedAt(runId)
+  const activatedByEmail = paypalIceActivatedAccountMap(runId)
+  const activatedByJobId = new Map()
+  for (const account of activatedByEmail.values()) {
+    const jobId = String(account?.last_bind_task_id || '').trim()
+    if (jobId) activatedByJobId.set(jobId, account)
+  }
+
+  for (const item of runItems) {
+    const key = activationItemKey(item)
+    const account = activatedByEmail.get(key)
+    if (!account) continue
+    const existing = resultRows.value.find(row => (
+      row.activationRunId === runId
+      && String(row.activationItemKey || row.email || '').trim().toLowerCase() === key
+    ))
+    if (existing) continue
+    const row = ensureRow(item.label)
+    row.activationRunId = runId
+    row.activationItemKey = key
+    row.createdAt = row.createdAt || runStartedAt || Math.floor(Date.now() / 1000)
+    row.sortAt = row.sortAt || row.createdAt
+  }
+
+  for (const row of resultRows.value) {
+    const key = String(row.activationItemKey || row.email || '').trim().toLowerCase()
+    const rowAt = normalizeRowTimestamp(row.createdAt || row.updatedAt || row.sortAt)
+    const matchesRunItem = itemKeys.has(key)
+    const matchesRunTime = !runStartedAt || !rowAt || rowAt >= runStartedAt - 60
+    const accountByJob = row.jobId ? activatedByJobId.get(row.jobId) : null
+    const belongsToRun = row.activationRunId === runId
+      || (Boolean(row.jobId) && matchesRunItem && matchesRunTime)
+      || Boolean(accountByJob && matchesRunItem)
+    if (!belongsToRun) continue
+
+    row.activationRunId = runId
+    row.activationItemKey = key
+    const account = accountByJob || activatedByEmail.get(key)
+    if (!account) continue
+    const bindAt = normalizeRowTimestamp(account.plus_bound_at || account.last_bind_at)
+    row.status = 'success'
+    row.resultCode = 'SUCCESS'
+    row.progressPercent = 100
+    row.progressStage = 'account_reconciled'
+    row.progressMessage = '账号池已确认 PayPal ICE 激活成功'
+    row.progressAvailable = true
+    row.otpPending = false
+    row.error = ''
+    row.finishedAt = bindAt || row.finishedAt || Math.floor(Date.now() / 1000)
+    row.updatedAt = Math.max(row.updatedAt || 0, bindAt || 0)
+  }
+}
+
 async function loadAccounts() {
   loadingAccounts.value = true
   try {
     const result = await api.getAccounts({ includeSessionStubs: true })
     accounts.value = Array.isArray(result) ? result : (result?.accounts || [])
+    reconcileCurrentActivationState()
     const availableEmails = new Set(accountOptions.value.map(account => String(account.email || '').trim().toLowerCase()))
     if (singleEmail.value && !availableEmails.has(String(singleEmail.value || '').trim().toLowerCase())) {
       singleEmail.value = ''
@@ -1397,27 +1579,76 @@ async function removeAccountFromIcePool(item, row = null) {
 }
 
 function activationRunCancelled(runId = currentActivationRunId.value) {
-  return Boolean(activationCancelRequested.value && (!runId || currentActivationRunId.value === runId))
+  const id = String(runId || '').trim()
+  if (id && cancelledActivationRunIds.has(id)) return true
+  return Boolean(activationCancelRequested.value && (!id || currentActivationRunId.value === id))
+}
+
+function activationRowsToCancel() {
+  const runId = String(currentActivationRunId.value || '').trim()
+  const runRows = runId ? resultRows.value.filter(row => row.activationRunId === runId) : []
+  if (runRows.length) return runRows
+  return resultRows.value.filter(row => {
+    if (row.localCancelled) return false
+    if (rowNeedsRefresh(row)) return true
+    return row.autoOauthLogin && ['pending', 'queued', 'submitted', 'running', 'waiting', 'retrying'].includes(row.oauthLoginStatus)
+  })
+}
+
+function markActivationRowsCancelled(rows) {
+  for (const row of resultRows.value) {
+    if (!rows.includes(row)) continue
+    const submitted = Boolean(row.jobId)
+    const iceTerminal = isTerminalActivationStatus(row.status) || activationRowSucceeded(row)
+    if (!submitted || !iceTerminal) {
+      row.localCancelled = submitted
+      row.status = 'cancelled'
+      row.progressPercent = 100
+      row.progressStage = 'cancelled'
+      row.progressMessage = submitted ? '已本地取消 PayPal ICE 任务' : '已取消，未提交到 ICE'
+      row.progressAvailable = true
+      row.error = submitted ? '已本地取消 PayPal ICE 任务' : '已取消，未提交到 ICE'
+    }
+    if (row.autoOauthLogin && !['completed', 'failed', 'cancelled'].includes(String(row.oauthLoginStatus || '').toLowerCase())) {
+      row.oauthLoginStatus = 'cancelled'
+      row.oauthLoginError = iceTerminal ? '已本地取消协议补登录' : '已本地取消 PayPal ICE 任务'
+    }
+  }
+  saveResultRowsState()
 }
 
 function markPendingActivationRowsCancelled(runId) {
-  for (const row of resultRows.value) {
-    if (row.activationRunId !== runId || row.jobId) continue
-    const status = String(row.status || '').toLowerCase()
-    if (!['pending', 'checking_trial', 'submitting', ''].includes(status)) continue
-    row.status = 'cancelled'
-    row.progressPercent = 100
-    row.progressStage = 'cancelled'
-    row.progressMessage = '已取消，未提交到 ICE'
-    row.error = '已取消，未提交到 ICE'
-  }
+  const rows = resultRows.value.filter(row => {
+    if (row.activationRunId !== runId || row.jobId) return false
+    return ['pending', 'checking_trial', 'submitting', ''].includes(String(row.status || '').toLowerCase())
+  })
+  markActivationRowsCancelled(rows)
 }
 
-function cancelActivationRun() {
-  if (!activationBusy.value || activationCancelRequested.value) return
+async function cancelActivationRun() {
+  if (activationCancelRequested.value) return
+  const rows = activationRowsToCancel()
+  if (!rows.length && !activationBusy.value) return
   activationCancelRequested.value = true
-  markPendingActivationRowsCancelled(currentActivationRunId.value)
-  setMessage('已请求取消本次激活任务；未开始的账号不会继续提交，已提交的 ICE job 会继续刷新状态')
+  const runId = String(currentActivationRunId.value || '').trim()
+  if (runId) cancelledActivationRunIds.add(runId)
+  markActivationRowsCancelled(rows)
+  discardActivationRunState()
+
+  const jobIds = [...new Set(rows.map(row => String(row.jobId || '').trim()).filter(Boolean))]
+  const oauthTaskIds = [...new Set(rows.map(row => String(row.oauthLoginTaskId || '').trim()).filter(Boolean))]
+  const cancellations = []
+  if (jobIds.length) cancellations.push(api.cancelPayPalIceJobs(jobIds))
+  cancellations.push(...oauthTaskIds.map(taskId => api.cancelTask({ task_id: taskId })))
+  const results = await Promise.allSettled(cancellations)
+  const failed = results.filter(result => result.status === 'rejected')
+  if (failed.length) {
+    activationCancelRequested.value = false
+    setMessage(`已停止本地 PayPal ICE 任务，但有 ${failed.length} 个取消请求失败，请刷新确认状态`, false)
+    return
+  }
+  activationCancelRequested.value = false
+  setMessage(jobIds.length ? `已停止本地 PayPal ICE 任务：${jobIds.length} 个已提交 job 不再刷新/补登录` : '已取消本次 PayPal ICE 任务')
 }
 
 function prepareActivationRunRow(item, runId, sortAt = null) {
@@ -1429,6 +1660,7 @@ function prepareActivationRunRow(item, runId, sortAt = null) {
   row.updatedAt = now
   row.activationRunId = runId
   row.activationItemKey = key
+  row.activationRetryCount = 0
   row.trialStatus = row.trialStatus || ''
   row.status = 'pending'
   row.billingStatus = ''
@@ -1484,15 +1716,141 @@ function existingActivationPreparedKeys(runId) {
     .filter(Boolean))
 }
 
+function paypalIceActivatedAccountMap(runId = currentActivationRunId.value) {
+  const runStartedAt = activationRunStartedAt(runId)
+  const activated = new Map()
+  for (const account of accounts.value) {
+    const email = String(account?.email || '').trim().toLowerCase()
+    const accountType = String(account?.account_type || '').trim().toLowerCase()
+    const bindProvider = String(account?.last_bind_provider || '').trim().toLowerCase()
+    if (!email || accountType !== 'plus' || bindProvider !== 'paypal_ice') continue
+    const bindAt = normalizeRowTimestamp(account.plus_bound_at || account.last_bind_at)
+    if (runStartedAt && bindAt && bindAt < runStartedAt - 60) continue
+    activated.set(email, account)
+  }
+  return activated
+}
+
+function activationRowSubmittedOrInFlight(row) {
+  if (!row) return false
+  if (row.jobId || isTerminalActivationStatus(row.status)) return true
+  return ['checking_trial', 'submitting'].includes(String(row.status || '').toLowerCase())
+}
+
 function existingActivationSubmittedKeys(runId) {
-  return new Set(resultRows.value
-    .filter(row => row.activationRunId === runId && (row.jobId || isTerminalActivationStatus(row.status)))
+  const submitted = new Set(resultRows.value
+    .filter(row => row.activationRunId === runId && activationRowSubmittedOrInFlight(row))
     .map(row => String(row.activationItemKey || row.email || '').trim().toLowerCase())
     .filter(Boolean))
+  const activated = paypalIceActivatedAccountMap(runId)
+  for (const item of activationSchedulerItems()) {
+    const key = activationItemKey(item)
+    if (key && activated.has(key)) submitted.add(key)
+  }
+  return submitted
 }
 
 function activationSchedulerItems() {
   return restoredActivationItems.value?.length ? restoredActivationItems.value : selectedItems.value
+}
+
+function activationRetryLimit() {
+  return clampNumber(options.value.job_retry, 0, 5, defaultPayPalIceOptions().job_retry)
+}
+
+function activationRetryCountForItem(runId, item) {
+  const key = activationItemKey(item)
+  const row = resultRows.value.find(candidate => (
+    candidate.activationRunId === runId
+    && String(candidate.activationItemKey || candidate.email || '').trim().toLowerCase() === key
+  ))
+  return clampNumber(row?.activationRetryCount, 0, 5, 0)
+}
+
+function inFlightActivationRowsCount(runId) {
+  return resultRows.value.filter(row => {
+    if (row.activationRunId !== runId || isTerminalActivationStatus(row.status)) return false
+    const status = String(row.status || '').toLowerCase()
+    return Boolean(row.jobId) || ['checking_trial', 'submitting'].includes(status)
+  }).length
+}
+
+function resetStaleLocalSubmissionRows(runId) {
+  for (const row of resultRows.value) {
+    if (row.activationRunId !== runId || row.jobId) continue
+    if (!['checking_trial', 'submitting'].includes(String(row.status || '').toLowerCase())) continue
+    row.status = 'pending'
+    row.progressPercent = 0
+    row.progressStage = 'resume_pending'
+    row.progressMessage = '页面刷新后等待重新提交'
+    row.progressAvailable = true
+    row.error = ''
+  }
+}
+
+function retryableFailedActivationItems(runId, items) {
+  const retryLimit = activationRetryLimit()
+  const retryableKeys = new Set(resultRows.value
+    .filter(row => (
+      row.activationRunId === runId
+      && String(row.status || '').toLowerCase() === 'failed'
+      && (row.jobId || row.trialStatus === 'eligible')
+      && clampNumber(row.activationRetryCount, 0, 5, 0) < retryLimit
+    ))
+    .map(row => String(row.activationItemKey || row.email || '').trim().toLowerCase())
+    .filter(Boolean))
+  return items.filter(item => retryableKeys.has(activationItemKey(item)))
+}
+
+function pendingActivationItems(runId, items) {
+  const pendingKeys = new Set(resultRows.value
+    .filter(row => (
+      row.activationRunId === runId
+      && !row.jobId
+      && !isTerminalActivationStatus(row.status)
+    ))
+    .map(row => String(row.activationItemKey || row.email || '').trim().toLowerCase())
+    .filter(Boolean))
+  return items.filter(item => pendingKeys.has(activationItemKey(item)))
+}
+
+function unsubmittedActivationItems(runId, items) {
+  const submitted = existingActivationSubmittedKeys(runId)
+  return items.filter(item => {
+    const key = activationItemKey(item)
+    return key && !submitted.has(key)
+  })
+}
+
+function prepareActivationRetryRows(items, runId, retryLimit) {
+  for (const item of items) {
+    const row = ensureRow(item.label)
+    const retryCount = Math.min(retryLimit, activationRetryCountForItem(runId, item) + 1)
+    row.activationRunId = runId
+    row.activationItemKey = activationItemKey(item)
+    row.activationRetryCount = retryCount
+    row.updatedAt = Math.floor(Date.now() / 1000)
+    row.status = 'pending'
+    row.billingStatus = ''
+    row.resultCode = ''
+    row.progressPercent = 0
+    row.progressStage = 'retry_wait'
+    row.progressMessage = `任务重试 ${retryCount}/${retryLimit}，等待重新提交`
+    row.progressAvailable = true
+    row.otpPending = false
+    row.error = ''
+    row.jobId = ''
+    row.finishedAt = 0
+    row.autoOauthLogin = currentActivationInputSource.value === 'account' && Boolean(options.value.auto_oauth_login)
+    row.oauthLoginTaskId = ''
+    row.oauthLoginStatus = ''
+    row.oauthLoginError = ''
+    row.oauthLoginResultEmail = ''
+    row.oauthLoginProgressStage = ''
+    row.oauthLoginProgressMessage = ''
+    row.oauthLoginProgressEmail = ''
+    row.oauthLoginProgressEvents = []
+  }
 }
 
 async function runActivationItem(item, runId) {
@@ -1519,13 +1877,13 @@ async function runActivationItem(item, runId) {
   }
 }
 
-async function runActivationScheduler() {
-  const runId = currentActivationRunId.value
-  const submitted = existingActivationSubmittedKeys(runId)
+async function runActivationRound(runId, roundItems, useExistingSubmitted = true, roundOptions = {}) {
+  const submitted = useExistingSubmitted ? existingActivationSubmittedKeys(runId) : new Set()
   const active = new Set()
   const prepared = existingActivationPreparedKeys(runId)
+  const earlyRetryRemaining = Math.max(0, Number(roundOptions.earlyRetryRemaining || 0))
   while (true) {
-    const currentItems = activationSchedulerItems()
+    const currentItems = roundItems || activationSchedulerItems()
     syncActivationRunRows(currentItems, runId, prepared, submitted)
     if (activationRunCancelled(runId)) {
       markPendingActivationRowsCancelled(runId)
@@ -1547,7 +1905,9 @@ async function runActivationScheduler() {
         continue
       }
     }
-    while (active.size < limit && nextItems.length) {
+    const detachedActive = Math.max(0, inFlightActivationRowsCount(runId) - active.size)
+    const availableLimit = Math.max(0, limit - detachedActive)
+    while (active.size < availableLimit && nextItems.length) {
       const item = nextItems.shift()
       const key = activationItemKey(item)
       if (!key || submitted.has(key)) continue
@@ -1557,7 +1917,10 @@ async function runActivationScheduler() {
       })
       active.add(promise)
     }
-    if (!active.size && !activationSchedulerItems().some(item => !submitted.has(activationItemKey(item)))) {
+    if (!nextItems.length && earlyRetryRemaining > 0 && active.size > 0 && active.size < earlyRetryRemaining) {
+      return { earlyRetry: true }
+    }
+    if (!active.size && !currentItems.some(item => !submitted.has(activationItemKey(item)))) {
       break
     }
     if (active.size) {
@@ -1566,11 +1929,77 @@ async function runActivationScheduler() {
       await sleep(PAYPAL_ICE_SCHEDULER_INTERVAL_MS)
     }
   }
+  return { earlyRetry: false }
+}
+
+async function waitForActivationJobs(runId, items) {
+  const itemKeys = new Set(items.map(activationItemKey).filter(Boolean))
+  const activeRows = resultRows.value.filter(row => {
+    const key = String(row.activationItemKey || row.email || '').trim().toLowerCase()
+    return row.activationRunId === runId
+      && itemKeys.has(key)
+      && row.jobId
+      && !isTerminalActivationStatus(row.status)
+  })
+  await Promise.all(activeRows.map(row => waitForIceTerminal(
+    row,
+    () => activationRunCancelled(runId),
+  )))
+}
+
+async function runActivationScheduler() {
+  const runId = currentActivationRunId.value
+  const allItems = activationSchedulerItems()
+  const savedRetryRound = Math.max(0, Number(currentActivationRetryRound.value || 0))
+  let roundItems = savedRetryRound > 0 ? pendingActivationItems(runId, allItems) : null
+  if (savedRetryRound > 0 && !roundItems.length) roundItems = allItems
+
+  await runActivationRound(runId, roundItems, true, {
+    earlyRetryRemaining: PAYPAL_ICE_EARLY_RETRY_REMAINING,
+  })
+
+  while (!activationRunCancelled(runId)) {
+    const currentItems = activationSchedulerItems()
+    if (unsubmittedActivationItems(runId, currentItems).length) {
+      await runActivationRound(runId, null, true, {
+        earlyRetryRemaining: PAYPAL_ICE_EARLY_RETRY_REMAINING,
+      })
+      continue
+    }
+    const retryLimit = activationRetryLimit()
+    const failedItems = retryableFailedActivationItems(runId, currentItems)
+    if (failedItems.length && retryLimit > 0) {
+      const retryRound = Math.max(...failedItems.map(item => activationRetryCountForItem(runId, item) + 1))
+      currentActivationRetryRound.value = Math.max(currentActivationRetryRound.value, retryRound)
+      prepareActivationRetryRows(failedItems, runId, retryLimit)
+      saveActivationRunState(currentItems)
+      setMessage(`ICE 失败账号提前重试：${failedItems.length} 个账号，本轮剩余任务少于 ${PAYPAL_ICE_EARLY_RETRY_REMAINING}`)
+      await runActivationRound(runId, failedItems, false, {
+        earlyRetryRemaining: PAYPAL_ICE_EARLY_RETRY_REMAINING,
+      })
+      continue
+    }
+    if (inFlightActivationRowsCount(runId) > 0) {
+      await sleep(PAYPAL_ICE_SCHEDULER_INTERVAL_MS)
+      continue
+    }
+    break
+  }
+  await waitForActivationJobs(runId, activationSchedulerItems())
 }
 
 async function resumeActivationRunIfNeeded() {
   const runId = String(currentActivationRunId.value || '').trim()
   if (!runId) return
+  const storedRows = resultRows.value.filter(row => row.activationRunId === runId)
+  if (storedRows.length && storedRows.every(row => row.localCancelled || String(row.status || '').toLowerCase() === 'cancelled')) {
+    discardActivationRunState()
+    return
+  }
+  if (storedRows.length && storedRows.every(row => row.localCancelled || isTerminalActivationStatus(row.status))) {
+    return
+  }
+  resetStaleLocalSubmissionRows(runId)
   currentActivationTotal.value = Math.max(
     currentActivationTotal.value,
     currentActivationRows.value.length,
@@ -1578,7 +2007,12 @@ async function resumeActivationRunIfNeeded() {
   )
   saveActivationRunState()
   const hasPendingSubmission = currentActivationRows.value.some(row => !row.jobId && !isTerminalActivationStatus(row.status))
-  if (!hasPendingSubmission) return
+  const hasActiveJobs = currentActivationRows.value.some(row => row.jobId && !isTerminalActivationStatus(row.status))
+  const hasRetryableFailures = retryableFailedActivationItems(
+    currentActivationRunId.value,
+    activationSchedulerItems(),
+  ).length > 0
+  if (!hasPendingSubmission && !hasActiveJobs && !hasRetryableFailures) return
   if (currentActivationInputSource.value !== 'account' || !activationSchedulerItems().length) {
     setMessage('检测到未完成的 ICE 任务，但当前输入无法恢复自动提交；已提交的 job 会继续刷新', false)
     return
@@ -1608,14 +2042,21 @@ async function activatePlus() {
     currentActivationRunId.value = `ice-${Date.now()}-${Math.random().toString(16).slice(2)}`
     currentActivationInputSource.value = inputSource.value === 'account' ? 'account' : 'token'
     const initialItems = [...selectedItems.value]
-    restoredActivationItems.value = null
+    restoredActivationItems.value = initialItems
     currentActivationTotal.value = initialItems.length
+    currentActivationRetryRound.value = 0
     saveActivationRunState(initialItems)
     for (const [index, item] of initialItems.entries()) {
       prepareActivationRunRow(item, currentActivationRunId.value, Date.now() / 1000 - index / 1000)
     }
     await runActivationScheduler()
-    setMessage(activationCancelRequested.value ? 'PayPal ICE 激活任务已取消，已提交的 job 会继续刷新状态' : 'PayPal ICE 激活任务已提交')
+    const progress = overallProgress.value
+    setMessage(
+      activationCancelRequested.value
+        ? 'PayPal ICE 激活任务已取消，已提交的 job 会继续刷新状态'
+        : `PayPal ICE 激活任务已完成：成功 ${progress.success} / ${progress.total}，失败 ${progress.failed}`,
+      !activationCancelRequested.value && progress.failed < 1,
+    )
     await refreshActiveJobs()
     await refreshIceAccountSilently({ force: true })
   } catch (error) {
@@ -1634,56 +2075,48 @@ async function submitIceJobWithRetry(item, row) {
   }
   const token = await checkTrialEligibilityBeforeIce(item, row)
   if (!token) return
-  let attempt = 0
-  while (true) {
-    if (activationRunCancelled(row.activationRunId)) {
-      if (!row.jobId) {
-        row.status = 'cancelled'
-        row.error = '已取消，未提交到 ICE'
-      }
-      return
-    }
-    const retryLimit = Number(options.value.job_retry || 0)
-    row.status = 'submitting'
-    row.error = attempt ? `失败后重试 ${attempt}/${retryLimit}` : ''
-    let result = null
-    try {
-      result = await api.createPayPalIceJob({
-        input: token,
-        client_ref: item.clientRef,
-        proxy: options.value.proxy || '',
-        proxy_jp: options.value.proxy_jp || '',
-        phone: options.value.use_pool ? '' : (options.value.phone || ''),
-        sms_api: options.value.use_pool ? '' : (options.value.sms_api || ''),
-        use_pool: Boolean(options.value.use_pool),
-        pplink_retry: Number(options.value.pplink_retry || 3),
-        otp_timeout: Number(options.value.otp_timeout || 180),
-        idempotency_key: `autotoken-${item.clientRef}-${Date.now()}-${attempt}`,
-        auto_oauth_login: currentActivationInputSource.value === 'account' && Boolean(options.value.auto_oauth_login),
-        oauth_login_config: storedOauthLoginConfig(),
-      })
-    } catch (error) {
-      if (isPhonePoolExhaustedError(error)) {
-        const available = await waitForPhonePoolSlot(row)
-        if (!available) return
-        continue
-      }
-      throw error
-    }
-    applyJobResult(row, result)
-    row.jobId = result.job_id || row.jobId
-    row.resourceMode = result.resource_mode || row.resourceMode
-    await refreshIceAccountSilently()
-
-    if ((options.value.use_pool || retryLimit > 0) && row.jobId) {
-      const terminal = await waitForIceTerminal(row, () => activationRunCancelled(row.activationRunId))
-      if (!terminal) return
-    }
-    if (options.value.use_pool) await loadPhonePoolStats()
-    if (String(row.status || '').toLowerCase() !== 'failed') return
-    if (attempt >= retryLimit) return
-    attempt += 1
+  if (activationRunCancelled(row.activationRunId)) {
+    row.status = 'cancelled'
+    row.error = '已取消，未提交到 ICE'
+    return
   }
+  const retryRound = clampNumber(row.activationRetryCount, 0, 5, 0)
+  const retryLimit = Math.max(activationRetryLimit(), retryRound)
+  row.status = 'submitting'
+  row.error = retryRound ? `整轮重试 ${retryRound}/${retryLimit}` : ''
+  let result = null
+  try {
+    result = await api.createPayPalIceJob({
+      input: token,
+      client_ref: item.clientRef,
+      proxy: options.value.proxy || '',
+      proxy_jp: options.value.proxy_jp || '',
+      phone: options.value.use_pool ? '' : (options.value.phone || ''),
+      sms_api: options.value.use_pool ? '' : (options.value.sms_api || ''),
+      use_pool: Boolean(options.value.use_pool),
+      pplink_retry: Number(options.value.pplink_retry || 3),
+      otp_timeout: Number(options.value.otp_timeout || 180),
+      idempotency_key: `autotoken-${item.clientRef}-${Date.now()}-round-${retryRound}`,
+      auto_oauth_login: currentActivationInputSource.value === 'account' && Boolean(options.value.auto_oauth_login),
+      oauth_login_config: storedOauthLoginConfig(),
+    })
+  } catch (error) {
+    if (isPhonePoolExhaustedError(error)) {
+      const available = await waitForPhonePoolSlot(row)
+      if (!available) return
+      return submitIceJobWithRetry(item, row)
+    }
+    throw error
+  }
+  applyJobResult(row, result)
+  row.jobId = result.job_id || row.jobId
+  row.resourceMode = result.resource_mode || row.resourceMode
+  await refreshIceAccountSilently()
+
+  if (row.jobId) {
+    await waitForIceTerminal(row, () => activationRunCancelled(row.activationRunId))
+  }
+  if (options.value.use_pool) await loadPhonePoolStats()
 }
 
 function isPhonePoolExhaustedError(error) {
@@ -1747,13 +2180,10 @@ async function refreshActiveJobs(options = {}) {
 
 function clearResults() {
   resultRows.value = []
-  currentActivationRunId.value = ''
-  currentActivationTotal.value = 0
-  currentActivationInputSource.value = ''
-  restoredActivationItems.value = null
+  cancelledActivationRunIds.clear()
+  discardActivationRunState()
   try {
     localStorage.removeItem(PAYPAL_ICE_ROWS_STATE_KEY)
-    localStorage.removeItem(PAYPAL_ICE_RUN_STATE_KEY)
   } catch (_) {
     // localStorage can be unavailable in private or restricted browser contexts.
   }
@@ -1919,6 +2349,7 @@ function applyJobResult(row, result) {
   row.progressAvailable = Boolean(result.progress_available)
   row.otpPending = Boolean(result.otp_pending)
   row.error = result.error_message || ''
+  row.localCancelled = Boolean(result.local_cancelled)
   row.autoOauthLogin = Boolean(result.auto_oauth_login)
   row.oauthLoginTaskId = result.oauth_login_task_id || ''
   row.oauthLoginStatus = result.oauth_login_status || ''
@@ -1976,6 +2407,20 @@ function jobProgressText(row) {
   }[String(row?.status || '').toLowerCase()] || '等待任务状态'
 }
 
+function failureReasonText(row) {
+  const candidates = [
+    row?.error,
+    row?.progressMessage,
+    row?.resultCode,
+    row?.progressStage,
+  ]
+  for (const value of candidates) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim()
+    if (text && text !== '任务失败') return text
+  }
+  return 'ICE 未返回失败原因'
+}
+
 function iceRealtimeProgressText(row) {
   const parts = []
   if (row?.progressPercent !== null && row?.progressPercent !== undefined && row?.progressAvailable) {
@@ -2030,6 +2475,17 @@ async function loadPhonePoolStats() {
 
 function selectAllAccounts() {
   batchEmails.value = accountOptions.value.map(account => String(account.email || '').trim().toLowerCase())
+}
+
+function selectAccountsByCount() {
+  const available = filteredAccounts.value
+  if (!available.length) return
+  const count = Math.max(1, Math.min(available.length, Math.trunc(Number(batchSelectCount.value) || 1)))
+  batchSelectCount.value = count
+  batchEmails.value = available
+    .slice(0, count)
+    .map(account => String(account.email || '').trim().toLowerCase())
+    .filter(Boolean)
 }
 
 function trialLabel(status) {
@@ -2171,6 +2627,7 @@ watch(
     mode: mode.value,
     singleEmail: singleEmail.value,
     batchEmails: batchEmails.value,
+    batchSelectCount: batchSelectCount.value,
     options: options.value,
   }),
   savePayPalIceFormState,
@@ -2202,7 +2659,7 @@ onMounted(async () => {
   ])
   if (config.value.configured) await loadIceAccount()
   pollTimer = setInterval(refreshActiveJobs, PAYPAL_ICE_POLL_INTERVAL_MS)
-  resumeActivationRunIfNeeded()
+  void resumeActivationRunIfNeeded()
 })
 
 onBeforeUnmount(() => {

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_SEC = 3.0
 DEFAULT_AUTO_SIGNUP_OTP_TIMEOUT_SEC = 120
 DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC = 120
-STATUS_CANCEL = -1
+STATUS_CANCEL = 8
 STATUS_SMSBOWER_CANCEL = 8
 STATUS_READY = 1
 STATUS_RESEND = 3
@@ -354,7 +354,24 @@ class SmsActivation:
         return ""
 
     def cancel(self) -> None:
-        _hero_set_status(self.base_url, self.api_key, self.activation_id, _sms_provider_cancel_status(self.provider))
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                _hero_set_status(
+                    self.base_url,
+                    self.api_key,
+                    self.activation_id,
+                    _sms_provider_cancel_status(self.provider),
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                if _is_early_cancel_denied(exc):
+                    raise
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        if last_error:
+            raise last_error
 
     def finish(self) -> None:
         _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_FINISH)
@@ -369,31 +386,77 @@ def _delayed_cancel_activation(
     delay_seconds: int = DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC,
     log: Callable[[str], None] = logger.info,
     reason: str = "",
+    on_success: Callable[[], None] | None = None,
+    on_failure: Callable[[Exception], None] | None = None,
+    max_early_cancel_retries: int = 6,
+    early_cancel_retry_seconds: int = 10,
 ) -> None:
     def worker() -> None:
         if delay_seconds > 0:
             time.sleep(delay_seconds)
-        try:
-            activation.cancel()
-            log(
-                "[gopay-signup] 已延迟取消短信号码: "
-                f"provider={getattr(activation, 'provider', 'unknown')} "
-                f"activation={getattr(activation, 'activation_id', '')} "
-                f"reason={reason or 'existing_or_probe_failed'}"
-            )
-        except Exception as exc:
-            log(
-                "[gopay-signup] 延迟取消短信号码失败: "
-                f"provider={getattr(activation, 'provider', 'unknown')} "
-                f"activation={getattr(activation, 'activation_id', '')} "
-                f"error={exc}"
-            )
+        early_attempt = 0
+        while True:
+            try:
+                activation.cancel()
+                if on_success:
+                    on_success()
+                log(
+                    "[gopay-signup] 已延迟取消短信号码: "
+                    f"provider={getattr(activation, 'provider', 'unknown')} "
+                    f"activation={getattr(activation, 'activation_id', '')} "
+                    f"reason={reason or 'existing_or_probe_failed'}"
+                )
+                return
+            except Exception as exc:
+                if _is_early_cancel_denied(exc) and early_attempt < max_early_cancel_retries:
+                    early_attempt += 1
+                    log(
+                        "[gopay-signup] 短信号码仍未达到最短取消时间，稍后重试: "
+                        f"provider={getattr(activation, 'provider', 'unknown')} "
+                        f"activation={getattr(activation, 'activation_id', '')} "
+                        f"retry={early_attempt}/{max_early_cancel_retries} "
+                        f"delay={early_cancel_retry_seconds}s"
+                    )
+                    time.sleep(max(1, int(early_cancel_retry_seconds)))
+                    continue
+                if on_failure:
+                    on_failure(exc)
+                log(
+                    "[gopay-signup] 延迟取消短信号码失败: "
+                    f"provider={getattr(activation, 'provider', 'unknown')} "
+                    f"activation={getattr(activation, 'activation_id', '')} "
+                    f"error={exc}"
+                )
+                return
 
     threading.Thread(
         target=worker,
         name=f"gopay-sms-cancel-{getattr(activation, 'activation_id', '')}",
         daemon=True,
     ).start()
+
+
+def _early_cancel_min_activation_time(exc: Exception | str) -> int:
+    text = str(exc or "")
+    try:
+        payload = json.loads(text)
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        title = str(payload.get("title") or "").strip().upper()
+        info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+        if title == "EARLY_CANCEL_DENIED":
+            try:
+                return max(1, int(float(info.get("minActivationTime") or 0)))
+            except Exception:
+                return DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC
+    if "EARLY_CANCEL_DENIED" in text.upper():
+        return DEFAULT_EXISTING_NUMBER_CANCEL_DELAY_SEC
+    return 0
+
+
+def _is_early_cancel_denied(exc: Exception | str) -> bool:
+    return _early_cancel_min_activation_time(exc) > 0
 
 
 def _env_str(name: str, default: str = "") -> str:
@@ -1367,14 +1430,26 @@ def _smsbower_get_number(
 def _hero_set_status(base_url: str, api_key: str, activation_id: str, status: int) -> str:
     if not activation_id:
         return ""
-    _, text, _ = _hero_request(
+    ok, text, _ = _hero_request(
         base_url,
         api_key,
         "setStatus",
         {"id": activation_id, "status": status},
         timeout=20,
     )
-    return str(text or "")
+    if not ok:
+        raise RuntimeError(str(text or "setStatus failed"))
+    response = str(text or "").strip()
+    if response.upper().startswith(
+        (
+            "BAD_",
+            "NO_ACTIVATION",
+            "ERROR_",
+            "REQUEST_ERROR:",
+        )
+    ):
+        raise RuntimeError(response)
+    return response
 
 
 def _sms_provider_cancel_status(provider: str) -> int:

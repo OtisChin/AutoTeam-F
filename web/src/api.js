@@ -128,6 +128,7 @@ export const api = {
   checkPayPalIceSubscription: (payload) => request('POST', '/paypal-ice/subscription', payload),
   listPayPalIceJobs: () => request('GET', '/paypal-ice/jobs'),
   createPayPalIceJob: (payload) => request('POST', '/paypal-ice/jobs', payload),
+  cancelPayPalIceJobs: (jobIds) => request('POST', '/paypal-ice/jobs/cancel-local', { job_ids: jobIds }),
   getPayPalIceJob: (jobId) => request('GET', `/paypal-ice/jobs/${encodeURIComponent(jobId)}`),
   releasePayPalIcePhone: (jobId) => request('POST', `/paypal-ice/jobs/${encodeURIComponent(jobId)}/release-phone`),
   getPayPalIcePhonePool: () => request('GET', '/paypal-ice/phone-pool'),

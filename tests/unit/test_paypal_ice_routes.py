@@ -3,11 +3,14 @@ import pytest
 from fastapi import HTTPException
 
 from autotoken.api_routes.paypal_ice import (
+    PayPalIceCancelJobsParams,
     PayPalIceJobParams,
     PayPalIceOAuthLoginParams,
     PayPalIceTrialCheckParams,
     _clean_oauth_login_config,
+    _clear_paypal_ice_phone_failure,
     _paypal_ice_job_history,
+    _paypal_ice_phone_failure_marker,
     _paypal_ice_job_summary,
     create_paypal_ice_router,
 )
@@ -117,6 +120,41 @@ def test_paypal_ice_history_backfills_success_finished_at(monkeypatch):
     )
 
     assert _paypal_ice_job_history()[0]["finished_at"] == 1234.0
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {"error_message": "SMS OTP 超时未收到"},
+            ("SMS_OTP_TIMEOUT", "SMS OTP 超时未收到"),
+        ),
+        (
+            {"result_code": "PHONE_CONFIRMATION_REQUIRED"},
+            ("PHONE_CONFIRMATION_REQUIRED", "PHONE_CONFIRMATION_REQUIRED"),
+        ),
+    ],
+)
+def test_paypal_ice_phone_failure_marker(payload, expected):
+    assert _paypal_ice_phone_failure_marker(payload) == expected
+
+
+def test_paypal_ice_success_clears_phone_failure_marker(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("autotoken.services.paypal_ice_phone_pool.phone_for_job", lambda job_id: "phone-1")
+    monkeypatch.setattr(
+        "autotoken.services.paypal_ice_phone_pool.clear_phone_failure_marker",
+        lambda phone_id: calls.append(("id", phone_id)),
+    )
+    monkeypatch.setattr(
+        "autotoken.services.paypal_ice_phone_pool.clear_phone_failure_marker_by_number",
+        lambda phone: calls.append(("number", phone)),
+    )
+
+    _clear_paypal_ice_phone_failure("job-success", {"phone": "08080051197"})
+
+    assert calls == [("id", "phone-1")]
 
 
 def test_paypal_ice_trial_check_uses_nerver_endpoint(monkeypatch):
@@ -737,3 +775,59 @@ def test_paypal_ice_auto_oauth_retries_failed_login_three_times(monkeypatch):
     assert failed["oauth_login_retry_count"] == 3
     assert failed["oauth_login_task_id"] == "oauth-task-4"
     assert failed["oauth_login_error"] == "bind failed final，已重试 3 次"
+
+
+def test_paypal_ice_cancel_local_blocks_oauth_restart(monkeypatch):
+    kv = {}
+    started = []
+
+    monkeypatch.setattr(
+        "autotoken.settings.setup_wizard._read_env",
+        lambda: {"PAYPAL_ICE_BASE_URL": "https://plus.example.test", "PAYPAL_ICE_API_KEY": "ice-key"},
+    )
+    monkeypatch.setattr(
+        "autotoken.api_routes.paypal_ice.sqlite_store.get_json",
+        lambda namespace, key, default=None, **_kwargs: kv.get((namespace, key), default),
+    )
+    monkeypatch.setattr(
+        "autotoken.api_routes.paypal_ice.sqlite_store.set_json",
+        lambda namespace, key, value, **_kwargs: kv.__setitem__((namespace, key), value) or value,
+    )
+    monkeypatch.setattr(
+        "autotoken.api_routes.paypal_ice.sqlite_store.delete_key",
+        lambda namespace, key, **_kwargs: kv.pop((namespace, key), None),
+    )
+    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
+
+    def fake_request(method, url, **_kwargs):
+        if method == "POST":
+            return FakeResponse({"job_id": "job-cancel", "status": "queued", "client_ref": "+27635220036"})
+        return FakeResponse(
+            {
+                "job_id": "job-cancel",
+                "status": "success",
+                "result_code": "SUCCESS",
+                "client_ref": "+27635220036",
+            }
+        )
+
+    monkeypatch.setattr("autotoken.api_routes.paypal_ice.requests.request", fake_request)
+    routes = _routes(start_oauth_login=lambda payload: started.append(payload) or {"task_id": "oauth-1"})
+    routes["post_paypal_ice_job"](
+        PayPalIceJobParams(
+            input="token",
+            client_ref="+27635220036",
+            phone="08012345678",
+            sms_api="https://sms.example.test",
+            auto_oauth_login=True,
+        )
+    )
+
+    cancelled = routes["cancel_paypal_ice_jobs"](PayPalIceCancelJobsParams(job_ids=["job-cancel"]))
+    refreshed = routes["get_paypal_ice_job"]("job-cancel")
+
+    assert cancelled == {"cancelled": ["job-cancel"], "count": 1}
+    assert refreshed["local_cancelled"] is True
+    assert refreshed["status"] == "cancelled"
+    assert refreshed["oauth_login_status"] == "cancelled"
+    assert started == []

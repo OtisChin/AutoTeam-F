@@ -68,6 +68,10 @@ class PayPalIceJobParams(BaseModel):
     oauth_login_config: PayPalIceOAuthLoginParams = Field(default_factory=PayPalIceOAuthLoginParams)
 
 
+class PayPalIceCancelJobsParams(BaseModel):
+    job_ids: list[str] = Field(default_factory=list)
+
+
 def _paypal_ice_env() -> dict[str, str]:
     from autotoken.settings.setup_wizard import _read_env
 
@@ -332,7 +336,9 @@ def _paypal_ice_job_summary(data: dict[str, Any], *, fallback: dict[str, Any] | 
     oauth_progress_events = source.get("oauth_login_progress_events")
     if not isinstance(oauth_progress_events, list):
         oauth_progress_events = []
-    return {
+    local_cancelled = bool(source.get("local_cancelled"))
+    oauth_login_cancelled = bool(source.get("oauth_login_cancelled"))
+    summary = {
         "job_id": job_id,
         "status": status,
         "client_ref": str(source.get("client_ref") or "").strip(),
@@ -379,7 +385,24 @@ def _paypal_ice_job_summary(data: dict[str, Any], *, fallback: dict[str, Any] | 
         "oauth_login_progress_email": str(source.get("oauth_login_progress_email") or "").strip(),
         "oauth_login_progress_events": oauth_progress_events[-12:],
         "oauth_login_retry_count": _int_value(source.get("oauth_login_retry_count"), 0),
+        "local_cancelled": local_cancelled,
+        "oauth_login_cancelled": oauth_login_cancelled,
     }
+    if local_cancelled:
+        summary["status"] = "cancelled"
+        summary["done"] = True
+        summary["progress_percent"] = 100
+        summary["progress_stage"] = "cancelled"
+        summary["progress_message"] = str(source.get("progress_message") or "已本地取消 PayPal ICE 任务").strip()
+        summary["progress_available"] = True
+        summary["error_message"] = str(source.get("error_message") or "已本地取消 PayPal ICE 任务").strip()
+        if summary["auto_oauth_login"] and summary["oauth_login_status"] not in {"completed", "failed", "cancelled"}:
+            summary["oauth_login_status"] = "cancelled"
+            summary["oauth_login_error"] = "已本地取消 PayPal ICE 任务"
+    elif oauth_login_cancelled and summary["oauth_login_status"] not in {"completed", "failed", "cancelled"}:
+        summary["oauth_login_status"] = "cancelled"
+        summary["oauth_login_error"] = "已本地取消协议补登录"
+    return summary
 
 
 def _paypal_ice_job_history() -> list[dict[str, Any]]:
@@ -574,6 +597,15 @@ def _sync_paypal_ice_oauth_login(
     start_oauth_login: Callable[[dict[str, Any]], dict[str, Any]] | None,
     get_task: Callable[[str], dict[str, Any] | None] | None,
 ) -> dict[str, Any]:
+    if item.get("local_cancelled"):
+        if str(item.get("oauth_login_status") or "").strip().lower() not in {"completed", "failed", "cancelled"}:
+            item["oauth_login_status"] = "cancelled"
+            item["oauth_login_error"] = "已本地取消 PayPal ICE 任务"
+        return item
+    if item.get("oauth_login_cancelled"):
+        item["oauth_login_status"] = "cancelled"
+        item["oauth_login_error"] = item.get("oauth_login_error") or "已本地取消协议补登录"
+        return item
     if not item.get("auto_oauth_login"):
         return item
     if str(item.get("status") or "").lower() != "success" and str(item.get("result_code") or "").upper() != "SUCCESS":
@@ -690,6 +722,111 @@ def _record_paypal_ice_job(
         merged.extend(existing for existing in items if str(existing.get("job_id") or "") != item["job_id"])
         _save_paypal_ice_job_history(merged)
         return item
+
+
+def _paypal_ice_phone_failure_marker(item: dict[str, Any]) -> tuple[str, str]:
+    text = " ".join(
+        str(item.get(key) or "").strip()
+        for key in ("result_code", "error_message", "progress_message", "progress_stage")
+    )
+    upper_text = text.upper()
+    if "PHONE_CONFIRMATION_REQUIRED" in upper_text:
+        return "PHONE_CONFIRMATION_REQUIRED", "PHONE_CONFIRMATION_REQUIRED"
+    if "SMS OTP 超时未收到" in text or ("SMS OTP" in upper_text and "超时" in text):
+        return "SMS_OTP_TIMEOUT", "SMS OTP 超时未收到"
+    return "", ""
+
+
+def _mark_paypal_ice_phone_failure(job_id: str, item: dict[str, Any]) -> None:
+    code, reason = _paypal_ice_phone_failure_marker(item)
+    if not reason:
+        return
+    try:
+        from autotoken.services.paypal_ice_phone_pool import (
+            mark_phone_error,
+            mark_phone_error_by_number,
+            phone_for_job,
+        )
+
+        phone_id = phone_for_job(job_id)
+        if phone_id:
+            mark_phone_error(phone_id, reason, code=code)
+            return
+        mark_phone_error_by_number(str(item.get("phone") or ""), reason, code=code)
+    except Exception:
+        pass
+
+
+def _clear_paypal_ice_phone_failure(job_id: str, item: dict[str, Any]) -> None:
+    try:
+        from autotoken.services.paypal_ice_phone_pool import (
+            clear_phone_failure_marker,
+            clear_phone_failure_marker_by_number,
+            phone_for_job,
+        )
+
+        phone_id = phone_for_job(job_id)
+        if phone_id:
+            clear_phone_failure_marker(phone_id)
+            return
+        clear_phone_failure_marker_by_number(str(item.get("phone") or ""))
+    except Exception:
+        pass
+
+
+def _cancel_paypal_ice_jobs(job_ids: list[str]) -> dict[str, Any]:
+    targets = {str(job_id or "").strip() for job_id in job_ids}
+    targets.discard("")
+    if not targets:
+        raise HTTPException(status_code=400, detail="请选择要取消的 ICE job")
+
+    cancelled: list[str] = []
+    with _PAYPAL_ICE_JOB_LOCK:
+        items = _paypal_ice_job_history()
+        next_items: list[dict[str, Any]] = []
+        now = time.time()
+        for item in items:
+            job_id = str(item.get("job_id") or "").strip()
+            if job_id not in targets:
+                next_items.append(item)
+                continue
+
+            updated = dict(item)
+            updated["updated_at"] = now
+            status = str(updated.get("status") or "").strip().lower()
+            result_code = str(updated.get("result_code") or "").strip().upper()
+            ice_terminal = status in {"success", "failed", "skipped", "cancelled"} or result_code == "SUCCESS"
+            if ice_terminal:
+                updated["oauth_login_cancelled"] = True
+            else:
+                updated["local_cancelled"] = True
+                updated["status"] = "cancelled"
+                updated["done"] = True
+                updated["progress_percent"] = 100
+                updated["progress_stage"] = "cancelled"
+                updated["progress_message"] = "已本地取消 PayPal ICE 任务"
+                updated["progress_available"] = True
+                updated["error_message"] = "已本地取消 PayPal ICE 任务"
+            oauth_status = str(updated.get("oauth_login_status") or "").strip().lower()
+            if oauth_status not in {"completed", "failed", "cancelled"}:
+                updated["oauth_login_status"] = "cancelled"
+                updated["oauth_login_error"] = "已本地取消协议补登录" if ice_terminal else "已本地取消 PayPal ICE 任务"
+            next_items.append(updated)
+            sqlite_store.delete_key(PAYPAL_ICE_OAUTH_CONFIG_NAMESPACE, job_id)
+            cancelled.append(job_id)
+        _save_paypal_ice_job_history(next_items)
+
+    for job_id in cancelled:
+        try:
+            from autotoken.services.paypal_ice_phone_pool import phone_for_job, release_phone
+
+            phone_id = phone_for_job(job_id)
+            if phone_id:
+                release_phone(phone_id)
+        except Exception:
+            pass
+
+    return {"cancelled": cancelled, "count": len(cancelled)}
 
 
 def _mark_paypal_ice_account_plus(item: dict[str, Any]) -> None:
@@ -874,6 +1011,10 @@ def create_paypal_ice_router(
         )
         return {**result, **item}
 
+    @router.post("/api/paypal-ice/jobs/cancel-local")
+    def cancel_paypal_ice_jobs(params: PayPalIceCancelJobsParams):
+        return _cancel_paypal_ice_jobs(params.job_ids)
+
     @router.get("/api/paypal-ice/jobs/{job_id}")
     def get_paypal_ice_job(job_id: str):
         result = _paypal_ice_request("GET", f"/api/v1/jobs/{_nonempty_text(job_id, 'job_id')}")
@@ -887,6 +1028,10 @@ def create_paypal_ice_router(
         status = str(result.get("status") or "").strip()
         if status in ("success", "failed"):
             try:
+                if status == "failed":
+                    _mark_paypal_ice_phone_failure(job_id, item)
+                else:
+                    _clear_paypal_ice_phone_failure(job_id, item)
                 from autotoken.services.paypal_ice_phone_pool import phone_for_job, release_phone
                 pid = phone_for_job(job_id)
                 if pid:

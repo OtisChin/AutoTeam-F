@@ -1315,6 +1315,54 @@ def test_register_accounts_can_enable_post_register_oauth(monkeypatch):
     assert result["failed"] == 0
 
 
+def test_register_accounts_sms_max_price_does_not_serialize_workers(monkeypatch):
+    import threading
+    import time
+
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    captured = []
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_create_account_direct(mail_client, **kwargs):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            captured.append(kwargs)
+            kwargs["out_outcome"].update(status="success", email=f"phone-{len(captured)}")
+            return {"status": "success", "email": f"phone-{len(captured)}"}
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(manager, "TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(manager, "create_account_direct", fake_create_account_direct)
+
+    result = manager.cmd_register_accounts(
+        count=4,
+        concurrency=4,
+        interval_seconds=0,
+        jitter_min_seconds=0,
+        jitter_max_seconds=0,
+        registration_flow="phone_cpa",
+        register_mode="protocol",
+        oauth_phone_sms_provider="hero_sms",
+        oauth_phone_sms_max_price="0.05",
+        phone_only=True,
+    )
+
+    assert result["ok"] == 4
+    assert max_active > 1
+    assert {call["oauth_phone_sms_max_price"] for call in captured} == {"0.05"}
+
+
 def test_register_accounts_retries_dynamic_proxy_when_probe_fails(monkeypatch):
     captured = {}
     progress_events = []

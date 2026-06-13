@@ -2842,7 +2842,6 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
     """
     from playwright.sync_api import sync_playwright
 
-    import sys; print("DEBUG: create_account_direct registration_flow=", repr(registration_flow), "phone_only=", repr(phone_only), "oauth_phone_sms_provider=", repr(oauth_phone_sms_provider), flush=True)
     from autotoken.auth.invite import RegisterBlocked, assert_not_blocked
 
     logger.info("[直接注册] %s", email)
@@ -3219,6 +3218,7 @@ def create_account_direct(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    oauth_phone_sms_max_price=None,
     phone_only=False,
 ):
     """
@@ -3234,7 +3234,6 @@ def create_account_direct(
     - is_duplicate=True: 换个临时邮箱继续尝试，独立计数不消耗 register_attempts
     - 其他异常:          归入现有 retry 计数
     """
-    import sys; print("DEBUG: create_account_direct registration_flow=", repr(registration_flow), "phone_only=", repr(phone_only), "oauth_phone_sms_provider=", repr(oauth_phone_sms_provider), flush=True)
     from autotoken.auth.invite import RegisterBlocked
 
     def _progress(stage, message, **extra):
@@ -3277,8 +3276,6 @@ def create_account_direct(
         )
 
     if registration_flow == "phone_cpa":
-        import sys
-        print(f"DEBUG: phone_only={phone_only} phone_only_check={bool(phone_only)}", flush=True)
         provider_label = str(oauth_phone_sms_provider or os.environ.get("OAUTH_PHONE_SMS_PROVIDER") or "phone_pool")
 
         if phone_only:
@@ -3295,6 +3292,7 @@ def create_account_direct(
                     proxy=proxy_url,
                     oauth_phone_sms_provider=provider_label,
                     oauth_phone_sms_country=oauth_phone_sms_country,
+                    oauth_phone_sms_max_price=oauth_phone_sms_max_price,
                     progress_callback=progress_callback,
                 )
                 if isinstance(session_data, dict):
@@ -3365,6 +3363,7 @@ def create_account_direct(
                     proxy=proxy_url,
                     oauth_phone_sms_provider=provider_label,
                     oauth_phone_sms_country=oauth_phone_sms_country,
+                    oauth_phone_sms_max_price=oauth_phone_sms_max_price,
                     progress_callback=progress_callback,
                 )
                 if isinstance(session_data, dict):
@@ -4482,13 +4481,8 @@ def cmd_register_accounts(
         registration_flow = "standard"
     fixed_proxy_url = str(proxy_url or "").strip()
     register_proxy_meta = register_proxy_meta or {}
-    oauth_env_overrides = {}
     oauth_provider = str(oauth_phone_sms_provider or "").strip().lower().replace("-", "_")
     oauth_max_price = str(oauth_phone_sms_max_price or "").strip()
-    if oauth_max_price and oauth_provider == "hero_sms":
-        oauth_env_overrides["OAUTH_HERO_SMS_MAX_PRICE"] = oauth_max_price
-    elif oauth_max_price and oauth_provider == "smsbower":
-        oauth_env_overrides["OAUTH_SMSBOWER_MAX_PRICE"] = oauth_max_price
 
     def _emit_progress():
         if not progress_callback:
@@ -4644,24 +4638,24 @@ def cmd_register_accounts(
             )
             try:
                 selected_proxy_url = _select_working_register_proxy(job_index, total)
-                with _temporary_mail_provider(None, oauth_env_overrides):
-                    raw_result = create_account_direct(
-                        mail_client,
-                        out_outcome=outcome,
-                        email_prefix=email_prefix,
-                        password=password,
-                        domain=job_domain,
-                        skip_post_register=not post_register_oauth,
-                        post_register_oauth=post_register_oauth,
-                        check_team_membership=False,
-                        register_mode=register_mode,
-                        registration_flow=registration_flow,
-                        proxy_url=selected_proxy_url,
-                        oauth_phone_sms_provider=oauth_phone_sms_provider,
-                        oauth_phone_sms_country=oauth_phone_sms_country,
-                        phone_only=phone_only,
-                        progress_callback=progress_callback,
-                    )
+                raw_result = create_account_direct(
+                    mail_client,
+                    out_outcome=outcome,
+                    email_prefix=email_prefix,
+                    password=password,
+                    domain=job_domain,
+                    skip_post_register=not post_register_oauth,
+                    post_register_oauth=post_register_oauth,
+                    check_team_membership=False,
+                    register_mode=register_mode,
+                    registration_flow=registration_flow,
+                    proxy_url=selected_proxy_url,
+                    oauth_phone_sms_provider=oauth_phone_sms_provider,
+                    oauth_phone_sms_country=oauth_phone_sms_country,
+                    oauth_phone_sms_max_price=oauth_max_price if oauth_provider in {"hero_sms", "smsbower"} else "",
+                    phone_only=phone_only,
+                    progress_callback=progress_callback,
+                )
                 if isinstance(raw_result, str):
                     result = {"status": outcome.get("status") or "success", "email": raw_result, **outcome}
                 elif isinstance(raw_result, dict):

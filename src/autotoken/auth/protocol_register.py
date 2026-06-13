@@ -37,6 +37,18 @@ def _phone_pool_failure_action(reason: str) -> str:
     return "release"
 
 
+def _phone_otp_timeout_remaining(phone_item: dict, timeout: int) -> int:
+    configured = max(30, int(timeout or 180))
+    try:
+        created_at = float(phone_item.get("created_at") or 0)
+    except Exception:
+        created_at = 0
+    if created_at <= 0:
+        return configured
+    elapsed = max(0, int(time.time() - created_at))
+    return max(1, configured - elapsed)
+
+
 def _load_protocol_classes():
     protocol_dir = Path(__file__).resolve().parents[1] / "_protocol_register"
     if not (protocol_dir / "auth_flow.py").exists():
@@ -266,6 +278,7 @@ def _attach_oauth_phone_supplier(
     *,
     provider: str | None = None,
     country: str | None = None,
+    max_price: str | None = None,
     email: str = "",
     allow_hero_reuse: bool = True,
 ) -> None:
@@ -292,6 +305,7 @@ def _attach_oauth_phone_supplier(
             item, error = _acquire_oauth_hero_sms_phone(
                 email=email,
                 country=country,
+                max_price=max_price,
                 reservation_owner=reservation_owner,
                 allow_reuse=allow_hero_reuse,
             )
@@ -299,6 +313,7 @@ def _attach_oauth_phone_supplier(
             item, error = _acquire_oauth_smsbower_phone(
                 email=email,
                 country=country,
+                max_price=max_price,
                 reservation_owner=reservation_owner,
                 allow_reuse=True,
             )
@@ -333,7 +348,7 @@ def _attach_oauth_phone_supplier(
         )
         return str(
             activation.wait_code(
-                timeout_sec=max(30, int(timeout or 180)),
+                timeout_sec=_phone_otp_timeout_remaining(phone_item, timeout),
                 label="protocol_oauth_add_phone",
                 max_resends=2,
             )
@@ -569,6 +584,7 @@ def phone_first_register_once(
     proxy: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    oauth_phone_sms_max_price: str | None = None,
     progress_callback=None,
 ) -> tuple[bool, dict]:
     """Phone-first free registration, then bind the selected AutoToken mailbox."""
@@ -584,6 +600,7 @@ def phone_first_register_once(
         flow,
         provider=oauth_phone_sms_provider or "phone_pool",
         country=oauth_phone_sms_country,
+        max_price=oauth_phone_sms_max_price,
         email=email,
     )
     if password:
@@ -712,6 +729,7 @@ def phone_only_register_once(
     proxy: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    oauth_phone_sms_max_price: str | None = None,
     progress_callback=None,
 ) -> tuple[bool, dict]:
     """手机号仅注册（跳过绑定邮箱和 OAuth），返回 ChatGPT Web session。"""
@@ -726,6 +744,7 @@ def phone_only_register_once(
         flow,
         provider=oauth_phone_sms_provider or "phone_pool",
         country=oauth_phone_sms_country,
+        max_price=oauth_phone_sms_max_price,
         email="",
     )
     if password:

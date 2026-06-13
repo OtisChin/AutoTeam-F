@@ -37,6 +37,10 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "note": str(data.get("note") or "").strip(),
         "error_message": str(data.get("error_message") or "").strip(),
+        "last_failure_code": str(data.get("last_failure_code") or "").strip(),
+        "last_failure_reason": str(data.get("last_failure_reason") or "").strip(),
+        "last_failure_at": data.get("last_failure_at"),
+        "failure_count": int(data.get("failure_count") or 0),
         "last_used_at": data.get("last_used_at"),
         "created_at": float(data.get("created_at") or _now()),
         "updated_at": float(data.get("updated_at") or _now()),
@@ -228,6 +232,76 @@ def release_phone(phone_id: str) -> dict[str, Any] | None:
                 item["updated_at"] = _now()
                 _save_items(items)
                 return _with_runtime_status(item)
+    return None
+
+
+def mark_phone_error(phone_id: str, reason: str, *, code: str = "") -> dict[str, Any] | None:
+    """Record an ICE failure marker on a pool phone without disabling it."""
+    target = str(phone_id or "").strip()
+    message = str(reason or "").strip()
+    if not target or not message:
+        return None
+    with _LOCK:
+        items = _raw_items()
+        now = _now()
+        for item in items:
+            if item["id"] != target:
+                continue
+            item["error_message"] = message
+            item["last_failure_reason"] = message
+            item["last_failure_code"] = str(code or "").strip()
+            item["last_failure_at"] = now
+            item["failure_count"] = int(item.get("failure_count") or 0) + 1
+            item["updated_at"] = now
+            _save_items(items)
+            return _with_runtime_status(item)
+    return None
+
+
+def mark_phone_error_by_number(phone_number: str, reason: str, *, code: str = "") -> dict[str, Any] | None:
+    """Record a failure marker by phone number when runtime job mapping is gone."""
+    phone_key = re.sub(r"\D+", "", str(phone_number or ""))
+    if not phone_key:
+        return None
+    with _LOCK:
+        for item in _raw_items():
+            item_key = re.sub(r"\D+", "", item.get("phone_number") or "")
+            if item_key == phone_key:
+                return mark_phone_error(item["id"], reason, code=code)
+    return None
+
+
+def clear_phone_failure_marker(phone_id: str) -> dict[str, Any] | None:
+    """Clear previous ICE failure markers after the phone succeeds."""
+    target = str(phone_id or "").strip()
+    if not target:
+        return None
+    with _LOCK:
+        items = _raw_items()
+        for item in items:
+            if item["id"] != target:
+                continue
+            item["error_message"] = ""
+            item["last_failure_reason"] = ""
+            item["last_failure_code"] = ""
+            item["last_failure_at"] = None
+            item["failure_count"] = 0
+            item["updated_at"] = _now()
+            _save_items(items)
+            return _with_runtime_status(item)
+    return None
+
+
+def clear_phone_failure_marker_by_number(phone_number: str) -> dict[str, Any] | None:
+    """Clear failure markers by phone number when runtime job mapping is gone."""
+    phone_key = re.sub(r"\D+", "", str(phone_number or ""))
+    if not phone_key:
+        return None
+    with _LOCK:
+        for item in _raw_items():
+            item_key = re.sub(r"\D+", "", item.get("phone_number") or "")
+            if item_key == phone_key:
+                return clear_phone_failure_marker(item["id"])
     return None
 
 
