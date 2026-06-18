@@ -32,8 +32,9 @@
             <option value="phone_pool">OAuth 手机号池</option>
             <option value="hero_sms">hero-sms</option>
             <option value="smsbower">smsbower</option>
+            <option value="oasis">Oasis CDK</option>
           </select>
-          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；动态供应商会按任务页选择的供应商国家 ID 购买 OpenAI 号码。</p>
+          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；hero-sms / smsbower 按国家买号；Oasis 使用 CDK 池兑换号码。</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">固定参数</label>
@@ -93,6 +94,82 @@
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
             <p class="mt-1 text-xs text-gray-500">保存后作为 maxPrice 传给 smsbower getNumber。</p>
+          </div>
+        </template>
+        <template v-if="oauthPhoneSmsForm.provider === 'oasis'">
+          <div class="md:col-span-2">
+            <label class="block text-sm text-gray-400 mb-1">
+              Oasis CDK 池
+              <span v-if="oauthPhoneSmsStatus.oasis_sms_cdk_count" class="text-xs text-green-400 ml-1">
+                已保存 {{ oauthPhoneSmsStatus.oasis_sms_cdk_count }} 个
+              </span>
+            </label>
+            <textarea
+              v-model.trim="oauthPhoneSmsForm.oasis_sms_cdks"
+              rows="5"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="一行一个或粘贴多个 CDK，例如 SMS-6L2A-6TAH-Q7BA"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-blue-500"
+            ></textarea>
+            <p class="mt-1 text-xs text-gray-500">每个 CDK 只对应一个号码和验证码，注册成功后会保存 CDK 与账号的映射。</p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              CDK 文件
+              <span v-if="oauthPhoneSmsStatus.oasis_sms_cdk_file_present" class="text-xs text-green-400 ml-1">已配置</span>
+            </label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.oasis_sms_cdk_file"
+              type="text"
+              autocomplete="off"
+              placeholder="例如 data/oasis_cdks.txt"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">Oasis API 地址</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.oasis_sms_base_url"
+              type="text"
+              autocomplete="off"
+              placeholder="https://sms.oapi.vip"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">账号映射文件</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.oasis_sms_account_map_file"
+              type="text"
+              autocomplete="off"
+              placeholder="oasis-cdk-accounts.jsonl"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1">轮询次数</label>
+              <input
+                v-model.trim="oauthPhoneSmsForm.oasis_sms_poll_attempts"
+                type="number"
+                min="1"
+                autocomplete="off"
+                placeholder="24"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label class="block text-sm text-gray-400 mb-1">轮询间隔 ms</label>
+              <input
+                v-model.trim="oauthPhoneSmsForm.oasis_sms_poll_interval_ms"
+                type="number"
+                min="500"
+                autocomplete="off"
+                placeholder="5000"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
           </div>
         </template>
       </div>
@@ -1213,6 +1290,12 @@ const oauthPhoneSmsForm = ref({
   hero_sms_max_price: '',
   smsbower_api_key: '',
   smsbower_max_price: '',
+  oasis_sms_cdks: '',
+  oasis_sms_cdk_file: '',
+  oasis_sms_base_url: 'https://sms.oapi.vip',
+  oasis_sms_poll_attempts: '24',
+  oasis_sms_poll_interval_ms: '5000',
+  oasis_sms_account_map_file: 'oasis-cdk-accounts.jsonl',
 })
 const paypalSmsLoading = ref(false)
 const paypalSmsSaving = ref(false)
@@ -1275,11 +1358,10 @@ const gopayAutoSignupConfigured = computed(() => {
   return Boolean(gopayAutoSignupStatus.value.smscloud_xi_token_present)
 })
 const oauthPhoneSmsConfigured = computed(() => {
-  return oauthPhoneSmsForm.value.provider === 'phone_pool'
-    ? true
-    : oauthPhoneSmsForm.value.provider === 'smsbower'
-      ? Boolean(oauthPhoneSmsStatus.value.smsbower_api_key_present)
-      : Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
+  if (oauthPhoneSmsForm.value.provider === 'phone_pool') return true
+  if (oauthPhoneSmsForm.value.provider === 'smsbower') return Boolean(oauthPhoneSmsStatus.value.smsbower_api_key_present)
+  if (oauthPhoneSmsForm.value.provider === 'oasis') return Number(oauthPhoneSmsStatus.value.oasis_sms_cdk_count || 0) > 0
+  return Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
 })
 const paypalSmsConfigured = computed(() => Boolean(paypalSmsStatus.value.configured))
 const paypalSmsProviderSecretPresent = computed(() => {
@@ -1674,11 +1756,17 @@ async function loadOAuthPhoneSmsConfig() {
     const cfg = await api.getOAuthPhoneSmsConfig()
     oauthPhoneSmsStatus.value = cfg || {}
     oauthPhoneSmsForm.value = {
-      provider: ['hero_sms', 'smsbower'].includes(cfg?.provider) ? cfg.provider : 'phone_pool',
+      provider: ['hero_sms', 'smsbower', 'oasis'].includes(cfg?.provider) ? cfg.provider : 'phone_pool',
       hero_sms_api_key: '',
       hero_sms_max_price: cfg?.hero_sms_max_price || '',
       smsbower_api_key: '',
       smsbower_max_price: cfg?.smsbower_max_price || '',
+      oasis_sms_cdks: '',
+      oasis_sms_cdk_file: cfg?.oasis_sms_cdk_file || '',
+      oasis_sms_base_url: cfg?.oasis_sms_base_url || 'https://sms.oapi.vip',
+      oasis_sms_poll_attempts: cfg?.oasis_sms_poll_attempts || '24',
+      oasis_sms_poll_interval_ms: cfg?.oasis_sms_poll_interval_ms || '5000',
+      oasis_sms_account_map_file: cfg?.oasis_sms_account_map_file || 'oasis-cdk-accounts.jsonl',
     }
   } catch (e) {
     setMessage(e.message || '加载 OAuth 接码配置失败', 'error')
@@ -1694,6 +1782,7 @@ async function saveOAuthPhoneSmsConfig() {
     oauthPhoneSmsStatus.value = result || {}
     oauthPhoneSmsForm.value.hero_sms_api_key = ''
     oauthPhoneSmsForm.value.smsbower_api_key = ''
+    oauthPhoneSmsForm.value.oasis_sms_cdks = ''
     setMessage(result.message || 'OAuth 接码配置已保存')
     await loadOAuthPhoneSmsConfig()
   } catch (e) {

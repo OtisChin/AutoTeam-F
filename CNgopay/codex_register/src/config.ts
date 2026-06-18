@@ -2,9 +2,11 @@ import {readFileSync} from "node:fs";
 import path from "node:path";
 
 export type MailProviderName = "2925" | "gmail" | "proxiedmail" | "cloudflare" | "hotmail" | "gptmail";
+export type SmsProviderName = "hero_sms" | "oasis";
 
 interface AppConfigFile {
     provider?: unknown;
+    smsProvider?: unknown;
     defaultPassword?: unknown;
     loopDelayMs?: unknown;
     gmailAccessToken?: unknown;
@@ -23,6 +25,12 @@ interface AppConfigFile {
     heroSMSPriceTiers?: unknown;
     heroSMSPollAttempts?: unknown;
     heroSMSPollIntervalMs?: unknown;
+    oasisSMSBaseUrl?: unknown;
+    oasisSMSCdks?: unknown;
+    oasisSMSCdkFile?: unknown;
+    oasisSMSPollAttempts?: unknown;
+    oasisSMSPollIntervalMs?: unknown;
+    oasisSMSAccountMapFile?: unknown;
     cliproxyApiAutoUploadAuth?: unknown;
     cliproxyApiBaseUrl?: unknown;
     cliproxyApiManagementKey?: unknown;
@@ -30,6 +38,7 @@ interface AppConfigFile {
 
 export interface AppConfig {
     provider: MailProviderName;
+    smsProvider: SmsProviderName;
     defaultPassword: string;
     loopDelayMs: number;
     gmailAccessToken: string;
@@ -48,6 +57,12 @@ export interface AppConfig {
     heroSMSPriceTiers?: number[];
     heroSMSPollAttempts: number;
     heroSMSPollIntervalMs: number;
+    oasisSMSBaseUrl: string;
+    oasisSMSCdks: string[];
+    oasisSMSCdkFile: string;
+    oasisSMSPollAttempts: number;
+    oasisSMSPollIntervalMs: number;
+    oasisSMSAccountMapFile: string;
     cliproxyApiAutoUploadAuth: boolean;
     cliproxyApiBaseUrl: string;
     cliproxyApiManagementKey: string;
@@ -55,6 +70,7 @@ export interface AppConfig {
 
 const DEFAULT_CONFIG: AppConfig = {
     provider: "proxiedmail",
+    smsProvider: "hero_sms",
     defaultPassword: "kuaileshifu88",
     loopDelayMs: 120000,
     gmailAccessToken: "",
@@ -72,6 +88,12 @@ const DEFAULT_CONFIG: AppConfig = {
     heroSMSMaxPrice: 0.05,
     heroSMSPollAttempts: 10,
     heroSMSPollIntervalMs: 3000,
+    oasisSMSBaseUrl: "https://sms.oapi.vip",
+    oasisSMSCdks: [],
+    oasisSMSCdkFile: "",
+    oasisSMSPollAttempts: 24,
+    oasisSMSPollIntervalMs: 5000,
+    oasisSMSAccountMapFile: "oasis-cdk-accounts.jsonl",
     cliproxyApiAutoUploadAuth: false,
     cliproxyApiBaseUrl: "http://localhost:8317",
     cliproxyApiManagementKey: "",
@@ -89,6 +111,31 @@ function normalizeProvider(value: unknown): MailProviderName {
         return value;
     }
     return DEFAULT_CONFIG.provider;
+}
+
+function normalizeSmsProvider(value: unknown): SmsProviderName {
+    if (value === "hero_sms" || value === "oasis") {
+        return value;
+    }
+    return DEFAULT_CONFIG.smsProvider;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+    const values = Array.isArray(value) ? value : [value];
+    const items: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of values) {
+        const text = String(raw ?? "");
+        for (const item of text.split(/[\s,;]+/)) {
+            const normalized = item.trim();
+            if (!normalized || seen.has(normalized)) {
+                continue;
+            }
+            seen.add(normalized);
+            items.push(normalized);
+        }
+    }
+    return items;
 }
 
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
@@ -119,6 +166,7 @@ function loadConfig(): AppConfig {
     const parsed = JSON.parse(raw) as AppConfigFile;
     return {
         provider: normalizeProvider(parsed.provider),
+        smsProvider: normalizeSmsProvider(parsed.smsProvider),
         defaultPassword:
             typeof parsed.defaultPassword === "string" && parsed.defaultPassword.trim()
                 ? parsed.defaultPassword
@@ -190,6 +238,27 @@ function loadConfig(): AppConfig {
           typeof parsed.heroSMSPollIntervalMs === "number"
             ? parsed.heroSMSPollIntervalMs
             : DEFAULT_CONFIG.heroSMSPollIntervalMs,
+        oasisSMSBaseUrl:
+            typeof parsed.oasisSMSBaseUrl === "string" && parsed.oasisSMSBaseUrl.trim()
+                ? parsed.oasisSMSBaseUrl.trim()
+                : DEFAULT_CONFIG.oasisSMSBaseUrl,
+        oasisSMSCdks: normalizeStringArray(parsed.oasisSMSCdks),
+        oasisSMSCdkFile:
+            typeof parsed.oasisSMSCdkFile === "string"
+                ? parsed.oasisSMSCdkFile.trim()
+                : DEFAULT_CONFIG.oasisSMSCdkFile,
+        oasisSMSPollAttempts:
+            typeof parsed.oasisSMSPollAttempts === "number"
+                ? parsed.oasisSMSPollAttempts
+                : DEFAULT_CONFIG.oasisSMSPollAttempts,
+        oasisSMSPollIntervalMs:
+            typeof parsed.oasisSMSPollIntervalMs === "number"
+                ? parsed.oasisSMSPollIntervalMs
+                : DEFAULT_CONFIG.oasisSMSPollIntervalMs,
+        oasisSMSAccountMapFile:
+            typeof parsed.oasisSMSAccountMapFile === "string" && parsed.oasisSMSAccountMapFile.trim()
+                ? parsed.oasisSMSAccountMapFile.trim()
+                : DEFAULT_CONFIG.oasisSMSAccountMapFile,
         cliproxyApiAutoUploadAuth: normalizeBoolean(
             parsed.cliproxyApiAutoUploadAuth,
             DEFAULT_CONFIG.cliproxyApiAutoUploadAuth,

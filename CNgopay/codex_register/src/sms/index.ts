@@ -1,6 +1,7 @@
 import { ActivationBroker } from "./activation-broker.js";
 import { createHeroSmsProvider } from "./heroSMS.js";
 import type { HeroSmsActivation, HeroSmsProvider, HeroSmsVerificationCode } from "./heroSMS.js";
+export {createOasisSMSBroker, recordOasisAccountMapping} from "./oasis.js";
 
 type HeroSMSBrokerOption = {
   apiKey: string;

@@ -46,6 +46,10 @@ class ManualRegisterParams(BaseModel):
         "",
         validation_alias=AliasChoices("oauth_phone_sms_max_price", "oauthPhoneSmsMaxPrice"),
     )
+    oauth_oasis_sms_cdks: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
+    )
     proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
@@ -111,13 +115,16 @@ def create_account_register_task_router(
             else ""
         )
         if params.oauth_phone_sms_country:
-            if oauth_phone_sms_provider == "smsbower":
+            if oauth_phone_sms_provider == "oasis":
+                oauth_phone_sms_country = ""
+            elif oauth_phone_sms_provider == "smsbower":
                 oauth_phone_sms_country = normalize_oauth_smsbower_country(params.oauth_phone_sms_country)
             else:
                 oauth_phone_sms_country = normalize_oauth_hero_sms_country(params.oauth_phone_sms_country)
         else:
             oauth_phone_sms_country = ""
         oauth_phone_sms_max_price = str(params.oauth_phone_sms_max_price or "").strip()
+        oauth_oasis_sms_cdks = str(params.oauth_oasis_sms_cdks or "").strip()
         if registration_flow == "phone_cpa" and not oauth_phone_sms_provider:
             oauth_phone_sms_provider = normalize_oauth_phone_sms_provider(
                 oauth_phone_sms_env().get("provider") or "phone_pool"
@@ -138,6 +145,20 @@ def create_account_register_task_router(
                 oauth_phone_sms_provider,
                 oauth_phone_sms_country or "<default>",
                 oauth_phone_sms_max_price or "<default>",
+            )
+        if post_register_oauth and oauth_phone_sms_provider == "oasis":
+            oauth_sms_cfg = oauth_phone_sms_env()
+            if not (
+                oauth_oasis_sms_cdks
+                or str(oauth_sms_cfg.get("oasis_sms_cdks") or "").strip()
+                or str(oauth_sms_cfg.get("oasis_sms_cdk_file") or "").strip()
+            ):
+                raise HTTPException(status_code=400, detail="启用 Oasis 前需要先在设置页配置 CDK 池")
+            oauth_phone_sms_country = ""
+            oauth_phone_sms_max_price = ""
+            logger.info(
+                "[注册账号] OAuth 接码参数: provider=oasis cdk_pool=%s",
+                "task_inline" if oauth_oasis_sms_cdks else "configured",
             )
         if mode not in ("single", "batch"):
             raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
@@ -228,6 +249,9 @@ def create_account_register_task_router(
             "oauth_phone_sms_provider": oauth_phone_sms_provider or "<default>",
             "oauth_phone_sms_country": oauth_phone_sms_country or "",
             "oauth_phone_sms_max_price": oauth_phone_sms_max_price,
+            "oauth_oasis_sms_cdk_count": len(
+                [item for item in oauth_oasis_sms_cdks.replace(",", "\n").replace(";", "\n").splitlines() if item.strip()]
+            ),
             "register_mode": register_mode,
             "proxy_url_present": bool(normalized_proxy_url),
             "proxy_api_provider": proxy_api_provider,
@@ -263,6 +287,7 @@ def create_account_register_task_router(
                 oauth_phone_sms_provider=oauth_phone_sms_provider or None,
                 oauth_phone_sms_country=oauth_phone_sms_country or None,
                 oauth_phone_sms_max_price=oauth_phone_sms_max_price,
+                oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None) if oauth_phone_sms_provider == "oasis" else None,
                 progress_callback=_register_progress,
             )
 
@@ -289,6 +314,7 @@ def create_account_register_task_router(
             oauth_phone_sms_provider=oauth_phone_sms_provider or None,
             oauth_phone_sms_country=oauth_phone_sms_country or None,
             oauth_phone_sms_max_price=oauth_phone_sms_max_price,
+            oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None) if oauth_phone_sms_provider == "oasis" else None,
             task_group=task_group_register,
             pass_task_id=True,
         )

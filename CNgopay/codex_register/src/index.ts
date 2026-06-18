@@ -1,7 +1,7 @@
 import {appConfig} from "./config.js";
 import {generateRandomDeviceProfile} from "./device-profile.js";
 import {OpenAIClient} from "./openai.js";
-import {createSMSBroker} from "./sms/index.js";
+import {createOasisSMSBroker, createSMSBroker, recordOasisAccountMapping} from "./sms/index.js";
 
 function readArgValue(flag: string): string {
     const index = process.argv.indexOf(flag);
@@ -9,6 +9,16 @@ function readArgValue(flag: string): string {
         return "";
     }
     return process.argv[index + 1] ?? "";
+}
+
+function readArgValues(flag: string): string[] {
+    const values: string[] = [];
+    for (let index = 0; index < process.argv.length; index += 1) {
+        if (process.argv[index] === flag) {
+            values.push(process.argv[index + 1] ?? "");
+        }
+    }
+    return values;
 }
 
 function hasFlag(flag: string): boolean {
@@ -24,15 +34,48 @@ function readNumberArg(flag: string): number | null {
     return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function splitListArg(value: string): string[] {
+    return value
+        .split(/[\s,;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+}
 
-const smsBroker = appConfig.heroSMSApiKey ? createSMSBroker({
-    apiKey: appConfig.heroSMSApiKey,
-    pollAttempts: appConfig.heroSMSPollAttempts,
-    pollIntervalMs: appConfig.heroSMSPollIntervalMs,
-    maxPrice: appConfig.heroSMSMaxPrice,
-    country: appConfig.heroSMSCountry,
-    priceTiers: appConfig.heroSMSPriceTiers,
-}) : undefined
+function createConfiguredSMSBroker() {
+    const oasisCdksFromArgs = [
+        ...readArgValues("--oasis-cdk"),
+        ...splitListArg(readArgValue("--oasis-cdks").trim()),
+    ].filter(Boolean);
+    const oasisCdkFileFromArg = readArgValue("--oasis-cdk-file").trim();
+    const wantsOasis =
+        appConfig.smsProvider === "oasis" ||
+        oasisCdksFromArgs.length > 0 ||
+        Boolean(oasisCdkFileFromArg) ||
+        appConfig.oasisSMSCdks.length > 0 ||
+        Boolean(appConfig.oasisSMSCdkFile);
+
+    if (wantsOasis) {
+        return createOasisSMSBroker({
+            baseUrl: appConfig.oasisSMSBaseUrl,
+            cdks: [...appConfig.oasisSMSCdks, ...oasisCdksFromArgs],
+            cdkFile: oasisCdkFileFromArg || appConfig.oasisSMSCdkFile,
+            pollAttempts: appConfig.oasisSMSPollAttempts,
+            pollIntervalMs: appConfig.oasisSMSPollIntervalMs,
+            accountMapFile: appConfig.oasisSMSAccountMapFile,
+        });
+    }
+
+    return appConfig.heroSMSApiKey ? createSMSBroker({
+        apiKey: appConfig.heroSMSApiKey,
+        pollAttempts: appConfig.heroSMSPollAttempts,
+        pollIntervalMs: appConfig.heroSMSPollIntervalMs,
+        maxPrice: appConfig.heroSMSMaxPrice,
+        country: appConfig.heroSMSCountry,
+        priceTiers: appConfig.heroSMSPriceTiers,
+    }) : undefined;
+}
+
+const smsBroker = createConfiguredSMSBroker();
 
 async function runOnce(): Promise<void> {
     const email = readArgValue("--email").trim();
@@ -108,7 +151,7 @@ async function runOnce(): Promise<void> {
             console.log(`[codex-cpa] 复用已注册号 ${phone}`);
         } else {
             if (!smsBroker) {
-                throw new Error("--codex-cpa 不传 --phone 时需要配置 heroSMSApiKey 自动 phone signup");
+                throw new Error("--codex-cpa 不传 --phone 时需要配置 SMS provider 自动 phone signup");
             }
             console.log(`[codex-cpa] [0] 未传 --phone，自动 phone signup 注册新号`);
             const MAX_PHONE_TRIES = 8;
@@ -341,6 +384,13 @@ async function runOnce(): Promise<void> {
 
         console.log(`\n[✅️codex-cpa 成功] phone=${phone} email=${bindEmail || "(none)"} 已入 CPA token 池`);
         console.log(`[POOL-RESULT] status=ok phone=${phone} email=${bindEmail || ""}`);
+        await recordOasisAccountMapping(smsBroker, {
+            mode: "codex-cpa",
+            account: bindEmail || phone,
+            email: bindEmail,
+            phone,
+            password,
+        });
 
         // 注册成功 → 把用过的 hotmail 卡密从池文件移除，append 到 history
         if (bindEmail) {
@@ -396,7 +446,7 @@ async function runOnce(): Promise<void> {
     // 不需要邮箱，直接用 hero-sms 取号注册 → 拿 ChatGPT plan accessToken
     if (phoneFirst) {
         if (!smsBroker) {
-            throw new Error("使用 --phone 需要配置 heroSMSApiKey");
+            throw new Error("使用 --phone 需要配置 SMS provider");
         }
         const callbackOutPath = readArgValue("--callback-out").trim();
         const client = new OpenAIClient({
@@ -532,6 +582,14 @@ async function runOnce(): Promise<void> {
         const accessTokenFile = await reauthClient.saveChatGPTAccessToken(chatgptAccessToken);
         console.log(`[access_token_file] ${accessTokenFile}`);
         console.log(`[access_token] ${chatgptAccessToken}`);
+        await recordOasisAccountMapping(smsBroker, {
+            mode: "phone-signup",
+            account: bindEmail || registeredPhone,
+            email: bindEmail,
+            phone: registeredPhone,
+            password: appConfig.defaultPassword,
+            accessTokenFile,
+        });
 
         if (gpTokenOutPath) {
             const {writeFile} = await import("node:fs/promises");
@@ -579,6 +637,14 @@ async function runOnce(): Promise<void> {
         const accessTokenFile = await client.saveChatGPTAccessToken(chatgptAccessToken);
         console.log(`[access_token_file] ${accessTokenFile}`);
         console.log(`[access_token] ${chatgptAccessToken}`);
+        await recordOasisAccountMapping(smsBroker, {
+            mode: "register-authorize-at",
+            account: client.email,
+            email: client.email,
+            password: appConfig.defaultPassword,
+            authFile: result.authFile,
+            accessTokenFile,
+        });
 
         // 同时把 access_token 写到 GP 端 token.txt（供 Plus 订阅链路用）
         if (gpTokenOutPath) {
@@ -607,6 +673,13 @@ async function runOnce(): Promise<void> {
         console.log(
             `[✅️授权成功] 邮箱：${client.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
         );
+        await recordOasisAccountMapping(smsBroker, {
+            mode: "register-authorize",
+            account: client.email,
+            email: client.email,
+            password: appConfig.defaultPassword,
+            authFile: result.authFile,
+        });
         return;
     }
 
@@ -645,6 +718,13 @@ async function runOnce(): Promise<void> {
         console.log(`[✅️注册成功] 邮箱：${registerClient.email} 密码：${appConfig.defaultPassword}`);
         console.log(`[access_token_file] ${accessTokenFile}`);
         console.log(`[access_token] ${accessToken}`);
+        await recordOasisAccountMapping(smsBroker, {
+            mode: "register-at",
+            account: registerClient.email,
+            email: registerClient.email,
+            password: appConfig.defaultPassword,
+            accessTokenFile,
+        });
         return;
     }
 
@@ -659,6 +739,13 @@ async function runOnce(): Promise<void> {
     console.log(
         `[✅️授权成功] 邮箱：${loginClient.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
     );
+    await recordOasisAccountMapping(smsBroker, {
+        mode: "register-login",
+        account: loginClient.email,
+        email: loginClient.email,
+        password: appConfig.defaultPassword,
+        authFile: result.authFile,
+    });
 }
 
 async function main() {
@@ -687,6 +774,13 @@ async function main() {
             console.log(
                 `[✅️授权成功] 邮箱：${client.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
             );
+            await recordOasisAccountMapping(smsBroker, {
+                mode: "auth",
+                account: client.email,
+                email: client.email,
+                password: appConfig.defaultPassword,
+                authFile: result.authFile,
+            });
 
             // 如果加了 --at，再拿 ChatGPT plan accessToken
             if (hasFlag("--at")) {

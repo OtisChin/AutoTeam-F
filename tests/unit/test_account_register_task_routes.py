@@ -109,3 +109,64 @@ def test_post_add_requires_sms_api_key_for_sms_oauth_provider(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "启用 hero_sms 前需要先在设置页配置 API Key"
+
+
+def test_post_add_allows_oasis_with_cdk_pool_without_api_key(monkeypatch):
+    started = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    routes = _routes(started, oauth_env={"oasis_sms_cdks": "SMS-6L2A-6TAH-Q7BA"})
+    result = routes["post_add"](
+        ManualRegisterParams(
+            post_register_oauth=True,
+            oauth_phone_sms_provider="oasis",
+            oauth_phone_sms_country="187",
+            oauth_phone_sms_max_price="0.05",
+        )
+    )
+
+    assert result["params"]["oauth_phone_sms_provider"] == "oasis"
+    assert result["params"]["oauth_phone_sms_country"] == ""
+    assert result["params"]["oauth_phone_sms_max_price"] == ""
+    assert started[0]["kwargs"]["oauth_phone_sms_provider"] == "oasis"
+    assert started[0]["kwargs"]["oauth_phone_sms_country"] is None
+    assert started[0]["kwargs"]["oauth_phone_sms_max_price"] == ""
+    assert started[0]["kwargs"]["oauth_oasis_sms_cdks"] is None
+
+
+def test_post_add_allows_oasis_with_inline_task_cdks(monkeypatch):
+    started = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    routes = _routes(started, oauth_env={})
+    result = routes["post_add"](
+        ManualRegisterParams(
+            post_register_oauth=True,
+            oauth_phone_sms_provider="oasis",
+            oauth_oasis_sms_cdks="SMS-6L2A-6TAH-Q7BA\nSMS-8EQ6-8E5G-KN2C",
+        )
+    )
+
+    assert result["params"]["oauth_phone_sms_provider"] == "oasis"
+    assert result["params"]["oauth_oasis_sms_cdk_count"] == 2
+    assert started[0]["kwargs"]["oauth_oasis_sms_cdks"] == "SMS-6L2A-6TAH-Q7BA\nSMS-8EQ6-8E5G-KN2C"
+
+
+def test_post_add_requires_oasis_cdk_pool(monkeypatch):
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    routes = _routes([], oauth_env={})
+    with pytest.raises(HTTPException) as exc_info:
+        routes["post_add"](ManualRegisterParams(post_register_oauth=True, oauth_phone_sms_provider="oasis"))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "启用 Oasis 前需要先在设置页配置 CDK 池"

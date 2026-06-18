@@ -279,6 +279,7 @@ def _attach_oauth_phone_supplier(
     provider: str | None = None,
     country: str | None = None,
     max_price: str | None = None,
+    oasis_cdks: str | None = None,
     email: str = "",
     allow_hero_reuse: bool = True,
 ) -> None:
@@ -289,7 +290,9 @@ def _attach_oauth_phone_supplier(
         return
     if provider in {"pool", "phonepool", "phone_pool"}:
         provider = "phone_pool"
-    if provider not in {"hero_sms", "smsbower", "phone_pool"}:
+    if provider in {"oasis_sms", "oasissms", "oapi"}:
+        provider = "oasis"
+    if provider not in {"hero_sms", "smsbower", "oasis", "phone_pool"}:
         return
 
     phone_state: dict[str, Any] = {"item": None, "finished": False}
@@ -317,6 +320,10 @@ def _attach_oauth_phone_supplier(
                 reservation_owner=reservation_owner,
                 allow_reuse=True,
             )
+        elif provider == "oasis":
+            from autotoken.auth.oasis_sms import acquire_oasis_phone
+
+            item, error = acquire_oasis_phone(email=email, reservation_owner=reservation_owner, cdks=oasis_cdks)
         else:
             try:
                 from autotoken.auth.oauth_phone_pool import acquire_available_phone
@@ -390,6 +397,11 @@ def _attach_oauth_phone_supplier(
                 )
             else:
                 _mark_oauth_smsbower_bound(phone_item, email=bound_email)
+        elif source == "oasis":
+            from autotoken.auth.oasis_sms import record_oasis_account_mapping
+
+            password = str(getattr(getattr(flow, "result", None), "password", "") or "").strip()
+            record_oasis_account_mapping(phone_item, email=bound_email, password=password, status="success")
         else:
             from autotoken.auth.oauth_phone_pool import mark_phone_bound
 
@@ -422,6 +434,10 @@ def _attach_oauth_phone_supplier(
                 reason=reason or "protocol_oauth_failed",
                 reservation_owner=reservation_owner,
             )
+        elif source == "oasis":
+            from autotoken.auth.oasis_sms import record_oasis_account_mapping
+
+            record_oasis_account_mapping(phone_item, email=email, status="failed", reason=reason or "protocol_oauth_failed")
         else:
             from autotoken.auth.oauth_phone_pool import (
                 mark_phone_cooldown,
@@ -533,6 +549,7 @@ def register_once(
     proxy: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    oauth_oasis_sms_cdks: str | None = None,
 ) -> tuple[bool, dict]:
     AuthFlow, Config = _load_protocol_classes()
     cfg = Config()
@@ -543,6 +560,7 @@ def register_once(
         flow,
         provider=oauth_phone_sms_provider,
         country=oauth_phone_sms_country,
+        oasis_cdks=oauth_oasis_sms_cdks,
         email=email,
     )
     if password:
@@ -585,6 +603,7 @@ def phone_first_register_once(
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
     oauth_phone_sms_max_price: str | None = None,
+    oauth_oasis_sms_cdks: str | None = None,
     progress_callback=None,
 ) -> tuple[bool, dict]:
     """Phone-first free registration, then bind the selected AutoToken mailbox."""
@@ -601,6 +620,7 @@ def phone_first_register_once(
         provider=oauth_phone_sms_provider or "phone_pool",
         country=oauth_phone_sms_country,
         max_price=oauth_phone_sms_max_price,
+        oasis_cdks=oauth_oasis_sms_cdks,
         email=email,
     )
     if password:
@@ -664,6 +684,7 @@ def oauth_from_auth_session_once(
     proxy: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    oauth_oasis_sms_cdks: str | None = None,
     progress_callback=None,
 ) -> dict:
     """Pure protocol Codex OAuth from an existing ChatGPT auth_session.
@@ -684,6 +705,7 @@ def oauth_from_auth_session_once(
         flow,
         provider=oauth_phone_sms_provider or "phone_pool",
         country=oauth_phone_sms_country,
+        oasis_cdks=oauth_oasis_sms_cdks,
         email=email,
     )
     if password:
@@ -730,6 +752,7 @@ def phone_only_register_once(
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
     oauth_phone_sms_max_price: str | None = None,
+    oauth_oasis_sms_cdks: str | None = None,
     progress_callback=None,
 ) -> tuple[bool, dict]:
     """手机号仅注册（跳过绑定邮箱和 OAuth），返回 ChatGPT Web session。"""
@@ -745,6 +768,7 @@ def phone_only_register_once(
         provider=oauth_phone_sms_provider or "phone_pool",
         country=oauth_phone_sms_country,
         max_price=oauth_phone_sms_max_price,
+        oasis_cdks=oauth_oasis_sms_cdks,
         email="",
     )
     if password:
@@ -773,6 +797,7 @@ def login_once(
     proxy: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    oauth_oasis_sms_cdks: str | None = None,
     progress_callback=None,
 ) -> dict:
     """Pure protocol login for an existing account; returns auth_session and optional Codex OAuth bundle."""
@@ -788,6 +813,7 @@ def login_once(
         flow,
         provider=oauth_phone_sms_provider,
         country=oauth_phone_sms_country,
+        oasis_cdks=oauth_oasis_sms_cdks,
         email=email,
     )
     adapter = ProtocolMailAdapter(mail_client, email=email, account_id=account_id)

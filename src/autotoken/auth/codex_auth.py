@@ -1678,6 +1678,8 @@ def _normalize_oauth_phone_sms_provider(value: str | None = None) -> str:
         return "hero_sms"
     if normalized in {"smsbower", "sms_bower"}:
         return "smsbower"
+    if normalized in {"oasis", "oasis_sms", "oasissms", "oapi"}:
+        return "oasis"
     return "phone_pool"
 
 
@@ -1694,6 +1696,13 @@ def _oauth_add_phone_provider_order(provider_mode: str) -> list[str]:
         order.append("hero_sms")
     if os.environ.get("OAUTH_SMSBOWER_API_KEY") and "smsbower" not in order:
         order.append("smsbower")
+    try:
+        from autotoken.auth.oasis_sms import oasis_configured
+
+        if oasis_configured() and "oasis" not in order:
+            order.append("oasis")
+    except Exception:
+        logger.debug("[Codex] 检查 Oasis 配置失败", exc_info=True)
     if "phone_pool" not in order:
         order.append("phone_pool")
     return order
@@ -2954,7 +2963,7 @@ def _mark_oauth_hero_sms_bound(phone_item: dict, *, email: str = "") -> None:
 
 def _make_phone_item_otp_provider(phone_item: dict):
     source = str(phone_item.get("source") or "").lower()
-    if source in {"hero_sms", "smsbower"}:
+    if source in {"hero_sms", "smsbower", "oasis"}:
         activation = phone_item.get("activation")
         if not activation:
             raise RuntimeError(f"{source} activation 为空")
@@ -3002,7 +3011,7 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
     phone = str(phone_item.get("phone_number") or "").strip()
     sms_url = str(phone_item.get("sms_url") or "").strip()
     dynamic_sms_source = str(phone_item.get("source") or "").lower()
-    is_dynamic_sms = dynamic_sms_source in {"hero_sms", "smsbower"}
+    is_dynamic_sms = dynamic_sms_source in {"hero_sms", "smsbower", "oasis"}
     if not phone or (not sms_url and not is_dynamic_sms):
         return False, "手机号或接码链接为空"
     if not _is_add_phone_page(page):
@@ -3164,6 +3173,7 @@ def _handle_oauth_add_phone_if_present(
     email: str,
     phone_sms_provider: str | None = None,
     phone_sms_country: str | None = None,
+    phone_sms_oasis_cdks: str | None = None,
 ) -> bool:
     if not _is_add_phone_page(page):
         return False
@@ -3211,6 +3221,10 @@ def _handle_oauth_add_phone_if_present(
                 phone_item, error = _acquire_oauth_hero_sms_phone(email, country=country_override)
             elif candidate == "smsbower":
                 phone_item, error = _acquire_oauth_smsbower_phone(email, country=country_override)
+            elif candidate == "oasis":
+                from autotoken.auth.oasis_sms import acquire_oasis_phone
+
+                phone_item, error = acquire_oasis_phone(email, cdks=phone_sms_oasis_cdks)
             elif pool_api.get("acquire"):
                 phone_item = pool_api["acquire"](email)
             else:
@@ -3243,6 +3257,11 @@ def _handle_oauth_add_phone_if_present(
         if source == "smsbower":
             _release_oauth_sms_activation_phone(phone_item, email=email, reason=reason)
             return
+        if source == "oasis":
+            from autotoken.auth.oasis_sms import record_oasis_account_mapping
+
+            record_oasis_account_mapping(phone_item, email=email, status="failed", reason=reason)
+            return
         pool_api["release"](str(phone_item.get("id") or ""), email)
 
     def mark_phone_success(phone_item: dict) -> None:
@@ -3252,6 +3271,11 @@ def _handle_oauth_add_phone_if_present(
             return
         if source == "smsbower":
             _mark_oauth_smsbower_bound(phone_item, email=email)
+            return
+        if source == "oasis":
+            from autotoken.auth.oasis_sms import record_oasis_account_mapping
+
+            record_oasis_account_mapping(phone_item, email=email, status="success")
             return
         pool_api["bound"](str(phone_item.get("id") or ""), email)
 
@@ -3271,6 +3295,11 @@ def _handle_oauth_add_phone_if_present(
                 _release_oauth_sms_activation_phone(phone_item, email=email, cancel=True, reason=reason)
             else:
                 _release_oauth_sms_activation_phone(phone_item, email=email, reason=reason)
+            return
+        if source == "oasis":
+            from autotoken.auth.oasis_sms import record_oasis_account_mapping
+
+            record_oasis_account_mapping(phone_item, email=email, status="failed", reason=reason)
             return
         if action == "cooldown":
             pool_api["cooldown"](str(phone_item.get("id") or ""), reason)
@@ -3636,6 +3665,7 @@ def _login_codex_via_browser_simple(
     proxy_bypass: str | None = None,
     phone_sms_provider: str | None = None,
     phone_sms_country: str | None = None,
+    phone_sms_oasis_cdks: str | None = None,
 ):
     """
     极简 OAuth 登录：输入邮箱 -> 邮箱验证码 -> 授权。
@@ -3737,6 +3767,7 @@ def _login_codex_via_browser_simple(
                     email=email,
                     phone_sms_provider=phone_sms_provider,
                     phone_sms_country=phone_sms_country,
+                    phone_sms_oasis_cdks=phone_sms_oasis_cdks,
                 ):
                     time.sleep(2)
                     continue
@@ -3840,6 +3871,7 @@ def _login_codex_via_browser_simple(
                 email=email,
                 phone_sms_provider=phone_sms_provider,
                 phone_sms_country=phone_sms_country,
+                phone_sms_oasis_cdks=phone_sms_oasis_cdks,
             ):
                 _screenshot(page, "codex_simple_03b_after_add_phone.png")
                 time.sleep(2)
@@ -3914,6 +3946,7 @@ def login_codex_via_browser(
     proxy_bypass: str | None = None,
     phone_sms_provider: str | None = None,
     phone_sms_country: str | None = None,
+    phone_sms_oasis_cdks: str | None = None,
 ):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
@@ -3939,6 +3972,7 @@ def login_codex_via_browser(
             proxy_bypass=proxy_bypass,
             phone_sms_provider=phone_sms_provider,
             phone_sms_country=phone_sms_country,
+            phone_sms_oasis_cdks=phone_sms_oasis_cdks,
         )
 
     code_verifier, code_challenge = _generate_pkce()
@@ -4295,6 +4329,7 @@ def login_codex_via_browser(
                         email=email,
                         phone_sms_provider=phone_sms_provider,
                         phone_sms_country=phone_sms_country,
+                        phone_sms_oasis_cdks=phone_sms_oasis_cdks,
                     ):
                         _screenshot(page, "codex_04_add_phone_handled.png")
                         time.sleep(2)
@@ -4619,6 +4654,7 @@ def login_codex_via_browser(
                     email=email,
                     phone_sms_provider=phone_sms_provider,
                     phone_sms_country=phone_sms_country,
+                    phone_sms_oasis_cdks=phone_sms_oasis_cdks,
                 ):
                     logger.info("[Codex] OAuth add-phone 已处理，继续等待回调: %s", email)
                     for _ in range(30):
@@ -4899,6 +4935,7 @@ class SessionCodexAuthFlow:
         auth_cookies=None,
         phone_sms_provider=None,
         phone_sms_country=None,
+        phone_sms_oasis_cdks=None,
     ):
         self.email = email or ""
         self.password = password or ""
@@ -4913,6 +4950,7 @@ class SessionCodexAuthFlow:
         self.auth_cookies = auth_cookies if isinstance(auth_cookies, list) else []
         self.phone_sms_provider = str(phone_sms_provider or "").strip()
         self.phone_sms_country = str(phone_sms_country or "").strip()
+        self.phone_sms_oasis_cdks = str(phone_sms_oasis_cdks or "").strip()
         self.code_verifier, code_challenge = _generate_pkce()
         self.state = secrets.token_urlsafe(16)
         self.auth_url = _build_auth_url(code_challenge, self.state, native_oauth=self.native_oauth)
@@ -5217,6 +5255,7 @@ class SessionCodexAuthFlow:
                     email=self.email,
                     phone_sms_provider=self.phone_sms_provider,
                     phone_sms_country=self.phone_sms_country,
+                    phone_sms_oasis_cdks=self.phone_sms_oasis_cdks,
                 ):
                     time.sleep(2)
                     continue
@@ -6147,6 +6186,7 @@ def login_codex_via_auth_session(
     proxy_url=None,
     phone_sms_provider=None,
     phone_sms_country=None,
+    phone_sms_oasis_cdks=None,
 ):
     """Complete Codex OAuth by reusing a freshly registered ChatGPT auth session."""
     if not isinstance(session_data, dict):
@@ -6177,6 +6217,7 @@ def login_codex_via_auth_session(
         auth_cookies=auth_cookies,
         phone_sms_provider=phone_sms_provider,
         phone_sms_country=phone_sms_country,
+        phone_sms_oasis_cdks=phone_sms_oasis_cdks,
     )
     try:
         state = flow.start()

@@ -7,6 +7,14 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from autotoken.auth.oasis_sms import (
+    OASIS_DEFAULT_ACCOUNT_MAP_FILE,
+    OASIS_DEFAULT_BASE_URL,
+    normalize_oasis_cdks,
+    oasis_cdk_count,
+    oasis_configured,
+)
+
 
 def normalize_oauth_phone_sms_provider(raw: str | None = None) -> str:
     value = str(raw or "").strip().lower().replace("-", "_")
@@ -14,6 +22,8 @@ def normalize_oauth_phone_sms_provider(raw: str | None = None) -> str:
         return "hero_sms"
     if value in {"smsbower", "sms_bower"}:
         return "smsbower"
+    if value in {"oasis", "oasis_sms", "oasissms", "oapi"}:
+        return "oasis"
     return "phone_pool"
 
 
@@ -74,6 +84,15 @@ def oauth_phone_sms_env() -> dict[str, str]:
         "smsbower_base_url": pick("OAUTH_SMSBOWER_BASE_URL", "https://smsbower.page/stubs/handler_api.php"),
         "smsbower_country": normalize_oauth_smsbower_country(pick("OAUTH_SMSBOWER_COUNTRY", "187")),
         "smsbower_service": normalize_oauth_hero_sms_service(pick("OAUTH_SMSBOWER_SERVICE", "dr")),
+        "oasis_sms_base_url": pick("OAUTH_OASIS_SMS_BASE_URL", OASIS_DEFAULT_BASE_URL),
+        "oasis_sms_cdks": pick("OAUTH_OASIS_SMS_CDKS"),
+        "oasis_sms_cdk_file": pick("OAUTH_OASIS_SMS_CDK_FILE"),
+        "oasis_sms_poll_attempts": pick("OAUTH_OASIS_SMS_POLL_ATTEMPTS", "24"),
+        "oasis_sms_poll_interval_ms": pick("OAUTH_OASIS_SMS_POLL_INTERVAL_MS", "5000"),
+        "oasis_sms_account_map_file": pick(
+            "OAUTH_OASIS_SMS_ACCOUNT_MAP_FILE",
+            OASIS_DEFAULT_ACCOUNT_MAP_FILE,
+        ),
     }
 
 
@@ -84,6 +103,11 @@ def build_oauth_phone_sms_config_response(
 ) -> dict[str, Any]:
     cfg = oauth_phone_sms_env()
     provider = cfg["provider"]
+    oasis_env = {
+        "OAUTH_OASIS_SMS_CDKS": cfg["oasis_sms_cdks"],
+        "OAUTH_OASIS_SMS_CDK_FILE": cfg["oasis_sms_cdk_file"],
+    }
+    oasis_ready = oasis_configured(oasis_env)
     response = {
         "provider": provider,
         "providers": [
@@ -104,10 +128,16 @@ def build_oauth_phone_sms_config_response(
                 "configured": bool(cfg["smsbower_api_key"]),
                 "secret_key": "OAUTH_SMSBOWER_API_KEY",
             },
+            {
+                "value": "oasis",
+                "label": "Oasis CDK",
+                "configured": oasis_ready,
+            },
         ],
         "configured": provider == "phone_pool"
         or (provider == "hero_sms" and bool(cfg["hero_sms_api_key"]))
-        or (provider == "smsbower" and bool(cfg["smsbower_api_key"])),
+        or (provider == "smsbower" and bool(cfg["smsbower_api_key"]))
+        or (provider == "oasis" and oasis_ready),
         "hero_sms_api_key_present": bool(cfg["hero_sms_api_key"]),
         "hero_sms_api_key_masked": mask_secret(cfg["hero_sms_api_key"]),
         "hero_sms_max_price": cfg["hero_sms_max_price"],
@@ -118,6 +148,13 @@ def build_oauth_phone_sms_config_response(
         "smsbower_max_price": cfg["smsbower_max_price"],
         "smsbower_country": cfg["smsbower_country"] or "187",
         "smsbower_service": cfg["smsbower_service"] or "dr",
+        "oasis_sms_base_url": cfg["oasis_sms_base_url"] or OASIS_DEFAULT_BASE_URL,
+        "oasis_sms_cdk_count": oasis_cdk_count(oasis_env),
+        "oasis_sms_cdk_file": cfg["oasis_sms_cdk_file"],
+        "oasis_sms_cdk_file_present": bool(cfg["oasis_sms_cdk_file"]),
+        "oasis_sms_poll_attempts": cfg["oasis_sms_poll_attempts"] or "24",
+        "oasis_sms_poll_interval_ms": cfg["oasis_sms_poll_interval_ms"] or "5000",
+        "oasis_sms_account_map_file": cfg["oasis_sms_account_map_file"] or OASIS_DEFAULT_ACCOUNT_MAP_FILE,
         "hero_sms_service_label": "OpenAI",
     }
     if message:
@@ -157,7 +194,7 @@ def create_oauth_phone_sms_config_router(*, mask_secret: Callable[[str], str]) -
 
         cfg = oauth_phone_sms_env()
         normalized = normalize_oauth_phone_sms_provider(provider or cfg["provider"])
-        if normalized == "phone_pool":
+        if normalized in {"phone_pool", "oasis"}:
             return {"provider": normalized, "options": [], "count": 0, "error": ""}
         if normalized == "smsbower":
             api_key = cfg["smsbower_api_key"]
@@ -210,10 +247,49 @@ def create_oauth_phone_sms_config_router(*, mask_secret: Callable[[str], str]) -
         smsbower_country = normalize_oauth_smsbower_country(
             data.get("smsbower_country") or data.get("OAUTH_SMSBOWER_COUNTRY") or current["smsbower_country"] or "187"
         )
+        oasis_sms_base_url = str(
+            data.get("oasis_sms_base_url")
+            or data.get("OAUTH_OASIS_SMS_BASE_URL")
+            or current["oasis_sms_base_url"]
+            or OASIS_DEFAULT_BASE_URL
+        ).strip()
+        oasis_sms_cdks_raw = str(
+            data.get("oasis_sms_cdks")
+            or data.get("OAUTH_OASIS_SMS_CDKS")
+            or current["oasis_sms_cdks"]
+            or ""
+        )
+        oasis_sms_cdks = ",".join(normalize_oasis_cdks(oasis_sms_cdks_raw))
+        oasis_sms_cdk_file = str(
+            data.get("oasis_sms_cdk_file")
+            or data.get("OAUTH_OASIS_SMS_CDK_FILE")
+            or current["oasis_sms_cdk_file"]
+            or ""
+        ).strip()
+        oasis_sms_poll_attempts = str(
+            data.get("oasis_sms_poll_attempts")
+            or data.get("OAUTH_OASIS_SMS_POLL_ATTEMPTS")
+            or current["oasis_sms_poll_attempts"]
+            or "24"
+        ).strip()
+        oasis_sms_poll_interval_ms = str(
+            data.get("oasis_sms_poll_interval_ms")
+            or data.get("OAUTH_OASIS_SMS_POLL_INTERVAL_MS")
+            or current["oasis_sms_poll_interval_ms"]
+            or "5000"
+        ).strip()
+        oasis_sms_account_map_file = str(
+            data.get("oasis_sms_account_map_file")
+            or data.get("OAUTH_OASIS_SMS_ACCOUNT_MAP_FILE")
+            or current["oasis_sms_account_map_file"]
+            or OASIS_DEFAULT_ACCOUNT_MAP_FILE
+        ).strip()
         if provider == "hero_sms" and not (hero_sms_api_key or current["hero_sms_api_key"]):
             raise HTTPException(status_code=400, detail="启用 hero-sms 前需要配置 OAuth hero-sms API Key")
         if provider == "smsbower" and not (smsbower_api_key or current["smsbower_api_key"]):
             raise HTTPException(status_code=400, detail="启用 smsbower 前需要配置 OAuth smsbower API Key")
+        if provider == "oasis" and not (oasis_sms_cdks or oasis_sms_cdk_file):
+            raise HTTPException(status_code=400, detail="启用 Oasis 前需要配置 CDK 池或 CDK 文件")
 
         updates = {
             "OAUTH_PHONE_SMS_PROVIDER": provider,
@@ -225,6 +301,12 @@ def create_oauth_phone_sms_config_router(*, mask_secret: Callable[[str], str]) -
             "OAUTH_SMSBOWER_BASE_URL": "https://smsbower.page/stubs/handler_api.php",
             "OAUTH_SMSBOWER_COUNTRY": smsbower_country,
             "OAUTH_SMSBOWER_SERVICE": "dr",
+            "OAUTH_OASIS_SMS_BASE_URL": oasis_sms_base_url or OASIS_DEFAULT_BASE_URL,
+            "OAUTH_OASIS_SMS_CDKS": oasis_sms_cdks,
+            "OAUTH_OASIS_SMS_CDK_FILE": oasis_sms_cdk_file,
+            "OAUTH_OASIS_SMS_POLL_ATTEMPTS": oasis_sms_poll_attempts or "24",
+            "OAUTH_OASIS_SMS_POLL_INTERVAL_MS": oasis_sms_poll_interval_ms or "5000",
+            "OAUTH_OASIS_SMS_ACCOUNT_MAP_FILE": oasis_sms_account_map_file or OASIS_DEFAULT_ACCOUNT_MAP_FILE,
         }
         if hero_sms_api_key:
             updates["OAUTH_HERO_SMS_API_KEY"] = hero_sms_api_key

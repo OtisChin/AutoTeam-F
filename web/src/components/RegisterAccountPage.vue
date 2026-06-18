@@ -196,10 +196,10 @@
                 <div class="relative">
                   <input
                     v-model="oauthPhoneSmsCountrySearch"
-                    :disabled="registeringBusy || oauthPhoneSmsLoading || oauthPhoneSmsCountriesLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
+                    :disabled="registeringBusy || oauthPhoneSmsLoading || oauthPhoneSmsCountriesLoading || ['phone_pool', 'oasis'].includes(registerForm.oauthPhoneSmsProvider)"
                     type="search"
                     autocomplete="off"
-                    :placeholder="oauthPhoneSmsCountriesLoading ? '国家列表加载中...' : '搜索或选择国家'"
+                    :placeholder="registerForm.oauthPhoneSmsProvider === 'oasis' ? '由 CDK 兑换结果决定' : (oauthPhoneSmsCountriesLoading ? '国家列表加载中...' : '搜索或选择国家')"
                     class="w-full px-3 py-2 pr-9 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
                     @focus="openOAuthPhoneSmsCountryDropdown"
                     @input="handleOAuthPhoneSmsCountryInput"
@@ -207,7 +207,7 @@
                   />
                   <button
                     type="button"
-                    :disabled="registeringBusy || oauthPhoneSmsLoading || oauthPhoneSmsCountriesLoading || registerForm.oauthPhoneSmsProvider === 'phone_pool'"
+                    :disabled="registeringBusy || oauthPhoneSmsLoading || oauthPhoneSmsCountriesLoading || ['phone_pool', 'oasis'].includes(registerForm.oauthPhoneSmsProvider)"
                     class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-1.5 py-1 text-xs text-gray-400 transition hover:bg-gray-700 hover:text-white disabled:pointer-events-none disabled:opacity-40"
                     @mousedown.prevent
                     @click="toggleOAuthPhoneSmsCountryDropdown"
@@ -215,7 +215,7 @@
                     ▾
                   </button>
                   <div
-                    v-if="oauthPhoneSmsCountryDropdownOpen && registerForm.oauthPhoneSmsProvider !== 'phone_pool'"
+                    v-if="oauthPhoneSmsCountryDropdownOpen && !['phone_pool', 'oasis'].includes(registerForm.oauthPhoneSmsProvider)"
                     class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl shadow-black/40"
                   >
                     <button
@@ -235,7 +235,7 @@
                 </div>
               </div>
             </div>
-            <div v-if="registerForm.oauthPhoneSmsProvider !== 'phone_pool'">
+            <div v-if="['hero_sms', 'smsbower'].includes(registerForm.oauthPhoneSmsProvider)">
               <label class="block text-xs text-gray-500 mb-1">价格上限</label>
               <input
                 v-model.trim="registerForm.oauthPhoneSmsMaxPrice"
@@ -247,11 +247,20 @@
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
               />
             </div>
-            <div class="text-xs text-gray-500">
-              手机号池使用池内号码；hero-sms / smsbower 会按这里的国家 ID 和价格上限取 OpenAI/ChatGPT 号码。
+            <div v-if="registerForm.oauthPhoneSmsProvider === 'oasis'">
+              <label class="block text-xs text-gray-500 mb-1">本次任务 CDK 池</label>
+              <textarea
+                v-model.trim="registerForm.oauthOasisSmsCdks"
+                :disabled="registeringBusy || oauthPhoneSmsLoading"
+                rows="4"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="可输入单个或多个 CDK，一行一个；留空则使用设置页保存的 Oasis CDK 池"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white font-mono placeholder:text-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
+              ></textarea>
             </div>
-            <div v-if="!oauthPhoneSmsReady" class="text-xs text-red-400">
-              当前手机号供应商未配置 API Key，请先到设置页配置后再启动。
+            <div class="text-xs text-gray-500">
+              手机号池使用池内号码；hero-sms / smsbower 按国家 ID 和价格上限取号；Oasis 优先使用本次任务 CDK 池。
             </div>
             <div v-if="oauthPhoneSmsCountryError" class="text-xs text-amber-300">
               {{ oauthPhoneSmsCountryError }}
@@ -654,6 +663,7 @@ const oauthPhoneSmsProviderOptions = ref([
   { value: 'phone_pool', label: '手机号池', configured: true },
   { value: 'hero_sms', label: 'hero-sms', configured: false },
   { value: 'smsbower', label: 'smsbower', configured: false },
+  { value: 'oasis', label: 'Oasis CDK', configured: false },
 ])
 const oauthPhoneSmsConfig = ref({})
 const oauthPhoneSmsConfigLoaded = ref(false)
@@ -684,6 +694,7 @@ const registerForm = ref({
   oauthPhoneSmsProvider: 'phone_pool',
   oauthPhoneSmsCountry: '187',
   oauthPhoneSmsMaxPrice: '',
+  oauthOasisSmsCdks: '',
   proxyUrl: '',
   proxyApiEnabled: false,
   proxyApiProvider: '1024proxy',
@@ -725,6 +736,7 @@ const oauthPhoneSmsCountryFallbackOptions = {
     { value: '6', label: '印度尼西亚 / 6' },
     { value: '33', label: '哥伦比亚 / 33' },
   ],
+  oasis: [],
 }
 const oauthPhoneSmsCountryOptions = ref([
   { value: 'all', label: '全部国家 / 不限制' },
@@ -866,26 +878,19 @@ const oauthPhoneSmsProviderLabel = computed(() => {
 })
 const oauthPhoneSmsCountryLabel = computed(() => {
   if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') return '按手机号池'
+  if (registerForm.value.oauthPhoneSmsProvider === 'oasis') return '由 CDK 分配'
   const option = selectedOAuthPhoneSmsCountryOption.value
   return option?.label || registerForm.value.oauthPhoneSmsCountry || '美国 (+1) / 187'
 })
 const oauthPhoneSmsMaxPriceLabel = computed(() => {
-  if (registerForm.value.oauthPhoneSmsProvider === 'phone_pool') return '不适用'
+  if (['phone_pool', 'oasis'].includes(registerForm.value.oauthPhoneSmsProvider)) return '不适用'
   return String(registerForm.value.oauthPhoneSmsMaxPrice || '').trim() || '使用设置页配置'
-})
-const oauthPhoneSmsReady = computed(() => {
-  if (!isPhoneCpaFlow.value && !registerForm.value.postRegisterOauth) return true
-  const provider = String(registerForm.value.oauthPhoneSmsProvider || 'phone_pool')
-  if (provider === 'phone_pool') return true
-  const option = oauthPhoneSmsProviderOptions.value.find(item => item.value === provider)
-  return Boolean(option?.configured)
 })
 const outlookImportResultClass = computed(() => outlookImportResultOk.value
   ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
   : 'bg-red-500/10 text-red-300 border-red-500/20')
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
-  if (!oauthPhoneSmsReady.value) return false
   if (registerProviderUsesPool.value) return true
   return registerForm.value.mode === 'batch'
     ? selectedRegisterDomains.value.length > 0
@@ -1043,15 +1048,15 @@ function loadSavedRegisterForm() {
           .map(([provider, maxPrice]) => [String(provider), String(maxPrice || '').trim()])
       )
       : {}
-    const savedOauthPhoneSmsProvider = ['phone_pool', 'hero_sms', 'smsbower'].includes(String(saved.oauthPhoneSmsProvider || ''))
+    const savedOauthPhoneSmsProvider = ['phone_pool', 'hero_sms', 'smsbower', 'oasis'].includes(String(saved.oauthPhoneSmsProvider || ''))
       ? String(saved.oauthPhoneSmsProvider)
       : 'phone_pool'
     const savedOauthPhoneSmsCountry = String(saved.oauthPhoneSmsCountry || savedOauthPhoneSmsCountries[savedOauthPhoneSmsProvider] || registerForm.value.oauthPhoneSmsCountry || '187')
-    if (savedOauthPhoneSmsProvider !== 'phone_pool' && savedOauthPhoneSmsCountry) {
+    if (!['phone_pool', 'oasis'].includes(savedOauthPhoneSmsProvider) && savedOauthPhoneSmsCountry) {
       savedOauthPhoneSmsCountries[savedOauthPhoneSmsProvider] = savedOauthPhoneSmsCountry
     }
     const savedOauthPhoneSmsMaxPrice = String(saved.oauthPhoneSmsMaxPrice || savedOauthPhoneSmsMaxPrices[savedOauthPhoneSmsProvider] || '').trim()
-    if (savedOauthPhoneSmsProvider !== 'phone_pool') {
+    if (!['phone_pool', 'oasis'].includes(savedOauthPhoneSmsProvider)) {
       savedOauthPhoneSmsMaxPrices[savedOauthPhoneSmsProvider] = savedOauthPhoneSmsMaxPrice
     }
     registerForm.value = {
@@ -1088,6 +1093,7 @@ function loadSavedRegisterForm() {
       oauthPhoneSmsProvider: savedOauthPhoneSmsProvider,
       oauthPhoneSmsCountry: savedOauthPhoneSmsCountry,
       oauthPhoneSmsMaxPrice: savedOauthPhoneSmsMaxPrice,
+      oauthOasisSmsCdks: '',
       proxyUrl: String(saved.proxyUrl || ''),
       proxyApiEnabled: Boolean(saved.proxyApiEnabled),
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || ''))
@@ -1101,15 +1107,17 @@ function loadSavedRegisterForm() {
 
 function saveRegisterForm() {
   try {
-    const oauthProvider = ['phone_pool', 'hero_sms', 'smsbower'].includes(String(registerForm.value.oauthPhoneSmsProvider || ''))
+    const oauthProvider = ['phone_pool', 'hero_sms', 'smsbower', 'oasis'].includes(String(registerForm.value.oauthPhoneSmsProvider || ''))
       ? registerForm.value.oauthPhoneSmsProvider
       : 'phone_pool'
-    const oauthCountry = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
-    if (oauthProvider !== 'phone_pool' && oauthCountry) {
+    const oauthCountry = oauthProvider === 'oasis' ? '' : String(registerForm.value.oauthPhoneSmsCountry || '').trim()
+    if (!['phone_pool', 'oasis'].includes(oauthProvider) && oauthCountry) {
       savedOauthPhoneSmsCountries[oauthProvider] = oauthCountry
     }
-    const oauthMaxPrice = String(registerForm.value.oauthPhoneSmsMaxPrice || '').trim()
-    if (oauthProvider !== 'phone_pool') {
+    const oauthMaxPrice = ['hero_sms', 'smsbower'].includes(oauthProvider)
+      ? String(registerForm.value.oauthPhoneSmsMaxPrice || '').trim()
+      : ''
+    if (!['phone_pool', 'oasis'].includes(oauthProvider)) {
       savedOauthPhoneSmsMaxPrices[oauthProvider] = oauthMaxPrice
     }
     localStorage.setItem(
@@ -1133,7 +1141,7 @@ function saveRegisterForm() {
       postRegisterOauth: Boolean(registerForm.value.postRegisterOauth),
       phoneOnly: Boolean(registerForm.value.phoneOnly),
       oauthPhoneSmsProvider: oauthProvider,
-      oauthPhoneSmsCountry: oauthCountry || '187',
+      oauthPhoneSmsCountry: oauthProvider === 'oasis' ? '' : (oauthCountry || '187'),
       oauthPhoneSmsCountryByProvider: savedOauthPhoneSmsCountries,
       oauthPhoneSmsMaxPrice: oauthMaxPrice,
       oauthPhoneSmsMaxPriceByProvider: savedOauthPhoneSmsMaxPrices,
@@ -1214,14 +1222,18 @@ async function loadOAuthPhoneSmsConfig() {
     }
     const provider = registerForm.value.oauthPhoneSmsProvider
     if (!registerForm.value.oauthPhoneSmsCountry) {
-      registerForm.value.oauthPhoneSmsCountry = provider === 'smsbower'
+      registerForm.value.oauthPhoneSmsCountry = provider === 'oasis'
+        ? ''
+        : provider === 'smsbower'
         ? (result.smsbower_country || '187')
         : (result.hero_sms_country || '187')
     }
     if (!registerForm.value.oauthPhoneSmsMaxPrice) {
       const hasRememberedMaxPrice = Object.prototype.hasOwnProperty.call(savedOauthPhoneSmsMaxPrices, provider)
       const rememberedMaxPrice = String(savedOauthPhoneSmsMaxPrices[provider] || '').trim()
-      registerForm.value.oauthPhoneSmsMaxPrice = hasRememberedMaxPrice ? rememberedMaxPrice : (provider === 'smsbower'
+      registerForm.value.oauthPhoneSmsMaxPrice = provider === 'oasis'
+        ? ''
+        : hasRememberedMaxPrice ? rememberedMaxPrice : (provider === 'smsbower'
         ? (result.smsbower_max_price || '')
         : (result.hero_sms_max_price || ''))
     }
@@ -1236,6 +1248,7 @@ async function loadOAuthPhoneSmsConfig() {
 function configuredOAuthPhoneCountry(provider) {
   if (!oauthPhoneSmsConfigLoaded.value) return ''
   const cfg = oauthPhoneSmsConfig.value || {}
+  if (provider === 'oasis') return ''
   if (provider === 'smsbower') return String(cfg.smsbower_country || '187')
   if (provider === 'hero_sms') return String(cfg.hero_sms_country || '187')
   return ''
@@ -1244,6 +1257,7 @@ function configuredOAuthPhoneCountry(provider) {
 function configuredOAuthPhoneMaxPrice(provider) {
   if (!oauthPhoneSmsConfigLoaded.value) return ''
   const cfg = oauthPhoneSmsConfig.value || {}
+  if (provider === 'oasis') return ''
   if (provider === 'smsbower') return String(cfg.smsbower_max_price || '')
   if (provider === 'hero_sms') return String(cfg.hero_sms_max_price || '')
   return ''
@@ -1289,7 +1303,7 @@ async function loadOAuthPhoneSmsCountries(provider = registerForm.value.oauthPho
   const normalizedProvider = String(provider || 'phone_pool')
   oauthPhoneSmsCountryError.value = ''
   oauthPhoneSmsCountryDropdownOpen.value = false
-  if (normalizedProvider === 'phone_pool') {
+  if (['phone_pool', 'oasis'].includes(normalizedProvider)) {
     oauthPhoneSmsCountryOptions.value = []
     syncOAuthPhoneSmsCountrySearch()
     return
@@ -1415,6 +1429,8 @@ async function submitManualRegister() {
   if (registeringBusy.value || registeringAccount.value) return
   registeringAccount.value = true
   try {
+    const oauthProvider = String(registerForm.value.oauthPhoneSmsProvider || 'phone_pool')
+    const oauthUsesProvider = isPhoneCpaFlow.value || registerForm.value.postRegisterOauth
     const payload = {
       mode: registerForm.value.mode,
       registration_flow: registerForm.value.registrationFlow,
@@ -1434,9 +1450,10 @@ async function submitManualRegister() {
       protocol_register: isPhoneCpaFlow.value || Boolean(registerForm.value.protocolRegister),
       phone_only: isPhoneCpaFlow.value && Boolean(registerForm.value.phoneOnly),
       post_register_oauth: (isPhoneCpaFlow.value && !Boolean(registerForm.value.phoneOnly)) || Boolean(registerForm.value.postRegisterOauth),
-      oauth_phone_sms_provider: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsProvider : '',
-      oauth_phone_sms_country: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsCountry : '',
-      oauth_phone_sms_max_price: (isPhoneCpaFlow.value || registerForm.value.postRegisterOauth) ? registerForm.value.oauthPhoneSmsMaxPrice : '',
+      oauth_phone_sms_provider: oauthUsesProvider ? oauthProvider : '',
+      oauth_phone_sms_country: oauthUsesProvider && oauthProvider !== 'oasis' ? registerForm.value.oauthPhoneSmsCountry : '',
+      oauth_phone_sms_max_price: oauthUsesProvider && ['hero_sms', 'smsbower'].includes(oauthProvider) ? registerForm.value.oauthPhoneSmsMaxPrice : '',
+      oauth_oasis_sms_cdks: oauthUsesProvider && oauthProvider === 'oasis' ? registerForm.value.oauthOasisSmsCdks : '',
       proxy_url: registerForm.value.proxyApiEnabled ? '' : (registerForm.value.proxyUrl || ''),
       proxy_api_provider: registerForm.value.proxyApiEnabled ? registerForm.value.proxyApiProvider : '',
     }
@@ -1501,13 +1518,13 @@ watch(
     const normalizedPreviousProvider = String(previousProvider || '')
     const currentCountry = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
     const currentMaxPrice = String(registerForm.value.oauthPhoneSmsMaxPrice || '').trim()
-    if (normalizedPreviousProvider && normalizedPreviousProvider !== 'phone_pool' && currentCountry) {
+    if (normalizedPreviousProvider && !['phone_pool', 'oasis'].includes(normalizedPreviousProvider) && currentCountry) {
       savedOauthPhoneSmsCountries[normalizedPreviousProvider] = currentCountry
     }
-    if (normalizedPreviousProvider && normalizedPreviousProvider !== 'phone_pool') {
+    if (normalizedPreviousProvider && !['phone_pool', 'oasis'].includes(normalizedPreviousProvider)) {
       savedOauthPhoneSmsMaxPrices[normalizedPreviousProvider] = currentMaxPrice
     }
-    if (normalizedProvider === 'phone_pool') {
+    if (['phone_pool', 'oasis'].includes(normalizedProvider)) {
       registerForm.value.oauthPhoneSmsCountry = ''
       registerForm.value.oauthPhoneSmsMaxPrice = ''
       oauthPhoneSmsCountryOptions.value = []

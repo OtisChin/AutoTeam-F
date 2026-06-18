@@ -1788,6 +1788,19 @@ function resetStaleLocalSubmissionRows(runId) {
   }
 }
 
+function pauseUnsubmittedActivationRows(runId) {
+  for (const row of resultRows.value) {
+    if (row.activationRunId !== runId || row.jobId || isTerminalActivationStatus(row.status)) continue
+    row.status = 'cancelled'
+    row.localCancelled = true
+    row.progressPercent = 100
+    row.progressStage = 'refresh_paused'
+    row.progressMessage = '页面刷新后已暂停本地提交，未重新发起 ICE 任务'
+    row.progressAvailable = true
+    row.error = '页面刷新后已暂停本地提交，未重新发起 ICE 任务'
+  }
+}
+
 function retryableFailedActivationItems(runId, items) {
   const retryLimit = activationRetryLimit()
   const retryableKeys = new Set(resultRows.value
@@ -2013,23 +2026,22 @@ async function resumeActivationRunIfNeeded() {
     activationSchedulerItems(),
   ).length > 0
   if (!hasPendingSubmission && !hasActiveJobs && !hasRetryableFailures) return
-  if (currentActivationInputSource.value !== 'account' || !activationSchedulerItems().length) {
-    setMessage('检测到未完成的 ICE 任务，但当前输入无法恢复自动提交；已提交的 job 会继续刷新', false)
-    return
+  if (hasPendingSubmission) {
+    pauseUnsubmittedActivationRows(runId)
+    saveResultRowsState()
   }
-  activationBusy.value = true
-  activationCancelRequested.value = false
-  setMessage(`已恢复本轮 ICE 激活任务：${currentActivationTotal.value} 个账号`)
-  try {
-    await runActivationScheduler()
+  if (hasActiveJobs) {
+    setMessage(
+      hasPendingSubmission || hasRetryableFailures
+        ? '已恢复已提交 ICE job 的状态刷新；未提交账号已暂停，避免刷新后重复发起任务'
+        : '已恢复已提交 ICE job 的状态刷新',
+      true,
+    )
     await refreshActiveJobs()
     await refreshIceAccountSilently({ force: true })
-  } catch (error) {
-    setMessage(`恢复 ICE 激活任务失败: ${error.message}`, false)
-  } finally {
-    activationBusy.value = false
-    activationCancelRequested.value = false
+    return
   }
+  setMessage('检测到上次未提交完成的 ICE 任务，已暂停自动提交，避免刷新后重复发起任务', false)
 }
 
 async function activatePlus() {

@@ -1462,6 +1462,7 @@ def _run_post_register_oauth(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    oauth_oasis_sms_cdks=None,
     phone_only=False,
 ):
     """
@@ -1528,6 +1529,7 @@ def _run_post_register_oauth(
                 proxy_url=proxy_url,
                 phone_sms_provider=oauth_phone_sms_provider,
                 phone_sms_country=oauth_phone_sms_country,
+                phone_sms_oasis_cdks=oauth_oasis_sms_cdks,
             )
         except CodexOAuthPhoneRequired as exc:
             return _handle_oauth_phone_required(exc, "post_leave_workspace")
@@ -1564,6 +1566,7 @@ def _run_post_register_oauth(
             proxy_url=proxy_url,
             phone_sms_provider=oauth_phone_sms_provider,
             phone_sms_country=oauth_phone_sms_country,
+            phone_sms_oasis_cdks=oauth_oasis_sms_cdks,
         )
     except CodexOAuthPhoneRequired as exc:
         return _handle_oauth_phone_required(exc, "post_register_team_oauth")
@@ -1878,6 +1881,7 @@ def _refresh_auth_session_via_protocol_login(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    oauth_oasis_sms_cdks=None,
     phone_only=False,
 ):
     from autotoken.auth.protocol_register import login_once as protocol_login_once
@@ -1890,6 +1894,7 @@ def _refresh_auth_session_via_protocol_login(
         proxy=proxy_url,
         oauth_phone_sms_provider=oauth_phone_sms_provider,
         oauth_phone_sms_country=oauth_phone_sms_country,
+        oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
     )
     if not _auth_session_payload_has_web_session(session_data):
         raise RuntimeError("协议登录未返回 ChatGPT Web session cookie")
@@ -1962,6 +1967,7 @@ def _run_post_register_session_oauth(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    oauth_oasis_sms_cdks=None,
     phone_only=False,
 ):
     """Use the just-created ChatGPT session to finish Codex OAuth, codex-console style."""
@@ -2101,6 +2107,7 @@ def _run_post_register_session_oauth(
                 proxy_url=proxy_url,
                 phone_sms_provider=oauth_phone_sms_provider,
                 phone_sms_country=oauth_phone_sms_country,
+                phone_sms_oasis_cdks=oauth_oasis_sms_cdks,
             )
         except CodexOAuthPhoneRequired as exc:
             logger.error("[注册] %s 复用注册会话 OAuth 仍需要手机号验证，账号不可用，将删除: %s", email, exc)
@@ -2152,6 +2159,7 @@ def _run_post_register_relogin_oauth(
     proxy_url=None,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
+    oauth_oasis_sms_cdks=None,
     phone_only=False,
 ):
     """Finish post-register Codex OAuth by logging in again, not by reusing the register session."""
@@ -2179,6 +2187,7 @@ def _run_post_register_relogin_oauth(
                 proxy=proxy_url,
                 oauth_phone_sms_provider=oauth_phone_sms_provider,
                 oauth_phone_sms_country=oauth_phone_sms_country,
+                oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
             )
             bundle = protocol_payload.get("codex_oauth_bundle")
             if not bundle:
@@ -2226,6 +2235,7 @@ def _run_post_register_relogin_oauth(
                 proxy_url=proxy_url,
                 phone_sms_provider=oauth_phone_sms_provider,
                 phone_sms_country=oauth_phone_sms_country,
+                phone_sms_oasis_cdks=oauth_oasis_sms_cdks,
             )
             oauth_source = "browser_relogin_oauth"
         except CodexOAuthPhoneRequired as exc:
@@ -3219,6 +3229,7 @@ def create_account_direct(
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
     oauth_phone_sms_max_price=None,
+    oauth_oasis_sms_cdks=None,
     phone_only=False,
 ):
     """
@@ -3293,6 +3304,7 @@ def create_account_direct(
                     oauth_phone_sms_provider=provider_label,
                     oauth_phone_sms_country=oauth_phone_sms_country,
                     oauth_phone_sms_max_price=oauth_phone_sms_max_price,
+                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
                     progress_callback=progress_callback,
                 )
                 if isinstance(session_data, dict):
@@ -3364,6 +3376,7 @@ def create_account_direct(
                     oauth_phone_sms_provider=provider_label,
                     oauth_phone_sms_country=oauth_phone_sms_country,
                     oauth_phone_sms_max_price=oauth_phone_sms_max_price,
+                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
                     progress_callback=progress_callback,
                 )
                 if isinstance(session_data, dict):
@@ -3467,6 +3480,7 @@ def create_account_direct(
                     proxy=proxy_url,
                     oauth_phone_sms_provider=oauth_phone_sms_provider if post_register_oauth_enabled else None,
                     oauth_phone_sms_country=oauth_phone_sms_country if post_register_oauth_enabled else None,
+                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks if post_register_oauth_enabled else None,
                 )
             else:
                 result = _register_direct_once(
@@ -3613,6 +3627,7 @@ def create_account_direct(
                             proxy_url=proxy_url,
                             oauth_phone_sms_provider=oauth_phone_sms_provider,
                             oauth_phone_sms_country=oauth_phone_sms_country,
+                            oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
                         )
                         if oauth_auth:
                             logger.info("[注册] 重新登录 Codex OAuth 已完成: %s", email)
@@ -3714,6 +3729,7 @@ def create_account_direct(
         proxy_url=proxy_url,
         oauth_phone_sms_provider=oauth_phone_sms_provider,
         oauth_phone_sms_country=oauth_phone_sms_country,
+        oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
     )
 
 
@@ -4431,6 +4447,7 @@ def cmd_register_accounts(
     oauth_phone_sms_country=None,
     phone_only=False,
     oauth_phone_sms_max_price=None,
+    oauth_oasis_sms_cdks=None,
     progress_callback=None,
 ):
     """执行独立注册；成功后保存 auth_session，并复用注册会话尝试生成 Codex OAuth 文件。
@@ -4653,6 +4670,7 @@ def cmd_register_accounts(
                     oauth_phone_sms_provider=oauth_phone_sms_provider,
                     oauth_phone_sms_country=oauth_phone_sms_country,
                     oauth_phone_sms_max_price=oauth_max_price if oauth_provider in {"hero_sms", "smsbower"} else "",
+                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks if oauth_provider == "oasis" else None,
                     phone_only=phone_only,
                     progress_callback=progress_callback,
                 )

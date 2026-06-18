@@ -164,7 +164,7 @@ export class ActivationBroker<
     let requestedAnotherSms = false;
     if (this.needsAnotherSms) {
       if (
-        // this.currentActivation.canRequestAnotherSms === false ||
+        this.currentActivation.canRequestAnotherSms === false ||
         this.isExpired(this.currentActivation)
       ) {
         const activation = await this.provider.requestActivation();
@@ -231,7 +231,7 @@ export class ActivationBroker<
     // 至于 failureCount，失败只会进入新一轮，多次失败不会有什么影响，仅添加一个上限防止无限失败，以求尽可能复用同一个号码
     if (
       rotate ||
-      // activation.canRequestAnotherSms === false ||
+      activation.canRequestAnotherSms === false ||
       this.isExpired(activation) ||
       this.usage.successCount >= 3 ||
       this.usage.failureCount >= 3

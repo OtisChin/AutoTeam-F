@@ -16,6 +16,15 @@
   "heroSMSPollAttempts": 15,
   "heroSMSPollIntervalMs": 3000,
 
+  "_oasis_comment": "Oasis 网页 CDK 接码。不需要 api_key；smsProvider=oasis 时使用 check_cdk/get_sms 网页接口。oasisSMSCdks 可填数组，也可填多行/逗号分隔字符串；大量 CDK 建议放 oasisSMSCdkFile。",
+  "smsProvider": "hero_sms",
+  "oasisSMSBaseUrl": "https://sms.oapi.vip",
+  "oasisSMSCdks": [],
+  "oasisSMSCdkFile": "",
+  "oasisSMSPollAttempts": 24,
+  "oasisSMSPollIntervalMs": 5000,
+  "oasisSMSAccountMapFile": "oasis-cdk-accounts.jsonl",
+
   "_cpa_comment": "CPA 上传 codex auth.json（带 refresh_token）",
   "cliproxyApiAutoUploadAuth": true,
   "cliproxyApiBaseUrl": "https://cpa.iceaix.com",
