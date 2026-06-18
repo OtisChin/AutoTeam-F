@@ -356,7 +356,13 @@ def _write_auth_file(filepath, bundle):
     return filepath
 
 
-def update_local_auth_plan_type(email: str, preferred_path: str = "", *, plan_type: str = "plus") -> dict:
+def update_local_auth_plan_type(
+    email: str,
+    preferred_path: str = "",
+    *,
+    plan_type: str = "plus",
+    candidate_paths: list[Path] | None = None,
+) -> dict:
     """Update a local CPA auth JSON's visible plan_type and rename it canonically."""
     target_email = _normalized_email(email)
     target_plan = str(plan_type or "").strip().lower() or "plus"
@@ -365,7 +371,9 @@ def update_local_auth_plan_type(email: str, preferred_path: str = "", *, plan_ty
         preferred = Path(preferred_path)
         if is_inside_auth_dir(preferred, auth_dir=AUTH_DIR):
             candidates.append(preferred)
-    if target_email and AUTH_DIR.exists():
+    if candidate_paths is not None:
+        candidates.extend(Path(path) for path in candidate_paths)
+    elif target_email and AUTH_DIR.exists():
         candidates.extend(_auth_files_for_email(target_email))
 
     seen: set[str] = set()

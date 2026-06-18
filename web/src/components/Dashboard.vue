@@ -865,6 +865,8 @@ const dashboardTabs = [
   { value: 'chatgpt', label: 'ChatGPT' },
   { value: 'kiro', label: 'Kiro' },
 ]
+const ACCOUNT_HUB_SYNC_MAX_EMAILS = 1000
+const ACCOUNT_DELETE_BATCH_MAX_EMAILS = 1000
 const activeDashboardTab = ref('chatgpt')
 const actionEmail = ref('')
 const actionType = ref('')
@@ -1464,6 +1466,53 @@ function clearSelection() {
   selectedSet.value = new Set()
 }
 
+function chunkItems(items, size) {
+  const chunks = []
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size))
+  }
+  return chunks
+}
+
+function emptyDeleteBatchResult() {
+  return {
+    results: [],
+    summary: {
+      total: 0,
+      ok: 0,
+      failed: 0,
+      skipped: 0,
+      remote_cleanup: false,
+      batches: 0,
+    },
+  }
+}
+
+function mergeDeleteBatchResult(target, batch) {
+  const summary = batch?.summary || {}
+  target.results.push(...(batch?.results || []))
+  target.summary.total += Number(summary.total || 0)
+  target.summary.ok += Number(summary.ok || 0)
+  target.summary.failed += Number(summary.failed || 0)
+  target.summary.skipped += Number(summary.skipped || 0)
+  target.summary.remote_cleanup = target.summary.remote_cleanup || Boolean(summary.remote_cleanup)
+  return target
+}
+
+async function deleteAccountsInChunks(emails, onProgress = null) {
+  const chunks = chunkItems(emails, ACCOUNT_DELETE_BATCH_MAX_EMAILS)
+  const combined = emptyDeleteBatchResult()
+  combined.summary.batches = chunks.length
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    const batch = await api.deleteAccountsBatch(chunks[index], true)
+    mergeDeleteBatchResult(combined, batch)
+    if (onProgress) onProgress(combined, index + 1, chunks.length)
+  }
+
+  return combined
+}
+
 function clearFilters() {
   emailFilter.value = ''
   statusFilter.value = ''
@@ -2039,15 +2088,18 @@ async function deleteInvalidCredentials() {
   invalidDeleting.value = true
   message.value = ''
   try {
-    const r = await api.deleteAccountsBatch(emails, true)
+    const r = await deleteAccountsInChunks(emails, (progress, done, total) => {
+      message.value = `无效凭证删除中 ${progress.summary.ok}/${emails.length}，批次 ${done}/${total}`
+      messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+    })
     const s = r?.summary || {}
     const failed = (r?.results || []).filter(x => !x.ok)
     if (failed.length === 0) {
-      message.value = `无效凭证删除完成:成功 ${s.ok}/${s.total}`
+      message.value = `无效凭证删除完成:成功 ${s.ok}/${s.total}${s.batches > 1 ? `，分 ${s.batches} 批` : ''}`
       messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     } else {
       const head = failed.slice(0, 3).map(x => `${x.email}: ${x.error}`).join('; ')
-      message.value = `无效凭证删除部分失败(成功 ${s.ok}/${s.total}):${head}${failed.length > 3 ? ' …' : ''}`
+      message.value = `无效凭证删除部分失败(成功 ${s.ok}/${s.total}${s.batches > 1 ? `，分 ${s.batches} 批` : ''}):${head}${failed.length > 3 ? ' …' : ''}`
       messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
     }
     clearSelection()
@@ -2085,6 +2137,12 @@ async function syncToAccountHub() {
     message.value = '请先勾选要同步到账号 Hub 的账号'
     messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
     setTimeout(() => { message.value = '' }, 5000)
+    return
+  }
+  if (emails.length > ACCOUNT_HUB_SYNC_MAX_EMAILS) {
+    message.value = `账号 Hub 单次最多同步 ${ACCOUNT_HUB_SYNC_MAX_EMAILS} 个账号，请缩小筛选或分批选择`
+    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+    setTimeout(() => { message.value = '' }, 8000)
     return
   }
   hubSyncing.value = true
@@ -2252,15 +2310,19 @@ async function batchDelete() {
   batchProgress.value = `0/${emails.length}`
   message.value = ''
   try {
-    const r = await api.deleteAccountsBatch(emails, true)
+    const r = await deleteAccountsInChunks(emails, (progress, done, total) => {
+      batchProgress.value = `${progress.summary.ok}/${emails.length}`
+      message.value = `批量删除中 ${progress.summary.ok}/${emails.length}，批次 ${done}/${total}`
+      messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+    })
     const s = r?.summary || {}
     const failed = (r?.results || []).filter(x => !x.ok)
     if (failed.length === 0) {
-      message.value = `批量删除完成:成功 ${s.ok}/${s.total}`
+      message.value = `批量删除完成:成功 ${s.ok}/${s.total}${s.batches > 1 ? `，分 ${s.batches} 批` : ''}`
       messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     } else {
       const head = failed.slice(0, 3).map(x => `${x.email}: ${x.error}`).join('; ')
-      message.value = `批量删除部分失败(成功 ${s.ok}/${s.total}):${head}${failed.length > 3 ? ' …' : ''}`
+      message.value = `批量删除部分失败(成功 ${s.ok}/${s.total}${s.batches > 1 ? `，分 ${s.batches} 批` : ''}):${head}${failed.length > 3 ? ' …' : ''}`
       messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
     }
     clearSelection()

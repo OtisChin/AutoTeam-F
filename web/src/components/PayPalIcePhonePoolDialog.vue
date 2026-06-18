@@ -62,6 +62,9 @@
               <button type="button" :disabled="saving || !selectedIds.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200 hover:bg-rose-500/20 disabled:opacity-50" @click="deletePhones(selectedIds)">
                 删除所选 ({{ selectedIds.length }})
               </button>
+              <button type="button" class="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500" @click="exportPhones">
+                导出
+              </button>
             </div>
 
             <div class="overflow-x-auto rounded-lg border border-gray-800">
@@ -211,6 +214,24 @@ async function addPhone() {
   }
 }
 
+async function exportPhones() {
+  saving.value = true
+  try {
+    const text = await api.exportPayPalIcePhones()
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'paypal-ice-phones.txt'
+    a.click()
+    URL.revokeObjectURL(url)
+    notify('已导出')
+  } catch (error) {
+    notify(error.message || '导出失败', false)
+  } finally {
+    saving.value = false
+  }
+}
 async function importPhones() {
   saving.value = true
   try {

@@ -712,12 +712,12 @@ def _record_paypal_ice_job(
         item = _paypal_ice_job_summary(data, fallback={**existing, **dict(fallback or {})})
         if not item["job_id"]:
             return item
-        _mark_paypal_ice_account_plus(item)
         item = _sync_paypal_ice_oauth_login(
             item,
             start_oauth_login=start_oauth_login,
             get_task=get_task,
         )
+        _mark_paypal_ice_account_plus(item)
         merged = [item]
         merged.extend(existing for existing in items if str(existing.get("job_id") or "") != item["job_id"])
         _save_paypal_ice_job_history(merged)

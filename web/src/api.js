@@ -137,6 +137,15 @@ export const api = {
   deletePayPalIcePhones: (ids) => request('POST', '/paypal-ice/phone-pool/delete', { ids }),
   importPayPalIcePhones: (text) => request('POST', '/paypal-ice/phone-pool/import', { text }),
   releasePayPalIcePhones: (payload) => request('POST', '/paypal-ice/phone-pool/release', payload),
+  exportPayPalIcePhones: async () => {
+    const headers = { 'Content-Type': 'application/json' }
+    const key = getApiKey()
+    if (key) headers['Authorization'] = "Bearer " + key
+    const resp = await fetch('/api/paypal-ice/phone-pool/export', { headers })
+    if (!resp.ok) throw new Error("HTTP " + resp.status)
+    return resp.text()
+  },
+
   getGoPayProStatus: () => request('GET', '/gopay-pro/status'),
   saveGoPayProConfig: (payload) => request('PUT', '/gopay-pro/config', payload),
   importGoPayProNumbers: (text) => request('POST', '/gopay-pro/numbers', { text }),

@@ -246,6 +246,40 @@ def test_upload_to_hub_can_limit_to_selected_emails(tmp_path, monkeypatch):
     assert saved["three@example.com"]["account_hub_synced"] is True
 
 
+def test_build_upload_payload_reuses_bounded_auth_file_indexes(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    auth_dir = tmp_path / "data" / "auths"
+    monkeypatch.setattr(accounts_mod, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(account_hub, "AUTH_DIR", auth_dir)
+
+    rows = [
+        {"email": f"user{index}@example.com", "status": "active", "account_type": "free"}
+        for index in range(5)
+    ]
+    accounts_mod.save_accounts(rows)
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    for row in rows[:2]:
+        (auth_dir / f"codex-{row['email']}-free.json").write_text(
+            json.dumps({"email": row["email"], "plan_type": "free"}),
+            encoding="utf-8",
+        )
+
+    real_iter = account_hub.iter_codex_auth_files
+    scan_count = 0
+
+    def counted_iter_codex_auth_files(*, auth_dir=None):
+        nonlocal scan_count
+        scan_count += 1
+        yield from real_iter(auth_dir=auth_dir)
+
+    monkeypatch.setattr(account_hub, "iter_codex_auth_files", counted_iter_codex_auth_files)
+
+    payload = account_hub.build_upload_payload(selected_emails=[row["email"] for row in rows])
+
+    assert [item["email"] for item in payload["auths"]] == ["user0@example.com", "user1@example.com"]
+    assert scan_count == 2
+
+
 def test_account_hub_private_email_normalizer_matches_core_helper():
     from autotoken.core.normalization import normalized_email
 

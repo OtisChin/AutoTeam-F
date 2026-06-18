@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 PAYPAL_ICE_PHONE_POOL_DELETE_MAX_IDS = 1_000
@@ -108,6 +109,24 @@ def create_paypal_ice_phone_pool_router() -> APIRouter:
             }
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get(
+        "/api/paypal-ice/phone-pool/export",
+        response_class=PlainTextResponse,
+    )
+    def export_phones():
+        from autotoken.services.paypal_ice_phone_pool import list_phones
+
+        items = list_phones()
+        lines: list[str] = []
+        for item in items:
+            phone = item.get("phone_number", "")
+            api_url = item.get("sms_api", "")
+            if phone and api_url:
+                lines.append(f"{phone}----{api_url}")
+        return PlainTextResponse(
+            "\n".join(lines), media_type="text/plain; charset=utf-8"
+        )
 
     @router.post("/api/paypal-ice/phone-pool/release")
     def release_phones(params: PayPalIcePhonePoolReleaseParams):

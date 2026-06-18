@@ -19,7 +19,12 @@ from autotoken.core.normalization import normalized_email
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.core.textio import write_text
 from autotoken.settings.runtime_config import get, set_value
-from autotoken.storage.auth_files import iter_auth_files_for_email, read_auth_json_file, trusted_auth_file_path
+from autotoken.storage.auth_files import (
+    iter_auth_files_for_email,
+    iter_codex_auth_files,
+    read_auth_json_file,
+    trusted_auth_file_path,
+)
 from autotoken.storage.auth_index import upsert_codex_auth_file
 from autotoken.storage.auth_storage import AUTH_DIR, ensure_auth_file_permissions
 
@@ -131,7 +136,33 @@ def _safe_auth_filename(name: str) -> str:
     return filename
 
 
-def _auth_candidates_for_account(acc: dict) -> list[Path]:
+def _auth_file_index_for_emails(emails: list[str] | set[str] | tuple[str, ...]) -> dict[str, list[Path]]:
+    wanted = sorted({_normalized_email(email) for email in emails if _normalized_email(email)}, key=len, reverse=True)
+    indexed = {email: [] for email in wanted}
+    if not wanted:
+        return indexed
+
+    prefixes = [(email, f"codex-{email}-") for email in wanted]
+    for path in iter_codex_auth_files(auth_dir=AUTH_DIR):
+        name = path.name.lower()
+        for email, prefix in prefixes:
+            if name.startswith(prefix):
+                indexed[email].append(path)
+                break
+    return indexed
+
+
+def _auth_file_index_for_accounts(accounts: list[dict]) -> dict[str, list[Path]]:
+    return _auth_file_index_for_emails(
+        [
+            str(acc.get("email") or "")
+            for acc in accounts
+            if isinstance(acc, dict) and str(acc.get("email") or "").strip()
+        ]
+    )
+
+
+def _auth_candidates_for_account(acc: dict, auth_files_by_email: dict[str, list[Path]] | None = None) -> list[Path]:
     email = str(acc.get("email") or "").strip()
     candidates: list[Path] = []
     auth_file = str(acc.get("auth_file") or "").strip()
@@ -141,7 +172,11 @@ def _auth_candidates_for_account(acc: dict) -> list[Path]:
             path = PROJECT_ROOT / path
         candidates.append(path)
     if email:
-        candidates.extend(iter_auth_files_for_email(email, auth_dir=AUTH_DIR))
+        indexed = (auth_files_by_email or {}).get(_normalized_email(email))
+        if indexed is not None:
+            candidates.extend(indexed)
+        else:
+            candidates.extend(iter_auth_files_for_email(email, auth_dir=AUTH_DIR))
     out: list[Path] = []
     seen = set()
     for path in candidates:
@@ -159,7 +194,7 @@ def _auth_candidates_for_account(acc: dict) -> list[Path]:
     return out
 
 
-def _is_syncable_account(acc: dict) -> bool:
+def _is_syncable_account(acc: dict, auth_files_by_email: dict[str, list[Path]] | None = None) -> bool:
     if bool(acc.get("account_hub_synced")):
         return False
     account_type = str(acc.get("account_type") or "").strip().lower()
@@ -168,11 +203,11 @@ def _is_syncable_account(acc: dict) -> bool:
         return False
     if account_type not in SYNC_ACCOUNT_TYPES and status != "plus":
         return False
-    return bool(_auth_candidates_for_account(acc))
+    return bool(_auth_candidates_for_account(acc, auth_files_by_email))
 
 
-def _syncable_accounts(accounts: list[dict]) -> list[dict]:
-    return [acc for acc in accounts if isinstance(acc, dict) and _is_syncable_account(acc)]
+def _syncable_accounts(accounts: list[dict], auth_files_by_email: dict[str, list[Path]] | None = None) -> list[dict]:
+    return [acc for acc in accounts if isinstance(acc, dict) and _is_syncable_account(acc, auth_files_by_email)]
 
 
 def _filter_accounts_by_emails(accounts: list[dict], selected_emails: list[str] | None) -> list[dict]:
@@ -365,7 +400,10 @@ def _account_payload_for_hub(acc: dict, luckmail_tokens: dict[str, str]) -> dict
     return payload
 
 
-def _normalize_plus_auth_plan_types_for_hub(accounts: list[dict]) -> int:
+def _normalize_plus_auth_plan_types_for_hub(
+    accounts: list[dict],
+    auth_files_by_email: dict[str, list[Path]] | None = None,
+) -> int:
     try:
         from autotoken.integrations.cpa_sync import update_local_auth_plan_type
         from autotoken.storage.accounts import update_account
@@ -384,7 +422,12 @@ def _normalize_plus_auth_plan_types_for_hub(accounts: list[dict]) -> int:
         if account_type != "plus" and status != "plus":
             continue
         try:
-            result = update_local_auth_plan_type(email, str(acc.get("auth_file") or ""), plan_type="plus")
+            result = update_local_auth_plan_type(
+                email,
+                str(acc.get("auth_file") or ""),
+                plan_type="plus",
+                candidate_paths=_auth_candidates_for_account(acc, auth_files_by_email),
+            )
         except Exception as exc:
             logger.warning("[account_hub] 修正 Plus auth plan_type 失败: email=%s error=%s", email, exc)
             continue
@@ -410,9 +453,10 @@ def build_upload_payload(
     name = str(node_name or get_config().get("name") or default_node_name()).strip() or default_node_name()
     accounts = load_accounts()
     accounts = _filter_accounts_by_emails(accounts, selected_emails)
+    auth_files_by_email = _auth_file_index_for_accounts(accounts)
     if syncable_only:
-        accounts = _syncable_accounts(accounts)
-    _normalize_plus_auth_plan_types_for_hub(accounts)
+        accounts = _syncable_accounts(accounts, auth_files_by_email)
+    _normalize_plus_auth_plan_types_for_hub(accounts, auth_files_by_email)
     restored = _restore_luckmail_tokens_for_accounts(accounts)
     if restored:
         from autotoken.storage.accounts import save_accounts
@@ -432,10 +476,11 @@ def build_upload_payload(
         save_accounts(all_accounts)
     luckmail_tokens = _luckmail_tokens_by_email()
     accounts_payload = [_account_payload_for_hub(acc, luckmail_tokens) for acc in accounts]
+    auth_files_by_email = _auth_file_index_for_accounts(accounts_payload)
     auths = []
     for acc in accounts_payload:
         email = _normalized_email(acc.get("email"))
-        for path in _auth_candidates_for_account(acc):
+        for path in _auth_candidates_for_account(acc, auth_files_by_email):
             try:
                 data = read_auth_json_file(path)
             except Exception as exc:

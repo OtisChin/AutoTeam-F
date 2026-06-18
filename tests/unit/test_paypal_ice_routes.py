@@ -512,6 +512,7 @@ def test_paypal_ice_success_starts_auto_oauth_login_once(monkeypatch):
     kv = {}
     started = []
     tasks = {}
+    account_updates = []
 
     monkeypatch.setattr(
         "autotoken.settings.setup_wizard._read_env",
@@ -529,7 +530,10 @@ def test_paypal_ice_success_starts_auto_oauth_login_once(monkeypatch):
         "autotoken.api_routes.paypal_ice.sqlite_store.delete_key",
         lambda namespace, key, **_kwargs: kv.pop((namespace, key), None),
     )
-    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.update_account",
+        lambda email, **kwargs: account_updates.append((email, kwargs)) or {"email": email, **kwargs},
+    )
 
     def fake_request(method, url, **_kwargs):
         if method == "POST":
@@ -620,6 +624,7 @@ def test_paypal_ice_success_starts_auto_oauth_login_once(monkeypatch):
     assert completed["oauth_login_status"] == "completed"
     assert completed["oauth_login_result_email"] == "bound@example.com"
     assert completed["oauth_login_progress_stage"] == "phone_first_add_email_otp_wait"
+    assert any(email == "bound@example.com" for email, _fields in account_updates)
 
 
 def test_paypal_ice_auto_oauth_adopts_same_account_running_task(monkeypatch):

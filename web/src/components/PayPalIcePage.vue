@@ -2348,12 +2348,14 @@ function applyPhonePoolStats(stats) {
 }
 
 function applyJobResult(row, result) {
+  const resultCode = String(result.result_code || '').trim().toUpperCase()
+  const status = String(result.status || '').trim().toLowerCase()
   row.createdAt = normalizeRowTimestamp(result.created_at) || row.createdAt || Math.floor(Date.now() / 1000)
   row.updatedAt = normalizeRowTimestamp(result.updated_at) || Math.floor(Date.now() / 1000)
   row.finishedAt = normalizeRowTimestamp(result.finished_at) || row.finishedAt || 0
-  row.status = result.status || row.status
+  row.status = resultCode === 'SUCCESS' ? 'success' : (status || row.status)
   row.billingStatus = result.billing_status || ''
-  row.resultCode = result.result_code || ''
+  row.resultCode = resultCode || ''
   row.resourceMode = result.resource_mode || row.resourceMode
   row.progressPercent = normalizeProgressPercent(result.progress_percent)
   row.progressStage = result.progress_stage || ''
