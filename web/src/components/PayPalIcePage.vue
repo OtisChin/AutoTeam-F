@@ -1539,11 +1539,13 @@ async function checkTrials() {
   }
 }
 
-function activationConcurrencyLimit() {
+function activationConcurrencyLimit(runId = '') {
   const requested = configuredConcurrency.value
   let limit = Math.min(requested, iceConcurrencyLimit.value || requested)
   if (options.value.use_pool) {
-    limit = Math.min(limit, Number(phonePoolStats.value.available || 0))
+    const availablePhones = Number(phonePoolStats.value.available || 0)
+    const occupiedByRun = runId ? inFlightActivationRowsCount(runId) : 0
+    limit = Math.min(limit, Math.max(0, availablePhones + occupiedByRun))
   }
   return Math.max(0, limit)
 }
@@ -1908,10 +1910,10 @@ async function runActivationRound(runId, roundItems, useExistingSubmitted = true
       const key = activationItemKey(item)
       return key && !submitted.has(key)
     })
-    let limit = activationConcurrencyLimit()
+    let limit = activationConcurrencyLimit(runId)
     if (limit < 1) {
       if (options.value.use_pool) await loadPhonePoolStats()
-      limit = activationConcurrencyLimit()
+      limit = activationConcurrencyLimit(runId)
       if (limit < 1) {
         setMessage('手机号池暂无可用号码，等待运行中的 ICE 任务释放号码')
         await sleep(PAYPAL_ICE_SCHEDULER_INTERVAL_MS)
