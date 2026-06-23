@@ -164,6 +164,38 @@ def test_post_accounts_login_batch_requires_emails():
     assert exc_info.value.detail == "emails 不能为空"
 
 
+def test_post_accounts_login_batch_passes_bind_phone(monkeypatch):
+    started = []
+    rows = [{"email": "first@example.com"}]
+    captured = []
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: rows[0] if email == "first@example.com" else None)
+
+    def fake_run(email, acc, **kwargs):
+        captured.append((email, acc, kwargs))
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(started, accounts=rows, run_account_codex_login_once=fake_run)
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(
+            emails=["first@example.com"],
+            bind_email=False,
+            bind_phone=True,
+            oauth_phone_sms_provider="smsbower",
+            oauth_phone_sms_country="187",
+            oauth_phone_sms_max_price="0.05",
+        )
+    )
+
+    result = started[0]["func"]("task-batch")
+    assert result["total"] == 1
+    assert captured[0][2]["bind_email"] is False
+    assert captured[0][2]["bind_phone"] is True
+    assert captured[0][2]["oauth_phone_sms_provider"] == "smsbower"
+    assert captured[0][2]["oauth_phone_sms_country"] == "187"
+    assert captured[0][2]["oauth_phone_sms_max_price"] == "0.05"
+
+
 def test_post_accounts_login_batch_rejects_too_many_raw_emails():
     routes, _accounts = _routes([])
 

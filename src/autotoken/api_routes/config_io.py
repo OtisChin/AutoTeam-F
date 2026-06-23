@@ -23,6 +23,10 @@ class OutlookAccountsImportParams(BaseModel):
     content: str
 
 
+class OutlookAccountsDeleteParams(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+
+
 class ConfigImportParams(BaseModel):
     config: dict | None = None
     content: str = ""
@@ -198,6 +202,95 @@ def _split_outlook_account_lines(content: str) -> list[str]:
             continue
         lines.append(value)
     return lines
+
+
+def _load_outlook_pool_status(target: Path) -> dict[str, Any]:
+    from autotoken.mail.outlook import OutlookMailProvider
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.storage.accounts import load_accounts
+
+    content = read_text(target) if target.exists() else ""
+    registered_emails = {normalize_email_addr(account.get("email")) for account in load_accounts() if account.get("email")}
+    skipped_emails = OutlookMailProvider._registered_emails()
+
+    entries: list[dict[str, Any]] = []
+    invalid = 0
+    seen: set[str] = set()
+    for line in _split_outlook_account_lines(content):
+        account = OutlookMailProvider._parse_account_line(line)
+        if not account or not account.validate():
+            invalid += 1
+            continue
+        email = account.email.lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        registered = email in registered_emails
+        unavailable = email in skipped_emails and not registered
+        status = "registered" if registered else ("unavailable" if unavailable else "available")
+        entries.append(
+            {
+                "email": account.email,
+                "status": status,
+                "registered": registered,
+                "available": status == "available",
+                "has_oauth": account.has_oauth(),
+                "has_mailapi": account.has_mailapi(),
+            }
+        )
+
+    registered_count = sum(1 for item in entries if item["status"] == "registered")
+    unavailable_count = sum(1 for item in entries if item["status"] == "unavailable")
+    available_count = sum(1 for item in entries if item["status"] == "available")
+    return {
+        "file": str(target),
+        "total": len(entries),
+        "available": available_count,
+        "registered": registered_count,
+        "unavailable": unavailable_count,
+        "invalid": invalid,
+        "accounts": entries[:500],
+        "next_available_email": next((item["email"] for item in entries if item["status"] == "available"), ""),
+    }
+
+
+def _delete_outlook_pool_accounts(target: Path, emails: list[str]) -> dict[str, Any]:
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.outlook import OutlookMailProvider
+
+    requested = [normalize_email_addr(email) for email in emails or []]
+    targets = {email for email in requested if email}
+    if not targets:
+        raise HTTPException(status_code=400, detail="请选择要删除的 Outlook 邮箱")
+
+    content = read_text(target) if target.exists() else ""
+    kept_lines: list[str] = []
+    deleted_emails: list[str] = []
+    deleted_seen: set[str] = set()
+    for raw_line in content.replace("\ufeff", "").replace(";", "\n").splitlines():
+        line = raw_line.strip()
+        account = OutlookMailProvider._parse_account_line(line)
+        email = account.email.lower() if account and account.validate() else ""
+        if email and email in targets:
+            if email not in deleted_seen:
+                deleted_seen.add(email)
+                deleted_emails.append(email)
+            continue
+        kept_lines.append(raw_line)
+
+    next_content = "\n".join(kept_lines)
+    if next_content:
+        next_content += "\n"
+    target.write_text(next_content, encoding="utf-8")
+
+    missing = sorted(targets - deleted_seen)
+    return {
+        "file": str(target),
+        "requested": len(targets),
+        "deleted": len(deleted_seen),
+        "deleted_emails": deleted_emails[:50],
+        "missing_emails": missing[:50],
+    }
 
 
 def create_config_io_router(
@@ -376,5 +469,28 @@ def create_config_io_router(
             "first_imported_email": imported_emails[0] if imported_emails else "",
             "invalid_lines": invalid[:20],
         }
+
+    @router.get("/api/config/outlook-accounts/status")
+    def get_outlook_accounts_status():
+        """读取 Outlook 邮箱池状态。只返回邮箱和能力标记，不返回密码或 token。"""
+        target = _resolve_outlook_accounts_file()
+        if target.exists() and target.stat().st_size > OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有 Outlook 账号池文件过大，最多支持 2MB txt")
+        return _load_outlook_pool_status(target)
+
+    @router.post("/api/config/outlook-accounts/delete")
+    def post_delete_outlook_accounts(params: OutlookAccountsDeleteParams):
+        """从 Outlook 邮箱池文件删除指定邮箱行，不删除本地已注册账号。"""
+        target = _resolve_outlook_accounts_file()
+        if target.exists() and target.stat().st_size > OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有 Outlook 账号池文件过大，最多支持 2MB txt")
+        result = _delete_outlook_pool_accounts(target, params.emails)
+        route_logger.info(
+            "[outlook] 删除账号池邮箱: file=%s requested=%d deleted=%d",
+            target,
+            result["requested"],
+            result["deleted"],
+        )
+        return result
 
     return router

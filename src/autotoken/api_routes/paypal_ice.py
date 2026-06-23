@@ -36,12 +36,15 @@ class PayPalIceTrialCheckParams(BaseModel):
 class PayPalIceOAuthLoginParams(BaseModel):
     protocol_only: bool = True
     bind_email: bool = True
+    bind_phone: bool = False
     mail_provider: str = ""
     luckmail_email_type: str = ""
     luckmail_preferred_domain: str = ""
     email_domain: str = ""
     oauth_phone_sms_provider: str = ""
     oauth_phone_sms_country: str = ""
+    oauth_phone_sms_max_price: str = ""
+    oauth_oasis_sms_cdks: str = ""
     proxy_url: str = ""
     proxy_pool: list[str] = Field(default_factory=list)
     proxy_pool_text: str = ""
@@ -469,21 +472,35 @@ def _oauth_login_config_for_job(job_id: str) -> dict[str, Any]:
 
 def _clean_oauth_login_config(raw_config: Any) -> dict[str, Any]:
     raw = raw_config.model_dump() if hasattr(raw_config, "model_dump") else dict(raw_config or {})
+    bind_phone = bool(raw.get("bind_phone") or raw.get("bindPhone"))
+    bind_email = bool(raw.get("bind_email", True)) and not bind_phone
     provider = str(raw.get("mail_provider") or "").strip().lower()
     payload: dict[str, Any] = {
         "protocol_only": True,
-        "bind_email": True,
+        "bind_email": bind_email,
     }
-    if provider:
+    if bind_phone:
+        payload["bind_phone"] = True
+        for key in (
+            "oauth_phone_sms_provider",
+            "oauth_phone_sms_country",
+            "oauth_phone_sms_max_price",
+            "oauth_oasis_sms_cdks",
+        ):
+            value = str(raw.get(key) or "").strip()
+            if value:
+                payload[key] = value
+
+    if bind_email and provider:
         payload["mail_provider"] = provider
-    if provider == "luckmail":
+    if bind_email and provider == "luckmail":
         luckmail_email_type = str(raw.get("luckmail_email_type") or "").strip()
         luckmail_preferred_domain = str(raw.get("luckmail_preferred_domain") or "").strip().lstrip("@")
         if luckmail_email_type:
             payload["luckmail_email_type"] = luckmail_email_type
         if luckmail_preferred_domain:
             payload["luckmail_preferred_domain"] = luckmail_preferred_domain
-    elif provider and provider != "outlook":
+    elif bind_email and provider and provider != "outlook":
         email_domain = str(raw.get("email_domain") or "").strip().lstrip("@")
         if email_domain:
             payload["email_domain"] = email_domain
@@ -650,7 +667,10 @@ def _sync_paypal_ice_oauth_login(
 
     payload = {"email": client_ref, **_oauth_login_config_for_job(job_id)}
     payload["protocol_only"] = True
-    payload["bind_email"] = True
+    if bool(payload.get("bind_phone")):
+        payload["bind_email"] = False
+    else:
+        payload["bind_email"] = bool(payload.get("bind_email", True))
     payload["exclusive"] = False
     try:
         task = start_oauth_login(payload)

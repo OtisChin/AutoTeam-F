@@ -171,6 +171,8 @@ export const api = {
   getMailProviderConfig: () => request('GET', '/config/mail-provider'),
   saveMailProviderConfig: (cfg) => request('PUT', '/config/mail-provider', cfg),
   importOutlookAccounts: (content, filename = '') => request('POST', '/config/outlook-accounts/import', { content, filename }),
+  getOutlookAccountsStatus: () => request('GET', '/config/outlook-accounts/status'),
+  deleteOutlookAccounts: (emails) => request('POST', '/config/outlook-accounts/delete', { emails }),
   getGoPayAutoSignupConfig: () => request('GET', '/config/gopay-auto-signup'),
   saveGoPayAutoSignupConfig: (cfg) => request('PUT', '/config/gopay-auto-signup', cfg),
   queryGoPayHeroSmsPrices: (cfg) => request('POST', '/config/gopay-auto-signup/hero-sms/prices', cfg),

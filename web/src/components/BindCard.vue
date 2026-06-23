@@ -1925,10 +1925,12 @@ const luckmailEmailTypeOptions = [
 const luckmailDomainOptions = [
   { value: '', label: '自动分配' },
   { value: 'outlook.com', label: 'outlook.com' },
+  { value: 'outlook.cl', label: 'outlook.cl' },
   { value: 'outlook.de', label: 'outlook.de' },
   { value: 'outlook.fr', label: 'outlook.fr' },
   { value: 'outlook.jp', label: 'outlook.jp' },
   { value: 'outlook.my', label: 'outlook.my' },
+  { value: 'outlook.ph', label: 'outlook.ph' },
   { value: 'hotmail.com', label: 'hotmail.com' },
   { value: 'hotmail.de', label: 'hotmail.de' },
   { value: 'live.com', label: 'live.com' },

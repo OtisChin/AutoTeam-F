@@ -4057,12 +4057,15 @@ def _run_account_codex_login_once(
     proxy_bypass: str | None = None,
     protocol_only: bool = False,
     bind_email: bool = False,
+    bind_phone: bool = False,
     mail_provider: str | None = None,
     luckmail_email_type: str | None = None,
     luckmail_preferred_domain: str | None = None,
     email_domain: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    oauth_phone_sms_max_price: str | None = None,
+    oauth_oasis_sms_cdks: str | None = None,
     progress_callback: Callable[[dict], Any] | None = None,
 ) -> dict:
     from autotoken.auth.codex_auth import (
@@ -4180,6 +4183,8 @@ def _run_account_codex_login_once(
                     proxy=oauth_proxy_url or None,
                     oauth_phone_sms_provider=oauth_phone_sms_provider,
                     oauth_phone_sms_country=oauth_phone_sms_country,
+                    oauth_phone_sms_max_price=oauth_phone_sms_max_price,
+                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
                     progress_callback=progress_callback,
                 )
                 if session_payload.get("mailbox_account_id"):
@@ -4197,6 +4202,8 @@ def _run_account_codex_login_once(
                     proxy=oauth_proxy_url or None,
                     oauth_phone_sms_provider=oauth_phone_sms_provider,
                     oauth_phone_sms_country=oauth_phone_sms_country,
+                    oauth_phone_sms_max_price=oauth_phone_sms_max_price,
+                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
                     progress_callback=progress_callback,
                 )
             bundle = (session_payload or {}).get("codex_oauth_bundle")

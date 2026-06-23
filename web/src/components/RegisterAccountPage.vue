@@ -336,41 +336,59 @@
           <div v-if="isOutlookProvider" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 space-y-3">
             <div class="flex items-start justify-between gap-3">
               <div>
-                <div class="text-sm font-medium text-white">导入 Outlook 邮箱池</div>
+                <div class="text-sm font-medium text-white">Outlook 邮箱池</div>
                 <div class="mt-1 text-xs text-gray-500">
-                  支持 txt 上传或直接粘贴，一行一个账号；格式沿用 Outlook 账号池配置。
+                  邮箱池会持久化保存；再次打开页面时将从首个可用邮箱继续注册。
                 </div>
               </div>
-              <button
-                type="button"
-                @click="importOutlookAccounts"
-                :disabled="outlookImporting || !outlookImportContent.trim()"
-                class="shrink-0 px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-200 border-gray-700 transition disabled:opacity-50">
-                {{ outlookImporting ? '导入中...' : '导入' }}
-              </button>
+              <div class="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  @click="loadOutlookPoolStatus"
+                  :disabled="outlookPoolLoading"
+                  class="px-3 py-1.5 rounded-lg text-xs border bg-gray-900 hover:bg-gray-800 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                  {{ outlookPoolLoading ? '刷新中...' : '刷新状态' }}
+                </button>
+                <button
+                  type="button"
+                  @click="openOutlookPoolDialog"
+                  class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-200 border-gray-700 transition">
+                  管理邮箱池
+                </button>
+                <button
+                  type="button"
+                  @click="openOutlookImportDialog"
+                  class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-200 border-gray-700 transition">
+                  导入邮箱
+                </button>
+              </div>
             </div>
-            <textarea
-              v-model="outlookImportContent"
-              :disabled="outlookImporting"
-              rows="5"
-              placeholder="例如：&#10;user@hotmail.com----https://mailapi.icu/key?type=html&orderNo=xxxx&#10;user@outlook.com----password----client_id----refresh_token"
-              class="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-xs font-mono text-gray-100 placeholder:text-gray-600 focus:outline-none focus:border-blue-500 resize-y"
-            ></textarea>
-            <div class="flex flex-wrap items-center gap-3">
-              <label class="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition cursor-pointer">
-                <input
-                  type="file"
-                  accept=".txt,text/plain"
-                  class="hidden"
-                  :disabled="outlookImporting"
-                  @change="handleOutlookImportFile"
-                />
-                选择 txt 文件
-              </label>
-              <span class="text-xs text-gray-500">{{ outlookImportFilename || '未选择文件' }}</span>
+            <div v-if="outlookPoolStatus" class="border-y border-gray-800 py-3">
+              <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div>
+                  <div class="text-[11px] text-gray-500">邮箱池</div>
+                  <div class="mt-0.5 text-sm font-medium text-white">{{ outlookPoolStatus.total }}</div>
+                </div>
+                <div>
+                  <div class="text-[11px] text-gray-500">可用</div>
+                  <div class="mt-0.5 text-sm font-medium text-emerald-300">{{ outlookPoolStatus.available }}</div>
+                </div>
+                <div>
+                  <div class="text-[11px] text-gray-500">已注册</div>
+                  <div class="mt-0.5 text-sm font-medium text-gray-300">{{ outlookPoolStatus.registered }}</div>
+                </div>
+                <div>
+                  <div class="text-[11px] text-gray-500">暂不可用</div>
+                  <div class="mt-0.5 text-sm font-medium text-amber-300">{{ outlookPoolStatus.unavailable }}</div>
+                </div>
+              </div>
+              <div class="mt-2 text-xs text-gray-500">
+                下一个可用邮箱：
+                <span class="font-mono text-gray-300">{{ outlookPoolStatus.next_available_email || '无' }}</span>
+              </div>
             </div>
-            <div v-if="outlookImportResult" class="rounded-lg border px-3 py-2 text-xs" :class="outlookImportResultClass">
-              {{ outlookImportResult }}
+            <div v-else-if="outlookPoolError" class="text-xs text-red-300">
+              {{ outlookPoolError }}
             </div>
           </div>
 
@@ -617,6 +635,201 @@
       </div>
     </section>
   </div>
+
+  <Teleport to="body">
+    <div
+      v-if="outlookPoolDialogOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      @click.self="closeOutlookPoolDialog"
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="outlook-pool-title"
+        class="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-2xl"
+      >
+        <header class="flex shrink-0 items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+          <div>
+            <h3 id="outlook-pool-title" class="text-base font-semibold text-white">管理 Outlook 邮箱池</h3>
+            <p class="mt-1 text-xs text-gray-500">查看邮箱可用状态，批量删除不再使用的邮箱池记录。</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              :disabled="outlookPoolLoading || outlookPoolDeleting"
+              class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+              @click="loadOutlookPoolStatus"
+            >
+              {{ outlookPoolLoading ? '刷新中...' : '刷新' }}
+            </button>
+            <button
+              type="button"
+              :disabled="outlookPoolDeleting"
+              class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+              @click="closeOutlookPoolDialog"
+            >
+              关闭
+            </button>
+          </div>
+        </header>
+
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          <div v-if="outlookPoolStatus" class="grid grid-cols-2 border-b border-gray-800 sm:grid-cols-4">
+            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
+              <div class="text-xs text-gray-500">邮箱池</div>
+              <div class="mt-1 text-xl font-semibold text-white">{{ outlookPoolStatus.total }}</div>
+            </div>
+            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
+              <div class="text-xs text-gray-500">可用</div>
+              <div class="mt-1 text-xl font-semibold text-emerald-300">{{ outlookPoolStatus.available }}</div>
+            </div>
+            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
+              <div class="text-xs text-gray-500">已注册</div>
+              <div class="mt-1 text-xl font-semibold text-gray-300">{{ outlookPoolStatus.registered }}</div>
+            </div>
+            <div class="px-4 py-3">
+              <div class="text-xs text-gray-500">暂不可用</div>
+              <div class="mt-1 text-xl font-semibold text-amber-300">{{ outlookPoolStatus.unavailable }}</div>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-3">
+            <div class="min-w-0 text-xs text-gray-500">
+              下一个可用邮箱：
+              <span class="font-mono text-gray-300">{{ outlookPoolStatus?.next_available_email || '无' }}</span>
+            </div>
+            <div class="flex shrink-0 items-center gap-3">
+              <label class="inline-flex items-center gap-2 text-xs text-gray-400">
+                <input
+                  type="checkbox"
+                  :checked="outlookPoolAllVisibleSelected"
+                  :disabled="outlookPoolDeleting || !outlookPoolVisibleEmails.length"
+                  class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
+                  @change="toggleOutlookPoolVisible($event.target.checked)"
+                />
+                当前列表全选
+              </label>
+              <button
+                type="button"
+                :disabled="outlookPoolDeleting || outlookPoolSelectedCount === 0"
+                class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50"
+                @click="deleteSelectedOutlookPoolEmails"
+              >
+                {{ outlookPoolDeleting ? '删除中...' : `删除所选 (${outlookPoolSelectedCount})` }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="outlookPoolError" class="mx-5 mt-4 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {{ outlookPoolError }}
+          </div>
+
+          <div v-if="outlookPoolStatus?.accounts?.length" class="divide-y divide-gray-800">
+            <div
+              v-for="account in outlookPoolStatus.accounts"
+              :key="account.email"
+              class="flex items-center justify-between gap-3 px-5 py-2.5 text-xs"
+            >
+              <label class="flex min-w-0 flex-1 items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="outlookPoolSelectedSet.has(account.email)"
+                  :disabled="outlookPoolDeleting"
+                  class="h-3.5 w-3.5 shrink-0 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
+                  @change="toggleOutlookPoolEmail(account.email, $event.target.checked)"
+                />
+                <span class="min-w-0 truncate font-mono text-gray-300">{{ account.email }}</span>
+              </label>
+              <span class="shrink-0" :class="outlookPoolAccountStatusClass(account.status)">
+                {{ outlookPoolAccountStatusLabel(account.status) }}
+              </span>
+            </div>
+          </div>
+          <div v-else-if="!outlookPoolLoading" class="px-5 py-8 text-center text-sm text-gray-500">
+            邮箱池暂无记录
+          </div>
+        </div>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="outlookImportDialogOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      @click.self="closeOutlookImportDialog"
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="outlook-import-title"
+        class="w-full max-w-2xl overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-2xl"
+      >
+        <header class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+          <div>
+            <h3 id="outlook-import-title" class="text-base font-semibold text-white">导入 Outlook 邮箱</h3>
+            <p class="mt-1 text-xs text-gray-500">支持 txt 文件或直接粘贴，一行一个邮箱账号。</p>
+          </div>
+          <button
+            type="button"
+            :disabled="outlookImporting"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+            @click="closeOutlookImportDialog"
+          >
+            关闭
+          </button>
+        </header>
+
+        <div class="space-y-4 p-5">
+          <div class="flex flex-wrap items-center gap-3">
+            <label class="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-300 transition hover:bg-gray-700">
+              <input
+                type="file"
+                accept=".txt,text/plain"
+                class="hidden"
+                :disabled="outlookImporting"
+                @change="handleOutlookImportFile"
+              />
+              选择 txt 文件
+            </label>
+            <span class="min-w-0 truncate text-xs text-gray-500">{{ outlookImportFilename || '未选择文件' }}</span>
+          </div>
+
+          <textarea
+            v-model="outlookImportContent"
+            :disabled="outlookImporting"
+            rows="10"
+            spellcheck="false"
+            placeholder="例如：&#10;user@hotmail.com----https://mailapi.icu/key?type=html&orderNo=xxxx&#10;user@outlook.com----password----client_id----refresh_token"
+            class="w-full resize-y rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-gray-100 outline-none placeholder:text-gray-600 focus:border-blue-500 disabled:opacity-60"
+          ></textarea>
+
+          <div v-if="outlookImportResult" class="rounded-lg border px-3 py-2 text-xs" :class="outlookImportResultClass">
+            {{ outlookImportResult }}
+          </div>
+        </div>
+
+        <footer class="flex justify-end gap-2 border-t border-gray-800 px-5 py-4">
+          <button
+            type="button"
+            :disabled="outlookImporting"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+            @click="closeOutlookImportDialog"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            :disabled="outlookImporting || !outlookImportContent.trim()"
+            class="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
+            @click="importOutlookAccounts"
+          >
+            {{ outlookImporting ? '导入中...' : '确认导入' }}
+          </button>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
@@ -648,6 +861,13 @@ const outlookImportFilename = ref('')
 const outlookImporting = ref(false)
 const outlookImportResult = ref('')
 const outlookImportResultOk = ref(true)
+const outlookImportDialogOpen = ref(false)
+const outlookPoolDialogOpen = ref(false)
+const outlookPoolLoading = ref(false)
+const outlookPoolDeleting = ref(false)
+const outlookPoolError = ref('')
+const outlookPoolStatus = ref(null)
+const outlookPoolSelectedEmails = ref([])
 const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
@@ -714,10 +934,12 @@ const luckmailEmailTypeOptions = [
 const luckmailDomainOptions = [
   { value: '', label: '自动分配' },
   { value: 'outlook.com', label: 'outlook.com' },
+  { value: 'outlook.cl', label: 'outlook.cl' },
   { value: 'outlook.de', label: 'outlook.de' },
   { value: 'outlook.fr', label: 'outlook.fr' },
   { value: 'outlook.jp', label: 'outlook.jp' },
   { value: 'outlook.my', label: 'outlook.my' },
+  { value: 'outlook.ph', label: 'outlook.ph' },
   { value: 'hotmail.com', label: 'hotmail.com' },
   { value: 'hotmail.de', label: 'hotmail.de' },
   { value: 'live.com', label: 'live.com' },
@@ -889,6 +1111,15 @@ const oauthPhoneSmsMaxPriceLabel = computed(() => {
 const outlookImportResultClass = computed(() => outlookImportResultOk.value
   ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
   : 'bg-red-500/10 text-red-300 border-red-500/20')
+const outlookPoolVisibleEmails = computed(() => (outlookPoolStatus.value?.accounts || []).map(account => account.email))
+const outlookPoolSelectedSet = computed(() => new Set(outlookPoolSelectedEmails.value))
+const outlookPoolSelectedCount = computed(() => outlookPoolSelectedEmails.value.length)
+const outlookPoolAllVisibleSelected = computed(() => {
+  const emails = outlookPoolVisibleEmails.value
+  if (!emails.length) return false
+  const selected = outlookPoolSelectedSet.value
+  return emails.every(email => selected.has(email))
+})
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
   if (registerProviderUsesPool.value) return true
@@ -1000,6 +1231,35 @@ async function handleOutlookImportFile(event) {
   }
 }
 
+function openOutlookImportDialog() {
+  outlookImportResult.value = ''
+  outlookImportDialogOpen.value = true
+}
+
+function closeOutlookImportDialog() {
+  if (outlookImporting.value) return
+  outlookImportDialogOpen.value = false
+}
+
+async function openOutlookPoolDialog() {
+  outlookPoolDialogOpen.value = true
+  await loadOutlookPoolStatus()
+}
+
+function closeOutlookPoolDialog() {
+  if (outlookPoolDeleting.value) return
+  outlookPoolDialogOpen.value = false
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key !== 'Escape') return
+  if (outlookImportDialogOpen.value) {
+    closeOutlookImportDialog()
+  } else if (outlookPoolDialogOpen.value) {
+    closeOutlookPoolDialog()
+  }
+}
+
 async function importOutlookAccounts() {
   const content = outlookImportContent.value.trim()
   if (!content || outlookImporting.value) return
@@ -1019,12 +1279,83 @@ async function importOutlookAccounts() {
       outlookImportContent.value = ''
       outlookImportFilename.value = ''
     }
+    await loadOutlookPoolStatus()
   } catch (e) {
     outlookImportResult.value = `导入失败: ${e.message}`
     outlookImportResultOk.value = false
   } finally {
     outlookImporting.value = false
   }
+}
+
+async function loadOutlookPoolStatus() {
+  if (!isOutlookProvider.value || outlookPoolLoading.value) return
+  outlookPoolLoading.value = true
+  outlookPoolError.value = ''
+  try {
+    outlookPoolStatus.value = await api.getOutlookAccountsStatus()
+    const visible = new Set(outlookPoolVisibleEmails.value)
+    outlookPoolSelectedEmails.value = outlookPoolSelectedEmails.value.filter(email => visible.has(email))
+  } catch (e) {
+    outlookPoolStatus.value = null
+    outlookPoolError.value = `读取 Outlook 邮箱池失败: ${e.message}`
+  } finally {
+    outlookPoolLoading.value = false
+  }
+}
+
+function toggleOutlookPoolEmail(email, checked) {
+  const value = String(email || '').trim()
+  if (!value) return
+  const selected = new Set(outlookPoolSelectedEmails.value)
+  if (checked) {
+    selected.add(value)
+  } else {
+    selected.delete(value)
+  }
+  outlookPoolSelectedEmails.value = Array.from(selected)
+}
+
+function toggleOutlookPoolVisible(checked) {
+  const selected = new Set(outlookPoolSelectedEmails.value)
+  for (const email of outlookPoolVisibleEmails.value) {
+    if (checked) {
+      selected.add(email)
+    } else {
+      selected.delete(email)
+    }
+  }
+  outlookPoolSelectedEmails.value = Array.from(selected)
+}
+
+async function deleteSelectedOutlookPoolEmails() {
+  if (outlookPoolDeleting.value || outlookPoolSelectedCount.value === 0) return
+  const emails = [...outlookPoolSelectedEmails.value]
+  const ok = window.confirm(`确认从 Outlook 邮箱池删除 ${emails.length} 个邮箱?\n\n只会删除邮箱池文件中的记录，不会删除本地已注册账号。`)
+  if (!ok) return
+  outlookPoolDeleting.value = true
+  try {
+    const result = await api.deleteOutlookAccounts(emails)
+    outlookPoolSelectedEmails.value = []
+    await loadOutlookPoolStatus()
+    setMessage(`已从 Outlook 邮箱池删除 ${result.deleted || 0} 个邮箱`, true)
+  } catch (e) {
+    setMessage(`删除 Outlook 邮箱失败: ${e.message}`, false)
+  } finally {
+    outlookPoolDeleting.value = false
+  }
+}
+
+function outlookPoolAccountStatusLabel(status) {
+  if (status === 'registered') return '已注册'
+  if (status === 'unavailable') return '暂不可用'
+  return '可用'
+}
+
+function outlookPoolAccountStatusClass(status) {
+  if (status === 'registered') return 'text-gray-500'
+  if (status === 'unavailable') return 'text-amber-300'
+  return 'text-emerald-300'
 }
 
 function loadSavedRegisterForm() {
@@ -1512,6 +1843,13 @@ watch(
 )
 
 watch(
+  isOutlookProvider,
+  enabled => {
+    if (enabled) loadOutlookPoolStatus()
+  }
+)
+
+watch(
   () => registerForm.value.oauthPhoneSmsProvider,
   async (provider, previousProvider) => {
     const normalizedProvider = String(provider || 'phone_pool')
@@ -1549,15 +1887,18 @@ watch(
 
 onMounted(reloadRegisterDomains)
 onMounted(() => {
+  window.addEventListener('keydown', handleGlobalKeydown)
   loadSavedRegisterForm()
   loadMailProviderOptions()
   loadOAuthPhoneSmsConfig()
+  if (isOutlookProvider.value) loadOutlookPoolStatus()
   loadRegisterLogs()
   loadRegisterStats()
   logsTimer = window.setInterval(loadRegisterLogs, 3000)
   statsTimer = window.setInterval(loadRegisterStats, 3000)
 })
 onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown)
   if (logsTimer) {
     window.clearInterval(logsTimer)
     logsTimer = null
@@ -1574,6 +1915,7 @@ watch(() => props.runningTask?.task_id, (newId, oldId) => {
   }
   if (oldId && !newId) {
     reloadRegisterDomains()
+    if (isOutlookProvider.value) loadOutlookPoolStatus()
     loadRegisterLogs()
     loadRegisterStats()
   }

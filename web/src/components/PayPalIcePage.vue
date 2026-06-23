@@ -206,14 +206,23 @@
                 <input v-model.number="options.job_retry" type="number" min="0" max="5" class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-blue-500" />
                 <div class="mt-1 text-xs text-gray-500">本轮全部结束后，将失败账号整轮重新提交；手机号池模式会先等待号码释放。</div>
               </div>
-              <label class="flex items-start gap-3 rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-3 sm:col-span-2" :class="inputSource === 'token' ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'">
-                <input v-model="options.auto_oauth_login" type="checkbox" :disabled="inputSource === 'token'" class="mt-0.5 h-4 w-4 accent-blue-500" />
-                <span>
-                  <span class="block text-sm text-gray-200">Plus 激活成功后自动协议补登录并绑定邮箱</span>
-                  <span class="mt-1 block text-xs text-gray-500">默认关闭。仅号池账号可用，使用仪表盘 OAuth 配置；失败不会影响 ICE 激活结果。</span>
-                </span>
-              </label>
-              <div v-if="inputSource === 'account' && options.auto_oauth_login" class="space-y-3 rounded-lg border border-blue-500/20 bg-blue-600/10 px-3 py-3 sm:col-span-2">
+              <div class="grid gap-2 sm:col-span-2">
+                <label class="flex items-start gap-3 rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-3" :class="inputSource === 'token' ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'">
+                  <input v-model="autoOauthBindEmail" type="checkbox" :disabled="inputSource === 'token'" class="mt-0.5 h-4 w-4 accent-blue-500" />
+                  <span>
+                    <span class="block text-sm text-gray-200">Plus 激活成功后自动协议补登录并绑定邮箱</span>
+                    <span class="mt-1 block text-xs text-gray-500">用于手机号注册的账号，成功激活后自动补登录并提交绑定邮箱。</span>
+                  </span>
+                </label>
+                <label class="flex items-start gap-3 rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-3" :class="inputSource === 'token' ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'">
+                  <input v-model="autoOauthBindPhone" type="checkbox" :disabled="inputSource === 'token'" class="mt-0.5 h-4 w-4 accent-blue-500" />
+                  <span>
+                    <span class="block text-sm text-gray-200">Plus 激活成功后自动协议补登录并绑定手机号</span>
+                    <span class="mt-1 block text-xs text-gray-500">用于邮箱注册的账号，成功激活后遇到 add-phone 时按下方接码配置绑定手机号。</span>
+                  </span>
+                </label>
+              </div>
+              <div v-if="autoOauthEmailConfigActive" class="space-y-3 rounded-lg border border-blue-500/20 bg-blue-600/10 px-3 py-3 sm:col-span-2">
                 <div class="flex items-center justify-between gap-3">
                   <div>
                     <div class="text-sm font-semibold text-blue-100">邮箱绑定配置</div>
@@ -264,6 +273,67 @@
                     {{ oauthEmailSaving ? '保存中...' : '保存邮箱配置' }}
                   </button>
                 </div>
+              </div>
+              <div v-if="autoOauthPhoneConfigActive" class="space-y-3 rounded-lg border border-blue-500/20 bg-blue-600/10 px-3 py-3 sm:col-span-2">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-semibold text-blue-100">手机号绑定配置</div>
+                    <div class="mt-1 text-xs text-gray-500">用于 ICE 激活成功后的协议补登录和手机号绑定。</div>
+                  </div>
+                  <button type="button" :disabled="oauthPhoneSmsLoading" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50" @click="loadOauthPhoneSmsConfig(true)">
+                    {{ oauthPhoneSmsLoading ? '读取中...' : '刷新配置' }}
+                  </button>
+                </div>
+
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label class="mb-1 block text-xs text-gray-400">OAuth 手机号供应商</label>
+                    <select v-model="oauthPhoneSmsProvider" :disabled="oauthPhoneSmsLoading" class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-blue-500">
+                      <option v-for="opt in oauthPhoneSmsProviderOptions" :key="opt.value" :value="opt.value">
+                        {{ opt.label }}{{ opt.configured ? '' : '（未配置）' }}
+                      </option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-xs text-gray-400">手机号国家</label>
+                    <select
+                      v-model="oauthPhoneSmsCountry"
+                      :disabled="oauthPhoneSmsLoading || oauthPhoneSmsCountriesLoading || ['phone_pool', 'oasis'].includes(oauthPhoneSmsProvider)"
+                      class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-blue-500 disabled:opacity-60"
+                    >
+                      <option value="">{{ oauthPhoneSmsProvider === 'phone_pool' ? '按手机号池' : oauthPhoneSmsProvider === 'oasis' ? '由 CDK 分配' : (oauthPhoneSmsCountriesLoading ? '国家列表加载中...' : '请选择国家') }}</option>
+                      <option v-for="opt in oauthPhoneSmsCountryOptionsForSelect" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div v-if="['hero_sms', 'smsbower'].includes(oauthPhoneSmsProvider)">
+                  <label class="mb-1 block text-xs text-gray-400">最高价格</label>
+                  <input
+                    v-model.trim="oauthPhoneSmsMaxPrice"
+                    :disabled="oauthPhoneSmsLoading"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder="留空使用设置页配置；例如 0.045"
+                    class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-500 focus:border-blue-500 disabled:opacity-60"
+                  />
+                </div>
+
+                <div v-if="oauthPhoneSmsProvider === 'oasis'">
+                  <label class="mb-1 block text-xs text-gray-400">本次任务 CDK 池</label>
+                  <textarea
+                    v-model.trim="oauthOasisSmsCdks"
+                    :disabled="oauthPhoneSmsLoading"
+                    rows="4"
+                    spellcheck="false"
+                    autocomplete="off"
+                    placeholder="可输入单个或多个 CDK，一行一个；留空则使用设置页保存的 Oasis CDK 池"
+                    class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 font-mono text-sm text-white outline-none placeholder:text-gray-500 focus:border-blue-500 disabled:opacity-60"
+                  ></textarea>
+                </div>
+
+                <div class="text-xs text-gray-500">{{ oauthPhoneSmsSummary }}</div>
               </div>
             </div>
           </div>
@@ -460,6 +530,10 @@ const PAYPAL_ICE_FORM_STATE_KEY = 'autotoken.paypalIce.formState.v1'
 const PAYPAL_ICE_ROWS_STATE_KEY = 'autotoken.paypalIce.resultRows.v1'
 const PAYPAL_ICE_RUN_STATE_KEY = 'autotoken.paypalIce.activationRun.v1'
 const OAUTH_EMAIL_STORAGE_KEY = 'autotoken.dashboard.oauthEmailCfg'
+const OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY = 'autotoken_oauth_phone_sms_countries_v2'
+const OAUTH_PHONE_SMS_COUNTRIES_CACHE_TTL_MS = 30 * 60 * 1000
+const OAUTH_LOGIN_MODE_BIND_EMAIL = 'bind_email'
+const OAUTH_LOGIN_MODE_BIND_PHONE = 'bind_phone'
 const PAYPAL_ICE_POLL_INTERVAL_MS = 1500
 const PAYPAL_ICE_ACCOUNT_REFRESH_INTERVAL_MS = 5000
 const PAYPAL_ICE_SCHEDULER_INTERVAL_MS = 500
@@ -493,6 +567,22 @@ const oauthEmailDomainOptions = ref([])
 const oauthEmailLoading = ref(false)
 const oauthEmailSaving = ref(false)
 const oauthEmailLoaded = ref(false)
+const oauthPhoneSmsLoading = ref(false)
+const oauthPhoneSmsCountriesLoading = ref(false)
+const oauthPhoneSmsLoaded = ref(false)
+const oauthPhoneSmsProvider = ref('phone_pool')
+const oauthPhoneSmsCountry = ref('187')
+const oauthPhoneSmsMaxPrice = ref('')
+const oauthOasisSmsCdks = ref('')
+const oauthPhoneSmsProviderOptions = ref([
+  { value: 'phone_pool', label: '手机号池', configured: true },
+  { value: 'hero_sms', label: 'hero-sms', configured: false },
+  { value: 'smsbower', label: 'smsbower', configured: false },
+  { value: 'oasis', label: 'Oasis CDK', configured: false },
+])
+const oauthPhoneSmsCountryOptions = ref([])
+const oauthPhoneSmsConfig = ref({})
+const oauthPhoneSmsCountryRequests = new Map()
 const configSaving = ref(false)
 const trialBusy = ref(false)
 const activationBusy = ref(false)
@@ -563,6 +653,20 @@ const currentActivationRows = computed(() => {
   }
   return [...latestByAccount.values()]
 })
+const autoOauthBindEmail = computed({
+  get: () => inputSource.value === 'account'
+    && Boolean(options.value.auto_oauth_login)
+    && options.value.oauth_login_mode !== OAUTH_LOGIN_MODE_BIND_PHONE,
+  set: enabled => setAutoOauthMode(enabled ? OAUTH_LOGIN_MODE_BIND_EMAIL : ''),
+})
+const autoOauthBindPhone = computed({
+  get: () => inputSource.value === 'account'
+    && Boolean(options.value.auto_oauth_login)
+    && options.value.oauth_login_mode === OAUTH_LOGIN_MODE_BIND_PHONE,
+  set: enabled => setAutoOauthMode(enabled ? OAUTH_LOGIN_MODE_BIND_PHONE : ''),
+})
+const autoOauthEmailConfigActive = computed(() => autoOauthBindEmail.value)
+const autoOauthPhoneConfigActive = computed(() => autoOauthBindPhone.value)
 const currentActivationOpen = computed(() => currentActivationRows.value.some(row => !isTerminalActivationStatus(row.status)))
 const activationLocked = computed(() => activationBusy.value || currentActivationOpen.value)
 const successCount = computed(() => currentActivationRows.value.filter(activationRowSucceeded).length)
@@ -648,6 +752,30 @@ const oauthEmailSummary = computed(() => {
     : '供应商默认邮箱'
   return `${provider} / ${domain}`
 })
+const oauthPhoneSmsCountryOptionsForSelect = computed(() => {
+  const selected = String(oauthPhoneSmsCountry.value || '').trim()
+  const options = normalizeOAuthPhoneSmsCountryOptions(oauthPhoneSmsCountryOptions.value)
+  if (selected && !options.some(option => option.value === selected)) {
+    return [{ value: selected, label: `当前配置 / ${selected}` }, ...options]
+  }
+  return options
+})
+const oauthPhoneSmsProviderLabel = computed(() => {
+  const provider = String(oauthPhoneSmsProvider.value || 'phone_pool')
+  const option = oauthPhoneSmsProviderOptions.value.find(item => item.value === provider)
+  return option?.label || provider
+})
+const oauthPhoneSmsCountryLabel = computed(() => {
+  if (oauthPhoneSmsProvider.value === 'phone_pool') return '按手机号池'
+  if (oauthPhoneSmsProvider.value === 'oasis') return '由 CDK 分配'
+  const option = oauthPhoneSmsCountryOptionsForSelect.value.find(item => item.value === oauthPhoneSmsCountry.value)
+  return option?.label || oauthPhoneSmsCountry.value || '美国 / 187'
+})
+const oauthPhoneSmsMaxPriceLabel = computed(() => {
+  if (!['hero_sms', 'smsbower'].includes(oauthPhoneSmsProvider.value)) return '不适用'
+  return String(oauthPhoneSmsMaxPrice.value || '').trim() || '使用设置页配置'
+})
+const oauthPhoneSmsSummary = computed(() => `${oauthPhoneSmsProviderLabel.value} / ${oauthPhoneSmsCountryLabel.value} / 最高价 ${oauthPhoneSmsMaxPriceLabel.value}`)
 const boardCards = computed(() => [
   { label: 'ICE 剩余额度', value: iceAccount.value?.quota_remaining ?? '-', meta: iceAccount.value ? `总额 ${iceAccount.value.quota_total ?? '-'} / 已用 ${iceAccount.value.quota_used ?? '-'}` : '保存配置后读取', color: 'text-blue-400' },
   { label: '激活成功数', value: successCount.value, meta: `本轮 ${overallProgress.value.total} 个任务`, color: 'text-emerald-400' },
@@ -665,14 +793,33 @@ const luckmailEmailTypeOptions = [
 const luckmailDomainOptions = [
   { value: '', label: '自动分配' },
   { value: 'outlook.com', label: 'outlook.com' },
+  { value: 'outlook.cl', label: 'outlook.cl' },
   { value: 'outlook.de', label: 'outlook.de' },
   { value: 'outlook.fr', label: 'outlook.fr' },
   { value: 'outlook.jp', label: 'outlook.jp' },
   { value: 'outlook.my', label: 'outlook.my' },
+  { value: 'outlook.ph', label: 'outlook.ph' },
   { value: 'hotmail.com', label: 'hotmail.com' },
   { value: 'hotmail.de', label: 'hotmail.de' },
   { value: 'live.com', label: 'live.com' },
 ]
+
+const oauthPhoneSmsCountryFallbackOptions = {
+  phone_pool: [],
+  hero_sms: [
+    { value: 'all', label: '全部国家 / 不限制' },
+    { value: '187', label: '美国 / 187' },
+    { value: '6', label: '印度尼西亚 / 6' },
+    { value: '33', label: '哥伦比亚 / 33' },
+  ],
+  smsbower: [
+    { value: 'all', label: '全部国家 / 不限制' },
+    { value: '187', label: '美国 / 187' },
+    { value: '6', label: '印度尼西亚 / 6' },
+    { value: '33', label: '哥伦比亚 / 33' },
+  ],
+  oasis: [],
+}
 
 function filterAccounts(rows, keyword) {
   const query = String(keyword || '').trim().toLowerCase()
@@ -716,12 +863,17 @@ function defaultPayPalIceOptions() {
     concurrency: 5,
     otp_timeout: 180,
     auto_oauth_login: false,
+    oauth_login_mode: OAUTH_LOGIN_MODE_BIND_EMAIL,
   }
 }
 
 function normalizePayPalIceOptions(value) {
   const defaults = defaultPayPalIceOptions()
   const source = value && typeof value === 'object' ? value : {}
+  const rawMode = String(source.oauth_login_mode || source.oauthLoginMode || '').trim()
+  const oauthLoginMode = rawMode === OAUTH_LOGIN_MODE_BIND_PHONE
+    ? OAUTH_LOGIN_MODE_BIND_PHONE
+    : OAUTH_LOGIN_MODE_BIND_EMAIL
   return {
     proxy: String(source.proxy || ''),
     proxy_jp: String(source.proxy_jp || ''),
@@ -733,6 +885,27 @@ function normalizePayPalIceOptions(value) {
     concurrency: clampNumber(source.concurrency, 1, 99, defaults.concurrency),
     otp_timeout: clampNumber(source.otp_timeout, 30, 900, defaults.otp_timeout),
     auto_oauth_login: Boolean(source.auto_oauth_login),
+    oauth_login_mode: oauthLoginMode,
+  }
+}
+
+function setAutoOauthMode(mode) {
+  if (inputSource.value !== 'account') {
+    options.value.auto_oauth_login = false
+    return
+  }
+  const normalized = mode === OAUTH_LOGIN_MODE_BIND_PHONE ? OAUTH_LOGIN_MODE_BIND_PHONE : OAUTH_LOGIN_MODE_BIND_EMAIL
+  if (!mode) {
+    options.value.auto_oauth_login = false
+    options.value.oauth_login_mode = normalized
+    return
+  }
+  options.value.auto_oauth_login = true
+  options.value.oauth_login_mode = normalized
+  if (normalized === OAUTH_LOGIN_MODE_BIND_PHONE) {
+    loadOauthPhoneSmsConfig()
+  } else {
+    loadOauthEmailConfig()
   }
 }
 
@@ -1087,6 +1260,138 @@ function saveOauthEmailConfig() {
   }
 }
 
+function configuredOauthPhoneCountry(provider) {
+  const cfg = oauthPhoneSmsConfig.value || {}
+  if (provider === 'oasis' || provider === 'phone_pool') return ''
+  if (provider === 'smsbower') return String(cfg.smsbower_country || '187')
+  if (provider === 'hero_sms') return String(cfg.hero_sms_country || '187')
+  return ''
+}
+
+function configuredOauthPhoneMaxPrice(provider) {
+  const cfg = oauthPhoneSmsConfig.value || {}
+  if (provider === 'smsbower') return String(cfg.smsbower_max_price || '')
+  if (provider === 'hero_sms') return String(cfg.hero_sms_max_price || '')
+  return ''
+}
+
+function normalizeOAuthPhoneSmsCountryOptions(options) {
+  return (Array.isArray(options) ? options : [])
+    .map(option => ({
+      value: String(option?.value || '').trim(),
+      label: String(option?.label || option?.value || '').trim(),
+    }))
+    .filter(option => option.value)
+}
+
+function readOAuthPhoneSmsCountriesCache(provider) {
+  try {
+    const raw = localStorage.getItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    const entry = parsed?.[provider]
+    if (!entry || !Array.isArray(entry.options)) return null
+    if (Date.now() - Number(entry.cachedAt || 0) > OAUTH_PHONE_SMS_COUNTRIES_CACHE_TTL_MS) return null
+    const options = normalizeOAuthPhoneSmsCountryOptions(entry.options)
+    return options.length ? options : null
+  } catch (_) {
+    return null
+  }
+}
+
+function writeOAuthPhoneSmsCountriesCache(provider, options) {
+  try {
+    const raw = localStorage.getItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    parsed[provider] = {
+      cachedAt: Date.now(),
+      options: normalizeOAuthPhoneSmsCountryOptions(options),
+    }
+    localStorage.setItem(OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY, JSON.stringify(parsed))
+  } catch (_) {
+    // localStorage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+async function loadOauthPhoneSmsCountries(provider = oauthPhoneSmsProvider.value) {
+  const normalizedProvider = String(provider || 'phone_pool').trim() || 'phone_pool'
+  if (['phone_pool', 'oasis'].includes(normalizedProvider)) {
+    oauthPhoneSmsCountryOptions.value = []
+    oauthPhoneSmsCountry.value = ''
+    return
+  }
+  const cachedOptions = readOAuthPhoneSmsCountriesCache(normalizedProvider)
+  if (cachedOptions) {
+    oauthPhoneSmsCountryOptions.value = cachedOptions
+    if (!oauthPhoneSmsCountry.value) oauthPhoneSmsCountry.value = configuredOauthPhoneCountry(normalizedProvider) || cachedOptions[0]?.value || '187'
+    return
+  }
+  oauthPhoneSmsCountriesLoading.value = true
+  let request = oauthPhoneSmsCountryRequests.get(normalizedProvider)
+  try {
+    if (!request) {
+      request = api.getOAuthPhoneSmsCountries(normalizedProvider)
+      oauthPhoneSmsCountryRequests.set(normalizedProvider, request)
+    }
+    const result = await request
+    const options = Array.isArray(result?.options) && result.options.length
+      ? result.options
+      : (oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || [])
+    oauthPhoneSmsCountryOptions.value = normalizeOAuthPhoneSmsCountryOptions(options)
+    if (!result?.fallback && oauthPhoneSmsCountryOptions.value.length) {
+      writeOAuthPhoneSmsCountriesCache(normalizedProvider, oauthPhoneSmsCountryOptions.value)
+    }
+  } catch (_) {
+    oauthPhoneSmsCountryOptions.value = oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || []
+  } finally {
+    if (oauthPhoneSmsCountryRequests.get(normalizedProvider) === request) {
+      oauthPhoneSmsCountryRequests.delete(normalizedProvider)
+    }
+    oauthPhoneSmsCountriesLoading.value = false
+  }
+  if (!oauthPhoneSmsCountry.value) {
+    oauthPhoneSmsCountry.value = configuredOauthPhoneCountry(normalizedProvider)
+      || oauthPhoneSmsCountryOptions.value[0]?.value
+      || '187'
+  }
+}
+
+async function loadOauthPhoneSmsConfig(force = false) {
+  if (oauthPhoneSmsLoaded.value && !force) return
+  oauthPhoneSmsLoading.value = true
+  try {
+    const result = await api.getOAuthPhoneSmsConfig()
+    oauthPhoneSmsConfig.value = result || {}
+    const providers = Array.isArray(result?.providers) && result.providers.length
+      ? result.providers
+      : oauthPhoneSmsProviderOptions.value
+    oauthPhoneSmsProviderOptions.value = providers
+      .map(option => ({
+        value: String(option?.value || '').trim(),
+        label: String(option?.label || option?.value || '').trim(),
+        configured: Boolean(option?.configured),
+      }))
+      .filter(option => option.value)
+    const configuredProvider = String(result?.provider || '').trim()
+    if (!oauthPhoneSmsLoaded.value || !oauthPhoneSmsProvider.value) {
+      oauthPhoneSmsProvider.value = configuredProvider || String(oauthPhoneSmsProvider.value || 'phone_pool').trim() || 'phone_pool'
+    }
+    if (!oauthPhoneSmsCountry.value || ['phone_pool', 'oasis'].includes(oauthPhoneSmsProvider.value)) {
+      oauthPhoneSmsCountry.value = configuredOauthPhoneCountry(oauthPhoneSmsProvider.value)
+    }
+    if (!oauthPhoneSmsMaxPrice.value) {
+      oauthPhoneSmsMaxPrice.value = configuredOauthPhoneMaxPrice(oauthPhoneSmsProvider.value)
+    }
+    if (!oauthOasisSmsCdks.value && oauthPhoneSmsProvider.value === 'oasis') {
+      oauthOasisSmsCdks.value = String(result?.oasis_sms_cdks || '')
+    }
+    oauthPhoneSmsLoaded.value = true
+    await loadOauthPhoneSmsCountries(oauthPhoneSmsProvider.value)
+  } finally {
+    oauthPhoneSmsLoading.value = false
+  }
+}
+
 function ensureRow(email) {
   let row = resultRows.value.find(item => item.email === email)
   const now = Math.floor(Date.now() / 1000)
@@ -1199,9 +1504,27 @@ function currentOauthEmailConfig() {
   }
 }
 
+function currentOauthPhoneSmsConfig() {
+  const provider = String(oauthPhoneSmsProvider.value || 'phone_pool').trim() || 'phone_pool'
+  const payload = {
+    oauth_phone_sms_provider: provider,
+    oauth_phone_sms_country: ['phone_pool', 'oasis'].includes(provider)
+      ? ''
+      : String(oauthPhoneSmsCountry.value || configuredOauthPhoneCountry(provider) || '187').trim(),
+  }
+  if (['hero_sms', 'smsbower'].includes(provider)) {
+    payload.oauth_phone_sms_max_price = String(oauthPhoneSmsMaxPrice.value || configuredOauthPhoneMaxPrice(provider) || '').trim()
+  }
+  if (provider === 'oasis') {
+    payload.oauth_oasis_sms_cdks = String(oauthOasisSmsCdks.value || '').trim()
+  }
+  return payload
+}
+
 function storedOauthLoginConfig() {
   const emailCfg = currentOauthEmailConfig()
   const mailProvider = String(emailCfg.mail_provider || '').trim()
+  const bindPhone = options.value.oauth_login_mode === OAUTH_LOGIN_MODE_BIND_PHONE
   let proxyCfg = {}
   try {
     proxyCfg = JSON.parse(localStorage.getItem('autotoken.dashboard.oauthProxy') || '{}')
@@ -1210,14 +1533,23 @@ function storedOauthLoginConfig() {
   }
   const payload = {
     protocol_only: true,
-    bind_email: true,
+    bind_email: !bindPhone,
   }
-  if (mailProvider) payload.mail_provider = mailProvider
-  if (mailProvider === 'luckmail') {
-    if (emailCfg.luckmail_email_type) payload.luckmail_email_type = emailCfg.luckmail_email_type
-    if (emailCfg.luckmail_preferred_domain) payload.luckmail_preferred_domain = emailCfg.luckmail_preferred_domain
-  } else if (mailProvider && mailProvider !== 'outlook' && (emailCfg.email_domain || emailCfg.domain)) {
-    payload.email_domain = emailCfg.email_domain || emailCfg.domain
+  if (bindPhone) {
+    const phoneCfg = currentOauthPhoneSmsConfig()
+    payload.bind_phone = true
+    if (phoneCfg.oauth_phone_sms_provider) payload.oauth_phone_sms_provider = phoneCfg.oauth_phone_sms_provider
+    if (phoneCfg.oauth_phone_sms_country) payload.oauth_phone_sms_country = phoneCfg.oauth_phone_sms_country
+    if (phoneCfg.oauth_phone_sms_max_price) payload.oauth_phone_sms_max_price = phoneCfg.oauth_phone_sms_max_price
+    if (phoneCfg.oauth_oasis_sms_cdks) payload.oauth_oasis_sms_cdks = phoneCfg.oauth_oasis_sms_cdks
+  } else {
+    if (mailProvider) payload.mail_provider = mailProvider
+    if (mailProvider === 'luckmail') {
+      if (emailCfg.luckmail_email_type) payload.luckmail_email_type = emailCfg.luckmail_email_type
+      if (emailCfg.luckmail_preferred_domain) payload.luckmail_preferred_domain = emailCfg.luckmail_preferred_domain
+    } else if (mailProvider && mailProvider !== 'outlook' && (emailCfg.email_domain || emailCfg.domain)) {
+      payload.email_domain = emailCfg.email_domain || emailCfg.domain
+    }
   }
   if (proxyCfg.enabled) {
     if (proxyCfg.mode === 'pool') payload.proxy_pool_text = proxyCfg.proxyPoolText || ''
@@ -2051,7 +2383,10 @@ async function activatePlus() {
   activationCancelRequested.value = false
   try {
     if (options.value.use_pool) await loadPhonePoolStats()
-    if (inputSource.value === 'account' && options.value.auto_oauth_login) await loadOauthEmailConfig()
+    if (inputSource.value === 'account' && options.value.auto_oauth_login) {
+      if (options.value.oauth_login_mode === OAUTH_LOGIN_MODE_BIND_PHONE) await loadOauthPhoneSmsConfig()
+      else await loadOauthEmailConfig()
+    }
     validateSelection(true)
     currentActivationRunId.value = `ice-${Date.now()}-${Math.random().toString(16).slice(2)}`
     currentActivationInputSource.value = inputSource.value === 'account' ? 'account' : 'token'
@@ -2657,11 +2992,22 @@ watch(
 )
 
 watch(
-  () => options.value.auto_oauth_login,
-  (enabled) => {
-    if (enabled && inputSource.value === 'account') {
-      loadOauthEmailConfig()
+  () => [options.value.auto_oauth_login, options.value.oauth_login_mode, inputSource.value],
+  ([enabled, mode, source]) => {
+    if (enabled && source === 'account') {
+      if (mode === OAUTH_LOGIN_MODE_BIND_PHONE) loadOauthPhoneSmsConfig()
+      else loadOauthEmailConfig()
     }
+  },
+)
+
+watch(
+  () => oauthPhoneSmsProvider.value,
+  (provider, previousProvider) => {
+    if (!provider || provider === previousProvider) return
+    oauthPhoneSmsCountry.value = configuredOauthPhoneCountry(provider)
+    oauthPhoneSmsMaxPrice.value = configuredOauthPhoneMaxPrice(provider)
+    loadOauthPhoneSmsCountries(provider)
   },
 )
 
@@ -2671,7 +3017,11 @@ onMounted(async () => {
     loadAccounts(),
     loadJobHistory(),
     loadPhonePoolStats(),
-    options.value.auto_oauth_login ? loadOauthEmailConfig() : Promise.resolve(),
+    options.value.auto_oauth_login && options.value.oauth_login_mode === OAUTH_LOGIN_MODE_BIND_PHONE
+      ? loadOauthPhoneSmsConfig()
+      : options.value.auto_oauth_login
+        ? loadOauthEmailConfig()
+        : Promise.resolve(),
   ])
   if (config.value.configured) await loadIceAccount()
   pollTimer = setInterval(refreshActiveJobs, PAYPAL_ICE_POLL_INTERVAL_MS)

@@ -240,6 +240,20 @@ class LuckMailProvider(MailProvider):
 
         raise RuntimeError("没有可用的 LuckMail 已购邮箱（可能都已注册、已被本轮占用或不匹配域名）")
 
+    def create_registration_email(self, prefix: str | None = None, domain: str | None = None) -> tuple[int | str, str]:
+        if not self.api_key:
+            raise RuntimeError("LuckMail 注册账号必须新购邮箱，请配置 LUCKMAIL_API_KEY")
+        account = self._purchase_account(domain=domain)
+        self._persist_purchased_account(account)
+        with _GLOBAL_RESERVATION_LOCK, self._lock:
+            self.accounts.append(account)
+            self._tokens_by_email[account.email.lower()] = account.token
+            self._emails_by_token[account.token] = account.email
+            self._reserved.add(account.email.lower())
+            _GLOBAL_RESERVED_EMAILS.add(account.email.lower())
+        logger.info("[luckmail] 注册账号强制新购并选择 LuckMail 邮箱: %s", account.email)
+        return account.token, account.email
+
     def list_accounts(self, size: int = 200) -> list[dict]:
         return [
             {

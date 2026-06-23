@@ -64,6 +64,37 @@ def test_create_temp_email_purchases_when_loaded_pool_is_reserved(monkeypatch):
     assert "next@outlook.com" in client._reserved
 
 
+def test_create_registration_email_always_purchases_new_mailbox(monkeypatch):
+    client = LuckMailProvider()
+    client.api_key = "key"
+    client.accounts = [LuckMailProvider._parse_account_line("loaded@outlook.com----tok_loaded")]
+    client._tokens_by_email = {"loaded@outlook.com": "tok_loaded"}
+    client._emails_by_token = {"tok_loaded": "loaded@outlook.com"}
+    purchased = []
+
+    def fake_purchase(domain=None):
+        purchased.append(domain)
+        return LuckMailProvider._parse_account_line("fresh@outlook.com----tok_fresh")
+
+    monkeypatch.setattr(client, "_purchase_account", fake_purchase)
+    monkeypatch.setattr(client, "_persist_purchased_account", lambda account: None)
+
+    account_id, email = client.create_registration_email(domain="outlook.com")
+
+    assert purchased == ["outlook.com"]
+    assert account_id == "tok_fresh"
+    assert email == "fresh@outlook.com"
+    assert email in client._reserved
+
+
+def test_create_registration_email_requires_api_key():
+    client = LuckMailProvider()
+    client.api_key = ""
+
+    with pytest.raises(RuntimeError, match="必须新购邮箱"):
+        client.create_registration_email(domain="outlook.com")
+
+
 def test_create_temp_email_reserves_loaded_pool_across_provider_instances(monkeypatch):
     first = LuckMailProvider()
     second = LuckMailProvider()

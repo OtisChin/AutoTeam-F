@@ -860,9 +860,9 @@ class AuthFlow:
                 logger.warning("Codex 登录推进需要 OTP，但未提供 mail_provider")
                 return continue_url or ""
             try:
-                otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "180")))
+                otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "60")))
             except Exception:
-                otp_timeout = 180
+                otp_timeout = 60
             otp_sent_at = time.time()
             if not self.kickoff_otp_delivery("codex_login_need_otp"):
                 self.send_otp()
@@ -1917,8 +1917,12 @@ class AuthFlow:
             if page_type == "email_otp_verification":
                 self._existing_email_verification_mode = (payload.get("email_verification_mode", "") or "").strip()
                 self._existing_page_type = page_type
-                logger.info("检测到已有账号，切换到 OTP 登录流程")
-                self._is_existing_account = True
+                if self._existing_email_verification_mode == "passwordless_signup":
+                    logger.info("检测到 passwordless signup，切换到邮箱 OTP 注册流程")
+                    self._is_existing_account = False
+                else:
+                    logger.info("检测到已有账号，切换到 OTP 登录流程")
+                    self._is_existing_account = True
                 return False
 
             # 未知 page_type：通常是社交登录/风控分支，按已有账号处理，避免误进 register_password 导致 invalid_state
@@ -2072,15 +2076,29 @@ class AuthFlow:
 
     def kickoff_otp_delivery(self, mode: str = "") -> bool:
         """
-        统一发码策略（优先 passwordless，兼容 resend/send）：
-        1) passwordless/send-otp
-        2) email-otp/resend
-        3) email-otp/send
+        统一发码策略：
+        - 已进入 email-verification 的流程优先 email-otp/resend
+        - 密码注册完成后优先 email-otp/send
+        - passwordless/send-otp 仅作为兼容兜底
         """
         mode_lc = (mode or "").strip().lower()
+        password_registration = mode_lc in {
+            "register_password_success",
+            "register_password_failed_fallback",
+        }
+
+        if password_registration:
+            try:
+                self.send_otp()
+                return True
+            except Exception as e:
+                logger.warning(f"send_otp 首选失败(mode={mode_lc}): {e}")
+        elif self.resend_otp("https://auth.openai.com/email-verification"):
+            return True
+
         if self.send_passwordless_otp("https://auth.openai.com/create-account/password"):
             return True
-        if self.resend_otp("https://auth.openai.com/email-verification"):
+        if password_registration and self.resend_otp("https://auth.openai.com/email-verification"):
             return True
         try:
             self.send_otp()
@@ -2978,16 +2996,8 @@ class AuthFlow:
             password_registered = self.register_password(email)
             otp_sent_at = time.time()
             if password_registered:
-                try:
-                    self.send_otp()
-                except RuntimeError as e:
-                    # 部分账号会在 register 后直接转入 email-verification，send 接口会报 invalid_auth_step
-                    if "invalid_auth_step" in str(e).lower():
-                        logger.warning("send_otp 返回 invalid_auth_step，回退到统一发码策略")
-                        if not self.kickoff_otp_delivery("register_password_invalid_auth_step"):
-                            raise
-                    else:
-                        raise
+                if not self.kickoff_otp_delivery("register_password_success"):
+                    raise RuntimeError("发送 OTP 失败: passwordless/resend/send 均未成功")
             else:
                 # 注册密码失败时优先按“已有账号 OTP”回退，避免卡死在 invalid_auth_step
                 logger.warning("注册密码失败，回退到已有账号 OTP 路径")
@@ -2996,15 +3006,28 @@ class AuthFlow:
                     self.send_otp()
 
             try:
-                otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "180")))
+                otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "60")))
             except Exception:
-                otp_timeout = 180
-            otp_code = self._wait_for_email_otp(
-                mail_provider,
-                email,
-                timeout=otp_timeout,
-                issued_after=otp_sent_at,
-            )
+                otp_timeout = 60
+            try:
+                otp_code = self._wait_for_email_otp(
+                    mail_provider,
+                    email,
+                    timeout=otp_timeout,
+                    issued_after=otp_sent_at,
+                )
+            except TimeoutError:
+                logger.warning("未等到新账号 OTP，先重发后重试等待")
+                otp_sent_at = time.time()
+                if not self.kickoff_otp_delivery("new_register_timeout_retry"):
+                    self.send_otp()
+                otp_code = self._wait_for_email_otp(
+                    mail_provider,
+                    email,
+                    timeout=otp_timeout,
+                    issued_after=otp_sent_at,
+                    exclude_used=True,
+                )
             try:
                 self.verify_otp(otp_code)
                 self.fetch_client_auth_session_dump("post_verify_otp_new")
@@ -3045,9 +3068,9 @@ class AuthFlow:
             continue_url = ""
 
             try:
-                otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "180")))
+                otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "60")))
             except Exception:
-                otp_timeout = 180
+                otp_timeout = 60
 
             if page_type == "login_password":
                 logger.info("已有账号进入 login_password 分支，先走密码校验再 OTP")
@@ -3232,9 +3255,9 @@ class AuthFlow:
 
         continue_url = ""
         try:
-            otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "180")))
+            otp_timeout = max(30, int(os.getenv("OTP_TIMEOUT", "60")))
         except Exception:
-            otp_timeout = 180
+            otp_timeout = 60
 
         page_type = ""
         mode = ""

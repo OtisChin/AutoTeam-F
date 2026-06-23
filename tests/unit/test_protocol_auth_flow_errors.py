@@ -175,6 +175,143 @@ def test_phone_first_failure_callback_receives_specific_error(monkeypatch):
     assert "PHONE_ALREADY_REGISTERED" in reasons[0]
 
 
+def test_new_protocol_register_uses_unified_email_otp_delivery(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeMailProvider:
+        def create_mailbox(self):
+            return "fresh@outlook.my"
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow.check_proxy = lambda: True
+    flow.get_csrf_token = lambda: "csrf"
+    flow.get_auth_url = lambda _csrf: "https://auth.openai.test/authorize"
+    flow.auth_oauth_init = lambda _url: "device"
+    flow.get_sentinel_token = lambda _device_id: "sentinel"
+    flow.signup = lambda _email, _sentinel: True
+    flow.register_password = lambda _email: True
+    flow.send_otp = lambda: (_ for _ in ()).throw(AssertionError("send_otp should be reached through kickoff only"))
+    flow._wait_for_email_otp = lambda *_args, **_kwargs: "123456"
+    flow.verify_otp = lambda _code: {}
+    flow.fetch_client_auth_session_dump = lambda _stage="": {}
+    flow.create_account = lambda: ""
+    flow.get_auth_session = lambda: (
+        setattr(flow.result, "session_token", "session-token"),
+        setattr(flow.result, "access_token", "access-token"),
+    )
+
+    delivery_modes = []
+    flow.kickoff_otp_delivery = lambda mode="": delivery_modes.append(mode) or True
+
+    result = flow.run_register(FakeMailProvider())
+
+    assert result.is_valid()
+    assert delivery_modes == ["register_password_success"]
+
+
+def test_new_protocol_register_resends_email_otp_after_timeout(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeMailProvider:
+        def create_mailbox(self):
+            return "fresh@outlook.my"
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    monkeypatch.delenv("OTP_TIMEOUT", raising=False)
+    flow.check_proxy = lambda: True
+    flow.get_csrf_token = lambda: "csrf"
+    flow.get_auth_url = lambda _csrf: "https://auth.openai.test/authorize"
+    flow.auth_oauth_init = lambda _url: "device"
+    flow.get_sentinel_token = lambda _device_id: "sentinel"
+    flow.signup = lambda _email, _sentinel: True
+    flow.register_password = lambda _email: True
+    flow.send_otp = lambda: (_ for _ in ()).throw(AssertionError("send_otp should be reached through kickoff only"))
+    flow.verify_otp = lambda _code: {}
+    flow.fetch_client_auth_session_dump = lambda _stage="": {}
+    flow.create_account = lambda: ""
+    flow.get_auth_session = lambda: (
+        setattr(flow.result, "session_token", "session-token"),
+        setattr(flow.result, "access_token", "access-token"),
+    )
+
+    delivery_modes = []
+    flow.kickoff_otp_delivery = lambda mode="": delivery_modes.append(mode) or True
+    wait_calls = []
+
+    def fake_wait(*_args, **kwargs):
+        wait_calls.append(kwargs)
+        if len(wait_calls) == 1:
+            raise TimeoutError("no code")
+        return "123456"
+
+    flow._wait_for_email_otp = fake_wait
+
+    result = flow.run_register(FakeMailProvider())
+
+    assert result.is_valid()
+    assert delivery_modes == ["register_password_success", "new_register_timeout_retry"]
+    assert wait_calls[0]["timeout"] == 60
+    assert wait_calls[1]["exclude_used"] is True
+
+
+def test_email_verification_delivery_uses_resend_before_passwordless():
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    calls = []
+    flow.resend_otp = lambda _referer="": calls.append("resend") or True
+    flow.send_passwordless_otp = lambda _referer="": calls.append("passwordless") or True
+    flow.send_otp = lambda: calls.append("send")
+
+    assert flow.kickoff_otp_delivery("existing_forced_resend") is True
+    assert calls == ["resend"]
+
+
+def test_password_registration_delivery_uses_email_otp_send_first():
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    calls = []
+    flow.send_otp = lambda: calls.append("send")
+    flow.resend_otp = lambda _referer="": calls.append("resend") or True
+    flow.send_passwordless_otp = lambda _referer="": calls.append("passwordless") or True
+
+    assert flow.kickoff_otp_delivery("register_password_success") is True
+    assert calls == ["send"]
+
+
+def test_passwordless_signup_is_not_marked_as_existing_account():
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow.authorize_continue = lambda **_kwargs: {
+        "continue_url": "https://auth.openai.com/email-verification",
+        "page": {
+            "type": "email_otp_verification",
+            "payload": {"email_verification_mode": "passwordless_signup"},
+        },
+    }
+
+    assert flow.signup("fresh@outlook.my", "sentinel") is False
+    assert flow._is_existing_account is False
+    assert flow._existing_email_verification_mode == "passwordless_signup"
+
+
 def test_existing_credentials_fallback_email_uses_shared_jwt_decoder():
     auth_flow = _load_auth_flow_module()
 

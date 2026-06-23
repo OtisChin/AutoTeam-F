@@ -88,7 +88,12 @@ PROVIDER_SETUP_FIELDS = {
         ("LUCKMAIL_API_KEY", "LuckMail API Key（可选，用于自动购买邮箱）", "", True),
         ("LUCKMAIL_PROJECT_CODE", "LuckMail 项目编码", "openai", True),
         ("LUCKMAIL_EMAIL_TYPE", "LuckMail 邮箱类型", "ms_graph", True),
-        ("LUCKMAIL_PREFERRED_DOMAIN", "LuckMail 优先域名（可选，如 outlook.my）", "", True),
+        (
+            "LUCKMAIL_PREFERRED_DOMAIN",
+            "LuckMail 优先域名（可选，如 outlook.cl / outlook.my / outlook.ph）",
+            "",
+            True,
+        ),
     ],
 }
 

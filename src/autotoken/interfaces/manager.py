@@ -3247,6 +3247,12 @@ def create_account_direct(
     """
     from autotoken.auth.invite import RegisterBlocked
 
+    def _create_registration_mailbox(current_prefix=None):
+        create_registration_email = getattr(mail_client, "create_registration_email", None)
+        if callable(create_registration_email):
+            return create_registration_email(prefix=current_prefix, domain=domain)
+        return mail_client.create_temp_email(prefix=current_prefix, domain=domain)
+
     def _progress(stage, message, **extra):
         if not callable(progress_callback):
             return
@@ -3265,7 +3271,7 @@ def create_account_direct(
     email = ""
     if registration_flow != "phone_cpa":
         _progress("register_email_creating", f"正在创建临时邮箱: domain=@{domain or '<default>'}")
-        account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
+        account_id, email = _create_registration_mailbox(resolved_prefix)
         _progress("register_email_created", f"已创建临时邮箱: {email}", email=email)
     chosen_password = password or random_password()
     password = chosen_password
@@ -3359,7 +3365,7 @@ def create_account_direct(
             def _create_phone_first_mailbox():
                 nonlocal account_id, email
                 _progress("register_email_creating", f"手机号注册成功，正在创建绑定邮箱: domain=@{domain or '<default>'}")
-                account_id, email = mail_client.create_temp_email(prefix=resolved_prefix, domain=domain)
+                account_id, email = _create_registration_mailbox(resolved_prefix)
                 _progress("register_email_created", f"已创建绑定邮箱: {email}", email=email)
                 return account_id, email
 
@@ -3542,7 +3548,7 @@ def create_account_direct(
                     level="warn",
                     duplicate_swaps=duplicate_swaps,
                 )
-                account_id, email = mail_client.create_temp_email(prefix=_with_random_suffix_prefix(email_prefix), domain=domain)
+                account_id, email = _create_registration_mailbox(_with_random_suffix_prefix(email_prefix))
                 password = chosen_password
                 logger.info("[直接注册] 已换新临时邮箱: %s", email)
                 _progress("register_email_created", f"已换新临时邮箱: {email}", email=email)

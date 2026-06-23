@@ -148,19 +148,19 @@ class ProtocolMailAdapter:
     def wait_for_otp(
         self,
         email: str,
-        timeout: int = 180,
+        timeout: int = 60,
         issued_after: float | None = None,
         exclude_codes: set[str] | list[str] | tuple[str, ...] | None = None,
         strict_issued_after: bool = False,
     ) -> str:
         target = str(email or self.email or "").strip()
-        deadline = time.time() + max(1, int(timeout or 180))
+        deadline = time.time() + max(1, int(timeout or 60))
         issued_after_ts = float(issued_after or 0)
         excluded = {str(x or "").strip() for x in (exclude_codes or []) if str(x or "").strip()}
         last_seen = ""
         last_no_code_signature = ""
         next_wait_log_at = 0.0
-        logger.info("[协议注册] 等待邮箱验证码: email=%s timeout=%ss", target, int(timeout or 180))
+        logger.info("[协议注册] 等待邮箱验证码: email=%s timeout=%ss", target, int(timeout or 60))
         while time.time() < deadline:
             try:
                 try:
@@ -253,7 +253,14 @@ def _attach_flow_stage_logs(flow):
         def signup_wrapped(*args, **kwargs):
             logger.info("[协议注册] 提交注册邮箱")
             result = signup(*args, **kwargs)
-            logger.info("[协议注册] 邮箱提交完成，账号类型: %s", "新账号" if result else "已有账号")
+            mode = str(getattr(flow, "_existing_email_verification_mode", "") or "").lower()
+            if result:
+                account_kind = "新账号"
+            elif mode == "passwordless_signup":
+                account_kind = "passwordless signup 注册分支"
+            else:
+                account_kind = "已有账号"
+            logger.info("[协议注册] 邮箱提交完成，账号类型: %s", account_kind)
             return result
 
         flow.signup = signup_wrapped
@@ -684,6 +691,7 @@ def oauth_from_auth_session_once(
     proxy: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    oauth_phone_sms_max_price: str | None = None,
     oauth_oasis_sms_cdks: str | None = None,
     progress_callback=None,
 ) -> dict:
@@ -705,6 +713,7 @@ def oauth_from_auth_session_once(
         flow,
         provider=oauth_phone_sms_provider or "phone_pool",
         country=oauth_phone_sms_country,
+        max_price=oauth_phone_sms_max_price,
         oasis_cdks=oauth_oasis_sms_cdks,
         email=email,
     )
@@ -797,6 +806,7 @@ def login_once(
     proxy: str | None = None,
     oauth_phone_sms_provider: str | None = None,
     oauth_phone_sms_country: str | None = None,
+    oauth_phone_sms_max_price: str | None = None,
     oauth_oasis_sms_cdks: str | None = None,
     progress_callback=None,
 ) -> dict:
@@ -813,6 +823,7 @@ def login_once(
         flow,
         provider=oauth_phone_sms_provider,
         country=oauth_phone_sms_country,
+        max_price=oauth_phone_sms_max_price,
         oasis_cdks=oauth_oasis_sms_cdks,
         email=email,
     )

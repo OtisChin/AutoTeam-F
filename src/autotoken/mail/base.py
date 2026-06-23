@@ -166,6 +166,10 @@ class MailProvider(ABC):
     def create_temp_email(self, prefix: str | None = None, domain: str | None = None) -> tuple[int | str, str]:
         """创建临时邮箱，返回 (account_id, email)。"""
 
+    def create_registration_email(self, prefix: str | None = None, domain: str | None = None) -> tuple[int | str, str]:
+        """创建注册专用邮箱。默认复用普通创建逻辑；provider 可覆写为强制新购。"""
+        return self.create_temp_email(prefix=prefix, domain=domain)
+
     @abstractmethod
     def list_accounts(self, size: int = 200) -> list[dict]:
         """列出已创建的临时邮箱。返回兼容字段的 dict 列表。"""

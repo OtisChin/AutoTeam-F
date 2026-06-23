@@ -19,6 +19,7 @@ from autotoken.api_routes.account_cpa_auths import (
 )
 from autotoken.api_routes.config_io import (
     OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES,
+    OutlookAccountsDeleteParams,
     OutlookAccountsImportParams,
     create_config_io_router,
 )
@@ -1193,6 +1194,82 @@ def test_post_import_outlook_accounts_creates_default_file_when_unconfigured(tmp
     assert result["imported"] == 1
     assert written_env["OUTLOOK_ACCOUNTS_FILE"] == "data/outlook_accounts.txt"
     assert (tmp_path / "data" / "outlook_accounts.txt").exists()
+
+
+def test_get_outlook_accounts_status_marks_registered_and_redacts_secrets(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "outlook_accounts.txt"
+    accounts_file.write_text(
+        "\n".join(
+            [
+                "registered@hotmail.com----secret-password",
+                "blocked@outlook.com----https://mailapi.icu/key?type=html&orderNo=secret-order",
+                "ready@outlook.com----mail-pass----client-id----refresh-token",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"OUTLOOK_ACCOUNTS_FILE": str(accounts_file)})
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [{"email": "registered@hotmail.com"}])
+    monkeypatch.setattr(
+        "autotoken.mail.outlook.OutlookMailProvider._registered_emails",
+        staticmethod(lambda: {"registered@hotmail.com", "blocked@outlook.com"}),
+    )
+
+    result = _config_io_routes()["get_outlook_accounts_status"]()
+
+    assert result["total"] == 3
+    assert result["available"] == 1
+    assert result["registered"] == 1
+    assert result["unavailable"] == 1
+    assert result["next_available_email"] == "ready@outlook.com"
+    statuses = {item["email"]: item["status"] for item in result["accounts"]}
+    assert statuses == {
+        "registered@hotmail.com": "registered",
+        "blocked@outlook.com": "unavailable",
+        "ready@outlook.com": "available",
+    }
+    serialized = json.dumps(result)
+    assert "secret-password" not in serialized
+    assert "secret-order" not in serialized
+    assert "refresh-token" not in serialized
+
+
+def test_post_delete_outlook_accounts_removes_selected_lines_and_redacts_secrets(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "outlook_accounts.txt"
+    accounts_file.write_text(
+        "\n".join(
+            [
+                "# keep comments",
+                "delete1@hotmail.com----secret-password",
+                "keep@outlook.com----keep-password",
+                "delete2@outlook.com----https://mailapi.icu/key?type=html&orderNo=secret-order",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"OUTLOOK_ACCOUNTS_FILE": str(accounts_file)})
+
+    result = _config_io_routes()["post_delete_outlook_accounts"](
+        OutlookAccountsDeleteParams(emails=["delete1@hotmail.com", "DELETE2@outlook.com", "missing@outlook.com"])
+    )
+
+    saved = accounts_file.read_text(encoding="utf-8")
+    assert result["requested"] == 3
+    assert result["deleted"] == 2
+    assert result["deleted_emails"] == ["delete1@hotmail.com", "delete2@outlook.com"]
+    assert result["missing_emails"] == ["missing@outlook.com"]
+    assert "# keep comments" in saved
+    assert "keep@outlook.com----keep-password" in saved
+    assert "delete1@hotmail.com" not in saved
+    assert "delete2@outlook.com" not in saved
+    serialized = json.dumps(result)
+    assert "secret-password" not in serialized
+    assert "secret-order" not in serialized
 
 
 def test_post_import_outlook_accounts_rejects_relative_path_outside_project(tmp_path, monkeypatch):

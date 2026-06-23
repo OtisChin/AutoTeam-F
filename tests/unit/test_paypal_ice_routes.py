@@ -508,6 +508,31 @@ def test_paypal_ice_oauth_config_filters_provider_specific_stale_values():
     }
 
 
+def test_paypal_ice_oauth_config_supports_bind_phone_mode():
+    payload = _clean_oauth_login_config(
+        PayPalIceOAuthLoginParams(
+            bind_email=False,
+            bind_phone=True,
+            mail_provider="luckmail",
+            luckmail_email_type="ms_imap",
+            luckmail_preferred_domain="outlook.com",
+            email_domain="example.com",
+            oauth_phone_sms_provider="smsbower",
+            oauth_phone_sms_country="187",
+            oauth_phone_sms_max_price="0.05",
+        )
+    )
+
+    assert payload == {
+        "protocol_only": True,
+        "bind_email": False,
+        "bind_phone": True,
+        "oauth_phone_sms_provider": "smsbower",
+        "oauth_phone_sms_country": "187",
+        "oauth_phone_sms_max_price": "0.05",
+    }
+
+
 def test_paypal_ice_success_starts_auto_oauth_login_once(monkeypatch):
     kv = {}
     started = []
@@ -625,6 +650,82 @@ def test_paypal_ice_success_starts_auto_oauth_login_once(monkeypatch):
     assert completed["oauth_login_result_email"] == "bound@example.com"
     assert completed["oauth_login_progress_stage"] == "phone_first_add_email_otp_wait"
     assert any(email == "bound@example.com" for email, _fields in account_updates)
+
+
+def test_paypal_ice_success_starts_auto_oauth_bind_phone(monkeypatch):
+    kv = {}
+    started = []
+    tasks = {}
+
+    monkeypatch.setattr(
+        "autotoken.settings.setup_wizard._read_env",
+        lambda: {"PAYPAL_ICE_BASE_URL": "https://plus.example.test", "PAYPAL_ICE_API_KEY": "ice-key"},
+    )
+    monkeypatch.setattr(
+        "autotoken.api_routes.paypal_ice.sqlite_store.get_json",
+        lambda namespace, key, default=None, **_kwargs: kv.get((namespace, key), default),
+    )
+    monkeypatch.setattr(
+        "autotoken.api_routes.paypal_ice.sqlite_store.set_json",
+        lambda namespace, key, value, **_kwargs: kv.__setitem__((namespace, key), value) or value,
+    )
+    monkeypatch.setattr(
+        "autotoken.api_routes.paypal_ice.sqlite_store.delete_key",
+        lambda namespace, key, **_kwargs: kv.pop((namespace, key), None),
+    )
+    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
+
+    def fake_request(method, url, **_kwargs):
+        if method == "POST":
+            return FakeResponse({"job_id": "job-phone-auto", "status": "queued", "client_ref": "user@example.com"})
+        return FakeResponse(
+            {
+                "job_id": "job-phone-auto",
+                "status": "success",
+                "result_code": "SUCCESS",
+                "client_ref": "user@example.com",
+            }
+        )
+
+    def start_oauth_login(payload):
+        started.append(payload)
+        tasks["oauth-phone-task"] = {"task_id": "oauth-phone-task", "status": "pending"}
+        return tasks["oauth-phone-task"]
+
+    monkeypatch.setattr("autotoken.api_routes.paypal_ice.requests.request", fake_request)
+    routes = _routes(start_oauth_login=start_oauth_login, get_task=lambda task_id: tasks.get(task_id))
+    routes["post_paypal_ice_job"](
+        PayPalIceJobParams(
+            input="token",
+            client_ref="user@example.com",
+            phone="08012345678",
+            sms_api="https://sms.example.test",
+            auto_oauth_login=True,
+            oauth_login_config=PayPalIceOAuthLoginParams(
+                bind_email=False,
+                bind_phone=True,
+                oauth_phone_sms_provider="smsbower",
+                oauth_phone_sms_country="187",
+                oauth_phone_sms_max_price="0.05",
+            ),
+        )
+    )
+
+    success = routes["get_paypal_ice_job"]("job-phone-auto")
+
+    assert success["oauth_login_task_id"] == "oauth-phone-task"
+    assert started == [
+        {
+            "email": "user@example.com",
+            "protocol_only": True,
+            "bind_email": False,
+            "bind_phone": True,
+            "oauth_phone_sms_provider": "smsbower",
+            "oauth_phone_sms_country": "187",
+            "oauth_phone_sms_max_price": "0.05",
+            "exclusive": False,
+        }
+    ]
 
 
 def test_paypal_ice_auto_oauth_adopts_same_account_running_task(monkeypatch):

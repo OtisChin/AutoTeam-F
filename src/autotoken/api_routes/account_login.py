@@ -26,6 +26,7 @@ class LoginAccountParams(BaseModel):
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
     protocol_only: bool = Field(True, validation_alias=AliasChoices("protocol_only", "protocolOnly"))
     bind_email: bool = Field(True, validation_alias=AliasChoices("bind_email", "bindEmail"))
+    bind_phone: bool = Field(False, validation_alias=AliasChoices("bind_phone", "bindPhone"))
     mail_provider: str = Field("", validation_alias=AliasChoices("mail_provider", "mailProvider"))
     luckmail_email_type: str = Field("", validation_alias=AliasChoices("luckmail_email_type", "luckmailEmailType"))
     luckmail_preferred_domain: str = Field(
@@ -40,6 +41,14 @@ class LoginAccountParams(BaseModel):
     oauth_phone_sms_country: str = Field(
         "",
         validation_alias=AliasChoices("oauth_phone_sms_country", "oauthPhoneSmsCountry", "phone_country", "phoneCountry"),
+    )
+    oauth_phone_sms_max_price: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_max_price", "oauthPhoneSmsMaxPrice"),
+    )
+    oauth_oasis_sms_cdks: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
     )
     exclusive: bool = Field(True, validation_alias=AliasChoices("exclusive", "task_exclusive", "taskExclusive"))
 
@@ -54,6 +63,7 @@ class AccountEmailBatchParams(BaseModel):
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
     protocol_only: bool = Field(True, validation_alias=AliasChoices("protocol_only", "protocolOnly"))
     bind_email: bool = Field(True, validation_alias=AliasChoices("bind_email", "bindEmail"))
+    bind_phone: bool = Field(False, validation_alias=AliasChoices("bind_phone", "bindPhone"))
     mail_provider: str = Field("", validation_alias=AliasChoices("mail_provider", "mailProvider"))
     luckmail_email_type: str = Field("", validation_alias=AliasChoices("luckmail_email_type", "luckmailEmailType"))
     luckmail_preferred_domain: str = Field(
@@ -69,6 +79,14 @@ class AccountEmailBatchParams(BaseModel):
         "",
         validation_alias=AliasChoices("oauth_phone_sms_country", "oauthPhoneSmsCountry", "phone_country", "phoneCountry"),
     )
+    oauth_phone_sms_max_price: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_phone_sms_max_price", "oauthPhoneSmsMaxPrice"),
+    )
+    oauth_oasis_sms_cdks: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
+    )
 
 
 def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) -> dict[str, Any]:
@@ -77,6 +95,8 @@ def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) ->
         "protocol_only": bool(params.protocol_only),
         "bind_email": bool(params.bind_email),
     }
+    if bool(getattr(params, "bind_phone", False)):
+        kwargs["bind_phone"] = True
     text_fields = {
         "mail_provider": params.mail_provider,
         "luckmail_email_type": params.luckmail_email_type,
@@ -84,6 +104,8 @@ def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) ->
         "email_domain": params.email_domain,
         "oauth_phone_sms_provider": params.oauth_phone_sms_provider,
         "oauth_phone_sms_country": params.oauth_phone_sms_country,
+        "oauth_phone_sms_max_price": params.oauth_phone_sms_max_price,
+        "oauth_oasis_sms_cdks": params.oauth_oasis_sms_cdks,
         "proxy_bypass": params.proxy_bypass,
     }
     for key, value in text_fields.items():

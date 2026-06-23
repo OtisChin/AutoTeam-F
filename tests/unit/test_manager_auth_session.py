@@ -329,6 +329,49 @@ def test_phone_first_token_only_saves_bundle_without_refreshing_web_auth(monkeyp
     ]
 
 
+def test_standard_registration_uses_registration_specific_mailbox_creation(monkeypatch):
+    calls = []
+
+    class FakeMailClient:
+        provider_name = "luckmail"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            calls.append(("registration", prefix, domain))
+            return "tok_fresh", "fresh@outlook.com"
+
+        def create_temp_email(self, *args, **kwargs):
+            raise AssertionError("注册账号不应复用已有邮箱池")
+
+    monkeypatch.setattr(
+        manager,
+        "_register_direct_once",
+        lambda *_args, **_kwargs: (
+            True,
+            {"status": 200, "data": {"accessToken": "access", "sessionToken": "session"}},
+        ),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_save_auth_from_session_page",
+        lambda email, *_args, **_kwargs: {"email": email, "auth_file": "data/auth_session/fresh.json"},
+    )
+
+    result = manager.create_account_direct(
+        FakeMailClient(),
+        email_prefix="new",
+        password="pw",
+        domain="outlook.com",
+        check_team_membership=False,
+        post_register_oauth=False,
+    )
+
+    assert result["email"] == "fresh@outlook.com"
+    assert len(calls) == 1
+    assert calls[0][0] == "registration"
+    assert str(calls[0][1]).startswith("new")
+    assert calls[0][2] == "outlook.com"
+
+
 def test_session_data_keeps_chatgpt_access_separate_from_codex_bundle(monkeypatch):
     from autotoken.auth import protocol_register as protocol_register_module
 
