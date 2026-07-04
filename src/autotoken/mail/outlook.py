@@ -277,6 +277,12 @@ class OutlookMailProvider(MailProvider):
             logger.debug("[outlook] 读取本地账号池失败，跳过已注册过滤", exc_info=True)
             emails = set()
         try:
+            from autotoken.storage.outlook_pool import list_registered_emails
+
+            emails.update(list_registered_emails())
+        except Exception:
+            logger.debug("[outlook] 读取 Outlook 邮箱池持久状态失败，跳过过滤", exc_info=True)
+        try:
             from autotoken.storage.register_failures import list_failures
 
             for failure in list_failures(500):

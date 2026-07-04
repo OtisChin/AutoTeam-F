@@ -2110,6 +2110,62 @@ def _generate_checkout_link(access_token: str, payload: dict[str, Any], *, proxy
     return _generate_checkout_link_via_http(access_token, payload, proxy_url=proxy_url)
 
 
+_bind_checkout_browser_sessions: list[Any] = []
+
+
+def _open_bind_checkout_with_auth_session(email: str, checkout_url: str) -> dict[str, Any]:
+    from autotoken.integrations.chatgpt_api import ChatGPTTeamAPI
+    from autotoken.storage.auth_session_store import load_auth_session
+
+    normalized_email = _normalized_email(email)
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="请选择号池账号")
+    session_data = load_auth_session(normalized_email)
+    if not session_data:
+        raise HTTPException(status_code=400, detail=f"账号缺少可用 auth_session: {normalized_email}")
+    session_token = str(session_data.get("sessionToken") or session_data.get("session_token") or "").strip()
+    cookie_header = str(session_data.get("cookie_header") or "").strip()
+    if not session_token and not cookie_header:
+        raise HTTPException(status_code=400, detail=f"账号 auth_session 缺少 sessionToken/cookie_header: {normalized_email}")
+
+    user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else {}
+    account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
+    account_id = str(
+        session_data.get("account_id")
+        or session_data.get("accountId")
+        or user_data.get("account_id")
+        or user_data.get("accountId")
+        or account_data.get("id")
+        or account_data.get("account_id")
+        or ""
+    ).strip()
+    device_id = str(session_data.get("device_id") or session_data.get("oai_device_id") or "").strip()
+
+    api = ChatGPTTeamAPI()
+    api.oai_device_id = device_id or getattr(api, "oai_device_id", "")
+    api._launch_browser(background=False, headless=False, randomize_fingerprint=False)
+    chatgpt_session_service.inject_chatgpt_browser_cookies(
+        api,
+        session_token=session_token,
+        cookie_header=cookie_header,
+        account_id=account_id,
+        device_id=device_id,
+    )
+    api.page.goto(checkout_url, wait_until="domcontentloaded", timeout=60000)
+    try:
+        api._wait_for_cloudflare()
+    except Exception:
+        logger.info("[bind/link/open] wait for cloudflare skipped/failed", exc_info=True)
+    _bind_checkout_browser_sessions.append(api)
+    if len(_bind_checkout_browser_sessions) > 5:
+        old_api = _bind_checkout_browser_sessions.pop(0)
+        try:
+            old_api.stop()
+        except Exception:
+            pass
+    return {"opened": True, "current_url": str(getattr(api.page, "url", "") or checkout_url)}
+
+
 def _generate_checkout_link_for_paypal_task(
     access_token: str, payload: dict[str, Any], *, proxy_url: str = ""
 ) -> dict[str, Any]:
@@ -4495,6 +4551,8 @@ app.include_router(
     create_bind_link_router(
         normalize_access_token=_normalize_access_token,
         generate_checkout_link=_generate_checkout_link,
+        get_account_access_token=_extract_account_access_token,
+        open_checkout_url=_open_bind_checkout_with_auth_session,
         logger=logger,
     )
 )

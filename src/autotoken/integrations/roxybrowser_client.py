@@ -21,6 +21,7 @@ _RESERVED_PROFILE_LOCK = threading.RLock()
 _RESERVED_PROFILE_IDS: set[str] = set()
 DEFAULT_ROXYBROWSER_OS = "Windows"
 DEFAULT_ROXYBROWSER_OS_VERSION = "10"
+PROJECT_WINDOW_NAME_PREFIX = "autotoken-"
 
 
 def _normalize_api_host(api_host: str | None) -> str:
@@ -178,6 +179,11 @@ def _row_open_status(row: dict[str, Any]) -> bool:
         if text in {"close", "closed", "stop", "stopped"}:
             return False
     return False
+
+
+def _is_project_managed_profile(profile: dict[str, Any]) -> bool:
+    name = str(profile.get("window_name") or profile.get("name") or "").strip().lower()
+    return name.startswith(PROJECT_WINDOW_NAME_PREFIX)
 
 
 def _normalize_proxy_info(proxy_url: str | None) -> dict[str, Any] | None:
@@ -420,6 +426,7 @@ class RoxyBrowserClient:
                 {
                     "id": dir_id,
                     "name": label,
+                    "window_name": name,
                     "workspace_id": resolved_workspace_id,
                     "open_status": _row_open_status(row),
                 }
@@ -597,6 +604,42 @@ class RoxyBrowserClient:
             json_body={"workspaceId": _coerce_workspace_id(workspace_id), "dirIds": dir_ids},
         )
 
+    def cleanup_project_profiles_for_quota(self, workspace_id: str | int) -> list[str]:
+        """Delete every unreserved profile created by this project to free window slots."""
+        resolved_workspace_id = str(workspace_id or "").strip()
+        if not resolved_workspace_id:
+            return []
+        reserved_for_cleanup: list[str] = []
+        with _RESERVED_PROFILE_LOCK:
+            for profile in self.list_profiles(resolved_workspace_id):
+                dir_id = str(profile.get("id") or "").strip()
+                if not dir_id or dir_id in _RESERVED_PROFILE_IDS:
+                    continue
+                if not _is_project_managed_profile(profile):
+                    continue
+                _RESERVED_PROFILE_IDS.add(dir_id)
+                reserved_for_cleanup.append(dir_id)
+        if not reserved_for_cleanup:
+            return []
+        deleted_dir_ids: list[str] = []
+        try:
+            for dir_id in reserved_for_cleanup:
+                try:
+                    self.browser_close(dir_id, release_reservation=False)
+                except Exception:
+                    pass
+            self.browser_delete(resolved_workspace_id, reserved_for_cleanup)
+            deleted_dir_ids = list(reserved_for_cleanup)
+            logger.info(
+                "RoxyBrowser deleted project-created profiles after create quota failure: workspace_id=%s dir_ids=%s",
+                resolved_workspace_id,
+                ",".join(deleted_dir_ids),
+            )
+            return deleted_dir_ids
+        finally:
+            for dir_id in reserved_for_cleanup:
+                self.release_profile_reservation(dir_id)
+
     def browser_connection_info(self, dir_ids: list[str] | None = None) -> dict[str, Any]:
         params = {}
         if dir_ids:
@@ -678,9 +721,29 @@ class RoxyBrowserClient:
                         except Exception as exc:
                             if not _roxybrowser_window_quota_insufficient(exc):
                                 raise
-                            raise RuntimeError(
-                                "RoxyBrowser 没有可复用的空闲窗口，且新建窗口额度不足；请关闭空闲窗口、提高窗口额度，或改用指定窗口"
-                            ) from exc
+                            cleaned_dir_ids = self.cleanup_project_profiles_for_quota(resolved_workspace_id)
+                            if not cleaned_dir_ids:
+                                raise RuntimeError(
+                                    "RoxyBrowser 没有可清理的本项目窗口，且新建窗口额度不足；请关闭空闲窗口、提高窗口额度，或改用指定窗口"
+                                ) from exc
+                            try:
+                                created = self.browser_create(
+                                    workspace_id=resolved_workspace_id,
+                                    window_name=launch_name,
+                                    proxy_url=proxy_url,
+                                )
+                                resolved_dir_id = _extract_dir_id(created)
+                                if not resolved_dir_id:
+                                    raise RuntimeError("RoxyBrowser browser_create 未返回 dirId")
+                                created_profile = True
+                                reserved_profile_id = resolved_dir_id
+                                _RESERVED_PROFILE_IDS.add(resolved_dir_id)
+                            except Exception as retry_exc:
+                                if _roxybrowser_window_quota_insufficient(retry_exc):
+                                    raise RuntimeError(
+                                        f"RoxyBrowser 已自动清理 {len(cleaned_dir_ids)} 个本项目窗口，但新建窗口额度仍不足；请关闭更多空闲窗口或提高窗口额度"
+                                    ) from retry_exc
+                                raise
 
             open_result = self.browser_open(resolved_dir_id, workspace_id=resolved_workspace_id, args=args or [])
             connection = _extract_connection_mapping(open_result) or {}

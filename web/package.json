@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:bind-link": "node scripts/test-bind-link-payload.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

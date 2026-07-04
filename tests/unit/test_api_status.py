@@ -1236,6 +1236,36 @@ def test_get_outlook_accounts_status_marks_registered_and_redacts_secrets(tmp_pa
     assert "refresh-token" not in serialized
 
 
+def test_get_outlook_accounts_status_keeps_persisted_outlook_registration_after_restart(tmp_path, monkeypatch):
+    from autotoken.storage import outlook_pool
+
+    accounts_file = tmp_path / "outlook_accounts.txt"
+    accounts_file.write_text(
+        "\n".join(
+            [
+                "registered@hotmail.com----secret-password",
+                "ready@outlook.com----mail-pass",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(outlook_pool, "STATE_FILE", tmp_path / "outlook_pool.json")
+    outlook_pool.mark_registered_email("registered@hotmail.com", source="register_success")
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"OUTLOOK_ACCOUNTS_FILE": str(accounts_file)})
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [])
+
+    result = _config_io_routes()["get_outlook_accounts_status"]()
+
+    assert result["registered"] == 1
+    assert result["available"] == 1
+    assert result["next_available_email"] == "ready@outlook.com"
+    statuses = {item["email"]: item["status"] for item in result["accounts"]}
+    assert statuses["registered@hotmail.com"] == "registered"
+    assert statuses["ready@outlook.com"] == "available"
+
+
 def test_post_delete_outlook_accounts_removes_selected_lines_and_redacts_secrets(tmp_path, monkeypatch):
     accounts_file = tmp_path / "outlook_accounts.txt"
     accounts_file.write_text(

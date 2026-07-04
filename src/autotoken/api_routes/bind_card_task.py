@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class BindCardTaskParams(BaseModel):
@@ -15,8 +15,25 @@ class BindCardTaskParams(BaseModel):
     checkout_url: str
     proxy_url: str | None = None
     proxy_label: str = ""
+    proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
+    proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
+    proxy_api_country: str = Field("US", validation_alias=AliasChoices("proxy_api_country", "proxyApiCountry"))
     proxy_bypass: str | None = None
-    manual_confirm: bool = True
+    roxybrowser_workspace_id: str = Field(
+        "",
+        validation_alias=AliasChoices("roxybrowser_workspace_id", "roxybrowserWorkspaceId"),
+    )
+    roxybrowser_profile_id: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "roxybrowser_profile_id", "roxybrowserProfileId", "roxybrowser_dir_id", "roxybrowserDirId"
+        ),
+    )
+    roxybrowser_auto_create_profile: bool = Field(
+        True,
+        validation_alias=AliasChoices("roxybrowser_auto_create_profile", "roxybrowserAutoCreateProfile"),
+    )
+    manual_confirm: bool = False
     timeout_seconds: int = 900
 
 
@@ -38,9 +55,12 @@ def create_bind_card_task_router(
     @router.post("/api/tasks/bind-card", status_code=202)
     def post_bind_card_task(params: BindCardTaskParams):
         from autotoken.core import cancel_signal
+        from autotoken.core.redaction import safe_proxy_summary
         from autotoken.payments.bind_audit import record_bind_audit
         from autotoken.payments.bind_executor import run_bind_task
         from autotoken.payments.card_pool import finalize_card_binding, find_item, reserve_card_item
+        from autotoken.services import proxy_runtime
+        from autotoken.settings.config import normalize_proxy_url
         from autotoken.storage.accounts import (
             ensure_session_only_account,
             find_account,
@@ -82,6 +102,52 @@ def create_bind_card_task_router(
             result = None
 
             try:
+                effective_proxy_url = str(params.proxy_url or "").strip()
+                proxy_api_provider = (
+                    proxy_runtime.normalize_proxy_api_provider(params.proxy_api_provider)
+                    if str(params.proxy_api_provider or "").strip()
+                    else ""
+                )
+                proxy_api_url = str(params.proxy_api_url or "").strip()
+                proxy_api_country = "".join(
+                    ch for ch in str(params.proxy_api_country or "US").strip().upper() if ch.isalpha()
+                )[:2] or "US"
+                if proxy_api_url and not proxy_api_provider:
+                    proxy_api_provider = proxy_runtime.infer_proxy_api_provider_from_url(proxy_api_url)
+                if proxy_api_provider and not proxy_api_url:
+                    proxy_api_url = proxy_runtime.default_paypal_proxy_api_url(
+                        proxy_api_provider,
+                        country=proxy_api_country,
+                    )
+                if proxy_api_url:
+                    proxy_api_url = proxy_runtime.proxy_api_url_with_region(proxy_api_url, proxy_api_country)
+                    fetched_proxy = proxy_runtime.fetch_proxy_from_api_url(
+                        proxy_api_url,
+                        default_auth_scheme="socks5h",
+                        provider=proxy_api_provider or "cliproxy",
+                    )
+                    if fetched_proxy:
+                        effective_proxy_url = fetched_proxy
+                    elif effective_proxy_url:
+                        effective_proxy_url = normalize_proxy_url(effective_proxy_url, default_auth_scheme="socks5h")
+                    else:
+                        raise RuntimeError("Cliproxy API 未返回可用代理；请检查 Cliproxy API 地址、白名单或套餐配置")
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "bind_proxy_api_selected",
+                            "email": email,
+                            "proxy_label": params.proxy_label,
+                            "proxy_api_provider": proxy_api_provider or "",
+                            "proxy_api_country": proxy_api_country,
+                            "proxy_api_url_present": True,
+                            "message": (
+                                f"已通过 {proxy_api_provider or 'cliproxy'} API 获取绑卡代理"
+                                f"({proxy_api_country}): {safe_proxy_summary(effective_proxy_url)}"
+                            ),
+                        },
+                    )
+
                 reserved_item = reserve_card_item(
                     params.card_item_id,
                     account_email=email,
@@ -104,10 +170,15 @@ def create_bind_card_task_router(
                 )
 
                 result = run_bind_task(
+                    email=email,
                     checkout_url=checkout_url,
                     card_item=reserved_item,
-                    proxy_url=params.proxy_url,
+                    proxy_url=effective_proxy_url,
                     proxy_bypass=params.proxy_bypass,
+                    use_roxybrowser=True,
+                    roxybrowser_workspace_id=params.roxybrowser_workspace_id,
+                    roxybrowser_profile_id=params.roxybrowser_profile_id,
+                    roxybrowser_auto_create_profile=params.roxybrowser_auto_create_profile,
                     manual_confirm=params.manual_confirm,
                     timeout_seconds=max(60, int(params.timeout_seconds or 900)),
                     is_cancelled=cancel_signal.is_cancelled,
@@ -130,6 +201,8 @@ def create_bind_card_task_router(
             result["card_item_id"] = params.card_item_id
             result["checkout_url"] = checkout_url
             result["proxy_label"] = params.proxy_label
+            result["proxy_api_provider"] = params.proxy_api_provider or ""
+            result["proxy_api_country"] = params.proxy_api_country or ""
             result["manual_confirm"] = params.manual_confirm
 
             if cancel_signal.is_cancelled() and result.get("status") != "success":
@@ -175,6 +248,9 @@ def create_bind_card_task_router(
                     "checkout_url": checkout_url,
                     "proxy_label": params.proxy_label,
                     "proxy_url": params.proxy_url or "",
+                    "proxy_api_provider": params.proxy_api_provider or "",
+                    "proxy_api_country": params.proxy_api_country or "",
+                    "proxy_api_url_present": bool(str(params.proxy_api_url or "").strip()),
                     "manual_confirm": params.manual_confirm,
                     "status": result.get("status") or "failed",
                     "task_status": task_status,

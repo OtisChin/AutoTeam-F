@@ -205,12 +205,14 @@ def _split_outlook_account_lines(content: str) -> list[str]:
 
 
 def _load_outlook_pool_status(target: Path) -> dict[str, Any]:
-    from autotoken.mail.outlook import OutlookMailProvider
     from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.outlook import OutlookMailProvider
     from autotoken.storage.accounts import load_accounts
+    from autotoken.storage.outlook_pool import list_registered_emails
 
     content = read_text(target) if target.exists() else ""
     registered_emails = {normalize_email_addr(account.get("email")) for account in load_accounts() if account.get("email")}
+    registered_emails.update(list_registered_emails())
     skipped_emails = OutlookMailProvider._registered_emails()
 
     entries: list[dict[str, Any]] = []

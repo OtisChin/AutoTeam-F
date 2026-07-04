@@ -246,7 +246,13 @@ def test_post_bind_card_task_starts_background_task(monkeypatch):
         "checkout_url": "https://chatgpt.com/checkout/demo",
         "proxy_url": "socks5://host:1080",
         "proxy_label": "res-us-01",
+        "proxy_api_provider": "",
+        "proxy_api_url": "",
+        "proxy_api_country": "US",
         "proxy_bypass": None,
+        "roxybrowser_workspace_id": "",
+        "roxybrowser_profile_id": "",
+        "roxybrowser_auto_create_profile": True,
         "manual_confirm": True,
         "timeout_seconds": 900,
     }
@@ -2641,7 +2647,7 @@ def test_paypal_cliproxy_provider_uses_backend_default_api(monkeypatch):
 
     assert result["status"] == "success"
     assert captured["api_calls"] == [
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json", 30)
+        ("https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json", 30)
     ]
     assert captured["run_kwargs"][0]["proxy_url"] == "socks5h://5.5.5.5:9090"
 
@@ -2853,8 +2859,8 @@ def test_paypal_protocol_cliproxy_provider_defaults_to_jp_then_us_provider(monke
 
     assert result["status"] == "success"
     assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json", 30),
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json", 30),
     ]
     assert captured["extract_kwargs"]["proxy_url"] == "socks5h://103.49.62.181:19004"
     assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://107.150.109.49:7104"
@@ -2958,8 +2964,8 @@ def test_paypal_protocol_payment_country_override_updates_provider_region(monkey
 
     assert result["status"] == "success"
     assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json", 30),
-        ("https://api.cliproxy.io/white/api?region=AU&num=1&time=10&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=AU&num=1&time=30&format=n&type=json", 30),
     ]
     assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://203.0.113.7:7104"
     assert captured["extract_kwargs"]["payment_method_country"] == "AU"
@@ -3185,8 +3191,8 @@ def test_paypal_protocol_ba_retry_reuses_same_sticky_proxies(monkeypatch):
 
     assert result["status"] == "success"
     assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json", 30),
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json", 30),
     ]
     assert len(captured["api_calls"]) == 2
     assert captured["extract_calls"] == [
@@ -6511,7 +6517,7 @@ def test_post_account_login_keeps_account_when_oauth_requires_phone(monkeypatch)
     api.post_account_login(api.LoginAccountParams(email="phone@example.com"))
 
     assert captured["task_group"] == api.TASK_GROUP_OAUTH
-    assert captured["exclusive"] is None
+    assert captured["exclusive"] is True
     assert captured["pass_task_id"] is True
     assert captured["error"].task_result["failure_stage"] == "oauth_phone_required"
     assert captured["error"].task_result["removed_pool_emails"] == []

@@ -17,7 +17,7 @@
         <p class="text-sm text-gray-400" :class="!standalone ? 'mb-4' : ''">
           {{ standalone
             ? '走印尼区 GoPay 支付链路，自动处理 OTP、短信验证码和 PIN 提交。'
-            : '支持生成官方优惠链接，以及 ChatGPT、Kiro 绑卡流程。' }}
+            : '支持生成官方支付链接，以及 ChatGPT、Kiro 绑卡流程。' }}
         </p>
         <div v-if="!standalone" class="flex flex-wrap gap-2">
           <button
@@ -65,7 +65,7 @@
         <div>
           <h3 class="text-lg font-semibold text-white">生成支付链接</h3>
           <p class="text-sm text-gray-400 mt-1">
-            选择套餐类型和优惠活动，系统将生成官方绑卡链接。
+            选择套餐类型和国家/货币，系统将生成官方绑卡链接。
           </p>
         </div>
       </div>
@@ -78,47 +78,13 @@
         <div class="min-w-0 space-y-3">
           <div>
             <label class="block text-sm text-gray-400 mb-1">套餐类型</label>
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                @click="bindForm.planType = 'plus'"
-                :disabled="generating"
-                class="px-4 py-2 rounded-lg text-sm border transition"
-                :class="bindForm.planType === 'plus'
-                  ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-                  : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'">
-                Plus
-              </button>
-              <button
-                @click="bindForm.planType = 'team'"
-                :disabled="generating"
-                class="px-4 py-2 rounded-lg text-sm border transition"
-                :class="bindForm.planType === 'team'
-                  ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-                  : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'">
-                Team
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">{{ bindForm.planType === 'team' ? '优惠码' : '优惠活动' }}</label>
-            <template v-if="bindForm.planType === 'team'">
-              <input
-                v-model.trim="bindForm.teamPromoCode"
-                :disabled="generating"
-                type="text"
-                placeholder="例如 STRIPEPERKSGPT4BIZ"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-              />
-            </template>
             <select
-              v-else
-              v-model="bindForm.promoId"
+              v-model="bindForm.planType"
               :disabled="generating"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             >
-              <option v-for="promo in filteredPromoOptions" :key="promo.id" :value="promo.id">
-                {{ promo.name }}
+              <option v-for="plan in bindPlanOptions" :key="plan.value" :value="plan.value">
+                {{ plan.label }}
               </option>
             </select>
           </div>
@@ -159,16 +125,9 @@
               :disabled="generating"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             >
-              <option value="US">美国 (US)</option>
-              <option value="GB">英国 (GB)</option>
-              <option value="DE">德国 (DE)</option>
-              <option value="FR">法国 (FR)</option>
-              <option value="CA">加拿大 (CA)</option>
-              <option value="AU">澳大利亚 (AU)</option>
-              <option value="JP">日本 (JP)</option>
-              <option value="SG">新加坡 (SG)</option>
-              <option value="ID">印度尼西亚 (ID)</option>
-              <option value="HK">香港 (HK)</option>
+              <option v-for="item in bindCountryOptions" :key="item.country" :value="item.country">
+                {{ item.label }}
+              </option>
             </select>
           </div>
 
@@ -208,41 +167,38 @@
                   <option value="year">year</option>
                 </select>
               </div>
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">取消回跳地址</label>
-                <input
-                  v-model.trim="bindForm.teamCancelUrl"
-                  :disabled="generating"
-                  type="text"
-                  placeholder="https://chatgpt.com/?promoCode=..."
-                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
             </div>
           </template>
 
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">链接类型</label>
-            <select
-              v-model="bindForm.checkoutMode"
-              :disabled="generating"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-            >
-              <option v-if="bindForm.planType !== 'team'" value="custom">短链（chatgpt.com/checkout）</option>
-              <option value="hosted">长链（pay.openai.com/c/pay）</option>
-            </select>
-          </div>
+            <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
+              <div>套餐：<span class="text-gray-200">{{ selectedPlanName }}</span></div>
+              <div>国家：<span class="text-gray-200">{{ bindForm.country }}</span> / 货币：<span class="text-gray-200">{{ bindForm.currency }}</span></div>
+              <div>链接类型：<span class="text-gray-200">Hosted 长链（pay.openai.com/c/pay）</span></div>
+              <template v-if="bindForm.planType === 'team'">
+                <div>工作区：<span class="text-gray-200">{{ bindForm.teamWorkspaceName || '-' }}</span></div>
+                <div>席位 / 周期：<span class="text-gray-200">{{ bindForm.teamSeatQuantity || 2 }} / {{ bindForm.teamPriceInterval }}</span></div>
+              </template>
+            </div>
 
-          <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
-            <div>套餐：<span class="text-gray-200">{{ bindForm.planType === 'plus' ? 'ChatGPT Plus' : 'ChatGPT Team' }}</span></div>
-            <div>优惠：<span class="text-gray-200">{{ selectedPromoName }}</span></div>
-            <div>国家：<span class="text-gray-200">{{ bindForm.country }}</span> / 货币：<span class="text-gray-200">{{ bindForm.currency }}</span></div>
-            <div>链接类型：<span class="text-gray-200">{{ bindForm.checkoutMode === 'custom' ? '短链（chatgpt.com/checkout）' : '长链（pay.openai.com/c/pay）' }}</span></div>
-            <template v-if="bindForm.planType === 'team'">
-              <div>工作区：<span class="text-gray-200">{{ bindForm.teamWorkspaceName || '-' }}</span></div>
-              <div>席位 / 周期：<span class="text-gray-200">{{ bindForm.teamSeatQuantity || 2 }} / {{ bindForm.teamPriceInterval }}</span></div>
-            </template>
-          </div>
+            <div class="rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-4 space-y-3">
+              <div class="text-xs text-gray-500">
+                可先生成链接，也可直接使用所选号池账号的 auth_session 打开支付页。
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  @click="generateLink"
+                  :disabled="generating || !bindForm.accessToken"
+                  class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg transition disabled:opacity-50">
+                  {{ generating ? '生成中...' : '生成绑卡链接' }}
+                </button>
+                <button
+                  @click="generateAndOpenWithAuthSession"
+                  :disabled="generating || !selectedAccountEmail"
+                  class="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50">
+                  {{ generating ? '打开中...' : '生成并打开' }}
+                </button>
+              </div>
+            </div>
 
         </div>
 
@@ -253,12 +209,6 @@
                 <h3 class="text-white font-semibold">Access Token</h3>
                 <div class="text-xs text-gray-500 mt-0.5">输入 ChatGPT access_token</div>
               </div>
-              <button
-                @click="generateLink"
-                :disabled="generating || !bindForm.accessToken"
-                class="shrink-0 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg transition disabled:opacity-50">
-                {{ generating ? '生成中...' : '生成绑卡链接' }}
-              </button>
             </div>
             <textarea
               v-model.trim="bindForm.accessToken"
@@ -271,7 +221,7 @@
           <div class="border border-gray-800 rounded-xl bg-gray-950/60 p-4 h-[170px] flex flex-col">
             <div class="mb-3">
               <h3 class="text-white font-semibold">支付链接</h3>
-              <div class="text-xs text-gray-500 mt-0.5">生成后可复制或直接打开</div>
+                <div class="text-xs text-gray-500 mt-0.5">生成后可复制或直接打开</div>
             </div>
             <div class="link-panel flex-1 min-h-0 rounded-lg border border-gray-800 bg-gray-900 p-3 overflow-y-auto" style="scrollbar-width: none; -ms-overflow-style: none;">
               <div v-if="!currentLink" class="text-sm text-gray-500">
@@ -377,47 +327,13 @@
           <div v-if="bindTaskForm.checkoutMode === 'auto'" class="rounded-lg border border-gray-800 bg-gray-800/30 p-3 space-y-4">
             <div>
               <label class="block text-sm text-gray-400 mb-1">套餐类型</label>
-              <div class="grid grid-cols-2 gap-2">
-                <button
-                  @click="bindForm.planType = 'plus'"
-                  :disabled="bindSubmitting || bindTaskRunning"
-                  class="px-4 py-2 rounded-lg text-sm border transition"
-                  :class="bindForm.planType === 'plus'
-                    ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-                    : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'">
-                  Plus
-                </button>
-                <button
-                  @click="bindForm.planType = 'team'"
-                  :disabled="bindSubmitting || bindTaskRunning"
-                  class="px-4 py-2 rounded-lg text-sm border transition"
-                  :class="bindForm.planType === 'team'
-                    ? 'bg-blue-600/20 text-blue-400 border-blue-500/40'
-                    : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'">
-                  Team
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-sm text-gray-400 mb-1">{{ bindForm.planType === 'team' ? '优惠码' : '优惠活动' }}</label>
-              <template v-if="bindForm.planType === 'team'">
-                <input
-                  v-model.trim="bindForm.teamPromoCode"
-                  :disabled="bindSubmitting || bindTaskRunning"
-                  type="text"
-                  placeholder="例如 STRIPEPERKSGPT4BIZ"
-                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-              </template>
               <select
-                v-else
-                v-model="bindForm.promoId"
+                v-model="bindForm.planType"
                 :disabled="bindSubmitting || bindTaskRunning"
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
               >
-                <option v-for="promo in filteredPromoOptions" :key="promo.id" :value="promo.id">
-                  {{ promo.name }}
+                <option v-for="plan in bindPlanOptions" :key="plan.value" :value="plan.value">
+                  {{ plan.label }}
                 </option>
               </select>
             </div>
@@ -429,16 +345,9 @@
                 :disabled="bindSubmitting || bindTaskRunning"
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
               >
-                <option value="US">美国 (US)</option>
-                <option value="GB">英国 (GB)</option>
-                <option value="DE">德国 (DE)</option>
-                <option value="FR">法国 (FR)</option>
-                <option value="CA">加拿大 (CA)</option>
-                <option value="AU">澳大利亚 (AU)</option>
-                <option value="JP">日本 (JP)</option>
-                <option value="SG">新加坡 (SG)</option>
-                <option value="ID">印度尼西亚 (ID)</option>
-                <option value="HK">香港 (HK)</option>
+                <option v-for="item in bindCountryOptions" :key="item.country" :value="item.country">
+                  {{ item.label }}
+                </option>
               </select>
             </div>
 
@@ -478,30 +387,9 @@
                     <option value="year">year</option>
                   </select>
                 </div>
-                <div>
-                  <label class="block text-sm text-gray-400 mb-1">取消回跳地址</label>
-                  <input
-                    v-model.trim="bindForm.teamCancelUrl"
-                    :disabled="bindSubmitting || bindTaskRunning"
-                    type="text"
-                    placeholder="https://chatgpt.com/?promoCode=..."
-                    class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-                  />
-                </div>
               </div>
             </template>
 
-            <div>
-              <label class="block text-sm text-gray-400 mb-1">链接类型</label>
-              <select
-                v-model="bindForm.checkoutMode"
-                :disabled="bindSubmitting || bindTaskRunning"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-              >
-                <option v-if="bindForm.planType !== 'team'" value="custom">短链（chatgpt.com/checkout）</option>
-                <option value="hosted">长链（pay.openai.com/c/pay）</option>
-              </select>
-            </div>
           </div>
 
           <div v-else>
@@ -515,35 +403,47 @@
             />
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label class="block text-sm text-gray-400 mb-1">代理标签</label>
+          <div class="rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-3">
+            <label class="inline-flex items-center gap-2 text-sm text-gray-300">
               <input
-                v-model.trim="bindTaskForm.proxyLabel"
-                type="text"
+                v-model="bindTaskForm.proxyApiEnabled"
+                type="checkbox"
                 :disabled="bindSubmitting || bindTaskRunning"
-                placeholder="例如 res-us-01"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                class="accent-blue-500"
               />
+              启用 Cliproxy API 轮换
+            </label>
+            <div v-if="bindTaskForm.proxyApiEnabled" class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">代理国家</label>
+                <select
+                  v-model="bindTaskForm.proxyApiCountry"
+                  :disabled="bindSubmitting || bindTaskRunning"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option v-for="option in bindCountryOptions" :key="`bind-proxy-${option.country}`" :value="option.country">
+                    {{ option.label }}
+                  </option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">Cliproxy API URL（可选）</label>
+                <input
+                  v-model.trim="bindTaskForm.proxyApiUrl"
+                  type="text"
+                  :disabled="bindSubmitting || bindTaskRunning"
+                  placeholder="留空使用默认 Cliproxy 白名单 API"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
             </div>
-            <div>
-              <label class="block text-sm text-gray-400 mb-1">代理 URL</label>
-              <input
-                v-model.trim="bindTaskForm.proxyUrl"
-                type="text"
-                :disabled="bindSubmitting || bindTaskRunning"
-                placeholder="socks5://user:pass@host:port"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-              />
+            <div class="mt-2 text-xs" :class="bindTaskForm.proxyApiEnabled ? 'text-blue-300' : 'text-gray-500'">
+              {{ bindProxyApiHelp }}
             </div>
           </div>
 
-          <label class="flex items-center gap-2 text-sm text-gray-300">
-            <input v-model="bindTaskForm.manualConfirm" type="checkbox" class="accent-blue-500" />
-            打开页面后由人工确认最终支付状态
-          </label>
-          <div class="text-xs text-amber-300/90">
-            远程服务器或 Docker 部署通常无法直接操作 Playwright 浏览器，默认建议关闭该选项走自动提交。
+          <div class="text-xs text-emerald-300/90">
+            自动绑卡会在填写完成后自动点击“订阅”，无需人工确认。
           </div>
 
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
@@ -551,8 +451,8 @@
             <div>卡片：<span class="text-gray-200">{{ selectedCardLabel || '-' }}</span></div>
             <div>链接模式：<span class="text-gray-200">{{ bindTaskForm.checkoutMode === 'auto' ? '自动生成' : '手动添加' }}</span></div>
             <div>链接：<span class="text-gray-200 break-all">{{ effectiveCheckoutUrl || '-' }}</span></div>
-            <div>代理：<span class="text-gray-200">{{ bindTaskForm.proxyLabel || '-' }}</span></div>
-            <div>模式：<span class="text-gray-200">{{ bindTaskForm.manualConfirm ? '人工确认' : '自动提交' }}</span></div>
+            <div>代理 API：<span class="text-gray-200">{{ bindTaskForm.proxyApiEnabled ? `Cliproxy / ${bindTaskForm.proxyApiCountry}` : '未启用' }}</span></div>
+            <div>模式：<span class="text-gray-200">自动提交</span></div>
           </div>
 
           <button
@@ -1528,7 +1428,7 @@
               {{ item.success ? '成功' : '失败' }}
             </span>
           </div>
-          <div class="mt-2 text-sm text-gray-200">{{ item.plan }} / {{ item.promo }}</div>
+          <div class="mt-2 text-sm text-gray-200">{{ item.plan }} / {{ item.country || '-' }} {{ item.currency ? `(${item.currency})` : '' }}</div>
           <div v-if="item.link" class="mt-2 text-xs text-blue-400 truncate cursor-pointer hover:text-blue-300" @click="openHistoryLink(item.link)">
             {{ item.link }}
           </div>
@@ -1900,6 +1800,14 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import { computeGoPayBoardView } from '../gopayBoard.js'
+import {
+  bindCountryOptions,
+  bindPlanLabel,
+  bindPlanOptions,
+  buildBindLinkPayload as buildCheckoutPayload,
+  countryCurrencyMap,
+  resolveCheckoutLink,
+} from '../bindLinkPayload.js'
 
 const props = defineProps({
   initialTab: {
@@ -1914,6 +1822,7 @@ const props = defineProps({
 const emit = defineEmits(['refresh'])
 
 const BIND_HISTORY_KEY = 'autotoken_bind_history_v1'
+const CHATGPT_BIND_FORM_STATE_KEY = 'autotoken_chatgpt_bind_form_state_v1'
 const GOPAY_FORM_STATE_KEY = 'autotoken_gopay_form_state_v1'
 const GOPAY_RECENT_TASK_KEY = 'autotoken_gopay_recent_task_id_v1'
 const luckmailEmailTypeOptions = [
@@ -2086,54 +1995,25 @@ let gopaySuccessNoticeTimer = 0
 const bindForm = ref({
   accessToken: '',
   planType: 'plus',
-  promoId: 'plus-1-month-free',
-  country: 'SG',
-  currency: 'SGD',
-  checkoutMode: 'custom',
-  teamWorkspaceName: '我的团队',
-  teamSeatQuantity: 2,
+  country: 'PH',
+  currency: 'PHP',
+  teamWorkspaceName: 'MyWorkspace',
+  teamSeatQuantity: 5,
   teamPriceInterval: 'month',
-  teamPromoCode: 'STRIPEPERKSGPT4BIZ',
-  teamCancelUrl: 'https://chatgpt.com/?promoCode=STRIPEPERKSGPT4BIZ',
 })
 
 const bindTaskForm = ref({
   checkoutMode: 'auto',
   cardItemId: '',
   checkoutUrl: '',
-  proxyLabel: '',
-  proxyUrl: '',
+  proxyApiEnabled: false,
+  proxyApiProvider: 'cliproxy',
+  proxyApiCountry: 'US',
+  proxyApiUrl: '',
   manualConfirm: false,
 })
 
-const countryCurrencyMap = {
-  US: 'USD',
-  GB: 'GBP',
-  DE: 'EUR',
-  FR: 'EUR',
-  CA: 'CAD',
-  AU: 'AUD',
-  JP: 'JPY',
-  SG: 'SGD',
-  ID: 'IDR',
-  HK: 'HKD',
-}
-
-const promoOptions = [
-  { id: 'plus-1-month-free', name: 'Plus 1个月免费试用', plan: 'plus' },
-]
-
-const filteredPromoOptions = computed(() => {
-  return promoOptions.filter(p => p.plan === bindForm.value.planType)
-})
-
-const selectedPromoName = computed(() => {
-  if (bindForm.value.planType === 'team') {
-    return bindForm.value.teamPromoCode || '-'
-  }
-  const promo = promoOptions.find(p => p.id === bindForm.value.promoId)
-  return promo?.name || bindForm.value.promoId
-})
+const selectedPlanName = computed(() => bindPlanLabel(bindForm.value.planType))
 
 const filteredAccountOptions = computed(() => {
   const keyword = accountSearchKeyword.value.trim().toLowerCase()
@@ -2516,7 +2396,7 @@ const gopayProxyApiHelp = computed(() => {
   if (gopayForm.value.proxyApiProvider === '1024proxy') {
     return '运行时使用 1024proxy 印尼代理 API，每次注册 GoPay 钱包前提取一条。'
   }
-  return '运行时使用 Cliproxy 印尼代理 API：region=ID&num=1&time=10&format=n&type=txt。'
+  return '运行时使用 Cliproxy 印尼代理 API：region=ID&num=1&time=30&format=n&type=txt。'
 })
 const gopayProxySummary = computed(() => {
   if (gopayForm.value.proxyApiEnabled) {
@@ -2919,6 +2799,12 @@ watch(
   { deep: true }
 )
 
+watch(
+  () => getRememberedChatGPTBindForm(),
+  () => saveChatGPTBindFormState(),
+  { deep: true }
+)
+
 const availableCards = computed(() => {
   return (cardOptions.value || []).filter(card => card?.id && card?.status === 'unused')
 })
@@ -2933,6 +2819,14 @@ const selectedCardLabel = computed(() => {
 
 const effectiveCheckoutUrl = computed(() => {
   return bindTaskForm.value.checkoutUrl || currentLink.value || ''
+})
+
+const bindProxyApiHelp = computed(() => {
+  if (!bindTaskForm.value.proxyApiEnabled) {
+    return '未启用时不使用动态代理；启用后每次绑卡任务启动前调用一次 Cliproxy API 获取/轮换代理。'
+  }
+  const country = String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US'
+  return `每次绑卡任务启动前调用 Cliproxy API，region=${country}。`
 })
 
 const bindResult = computed(() => bindTask.value?.result || null)
@@ -3519,6 +3413,84 @@ function closeGoPayAccountPicker() {
   gopayAccountPickerOpen.value = false
 }
 
+function getRememberedChatGPTBindForm() {
+  return {
+    activeTab: ['bind', 'generate'].includes(activeTab.value) ? activeTab.value : '',
+    selectedAccountEmail: String(selectedAccountEmail.value || '').trim().toLowerCase(),
+    accountSearchKeyword: String(accountSearchKeyword.value || '').trim(),
+    linkForm: {
+      planType: ['plus', 'pro5x', 'pro20x', 'team'].includes(String(bindForm.value.planType || ''))
+        ? bindForm.value.planType
+        : 'plus',
+      country: String(bindForm.value.country || 'PH').trim().toUpperCase() || 'PH',
+      currency: String(bindForm.value.currency || 'PHP').trim().toUpperCase() || 'PHP',
+      teamWorkspaceName: String(bindForm.value.teamWorkspaceName || 'MyWorkspace').trim() || 'MyWorkspace',
+      teamSeatQuantity: Math.max(2, Number.parseInt(bindForm.value.teamSeatQuantity || 5, 10) || 5),
+      teamPriceInterval: bindForm.value.teamPriceInterval === 'year' ? 'year' : 'month',
+    },
+    taskForm: {
+      checkoutMode: bindTaskForm.value.checkoutMode === 'manual' ? 'manual' : 'auto',
+      cardItemId: String(bindTaskForm.value.cardItemId || '').trim(),
+      checkoutUrl: String(bindTaskForm.value.checkoutUrl || '').trim(),
+      proxyApiEnabled: Boolean(bindTaskForm.value.proxyApiEnabled),
+      proxyApiProvider: 'cliproxy',
+      proxyApiCountry: String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US',
+      proxyApiUrl: String(bindTaskForm.value.proxyApiUrl || '').trim(),
+    },
+  }
+}
+
+function loadChatGPTBindFormState() {
+  try {
+    if (props.standalone) return false
+    const raw = localStorage.getItem(CHATGPT_BIND_FORM_STATE_KEY)
+    if (!raw) return false
+    const saved = JSON.parse(raw)
+    if (!saved || typeof saved !== 'object') return false
+    if (!props.standalone && ['bind', 'generate'].includes(saved.activeTab)) {
+      activeTab.value = saved.activeTab
+    }
+    selectedAccountEmail.value = String(saved.selectedAccountEmail || '').trim().toLowerCase()
+    accountSearchKeyword.value = String(saved.accountSearchKeyword || '').trim()
+    const linkForm = saved.linkForm && typeof saved.linkForm === 'object' ? saved.linkForm : {}
+    const savedPlanType = String(linkForm.planType || '')
+    bindForm.value = {
+      ...bindForm.value,
+      planType: ['plus', 'pro5x', 'pro20x', 'team'].includes(savedPlanType) ? savedPlanType : bindForm.value.planType,
+      country: String(linkForm.country || bindForm.value.country || 'PH').trim().toUpperCase(),
+      currency: String(linkForm.currency || bindForm.value.currency || 'PHP').trim().toUpperCase(),
+      teamWorkspaceName: String(linkForm.teamWorkspaceName || bindForm.value.teamWorkspaceName || 'MyWorkspace').trim() || 'MyWorkspace',
+      teamSeatQuantity: Math.max(2, Number.parseInt(linkForm.teamSeatQuantity || bindForm.value.teamSeatQuantity || 5, 10) || 5),
+      teamPriceInterval: linkForm.teamPriceInterval === 'year' ? 'year' : 'month',
+    }
+    const taskForm = saved.taskForm && typeof saved.taskForm === 'object' ? saved.taskForm : {}
+    bindTaskForm.value = {
+      ...bindTaskForm.value,
+      checkoutMode: taskForm.checkoutMode === 'manual' ? 'manual' : 'auto',
+      cardItemId: String(taskForm.cardItemId || '').trim(),
+      checkoutUrl: String(taskForm.checkoutUrl || '').trim(),
+      proxyApiEnabled: Boolean(taskForm.proxyApiEnabled),
+      proxyApiProvider: 'cliproxy',
+      proxyApiCountry: String(taskForm.proxyApiCountry || 'US').trim().toUpperCase() || 'US',
+      proxyApiUrl: String(taskForm.proxyApiUrl || '').trim(),
+      manualConfirm: false,
+    }
+    return true
+  } catch (e) {
+    console.error('loadChatGPTBindFormState', e)
+    return false
+  }
+}
+
+function saveChatGPTBindFormState() {
+  try {
+    if (props.standalone || !['bind', 'generate'].includes(activeTab.value)) return
+    localStorage.setItem(CHATGPT_BIND_FORM_STATE_KEY, JSON.stringify(getRememberedChatGPTBindForm()))
+  } catch (e) {
+    console.error('saveChatGPTBindFormState', e)
+  }
+}
+
 function getRememberedGoPayForm() {
   return {
     email: String(gopayForm.value.email || '').trim().toLowerCase(),
@@ -3918,61 +3890,18 @@ function formatCardOption(card) {
 }
 
 function buildBindLinkPayload(accessToken) {
-  const planName = bindForm.value.planType === 'plus' ? 'chatgptplusplan' : 'chatgptteamplan'
-  if (bindForm.value.planType === 'team') {
-    return {
-      access_token: accessToken,
-      entry_point: 'team_workspace_purchase_modal',
-      plan_name: planName,
-      team_plan_data: {
-        workspace_name: bindForm.value.teamWorkspaceName || '我的团队',
-        price_interval: bindForm.value.teamPriceInterval || 'month',
-        seat_quantity: Number(bindForm.value.teamSeatQuantity) || 2,
-      },
-      billing_details: {
-        country: bindForm.value.country,
-        currency: bindForm.value.currency,
-      },
-      cancel_url: bindForm.value.teamCancelUrl || undefined,
-      promo_code: bindForm.value.teamPromoCode || undefined,
-      checkout_ui_mode: 'hosted',
-    }
-  }
-
-  return {
-    access_token: accessToken,
-    promo_campaign: {
-      promo_campaign_id: bindForm.value.promoId,
-      is_coupon_from_query_param: false,
-    },
-    plan_name: planName,
-    billing_details: {
-      country: bindForm.value.country,
-      currency: bindForm.value.currency,
-    },
-    checkout_ui_mode: bindForm.value.checkoutMode,
-  }
+  return buildCheckoutPayload({
+    accessToken,
+    planType: bindForm.value.planType,
+    country: bindForm.value.country,
+    teamWorkspaceName: bindForm.value.teamWorkspaceName,
+    teamPriceInterval: bindForm.value.teamPriceInterval,
+    teamSeatQuantity: bindForm.value.teamSeatQuantity,
+  })
 }
 
 function resolveGeneratedLink(result) {
-  if (result?.url) {
-    return {
-      link: result.url,
-      sessionId: result.checkout_session_id || '',
-      rawGeneratedUrl: result.url,
-    }
-  }
-  if (result?.checkout_session_id) {
-    const sessionId = result.checkout_session_id
-    return {
-      link: bindForm.value.planType === 'team'
-        ? `https://chatgpt.com/checkout/openai_ie/${sessionId}`
-        : `https://chatgpt.com/checkout/openai_llc/${sessionId}`,
-      sessionId,
-      rawGeneratedUrl: '',
-    }
-  }
-  return null
+  return resolveCheckoutLink(result)
 }
 
 function stopBindTaskPolling() {
@@ -4143,30 +4072,28 @@ async function restoreActiveBindTasks() {
 }
 
 watch(
-  () => bindForm.value.planType,
-  (planType) => {
-    if (planType === 'team') {
-      bindForm.value.country = 'US'
-      bindForm.value.currency = 'USD'
-      bindForm.value.checkoutMode = 'hosted'
-    } else {
-      const nextPromo = promoOptions.find(p => p.plan === planType)
-      if (nextPromo && nextPromo.id !== bindForm.value.promoId) {
-        bindForm.value.promoId = nextPromo.id
-      }
-      bindForm.value.country = 'SG'
-      bindForm.value.currency = 'SGD'
-      bindForm.value.checkoutMode = 'custom'
-    }
-  }
-)
-
-watch(
   () => bindForm.value.country,
   (country) => {
     bindForm.value.currency = countryCurrencyMap[country] || 'USD'
   },
   { immediate: true }
+)
+
+watch(
+  () => [
+    bindForm.value.planType,
+    bindForm.value.country,
+    bindForm.value.teamWorkspaceName,
+    bindForm.value.teamSeatQuantity,
+    bindForm.value.teamPriceInterval,
+  ],
+  () => {
+    if (bindTaskForm.value.checkoutMode !== 'auto') return
+    currentLink.value = ''
+    checkoutSessionId.value = ''
+    rawGeneratedUrl.value = ''
+    bindTaskForm.value.checkoutUrl = ''
+  }
 )
 
 async function useAccountToken() {
@@ -4211,7 +4138,8 @@ async function generateLink() {
       history.value.unshift({
         time: formatDate(),
         plan: bindForm.value.planType.toUpperCase(),
-        promo: selectedPromoName.value,
+        country: bindForm.value.country,
+        currency: bindForm.value.currency,
         link: '',
         error: errorMsg,
         success: false,
@@ -4225,7 +4153,8 @@ async function generateLink() {
       history.value.unshift({
         time: formatDate(),
         plan: bindForm.value.planType.toUpperCase(),
-        promo: selectedPromoName.value,
+        country: bindForm.value.country,
+        currency: bindForm.value.currency,
         link: resolved.link,
         error: '',
         success: true,
@@ -4238,7 +4167,63 @@ async function generateLink() {
     history.value.unshift({
       time: formatDate(),
       plan: bindForm.value.planType.toUpperCase(),
-      promo: selectedPromoName.value,
+      country: bindForm.value.country,
+      currency: bindForm.value.currency,
+      link: '',
+      error: e.message,
+      success: false,
+    })
+    saveHistory()
+  } finally {
+    generating.value = false
+  }
+}
+
+async function generateAndOpenWithAuthSession() {
+  if (generating.value) return
+  if (!selectedAccountEmail.value) {
+    setMessage('请先选择号池账号', false)
+    return
+  }
+  generating.value = true
+  currentLink.value = ''
+  checkoutSessionId.value = ''
+  rawGeneratedUrl.value = ''
+
+  try {
+    const payload = {
+      ...buildBindLinkPayload(bindForm.value.accessToken),
+      email: selectedAccountEmail.value,
+    }
+    const result = await api.openBindLinkWithAuthSession(payload)
+    const resolved = resolveGeneratedLink(result)
+    if (!resolved) {
+      const errorMsg = result.detail || JSON.stringify(result)
+      throw new Error(errorMsg)
+    }
+
+    currentLink.value = resolved.link
+    checkoutSessionId.value = resolved.sessionId
+    rawGeneratedUrl.value = resolved.rawGeneratedUrl
+    bindTaskForm.value.checkoutUrl = resolved.link
+    history.value.unshift({
+      time: formatDate(),
+      plan: bindForm.value.planType.toUpperCase(),
+      country: bindForm.value.country,
+      currency: bindForm.value.currency,
+      link: resolved.link,
+      error: '',
+      success: true,
+    })
+    saveHistory()
+    setMessage(`已用 ${selectedAccountEmail.value} 的 auth_session 打开支付页`)
+  } catch (e) {
+    setMessage(`生成并打开失败: ${e.message}`, false)
+    history.value.unshift({
+      time: formatDate(),
+      plan: bindForm.value.planType.toUpperCase(),
+      country: bindForm.value.country,
+      currency: bindForm.value.currency,
       link: '',
       error: e.message,
       success: false,
@@ -4259,12 +4244,6 @@ async function ensureBindCheckoutUrl() {
     return manualLink
   }
 
-  const manualLink = String(bindTaskForm.value.checkoutUrl || '').trim()
-  if (manualLink) {
-    pushBindLog('检测到手动输入支付链接，直接使用该链接', 'info')
-    return manualLink
-  }
-
   pushBindLog(`开始为账号 ${selectedAccountEmail.value} 提取 access_token`, 'info')
   const authResult = await api.getCodexAuth(selectedAccountEmail.value)
   const token = authResult?.codex_auth?.tokens?.access_token || ''
@@ -4273,7 +4252,7 @@ async function ensureBindCheckoutUrl() {
   }
 
   bindForm.value.accessToken = token
-  pushBindLog('access_token 提取成功，开始生成支付链接', 'info')
+  pushBindLog(`access_token 提取成功，开始生成 ${bindPlanLabel(bindForm.value.planType)} 支付链接`, 'info')
   const linkResult = await api.generateBindLink(buildBindLinkPayload(token))
   const resolved = resolveGeneratedLink(linkResult)
   if (!resolved?.link) {
@@ -4308,9 +4287,12 @@ async function startBindCard() {
       email: selectedAccountEmail.value,
       card_item_id: bindTaskForm.value.cardItemId,
       checkout_url: checkoutUrl,
-      proxy_url: bindTaskForm.value.proxyUrl || null,
-      proxy_label: bindTaskForm.value.proxyLabel,
-      manual_confirm: bindTaskForm.value.manualConfirm,
+      proxy_api_provider: bindTaskForm.value.proxyApiEnabled ? 'cliproxy' : '',
+      proxy_api_country: bindTaskForm.value.proxyApiEnabled
+        ? (String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US')
+        : '',
+      proxy_api_url: bindTaskForm.value.proxyApiEnabled ? String(bindTaskForm.value.proxyApiUrl || '').trim() : '',
+      manual_confirm: false,
     })
     bindTask.value = task
     pushBindLog(`绑卡任务已提交，任务 ID: ${task.task_id}`, 'success')
@@ -4496,7 +4478,7 @@ async function startGoPayBind() {
       proxy_pool_text: gopayForm.value.proxyPoolEnabled && !gopayForm.value.proxyApiEnabled ? gopayForm.value.proxyPoolText : '',
       proxy_api_provider: gopayForm.value.proxyApiEnabled ? gopayForm.value.proxyApiProvider : '',
       proxy_api_url: gopayForm.value.proxyApiEnabled && gopayForm.value.proxyApiProvider === 'cliproxy'
-        ? 'https://api.cliproxy.io/white/api?region=ID&num=1&time=10&format=n&type=txt'
+        ? 'https://api.cliproxy.io/white/api?region=ID&num=1&time=30&format=n&type=txt'
         : '',
       proxy_label: gopayForm.value.proxyLabel,
       delete_rejected_accounts: Boolean(gopayForm.value.deleteRejectedAccounts),
@@ -4616,6 +4598,7 @@ function openHistoryLink(link) {
 
 onMounted(() => {
   loadHistory()
+  loadChatGPTBindFormState()
   const restoredGoPayForm = loadGoPayFormState()
   loadGoPayAutoSignupConfig({ applyDefaults: !restoredGoPayForm })
   loadGoPayRekberinajaConfig()

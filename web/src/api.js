@@ -203,6 +203,7 @@ export const api = {
   getTeamMembers: () => request('GET', '/team/members'),
   removeTeamMember: (payload) => request('POST', '/team/members/remove', payload),
   generateBindLink: (payload) => request('POST', '/bind/link', payload),
+  openBindLinkWithAuthSession: (payload) => request('POST', '/bind/link/open', payload),
   getCardPool: (poolType) => request('GET', `/card-pool/${encodeURIComponent(poolType)}`),
   importCardPool: (payload) => request('POST', '/card-pool/import', payload),
   deleteCardPoolItems: (payload) => request('POST', '/card-pool/delete', payload),

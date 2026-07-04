@@ -179,6 +179,57 @@ def test_roxybrowser_launch_force_new_profile_skips_idle_profile(monkeypatch):
     assert not any(path == "/browser/list_v3" for _method, path, _json_body, _params in calls)
 
 
+def test_roxybrowser_launch_force_new_profile_cleans_project_profiles_after_quota(monkeypatch):
+    calls = []
+    create_attempts = {"count": 0}
+
+    def fake_request(self, method, path, *, params=None, json_body=None, timeout=None):
+        calls.append((method, path, json_body, params))
+        if path == "/browser/workspace":
+            return {"data": [{"workspaceId": 1, "workspaceName": "default"}], "total": 1}
+        if path == "/browser/create":
+            create_attempts["count"] += 1
+            if create_attempts["count"] == 1:
+                raise RuntimeError("窗口额度不足")
+            return {"data": {"dirId": "new-dir"}}
+        if path == "/browser/list_v3":
+            return {
+                "data": [
+                    {"dirId": "foreign-dir", "windowName": "User Window", "openStatus": False},
+                    {"dirId": "project-open-dir", "windowName": "autotoken-chatgpt-open", "openStatus": True},
+                    {"dirId": "project-idle-dir", "windowName": "autotoken-chatgpt-idle", "openStatus": False},
+                ],
+                "total": 3,
+            }
+        if path == "/browser/open":
+            return {"data": {"http": "127.0.0.1:5566", "ws": "ws://127.0.0.1:5566/devtools/browser/1"}}
+        return {"code": 0, "msg": "ok"}
+
+    monkeypatch.setattr(RoxyBrowserClient, "_request", fake_request)
+
+    client = RoxyBrowserClient("http://127.0.0.1:50000", "token")
+    result = client.launch(clear_profile_data=True, force_new_profile=True)
+
+    assert result.dir_id == "new-dir"
+    assert result.created_profile is True
+    assert result.reused_existing_profile is False
+    assert create_attempts["count"] == 2
+    assert ("POST", "/browser/close", {"dirId": "project-open-dir"}, None) in calls
+    assert ("POST", "/browser/close", {"dirId": "project-idle-dir"}, None) in calls
+    assert (
+        "POST",
+        "/browser/delete",
+        {"workspaceId": 1, "dirIds": ["project-open-dir", "project-idle-dir"]},
+        None,
+    ) in calls
+    assert not any(
+        path == "/browser/delete" and "foreign-dir" in (json_body or {}).get("dirIds", [])
+        for _method, path, json_body, _params in calls
+    )
+    assert calls[-1] == ("POST", "/browser/open", {"dirId": "new-dir", "args": [], "workspaceId": 1}, None)
+    client.browser_close("new-dir")
+
+
 def test_roxybrowser_launch_create_quota_has_clear_error_when_no_idle_profile(monkeypatch):
     def fake_request(self, method, path, *, params=None, json_body=None, timeout=None):
         if path == "/browser/workspace":
@@ -195,6 +246,6 @@ def test_roxybrowser_launch_create_quota_has_clear_error_when_no_idle_profile(mo
     try:
         client.launch(clear_profile_data=True)
     except RuntimeError as exc:
-        assert "没有可复用的空闲窗口，且新建窗口额度不足" in str(exc)
+        assert "没有可清理的本项目窗口，且新建窗口额度不足" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")

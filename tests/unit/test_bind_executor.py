@@ -196,6 +196,789 @@ def test_gopay_auth_context_extracts_account_id_from_access_token(monkeypatch):
     assert context["session_token"] == "session-token"
 
 
+def test_run_bind_task_injects_selected_account_auth_session_before_checkout(monkeypatch):
+    events = []
+    apis = []
+
+    class FakePage:
+        url = "about:blank"
+
+        def goto(self, url, **_kwargs):
+            events.append(("goto", url))
+            self.url = url
+
+    class FakeApi:
+        def __init__(self):
+            self.page = FakePage()
+            self.context = None
+            self.oai_device_id = ""
+            apis.append(self)
+
+        def _launch_browser(self, **_kwargs):
+            events.append(("launch", self.oai_device_id))
+            self.context = object()
+
+        def _wait_for_cloudflare(self):
+            events.append(("cloudflare", None))
+
+        def stop(self):
+            events.append(("stop", None))
+
+    def inject(api, **kwargs):
+        events.append(("inject", kwargs))
+        assert api.context is not None
+
+    monkeypatch.setattr(bind_executor, "ChatGPTTeamAPI", FakeApi)
+    monkeypatch.setattr(
+        bind_executor,
+        "load_auth_session",
+        lambda email: {
+            "sessionToken": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+            "account_id": "account-id",
+            "device_id": "device-id",
+        }
+        if email == "user@example.com"
+        else {},
+        raising=False,
+    )
+    monkeypatch.setattr(bind_executor.chatgpt_session_service, "inject_chatgpt_browser_cookies", inject, raising=False)
+    monkeypatch.setattr(bind_executor, "_capture_screenshot", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(bind_executor, "_fill_field", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        bind_executor,
+        "generate_tax_free_billing_address",
+        lambda: {
+            "name": "Generated User",
+            "country": "US",
+            "state": "OR",
+            "city": "Portland",
+            "zip": "97201",
+            "address1": "800 SW 5th Ave",
+        },
+    )
+    monkeypatch.setattr(
+        bind_executor,
+        "_wait_for_checkout_result",
+        lambda *_args, **_kwargs: {"status": "success", "message": "ok", "screenshot_paths": []},
+    )
+
+    result = bind_executor.run_bind_task(
+        email="user@example.com",
+        checkout_url="https://chatgpt.com/checkout/openai_llc/cs_test",
+        card_item={
+            "value": "4242424242424242",
+            "meta": {"content": {"expiry_date": "12/30", "cvv": "123"}},
+        },
+    )
+
+    assert result["status"] == "success"
+    assert apis[0].oai_device_id == "device-id"
+    assert events[:5] == [
+        ("launch", "device-id"),
+        (
+            "inject",
+            {
+                "session_token": "session-token",
+                "cookie_header": "__Secure-next-auth.session-token=session-token",
+                "account_id": "account-id",
+                "device_id": "device-id",
+            },
+        ),
+        ("goto", "https://chatgpt.com/"),
+        ("cloudflare", None),
+        ("goto", "https://chatgpt.com/checkout/openai_llc/cs_test"),
+    ]
+
+
+def test_run_bind_task_fails_when_selected_account_has_no_auth_session(monkeypatch):
+    events = []
+
+    class FakeApi:
+        def __init__(self):
+            self.context = None
+            self.page = type("Page", (), {"url": "about:blank"})()
+
+        def _launch_browser(self, **_kwargs):
+            events.append("launch")
+            self.context = object()
+
+        def stop(self):
+            events.append("stop")
+
+    monkeypatch.setattr(bind_executor, "ChatGPTTeamAPI", FakeApi)
+    monkeypatch.setattr(bind_executor, "load_auth_session", lambda _email: {}, raising=False)
+    monkeypatch.setattr(bind_executor, "_capture_screenshot", lambda *_args, **_kwargs: "")
+
+    result = bind_executor.run_bind_task(
+        email="user@example.com",
+        checkout_url="https://chatgpt.com/checkout/openai_llc/cs_test",
+        card_item={
+            "value": "4242424242424242",
+            "meta": {"content": {"expiry_date": "12/30", "cvv": "123"}},
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "open_checkout"
+    assert "session token" in result["message"]
+    assert events == ["stop"]
+
+
+def test_run_bind_task_waits_for_slow_checkout_card_field(monkeypatch):
+    timeouts = []
+
+    class FakeLocator:
+        def click(self, **_kwargs):
+            pass
+
+        def fill(self, *_args, **_kwargs):
+            pass
+
+    class FakePage:
+        url = "https://chatgpt.com/checkout/openai_llc/cs_test"
+
+        def goto(self, *_args, **_kwargs):
+            pass
+
+    class FakeApi:
+        def __init__(self):
+            self.page = FakePage()
+            self.context = object()
+            self.oai_device_id = ""
+
+        def _launch_browser(self, **_kwargs):
+            pass
+
+        def _wait_for_cloudflare(self):
+            pass
+
+        def stop(self):
+            pass
+
+    def locator_from_selectors(_api, selectors, timeout_ms=4000):
+        if selectors == bind_executor.CARD_NUMBER_SELECTORS:
+            timeouts.append(timeout_ms)
+            if timeout_ms < 60_000:
+                return None
+        return FakeLocator()
+
+    monkeypatch.setattr(bind_executor, "ChatGPTTeamAPI", FakeApi)
+    monkeypatch.setattr(
+        bind_executor,
+        "load_auth_session",
+        lambda _email: {
+            "sessionToken": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bind_executor.chatgpt_session_service,
+        "inject_chatgpt_browser_cookies",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(bind_executor, "_capture_screenshot", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(bind_executor, "_locator_from_selectors", locator_from_selectors)
+    monkeypatch.setattr(bind_executor, "_fill_billing_name_before_address", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        bind_executor,
+        "generate_tax_free_billing_address",
+        lambda: {
+            "name": "Generated User",
+            "country": "US",
+            "state": "OR",
+            "city": "Portland",
+            "zip": "97201",
+            "address1": "800 SW 5th Ave",
+        },
+    )
+    monkeypatch.setattr(
+        bind_executor,
+        "_wait_for_checkout_result",
+        lambda *_args, **_kwargs: {"status": "success", "message": "ok", "screenshot_paths": []},
+    )
+
+    result = bind_executor.run_bind_task(
+        email="user@example.com",
+        checkout_url="https://chatgpt.com/checkout/openai_llc/cs_test",
+        card_item={
+            "value": "4242424242424242",
+            "meta": {"content": {"expiry_date": "12/30", "cvv": "123"}},
+        },
+    )
+
+    assert result["status"] == "success"
+    assert timeouts
+    assert timeouts[0] >= 60_000
+
+
+def test_extract_card_payload_does_not_use_card_billing_address():
+    payload = bind_executor.extract_card_payload(
+        {
+            "value": "4242424242424242",
+            "meta": {
+                "content": {
+                    "expiry_date": "12/30",
+                    "cvv": "123",
+                    "name": "Jane Doe",
+                    "address": "123 Main St, New York NY 10001, US",
+                }
+            },
+        }
+    )
+
+    assert payload["address"] == ""
+    assert payload["city"] == ""
+    assert payload["state"] == ""
+    assert payload["postal_code"] == ""
+    assert payload["country"] == ""
+
+
+def test_generate_tax_free_billing_address_rejects_non_tax_free_generated_address():
+    billing = bind_executor.generate_tax_free_billing_address(
+        fetch_billing_address=lambda: {
+            "name": "Generated User",
+            "country": "US",
+            "state": "CA",
+            "city": "Los Angeles",
+            "zip": "90026",
+            "address1": "3110 Sunset Boulevard",
+        }
+    )
+
+    assert billing["country"] == "US"
+    assert billing["state"] in bind_executor.TAX_FREE_US_STATES
+    assert billing["state"] != "CA"
+    assert billing["address1"]
+    assert billing["city"]
+    assert billing["zip"]
+
+
+def test_run_bind_task_fills_generated_tax_free_billing_address(monkeypatch):
+    filled = []
+
+    class FakeLocator:
+        def __init__(self, label):
+            self.label = label
+
+        def click(self, **_kwargs):
+            pass
+
+        def fill(self, value, **_kwargs):
+            filled.append((self.label, value))
+
+    class FakePage:
+        url = "https://chatgpt.com/checkout/openai_llc/cs_test"
+
+        def goto(self, *_args, **_kwargs):
+            pass
+
+    class FakeApi:
+        def __init__(self):
+            self.page = FakePage()
+            self.context = object()
+            self.oai_device_id = ""
+
+        def _launch_browser(self, **_kwargs):
+            pass
+
+        def _wait_for_cloudflare(self):
+            pass
+
+        def stop(self):
+            pass
+
+    def locator_from_selectors(_api, selectors, timeout_ms=4000):
+        if selectors == bind_executor.SUBMIT_SELECTORS:
+            return FakeLocator("subscribe")
+        if selectors == bind_executor.CARD_NUMBER_SELECTORS:
+            return FakeLocator("card")
+        if selectors == bind_executor.EXPIRY_SELECTORS:
+            return FakeLocator("expiry")
+        if selectors == bind_executor.CVC_SELECTORS:
+            return FakeLocator("cvc")
+        if selectors == bind_executor.NAME_SELECTORS:
+            return FakeLocator("name")
+        if selectors == bind_executor.ADDRESS_SELECTORS:
+            return FakeLocator("address")
+        if selectors == bind_executor.CITY_SELECTORS:
+            return FakeLocator("city")
+        if selectors == bind_executor.STATE_SELECTORS:
+            return FakeLocator("state")
+        if selectors == bind_executor.POSTAL_CODE_SELECTORS:
+            return FakeLocator("postal")
+        if selectors == bind_executor.COUNTRY_SELECTORS:
+            return FakeLocator("country")
+        return None
+
+    monkeypatch.setattr(bind_executor, "ChatGPTTeamAPI", FakeApi)
+    monkeypatch.setattr(
+        bind_executor,
+        "load_auth_session",
+        lambda _email: {
+            "sessionToken": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bind_executor.chatgpt_session_service,
+        "inject_chatgpt_browser_cookies",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(bind_executor, "_capture_screenshot", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(bind_executor, "_locator_from_selectors", locator_from_selectors)
+    monkeypatch.setattr(
+        bind_executor,
+        "generate_tax_free_billing_address",
+        lambda: {
+            "name": "Generated User",
+            "country": "US",
+            "state": "OR",
+            "city": "Portland",
+            "zip": "97201",
+            "address1": "800 SW 5th Ave",
+            "address2": "",
+            "phone_number": "503-555-0182",
+        },
+    )
+    monkeypatch.setattr(
+        bind_executor,
+        "_wait_for_checkout_result",
+        lambda *_args, **_kwargs: {"status": "success", "message": "ok", "screenshot_paths": []},
+    )
+
+    result = bind_executor.run_bind_task(
+        email="user@example.com",
+        checkout_url="https://chatgpt.com/checkout/openai_llc/cs_test",
+        card_item={
+            "value": "4242424242424242",
+            "meta": {
+                "content": {
+                    "expiry_date": "12/30",
+                    "cvv": "123",
+                    "name": "Jane Doe",
+                    "address": "123 Main St, New York NY 10001, US",
+                }
+            },
+        },
+    )
+
+    assert result["status"] == "success"
+    assert ("address", "800 SW 5th Ave") in filled
+    assert ("city", "Portland") in filled
+    assert ("state", "OR") in filled
+    assert ("postal", "97201") in filled
+    assert ("country", "US") in filled
+    assert ("address", "123 Main St") not in filled
+
+
+def test_run_bind_task_fills_billing_address_once_after_card_fields(monkeypatch):
+    filled = []
+    launch_kwargs = {}
+
+    class FakeLocator:
+        def __init__(self, label):
+            self.label = label
+
+        def click(self, **_kwargs):
+            pass
+
+        def fill(self, value, **_kwargs):
+            filled.append((self.label, value))
+
+    class FakePage:
+        url = "https://chatgpt.com/checkout/openai_llc/cs_test"
+
+        def goto(self, *_args, **_kwargs):
+            pass
+
+    class FakeApi:
+        def __init__(self):
+            self.page = FakePage()
+            self.context = object()
+            self.oai_device_id = ""
+
+        def _launch_browser(self, **_kwargs):
+            launch_kwargs.update(_kwargs)
+
+        def _wait_for_cloudflare(self):
+            pass
+
+        def stop(self):
+            pass
+
+    def locator_from_selectors(_api, selectors, timeout_ms=4000):
+        labels = {
+            id(bind_executor.SUBMIT_SELECTORS): "subscribe",
+            id(bind_executor.CARD_NUMBER_SELECTORS): "card",
+            id(bind_executor.EXPIRY_SELECTORS): "expiry",
+            id(bind_executor.CVC_SELECTORS): "cvc",
+            id(bind_executor.BILLING_NAME_SELECTORS): "billing-name",
+            id(bind_executor.COUNTRY_SELECTORS): "country",
+            id(bind_executor.ADDRESS_SELECTORS): "address",
+            id(bind_executor.CITY_SELECTORS): "city",
+            id(bind_executor.STATE_SELECTORS): "state",
+            id(bind_executor.POSTAL_CODE_SELECTORS): "postal",
+        }
+        label = labels.get(id(selectors))
+        return FakeLocator(label) if label else None
+
+    monkeypatch.setattr(bind_executor, "ChatGPTTeamAPI", FakeApi)
+    monkeypatch.setattr(
+        bind_executor,
+        "load_auth_session",
+        lambda _email: {
+            "sessionToken": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bind_executor.chatgpt_session_service,
+        "inject_chatgpt_browser_cookies",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(bind_executor, "_capture_screenshot", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(bind_executor, "_locator_from_selectors", locator_from_selectors)
+    monkeypatch.setattr(
+        bind_executor,
+        "generate_tax_free_billing_address",
+        lambda: {
+            "name": "Generated User",
+            "country": "US",
+            "state": "OR",
+            "city": "Portland",
+            "zip": "97201",
+            "address1": "800 SW 5th Ave",
+        },
+    )
+    monkeypatch.setattr(bind_executor, "_nudge_billing_address_recalculation", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        bind_executor,
+        "_wait_for_checkout_result",
+        lambda *_args, **_kwargs: {"status": "success", "message": "ok", "screenshot_paths": []},
+    )
+
+    result = bind_executor.run_bind_task(
+        email="user@example.com",
+        checkout_url="https://chatgpt.com/checkout/openai_llc/cs_test",
+        card_item={
+            "value": "4242424242424242",
+            "meta": {"content": {"expiry_date": "12/30", "cvv": "123"}},
+        },
+        roxybrowser_profile_id="existing-profile",
+    )
+
+    assert result["status"] == "success"
+    assert [label for label, _value in filled] == [
+        "card",
+        "expiry",
+        "cvc",
+        "billing-name",
+        "country",
+        "address",
+        "city",
+        "state",
+        "postal",
+    ]
+    assert launch_kwargs["use_roxybrowser"] is True
+    assert launch_kwargs["randomize_fingerprint"] is False
+    assert launch_kwargs["roxybrowser_force_new_profile"] is True
+    assert launch_kwargs["roxybrowser_profile_id"] is None
+
+
+def test_run_bind_task_fills_billing_name_without_touching_link_name(monkeypatch):
+    filled = []
+
+    class FakeLocator:
+        def __init__(self, label):
+            self.label = label
+
+        def click(self, **_kwargs):
+            pass
+
+        def fill(self, value, **_kwargs):
+            filled.append((self.label, value))
+
+    class FakePage:
+        url = "https://chatgpt.com/checkout/openai_llc/cs_test"
+
+        def goto(self, *_args, **_kwargs):
+            pass
+
+    class FakeApi:
+        def __init__(self):
+            self.page = FakePage()
+            self.context = object()
+            self.oai_device_id = ""
+
+        def _launch_browser(self, **_kwargs):
+            pass
+
+        def _wait_for_cloudflare(self):
+            pass
+
+        def stop(self):
+            pass
+
+    def locator_from_selectors(_api, selectors, timeout_ms=4000):
+        if selectors == bind_executor.SUBMIT_SELECTORS:
+            return FakeLocator("subscribe")
+        if selectors == bind_executor.CARD_NUMBER_SELECTORS:
+            return FakeLocator("card")
+        if selectors == bind_executor.EXPIRY_SELECTORS:
+            return FakeLocator("expiry")
+        if selectors == bind_executor.CVC_SELECTORS:
+            return FakeLocator("cvc")
+        if selectors == bind_executor.NAME_SELECTORS:
+            return FakeLocator("link-name")
+        if selectors == bind_executor.BILLING_NAME_SELECTORS:
+            return FakeLocator("billing-name")
+        if selectors == bind_executor.COUNTRY_SELECTORS:
+            return FakeLocator("country")
+        if selectors == bind_executor.ADDRESS_SELECTORS:
+            return FakeLocator("address")
+        if selectors == bind_executor.CITY_SELECTORS:
+            return FakeLocator("city")
+        if selectors == bind_executor.STATE_SELECTORS:
+            return FakeLocator("state")
+        if selectors == bind_executor.POSTAL_CODE_SELECTORS:
+            return FakeLocator("postal")
+        return None
+
+    monkeypatch.setattr(bind_executor, "ChatGPTTeamAPI", FakeApi)
+    monkeypatch.setattr(
+        bind_executor,
+        "load_auth_session",
+        lambda _email: {
+            "sessionToken": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bind_executor.chatgpt_session_service,
+        "inject_chatgpt_browser_cookies",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(bind_executor, "_capture_screenshot", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(bind_executor, "_locator_from_selectors", locator_from_selectors)
+    monkeypatch.setattr(
+        bind_executor,
+        "generate_tax_free_billing_address",
+        lambda: {
+            "name": "FREDDIE PACHECO",
+            "country": "US",
+            "state": "AK",
+            "city": "Anchorage",
+            "zip": "99503",
+            "address1": "1040 West 27th Avenue",
+        },
+    )
+    monkeypatch.setattr(
+        bind_executor,
+        "_wait_for_checkout_result",
+        lambda *_args, **_kwargs: {"status": "success", "message": "ok", "screenshot_paths": []},
+    )
+
+    result = bind_executor.run_bind_task(
+        email="user@example.com",
+        checkout_url="https://chatgpt.com/checkout/openai_llc/cs_test",
+        card_item={
+            "value": "4242424242424242",
+            "meta": {"content": {"expiry_date": "12/30", "cvv": "123"}},
+        },
+        manual_confirm=False,
+    )
+
+    assert result["status"] == "success"
+    assert ("link-name", "FREDDIE PACHECO") not in filled
+    assert ("billing-name", "FREDDIE PACHECO") in filled
+
+
+def test_address_line1_selectors_do_not_match_billing_group_name_field():
+    joined = "\n".join(bind_executor.ADDRESS_SELECTORS)
+
+    assert 'name*="address"' not in joined
+    assert 'id*="address"' not in joined
+    assert any("address-line1" in selector for selector in bind_executor.ADDRESS_SELECTORS)
+
+
+def test_chatgpt_checkout_selectors_include_real_stripe_billing_fields():
+    assert "#billingAddress-nameInput" in bind_executor.BILLING_NAME_SELECTORS
+    assert bind_executor.BILLING_NAME_SELECTORS.index("#billingAddress-nameInput") < bind_executor.BILLING_NAME_SELECTORS.index('input[name="name"]')
+    assert bind_executor.BILLING_NAME_SELECTORS.index("#billingAddress-nameInput") < bind_executor.BILLING_NAME_SELECTORS.index('input[autocomplete="name"]')
+    assert "#billingAddress-countryInput" in bind_executor.COUNTRY_SELECTORS
+    assert "#billingAddress-addressLine1Input" in bind_executor.ADDRESS_SELECTORS
+    assert "#billingAddress-localityInput" in bind_executor.CITY_SELECTORS
+    assert "#billingAddress-administrativeAreaInput" in bind_executor.STATE_SELECTORS
+    assert 'select[name="administrativeArea"]' in bind_executor.STATE_SELECTORS
+    assert "#billingAddress-postalCodeInput" in bind_executor.POSTAL_CODE_SELECTORS
+
+
+def test_chatgpt_checkout_form_selectors_do_not_depend_on_visible_language():
+    selector_groups = (
+        bind_executor.CARD_NUMBER_SELECTORS,
+        bind_executor.EXPIRY_SELECTORS,
+        bind_executor.CVC_SELECTORS,
+        bind_executor.NAME_SELECTORS,
+        bind_executor.BILLING_NAME_SELECTORS,
+        bind_executor.COUNTRY_SELECTORS,
+        bind_executor.ADDRESS_SELECTORS,
+        bind_executor.CITY_SELECTORS,
+        bind_executor.STATE_SELECTORS,
+        bind_executor.POSTAL_CODE_SELECTORS,
+        bind_executor.SUBMIT_SELECTORS,
+    )
+    joined = "\n".join(selector for selectors in selector_groups for selector in selectors).lower()
+
+    assert "placeholder" not in joined
+    assert "aria-label" not in joined
+    assert "has-text" not in joined
+
+
+def test_locator_from_selectors_respects_selector_priority():
+    calls = []
+
+    class FakeApi:
+        def _visible_locator_in_frames(self, selectors, timeout_ms=5000):
+            calls.append(tuple(selectors))
+            if selectors == ["#billingAddress-nameInput"]:
+                return "billing-name"
+            if selectors == ['input[name="name"]']:
+                return "link-name"
+            return None
+
+    locator = bind_executor._locator_from_selectors(
+        FakeApi(),
+        ["#billingAddress-nameInput", 'input[name="name"]'],
+        timeout_ms=1000,
+    )
+
+    assert locator == "billing-name"
+    assert calls[0] == ("#billingAddress-nameInput",)
+
+
+def test_run_bind_task_auto_mode_clicks_subscribe_after_fill(monkeypatch):
+    events = []
+
+    class FakeLocator:
+        def __init__(self, label):
+            self.label = label
+
+        def click(self, **_kwargs):
+            events.append(("click", self.label))
+
+        def fill(self, value, **_kwargs):
+            events.append(("fill", self.label, value))
+
+    class FakePage:
+        url = "https://chatgpt.com/checkout/openai_llc/cs_test"
+
+        def goto(self, *_args, **_kwargs):
+            events.append(("goto", "checkout"))
+
+    class FakeApi:
+        def __init__(self):
+            self.page = FakePage()
+            self.context = object()
+            self.oai_device_id = ""
+
+        def _launch_browser(self, **_kwargs):
+            pass
+
+        def _wait_for_cloudflare(self):
+            pass
+
+        def stop(self):
+            pass
+
+    def locator_from_selectors(_api, selectors, timeout_ms=4000):
+        if selectors == bind_executor.SUBMIT_SELECTORS:
+            return FakeLocator("subscribe")
+        if selectors == bind_executor.CARD_NUMBER_SELECTORS:
+            return FakeLocator("card")
+        if selectors == bind_executor.EXPIRY_SELECTORS:
+            return FakeLocator("expiry")
+        if selectors == bind_executor.CVC_SELECTORS:
+            return FakeLocator("cvc")
+        if selectors == bind_executor.NAME_SELECTORS:
+            return FakeLocator("name")
+        if selectors == bind_executor.COUNTRY_SELECTORS:
+            return FakeLocator("country")
+        if selectors == bind_executor.ADDRESS_SELECTORS:
+            return FakeLocator("address")
+        if selectors == bind_executor.CITY_SELECTORS:
+            return FakeLocator("city")
+        if selectors == bind_executor.STATE_SELECTORS:
+            return FakeLocator("state")
+        if selectors == bind_executor.POSTAL_CODE_SELECTORS:
+            return FakeLocator("postal")
+        return None
+
+    monkeypatch.setattr(bind_executor, "ChatGPTTeamAPI", FakeApi)
+    monkeypatch.setattr(
+        bind_executor,
+        "load_auth_session",
+        lambda _email: {
+            "sessionToken": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        bind_executor.chatgpt_session_service,
+        "inject_chatgpt_browser_cookies",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(bind_executor, "_capture_screenshot", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(bind_executor, "_locator_from_selectors", locator_from_selectors)
+    monkeypatch.setattr(
+        bind_executor,
+        "generate_tax_free_billing_address",
+        lambda: {
+            "name": "Generated User",
+            "country": "US",
+            "state": "OR",
+            "city": "Portland",
+            "zip": "97201",
+            "address1": "800 SW 5th Ave",
+        },
+    )
+    monkeypatch.setattr(
+        bind_executor,
+        "_wait_for_checkout_result",
+        lambda *_args, **_kwargs: {"status": "success", "message": "ok", "screenshot_paths": []},
+    )
+
+    result = bind_executor.run_bind_task(
+        email="user@example.com",
+        checkout_url="https://chatgpt.com/checkout/openai_llc/cs_test",
+        card_item={
+            "value": "4242424242424242",
+            "meta": {"content": {"expiry_date": "12/30", "cvv": "123"}},
+        },
+        manual_confirm=False,
+    )
+
+    assert result["status"] == "success"
+    assert ("click", "subscribe") in events
+    assert events.index(("fill", "postal", "97201")) < events.index(("click", "subscribe"))
+
+
+def test_submit_selectors_use_technical_attributes_only():
+    assert "button[type=\"submit\"]" in bind_executor.SUBMIT_SELECTORS
+    assert "input[type=\"submit\"]" in bind_executor.SUBMIT_SELECTORS
+    assert not any("has-text" in selector for selector in bind_executor.SUBMIT_SELECTORS)
+
+
 def test_paypal_progress_event_wrapper_uses_shared_stage_messages():
     assert paypal_bind_executor._progress_event("paypal_wait_result", url="https://paypal.example") == {
         "stage": "paypal_wait_result",
@@ -2913,8 +3696,11 @@ def test_paypal_pplink_billing_profile_supports_au_address():
     profile = paypal_bind_executor._paypal_pplink_billing_profile(country="AU", access_token="")
 
     assert profile["country"] == "AU"
-    assert profile["state"] == "NSW"
-    assert profile["postal_code"] == "2000"
+    assert (profile["state"], profile["postal_code"]) in {
+        ("NSW", "2000"),
+        ("VIC", "3000"),
+        ("South Australia", "5000"),
+    }
 
 
 def test_paypal_protocol_signup_keeps_onboard_referer_off_hermes(monkeypatch):
@@ -12365,3 +13151,64 @@ def test_resolve_page_billing_locator_searches_child_frames():
 
     assert locator is api.page.child_locator
     assert locator.waited == "visible"
+
+
+def test_chatgpt_ph_checkout_vat_summary_is_not_zero_tax():
+    body = """
+    按月订阅订阅
+    PHP 8,919.64
+    VAT (12%)
+    PHP 1,070.36
+    今日应付金额
+    PHP 9,990.00
+    """
+
+    assert bind_executor._tax_summary_still_has_vat(body) is True
+    assert bind_executor._tax_summary_has_zero_tax(body) is False
+
+
+def test_chatgpt_ph_checkout_recalculated_us_address_is_zero_tax():
+    body = """
+    按月订阅订阅
+    PHP 8,919.64
+    税额 (0%)
+    PHP 0.00
+    今日应付金额
+    PHP 8,919.64
+    """
+
+    assert bind_executor._tax_summary_still_has_vat(body) is False
+    assert bind_executor._tax_summary_has_zero_tax(body) is True
+
+
+def test_nudge_billing_address_recalculation_dispatches_address_fields():
+    calls = []
+
+    class FakeFrame:
+        def evaluate(self, script, fields):
+            calls.append(fields)
+            return ["country", "address", "postal_code"]
+
+    class FakePage(FakeFrame):
+        def __init__(self):
+            self.frames = [FakeFrame()]
+
+    class FakeApi:
+        def __init__(self):
+            self.page = FakePage()
+
+    bind_executor._nudge_billing_address_recalculation(
+        FakeApi(),
+        {
+            "name": "DAWN M KUCK",
+            "country": "US",
+            "address": "632 W 6th Ave",
+            "city": "Anchorage",
+            "state": "AK",
+            "postal_code": "99501",
+        },
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["country"] == "US"
+    assert calls[0]["postal_code"] == "99501"

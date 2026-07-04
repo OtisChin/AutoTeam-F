@@ -76,13 +76,6 @@ def normalize_checkout_payload_for_http(payload: dict[str, Any]) -> dict[str, An
         plan_name = "chatgptplusplan"
     if plan_name == "chatgptplusplan":
         normalized.setdefault("entry_point", "all_plans_pricing_modal")
-        normalized.setdefault(
-            "promo_campaign",
-            {
-                "promo_campaign_id": "plus-1-month-free",
-                "is_coupon_from_query_param": False,
-            },
-        )
     billing_details = normalized.get("billing_details") if isinstance(normalized.get("billing_details"), dict) else {}
     normalized["billing_details"] = {
         "country": str(billing_details.get("country") or "US").strip().upper() or "US",

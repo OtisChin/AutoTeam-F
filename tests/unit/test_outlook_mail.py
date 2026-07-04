@@ -77,6 +77,24 @@ def test_create_temp_email_exhausted_when_all_registered(monkeypatch):
         client.create_temp_email()
 
 
+def test_create_temp_email_skips_persisted_registered_accounts_after_restart(tmp_path, monkeypatch):
+    from autotoken.storage import outlook_pool
+
+    monkeypatch.setattr(outlook_pool, "STATE_FILE", tmp_path / "outlook_pool.json")
+    outlook_pool.mark_registered_email("used@outlook.com", source="register_success")
+
+    restarted = OutlookMailProvider()
+    restarted.accounts = [
+        OutlookMailProvider._parse_account_line("used@outlook.com----p"),
+        OutlookMailProvider._parse_account_line("new@outlook.com----p"),
+    ]
+
+    account_id, email = restarted.create_temp_email()
+
+    assert account_id == "new@outlook.com"
+    assert email == "new@outlook.com"
+
+
 def test_list_accounts_limits_and_marks_account_capabilities():
     client = OutlookMailProvider()
     client.accounts = [

@@ -34,13 +34,13 @@ def test_proxy_api_url_detection_and_provider_defaults():
         "https://white.1024proxy.com/white/api?region=JP&num=1&time=10&format=1&type=json"
     )
     assert proxy_runtime.default_proxy_api_url("cliproxy") == (
-        "https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json"
+        "https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json"
     )
     assert proxy_runtime.default_paypal_proxy_api_url("1024") == (
         "https://white.1024proxy.com/white/api?region=US&num=1&time=10&format=1&type=json"
     )
     assert proxy_runtime.default_gopay_proxy_api_url("cliproxy") == (
-        "https://api.cliproxy.io/white/api?region=ID&num=1&time=10&format=n&type=txt"
+        "https://api.cliproxy.io/white/api?region=ID&num=1&time=30&format=n&type=txt"
     )
 
 
@@ -49,7 +49,7 @@ def test_default_paypal_proxy_api_url_uses_country_except_protocol_no_card_defau
         "https://white.1024proxy.com/white/api?region=JP&num=1&time=10&format=1&type=json"
     )
     assert proxy_runtime.default_paypal_proxy_api_url("cliproxy", country="jp") == (
-        "https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json"
+        "https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json"
     )
     assert proxy_runtime.default_paypal_proxy_api_url("1024proxy", country="JP", protocol_no_card=True) == (
         "https://white.1024proxy.com/white/api?region=JP&num=1&time=10&format=1&type=json"

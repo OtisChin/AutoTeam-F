@@ -210,6 +210,18 @@ def _mail_client_provider_name(mail_client) -> str:
     return str(getattr(inner, "provider_name", "") or "").strip().lower()
 
 
+def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
+    provider = (mail_provider or _mail_client_provider_name(mail_client)).strip().lower() if (mail_provider or mail_client) else ""
+    if provider != "outlook":
+        return
+    try:
+        from autotoken.storage.outlook_pool import mark_registered_email
+
+        mark_registered_email(email, source=source or "register_success")
+    except Exception:
+        logger.debug("[outlook] 写入 Outlook 邮箱池持久注册状态失败: %s", email, exc_info=True)
+
+
 def _direct_register_code_timeout(mail_client, email: str | None = None) -> int:
     provider_name = _mail_client_provider_name(mail_client)
     if provider_name == "outlook":
@@ -1840,6 +1852,7 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         seat_type=SEAT_CODEX,
         mail_provider=mail_provider,
     )
+    _mark_outlook_email_registered(email, mail_provider=mail_provider, source="auth_session_saved")
     logger.info("[注册] auth_session 已保存: %s", auth_file)
     update_account(email, **registration.auth_session_update_fields(last_active_at=time.time()))
     logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)
@@ -1935,6 +1948,7 @@ def _save_codex_oauth_bundle_for_account(
         seat_type=seat_type,
         mail_provider=mail_provider,
     )
+    _mark_outlook_email_registered(email, mail_provider=mail_provider, source=source)
     update_account(email, **registration.free_codex_oauth_update_fields(auth_file=auth_file, last_active_at=time.time()))
     logger.info("[注册] 协议 Codex OAuth 已保存 CPA JSON: %s plan=%s auth_file=%s", email, plan_type, auth_file)
     _record_outcome(
@@ -3525,6 +3539,7 @@ def create_account_direct(
                 return None
             if blocked.is_duplicate:
                 # 邮箱重复 → 换一个全新的临时邮箱再来，不计入 register_attempts
+                _mark_outlook_email_registered(email, mail_client, source="email_already_in_use")
                 duplicate_swaps += 1
                 if duplicate_swaps > MAX_DUPLICATE_SWAPS:
                     logger.error("[直接注册] duplicate 换邮箱已达上限 %d，放弃", MAX_DUPLICATE_SWAPS)
@@ -3601,6 +3616,7 @@ def create_account_direct(
 
         if success:
             _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)
+            _mark_outlook_email_registered(email, mail_client, source="register_success")
             if not check_team_membership:
                 try:
                     logger.info("[注册] 独立注册成功，开始调用 /api/auth/session 保存 auth_session: %s", email)

@@ -89,7 +89,7 @@ def default_proxy_api_url(provider: str, _proxy_url: str = "") -> str:
     normalized_provider = normalize_proxy_api_provider(provider)
     if normalized_provider == "1024proxy":
         return "https://white.1024proxy.com/white/api?region=JP&num=1&time=10&format=1&type=json"
-    return "https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json"
+    return "https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json"
 
 
 def default_paypal_proxy_api_url(provider: str, *, country: str = "US", protocol_no_card: bool = False) -> str:
@@ -97,14 +97,14 @@ def default_paypal_proxy_api_url(provider: str, *, country: str = "US", protocol
     region = re.sub(r"[^A-Za-z]", "", str(country or "US").strip().upper())[:2] or "US"
     if normalized_provider == "1024proxy":
         return f"https://white.1024proxy.com/white/api?region={region}&num=1&time=10&format=1&type=json"
-    return f"https://api.cliproxy.io/white/api?region={region}&num=1&time=10&format=n&type=json"
+    return f"https://api.cliproxy.io/white/api?region={region}&num=1&time=30&format=n&type=json"
 
 
 def default_gopay_proxy_api_url(provider: str, _proxy_url: str = "") -> str:
     normalized_provider = normalize_proxy_api_provider(provider)
     if normalized_provider == "1024proxy":
         return "https://white.1024proxy.com/white/api?region=ID&num=1&time=10&format=1&type=json"
-    return "https://api.cliproxy.io/white/api?region=ID&num=1&time=10&format=n&type=txt"
+    return "https://api.cliproxy.io/white/api?region=ID&num=1&time=30&format=n&type=txt"
 
 
 def proxy_api_url_with_region(api_url: str, region: str) -> str:

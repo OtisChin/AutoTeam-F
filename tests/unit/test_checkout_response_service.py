@@ -46,7 +46,7 @@ def test_choose_checkout_error_status_preserves_client_retriable_statuses():
     assert checkout_response.choose_checkout_error_status(500) == 502
 
 
-def test_normalize_checkout_payload_for_http_adds_plus_defaults_and_billing_uppercase():
+def test_normalize_checkout_payload_for_http_adds_plus_entry_point_and_billing_uppercase():
     payload = checkout_response.normalize_checkout_payload_for_http(
         {
             "billing_details": {"country": " jp ", "currency": " jpy "},
@@ -56,12 +56,28 @@ def test_normalize_checkout_payload_for_http_adds_plus_defaults_and_billing_uppe
 
     assert payload["plan_name"] == "chatgptplusplan"
     assert payload["entry_point"] == "all_plans_pricing_modal"
-    assert payload["promo_campaign"] == {
-        "promo_campaign_id": "plus-1-month-free",
-        "is_coupon_from_query_param": False,
-    }
+    assert "promo_campaign" not in payload
     assert payload["billing_details"] == {"country": "JP", "currency": "JPY"}
     assert payload["checkout_ui_mode"] == "hosted"
+
+
+def test_normalize_checkout_payload_for_http_does_not_inject_plus_promo_campaign():
+    payload = checkout_response.normalize_checkout_payload_for_http(
+        {
+            "plan_name": "chatgptplusplan",
+            "billing_details": {"country": "PH", "currency": "PHP"},
+            "checkout_ui_mode": "hosted",
+            "entry_point": "all_plans_pricing_modal",
+        }
+    )
+
+    assert "promo_campaign" not in payload
+    assert payload == {
+        "plan_name": "chatgptplusplan",
+        "billing_details": {"country": "PH", "currency": "PHP"},
+        "checkout_ui_mode": "hosted",
+        "entry_point": "all_plans_pricing_modal",
+    }
 
 
 def test_normalize_checkout_payload_for_http_preserves_non_plus_plan_and_custom_mode():
