@@ -8,11 +8,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from autotoken.services import payment_checkout_state, paypal_preflight
 
 
-def paypal_ba_extract_attempts(value: Any, *, default: int = 5) -> int:
+def paypal_ba_extract_attempts(value: Any, *, default: int = 15) -> int:
     try:
-        return max(1, min(5, int(value if value is not None else default)))
+        return max(1, min(15, int(value if value is not None else default)))
     except Exception:
-        return max(1, min(5, int(default or 5)))
+        return max(1, min(15, int(default or 15)))
 
 
 def paypal_ba_payment_method_country(
@@ -25,6 +25,9 @@ def paypal_ba_payment_method_country(
     normalized_override = re.sub(r"[^A-Za-z]", "", str(override or "")).upper()[:2]
     if normalized_override:
         return normalized_override
+    normalized_mode = paypal_ba_extract_mode(paypal_ba_mode)
+    if protocol_no_card and normalized_mode == "br":
+        return "BR"
     if protocol_no_card:
         return "US"
     normalized_country = re.sub(r"[^A-Za-z]", "", str(paypal_country or "")).upper()[:2]
@@ -33,7 +36,11 @@ def paypal_ba_payment_method_country(
 
 def paypal_ba_extract_mode(value: Any) -> str:
     normalized = re.sub(r"[^A-Za-z]", "", str(value or "").lower())
-    return "us" if normalized == "us" else "eu"
+    if normalized in {"us", "eu", "br"}:
+        return normalized
+    if normalized in {"brbrl", "brazil", "brasil"}:
+        return "br"
+    return "eu"
 
 
 def paypal_ba_checkout_country(paypal_country: str) -> str:
@@ -73,8 +80,19 @@ def paypal_extract_result_from_redirect(
     *,
     resolve_approve_url: Callable[[Any, str], tuple[str, str]],
 ) -> dict[str, Any]:
+    raw_redirect_url = str(redirect_url or "").strip()
+    if paypal_protocol_is_pm_redirect_url(raw_redirect_url):
+        return {
+            "status": "success",
+            "ba_token": "",
+            "approve_url": raw_redirect_url,
+            "provider_redirect_url": raw_redirect_url,
+            "payment_link_type": "paypal_redirect",
+            "checkout_session_id": checkout_session_id,
+            "pm_id": pm_id,
+        }
     try:
-        approve_url, ba_token = resolve_approve_url(http, redirect_url)
+        approve_url, ba_token = resolve_approve_url(http, raw_redirect_url)
     except Exception as exc:
         return {
             "status": "failed",
@@ -104,6 +122,8 @@ def paypal_extract_result_from_redirect(
         "status": "success",
         "ba_token": ba_token,
         "approve_url": approve_url,
+        "provider_redirect_url": raw_redirect_url,
+        "payment_link_type": "paypal_approve",
         "checkout_session_id": checkout_session_id,
         "pm_id": pm_id,
     }
@@ -111,9 +131,8 @@ def paypal_extract_result_from_redirect(
 
 def paypal_protocol_elements_options() -> dict[str, str]:
     return {
-        "elements_options_client[stripe_js_locale]": "auto",
-        "elements_options_client[saved_payment_method][enable_save]": "auto",
-        "elements_options_client[saved_payment_method][enable_redisplay]": "auto",
+        "elements_options_client[saved_payment_method][enable_save]": "never",
+        "elements_options_client[saved_payment_method][enable_redisplay]": "never",
     }
 
 
@@ -184,6 +203,14 @@ def paypal_protocol_extract_url_from_text(value: str) -> str:
         if "paypal.com" in lowered or "pm-redirects.stripe.com" in lowered:
             return url
     return ""
+
+
+def paypal_protocol_is_pm_redirect_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(str(value or ""))
+    except Exception:
+        return False
+    return parsed.scheme.lower() == "https" and (parsed.hostname or "").lower() == "pm-redirects.stripe.com"
 
 
 def paypal_protocol_extract_ba_token(url: str, fallback: str = "") -> str:

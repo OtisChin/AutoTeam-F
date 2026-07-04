@@ -32,8 +32,11 @@ def new_http_session(
     *,
     require_curl_cffi: bool = False,
     tls_impersonate_env: str = "GOPAY_TLS_IMPERSONATE",
+    force_requests: bool = False,
 ) -> Any:
-    if _CurlCffiSession is not None:
+    preferred_transport = str(os.environ.get("AUTOTOKEN_HTTP_TRANSPORT") or "").strip().lower()
+    use_requests = force_requests or preferred_transport in {"requests", "request", "urllib3"}
+    if _CurlCffiSession is not None and not use_requests:
         session = _CurlCffiSession(impersonate=os.environ.get(tls_impersonate_env, "chrome136"))
         session.trust_env = False
         try:
@@ -41,7 +44,7 @@ def new_http_session(
         except Exception:
             pass
     else:
-        if require_curl_cffi:
+        if require_curl_cffi and _CurlCffiSession is None:
             raise PaymentHttpError(
                 "ChatGPT checkout/approve 需要 curl-cffi 的 Chrome TLS 指纹；"
                 "当前环境未安装 curl_cffi，请执行 `pip install curl-cffi` 或重新安装项目依赖后重试",

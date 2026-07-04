@@ -253,7 +253,7 @@ def run_live(args: argparse.Namespace) -> int:
         combo_success = 0
         combo_fail = 0
 
-        for email, auth_file, token in accounts_to_use:
+        for email, auth_file, _token in accounts_to_use:
             print(f"\n  Testing {email}...")
             outcome = test_extraction(
                 proxy_url=proxy_url,
@@ -321,8 +321,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--start-index", type=int, default=0, help="Start offset in the valid account list (default: 0)")
     p.add_argument("--email", action="append", help="Only test the selected email(s); repeat or comma-separate")
     p.add_argument("--timeout", type=int, default=120, help="Timeout per extraction attempt (default: 120s)")
-    p.add_argument("--paypal-ba-mode", choices=["us", "eu"], default="us", help="BA extraction mode")
-    p.add_argument("--payment-country", choices=["US", "AU"], default="US", help="PayPal payment/billing country")
+    p.add_argument("--paypal-ba-mode", choices=["us", "eu", "br"], default="us", help="BA extraction mode")
+    p.add_argument("--payment-country", choices=["US", "AU", "BR"], default="US", help="PayPal payment/billing country")
     p.add_argument(
         "--combo",
         choices=[label for *_rest, label in COMBINATIONS],

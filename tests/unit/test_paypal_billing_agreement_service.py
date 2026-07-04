@@ -4,8 +4,16 @@ from autotoken.services import paypal_billing_agreement as paypal_ba
 def test_paypal_ba_extract_attempts_clamps_and_falls_back():
     assert paypal_ba.paypal_ba_extract_attempts("0") == 1
     assert paypal_ba.paypal_ba_extract_attempts("3") == 3
-    assert paypal_ba.paypal_ba_extract_attempts("99") == 5
-    assert paypal_ba.paypal_ba_extract_attempts("bad") == 5
+    assert paypal_ba.paypal_ba_extract_attempts("99") == 15
+    assert paypal_ba.paypal_ba_extract_attempts("bad") == 15
+
+
+def test_paypal_ba_extract_mode_preserves_supported_regions():
+    assert paypal_ba.paypal_ba_extract_mode("us") == "us"
+    assert paypal_ba.paypal_ba_extract_mode("eu") == "eu"
+    assert paypal_ba.paypal_ba_extract_mode("br") == "br"
+    assert paypal_ba.paypal_ba_extract_mode("BR/BRL") == "br"
+    assert paypal_ba.paypal_ba_extract_mode("") == "eu"
 
 
 def test_paypal_ba_payment_method_country_prefers_override_then_protocol_rules():
@@ -33,6 +41,15 @@ def test_paypal_ba_payment_method_country_prefers_override_then_protocol_rules()
             paypal_ba_mode="us",
         )
         == "US"
+    )
+    assert (
+        paypal_ba.paypal_ba_payment_method_country(
+            override="",
+            protocol_no_card=True,
+            paypal_country="JP",
+            paypal_ba_mode="br",
+        )
+        == "BR"
     )
     assert (
         paypal_ba.paypal_ba_payment_method_country(
@@ -135,7 +152,7 @@ def test_paypal_checkout_payload_uses_paypal_zero_trial_defaults():
 def test_paypal_extract_result_from_redirect_returns_success_payload():
     result = paypal_ba.paypal_extract_result_from_redirect(
         object(),
-        "https://pm-redirects.stripe.com/authorize/test",
+        "https://www.paypal.com/pay?token=BA-DEMO",
         "cs_test",
         "pm_test",
         resolve_approve_url=lambda _http, _url: ("https://www.paypal.com/pay?token=BA-DEMO", "BA-DEMO"),
@@ -145,15 +162,45 @@ def test_paypal_extract_result_from_redirect_returns_success_payload():
         "status": "success",
         "ba_token": "BA-DEMO",
         "approve_url": "https://www.paypal.com/pay?token=BA-DEMO",
+        "provider_redirect_url": "https://www.paypal.com/pay?token=BA-DEMO",
+        "payment_link_type": "paypal_approve",
         "checkout_session_id": "cs_test",
         "pm_id": "pm_test",
     }
 
 
-def test_paypal_extract_result_from_redirect_reports_resolve_failures():
+def test_paypal_extract_result_from_redirect_accepts_pm_redirect_without_resolving():
+    called = False
+
+    def resolve_approve_url(_http, _url):
+        nonlocal called
+        called = True
+        return "https://www.paypal.com/pay?token=BA-DEMO", "BA-DEMO"
+
     result = paypal_ba.paypal_extract_result_from_redirect(
         object(),
         "https://pm-redirects.stripe.com/authorize/test",
+        "cs_test",
+        "pm_test",
+        resolve_approve_url=resolve_approve_url,
+    )
+
+    assert result == {
+        "status": "success",
+        "ba_token": "",
+        "approve_url": "https://pm-redirects.stripe.com/authorize/test",
+        "provider_redirect_url": "https://pm-redirects.stripe.com/authorize/test",
+        "payment_link_type": "paypal_redirect",
+        "checkout_session_id": "cs_test",
+        "pm_id": "pm_test",
+    }
+    assert called is False
+
+
+def test_paypal_extract_result_from_redirect_reports_resolve_failures():
+    result = paypal_ba.paypal_extract_result_from_redirect(
+        object(),
+        "https://www.paypal.com/checkoutnow/test",
         "cs_test",
         "pm_test",
         resolve_approve_url=lambda _http, _url: (_ for _ in ()).throw(RuntimeError("network down")),
@@ -171,14 +218,14 @@ def test_paypal_extract_result_from_redirect_reports_resolve_failures():
 def test_paypal_extract_result_from_redirect_reports_missing_approve_url_or_ba_token():
     missing_approve = paypal_ba.paypal_extract_result_from_redirect(
         object(),
-        "https://pm-redirects.stripe.com/authorize/test",
+        "https://www.paypal.com/checkoutnow/test",
         "cs_test",
         "pm_test",
         resolve_approve_url=lambda _http, _url: ("", ""),
     )
     missing_token = paypal_ba.paypal_extract_result_from_redirect(
         object(),
-        "https://pm-redirects.stripe.com/authorize/test",
+        "https://www.paypal.com/checkoutnow/test",
         "cs_test",
         "pm_test",
         resolve_approve_url=lambda _http, _url: ("https://www.paypal.com/pay?token=", ""),
@@ -192,9 +239,8 @@ def test_paypal_extract_result_from_redirect_reports_missing_approve_url_or_ba_t
 
 def test_paypal_protocol_elements_options_match_stripe_checkout_contract():
     assert paypal_ba.paypal_protocol_elements_options() == {
-        "elements_options_client[stripe_js_locale]": "auto",
-        "elements_options_client[saved_payment_method][enable_save]": "auto",
-        "elements_options_client[saved_payment_method][enable_redisplay]": "auto",
+        "elements_options_client[saved_payment_method][enable_save]": "never",
+        "elements_options_client[saved_payment_method][enable_redisplay]": "never",
     }
 
 

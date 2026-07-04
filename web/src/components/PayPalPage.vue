@@ -206,6 +206,7 @@
                 <select v-model="form.paypalBaPaymentMethodCountry" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
                   <option value="US">US</option>
                   <option value="AU">AU</option>
+                  <option value="BR">BR</option>
                 </select>
                 <div class="mt-2 text-xs text-gray-500">
                   checkout 固定走 JP sticky 代理；支付侧与 billing 会跟随这里的国家。
@@ -217,6 +218,7 @@
                 <select v-model="form.paypalBaMode" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
                   <option value="eu">EU 模式（FR/EUR/custom）</option>
                   <option value="us">US 模式（US/USD/hosted）</option>
+                  <option value="br">BR 模式（BR/BRL/custom）</option>
                 </select>
                 <div class="mt-2 text-xs text-gray-500">
                   {{ paypalBaModeHelp }}
@@ -907,7 +909,7 @@ const isNoCardPayPalMode = computed(() => (
 ))
 const paypalPaymentCountry = computed(() => {
   const value = String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase()
-  return ['US', 'AU'].includes(value) ? value : 'US'
+  return ['US', 'AU', 'BR'].includes(value) ? value : 'US'
 })
 const paypalCountry = computed(() => form.value.paypalRegion === 'JP_NOCARD' ? 'JP' : String(form.value.billingCountry || 'US').trim().toUpperCase())
 const paypalLang = computed(() => paypalCountry.value === 'JP' ? 'ja' : 'en')
@@ -917,9 +919,11 @@ const paypalRegionHelp = computed(() => (
     : '保留现有美区流程，可用浏览器或协议模式，自动注册时按原规则使用卡片。'
 ))
 const paypalBaModeHelp = computed(() => (
-  form.value.paypalBaMode === 'us'
-    ? `使用 pplink US 模式；checkout 固定走 JP sticky，支付 / billing 走 ${paypalPaymentCountry.value}。`
-    : `使用 pplink EU 模式；checkout 固定走 JP sticky，支付 / billing 走 ${paypalPaymentCountry.value}。`
+  form.value.paypalBaMode === 'br'
+    ? '使用 OPLL BR 模式；checkout 走 BR/BRL/custom，支付 / billing 固定走 BR。'
+    : form.value.paypalBaMode === 'us'
+      ? `使用 OPLL US 模式；checkout 走 US/USD/custom，支付 / billing 走 ${paypalPaymentCountry.value}。`
+      : `使用 OPLL EU 模式；checkout 走 FR/EUR/custom，支付 / billing 走 ${paypalPaymentCountry.value}。`
 ))
 const singleSelectedEmail = computed(() => String(selectedAccountEmail.value || '').trim().toLowerCase())
 const phonePoolEntries = computed(() => parsePayPalPhonePool(form.value.phonePoolText, { strict: false }))
@@ -1058,10 +1062,13 @@ function applyPayPalRegionDefaults() {
   if (form.value.paypalRegion === 'JP_NOCARD') {
     form.value.paypalMode = 'create_account'
     form.value.paypalBrowser = 'protocol'
-    if (!['eu', 'us'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
+    if (!['eu', 'us', 'br'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
       form.value.paypalBaMode = 'us'
     }
-    if (!['US', 'AU'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
+    if (String(form.value.paypalBaMode || '').toLowerCase() === 'br') {
+      form.value.paypalBaPaymentMethodCountry = 'BR'
+    }
+    if (!['US', 'AU', 'BR'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
       form.value.paypalBaPaymentMethodCountry = 'US'
     }
     form.value.billingCountry = paypalPaymentCountry.value
@@ -1415,12 +1422,15 @@ function restorePayPalState() {
       if (saved.form.paypalProtocolRoxyFallback === undefined) {
         form.value.paypalProtocolRoxyFallback = false
       }
-      if (!['eu', 'us'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
+      if (!['eu', 'us', 'br'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
         form.value.paypalBaMode = 'us'
       } else {
         form.value.paypalBaMode = String(form.value.paypalBaMode || 'us').toLowerCase()
       }
-      if (!['US', 'AU'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
+      if (form.value.paypalBaMode === 'br') {
+        form.value.paypalBaPaymentMethodCountry = 'BR'
+      }
+      if (!['US', 'AU', 'BR'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
         form.value.paypalBaPaymentMethodCountry = 'US'
       } else {
         form.value.paypalBaPaymentMethodCountry = String(form.value.paypalBaPaymentMethodCountry || 'US').trim().toUpperCase()
@@ -1959,6 +1969,18 @@ watch(
     if (form.value.paypalRegion === 'JP_NOCARD') {
       form.value.billingCountry = paypalPaymentCountry.value
     }
+  }
+)
+
+watch(
+  () => form.value.paypalBaMode,
+  () => {
+    if (form.value.paypalRegion !== 'JP_NOCARD') return
+    const mode = String(form.value.paypalBaMode || '').toLowerCase()
+    if (mode === 'br') {
+      form.value.paypalBaPaymentMethodCountry = 'BR'
+    }
+    form.value.billingCountry = paypalPaymentCountry.value
   }
 )
 

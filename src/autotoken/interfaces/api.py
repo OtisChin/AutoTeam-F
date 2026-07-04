@@ -9001,7 +9001,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
         )
 
     def _paypal_ba_extract_attempts() -> int:
-        return paypal_ba_service.paypal_ba_extract_attempts(os.environ.get("PAYPAL_BA_EXTRACT_ATTEMPTS", "5"))
+        return paypal_ba_service.paypal_ba_extract_attempts(os.environ.get("PAYPAL_BA_EXTRACT_ATTEMPTS", "15"))
 
     def _paypal_ba_payment_method_country() -> str:
         return paypal_ba_payment_method_country
