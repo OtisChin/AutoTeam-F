@@ -744,6 +744,10 @@ def test_post_paypal_task_protocol_auto_provisioned_sms_bridge_closed_after_succ
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
     monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
     monkeypatch.setattr(
+        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
+        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
+    )
+    monkeypatch.setattr(
         api.paypal_phone_pool_service,
         "paypal_sms_auto_provision_enabled",
         lambda **kwargs: kwargs["paypal_mode"] == "create_account" and kwargs["protocol_no_card"],
@@ -808,6 +812,7 @@ def test_post_paypal_task_protocol_auto_provisioned_sms_bridge_closed_after_succ
             paypal_browser="protocol",
             paypal_country="JP",
             paypal_lang="ja",
+            paypal_jp_proxy_url="socks5://jp.example.test:1080",
             autofill_enabled=True,
         )
     )
@@ -2652,6 +2657,10 @@ def test_paypal_protocol_cliproxy_api_uses_us_provider_stage_proxy(monkeypatch):
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
     monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
     monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
+    monkeypatch.setattr(
+        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
+        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
+    )
     monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
     monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
@@ -2737,14 +2746,14 @@ def test_paypal_protocol_cliproxy_api_uses_us_provider_stage_proxy(monkeypatch):
 
     assert result["status"] == "success"
     assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=txt", 30),
+        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=txt", 30),
         ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=txt", 30),
     ]
-    assert captured["extract_kwargs"]["proxy_url"] == "socks5h://107.150.109.49:7104"
+    assert captured["extract_kwargs"]["proxy_url"] == "socks5h://103.49.62.181:19004"
     assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://107.150.109.49:7104"
     assert captured["extract_kwargs"]["paypal_ba_mode"] == "us"
     assert captured["params"]["proxy_api_provider"] == "cliproxy"
-    assert not any(event.get("stage") == "paypal_provider_proxy_selected" for event in captured["progress"])
+    assert any(event.get("stage") == "paypal_provider_proxy_selected" for event in captured["progress"])
 
 
 def test_paypal_protocol_cliproxy_provider_defaults_to_jp_then_us_provider(monkeypatch):
@@ -2758,6 +2767,10 @@ def test_paypal_protocol_cliproxy_provider_defaults_to_jp_then_us_provider(monke
     monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
     monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
     monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
+    monkeypatch.setattr(
+        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
+        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
+    )
     monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
     monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
     monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
@@ -2845,9 +2858,341 @@ def test_paypal_protocol_cliproxy_provider_defaults_to_jp_then_us_provider(monke
     ]
     assert captured["extract_kwargs"]["proxy_url"] == "socks5h://103.49.62.181:19004"
     assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://107.150.109.49:7104"
+    assert captured["extract_kwargs"]["payment_method_country"] == "US"
     assert captured["extract_kwargs"]["paypal_ba_mode"] == "eu"
     assert captured["params"]["proxy_api_provider"] == "cliproxy"
     assert captured["params"]["proxy_api_url_present"] is True
+
+
+def test_paypal_protocol_payment_country_override_updates_provider_region(monkeypatch):
+    captured = {"extract_kwargs": {}, "progress": [], "api_calls": []}
+    accounts = [{"email": "first@example.com"}]
+
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
+    )
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
+    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
+    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
+    monkeypatch.setattr(
+        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
+        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
+    )
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
+    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+
+        def __init__(self, text):
+            self.text = text
+
+    def fake_get(url, timeout):
+        captured["api_calls"].append((url, timeout))
+        if "region=AU" in url:
+            return FakeResponse("203.0.113.7:7104")
+        return FakeResponse("103.49.62.181:19004")
+
+    monkeypatch.setattr(api.requests, "get", fake_get)
+    monkeypatch.setattr(
+        "autotoken.paypal_bind_executor._extract_auth_session_context",
+        lambda _email: {
+            "access_token": "extract-token",
+            "session_token": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+        },
+    )
+    monkeypatch.setattr(
+        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
+        lambda **kwargs: (
+            captured.update({"extract_kwargs": kwargs})
+            or {
+                "status": "success",
+                "ba_token": "BA-AU",
+                "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-AU",
+                "checkout_url": "https://pay.openai.com/c/pay/cs_demo#hash",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "autotoken.paypal_bind_executor.run_paypal_bind_task",
+        lambda **kwargs: {
+            "status": "success",
+            "failure_stage": "",
+            "message": "PayPal 绑定完成",
+            "screenshot_paths": [],
+            "checkout_url": kwargs["checkout_url"],
+        },
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: (
+            captured.update({"func": func, "params": params})
+            or {"task_id": "task-paypal-au-provider-proxy", "command": command, "params": params}
+        ),
+    )
+
+    api.post_paypal_task(
+        api.PayPalTaskParams(
+            runner_mode="manual_checkout",
+            email="first@example.com",
+            bind_link_payload={"plan_name": "chatgptplusplan"},
+            proxy_api_provider="cliproxy",
+            paypal_browser="protocol",
+            paypal_country="JP",
+            paypal_ba_mode="us",
+            paypal_ba_payment_method_country="AU",
+            manual_confirm=False,
+            paypal_mode="create_account",
+            autofill_enabled=True,
+            billing_phone="+819012345678",
+            sms_url="https://sms.example.test/token=demo",
+        )
+    )
+
+    result = captured["func"]()
+
+    assert result["status"] == "success"
+    assert captured["api_calls"][:2] == [
+        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=AU&num=1&time=10&format=n&type=json", 30),
+    ]
+    assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://203.0.113.7:7104"
+    assert captured["extract_kwargs"]["payment_method_country"] == "AU"
+
+
+def test_paypal_protocol_requires_jp_checkout_proxy_before_extract(monkeypatch):
+    captured = {"progress": []}
+    accounts = [{"email": "first@example.com"}]
+
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
+    )
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
+    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
+    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
+    monkeypatch.setattr(
+        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
+        lambda *_args, **_kwargs: {
+            "country_code": "US",
+            "region": "California",
+            "city": "Los Angeles",
+            "ip": "203.0.113.20",
+        },
+    )
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
+    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+    monkeypatch.setattr(
+        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
+        lambda **_kwargs: pytest.fail("BA extraction should not start when checkout proxy is not JP"),
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: (
+            captured.update({"func": func, "params": params})
+            or {"task_id": "task-paypal-jp-guard", "command": command, "params": params}
+        ),
+    )
+
+    api.post_paypal_task(
+        api.PayPalTaskParams(
+            runner_mode="manual_checkout",
+            email="first@example.com",
+            bind_link_payload={"plan_name": "chatgptplusplan"},
+            proxy_url="socks5h://198.51.100.8:1080",
+            paypal_browser="protocol",
+            paypal_country="JP",
+            manual_confirm=False,
+            paypal_mode="create_account",
+            autofill_enabled=True,
+            billing_phone="+819012345678",
+            sms_url="https://sms.example.test/token=demo",
+            pending_retry_attempts=0,
+        )
+    )
+
+    with pytest.raises(api.TaskResultError) as exc_info:
+        captured["func"]()
+
+    result = exc_info.value.task_result
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "paypal_checkout_proxy_country_mismatch"
+    assert result["checkout_proxy_country"] == "US"
+    assert any(event["stage"] == "paypal_checkout_proxy_country_mismatch" for event in captured["progress"])
+
+
+def test_paypal_protocol_blocks_when_checkout_proxy_country_probe_is_unknown(monkeypatch):
+    captured = {"progress": []}
+    accounts = [{"email": "first@example.com"}]
+
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
+    )
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
+    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
+    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
+    monkeypatch.setattr("autotoken.services.paypal_proxy.paypal_proxy_exit_location", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
+    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+    monkeypatch.setattr(
+        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
+        lambda **_kwargs: pytest.fail("BA extraction should not start when checkout proxy country is unknown"),
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: (
+            captured.update({"func": func, "params": params})
+            or {"task_id": "task-paypal-jp-guard-unknown", "command": command, "params": params}
+        ),
+    )
+
+    api.post_paypal_task(
+        api.PayPalTaskParams(
+            runner_mode="manual_checkout",
+            email="first@example.com",
+            bind_link_payload={"plan_name": "chatgptplusplan"},
+            proxy_url="socks5h://198.51.100.8:1080",
+            paypal_browser="protocol",
+            paypal_country="JP",
+            manual_confirm=False,
+            paypal_mode="create_account",
+            autofill_enabled=True,
+            billing_phone="+819012345678",
+            sms_url="https://sms.example.test/token=demo",
+            pending_retry_attempts=0,
+        )
+    )
+
+    with pytest.raises(api.TaskResultError) as exc_info:
+        captured["func"]()
+
+    result = exc_info.value.task_result
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "paypal_checkout_proxy_country_mismatch"
+    assert result["checkout_proxy_country"] == ""
+    assert "无法确认是否为 JP" in result["message"]
+    assert any(event["stage"] == "paypal_checkout_proxy_country_mismatch" for event in captured["progress"])
+
+
+def test_paypal_protocol_ba_retry_reuses_same_sticky_proxies(monkeypatch):
+    captured = {"progress": [], "api_calls": [], "extract_calls": []}
+    accounts = [{"email": "first@example.com"}]
+
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
+    )
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
+    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
+    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
+    monkeypatch.setattr(
+        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
+        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
+    )
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
+    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
+    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+
+        def __init__(self, text):
+            self.text = text
+
+    def fake_get(url, timeout):
+        captured["api_calls"].append((url, timeout))
+        if "region=US" in url:
+            return FakeResponse("107.150.109.49:7104")
+        return FakeResponse("103.49.62.181:19004")
+
+    monkeypatch.setattr(api.requests, "get", fake_get)
+    monkeypatch.setattr(
+        "autotoken.paypal_bind_executor._extract_auth_session_context",
+        lambda _email: {
+            "access_token": "extract-token",
+            "session_token": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+        },
+    )
+
+    attempt = {"count": 0}
+
+    def fake_extract(**kwargs):
+        attempt["count"] += 1
+        captured["extract_calls"].append((kwargs["proxy_url"], kwargs["provider_proxy_url"]))
+        if attempt["count"] == 1:
+            return {
+                "status": "failed",
+                "failure_stage": "extract_ba_link_pplink_timeout",
+                "message": "timeout",
+            }
+        return {
+            "status": "success",
+            "ba_token": "BA-RETRY",
+            "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-RETRY",
+            "checkout_url": "https://pay.openai.com/c/pay/cs_demo#hash",
+        }
+
+    monkeypatch.setattr("autotoken.paypal_bind_executor._paypal_extract_ba_link", fake_extract)
+    monkeypatch.setattr(
+        "autotoken.paypal_bind_executor.run_paypal_bind_task",
+        lambda **kwargs: {
+            "status": "success",
+            "failure_stage": "",
+            "message": "PayPal 绑定完成",
+            "screenshot_paths": [],
+            "checkout_url": kwargs["checkout_url"],
+        },
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: (
+            captured.update({"func": func, "params": params})
+            or {"task_id": "task-paypal-sticky-retry", "command": command, "params": params}
+        ),
+    )
+
+    api.post_paypal_task(
+        api.PayPalTaskParams(
+            runner_mode="manual_checkout",
+            email="first@example.com",
+            bind_link_payload={"plan_name": "chatgptplusplan"},
+            proxy_api_provider="cliproxy",
+            paypal_browser="protocol",
+            paypal_country="JP",
+            paypal_ba_mode="us",
+            manual_confirm=False,
+            paypal_mode="create_account",
+            autofill_enabled=True,
+            billing_phone="+819012345678",
+            sms_url="https://sms.example.test/token=demo",
+        )
+    )
+
+    result = captured["func"]()
+
+    assert result["status"] == "success"
+    assert captured["api_calls"][:2] == [
+        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json", 30),
+        ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=json", 30),
+    ]
+    assert len(captured["api_calls"]) == 2
+    assert captured["extract_calls"] == [
+        ("socks5h://103.49.62.181:19004", "socks5h://107.150.109.49:7104"),
+        ("socks5h://103.49.62.181:19004", "socks5h://107.150.109.49:7104"),
+    ]
 
 
 def test_paypal_proxy_api_rejects_html_response(monkeypatch):

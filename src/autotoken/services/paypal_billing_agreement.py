@@ -26,8 +26,6 @@ def paypal_ba_payment_method_country(
     if normalized_override:
         return normalized_override
     if protocol_no_card:
-        if paypal_ba_extract_mode(paypal_ba_mode) == "eu":
-            return "JP"
         return "US"
     normalized_country = re.sub(r"[^A-Za-z]", "", str(paypal_country or "")).upper()[:2]
     return normalized_country or "US"
@@ -114,8 +112,8 @@ def paypal_extract_result_from_redirect(
 def paypal_protocol_elements_options() -> dict[str, str]:
     return {
         "elements_options_client[stripe_js_locale]": "auto",
-        "elements_options_client[saved_payment_method][enable_save]": "never",
-        "elements_options_client[saved_payment_method][enable_redisplay]": "never",
+        "elements_options_client[saved_payment_method][enable_save]": "auto",
+        "elements_options_client[saved_payment_method][enable_redisplay]": "auto",
     }
 
 
@@ -539,7 +537,44 @@ def paypal_ba_extract_retry_progress(
     payload.update(
         {
             "max_ba_attempts": max_ba_attempts,
-            "message": f"PayPal BA 第 {ba_attempt}/{max_ba_attempts} 次重试，重新获取代理和 checkout",
+            "message": f"PayPal BA 第 {ba_attempt}/{max_ba_attempts} 次重试，复用当前 sticky 代理重新获取 checkout",
+            "level": "warn",
+        }
+    )
+    return payload
+
+
+def paypal_checkout_proxy_country_mismatch_progress(
+    *,
+    email: str,
+    current: int,
+    total: int,
+    detected_country: str,
+    proxy_region: str,
+    proxy_city: str,
+    proxy_ip: str,
+    retry_round: int | None = None,
+) -> dict[str, Any]:
+    payload = paypal_ba_progress_base(
+        stage="paypal_checkout_proxy_country_mismatch",
+        email=email,
+        current=current,
+        total=total,
+        retry_round=retry_round,
+    )
+    payload.update(
+        {
+            "checkout_proxy_country": detected_country,
+            "checkout_proxy_region": proxy_region,
+            "checkout_proxy_city": proxy_city,
+            "checkout_proxy_ip": proxy_ip,
+            "message": (
+                "PayPal checkout 代理出口不是 JP，已跳过当前账号: "
+                f"country={detected_country or '-'} "
+                f"region={proxy_region or '-'} "
+                f"city={proxy_city or '-'} "
+                f"ip={proxy_ip or '-'}"
+            ),
             "level": "warn",
         }
     )

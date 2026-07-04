@@ -399,6 +399,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                     provider_proxy_url=provider_proxy_url,
                     paypal_country=args.paypal_country,
                     payment_method_country=args.payment_method_country,
+                    paypal_ba_mode=args.paypal_ba_mode,
                     timeout_seconds=args.timeout_seconds,
                     is_cancelled=lambda: False,
                 ),
@@ -446,7 +447,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--public-base-url", default=os.environ.get("AUTOTOKEN_LOCAL_BASE_URL", "http://127.0.0.1:8787"), help="Local API base URL that exposes /otp/gopay-signup/{token}")
     parser.add_argument("--paypal-country", default="JP")
     parser.add_argument("--paypal-lang", default="ja")
-    parser.add_argument("--payment-method-country", default="JP")
+    parser.add_argument("--paypal-ba-mode", choices=["us", "eu"], default="us")
+    parser.add_argument("--payment-method-country", choices=["US", "AU"], default="US")
     parser.add_argument("--sms-url", default="", help="Use an existing SMS polling URL instead of PAYPAL_SMS_* auto-provisioning")
     parser.add_argument("--phone-number", default="", help="Phone number that belongs to --sms-url")
     parser.add_argument("--otp-channel", default="sms", choices=["sms", "whatsapp"])

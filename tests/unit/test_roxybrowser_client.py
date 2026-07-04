@@ -26,19 +26,19 @@ def test_roxybrowser_connection_endpoint_prefers_http():
     assert pick_roxybrowser_endpoint(connection) == "http://127.0.0.1:52314"
 
 
-def test_roxybrowser_create_defaults_to_ios_fingerprint(monkeypatch):
+def test_roxybrowser_create_defaults_to_windows_fingerprint(monkeypatch):
     calls = []
 
     def fake_request(self, method, path, *, params=None, json_body=None, timeout=None):
         calls.append((method, path, json_body))
-        return {"data": {"dirId": "dir-ios"}}
+        return {"data": {"dirId": "dir-windows"}}
 
     monkeypatch.setattr(RoxyBrowserClient, "_request", fake_request)
 
     client = RoxyBrowserClient("http://127.0.0.1:50000", "token")
     result = client.browser_create(workspace_id="1", window_name="PayPal")
 
-    assert result == {"data": {"dirId": "dir-ios"}}
+    assert result == {"data": {"dirId": "dir-windows"}}
     assert calls == [
         (
             "POST",
@@ -46,8 +46,8 @@ def test_roxybrowser_create_defaults_to_ios_fingerprint(monkeypatch):
             {
                 "workspaceId": 1,
                 "windowName": "PayPal",
-                "os": "IOS",
-                "osVersion": "18.2",
+                "os": "Windows",
+                "osVersion": "10",
                 "fingerInfo": {
                     "clearCacheFile": False,
                     "clearCookie": False,
@@ -107,7 +107,7 @@ def test_roxybrowser_launch_clears_existing_profile_before_open(monkeypatch):
     assert ("POST", "/browser/close", {"dirId": "dir-1"}) in calls
     assert ("POST", "/browser/clear_local_cache", {"dirIds": ["dir-1"]}) in calls
     assert ("POST", "/browser/clear_server_cache", {"workspaceId": 1, "dirIds": ["dir-1"]}) in calls
-    assert ("POST", "/browser/mdf", {"workspaceId": 1, "dirId": "dir-1", "os": "IOS", "osVersion": "18.2"}) in calls
+    assert ("POST", "/browser/mdf", {"workspaceId": 1, "dirId": "dir-1", "os": "Windows", "osVersion": "10"}) in calls
     assert calls[-1] == ("POST", "/browser/open", {"dirId": "dir-1", "args": [], "workspaceId": 1})
 
 
@@ -145,7 +145,7 @@ def test_roxybrowser_launch_prefers_reusing_idle_profile_before_create(monkeypat
     assert (
         "POST",
         "/browser/mdf",
-        {"workspaceId": 1, "dirId": "idle-dir", "os": "IOS", "osVersion": "18.2"},
+        {"workspaceId": 1, "dirId": "idle-dir", "os": "Windows", "osVersion": "10"},
         None,
     ) in calls
     assert calls[-1] == ("POST", "/browser/open", {"dirId": "idle-dir", "args": [], "workspaceId": 1}, None)

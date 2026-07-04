@@ -134,6 +134,12 @@ def test_paypal_result_classifiers_preserve_retry_rules():
         == "paypal_phone_rejected"
     )
     assert (
+        payment_results.paypal_pending_retry_reason(
+            {"status": "failed", "failure_stage": "paypal_checkout_proxy_country_mismatch"}
+        )
+        == "paypal_checkout_proxy_country_mismatch"
+    )
+    assert (
         payment_results.paypal_pending_retry_reason({"status": "needs_review", "failure_stage": ""}) == "needs_review"
     )
     assert (

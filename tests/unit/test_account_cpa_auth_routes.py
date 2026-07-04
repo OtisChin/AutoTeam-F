@@ -426,6 +426,56 @@ def test_account_cpa_auth_export_cpa_skips_plus_verify_when_auth_declares_plus(m
     assert json.loads(base64.b64decode(result["content_base64"]).decode("utf-8")) == payload
 
 
+def test_account_cpa_auth_export_cpa_skips_plus_verify_for_external_import(monkeypatch, tmp_path):
+    auth_file = tmp_path / "codex-external@example.com-free-deadbeef.json"
+    auth_file.write_text(
+        json.dumps({"email": "external@example.com", "access_token": "token", "plan_type": "free"}),
+        encoding="utf-8",
+    )
+    captured = {"plan_updates": []}
+
+    def fake_update_plan(email, *, account, plan_type):
+        captured["plan_updates"].append((email, account["email"], plan_type))
+        payload = json.loads(auth_file.read_text(encoding="utf-8"))
+        payload["plan_type"] = plan_type
+        payload["chatgpt_plan_type"] = plan_type
+        auth_file.write_text(json.dumps(payload), encoding="utf-8")
+        return {"auth_file": str(auth_file)}
+
+    app = _app(
+        normalize_email=lambda value: (value or "").strip().lower(),
+        resolve_codex_auth_file=lambda _account: str(auth_file),
+        update_account_cpa_auth_plan_type=fake_update_plan,
+        verify_plus_plan=lambda _item: (_ for _ in ()).throw(AssertionError("external import should not verify")),
+        normalize_observed_auth_plan=lambda *_args: None,
+        mark_failed_account=lambda *_args, **_kwargs: None,
+    )
+
+    monkeypatch.setattr(
+        accounts,
+        "load_accounts",
+        lambda: [
+            {
+                "email": "external@example.com",
+                "account_type": "plus",
+                "last_bind_provider": "external_import",
+            }
+        ],
+    )
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "external@example.com" else None)
+    monkeypatch.setattr(accounts, "update_account", lambda *_args, **_kwargs: None)
+
+    result = _endpoint(app, "/api/accounts/export-cpa-auths", "POST")(
+        AccountEmailBatchParams(emails=["external@example.com"])
+    )
+
+    assert result["count"] == 1
+    assert captured["plan_updates"] == [("external@example.com", "external@example.com", "plus")]
+    exported = json.loads(base64.b64decode(result["content_base64"]).decode("utf-8"))
+    assert exported["plan_type"] == "plus"
+    assert exported["chatgpt_plan_type"] == "plus"
+
+
 def test_account_cpa_auth_export_cpa_rejects_unconfirmed_plus(monkeypatch, tmp_path):
     auth_file = tmp_path / "codex-plus@example.com-plus-deadbeef.json"
     auth_file.write_text(json.dumps({"email": "plus@example.com"}), encoding="utf-8")

@@ -339,7 +339,12 @@ def create_account_cpa_auths_router(
                 missing.append(email)
                 continue
             if str(account.get("account_type") or "").strip().lower() == ACCOUNT_TYPE_PLUS:
-                if not _auth_file_declares_plan(auth_file, ACCOUNT_TYPE_PLUS):
+                external_import = str(account.get("last_bind_provider") or "").strip().lower() == "external_import"
+                if external_import:
+                    plan_update = update_account_cpa_auth_plan_type(email, account=account, plan_type=ACCOUNT_TYPE_PLUS)
+                    auth_file = str(plan_update.get("auth_file") or auth_file)
+                    account = {**account, "auth_file": auth_file}
+                elif not _auth_file_declares_plan(auth_file, ACCOUNT_TYPE_PLUS):
                     verification = verify_plus_plan(
                         {
                             "email": email,
@@ -361,8 +366,11 @@ def create_account_cpa_auths_router(
                         missing.append(email)
                         unconfirmed_plus.append({"email": email, "message": message})
                         continue
-                plan_update = update_account_cpa_auth_plan_type(email, account=account, plan_type=ACCOUNT_TYPE_PLUS)
-                auth_file = str(plan_update.get("auth_file") or auth_file)
+                    plan_update = update_account_cpa_auth_plan_type(email, account=account, plan_type=ACCOUNT_TYPE_PLUS)
+                    auth_file = str(plan_update.get("auth_file") or auth_file)
+                else:
+                    plan_update = update_account_cpa_auth_plan_type(email, account=account, plan_type=ACCOUNT_TYPE_PLUS)
+                    auth_file = str(plan_update.get("auth_file") or auth_file)
             path = trusted_auth_file_path(auth_file)
             if not path:
                 missing.append(email)

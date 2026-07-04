@@ -213,6 +213,8 @@ def is_chatgpt_token_invalidated_result(result: dict | None) -> bool:
     text = json.dumps(result, ensure_ascii=False).lower()
     return (
         "token_invalidated" in text
+        or "token_revoked" in text
+        or "invalidated oauth token" in text
         or "authentication token has been invalidated" in text
         or ("http 401" in text and "invalidated" in text)
     )
@@ -410,6 +412,7 @@ def paypal_pending_retry_reason(result: dict | None) -> str:
         "generate_checkout",
         "open_checkout",
         "open_checkout_proxy",
+        "paypal_checkout_proxy_country_mismatch",
         "checkout_browser_fallback",
         "submit_checkout",
         "fill_billing_info",

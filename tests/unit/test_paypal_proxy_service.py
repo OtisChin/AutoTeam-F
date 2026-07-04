@@ -162,10 +162,11 @@ def test_prepare_paypal_proxy_runtime_infers_api_and_rewrites_protocol_regions()
     )
 
     assert runtime.proxy_api_provider == "cliproxy"
-    assert runtime.proxy_api_url == "https://api.cliproxy.io/white/api?region=US&num=1"
-    assert runtime.normalized_proxy_url == "socks5://region-US.example:1080"
-    assert runtime.normalized_proxy_pool == ["socks5://region-US.example:1080"]
-    assert runtime.bind_proxy_url == "socks5://region-US.example:1080"
+    assert runtime.proxy_api_url == "https://api.cliproxy.io/white/api?region=JP&num=1"
+    assert runtime.normalized_proxy_url == "socks5://region-JP.example:1080"
+    assert runtime.normalized_proxy_pool == ["socks5://region-JP.example:1080"]
+    assert runtime.bind_proxy_url == "socks5://region-JP.example:1080"
+    assert runtime.provider_proxy_region == "US"
 
 
 def test_prepare_paypal_proxy_runtime_uses_provider_default_and_default_entry():
@@ -203,7 +204,7 @@ def test_prepare_paypal_proxy_runtime_prefers_explicit_sticky_proxies():
 
     assert runtime.normalized_proxy_url == "socks5://region-JP.example:1080"
     assert runtime.bind_proxy_url == "socks5://region-JP.example:1080"
-    assert runtime.provider_proxy_url == "socks5://region-us.example:1080"
+    assert runtime.provider_proxy_url == ""
     assert (
         paypal_proxy.select_paypal_provider_proxy(
             runtime,
@@ -212,7 +213,7 @@ def test_prepare_paypal_proxy_runtime_prefers_explicit_sticky_proxies():
             fetch_proxy_from_api_url=lambda *_args, **_kwargs: "socks5://ignored.example:1080",
             default_auth_scheme="socks5",
         )
-        == "socks5://region-us.example:1080"
+        == "socks5://region-JP.example:1080"
     )
 
 
@@ -231,8 +232,40 @@ def test_prepare_paypal_proxy_runtime_uses_us_sticky_for_us_ba_mode():
         default_proxy_entry=lambda _provider: "",
     )
 
-    assert runtime.normalized_proxy_url == "socks5://sticky-us.example:1080"
+    assert runtime.normalized_proxy_url == "socks5://sticky-jp.example:1080"
+    assert runtime.bind_proxy_url == "socks5://sticky-jp.example:1080"
     assert runtime.provider_proxy_url == "socks5://sticky-us.example:1080"
+
+
+def test_prepare_paypal_proxy_runtime_rewrites_payment_sticky_for_au_provider():
+    runtime = paypal_proxy.prepare_paypal_proxy_runtime(
+        proxy_url="socks5://region-JP.example:1080",
+        proxy_pool=[],
+        proxy_pool_text="",
+        proxy_api_provider="",
+        proxy_api_url="",
+        paypal_jp_proxy_url="socks5://sticky-jp.example:1080",
+        paypal_us_proxy_url="socks5://region-US.example:1080",
+        paypal_country="JP",
+        protocol_no_card=True,
+        paypal_ba_proxy_region="AU",
+        default_proxy_entry=lambda _provider: "",
+    )
+
+    assert runtime.normalized_proxy_url == "socks5://sticky-jp.example:1080"
+    assert runtime.bind_proxy_url == "socks5://sticky-jp.example:1080"
+    assert runtime.provider_proxy_region == "AU"
+    assert runtime.provider_proxy_url == "socks5://region-AU.example:1080"
+    assert (
+        paypal_proxy.select_paypal_provider_proxy(
+            runtime,
+            selected_proxy_url=runtime.normalized_proxy_url,
+            protocol_no_card=True,
+            fetch_proxy_from_api_url=lambda *_args, **_kwargs: "socks5://ignored.example:1080",
+            default_auth_scheme="socks5",
+        )
+        == "socks5://region-AU.example:1080"
+    )
 
 
 def test_prepare_paypal_proxy_runtime_promotes_proxy_pool_api_url():
@@ -384,6 +417,25 @@ def test_select_paypal_provider_proxy_respects_protocol_and_derives_without_api(
             default_auth_scheme="socks5",
         )
         == "socks5://region-US.example:1080"
+    )
+
+    au_runtime = paypal_proxy.PayPalProxyRuntime(
+        proxy_api_url="",
+        proxy_api_provider="",
+        normalized_proxy_url="",
+        normalized_proxy_pool=[],
+        bind_proxy_url="",
+        provider_proxy_region="AU",
+    )
+    assert (
+        paypal_proxy.select_paypal_provider_proxy(
+            au_runtime,
+            selected_proxy_url="socks5://region-JP.example:1080",
+            protocol_no_card=True,
+            fetch_proxy_from_api_url=lambda *_args, **_kwargs: "",
+            default_auth_scheme="socks5",
+        )
+        == "socks5://region-AU.example:1080"
     )
 
 

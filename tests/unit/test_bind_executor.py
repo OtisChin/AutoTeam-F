@@ -1955,7 +1955,7 @@ def test_paypal_extract_ba_link_uses_pplink_eu_mode_and_approve_poll(monkeypatch
             ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
             (
                 "POST",
-                "chatgpt.com/backend-api/payments/checkouts",
+                "chatgpt.com/backend-api/payments/checkout",
                 FakeResponse(
                     json_data={
                         "checkout_session_id": "cs_live_test",
@@ -2035,8 +2035,8 @@ def test_paypal_extract_ba_link_uses_pplink_eu_mode_and_approve_poll(monkeypatch
     assert result["paypal_ba_mode"] == "eu"
     assert session_proxy_urls == ["socks5h://jp.example:1080", "socks5h://jp.example:1080"]
 
-    checkout_request = next(request for request in chat_http.requests if request["url"].endswith("/payments/checkouts"))
-    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "FR", "currency": "eur"}
+    checkout_request = next(request for request in chat_http.requests if request["url"].endswith("/payments/checkout"))
+    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "FR", "currency": "EUR"}
     assert checkout_request["kwargs"]["json"]["checkout_ui_mode"] == "custom"
     approve_request = next(request for request in chat_http.requests if request["url"].endswith("/checkout/approve"))
     assert approve_request["kwargs"]["data"]["processor_entity"] == "openai_ie"
@@ -2046,8 +2046,8 @@ def test_paypal_extract_ba_link_uses_pplink_eu_mode_and_approve_poll(monkeypatch
         request for request in stripe_http.requests if request["url"].endswith("/v1/payment_methods")
     )
     confirm_request = next(request for request in stripe_http.requests if "/v1/setup_intents/" in request["url"])
-    assert payment_method_request["kwargs"]["data"]["billing_details[address][country]"] == "JP"
-    assert payment_method_request["kwargs"]["data"]["expected_payment_method_type"] == "paypal"
+    assert payment_method_request["kwargs"]["data"]["billing_details[address][country]"] == "US"
+    assert "expected_payment_method_type" not in payment_method_request["kwargs"]["data"]
     assert confirm_request["kwargs"]["data"]["payment_method"] == "pm_test"
     assert confirm_request["kwargs"]["data"]["client_secret"] == "seti_test_secret_secret"
     assert not any("/v1/payment_pages/cs_live_test/init" in request["url"] for request in stripe_http.requests)
@@ -2062,7 +2062,7 @@ def test_paypal_extract_ba_link_uses_pplink_us_mode(monkeypatch):
             ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
             (
                 "POST",
-                "chatgpt.com/backend-api/payments/checkouts",
+                "chatgpt.com/backend-api/payments/checkout",
                 FakeResponse(
                     json_data={
                         "checkout_session_id": "cs_live_us",
@@ -2122,13 +2122,166 @@ def test_paypal_extract_ba_link_uses_pplink_us_mode(monkeypatch):
     assert result["ba_token"] == "BA-US"
     assert result["paypal_ba_mode"] == "us"
     assert session_proxy_urls == ["socks5h://jp.example:1080", "socks5h://us.example:1080"]
-    checkout_request = next(request for request in chat_http.requests if request["url"].endswith("/payments/checkouts"))
-    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "US", "currency": "usd"}
+    checkout_request = next(request for request in chat_http.requests if request["url"].endswith("/payments/checkout"))
+    assert checkout_request["kwargs"]["json"]["billing_details"] == {"country": "US", "currency": "USD"}
     assert checkout_request["kwargs"]["json"]["checkout_ui_mode"] == "hosted"
     payment_method_request = next(
         request for request in stripe_http.requests if request["url"].endswith("/v1/payment_methods")
     )
     assert payment_method_request["kwargs"]["data"]["billing_details[address][country]"] == "US"
+    assert "expected_payment_method_type" not in payment_method_request["kwargs"]["data"]
+    assert len(chat_http.responses) == 0
+    assert len(stripe_http.responses) == 0
+
+
+def test_paypal_extract_ba_link_python_stops_when_custom_checkout_lacks_paypal(monkeypatch):
+    chat_http = FakeHttp(
+        [
+            ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
+            (
+                "POST",
+                "chatgpt.com/backend-api/payments/checkout",
+                FakeResponse(
+                    json_data={
+                        "checkout_session_id": "cs_live_no_paypal",
+                        "url": "https://pay.openai.com/c/pay/cs_live_no_paypal",
+                        "client_secret": "cs_live_no_paypal_secret_secret",
+                    }
+                ),
+            ),
+        ]
+    )
+    stripe_http = FakeHttp(
+        [
+            (
+                "GET",
+                "https://pay.openai.com/c/pay/cs_live_no_paypal",
+                FakeResponse(text='"pk_live_NO_PAYPAL" "amount_due":0'),
+            ),
+        ]
+    )
+    sessions = [chat_http, stripe_http]
+
+    def fake_new_http_session(*_args, **_kwargs):
+        return sessions.pop(0)
+
+    monkeypatch.setattr(paypal_bind_executor, "_new_http_session", fake_new_http_session)
+    monkeypatch.setattr(paypal_bind_executor, "_configure_chatgpt_http_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_paypal_protocol_stripe_init",
+        lambda *_args, **_kwargs: {
+            "raw": {"payment_method_types": ["card", "link"]},
+            "payment_method_types": {"card", "link"},
+            "init_checksum": "init",
+            "stripe_js_id": "js",
+            "elements_session_id": "es",
+            "elements_session_config_id": "esc",
+            "config_id": "cfg",
+            "expected_amount": "0",
+            "currency": "jpy",
+            "return_url": "",
+            "stripe_hosted_url": "",
+            "locale": "ja",
+            "stripe_version": paypal_bind_executor.STRIPE_VERSION_FULL,
+        },
+    )
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_paypal_protocol_elements_session",
+        lambda *_args, **_kwargs: pytest.fail("elements session should not run without paypal support"),
+    )
+
+    result = paypal_bind_executor._paypal_extract_ba_link_python(
+        access_token="token",
+        proxy_url="socks5h://jp.example:1080",
+        provider_proxy_url="socks5h://jp.example:1080",
+        paypal_ba_mode="us",
+        timeout_seconds=1,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "paypal_payment_method_unavailable"
+    assert "card,link" in result["message"]
+    assert result["checkout_session_id"] == "cs_live_no_paypal"
+    assert chat_http.responses == []
+    assert stripe_http.responses == []
+
+
+def test_paypal_extract_ba_link_python_marks_checkout_token_invalidated(monkeypatch):
+    chat_http = FakeHttp(
+        [
+            ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
+            (
+                "POST",
+                "chatgpt.com/backend-api/payments/checkout",
+                FakeResponse(
+                    status_code=401,
+                    text='{"error":{"message":"Your authentication token has been invalidated.","code":"token_invalidated"}}',
+                ),
+            ),
+        ]
+    )
+    stripe_http = FakeHttp([])
+    sessions = [chat_http, stripe_http]
+
+    def fake_new_http_session(proxy_url, **kwargs):
+        return sessions.pop(0)
+
+    monkeypatch.setattr(paypal_bind_executor, "_new_http_session", fake_new_http_session)
+    monkeypatch.setattr(paypal_bind_executor, "_configure_chatgpt_http_session", lambda *args, **kwargs: None)
+
+    result = paypal_bind_executor._paypal_extract_ba_link_python(
+        access_token="token",
+        proxy_url="socks5h://jp.example:1080",
+        provider_proxy_url="socks5h://us.example:1080",
+        paypal_ba_mode="us",
+        timeout_seconds=1,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "token_invalidated"
+    assert result["token_invalidated"] is True
+    assert "token_invalidated" in result["message"]
+    assert len(chat_http.responses) == 0
+    assert len(stripe_http.responses) == 0
+
+
+def test_paypal_extract_ba_link_python_marks_checkout_token_revoked(monkeypatch):
+    chat_http = FakeHttp(
+        [
+            ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
+            (
+                "POST",
+                "chatgpt.com/backend-api/payments/checkout",
+                FakeResponse(
+                    status_code=401,
+                    text='{"error":{"message":"Encountered invalidated oauth token for user","code":"token_revoked"}}',
+                ),
+            ),
+        ]
+    )
+    stripe_http = FakeHttp([])
+    sessions = [chat_http, stripe_http]
+
+    def fake_new_http_session(proxy_url, **kwargs):
+        return sessions.pop(0)
+
+    monkeypatch.setattr(paypal_bind_executor, "_new_http_session", fake_new_http_session)
+    monkeypatch.setattr(paypal_bind_executor, "_configure_chatgpt_http_session", lambda *args, **kwargs: None)
+
+    result = paypal_bind_executor._paypal_extract_ba_link_python(
+        access_token="token",
+        proxy_url="socks5h://jp.example:1080",
+        provider_proxy_url="socks5h://us.example:1080",
+        paypal_ba_mode="us",
+        timeout_seconds=1,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "token_invalidated"
+    assert result["token_invalidated"] is True
+    assert "token_revoked" in result["message"]
     assert len(chat_http.responses) == 0
     assert len(stripe_http.responses) == 0
 
@@ -2139,7 +2292,7 @@ def test_paypal_extract_ba_link_blocks_nonzero_amount_before_pm(monkeypatch):
             ("GET", "chatgpt.com/backend-api/sentinel/ping", FakeResponse(json_data={"ok": True})),
             (
                 "POST",
-                "chatgpt.com/backend-api/payments/checkouts",
+                "chatgpt.com/backend-api/payments/checkout",
                 FakeResponse(
                     json_data={
                         "checkout_session_id": "cs_live_test",
@@ -2217,6 +2370,80 @@ def test_paypal_extract_ba_link_defaults_to_bundled_pplink_exe(monkeypatch):
     assert captured["paypal_ba_mode"] == "eu"
 
 
+def test_paypal_extract_ba_link_uses_python_backend_for_au_payment_country(monkeypatch):
+    captured = {}
+
+    def fake_python_backend(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "success",
+            "ba_token": "BA-AU",
+            "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-AU",
+            "paypal_ba_mode": "us",
+        }
+
+    monkeypatch.delenv("PAYPAL_BA_EXTRACT_BACKEND", raising=False)
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_paypal_pplink_run_exe",
+        lambda **_kwargs: pytest.fail("AU payment country must not use bundled pplink.exe"),
+    )
+    monkeypatch.setattr(paypal_bind_executor, "_paypal_extract_ba_link_python", fake_python_backend)
+
+    result = paypal_bind_executor._paypal_extract_ba_link(
+        access_token="token",
+        proxy_url="socks5://jp.example:1080",
+        provider_proxy_url="socks5://au.example:1080",
+        payment_method_country="AU",
+        paypal_ba_mode="us",
+        timeout_seconds=30,
+    )
+
+    assert result["status"] == "success"
+    assert result["ba_token"] == "BA-AU"
+    assert captured["payment_method_country"] == "AU"
+    assert captured["provider_proxy_url"] == "socks5://au.example:1080"
+
+
+def test_paypal_extract_ba_link_uses_python_backend_when_session_context_present(monkeypatch):
+    captured = {}
+
+    def fake_python_backend(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "success",
+            "ba_token": "BA-SESSION",
+            "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-SESSION",
+            "paypal_ba_mode": "us",
+        }
+
+    monkeypatch.delenv("PAYPAL_BA_EXTRACT_BACKEND", raising=False)
+    monkeypatch.setattr(
+        paypal_bind_executor,
+        "_paypal_pplink_run_exe",
+        lambda **_kwargs: pytest.fail("session-backed protocol extraction must not use bundled pplink.exe"),
+    )
+    monkeypatch.setattr(paypal_bind_executor, "_paypal_extract_ba_link_python", fake_python_backend)
+
+    result = paypal_bind_executor._paypal_extract_ba_link(
+        access_token="token",
+        session_token="session-token",
+        cookie_header="__Secure-next-auth.session-token=session-token",
+        proxy_url="socks5://jp.example:1080",
+        provider_proxy_url="socks5://us.example:1080",
+        payment_method_country="US",
+        paypal_ba_mode="us",
+        timeout_seconds=30,
+    )
+
+    assert result["status"] == "success"
+    assert result["ba_token"] == "BA-SESSION"
+    assert captured["session_token"] == "session-token"
+    assert captured["cookie_header"] == "__Secure-next-auth.session-token=session-token"
+    assert captured["payment_method_country"] == "US"
+    assert captured["provider_proxy_url"] == "socks5://us.example:1080"
+
+
 def test_paypal_pplink_run_exe_writes_config_and_parses_authorize_url(monkeypatch):
     captured = {}
 
@@ -2272,6 +2499,14 @@ def test_paypal_pplink_proxy_config_keeps_authenticated_socks_proxy():
         "proxy_jp": "socks5://user:pass@jp.example:1080",
         "proxy_us": "socks5h://us-user:us-pass@us.example:1080",
     }
+
+
+def test_paypal_pplink_billing_profile_supports_au_address():
+    profile = paypal_bind_executor._paypal_pplink_billing_profile(country="AU", access_token="")
+
+    assert profile["country"] == "AU"
+    assert profile["state"] == "NSW"
+    assert profile["postal_code"] == "2000"
 
 
 def test_paypal_protocol_signup_keeps_onboard_referer_off_hermes(monkeypatch):
@@ -4445,6 +4680,94 @@ def test_paypal_protocol_stops_when_checkout_session_lacks_paypal(monkeypatch):
     assert result["status"] == "failed"
     assert result["failure_stage"] == "paypal_payment_method_unavailable"
     assert "未启用 PayPal" in result["message"]
+
+
+def test_paypal_protocol_stripe_init_prefers_browser_full_version():
+    http = FakeHttp(
+        [
+            (
+                "POST",
+                "/v1/payment_pages/cs_live_demo/init",
+                FakeResponse(
+                    json_data={
+                        "init_checksum": "init",
+                        "currency": "usd",
+                        "payment_method_types": ["card", "link", "paypal"],
+                    }
+                ),
+            )
+        ]
+    )
+
+    result = paypal_bind_executor._paypal_protocol_stripe_init(http, "cs_live_demo", "pk_live_demo")
+
+    request_data = http.requests[0]["kwargs"]["data"]
+    assert request_data["_stripe_version"] == paypal_bind_executor.STRIPE_VERSION_FULL
+    assert request_data["elements_session_client[client_betas][0]"] == "custom_checkout_server_updates_1"
+    assert request_data["elements_session_client[client_betas][1]"] == "custom_checkout_manual_approval_1"
+    assert request_data["elements_options_client[saved_payment_method][enable_save]"] == "auto"
+    assert result["payment_method_types"] == {"card", "link", "paypal"}
+    assert result["elements_options_client"]["elements_options_client[saved_payment_method][enable_save]"] == "auto"
+
+
+def test_paypal_protocol_stripe_init_falls_back_to_base_version_when_full_rejected():
+    http = FakeHttp(
+        [
+            ("POST", "/v1/payment_pages/cs_live_demo/init", FakeResponse(status_code=400, text="parameter_unknown")),
+            (
+                "POST",
+                "/v1/payment_pages/cs_live_demo/init",
+                FakeResponse(json_data={"init_checksum": "init", "currency": "usd"}),
+            ),
+        ]
+    )
+
+    result = paypal_bind_executor._paypal_protocol_stripe_init(http, "cs_live_demo", "pk_live_demo")
+
+    assert http.requests[0]["kwargs"]["data"]["_stripe_version"] == paypal_bind_executor.STRIPE_VERSION_FULL
+    assert http.requests[1]["kwargs"]["data"]["_stripe_version"] == paypal_bind_executor.STRIPE_VERSION_BASE
+    assert "elements_session_client[client_betas][0]" not in http.requests[1]["kwargs"]["data"]
+    assert result["stripe_version"] == paypal_bind_executor.STRIPE_VERSION_BASE
+    assert result["elements_options_client"] == {}
+
+
+def test_paypal_protocol_elements_session_matches_browser_payment_method_types():
+    http = FakeHttp(
+        [
+            (
+                "GET",
+                "/v1/elements/sessions",
+                FakeResponse(
+                    json_data={
+                        "session_id": "elements_session_real",
+                        "config_id": "checkout_config_real",
+                        "elements_session_config_id": "elements_config_real",
+                    }
+                ),
+            )
+        ]
+    )
+    init_ctx = {
+        "stripe_js_id": "stripe-js",
+        "elements_session_id": "elements-session",
+        "elements_session_config_id": "elements-config",
+        "expected_amount": "0",
+        "currency": "usd",
+        "locale": "ja-JP",
+        "stripe_version": paypal_bind_executor.STRIPE_VERSION_FULL,
+    }
+
+    paypal_bind_executor._paypal_protocol_elements_session(http, "cs_live_demo", "pk_live_demo", init_ctx)
+
+    params = http.requests[0]["kwargs"]["params"]
+    assert params["deferred_intent[payment_method_types][0]"] == "card"
+    assert params["deferred_intent[payment_method_types][1]"] == "link"
+    assert params["deferred_intent[payment_method_types][2]"] == "paypal"
+    assert params["currency"] == "usd"
+    assert params["client_betas[0]"] == "custom_checkout_server_updates_1"
+    assert init_ctx["elements_session_id"] == "elements_session_real"
+    assert init_ctx["config_id"] == "checkout_config_real"
+    assert init_ctx["elements_session_config_id"] == "elements_config_real"
 
 
 def test_paypal_protocol_retries_authenticated_socks_proxy_as_http_on_curl_97(monkeypatch):

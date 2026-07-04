@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 _RESERVED_PROFILE_LOCK = threading.RLock()
 _RESERVED_PROFILE_IDS: set[str] = set()
-DEFAULT_ROXYBROWSER_OS = "IOS"
-DEFAULT_ROXYBROWSER_OS_VERSION = "18.2"
+DEFAULT_ROXYBROWSER_OS = "Windows"
+DEFAULT_ROXYBROWSER_OS_VERSION = "10"
 
 
 def _normalize_api_host(api_host: str | None) -> str:

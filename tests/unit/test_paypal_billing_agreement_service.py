@@ -23,7 +23,7 @@ def test_paypal_ba_payment_method_country_prefers_override_then_protocol_rules()
             protocol_no_card=True,
             paypal_country="JP",
         )
-        == "JP"
+        == "US"
     )
     assert (
         paypal_ba.paypal_ba_payment_method_country(
@@ -193,8 +193,8 @@ def test_paypal_extract_result_from_redirect_reports_missing_approve_url_or_ba_t
 def test_paypal_protocol_elements_options_match_stripe_checkout_contract():
     assert paypal_ba.paypal_protocol_elements_options() == {
         "elements_options_client[stripe_js_locale]": "auto",
-        "elements_options_client[saved_payment_method][enable_save]": "never",
-        "elements_options_client[saved_payment_method][enable_redisplay]": "never",
+        "elements_options_client[saved_payment_method][enable_save]": "auto",
+        "elements_options_client[saved_payment_method][enable_redisplay]": "auto",
     }
 
 
@@ -468,10 +468,37 @@ def test_paypal_ba_attempt_retry_and_result_progress_payloads():
     assert failed_attempt["max_ba_attempts"] == 5
     assert failed_attempt["failure_stage"] == "extract_ba_link_poll"
     assert failed_attempt["message"] == "PayPal BA 第 2/5 次失败: timeout"
-    assert retrying["message"] == "PayPal BA 第 3/5 次重试，重新获取代理和 checkout"
+    assert retrying["message"] == "PayPal BA 第 3/5 次重试，复用当前 sticky 代理重新获取 checkout"
     assert "retry_round" not in retrying
     assert extracted["message"] == "已通过 HTTP 协议提取 PayPal BA 链接: BA-123456789..."
     assert failed["message"] == "HTTP 提取 BA 链接失败: not found"
+
+
+def test_paypal_checkout_proxy_country_mismatch_progress_payload():
+    payload = paypal_ba.paypal_checkout_proxy_country_mismatch_progress(
+        email="user@example.com",
+        current=1,
+        total=2,
+        retry_round=1,
+        detected_country="US",
+        proxy_region="California",
+        proxy_city="Los Angeles",
+        proxy_ip="203.0.113.10",
+    )
+
+    assert payload == {
+        "stage": "paypal_checkout_proxy_country_mismatch",
+        "email": "user@example.com",
+        "current": 1,
+        "total": 2,
+        "retry_round": 1,
+        "checkout_proxy_country": "US",
+        "checkout_proxy_region": "California",
+        "checkout_proxy_city": "Los Angeles",
+        "checkout_proxy_ip": "203.0.113.10",
+        "message": "PayPal checkout 代理出口不是 JP，已跳过当前账号: country=US region=California city=Los Angeles ip=203.0.113.10",
+        "level": "warn",
+    }
 
 
 def test_paypal_approve_proxy_and_checkout_long_link_progress_payloads():

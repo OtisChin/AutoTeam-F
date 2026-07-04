@@ -202,6 +202,17 @@
               </div>
 
               <div v-if="isNoCardPayPalMode" class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
+                <label class="mb-1 block text-sm font-medium text-gray-200">支付 / Billing 国家</label>
+                <select v-model="form.paypalBaPaymentMethodCountry" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
+                  <option value="US">US</option>
+                  <option value="AU">AU</option>
+                </select>
+                <div class="mt-2 text-xs text-gray-500">
+                  checkout 固定走 JP sticky 代理；支付侧与 billing 会跟随这里的国家。
+                </div>
+              </div>
+
+              <div v-if="isNoCardPayPalMode" class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
                 <label class="mb-1 block text-sm font-medium text-gray-200">BA 提取模式</label>
                 <select v-model="form.paypalBaMode" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
                   <option value="eu">EU 模式（FR/EUR/custom）</option>
@@ -380,7 +391,7 @@
                       <input v-model.trim="form.paypalJpProxyUrl" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" placeholder="socks5://user:pass@host:port" :disabled="busy || running" />
                     </div>
                     <div>
-                      <label class="block text-xs text-gray-400 mb-1">US sticky 代理</label>
+                      <label class="block text-xs text-gray-400 mb-1">支付侧 sticky 代理（US/AU，可选）</label>
                       <input v-model.trim="form.paypalUsProxyUrl" type="text" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" placeholder="socks5://user:pass@host:port" :disabled="busy || running" />
                     </div>
                   </div>
@@ -811,7 +822,8 @@ const form = ref({
   paypalMode: 'create_account',
   paypalEmail: '',
   paypalPassword: '',
-  paypalBaMode: 'eu',
+  paypalBaMode: 'us',
+  paypalBaPaymentMethodCountry: 'US',
   paypalProtocolRoxyFallback: false,
   smsUrl: '',
   phonePoolEnabled: false,
@@ -893,17 +905,21 @@ const isNoCardPayPalMode = computed(() => (
   form.value.paypalRegion === 'JP_NOCARD'
   || (form.value.paypalMode === 'create_account' && form.value.paypalBrowser === 'protocol')
 ))
+const paypalPaymentCountry = computed(() => {
+  const value = String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase()
+  return ['US', 'AU'].includes(value) ? value : 'US'
+})
 const paypalCountry = computed(() => form.value.paypalRegion === 'JP_NOCARD' ? 'JP' : String(form.value.billingCountry || 'US').trim().toUpperCase())
 const paypalLang = computed(() => paypalCountry.value === 'JP' ? 'ja' : 'en')
 const paypalRegionHelp = computed(() => (
   form.value.paypalRegion === 'JP_NOCARD'
-    ? '按所选 BA 提取模式获取 PayPal BA，并按 JP/ja 进行 PayPal 协议无卡注册；不需要填写卡片信息。'
+    ? '按 JP/ja 进行 PayPal 协议无卡注册；checkout 固定走 JP sticky，支付侧可切 US/AU，不需要填写卡片信息。'
     : '保留现有美区流程，可用浏览器或协议模式，自动注册时按原规则使用卡片。'
 ))
 const paypalBaModeHelp = computed(() => (
   form.value.paypalBaMode === 'us'
-    ? '使用 pplink US 模式，checkout 和 Stripe 阶段走 US 配置。'
-    : '使用 pplink EU 模式，FR/EUR/custom checkout，默认走 JP 代理。'
+    ? `使用 pplink US 模式；checkout 固定走 JP sticky，支付 / billing 走 ${paypalPaymentCountry.value}。`
+    : `使用 pplink EU 模式；checkout 固定走 JP sticky，支付 / billing 走 ${paypalPaymentCountry.value}。`
 ))
 const singleSelectedEmail = computed(() => String(selectedAccountEmail.value || '').trim().toLowerCase())
 const phonePoolEntries = computed(() => parsePayPalPhonePool(form.value.phonePoolText, { strict: false }))
@@ -917,7 +933,7 @@ const proxyApiProviderHelp = computed(() => {
 })
 const proxySettingSummary = computed(() => {
   if (isNoCardPayPalMode.value) {
-    return ''
+    return `checkout 固定复用 JP sticky；支付侧默认复用当前 ${paypalPaymentCountry.value} 代理出口。`
   }
   if (form.value.proxyApiEnabled) {
     return '已启用代理 API 轮换；每个账号流程开始前调用一次供应商 API。'
@@ -1043,9 +1059,12 @@ function applyPayPalRegionDefaults() {
     form.value.paypalMode = 'create_account'
     form.value.paypalBrowser = 'protocol'
     if (!['eu', 'us'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
-      form.value.paypalBaMode = 'eu'
+      form.value.paypalBaMode = 'us'
     }
-    form.value.billingCountry = 'JP'
+    if (!['US', 'AU'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
+      form.value.paypalBaPaymentMethodCountry = 'US'
+    }
+    form.value.billingCountry = paypalPaymentCountry.value
     bindForm.value.country = 'US'
     bindForm.value.currency = 'USD'
     return
@@ -1397,9 +1416,14 @@ function restorePayPalState() {
         form.value.paypalProtocolRoxyFallback = false
       }
       if (!['eu', 'us'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
-        form.value.paypalBaMode = 'eu'
+        form.value.paypalBaMode = 'us'
       } else {
-        form.value.paypalBaMode = String(form.value.paypalBaMode || 'eu').toLowerCase()
+        form.value.paypalBaMode = String(form.value.paypalBaMode || 'us').toLowerCase()
+      }
+      if (!['US', 'AU'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
+        form.value.paypalBaPaymentMethodCountry = 'US'
+      } else {
+        form.value.paypalBaPaymentMethodCountry = String(form.value.paypalBaPaymentMethodCountry || 'US').trim().toUpperCase()
       }
     }
     if (saved.bindForm && typeof saved.bindForm === 'object') {
@@ -1410,6 +1434,7 @@ function restorePayPalState() {
     selectedAccountEmail.value = String(saved.selectedAccountEmail || '').trim().toLowerCase()
     accountSearchKeyword.value = String(saved.accountSearchKeyword || '')
     currentLink.value = String(saved.currentLink || '')
+    applyPayPalRegionDefaults()
     prunePhonePoolStatuses()
   } catch (error) {
     console.warn('PayPal 表单缓存读取失败:', error)
@@ -1748,7 +1773,7 @@ function validateBeforeStart() {
   }
   if (isNoCardPayPalMode.value) {
     if (!String(form.value.paypalJpProxyUrl || '').trim() || !String(form.value.paypalUsProxyUrl || '').trim()) {
-      throw new Error('日区无卡需要同时填写 JP 和 US sticky 代理')
+      throw new Error('日区无卡需要同时填写 JP 和支付侧 sticky 代理')
     }
   } else if (form.value.proxyApiEnabled) {
     const provider = String(form.value.proxyApiProvider || '').trim()
@@ -1821,6 +1846,7 @@ function buildPayPalTaskPayload() {
     paypal_fallback_browser: paypalFallbackBrowser.value,
     paypal_mode: form.value.paypalMode,
     paypal_ba_mode: form.value.paypalBaMode,
+    paypal_ba_payment_method_country: paypalPaymentCountry.value,
     paypal_country: paypalCountry.value,
     paypal_lang: paypalLang.value,
     paypal_email: isCreateAccountMode.value ? '' : form.value.paypalEmail,
@@ -1838,7 +1864,7 @@ function buildPayPalTaskPayload() {
     billing_name: form.value.billingName,
     billing_email: effectiveEmail,
     billing_phone: firstPhoneAccount?.phone_number || form.value.billingPhone,
-    billing_country: paypalCountry.value,
+    billing_country: isNoCardPayPalMode.value ? paypalPaymentCountry.value : paypalCountry.value,
     billing_state: form.value.billingState,
     billing_city: form.value.billingCity,
     billing_zip: form.value.billingZip,
@@ -1925,6 +1951,15 @@ watch(
     applyPayPalRegionDefaults()
   },
   { immediate: true }
+)
+
+watch(
+  () => form.value.paypalBaPaymentMethodCountry,
+  () => {
+    if (form.value.paypalRegion === 'JP_NOCARD') {
+      form.value.billingCountry = paypalPaymentCountry.value
+    }
+  }
 )
 
 watch(

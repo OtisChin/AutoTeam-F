@@ -55,6 +55,7 @@ from autotoken.api_routes.bind_link import create_bind_link_router
 from autotoken.api_routes.card_pool import create_card_pool_router
 from autotoken.api_routes.config_io import create_config_io_router
 from autotoken.api_routes.cpa_to_sub2api import create_cpa_to_sub2api_router
+from autotoken.api_routes.finished_account_import import create_finished_account_import_router
 from autotoken.api_routes.gopay_auto_signup_config import (
     create_gopay_auto_signup_config_router,
 )
@@ -4045,6 +4046,7 @@ app.include_router(
         current_time=time.time,
     )
 )
+app.include_router(create_finished_account_import_router())
 
 
 def _run_account_codex_login_once(
@@ -8890,7 +8892,16 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
         raise HTTPException(status_code=400, detail="直连 PayPal BA/link 模式只支持 create_account + protocol/no-card")
     sms_url = paypal_inputs["sms_url"]
     otp_channel = paypal_inputs["otp_channel"]
-    paypal_ba_proxy_region = str(os.environ.get("PAYPAL_BA_PROXY_REGION") or ("US" if paypal_ba_mode == "us" else "JP"))
+    requested_paypal_ba_payment_method_country = str(
+        getattr(params, "paypal_ba_payment_method_country", "") or ""
+    ).strip()
+    paypal_ba_payment_method_country = paypal_ba_service.paypal_ba_payment_method_country(
+        override=requested_paypal_ba_payment_method_country or os.environ.get("PAYPAL_BA_PAYMENT_METHOD_COUNTRY"),
+        protocol_no_card=protocol_no_card,
+        paypal_country=paypal_country,
+        paypal_ba_mode=paypal_ba_mode,
+    )
+    paypal_ba_proxy_region = str(os.environ.get("PAYPAL_BA_PROXY_REGION") or paypal_ba_payment_method_country)
     try:
         paypal_proxy_runtime = paypal_proxy_service.prepare_paypal_proxy_runtime(
             proxy_url=params.proxy_url,
@@ -8993,12 +9004,58 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
         return paypal_ba_service.paypal_ba_extract_attempts(os.environ.get("PAYPAL_BA_EXTRACT_ATTEMPTS", "5"))
 
     def _paypal_ba_payment_method_country() -> str:
-        return paypal_ba_service.paypal_ba_payment_method_country(
-            override=os.environ.get("PAYPAL_BA_PAYMENT_METHOD_COUNTRY"),
-            protocol_no_card=protocol_no_card,
-            paypal_country=paypal_country,
-            paypal_ba_mode=paypal_ba_mode,
+        return paypal_ba_payment_method_country
+
+    def _paypal_checkout_proxy_exit_location(selected_proxy_url: str) -> dict[str, str]:
+        return paypal_proxy_service.paypal_proxy_exit_location(
+            selected_proxy_url,
+            on_error=lambda exc: logger.info("[paypal_extract] checkout proxy geo probe failed: %s", exc),
         )
+
+    def _paypal_checkout_proxy_country_mismatch_result(
+        candidate_email: str,
+        *,
+        selected_proxy_url: str,
+    ) -> dict[str, Any] | None:
+        if not protocol_no_card or direct_ba_pre_extracted:
+            return None
+        if not str(selected_proxy_url or "").strip():
+            return {
+                "status": "failed",
+                "failure_stage": "paypal_checkout_proxy_country_mismatch",
+                "message": "PayPal checkout 缺少 JP 代理，当前账号跳过",
+                "email": candidate_email,
+                "checkout_proxy_url": "",
+                "checkout_proxy_country": "",
+                "checkout_proxy_region": "",
+                "checkout_proxy_city": "",
+                "checkout_proxy_ip": "",
+            }
+        exit_location = _paypal_checkout_proxy_exit_location(selected_proxy_url)
+        detected_country = str(exit_location.get("country_code") or "").strip().upper()
+        if detected_country == "JP":
+            return None
+        proxy_region = str(exit_location.get("region") or "").strip()
+        proxy_city = str(exit_location.get("city") or "").strip()
+        proxy_ip = str(exit_location.get("ip") or "").strip()
+        reason = "不是 JP" if detected_country else "无法确认是否为 JP"
+        return {
+            "status": "failed",
+            "failure_stage": "paypal_checkout_proxy_country_mismatch",
+            "message": (
+                f"PayPal checkout 代理出口{reason}，当前账号跳过: "
+                f"country={detected_country or '-'} "
+                f"region={proxy_region or '-'} "
+                f"city={proxy_city or '-'} "
+                f"ip={proxy_ip or '-'}"
+            ),
+            "email": candidate_email,
+            "checkout_proxy_url": selected_proxy_url,
+            "checkout_proxy_country": detected_country,
+            "checkout_proxy_region": proxy_region,
+            "checkout_proxy_city": proxy_city,
+            "checkout_proxy_ip": proxy_ip,
+        }
 
     def _paypal_ba_auth_context(email: str, fallback_access_token: str) -> dict[str, str]:
         use_full_context = protocol_no_card or str(
@@ -9546,6 +9603,24 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                         using_proxy_api=bool(proxy_api_provider or proxy_api_url),
                     )
                 )
+            proxy_country_mismatch = _paypal_checkout_proxy_country_mismatch_result(
+                candidate_email,
+                selected_proxy_url=selected_proxy_url,
+            )
+            if proxy_country_mismatch is not None:
+                _append_task_progress_threadsafe(
+                    paypal_ba_service.paypal_checkout_proxy_country_mismatch_progress(
+                        email=candidate_email,
+                        current=index,
+                        total=len(candidates),
+                        retry_round=retry_round,
+                        detected_country=str(proxy_country_mismatch.get("checkout_proxy_country") or ""),
+                        proxy_region=str(proxy_country_mismatch.get("checkout_proxy_region") or ""),
+                        proxy_city=str(proxy_country_mismatch.get("checkout_proxy_city") or ""),
+                        proxy_ip=str(proxy_country_mismatch.get("checkout_proxy_ip") or ""),
+                    )
+                )
+                return proxy_country_mismatch
 
             try:
                 access_token = ""
@@ -9644,7 +9719,8 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                     )
                             except Exception as provider_proxy_exc:
                                 provider_proxy_url = (
-                                    _proxy_url_for_region(selected_proxy_url, "US") or selected_proxy_url
+                                    _proxy_url_for_region(selected_proxy_url, _paypal_ba_payment_method_country())
+                                    or selected_proxy_url
                                 )
                                 _append_task_progress_threadsafe(
                                     paypal_ba_service.paypal_provider_proxy_failed_progress(
@@ -9697,52 +9773,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                     )
                                 )
                                 retry_proxy_url = selected_proxy_url
-                                try:
-                                    if proxy_api_url or normalized_proxy_pool:
-                                        retry_proxy_url = _select_paypal_proxy()
-                                        selected_proxy_url = retry_proxy_url
-                                        _append_task_progress_threadsafe(
-                                            paypal_proxy_service.paypal_proxy_selected_progress(
-                                                email=candidate_email,
-                                                current=index,
-                                                total=len(candidates),
-                                                retry_round=retry_round,
-                                                ba_attempt=ba_attempt,
-                                                proxy_label=params.proxy_label,
-                                                proxy_pool_count=len(normalized_proxy_pool),
-                                                proxy_api_url_present=bool(proxy_api_url),
-                                                proxy_api_provider=proxy_api_provider,
-                                                selected_proxy_summary=_safe_proxy_summary(retry_proxy_url),
-                                                using_proxy_api=bool(proxy_api_provider or proxy_api_url),
-                                                ba_retry=True,
-                                            )
-                                        )
-                                except Exception as retry_proxy_exc:
-                                    logger.info("[paypal_extract] BA retry proxy selection failed: %s", retry_proxy_exc)
-                                retry_provider_proxy_url = ""
-                                try:
-                                    retry_provider_proxy_url = _select_paypal_provider_proxy(retry_proxy_url)
-                                    if retry_provider_proxy_url and retry_provider_proxy_url != retry_proxy_url:
-                                        _append_task_progress_threadsafe(
-                                            paypal_ba_service.paypal_provider_proxy_selected_progress(
-                                                email=candidate_email,
-                                                current=index,
-                                                total=len(candidates),
-                                                retry_round=retry_round,
-                                                ba_attempt=ba_attempt,
-                                                proxy_label=params.proxy_label,
-                                                proxy_api_provider=proxy_api_provider,
-                                                proxy_summary=_safe_proxy_summary(retry_provider_proxy_url),
-                                            )
-                                        )
-                                except Exception as provider_proxy_exc:
-                                    retry_provider_proxy_url = (
-                                        _proxy_url_for_region(retry_proxy_url, "US") or retry_proxy_url
-                                    )
-                                    logger.info(
-                                        "[paypal_extract] BA retry provider proxy selection failed: %s",
-                                        provider_proxy_exc,
-                                    )
+                                retry_provider_proxy_url = provider_proxy_url or retry_proxy_url
                                 pre_extracted_data = _paypal_extract_ba_link(
                                     **paypal_ba_service.paypal_ba_extract_kwargs(
                                         auth_session_context=auth_session_context,
@@ -10247,6 +10278,38 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                 exit_ip=exit_ip,
                             ),
                         )
+                proxy_country_mismatch = _paypal_checkout_proxy_country_mismatch_result(
+                    candidate_email,
+                    selected_proxy_url=selected_proxy_url,
+                )
+                if proxy_country_mismatch is not None:
+                    _append_task_progress(
+                        task_id,
+                        paypal_ba_service.paypal_checkout_proxy_country_mismatch_progress(
+                            email=candidate_email,
+                            current=index,
+                            total=len(candidates),
+                            detected_country=str(proxy_country_mismatch.get("checkout_proxy_country") or ""),
+                            proxy_region=str(proxy_country_mismatch.get("checkout_proxy_region") or ""),
+                            proxy_city=str(proxy_country_mismatch.get("checkout_proxy_city") or ""),
+                            proxy_ip=str(proxy_country_mismatch.get("checkout_proxy_ip") or ""),
+                        ),
+                    )
+                    retry_reason = _paypal_retryable_result(proxy_country_mismatch)
+                    if retry_reason and retry_round < pending_retry_attempts:
+                        _queue_paypal_pending_retry(
+                            candidate_email,
+                            reason=retry_reason,
+                            result_payload=proxy_country_mismatch,
+                            retry_round=retry_round + 1,
+                            current_index=index,
+                            total_count=len(candidates),
+                        )
+                        result = proxy_country_mismatch
+                        continue
+                    _append_unique(failed_emails, candidate_email)
+                    result = proxy_country_mismatch
+                    continue
                 try:
                     effective_checkout_url = checkout_url
                     access_token = ""
@@ -10374,7 +10437,8 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                         )
                                 except Exception as provider_proxy_exc:
                                     provider_proxy_url = (
-                                        _proxy_url_for_region(selected_proxy_url, "US") or selected_proxy_url
+                                        _proxy_url_for_region(selected_proxy_url, _paypal_ba_payment_method_country())
+                                        or selected_proxy_url
                                     )
                                     _append_task_progress(
                                         task_id,
@@ -10427,38 +10491,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                         ),
                                     )
                                     retry_proxy_url = selected_proxy_url
-                                    try:
-                                        if proxy_api_url or normalized_proxy_pool:
-                                            retry_proxy_url = _select_paypal_proxy()
-                                            selected_proxy_url = retry_proxy_url
-                                    except Exception as retry_proxy_exc:
-                                        logger.info(
-                                            "[paypal_extract] BA retry proxy selection failed: %s", retry_proxy_exc
-                                        )
-                                    retry_provider_proxy_url = ""
-                                    try:
-                                        retry_provider_proxy_url = _select_paypal_provider_proxy(retry_proxy_url)
-                                        if retry_provider_proxy_url and retry_provider_proxy_url != retry_proxy_url:
-                                            _append_task_progress(
-                                                task_id,
-                                                paypal_ba_service.paypal_provider_proxy_selected_progress(
-                                                    email=candidate_email,
-                                                    current=index,
-                                                    total=len(candidates),
-                                                    ba_attempt=ba_attempt,
-                                                    proxy_label=params.proxy_label,
-                                                    proxy_api_provider=proxy_api_provider,
-                                                    proxy_summary=_safe_proxy_summary(retry_provider_proxy_url),
-                                                ),
-                                            )
-                                    except Exception as provider_proxy_exc:
-                                        retry_provider_proxy_url = (
-                                            _proxy_url_for_region(retry_proxy_url, "US") or retry_proxy_url
-                                        )
-                                        logger.info(
-                                            "[paypal_extract] BA retry provider proxy selection failed: %s",
-                                            provider_proxy_exc,
-                                        )
+                                    retry_provider_proxy_url = provider_proxy_url or retry_proxy_url
                                     if retry_provider_proxy_url and retry_provider_proxy_url != retry_proxy_url:
                                         _append_task_progress(
                                             task_id,

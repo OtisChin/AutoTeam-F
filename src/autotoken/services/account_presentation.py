@@ -282,7 +282,8 @@ def sanitize_account_with_indexes(
         sanitized["codex_auth_synthetic"] = bool((indexed_auth or {}).get("synthetic"))
     else:
         sanitized["codex_auth_synthetic"] = codex_auth_file_is_synthetic(codex_auth_file)
-    sanitized["needs_codex_login"] = not sanitized["is_main_account"] and (
+    imported_external_auth = bind_provider == "external_import" and bool(codex_auth_file)
+    sanitized["needs_codex_login"] = not sanitized["is_main_account"] and not imported_external_auth and (
         not bool(codex_auth_file) or bool(sanitized["codex_auth_synthetic"])
     )
     auth_session_file = auth_session_files.get(email, "")

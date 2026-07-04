@@ -52,7 +52,7 @@ def test_default_paypal_proxy_api_url_uses_country_except_protocol_no_card_defau
         "https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=json"
     )
     assert proxy_runtime.default_paypal_proxy_api_url("1024proxy", country="JP", protocol_no_card=True) == (
-        "https://white.1024proxy.com/white/api?region=US&num=1&time=10&format=1&type=json"
+        "https://white.1024proxy.com/white/api?region=JP&num=1&time=10&format=1&type=json"
     )
 
 

@@ -228,7 +228,7 @@ dependencies = [
     { name = "curl-cffi" },
     { name = "fastapi" },
     { name = "playwright" },
-    { name = "requests" },
+    { name = "requests", extra = ["socks"] },
     { name = "rich" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "xvfbwrapper", marker = "sys_platform == 'linux'" },
@@ -256,7 +256,7 @@ requires-dist = [
     { name = "curl-cffi", specifier = ">=0.14.0" },
     { name = "fastapi", specifier = ">=0.135.3" },
     { name = "playwright", specifier = ">=1.40.0" },
-    { name = "requests", specifier = ">=2.28.0" },
+    { name = "requests", extras = ["socks"], specifier = ">=2.28.0" },
     { name = "rich", specifier = ">=14.3.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.44.0" },
     { name = "xvfbwrapper", marker = "sys_platform == 'linux'", specifier = ">=0.2.9" },
@@ -2048,6 +2048,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5f/a4/98b9c7c6428a668bf7e42ebb7c79d576a1c3c1e3ae2d47e674b468388871/requests-2.33.1.tar.gz", hash = "sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517", size = 134120, upload-time = "2026-03-30T16:09:15.531Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/8e/7540e8a2036f79a125c1d2ebadf69ed7901608859186c856fa0388ef4197/requests-2.33.1-py3-none-any.whl", hash = "sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a", size = 64947, upload-time = "2026-03-30T16:09:13.83Z" },
+]
+
+[package.optional-dependencies]
+socks = [
+    { name = "pysocks" },
 ]
 
 [[package]]

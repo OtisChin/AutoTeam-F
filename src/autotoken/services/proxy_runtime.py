@@ -94,7 +94,7 @@ def default_proxy_api_url(provider: str, _proxy_url: str = "") -> str:
 
 def default_paypal_proxy_api_url(provider: str, *, country: str = "US", protocol_no_card: bool = False) -> str:
     normalized_provider = normalize_proxy_api_provider(provider)
-    region = "US" if protocol_no_card else re.sub(r"[^A-Za-z]", "", str(country or "US").strip().upper())[:2] or "US"
+    region = re.sub(r"[^A-Za-z]", "", str(country or "US").strip().upper())[:2] or "US"
     if normalized_provider == "1024proxy":
         return f"https://white.1024proxy.com/white/api?region={region}&num=1&time=10&format=1&type=json"
     return f"https://api.cliproxy.io/white/api?region={region}&num=1&time=10&format=n&type=json"

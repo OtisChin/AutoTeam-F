@@ -57,6 +57,15 @@
             {{ cpaImporting ? '导入中...' : '导入CPA认证' }}
           </button>
           <button
+            @click="openFinishedImport"
+            :disabled="finishedImporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="finishedImporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-teal-600/10 text-teal-300 border-teal-500/30 hover:bg-teal-600/20'">
+            {{ finishedImporting ? '导入中...' : '导入成品' }}
+          </button>
+          <button
             @click="exportCpaAuths"
             :disabled="!cpaExportableAccounts.length || cpaExporting"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -597,6 +606,72 @@
         </div>
       </div>
 
+      <!-- 成品账号导入弹窗 -->
+      <div v-if="finishedImportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeFinishedImport">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[86vh] flex flex-col">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <div>
+              <h3 class="text-white font-semibold">导入成品</h3>
+              <div class="text-xs text-gray-500 mt-0.5">读取成品账号 JSON 和邮箱池 TXT，离线构造 CPA/Codex 认证文件。</div>
+            </div>
+            <button @click="closeFinishedImport" class="text-gray-400 hover:text-white text-lg">&times;</button>
+          </div>
+          <div class="p-4 space-y-4 overflow-y-auto flex-1">
+            <div class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              不会真实补登录，不使用手机号接码；缺失的 id_token / refresh_token 会按 CPA 字段格式构造占位值。
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">账号 JSON 文件</label>
+              <input
+                type="file"
+                accept=".json,.jsonl,application/json"
+                @change="handleFinishedAccountsFile"
+                class="block w-full text-xs text-gray-300 file:mr-3 file:rounded-lg file:border file:border-teal-500/40 file:bg-teal-600/10 file:px-3 file:py-2 file:text-xs file:font-medium file:text-teal-200 hover:file:bg-teal-600/20" />
+              <div v-if="finishedAccountsFile" class="mt-2 text-xs text-gray-300 font-mono break-all">{{ finishedAccountsFile.name }}</div>
+              <div class="mt-1 text-xs text-gray-500">支持连续 JSON object、JSON 数组或 {"accounts": [...]}。</div>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">邮箱池 TXT 文件，可选</label>
+              <input
+                type="file"
+                accept=".txt,text/plain"
+                @change="handleFinishedMailboxesFile"
+                class="block w-full text-xs text-gray-300 file:mr-3 file:rounded-lg file:border file:border-gray-600 file:bg-gray-800 file:px-3 file:py-2 file:text-xs file:font-medium file:text-gray-200 hover:file:bg-gray-700" />
+              <div v-if="finishedMailboxesFile" class="mt-2 text-xs text-gray-300 font-mono break-all">{{ finishedMailboxesFile.name }}</div>
+              <div class="mt-1 text-xs text-gray-500">匹配到邮箱池时，会把账号标记为 outlook 并保留邮箱来源标识。</div>
+            </div>
+
+            <div v-if="finishedImportResult" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 text-xs">
+              <div class="text-gray-200">
+                导入 {{ finishedImportResult.imported || 0 }}，更新账号 {{ finishedImportResult.accounts_updated || 0 }}，邮箱匹配 {{ finishedImportResult.mailboxes_matched || 0 }}/{{ finishedImportResult.mailboxes_total || 0 }}
+              </div>
+              <div v-if="finishedImportResult.invalid?.length" class="mt-2 text-amber-300">
+                跳过 {{ finishedImportResult.invalid.length }} 条无效来源；前 3 条：
+                <div v-for="item in finishedImportResult.invalid.slice(0, 3)" :key="String(item.filename || '') + String(item.error || '')" class="mt-1 text-amber-200/80 font-mono break-all">
+                  {{ item.filename || item.line || item.offset }}: {{ item.error }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
+            <button
+              @click="closeFinishedImport"
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              关闭
+            </button>
+            <button
+              @click="submitFinishedImport"
+              :disabled="finishedImporting || !finishedAccountsFile"
+              class="px-4 py-2 text-sm rounded-lg border transition"
+              :class="finishedImporting || !finishedAccountsFile
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                : 'bg-teal-600 hover:bg-teal-500 text-white border-teal-500'">
+              {{ finishedImporting ? '导入中...' : '开始导入' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- CPA 认证导入弹窗 -->
       <div v-if="cpaImportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeCpaImport">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-3xl max-h-[86vh] flex flex-col">
@@ -899,6 +974,11 @@ const cpaImportText = ref('')
 const cpaImportFiles = ref([])
 const cpaImporting = ref(false)
 const cpaImportResult = ref(null)
+const finishedImportOpen = ref(false)
+const finishedAccountsFile = ref(null)
+const finishedMailboxesFile = ref(null)
+const finishedImporting = ref(false)
+const finishedImportResult = ref(null)
 const cpaExporting = ref(false)
 const sessionCpaConverting = ref(false)
 const subExporting = ref(false)
@@ -1562,6 +1642,65 @@ function closeCpaImport() {
   cpaImportOpen.value = false
 }
 
+function openFinishedImport() {
+  finishedImportOpen.value = true
+  finishedImportResult.value = null
+}
+
+function closeFinishedImport() {
+  if (finishedImporting.value) return
+  finishedImportOpen.value = false
+}
+
+function handleFinishedAccountsFile(event) {
+  finishedAccountsFile.value = Array.from(event.target.files || [])[0] || null
+  finishedImportResult.value = null
+}
+
+function handleFinishedMailboxesFile(event) {
+  finishedMailboxesFile.value = Array.from(event.target.files || [])[0] || null
+  finishedImportResult.value = null
+}
+
+function readFileText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'))
+    reader.readAsText(file)
+  })
+}
+
+async function submitFinishedImport() {
+  const accountsFile = finishedAccountsFile.value
+  if (finishedImporting.value || !accountsFile) return
+
+  finishedImporting.value = true
+  finishedImportResult.value = null
+  message.value = ''
+  try {
+    const mailboxesFile = finishedMailboxesFile.value
+    const result = await api.importFinishedAccounts({
+      accounts_content: await readFileText(accountsFile),
+      accounts_filename: accountsFile.name || 'accounts.json',
+      mailboxes_content: mailboxesFile ? await readFileText(mailboxesFile) : '',
+      mailboxes_filename: mailboxesFile?.name || '',
+    })
+    finishedImportResult.value = result
+    const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，跳过 ${result.invalid.length} 条无效` : ''
+    const matched = result.mailboxes_total ? `，邮箱匹配 ${result.mailboxes_matched || 0}/${result.mailboxes_total || 0}` : ''
+    message.value = `成品账号导入完成：导入 ${result.imported || 0}，更新账号 ${result.accounts_updated || 0}${matched}${invalid}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    finishedImporting.value = false
+    setTimeout(() => { message.value = '' }, 10000)
+  }
+}
+
 function handleCpaImportFiles(event) {
   const files = Array.from(event.target.files || [])
     .filter(file => /\.(json|zip)$/i.test(file.name || file.webkitRelativePath || ''))
@@ -1717,6 +1856,7 @@ function bindProviderLabel(provider) {
     gopay: 'GoPay',
     gopay_pro: 'GoPay Pro',
     card: 'Card',
+    external_import: '外部导入',
   }[String(provider || '').toLowerCase()] || '-'
 }
 
@@ -1738,6 +1878,7 @@ function bindProviderClass(provider) {
     gopay: 'bg-emerald-500/10 text-emerald-300',
     gopay_pro: 'bg-cyan-500/10 text-cyan-300',
     card: 'bg-amber-500/10 text-amber-300',
+    external_import: 'bg-teal-500/10 text-teal-300',
   }[String(provider || '').toLowerCase()] || 'bg-gray-500/10 text-gray-500'
 }
 
