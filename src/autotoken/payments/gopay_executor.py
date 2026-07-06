@@ -145,11 +145,20 @@ class GoPayRateLimited(GoPayFlowError):
     pass
 
 
-def _new_http_session(proxy_url: str | None = None, *, require_curl_cffi: bool = False) -> Any:
+def _new_http_session(
+    proxy_url: str | None = None,
+    *,
+    require_curl_cffi: bool = False,
+    tls_impersonate: str | None = None,
+) -> Any:
     original_curl_cffi_session = payment_http_service._CurlCffiSession
     payment_http_service._CurlCffiSession = _CurlCffiSession
     try:
-        return payment_http_service.new_http_session(proxy_url, require_curl_cffi=require_curl_cffi)
+        return payment_http_service.new_http_session(
+            proxy_url,
+            require_curl_cffi=require_curl_cffi,
+            tls_impersonate=tls_impersonate,
+        )
     except payment_http_service.PaymentHttpError as exc:
         message = str(exc)
         if require_curl_cffi and message.startswith("ChatGPT checkout/approve"):
@@ -834,6 +843,9 @@ def _configure_chatgpt_http_session(
     openai_sentinel_token: str = "",
     oai_client_version: str = "",
     oai_client_build_number: str = "",
+    accept_language: str = "",
+    sec_ch_ua: str = "",
+    sec_ch_ua_platform: str = "",
 ) -> dict:
     return chatgpt_session_service.configure_chatgpt_http_session(
         http,
@@ -846,6 +858,9 @@ def _configure_chatgpt_http_session(
         openai_sentinel_token=openai_sentinel_token,
         oai_client_version=oai_client_version,
         oai_client_build_number=oai_client_build_number,
+        accept_language=accept_language,
+        sec_ch_ua=sec_ch_ua,
+        sec_ch_ua_platform=sec_ch_ua_platform,
     )
 
 
@@ -960,6 +975,8 @@ def _chatgpt_checkout_headers(
     device_id: str = "",
     target_path: str = "",
     openai_sentinel_token: str = "",
+    sec_ch_ua: str = "",
+    sec_ch_ua_platform: str = "",
 ) -> dict:
     return chatgpt_session_service.chatgpt_checkout_headers(
         access_token=access_token,
@@ -970,6 +987,8 @@ def _chatgpt_checkout_headers(
         device_id=device_id,
         target_path=target_path,
         openai_sentinel_token=openai_sentinel_token,
+        sec_ch_ua=sec_ch_ua,
+        sec_ch_ua_platform=sec_ch_ua_platform,
     )
 
 
@@ -1159,6 +1178,10 @@ def _approve_checkout_http(
     account_id: str = "",
     device_id: str = "",
     openai_sentinel_token: str = "",
+    user_agent: str = "",
+    accept_language: str = "",
+    sec_ch_ua: str = "",
+    sec_ch_ua_platform: str = "",
 ) -> dict:
     if access_token or cookie_header or account_id or device_id or openai_sentinel_token:
         _configure_chatgpt_http_session(
@@ -1168,12 +1191,16 @@ def _approve_checkout_http(
             account_id=account_id,
             device_id=device_id,
             openai_sentinel_token=openai_sentinel_token,
+            user_agent=user_agent,
+            accept_language=accept_language,
+            sec_ch_ua=sec_ch_ua,
+            sec_ch_ua_platform=sec_ch_ua_platform,
         )
-    user_agent = ""
+    resolved_user_agent = str(user_agent or "").strip()
     try:
-        user_agent = str((getattr(http, "headers", {}) or {}).get("User-Agent") or "")
+        resolved_user_agent = resolved_user_agent or str((getattr(http, "headers", {}) or {}).get("User-Agent") or "")
     except Exception:
-        user_agent = ""
+        resolved_user_agent = resolved_user_agent or ""
     headers = _chatgpt_checkout_headers(
         access_token=access_token,
         checkout_session_id=checkout_session_id,
@@ -1183,16 +1210,18 @@ def _approve_checkout_http(
         device_id=device_id,
         target_path="/backend-api/payments/checkout/approve",
         openai_sentinel_token="",
+        sec_ch_ua=sec_ch_ua,
+        sec_ch_ua_platform=sec_ch_ua_platform,
     )
     sentinel_headers = _checkout_approval_sentinel_headers(
         cookie_header=headers.get("cookie", ""),
-        user_agent=user_agent,
+        user_agent=resolved_user_agent,
         checkout_url=f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
     )
     headers.update(sentinel_headers)
     headers.pop("openai-sentinel-token", None)
-    if user_agent:
-        headers["user-agent"] = user_agent
+    if resolved_user_agent:
+        headers["user-agent"] = resolved_user_agent
     try:
         http.post(
             "https://chatgpt.com/backend-api/sentinel/ping",
@@ -1237,6 +1266,9 @@ def _verify_checkout_http(
     account_id: str = "",
     device_id: str = "",
     openai_sentinel_token: str = "",
+    user_agent: str = "",
+    sec_ch_ua: str = "",
+    sec_ch_ua_platform: str = "",
 ) -> dict:
     headers = _chatgpt_checkout_headers(
         access_token=access_token,
@@ -1246,7 +1278,11 @@ def _verify_checkout_http(
         account_id=account_id,
         device_id=device_id,
         openai_sentinel_token=openai_sentinel_token,
+        sec_ch_ua=sec_ch_ua,
+        sec_ch_ua_platform=sec_ch_ua_platform,
     )
+    if str(user_agent or "").strip():
+        headers["user-agent"] = str(user_agent or "").strip()
     resp = http.get(
         "https://chatgpt.com/checkout/verify",
         params={

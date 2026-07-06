@@ -291,6 +291,84 @@ def test_run_bind_task_injects_selected_account_auth_session_before_checkout(mon
     ]
 
 
+def test_bind_checkout_response_capture_extracts_stripe_decline_reason():
+    capture = bind_executor._new_checkout_network_capture()
+
+    class FakePlaywrightResponse:
+        url = "https://api.stripe.com/v1/payment_intents/pi_test_123/confirm"
+        status = 402
+
+        def json(self):
+            return {
+                "error": {
+                    "code": "card_declined",
+                    "decline_code": "generic_decline",
+                    "message": "Your card was declined.",
+                    "type": "card_error",
+                }
+            }
+
+    bind_executor._capture_checkout_network_response(capture, FakePlaywrightResponse())
+    result = bind_executor._enrich_checkout_result_with_network_failure(
+        bind_executor._build_result("failed", failure_stage="post_submit", message="检测到支付失败提示"),
+        capture,
+    )
+
+    assert result["payment_intent"]["failure_reason"] == {
+        "code": "card_declined",
+        "decline_code": "generic_decline",
+        "message": "Your card was declined.",
+        "type": "card_error",
+    }
+    assert "card_declined" in result["message"]
+    assert "generic_decline" in result["message"]
+
+
+def test_wait_for_checkout_result_includes_captured_network_decline(monkeypatch):
+    capture = bind_executor._new_checkout_network_capture()
+    bind_executor._capture_checkout_network_payload(
+        capture,
+        url="https://api.stripe.com/v1/payment_intents/pi_test_123/confirm",
+        status=402,
+        payload={
+            "error": {
+                "code": "card_declined",
+                "decline_code": "do_not_honor",
+                "message": "The bank did not approve this payment.",
+                "type": "card_error",
+            }
+        },
+    )
+
+    class FakeLocator:
+        def inner_text(self, timeout=1500):
+            return "Your card was declined."
+
+    class FakePage:
+        url = "https://chatgpt.com/checkout/openai_llc/oaics_demo"
+
+        def locator(self, _selector):
+            return FakeLocator()
+
+    class FakeApi:
+        page = FakePage()
+
+    monkeypatch.setattr(bind_executor, "_capture_screenshot", lambda *_args, **_kwargs: "")
+
+    result = bind_executor._wait_for_checkout_result(
+        FakeApi(),
+        session_id="session",
+        screenshot_paths=[],
+        timeout_seconds=10,
+        network_capture=capture,
+    )
+
+    assert result["status"] == "failed"
+    assert result["payment_intent"]["failure_reason"]["code"] == "card_declined"
+    assert result["payment_intent"]["failure_reason"]["decline_code"] == "do_not_honor"
+    assert "do_not_honor" in result["message"]
+
+
 def test_run_bind_task_fails_when_selected_account_has_no_auth_session(monkeypatch):
     events = []
 

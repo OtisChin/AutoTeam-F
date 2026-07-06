@@ -167,15 +167,18 @@ def chatgpt_checkout_headers(
     device_id: str = "",
     target_path: str = "",
     openai_sentinel_token: str = "",
+    sec_ch_ua: str = "",
+    sec_ch_ua_platform: str = "",
 ) -> dict[str, str]:
     headers = {
         "accept": "*/*",
         "content-type": "application/json",
         "origin": "https://chatgpt.com",
         "referer": f"https://chatgpt.com/checkout/{processor_entity}/{checkout_session_id}",
-        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+        "sec-ch-ua": str(sec_ch_ua or "").strip()
+        or '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
         "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua-platform": str(sec_ch_ua_platform or "").strip() or '"Windows"',
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",
@@ -304,6 +307,9 @@ def configure_chatgpt_http_session(
     openai_sentinel_token: str = "",
     oai_client_version: str = "",
     oai_client_build_number: str = "",
+    accept_language: str = "",
+    sec_ch_ua: str = "",
+    sec_ch_ua_platform: str = "",
 ) -> dict[str, str]:
     resolved_device_id = str(device_id or "").strip() or str(uuid.uuid4())
     resolved_user_agent = str(user_agent or "").strip() or (
@@ -319,15 +325,16 @@ def configure_chatgpt_http_session(
     headers = {
         "User-Agent": resolved_user_agent,
         "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": str(accept_language or "").strip() or "en-US,en;q=0.9",
         "Origin": "https://chatgpt.com",
         "Referer": "https://chatgpt.com/",
         "Content-Type": "application/json",
         "oai-device-id": resolved_device_id,
         "oai-language": "en-US",
-        "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+        "sec-ch-ua": str(sec_ch_ua or "").strip()
+        or '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
         "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua-platform": str(sec_ch_ua_platform or "").strip() or '"Windows"',
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",

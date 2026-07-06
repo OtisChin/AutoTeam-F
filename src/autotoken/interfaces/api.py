@@ -116,6 +116,7 @@ from autotoken.api_routes.interactive_login import (
 from autotoken.api_routes.interactive_login import (
     create_interactive_login_router,
 )
+from autotoken.api_routes.mail_accounts import create_mail_accounts_router
 from autotoken.api_routes.mail_provider_config import create_mail_provider_config_router
 from autotoken.api_routes.oauth_phone_pool import create_oauth_phone_pool_router
 from autotoken.api_routes.oauth_phone_sms_config import (
@@ -680,6 +681,7 @@ def _set_api_key(value: str) -> None:
 
 app.include_router(create_setup_router(get_api_key=_get_api_key, set_api_key=_set_api_key))
 app.include_router(create_mail_provider_config_router())
+app.include_router(create_mail_accounts_router())
 
 
 def _mask_secret_for_config(value: str) -> str:

@@ -301,6 +301,23 @@
           </div>
 
           <div>
+            <label class="block text-sm text-gray-400 mb-1">支付流程</label>
+            <select
+              v-model="bindTaskForm.paymentFlow"
+              :disabled="bindSubmitting || bindTaskRunning"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            >
+              <option value="playwright">Playwright</option>
+              <option value="protocol">协议支付</option>
+            </select>
+            <div class="mt-1 text-xs" :class="bindTaskForm.paymentFlow === 'protocol' ? 'text-amber-300' : 'text-gray-500'">
+              {{ bindTaskForm.paymentFlow === 'protocol'
+                ? '协议支付不会打开浏览器，直接通过 Stripe/ChatGPT 接口提交卡片并确认。'
+                : '保持当前已验证通过的浏览器自动填表支付流程。' }}
+            </div>
+          </div>
+
+          <div>
             <label class="block text-sm text-gray-400 mb-2">Checkout 链接模式</label>
             <div class="grid grid-cols-2 gap-2">
               <button
@@ -449,6 +466,7 @@
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
             <div>账号：<span class="text-gray-200">{{ selectedAccountEmail || '-' }}</span></div>
             <div>卡片：<span class="text-gray-200">{{ selectedCardLabel || '-' }}</span></div>
+            <div>支付流程：<span class="text-gray-200">{{ bindTaskForm.paymentFlow === 'protocol' ? '协议支付' : 'Playwright' }}</span></div>
             <div>链接模式：<span class="text-gray-200">{{ bindTaskForm.checkoutMode === 'auto' ? '自动生成' : '手动添加' }}</span></div>
             <div>链接：<span class="text-gray-200 break-all">{{ effectiveCheckoutUrl || '-' }}</span></div>
             <div>代理 API：<span class="text-gray-200">{{ bindTaskForm.proxyApiEnabled ? `Cliproxy / ${bindTaskForm.proxyApiCountry}` : '未启用' }}</span></div>
@@ -2004,6 +2022,7 @@ const bindForm = ref({
 
 const bindTaskForm = ref({
   checkoutMode: 'auto',
+  paymentFlow: 'playwright',
   cardItemId: '',
   checkoutUrl: '',
   proxyApiEnabled: false,
@@ -3011,6 +3030,15 @@ const gopayStageLabelMap = {
   gopay_payment_process_failed_rotate: 'GoPay 钱包扣款授权失败，切换账号',
   gopay_all_payment_process_failed: '所有账号 GoPay 扣款授权均失败',
   payment_completed: '支付完成，回查状态',
+  protocol_card_http_profile: '协议支付：初始化 HTTP 指纹',
+  protocol_openai_taxes: '协议支付：更新 ChatGPT 税费/账单',
+  protocol_openai_confirmation_token: '协议支付：创建 Stripe confirmation token',
+  protocol_openai_confirm: '协议支付：确认 ChatGPT checkout',
+  protocol_card_payment_intent_confirm: '协议支付：确认 Stripe PaymentIntent',
+  protocol_card_payment_intent: '协议支付：读取 Stripe PaymentIntent',
+  protocol_card_verify: '协议支付：回查 ChatGPT 支付结果',
+  bind_proxy_preflight_failed: '绑卡代理预检失败，切换代理',
+  bind_proxy_api_selected: '已选择可用绑卡代理',
   chatgpt_verify: '回查 ChatGPT 支付结果',
   select_gopay: '选择 GoPay 支付方式',
   gopay_selected: '已选择 GoPay',
@@ -3430,6 +3458,7 @@ function getRememberedChatGPTBindForm() {
     },
     taskForm: {
       checkoutMode: bindTaskForm.value.checkoutMode === 'manual' ? 'manual' : 'auto',
+      paymentFlow: bindTaskForm.value.paymentFlow === 'protocol' ? 'protocol' : 'playwright',
       cardItemId: String(bindTaskForm.value.cardItemId || '').trim(),
       checkoutUrl: String(bindTaskForm.value.checkoutUrl || '').trim(),
       proxyApiEnabled: Boolean(bindTaskForm.value.proxyApiEnabled),
@@ -3467,6 +3496,7 @@ function loadChatGPTBindFormState() {
     bindTaskForm.value = {
       ...bindTaskForm.value,
       checkoutMode: taskForm.checkoutMode === 'manual' ? 'manual' : 'auto',
+      paymentFlow: taskForm.paymentFlow === 'protocol' ? 'protocol' : 'playwright',
       cardItemId: String(taskForm.cardItemId || '').trim(),
       checkoutUrl: String(taskForm.checkoutUrl || '').trim(),
       proxyApiEnabled: Boolean(taskForm.proxyApiEnabled),
@@ -3937,7 +3967,7 @@ async function pollBindTask(taskId) {
     const previousStage = previous?.progress?.stage || ''
     const nextStage = task?.progress?.stage || ''
     if (nextStage && previousStage !== nextStage && !shouldHideGoPayProgressEvent(task.progress)) {
-      pushBindLog(`执行阶段：${nextStage}`, 'info')
+      pushBindLog(`执行阶段：${gopayStageLabelMap[nextStage] || nextStage}`, 'info')
     }
     if (['pending', 'running'].includes(task.status)) {
       bindTaskPollTimer = window.setTimeout(() => {
@@ -4060,7 +4090,7 @@ async function restoreActiveBindTasks() {
     bindTask.value = running
     pushBindLog(`已恢复绑卡任务轮询：${running.task_id}`, 'info')
     if (running.progress?.stage) {
-      pushBindLog(`执行阶段：${running.progress.stage}`, 'info')
+      pushBindLog(`执行阶段：${gopayStageLabelMap[running.progress.stage] || running.progress.stage}`, 'info')
     }
     if (running.progress?.message) {
       pushBindLog(running.progress.message, 'info')
@@ -4282,16 +4312,27 @@ async function startBindCard() {
   bindLogEntries.value = []
   pushBindLog('准备提交绑卡任务', 'info')
   try {
-    const checkoutUrl = await ensureBindCheckoutUrl()
+    const useProtocolAutoCheckout = bindTaskForm.value.paymentFlow === 'protocol' && bindTaskForm.value.checkoutMode !== 'manual'
+    const checkoutUrl = useProtocolAutoCheckout ? '' : await ensureBindCheckoutUrl()
+    const checkoutPayload = useProtocolAutoCheckout ? buildBindLinkPayload('') : {}
+    if (useProtocolAutoCheckout) {
+      currentLink.value = ''
+      checkoutSessionId.value = ''
+      rawGeneratedUrl.value = ''
+      bindTaskForm.value.checkoutUrl = ''
+      pushBindLog('协议支付模式将由后端在同一代理/IP/指纹环境中生成 checkout 链接', 'info')
+    }
     const task = await api.startBindCard({
       email: selectedAccountEmail.value,
       card_item_id: bindTaskForm.value.cardItemId,
       checkout_url: checkoutUrl,
+      bind_link_payload: checkoutPayload,
       proxy_api_provider: bindTaskForm.value.proxyApiEnabled ? 'cliproxy' : '',
       proxy_api_country: bindTaskForm.value.proxyApiEnabled
         ? (String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US')
         : '',
       proxy_api_url: bindTaskForm.value.proxyApiEnabled ? String(bindTaskForm.value.proxyApiUrl || '').trim() : '',
+      payment_flow: bindTaskForm.value.paymentFlow === 'protocol' ? 'protocol' : 'playwright',
       manual_confirm: false,
     })
     bindTask.value = task

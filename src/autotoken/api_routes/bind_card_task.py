@@ -1,5 +1,6 @@
 """Card binding task launch route."""
 
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -12,13 +13,18 @@ from pydantic import AliasChoices, BaseModel, Field
 class BindCardTaskParams(BaseModel):
     email: str
     card_item_id: str
-    checkout_url: str
+    checkout_url: str = ""
+    bind_link_payload: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("bind_link_payload", "bindLinkPayload", "checkout_payload", "checkoutPayload"),
+    )
     proxy_url: str | None = None
     proxy_label: str = ""
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
     proxy_api_country: str = Field("US", validation_alias=AliasChoices("proxy_api_country", "proxyApiCountry"))
     proxy_bypass: str | None = None
+    payment_flow: str = Field("playwright", validation_alias=AliasChoices("payment_flow", "paymentFlow"))
     roxybrowser_workspace_id: str = Field(
         "",
         validation_alias=AliasChoices("roxybrowser_workspace_id", "roxybrowserWorkspaceId"),
@@ -58,6 +64,7 @@ def create_bind_card_task_router(
         from autotoken.core.redaction import safe_proxy_summary
         from autotoken.payments.bind_audit import record_bind_audit
         from autotoken.payments.bind_executor import run_bind_task
+        from autotoken.payments.protocol_card_executor import run_protocol_card_bind_task
         from autotoken.payments.card_pool import finalize_card_binding, find_item, reserve_card_item
         from autotoken.services import proxy_runtime
         from autotoken.settings.config import normalize_proxy_url
@@ -75,7 +82,11 @@ def create_bind_card_task_router(
             raise HTTPException(status_code=400, detail="email 不能为空")
         if not params.card_item_id:
             raise HTTPException(status_code=400, detail="card_item_id 不能为空")
-        if not checkout_url:
+        payment_flow = str(params.payment_flow or "playwright").strip().lower().replace("_", "-")
+        if payment_flow not in {"playwright", "protocol"}:
+            raise HTTPException(status_code=400, detail="payment_flow 仅支持 playwright 或 protocol")
+        checkout_payload = params.bind_link_payload if isinstance(params.bind_link_payload, dict) else {}
+        if not checkout_url and not (payment_flow == "protocol" and checkout_payload):
             raise HTTPException(status_code=400, detail="checkout_url 不能为空")
 
         accounts = load_accounts()
@@ -121,17 +132,90 @@ def create_bind_card_task_router(
                     )
                 if proxy_api_url:
                     proxy_api_url = proxy_runtime.proxy_api_url_with_region(proxy_api_url, proxy_api_country)
-                    fetched_proxy = proxy_runtime.fetch_proxy_from_api_url(
-                        proxy_api_url,
-                        default_auth_scheme="socks5h",
-                        provider=proxy_api_provider or "cliproxy",
+                    max_proxy_attempts = max(
+                        1,
+                        min(5, int(os.environ.get("AUTOTOKEN_BIND_PROXY_PREFLIGHT_ATTEMPTS", "3") or 3)),
                     )
-                    if fetched_proxy:
-                        effective_proxy_url = fetched_proxy
-                    elif effective_proxy_url:
-                        effective_proxy_url = normalize_proxy_url(effective_proxy_url, default_auth_scheme="socks5h")
+                    last_preflight_error = ""
+                    selected_proxy_url = ""
+                    for attempt in range(1, max_proxy_attempts + 1):
+                        try:
+                            fetched_proxy = proxy_runtime.fetch_proxy_from_api_url(
+                                proxy_api_url,
+                                default_auth_scheme="socks5h",
+                                provider=proxy_api_provider or "cliproxy",
+                            )
+                        except Exception as exc:
+                            last_preflight_error = f"动态代理 API 请求失败: {exc}"
+                            append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "bind_proxy_preflight_failed",
+                                    "email": email,
+                                    "proxy_label": params.proxy_label,
+                                    "proxy_api_provider": proxy_api_provider or "",
+                                    "proxy_api_country": proxy_api_country,
+                                    "attempt": attempt,
+                                    "max_attempts": max_proxy_attempts,
+                                    "message": f"绑卡代理预检失败({attempt}/{max_proxy_attempts}): {last_preflight_error}",
+                                },
+                            )
+                            continue
+                        candidate_proxy_url = fetched_proxy or (
+                            normalize_proxy_url(effective_proxy_url, default_auth_scheme="socks5h")
+                            if effective_proxy_url
+                            else ""
+                        )
+                        if not candidate_proxy_url:
+                            last_preflight_error = "动态代理 API 未返回可用代理"
+                            append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "bind_proxy_preflight_failed",
+                                    "email": email,
+                                    "proxy_label": params.proxy_label,
+                                    "proxy_api_provider": proxy_api_provider or "",
+                                    "proxy_api_country": proxy_api_country,
+                                    "attempt": attempt,
+                                    "max_attempts": max_proxy_attempts,
+                                    "message": f"绑卡代理预检失败({attempt}/{max_proxy_attempts}): {last_preflight_error}",
+                                },
+                            )
+                            continue
+                        ok, preflight_message = proxy_runtime.preflight_payment_proxy_url(candidate_proxy_url)
+                        if ok:
+                            selected_proxy_url = candidate_proxy_url
+                            break
+                        last_preflight_error = preflight_message
+                        append_task_progress(
+                            task_id,
+                            {
+                                "stage": "bind_proxy_preflight_failed",
+                                "email": email,
+                                "proxy_label": params.proxy_label,
+                                "proxy_api_provider": proxy_api_provider or "",
+                                "proxy_api_country": proxy_api_country,
+                                "attempt": attempt,
+                                "max_attempts": max_proxy_attempts,
+                                "message": (
+                                    f"绑卡代理预检失败({attempt}/{max_proxy_attempts}): "
+                                    f"{safe_proxy_summary(candidate_proxy_url)} - {preflight_message}"
+                                ),
+                            },
+                        )
+                    if selected_proxy_url:
+                        effective_proxy_url = selected_proxy_url
                     else:
-                        raise RuntimeError("Cliproxy API 未返回可用代理；请检查 Cliproxy API 地址、白名单或套餐配置")
+                        message = f"动态代理预检失败: {last_preflight_error or '所有代理均不可用'}"
+                        raise task_result_error(
+                            message,
+                            task_result={
+                                "status": "failed",
+                                "failure_stage": "proxy_preflight",
+                                "message": message,
+                                "screenshot_paths": [],
+                            },
+                        )
                     append_task_progress(
                         task_id,
                         {
@@ -147,12 +231,37 @@ def create_bind_card_task_router(
                             ),
                         },
                     )
+                elif effective_proxy_url:
+                    ok, preflight_message = proxy_runtime.preflight_payment_proxy_url(effective_proxy_url)
+                    if not ok:
+                        append_task_progress(
+                            task_id,
+                            {
+                                "stage": "bind_proxy_preflight_failed",
+                                "email": email,
+                                "proxy_label": params.proxy_label,
+                                "message": (
+                                    "绑卡代理预检失败: "
+                                    f"{safe_proxy_summary(effective_proxy_url)} - {preflight_message}"
+                                ),
+                            },
+                        )
+                        message = f"代理预检失败: {preflight_message}"
+                        raise task_result_error(
+                            message,
+                            task_result={
+                                "status": "failed",
+                                "failure_stage": "proxy_preflight",
+                                "message": message,
+                                "screenshot_paths": [],
+                            },
+                        )
 
                 reserved_item = reserve_card_item(
                     params.card_item_id,
                     account_email=email,
                     proxy_label=params.proxy_label,
-                    checkout_url=checkout_url,
+                    checkout_url=checkout_url or "<protocol-auto-generate>",
                     task_id=task_id,
                 )
                 if not reserved_item:
@@ -169,20 +278,47 @@ def create_bind_card_task_router(
                     },
                 )
 
-                result = run_bind_task(
-                    email=email,
-                    checkout_url=checkout_url,
-                    card_item=reserved_item,
-                    proxy_url=effective_proxy_url,
-                    proxy_bypass=params.proxy_bypass,
-                    use_roxybrowser=True,
-                    roxybrowser_workspace_id=params.roxybrowser_workspace_id,
-                    roxybrowser_profile_id=params.roxybrowser_profile_id,
-                    roxybrowser_auto_create_profile=params.roxybrowser_auto_create_profile,
-                    manual_confirm=params.manual_confirm,
-                    timeout_seconds=max(60, int(params.timeout_seconds or 900)),
-                    is_cancelled=cancel_signal.is_cancelled,
-                )
+                if payment_flow == "protocol":
+                    result = run_protocol_card_bind_task(
+                        email=email,
+                        checkout_url=checkout_url,
+                        checkout_payload=checkout_payload,
+                        card_item=reserved_item,
+                        proxy_url=effective_proxy_url,
+                        proxy_bypass=params.proxy_bypass,
+                        timeout_seconds=max(60, int(params.timeout_seconds or 900)),
+                        is_cancelled=cancel_signal.is_cancelled,
+                        progress_callback=lambda event: append_task_progress(
+                            task_id,
+                            {
+                                **dict(event or {}),
+                                "email": email,
+                                "card_item_id": params.card_item_id,
+                            },
+                        ),
+                    )
+                else:
+                    result = run_bind_task(
+                        email=email,
+                        checkout_url=checkout_url,
+                        card_item=reserved_item,
+                        proxy_url=effective_proxy_url,
+                        proxy_bypass=params.proxy_bypass,
+                        use_roxybrowser=True,
+                        roxybrowser_workspace_id=params.roxybrowser_workspace_id,
+                        roxybrowser_profile_id=params.roxybrowser_profile_id,
+                        roxybrowser_auto_create_profile=params.roxybrowser_auto_create_profile,
+                        manual_confirm=params.manual_confirm,
+                        timeout_seconds=max(60, int(params.timeout_seconds or 900)),
+                        is_cancelled=cancel_signal.is_cancelled,
+                    )
+            except task_result_error as exc:
+                result = getattr(exc, "task_result", None) or {
+                    "status": "failed",
+                    "failure_stage": "proxy_preflight",
+                    "message": str(exc),
+                    "screenshot_paths": [],
+                }
             except Exception as exc:
                 logger.exception("[bind-card] unexpected error")
                 result = {
@@ -197,12 +333,14 @@ def create_bind_card_task_router(
             result.setdefault("failure_stage", "")
             result.setdefault("message", "")
             result.setdefault("screenshot_paths", [])
+            effective_checkout_url = str(result.get("checkout_url") or checkout_url or "").strip()
             result["email"] = email
             result["card_item_id"] = params.card_item_id
-            result["checkout_url"] = checkout_url
+            result["checkout_url"] = effective_checkout_url
             result["proxy_label"] = params.proxy_label
             result["proxy_api_provider"] = params.proxy_api_provider or ""
             result["proxy_api_country"] = params.proxy_api_country or ""
+            result["payment_flow"] = payment_flow
             result["manual_confirm"] = params.manual_confirm
 
             if cancel_signal.is_cancelled() and result.get("status") != "success":
@@ -221,7 +359,7 @@ def create_bind_card_task_router(
                     message=result.get("message") or "",
                     account_email=email,
                     proxy_label=params.proxy_label,
-                    checkout_url=checkout_url,
+                    checkout_url=effective_checkout_url,
                     task_id=task_id,
                     reusable=is_bind_card_reusable_result(result),
                 )
@@ -232,7 +370,7 @@ def create_bind_card_task_router(
                 last_bind_status="cancelled" if task_status == "cancelled" else result.get("status") or "failed",
                 last_bind_at=time.time(),
                 last_bind_provider="card",
-                last_checkout_url=checkout_url,
+                last_checkout_url=effective_checkout_url,
                 last_card_id=params.card_item_id,
                 last_proxy_label=params.proxy_label,
                 last_bind_task_id=task_id,
@@ -245,12 +383,13 @@ def create_bind_card_task_router(
                     "task_id": task_id,
                     "email": email,
                     "card_item_id": params.card_item_id,
-                    "checkout_url": checkout_url,
+                    "checkout_url": effective_checkout_url,
                     "proxy_label": params.proxy_label,
                     "proxy_url": params.proxy_url or "",
                     "proxy_api_provider": params.proxy_api_provider or "",
                     "proxy_api_country": params.proxy_api_country or "",
                     "proxy_api_url_present": bool(str(params.proxy_api_url or "").strip()),
+                    "payment_flow": payment_flow,
                     "manual_confirm": params.manual_confirm,
                     "status": result.get("status") or "failed",
                     "task_status": task_status,

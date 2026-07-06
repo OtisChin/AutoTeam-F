@@ -32,12 +32,13 @@ def new_http_session(
     *,
     require_curl_cffi: bool = False,
     tls_impersonate_env: str = "GOPAY_TLS_IMPERSONATE",
+    tls_impersonate: str | None = None,
     force_requests: bool = False,
 ) -> Any:
     preferred_transport = str(os.environ.get("AUTOTOKEN_HTTP_TRANSPORT") or "").strip().lower()
     use_requests = force_requests or preferred_transport in {"requests", "request", "urllib3"}
     if _CurlCffiSession is not None and not use_requests:
-        session = _CurlCffiSession(impersonate=os.environ.get(tls_impersonate_env, "chrome136"))
+        session = _CurlCffiSession(impersonate=str(tls_impersonate or os.environ.get(tls_impersonate_env, "chrome136") or "chrome136"))
         session.trust_env = False
         try:
             session._autotoken_transport = "curl_cffi"  # type: ignore[attr-defined]

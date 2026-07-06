@@ -74,6 +74,7 @@ const items = [
   { key: 'oauthPhones', group: 'OAuth', glyph: 'PH', label: 'OAuth 手机号', mobileLabel: '手机号' },
   { key: 'oauthPhoneRecords', group: 'OAuth', glyph: 'OR', label: 'OAuth 取号记录', mobileLabel: '取号' },
   { key: 'oauth', group: 'OAuth', glyph: 'OA', label: 'OAuth 登录', mobileLabel: 'OAuth' },
+  { key: 'mailAccounts', group: 'Accounts', glyph: 'ML', label: 'mail邮箱管理', mobileLabel: 'mail' },
   { key: 'trade', group: 'Commerce', glyph: 'CD', label: '交易管理', mobileLabel: '交易' },
   { key: 'cpa2sub', group: 'Tools', glyph: 'CS', label: 'CPA_2_Sub2API', mobileLabel: 'CPA2Sub' },
   { key: 'tasks', group: 'System', glyph: 'TS', label: '任务历史', mobileLabel: '任务' },

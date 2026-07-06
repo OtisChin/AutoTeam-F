@@ -231,6 +231,41 @@ def fetch_proxy_from_api_url(api_url: str, *, default_auth_scheme: str, provider
         raise RuntimeError(f"动态代理 API 返回的代理格式无效: {candidate} ({exc})") from exc
 
 
+def preflight_payment_proxy_url(proxy_url: str, *, timeout_seconds: float = 20.0) -> tuple[bool, str]:
+    """Check a payment proxy before reserving a card.
+
+    The probe deliberately touches ChatGPT through curl_cffi Chrome TLS, because
+    that is where bad dynamic proxy ports usually fail during checkout creation.
+    Any HTTP response below 500 is enough: this is a transport/TLS proxy check,
+    not a login or Cloudflare bypass check.
+    """
+
+    try:
+        normalized_proxy_url = normalize_proxy_url(proxy_url, default_auth_scheme="socks5h")
+        if not normalized_proxy_url:
+            return True, "no proxy"
+        from autotoken.services.payment_http import new_http_session
+
+        http = new_http_session(
+            normalized_proxy_url,
+            require_curl_cffi=True,
+            tls_impersonate="chrome136",
+        )
+        try:
+            resp = http.get("https://chatgpt.com/cdn-cgi/trace", timeout=max(5.0, float(timeout_seconds or 20.0)))
+        finally:
+            try:
+                http.close()
+            except Exception:
+                pass
+        status_code = int(getattr(resp, "status_code", 0) or 0)
+        if 200 <= status_code < 500:
+            return True, f"HTTP {status_code}"
+        return False, f"HTTP {status_code or 'unknown'}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def build_oauth_proxy_selector(
     *,
     proxy_url: str | None = None,

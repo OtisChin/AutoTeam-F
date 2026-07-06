@@ -218,4 +218,18 @@ export const api = {
     ? request('PUT', `/oauth-phone-pool/${encodeURIComponent(item.id)}`, item)
     : request('POST', '/oauth-phone-pool', item),
   deleteOAuthPhonePoolItems: (ids) => request('POST', '/oauth-phone-pool/delete', { ids }),
+
+  getMailAccounts: () => request('GET', '/mail-accounts'),
+  importMailAccounts: (text) => request('POST', '/mail-accounts/import', { text }),
+  saveMailAccount: (item, originalEmail = '') => originalEmail
+    ? request('PUT', `/mail-accounts/${encodeURIComponent(originalEmail)}`, item)
+    : request('POST', '/mail-accounts', item),
+  deleteMailAccounts: (emails) => request('POST', '/mail-accounts/delete', { emails }),
+  clearMailAccounts: () => request('POST', '/mail-accounts/clear'),
+  checkMailAccounts: (emails) => request('POST', '/mail-accounts/check', { emails }),
+  fetchMailAccounts: (emails) => request('POST', '/mail-accounts/fetch', { emails }),
+  updateMailAccountStatus: (emails, status) => request('POST', '/mail-accounts/status', { emails, status }),
+  updateMailAccountNote: (emails, note) => request('POST', '/mail-accounts/note', { emails, note }),
+  changeMailAccountPassword: (emails, newPassword) => request('POST', '/mail-accounts/change-password', { emails, newPassword }),
+  exportMailAccounts: () => request('GET', '/mail-accounts/export'),
 }

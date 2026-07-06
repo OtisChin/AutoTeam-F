@@ -362,6 +362,169 @@ def _build_result(status: str, *, failure_stage: str = "", message: str = "", sc
     }
 
 
+CHECKOUT_NETWORK_CAPTURE_MARKERS = (
+    "/v1/confirmation_tokens",
+    "/v1/payment_intents/",
+    "/v1/payment_pages/",
+    "/backend-api/payments/checkout/confirm",
+)
+
+
+def _new_checkout_network_capture() -> dict:
+    return {
+        "responses": [],
+        "payment_intent": {},
+        "failure_reason": {},
+    }
+
+
+def _checkout_network_url_relevant(url: str) -> bool:
+    raw = str(url or "")
+    return any(marker in raw for marker in CHECKOUT_NETWORK_CAPTURE_MARKERS)
+
+
+def _payment_intent_id_from_url(url: str) -> str:
+    matched = re.search(r"/payment_intents/(pi_[^/?#]+)", str(url or ""))
+    return str(matched.group(1) if matched else "").strip()
+
+
+def _compact_failure_parts(reason: dict) -> str:
+    parts = [
+        str(reason.get("code") or "").strip(),
+        str(reason.get("decline_code") or "").strip(),
+        str(reason.get("message") or "").strip(),
+    ]
+    return " / ".join(part for part in parts if part)
+
+
+def _checkout_failure_reason_from_payload(payload: dict) -> dict[str, str]:
+    data = payload if isinstance(payload, dict) else {}
+    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+    if error:
+        return {
+            "code": str(error.get("code") or "").strip(),
+            "decline_code": str(error.get("decline_code") or "").strip(),
+            "message": str(error.get("message") or "").strip(),
+            "type": str(error.get("type") or "").strip(),
+        }
+
+    payment_intent = data.get("payment_intent") if isinstance(data.get("payment_intent"), dict) else data
+    if not isinstance(payment_intent, dict):
+        return {}
+    last_error = (
+        payment_intent.get("last_payment_error")
+        if isinstance(payment_intent.get("last_payment_error"), dict)
+        else {}
+    )
+    if last_error:
+        return {
+            "code": str(last_error.get("code") or "").strip(),
+            "decline_code": str(last_error.get("decline_code") or "").strip(),
+            "message": str(last_error.get("message") or "").strip(),
+            "type": str(last_error.get("type") or "").strip(),
+        }
+    latest_charge = payment_intent.get("latest_charge") if isinstance(payment_intent.get("latest_charge"), dict) else {}
+    outcome = latest_charge.get("outcome") if isinstance(latest_charge.get("outcome"), dict) else {}
+    if outcome:
+        return {
+            "code": "",
+            "decline_code": str(outcome.get("reason") or "").strip(),
+            "message": str(outcome.get("seller_message") or outcome.get("network_decline_code") or "").strip(),
+            "type": str(outcome.get("type") or "").strip(),
+        }
+    return {}
+
+
+def _capture_checkout_network_payload(capture: dict, *, url: str, status: int = 0, payload: dict | None = None) -> None:
+    if not isinstance(capture, dict) or not _checkout_network_url_relevant(url):
+        return
+    data = payload if isinstance(payload, dict) else {}
+    event = {
+        "url": str(url or ""),
+        "http_status": int(status or 0),
+    }
+    capture.setdefault("responses", []).append(event)
+    payment_intent_payload = data.get("payment_intent") if isinstance(data.get("payment_intent"), dict) else data
+    pi_id = (
+        str(payment_intent_payload.get("id") or "").strip()
+        if isinstance(payment_intent_payload, dict)
+        else ""
+    ) or _payment_intent_id_from_url(url)
+    pi_status = (
+        str(payment_intent_payload.get("status") or "").strip()
+        if isinstance(payment_intent_payload, dict)
+        else ""
+    )
+    reason = _checkout_failure_reason_from_payload(data)
+    if pi_id or pi_status or reason:
+        payment_intent = {
+            "id": pi_id,
+            "status": pi_status,
+            "failure_reason": reason,
+            "confirm_result": {
+                "http_status": int(status or 0),
+                "error": reason if reason else {},
+            },
+        }
+        capture["payment_intent"] = payment_intent
+    if reason:
+        capture["failure_reason"] = reason
+
+
+def _capture_checkout_network_response(capture: dict, response) -> None:
+    url = str(getattr(response, "url", "") or "")
+    if not _checkout_network_url_relevant(url):
+        return
+    try:
+        status = int(getattr(response, "status", 0) or 0)
+    except Exception:
+        status = 0
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    _capture_checkout_network_payload(capture, url=url, status=status, payload=payload)
+
+
+def _install_checkout_network_capture(api: ChatGPTTeamAPI, capture: dict) -> None:
+    page = getattr(api, "page", None)
+    if page is None or not hasattr(page, "on"):
+        return
+
+    def _on_response(response):
+        try:
+            _capture_checkout_network_response(capture, response)
+        except Exception:
+            logger.debug("[bind_executor] checkout network response capture failed", exc_info=True)
+
+    try:
+        page.on("response", _on_response)
+    except Exception:
+        logger.debug("[bind_executor] unable to install checkout network capture", exc_info=True)
+
+
+def _enrich_checkout_result_with_network_failure(result: dict, capture: dict | None) -> dict:
+    enriched = dict(result or {})
+    capture = capture if isinstance(capture, dict) else {}
+    payment_intent = capture.get("payment_intent") if isinstance(capture.get("payment_intent"), dict) else {}
+    reason = capture.get("failure_reason") if isinstance(capture.get("failure_reason"), dict) else {}
+    if not reason and isinstance(payment_intent.get("failure_reason"), dict):
+        reason = payment_intent.get("failure_reason") or {}
+    if not reason:
+        return enriched
+
+    if enriched.get("status") == "needs_review":
+        enriched["status"] = "failed"
+    enriched["failure_stage"] = enriched.get("failure_stage") or "post_submit"
+    enriched["payment_intent"] = payment_intent or {"failure_reason": reason}
+    detail = _compact_failure_parts(reason)
+    if detail:
+        current = str(enriched.get("message") or "").strip()
+        if detail not in current:
+            enriched["message"] = f"{current}，原因: {detail}" if current else f"银行卡支付未成功，原因: {detail}"
+    return enriched
+
+
 def _selected_account_auth_context(email: str) -> dict[str, str]:
     normalized_email = str(email or "").strip().lower()
     if not normalized_email:
@@ -781,6 +944,7 @@ def _wait_for_checkout_result(
     screenshot_paths: list[str],
     timeout_seconds: int,
     is_cancelled=None,
+    network_capture: dict | None = None,
 ):
     deadline = time.time() + max(10, timeout_seconds)
     last_log_at = 0.0
@@ -804,17 +968,17 @@ def _wait_for_checkout_result(
         if classified:
             _capture_screenshot(api, session_id, classified["status"], screenshot_paths)
             classified["screenshot_paths"] = screenshot_paths
-            return classified
+            return _enrich_checkout_result_with_network_failure(classified, network_capture)
 
         time.sleep(3)
 
     _capture_screenshot(api, session_id, "timeout", screenshot_paths)
-    return _build_result(
+    return _enrich_checkout_result_with_network_failure(_build_result(
         "needs_review",
         failure_stage="post_submit",
         message="等待支付结果超时，需要人工确认最终状态",
         screenshot_paths=screenshot_paths,
-    )
+    ), network_capture)
 
 
 def run_bind_task(
@@ -900,6 +1064,8 @@ def run_bind_task(
                 screenshot_paths=screenshot_paths,
             )
 
+        network_capture = _new_checkout_network_capture()
+        _install_checkout_network_capture(api, network_capture)
         api._wait_for_cloudflare()
         _capture_screenshot(api, session_id, "opened", screenshot_paths)
 
@@ -964,6 +1130,7 @@ def run_bind_task(
                 screenshot_paths=screenshot_paths,
                 timeout_seconds=timeout_seconds,
                 is_cancelled=is_cancelled,
+                network_capture=network_capture,
             )
 
         result = _submit_checkout(api)
@@ -979,6 +1146,7 @@ def run_bind_task(
             screenshot_paths=screenshot_paths,
             timeout_seconds=timeout_seconds,
             is_cancelled=is_cancelled,
+            network_capture=network_capture,
         )
     except Exception as exc:
         logger.exception("[bind_executor] unexpected error")
