@@ -210,16 +210,41 @@ def _mail_client_provider_name(mail_client) -> str:
     return str(getattr(inner, "provider_name", "") or "").strip().lower()
 
 
-def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
+def _sync_provider_registered_email(
+    email: str,
+    mail_client=None,
+    *,
+    mail_provider: str | None = None,
+    password: str = "",
+    refresh_token: str = "",
+    source: str = "",
+) -> None:
     provider = (mail_provider or _mail_client_provider_name(mail_client)).strip().lower() if (mail_provider or mail_client) else ""
-    if provider != "outlook":
-        return
-    try:
-        from autotoken.storage.outlook_pool import mark_registered_email
+    if provider == "outlook":
+        try:
+            from autotoken.storage.outlook_pool import mark_registered_email
 
-        mark_registered_email(email, source=source or "register_success")
-    except Exception:
-        logger.debug("[outlook] 写入 Outlook 邮箱池持久注册状态失败: %s", email, exc_info=True)
+            mark_registered_email(email, source=source)
+        except Exception as exc:
+            logger.debug("[outlook] 标记已注册邮箱失败: %s", exc, exc_info=True)
+        return
+    if provider in {"mail.com", "mailcom", "mail_com"}:
+        try:
+            from autotoken.storage.mail_accounts import mark_mailcom_registered
+
+            mark_mailcom_registered(
+                email,
+                gpt_password=password,
+                refresh_token=refresh_token,
+                source=source,
+            )
+        except Exception as exc:
+            logger.debug("[mail.com] 标记已注册邮箱失败: %s", exc, exc_info=True)
+        return
+
+
+def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
+    _sync_provider_registered_email(email, mail_client, mail_provider=mail_provider, source=source)
 
 
 def _direct_register_code_timeout(mail_client, email: str | None = None) -> int:
@@ -1852,7 +1877,12 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         seat_type=SEAT_CODEX,
         mail_provider=mail_provider,
     )
-    _mark_outlook_email_registered(email, mail_provider=mail_provider, source="auth_session_saved")
+    _sync_provider_registered_email(
+        email,
+        mail_provider=mail_provider,
+        password=password,
+        source="auth_session_saved",
+    )
     logger.info("[注册] auth_session 已保存: %s", auth_file)
     update_account(email, **registration.auth_session_update_fields(last_active_at=time.time()))
     logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)
@@ -3616,7 +3646,12 @@ def create_account_direct(
 
         if success:
             _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)
-            _mark_outlook_email_registered(email, mail_client, source="register_success")
+            _sync_provider_registered_email(
+                email,
+                mail_client,
+                password=password,
+                source="register_success",
+            )
             if not check_team_membership:
                 try:
                     logger.info("[注册] 独立注册成功，开始调用 /api/auth/session 保存 auth_session: %s", email)
@@ -4665,7 +4700,7 @@ def cmd_register_accounts(
             provider_label = _mail_client_provider_name(mail_client) or str(mail_provider or "").strip().lower() or "default"
             register_target = (
                 f"provider={provider_label}"
-                if provider_label in {"luckmail", "outlook"}
+                if provider_label in {"luckmail", "outlook", "mail.com"}
                 else f"domain=@{job_domain or ''}"
             )
             logger.info(
