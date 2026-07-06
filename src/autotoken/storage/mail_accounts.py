@@ -437,37 +437,46 @@ def mailcom_pool_status() -> dict[str, Any]:
         account = accounts_by_email.get(email or "")
         auth_session_file = auth_session_store.get_auth_session_file(email) if email else ""
         auth_ready = bool(auth_session_file)
+        check_status = str(row.get("check_status") or "").strip().lower()
+        last_error = str(row.get("last_error") or "").strip()
         account_status = "missing" if not account else str(account.get("status") or "pending")
+        if row.get("status") == "disabled":
+            login_status = "disabled"
+            login_error = ""
+        elif auth_ready:
+            login_status = "ready"
+            login_error = ""
+        elif check_status in {"error", "invalid"} and last_error:
+            login_status = "failed"
+            login_error = last_error
+        elif str(row.get("mail_password") or "").strip():
+            login_status = "available"
+            login_error = ""
+        else:
+            login_status = "not_logged_in"
+            login_error = ""
         item = {
             **row,
+            "login_status": login_status,
+            "login_error": login_error,
             "account_pool_status": account_status,
             "auth_session_status": "ready" if auth_ready else "missing",
             "auth_session_file": auth_session_file,
-            "pool_status": "disabled" if row.get("status") == "disabled" else ("ready" if auth_ready else "available"),
+            "pool_status": login_status,
         }
         items.append(item)
 
-    available_items = [
-        item
-        for item in items
-        if item.get("status") == "enabled"
-        and item.get("auth_session_status") != "ready"
-        and str(item.get("mail_password") or "").strip()
-    ]
+    available_items = [item for item in items if item.get("login_status") == "available"]
     return {
         "items": items,
         "total": len(items),
         "available": len(available_items),
         "auth_session_ready": sum(1 for item in items if item.get("auth_session_status") == "ready"),
-        "not_logged_in": sum(1 for item in items if item.get("status") == "enabled" and item.get("auth_session_status") != "ready"),
-        "disabled": sum(1 for item in items if item.get("status") == "disabled"),
-        "login_failed": sum(
-            1
-            for item in items
-            if item.get("status") == "enabled"
-            and item.get("auth_session_status") != "ready"
-            and item.get("check_status") in {"invalid", "error"}
+        "not_logged_in": sum(
+            1 for item in items if item.get("login_status") in {"available", "not_logged_in"}
         ),
+        "disabled": sum(1 for item in items if item.get("status") == "disabled"),
+        "login_failed": sum(1 for item in items if item.get("login_status") == "failed"),
         "next_available_email": available_items[0]["email"] if available_items else "",
     }
 

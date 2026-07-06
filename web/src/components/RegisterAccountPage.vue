@@ -926,9 +926,18 @@
                   </td>
                   <td class="px-5 py-3 align-middle font-mono">{{ item.email || '-' }}</td>
                   <td class="px-5 py-3 align-middle">
-                    <span :class="item.login_status === 'failed' ? 'text-red-300' : item.login_status === 'ready' ? 'text-emerald-300' : 'text-amber-300'">
-                      {{ item.login_status || item.status || 'unknown' }}
-                    </span>
+                    <div class="space-y-1">
+                      <span :class="mailComPoolLoginStatusClass(item.login_status || item.status)">
+                        {{ mailComPoolLoginStatusLabel(item.login_status || item.status) }}
+                      </span>
+                      <div
+                        v-if="item.login_error"
+                        :title="item.login_error"
+                        class="max-w-xs truncate text-[11px] text-red-300"
+                      >
+                        {{ item.login_error }}
+                      </div>
+                    </div>
                   </td>
                   <td class="px-5 py-3 align-middle">
                     <span :class="item.auth_session_status === 'ready' ? 'text-emerald-300' : 'text-gray-400'">
@@ -1840,6 +1849,22 @@ function outlookPoolAccountStatusClass(status) {
   if (status === 'registered') return 'text-gray-500'
   if (status === 'unavailable') return 'text-amber-300'
   return 'text-emerald-300'
+}
+
+function mailComPoolLoginStatusLabel(status) {
+  if (status === 'failed') return '登录失败'
+  if (status === 'ready') return '已入池'
+  if (status === 'available') return '可登录'
+  if (status === 'not_logged_in') return '未登录'
+  if (status === 'disabled') return '已禁用'
+  return status || 'unknown'
+}
+
+function mailComPoolLoginStatusClass(status) {
+  if (status === 'failed') return 'text-red-300'
+  if (status === 'ready') return 'text-emerald-300'
+  if (status === 'disabled') return 'text-gray-500'
+  return 'text-amber-300'
 }
 
 function loadSavedRegisterForm() {

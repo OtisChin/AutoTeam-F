@@ -134,7 +134,9 @@ def test_mailcom_pool_status_derives_account_pool_and_auth_session(monkeypatch, 
     assert status["next_available_email"] == "fresh@mail.com"
     by_email = {item["email"]: item for item in status["items"]}
     assert by_email["ready@mail.com"]["auth_session_status"] == "ready"
+    assert by_email["ready@mail.com"]["login_status"] == "ready"
     assert by_email["fresh@mail.com"]["account_pool_status"] == "missing"
+    assert by_email["fresh@mail.com"]["login_status"] == "available"
 
 
 def test_sync_mail_accounts_to_account_pool_creates_and_updates_managed_accounts(monkeypatch, tmp_path):
@@ -212,7 +214,14 @@ def test_mark_mailcom_login_failure_updates_error_state_and_pool_counter(monkeyp
     assert updated["email"] == "one@mail.com"
     assert updated["check_status"] == "error"
     assert updated["last_error"] == "protocol login failed"
-    assert mail_accounts.mailcom_pool_status()["login_failed"] == 1
+    status = mail_accounts.mailcom_pool_status()
+    assert status["login_failed"] == 1
+    assert status["not_logged_in"] == 0
+    assert status["available"] == 0
+    assert status["next_available_email"] == ""
+    item = status["items"][0]
+    assert item["login_status"] == "failed"
+    assert item["login_error"] == "protocol login failed"
 
 
 def test_mark_mailcom_registered_updates_gpt_password_and_note(monkeypatch, tmp_path):
