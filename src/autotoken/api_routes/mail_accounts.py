@@ -402,7 +402,12 @@ def create_mail_accounts_router() -> APIRouter:
                 label="mail邮箱导入",
             )
             result = mail_accounts.import_mail_accounts(params.text)
-            sync_result = mail_accounts.sync_mail_accounts_to_account_pool()
+            imported_emails = list(result.get("emails") or [])
+            sync_result = (
+                mail_accounts.sync_mail_accounts_to_account_pool(imported_emails)
+                if imported_emails
+                else {"synced": 0, "emails": [], "skipped": []}
+            )
             pool_status = mail_accounts.mailcom_pool_status()
             return {
                 **result,

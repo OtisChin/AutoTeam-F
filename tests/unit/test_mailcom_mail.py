@@ -1,6 +1,7 @@
 import pytest
 
 from autotoken.mail.mailcom import MailComMailProvider
+from autotoken.storage import mail_accounts
 
 
 def test_mailcom_provider_selects_available_sqlite_account(monkeypatch):
@@ -60,6 +61,23 @@ def test_mailcom_provider_fetches_messages_via_official_webmail(monkeypatch):
     assert messages[0]["accountId"] == "fresh@mail.com"
     assert messages[0]["toEmail"] == "fresh@mail.com"
     assert provider.extract_verification_code(messages[0]) == "123456"
+
+
+def test_mailcom_provider_can_select_pending_synced_account_without_auth_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
+    mail_accounts.import_mail_accounts("fresh@mail.com----gpt-pass----mail-pass----rt")
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.load_accounts",
+        lambda: [{"email": "fresh@mail.com", "status": "pending", "mail_provider": "mail.com"}],
+    )
+    monkeypatch.setattr("autotoken.storage.auth_session_store.list_auth_session_emails", lambda: [])
+    monkeypatch.setattr("autotoken.storage.register_failures.list_failures", lambda _limit=500: [])
+
+    provider = MailComMailProvider()
+    account_id, email = provider.create_temp_email()
+
+    assert account_id == "fresh@mail.com"
+    assert email == "fresh@mail.com"
 
 
 def test_factory_returns_mailcom_provider(monkeypatch):

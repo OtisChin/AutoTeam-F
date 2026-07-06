@@ -304,6 +304,21 @@ def create_account_login_router(
             )
             from autotoken.storage.accounts import update_account
 
+            def _persist_mailcom_login_failure(item_email: str, account: dict[str, Any], kind: str, message: str) -> None:
+                provider = str(params.mail_provider or account.get("mail_provider") or "").strip().lower()
+                if provider != "mail.com":
+                    return
+                try:
+                    from autotoken.storage import mail_accounts
+
+                    mail_accounts.mark_mailcom_login_failure(
+                        item_email,
+                        message,
+                        check_status="invalid" if kind in {"account_deactivated", "login_required"} else "error",
+                    )
+                except Exception as exc:
+                    logger.warning("[账号登录] 持久化 mail.com 登录失败状态失败: email=%s error=%s", item_email, exc)
+
             ok = []
             failed = []
             phone_required = []
@@ -442,6 +457,7 @@ def create_account_login_router(
                 for future in as_completed(future_map):
                     item = future.result()
                     item_email = item["email"]
+                    item_account = accounts_by_email.get(item_email) or {}
                     with result_lock:
                         if item["kind"] == "ok":
                             ok.append(item["result"])
@@ -469,6 +485,12 @@ def create_account_login_router(
                             },
                         )
                     elif item["kind"] in {"phone_required", "phone_rate_limited", "login_required", "account_deactivated"}:
+                        _persist_mailcom_login_failure(
+                            item_email,
+                            item_account,
+                            item["kind"],
+                            str(item["result"].get("message") or f"补登录失败: {item_email}"),
+                        )
                         stage = {
                             "account_deactivated": "account_login_deactivated_removed",
                             "login_required": "account_login_required",
@@ -489,6 +511,7 @@ def create_account_login_router(
                             },
                         )
                     else:
+                        _persist_mailcom_login_failure(item_email, item_account, item["kind"], str(item.get("error") or ""))
                         append_task_progress(
                             task_id,
                             {

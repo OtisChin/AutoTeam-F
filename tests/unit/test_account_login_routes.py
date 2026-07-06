@@ -280,3 +280,68 @@ def test_post_accounts_login_batch_passes_protocol_email_domain(monkeypatch):
     assert captured[0][2]["email_domain"] == "example.com"
     assert captured[0][2]["oauth_phone_sms_provider"] == "smsbower"
     assert captured[0][2]["oauth_phone_sms_country"] == "187"
+
+
+def test_post_accounts_login_batch_mailcom_failure_updates_mail_pool(monkeypatch):
+    started = []
+    rows = [{"email": "first@mail.com", "cloudmail_account_id": "first@mail.com", "mail_provider": "mail.com"}]
+    captured = []
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: rows[0] if email == "first@mail.com" else None)
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.mark_mailcom_login_failure",
+        lambda email, error, **_kwargs: captured.append((email, error)),
+    )
+
+    def failing_run(_email, _acc, **_kwargs):
+        raise RuntimeError("protocol login failed")
+
+    routes, _accounts = _routes(started, accounts=rows, run_account_codex_login_once=failing_run)
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(
+            emails=["first@mail.com"],
+            mail_provider="mail.com",
+            protocol_only=True,
+            bind_email=False,
+        )
+    )
+
+    result = started[0]["func"]("task-batch")
+
+    assert result["total"] == 1
+    assert result["failed"] == [{"email": "first@mail.com", "error": "protocol login failed"}]
+    assert captured == [("first@mail.com", "protocol login failed")]
+
+
+def test_post_accounts_login_batch_non_mailcom_failure_does_not_update_mail_pool(monkeypatch):
+    started = []
+    rows = [{"email": "first@example.com", "cloudmail_account_id": "first@example.com", "mail_provider": "cloud-mail"}]
+    captured = []
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda _accounts, email: rows[0] if email == "first@example.com" else None,
+    )
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.mark_mailcom_login_failure",
+        lambda email, error, **_kwargs: captured.append((email, error)),
+    )
+
+    def failing_run(_email, _acc, **_kwargs):
+        raise RuntimeError("protocol login failed")
+
+    routes, _accounts = _routes(started, accounts=rows, run_account_codex_login_once=failing_run)
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(
+            emails=["first@example.com"],
+            mail_provider="cloud-mail",
+            protocol_only=True,
+            bind_email=False,
+        )
+    )
+
+    result = started[0]["func"]("task-batch")
+
+    assert result["total"] == 1
+    assert result["failed"] == [{"email": "first@example.com", "error": "protocol login failed"}]
+    assert captured == []

@@ -29,7 +29,10 @@ def test_mail_account_routes_delegate_to_storage(monkeypatch):
     calls = {}
 
     monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
-    monkeypatch.setattr("autotoken.storage.mail_accounts.import_mail_accounts", lambda text: {"imported": 1, "text": text})
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.import_mail_accounts",
+        lambda text: {"imported": 1, "skipped": 0, "total": 1, "emails": ["one@mail.com"], "text": text},
+    )
     monkeypatch.setattr(
         "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
         lambda emails=None: {"synced": len(emails or []), "emails": list(emails or []), "skipped": []},
@@ -235,12 +238,18 @@ def test_mail_account_check_missing_account_returns_404(monkeypatch):
 
 def test_mail_accounts_import_syncs_account_pool_and_returns_pool_status(monkeypatch):
     app = _app()
-    monkeypatch.setattr("autotoken.storage.mail_accounts.import_mail_accounts", lambda text: {"imported": 1, "skipped": 0, "total": 1})
-    monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
     monkeypatch.setattr(
-        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
-        lambda emails=None: {"synced": 1, "emails": ["one@mail.com"], "skipped": []},
+        "autotoken.storage.mail_accounts.import_mail_accounts",
+        lambda text: {"imported": 1, "skipped": 0, "total": 1, "emails": ["one@mail.com"]},
     )
+    monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
+    captured = {}
+
+    def fake_sync(emails=None):
+        captured["emails"] = list(emails or [])
+        return {"synced": 1, "emails": ["one@mail.com"], "skipped": []}
+
+    monkeypatch.setattr("autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool", fake_sync)
     monkeypatch.setattr(
         "autotoken.storage.mail_accounts.mailcom_pool_status",
         lambda: {"total": 1, "auth_session_ready": 0, "items": [{"email": "one@mail.com"}]},
@@ -251,6 +260,7 @@ def test_mail_accounts_import_syncs_account_pool_and_returns_pool_status(monkeyp
     assert result["imported"] == 1
     assert result["synced_account_pool"]["synced"] == 1
     assert result["pool_status"]["total"] == 1
+    assert captured["emails"] == ["one@mail.com"]
 
 
 def test_mail_accounts_pool_status_and_sync_routes(monkeypatch):

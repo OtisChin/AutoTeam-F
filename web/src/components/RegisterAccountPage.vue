@@ -1379,10 +1379,10 @@ const mailComPoolAllVisibleSelected = computed(() => {
 })
 const mailComLoginCandidateEmails = computed(() => {
   const selected = mailComPoolSelectedEmails.value.length ? mailComPoolSelectedEmails.value : mailComPoolVisibleEmails.value
-  const ready = new Set(mailComPoolItems.value
-    .filter(item => item.auth_session_status === 'ready')
+  const loginable = new Set(mailComPoolItems.value
+    .filter(item => item.status === 'enabled' && item.auth_session_status !== 'ready')
     .map(item => normalizeMailComEmail(item.email)))
-  return selected.filter(email => email && !ready.has(email))
+  return selected.filter(email => email && loginable.has(email))
 })
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
@@ -1542,11 +1542,29 @@ function parseMailComImportContent(content) {
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] || '').trim()
     if (!line) continue
-    const firstField = line.split('----')[0]?.trim() || ''
+    const parts = line.split('----').map(part => String(part || '').trim())
+    const firstField = parts[0] || ''
+    if (parts.length !== 4) {
+      invalidLines.push({
+        lineNumber: index + 1,
+        email: firstField,
+        reason: '必须恰好 4 段：邮箱----GPT密码----邮箱密码----refreshToken',
+      })
+      continue
+    }
+    if (parts.some(part => !part)) {
+      invalidLines.push({
+        lineNumber: index + 1,
+        email: firstField,
+        reason: '4 个字段都不能为空',
+      })
+      continue
+    }
     if (!isMailComEmail(firstField)) {
       invalidLines.push({
         lineNumber: index + 1,
         email: firstField,
+        reason: '第一段必须是 @mail.com 邮箱',
       })
       continue
     }
@@ -1589,10 +1607,10 @@ async function importMailComAccounts() {
   if (invalidLines.length) {
     const preview = invalidLines
       .slice(0, 3)
-      .map(item => `第 ${item.lineNumber} 行: ${item.email || '(空邮箱)'}`)
+      .map(item => `第 ${item.lineNumber} 行: ${item.reason}${item.email ? `（${item.email}）` : ''}`)
       .join('；')
     const suffix = invalidLines.length > 3 ? `；另有 ${invalidLines.length - 3} 行` : ''
-    mailComImportResult.value = `仅支持导入 @mail.com 邮箱，请移除非 mail.com 行：${preview}${suffix}`
+    mailComImportResult.value = `导入格式错误：${preview}${suffix}`
     mailComImportResultOk.value = false
     return
   }
@@ -1605,20 +1623,28 @@ async function importMailComAccounts() {
   mailComPoolError.value = ''
   try {
     const result = await api.importMailAccounts(content)
+    const importedEmails = Array.isArray(result.emails)
+      ? result.emails.map(normalizeMailComEmail).filter(isMailComEmail)
+      : []
     mailComPoolStatus.value = result.pool_status || await api.getMailAccountsPoolStatus()
     let syncEmails = Array.isArray(result.synced_account_pool?.emails)
       ? result.synced_account_pool.emails.map(normalizeMailComEmail).filter(isMailComEmail)
       : []
-    if (!syncEmails.length) {
-      const syncResult = await api.syncMailAccountsToAccountPool(parsedMailComEmails)
+    if (!syncEmails.length && importedEmails.length) {
+      const syncResult = await api.syncMailAccountsToAccountPool(importedEmails)
       syncEmails = Array.isArray(syncResult?.emails)
         ? syncResult.emails.map(normalizeMailComEmail).filter(isMailComEmail)
         : []
     }
-    mailComImportResult.value = `导入完成：成功 ${result.imported || 0}，跳过 ${result.skipped || 0}，同步账号池 ${syncEmails.length} 个${syncEmails.length ? '，正在启动登录入池' : ''}`
+    const poolItemsByEmail = new Map(mailComPoolItems.value.map(item => [normalizeMailComEmail(item.email), item]))
+    const loginEmails = syncEmails.filter(email => {
+      const item = poolItemsByEmail.get(email)
+      return item && item.status === 'enabled' && item.auth_session_status !== 'ready'
+    })
+    mailComImportResult.value = `导入完成：成功 ${result.imported || 0}，跳过 ${result.skipped || 0}，同步账号池 ${syncEmails.length} 个${loginEmails.length ? `，正在启动 ${loginEmails.length} 个登录入池` : ''}`
     mailComImportResultOk.value = true
-    if (syncEmails.length) {
-      await api.loginAccountsBatch(syncEmails, {
+    if (loginEmails.length) {
+      await api.loginAccountsBatch(loginEmails, {
         mail_provider: 'mail.com',
         protocol_only: true,
         bind_email: false,

@@ -13,6 +13,16 @@ from autotoken.storage import auth_session_store, sqlite_store
 
 MAIL_ACCOUNT_STATUSES = {"enabled", "disabled"}
 MAIL_ACCOUNT_CHECK_STATUSES = {"unchecked", "valid", "invalid", "error"}
+REGISTERED_ACCOUNT_POOL_STATUSES = {
+    "active",
+    "auth_invalid",
+    "exhausted",
+    "orphan",
+    "personal",
+    "plus",
+    "session_only",
+    "standby",
+}
 
 
 def _connect() -> sqlite3.Connection:
@@ -151,30 +161,39 @@ def upsert_mail_account(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def import_mail_accounts(text: str) -> dict[str, int]:
+def import_mail_accounts(text: str) -> dict[str, Any]:
     imported = 0
     skipped = 0
+    imported_emails: list[str] = []
+    seen_emails: set[str] = set()
     for raw_line in str(text or "").splitlines():
         line = raw_line.strip()
         if not line:
             continue
         parts = [part.strip() for part in line.split("----")]
-        if len(parts) < 4:
+        if len(parts) != 4 or any(not part for part in parts):
             skipped += 1
             continue
         try:
-            upsert_mail_account(
+            current = get_mail_account(parts[0]) or {}
+            updated = upsert_mail_account(
                 {
                     "email": parts[0],
                     "gpt_password": parts[1],
                     "mail_password": parts[2],
-                    "refresh_token": "----".join(parts[3:]).strip(),
+                    "refresh_token": parts[3],
+                    "status": current.get("status") or "enabled",
+                    "note": current.get("note") or "",
                 }
             )
             imported += 1
+            email = str(updated.get("email") or "").strip().lower()
+            if email and email not in seen_emails:
+                seen_emails.add(email)
+                imported_emails.append(email)
         except ValueError:
             skipped += 1
-    return {"imported": imported, "skipped": skipped, "total": len(list_mail_accounts())}
+    return {"imported": imported, "skipped": skipped, "total": len(list_mail_accounts()), "emails": imported_emails}
 
 
 def update_mail_account(email: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -318,7 +337,20 @@ def _account_pool_by_email() -> dict[str, dict[str, Any]]:
 
 
 def _mailcom_registered_emails() -> set[str]:
-    emails = set(_account_pool_by_email().keys())
+    emails = set()
+    for email, account in _account_pool_by_email().items():
+        if not email:
+            continue
+        if str(account.get("auth_file") or "").strip():
+            emails.add(email)
+            continue
+        status = str(account.get("status") or "").strip().lower()
+        if status in REGISTERED_ACCOUNT_POOL_STATUSES:
+            emails.add(email)
+    try:
+        emails.update(auth_session_store.list_auth_session_emails())
+    except Exception:
+        pass
     try:
         from autotoken.storage.register_failures import list_failures
 
@@ -335,6 +367,12 @@ def _mailcom_registered_emails() -> set[str]:
     return emails
 
 
+def _mail_account_note_marks_registered(note: Any) -> bool:
+    raw = str(note or "").strip()
+    lowered = raw.lower()
+    return "已注册" in raw or "registered" in lowered or "email_already_in_use" in lowered
+
+
 def list_available_registration_accounts() -> list[dict[str, Any]]:
     registered = _mailcom_registered_emails()
     rows = []
@@ -346,6 +384,8 @@ def list_available_registration_accounts() -> list[dict[str, Any]]:
             continue
         if email in registered:
             continue
+        if _mail_account_note_marks_registered(row.get("note")):
+            continue
         if not str(row.get("mail_password") or "").strip():
             continue
         rows.append(row)
@@ -353,11 +393,11 @@ def list_available_registration_accounts() -> list[dict[str, Any]]:
 
 
 def sync_mail_accounts_to_account_pool(emails: Iterable[str] | None = None) -> dict[str, Any]:
-    selected = {email for email in (normalized_email(item) for item in emails or []) if email}
+    selected = None if emails is None else {email for email in (normalized_email(item) for item in emails) if email}
     rows = [
         row
         for row in list_mail_accounts()
-        if not selected or normalized_email(row.get("email")) in selected
+        if selected is None or normalized_email(row.get("email")) in selected
     ]
     from autotoken.storage.accounts import SEAT_CODEX, add_account, update_account
 
@@ -421,9 +461,40 @@ def mailcom_pool_status() -> dict[str, Any]:
         "auth_session_ready": sum(1 for item in items if item.get("auth_session_status") == "ready"),
         "not_logged_in": sum(1 for item in items if item.get("status") == "enabled" and item.get("auth_session_status") != "ready"),
         "disabled": sum(1 for item in items if item.get("status") == "disabled"),
-        "login_failed": sum(1 for item in items if str(item.get("account_pool_status") or "") == "fail"),
+        "login_failed": sum(
+            1
+            for item in items
+            if item.get("status") == "enabled"
+            and item.get("auth_session_status") != "ready"
+            and item.get("check_status") in {"invalid", "error"}
+        ),
         "next_available_email": available_items[0]["email"] if available_items else "",
     }
+
+
+def mark_mailcom_login_failure(
+    email: str,
+    error: str,
+    *,
+    check_status: str = "error",
+) -> dict[str, Any] | None:
+    normalized = normalized_email(email)
+    if not normalized:
+        raise ValueError("邮箱不能为空")
+    now = time.time()
+    with _connect() as conn:
+        row = conn.execute("SELECT email FROM mail_accounts WHERE email = ?", (normalized,)).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            """
+            UPDATE mail_accounts
+            SET check_status = ?, last_error = ?, last_checked_at = ?, updated_at = ?
+            WHERE email = ?
+            """,
+            (_normalize_check_status(check_status), str(error or "").strip()[:1000], now, now, normalized),
+        )
+    return get_mail_account(normalized)
 
 
 def mark_mailcom_registered(

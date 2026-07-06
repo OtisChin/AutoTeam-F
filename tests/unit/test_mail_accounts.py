@@ -12,7 +12,12 @@ def test_import_mail_accounts_persists_rows_in_sqlite(monkeypatch, tmp_path):
         " second@mail.com ---- g2 ---- m2 ---- rt.2.token "
     )
 
-    assert result == {"imported": 2, "skipped": 1, "total": 2}
+    assert result == {
+        "imported": 2,
+        "skipped": 1,
+        "total": 2,
+        "emails": ["aharvey183195@mail.com", "second@mail.com"],
+    }
     rows = mail_accounts.list_mail_accounts()
     assert [row["email"] for row in rows] == ["aharvey183195@mail.com", "second@mail.com"]
     assert rows[0]["gpt_password"] == "gpt-pass"
@@ -20,6 +25,25 @@ def test_import_mail_accounts_persists_rows_in_sqlite(monkeypatch, tmp_path):
     assert rows[0]["refresh_token"] == "rt.1.token"
     assert rows[0]["refresh_token_masked"].startswith("rt.1")
     assert rows[0]["check_status"] == "unchecked"
+
+
+def test_import_mail_accounts_requires_exactly_four_nonempty_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
+
+    result = mail_accounts.import_mail_accounts(
+        "one@mail.com----gpt----mail----rt----extra\n"
+        "two@mail.com----gpt----mail----\n"
+        "three@mail.com----gpt--------rt\n"
+        "four@mail.com----gpt----mail----rt\n"
+    )
+
+    assert result == {
+        "imported": 1,
+        "skipped": 3,
+        "total": 1,
+        "emails": ["four@mail.com"],
+    }
+    assert [row["email"] for row in mail_accounts.list_mail_accounts()] == ["four@mail.com"]
 
 
 def test_change_mail_password_updates_selected_accounts(monkeypatch, tmp_path):
@@ -152,11 +176,43 @@ def test_list_available_registration_accounts_skips_registered_disabled_and_miss
         "disabled@mail.com----gpt----mail----rt\n"
     )
     mail_accounts.set_account_statuses(["disabled@mail.com"], "disabled")
-    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [{"email": "used@mail.com"}])
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.load_accounts",
+        lambda: [{"email": "used@mail.com", "status": "active", "mail_provider": "mail.com"}],
+    )
 
     rows = mail_accounts.list_available_registration_accounts()
 
     assert [row["email"] for row in rows] == ["fresh@mail.com"]
+
+
+def test_list_available_registration_accounts_keeps_pending_pool_row_without_auth_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
+    mail_accounts.import_mail_accounts("fresh@mail.com----gpt----mail----rt")
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.load_accounts",
+        lambda: [{"email": "fresh@mail.com", "status": "pending", "mail_provider": "mail.com"}],
+    )
+    monkeypatch.setattr("autotoken.storage.auth_session_store.list_auth_session_emails", lambda: [])
+    monkeypatch.setattr("autotoken.storage.register_failures.list_failures", lambda _limit=500: [])
+
+    rows = mail_accounts.list_available_registration_accounts()
+
+    assert [row["email"] for row in rows] == ["fresh@mail.com"]
+
+
+def test_mark_mailcom_login_failure_updates_error_state_and_pool_counter(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
+    mail_accounts.import_mail_accounts("one@mail.com----gpt----mail----rt")
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [{"email": "one@mail.com", "status": "pending"}])
+    monkeypatch.setattr("autotoken.storage.auth_session_store.get_auth_session_file", lambda _email: "")
+
+    updated = mail_accounts.mark_mailcom_login_failure("one@mail.com", "protocol login failed")
+
+    assert updated["email"] == "one@mail.com"
+    assert updated["check_status"] == "error"
+    assert updated["last_error"] == "protocol login failed"
+    assert mail_accounts.mailcom_pool_status()["login_failed"] == 1
 
 
 def test_mark_mailcom_registered_updates_gpt_password_and_note(monkeypatch, tmp_path):
