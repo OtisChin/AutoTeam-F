@@ -223,3 +223,41 @@ def test_mail_account_check_missing_account_returns_404(monkeypatch):
         assert exc.status_code == 404
     else:
         raise AssertionError("missing account check must fail")
+
+
+def test_mail_accounts_import_syncs_account_pool_and_returns_pool_status(monkeypatch):
+    app = _app()
+    monkeypatch.setattr("autotoken.storage.mail_accounts.import_mail_accounts", lambda text: {"imported": 1, "skipped": 0, "total": 1})
+    monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
+        lambda emails=None: {"synced": 1, "emails": ["one@mail.com"], "skipped": []},
+    )
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.mailcom_pool_status",
+        lambda: {"total": 1, "auth_session_ready": 0, "items": [{"email": "one@mail.com"}]},
+    )
+
+    result = _endpoint(app, "/api/mail-accounts/import", "POST")(MailAccountImportParams(text="one@mail.com----g----m----rt"))
+
+    assert result["imported"] == 1
+    assert result["synced_account_pool"]["synced"] == 1
+    assert result["pool_status"]["total"] == 1
+
+
+def test_mail_accounts_pool_status_and_sync_routes(monkeypatch):
+    app = _app()
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.mailcom_pool_status",
+        lambda: {"total": 2, "auth_session_ready": 1, "items": []},
+    )
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
+        lambda emails=None: {"synced": len(emails or []), "emails": list(emails or []), "skipped": []},
+    )
+
+    assert _endpoint(app, "/api/mail-accounts/pool-status", "GET")()["total"] == 2
+    synced = _endpoint(app, "/api/mail-accounts/sync-account-pool", "POST")(
+        MailAccountBatchParams(emails=["one@mail.com", "two@mail.com"])
+    )
+    assert synced["synced"] == 2

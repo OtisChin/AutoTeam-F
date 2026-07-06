@@ -170,3 +170,23 @@ def test_post_add_requires_oasis_cdk_pool(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "启用 Oasis 前需要先在设置页配置 CDK 池"
+
+
+def test_post_add_mailcom_does_not_require_register_domain(monkeypatch):
+    started = []
+    calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: [])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "mail.com")
+    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+
+    routes = _routes(started)
+    result = routes["post_add"](ManualRegisterParams(mail_provider="mail.com", domain="", domains=[]))
+
+    assert result["command"] == "register"
+    assert started[0]["params"]["domain"] == ""
+    assert started[0]["params"]["domains"] == []
+    assert started[0]["kwargs"]["mail_provider"] == "mail.com"
+    assert started[0]["func"]("task-register") == {"created": 1}
+    assert calls[0]["mail_provider"] == "mail.com"

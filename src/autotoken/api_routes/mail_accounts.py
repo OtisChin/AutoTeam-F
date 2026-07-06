@@ -402,9 +402,30 @@ def create_mail_accounts_router() -> APIRouter:
                 label="mail邮箱导入",
             )
             result = mail_accounts.import_mail_accounts(params.text)
-            return {**result, **_response(mail_accounts.list_mail_accounts())}
+            sync_result = mail_accounts.sync_mail_accounts_to_account_pool()
+            pool_status = mail_accounts.mailcom_pool_status()
+            return {
+                **result,
+                **_response(mail_accounts.list_mail_accounts()),
+                "synced_account_pool": sync_result,
+                "pool_status": pool_status,
+            }
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/api/mail-accounts/pool-status")
+    def get_mail_accounts_pool_status():
+        from autotoken.storage import mail_accounts
+
+        return mail_accounts.mailcom_pool_status()
+
+    @router.post("/api/mail-accounts/sync-account-pool")
+    def post_mail_accounts_sync_account_pool(params: MailAccountBatchParams):
+        from autotoken.storage import mail_accounts
+
+        _validate_batch(params.emails)
+        emails = params.emails or None
+        return mail_accounts.sync_mail_accounts_to_account_pool(emails)
 
     @router.post("/api/mail-accounts")
     def post_mail_account(params: MailAccountUpsertParams):
