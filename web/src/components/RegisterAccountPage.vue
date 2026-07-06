@@ -392,6 +392,50 @@
             </div>
           </div>
 
+          <div v-if="isMailComProvider" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 space-y-3">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <div class="text-sm font-medium text-white">mail.com 邮箱池</div>
+                <div class="mt-1 text-xs text-gray-500">导入后会同步账号池，并自动启动 ChatGPT 登录获取 auth_session。</div>
+              </div>
+              <div class="flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  @click="loadMailComPoolStatus"
+                  :disabled="mailComPoolLoading"
+                  class="px-3 py-1.5 rounded-lg text-xs border bg-gray-900 hover:bg-gray-800 text-gray-300 border-gray-700 transition disabled:opacity-50">
+                  {{ mailComPoolLoading ? '刷新中...' : '刷新状态' }}
+                </button>
+                <button
+                  type="button"
+                  @click="openMailComImportDialog"
+                  class="px-3 py-1.5 rounded-lg text-xs border bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/30 transition">
+                  导入邮箱
+                </button>
+                <button
+                  type="button"
+                  @click="openMailComPoolDialog"
+                  class="px-3 py-1.5 rounded-lg text-xs border bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/30 transition">
+                  管理邮箱池
+                </button>
+              </div>
+            </div>
+            <div v-if="mailComPoolStatus" class="border-y border-gray-800 py-3">
+              <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                <div><div class="text-[11px] text-gray-500">邮箱池</div><div class="mt-0.5 text-sm font-medium text-white">{{ mailComPoolStatus.total }}</div></div>
+                <div><div class="text-[11px] text-gray-500">可用</div><div class="mt-0.5 text-sm font-medium text-emerald-300">{{ mailComPoolStatus.available }}</div></div>
+                <div><div class="text-[11px] text-gray-500">auth_session</div><div class="mt-0.5 text-sm font-medium text-blue-300">{{ mailComPoolStatus.auth_session_ready }}</div></div>
+                <div><div class="text-[11px] text-gray-500">未登录</div><div class="mt-0.5 text-sm font-medium text-amber-300">{{ mailComPoolStatus.not_logged_in }}</div></div>
+                <div><div class="text-[11px] text-gray-500">失败</div><div class="mt-0.5 text-sm font-medium text-red-300">{{ mailComPoolStatus.login_failed }}</div></div>
+              </div>
+              <div class="mt-2 text-xs text-gray-500">
+                下一个可用邮箱：
+                <span class="font-mono text-gray-300">{{ mailComPoolStatus.next_available_email || '无' }}</span>
+              </div>
+            </div>
+            <div v-else-if="mailComPoolError" class="text-xs text-red-300">{{ mailComPoolError }}</div>
+          </div>
+
           <div v-if="registerProviderUsesDomains">
             <label class="block text-sm text-gray-400 mb-1">注册域名</label>
             <select
@@ -754,6 +798,193 @@
   </Teleport>
 
   <Teleport to="body">
+    <div v-if="mailComPoolDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" @click.self="closeMailComPoolDialog">
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mailcom-pool-title"
+        class="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-2xl"
+      >
+        <header class="flex shrink-0 items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+          <div>
+            <h3 id="mailcom-pool-title" class="text-base font-semibold text-white">管理 mail.com 邮箱池</h3>
+            <p class="mt-1 text-xs text-gray-500">查看登录状态、auth_session 状态，并批量协议登录入池或删除记录。</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              :disabled="mailComPoolLoading || mailComPoolDeleting || mailComPoolLoginBusy"
+              class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+              @click="loadMailComPoolStatus"
+            >
+              {{ mailComPoolLoading ? '刷新中...' : '刷新' }}
+            </button>
+            <button
+              type="button"
+              :disabled="mailComPoolDeleting || mailComPoolLoginBusy"
+              class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+              @click="closeMailComPoolDialog"
+            >
+              关闭
+            </button>
+          </div>
+        </header>
+
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          <div v-if="mailComPoolStatus" class="grid grid-cols-2 border-b border-gray-800 sm:grid-cols-5">
+            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
+              <div class="text-xs text-gray-500">邮箱池</div>
+              <div class="mt-1 text-xl font-semibold text-white">{{ mailComPoolStatus.total }}</div>
+            </div>
+            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
+              <div class="text-xs text-gray-500">可用</div>
+              <div class="mt-1 text-xl font-semibold text-emerald-300">{{ mailComPoolStatus.available }}</div>
+            </div>
+            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
+              <div class="text-xs text-gray-500">auth_session</div>
+              <div class="mt-1 text-xl font-semibold text-blue-300">{{ mailComPoolStatus.auth_session_ready }}</div>
+            </div>
+            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
+              <div class="text-xs text-gray-500">未登录</div>
+              <div class="mt-1 text-xl font-semibold text-amber-300">{{ mailComPoolStatus.not_logged_in }}</div>
+            </div>
+            <div class="px-4 py-3">
+              <div class="text-xs text-gray-500">失败</div>
+              <div class="mt-1 text-xl font-semibold text-red-300">{{ mailComPoolStatus.login_failed }}</div>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-5 py-3">
+            <div class="min-w-0 text-xs text-gray-500">
+              下一个可用邮箱：
+              <span class="font-mono text-gray-300">{{ mailComPoolStatus?.next_available_email || '无' }}</span>
+            </div>
+            <div class="flex shrink-0 flex-wrap items-center gap-3">
+              <label class="inline-flex items-center gap-2 text-xs text-gray-400">
+                <input
+                  type="checkbox"
+                  :checked="mailComPoolAllVisibleSelected"
+                  :disabled="mailComPoolDeleting || mailComPoolLoginBusy || !mailComPoolVisibleEmails.length"
+                  class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
+                  @change="toggleMailComPoolVisible($event.target.checked)"
+                />
+                当前列表全选
+              </label>
+              <button
+                type="button"
+                :disabled="mailComPoolDeleting || mailComPoolLoginBusy || !mailComLoginCandidateEmails.length"
+                class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs text-blue-200 transition hover:bg-blue-500/20 disabled:opacity-50"
+                @click="loginSelectedMailComAccounts"
+              >
+                {{ mailComPoolLoginBusy ? '启动中...' : `登录并入池 / 重试 (${mailComLoginCandidateEmails.length})` }}
+              </button>
+              <button
+                type="button"
+                :disabled="mailComPoolDeleting || mailComPoolLoginBusy || mailComPoolSelectedCount === 0"
+                class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50"
+                @click="deleteSelectedMailComPoolEmails"
+              >
+                {{ mailComPoolDeleting ? '删除中...' : `删除所选 (${mailComPoolSelectedCount})` }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="mailComPoolError" class="mx-5 mt-4 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {{ mailComPoolError }}
+          </div>
+
+          <div v-if="mailComPoolItems.length" class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-800 text-xs">
+              <thead class="bg-gray-950/40 text-left text-gray-500">
+                <tr>
+                  <th class="px-5 py-3">
+                    <input
+                      type="checkbox"
+                      :checked="mailComPoolAllVisibleSelected"
+                      :disabled="mailComPoolDeleting || mailComPoolLoginBusy || !mailComPoolVisibleEmails.length"
+                      class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
+                      @change="toggleMailComPoolVisible($event.target.checked)"
+                    />
+                  </th>
+                  <th class="px-5 py-3 font-medium">邮箱</th>
+                  <th class="px-5 py-3 font-medium">状态</th>
+                  <th class="px-5 py-3 font-medium">auth_session</th>
+                  <th class="px-5 py-3 font-medium">account_pool_status</th>
+                  <th class="px-5 py-3 font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-800">
+                <tr v-for="item in mailComPoolItems" :key="item.email" class="text-gray-300">
+                  <td class="px-5 py-3 align-middle">
+                    <input
+                      type="checkbox"
+                      :checked="mailComPoolSelectedEmails.includes(item.email)"
+                      :disabled="mailComPoolDeleting || mailComPoolLoginBusy"
+                      class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
+                      @change="toggleMailComPoolEmail(item.email, $event.target.checked)"
+                    />
+                  </td>
+                  <td class="px-5 py-3 align-middle font-mono">{{ item.email || '-' }}</td>
+                  <td class="px-5 py-3 align-middle">
+                    <span :class="item.login_status === 'failed' ? 'text-red-300' : item.login_status === 'ready' ? 'text-emerald-300' : 'text-amber-300'">
+                      {{ item.login_status || item.status || 'unknown' }}
+                    </span>
+                  </td>
+                  <td class="px-5 py-3 align-middle">
+                    <span :class="item.auth_session_status === 'ready' ? 'text-emerald-300' : 'text-gray-400'">
+                      {{ item.auth_session_status || 'missing' }}
+                    </span>
+                  </td>
+                  <td class="px-5 py-3 align-middle">
+                    <span :class="item.account_pool_status === 'synced' ? 'text-blue-300' : 'text-gray-400'">
+                      {{ item.account_pool_status || 'pending' }}
+                    </span>
+                  </td>
+                  <td class="px-5 py-3 align-middle">
+                    <button
+                      type="button"
+                      :disabled="mailComPoolDeleting || mailComPoolLoginBusy"
+                      class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-2.5 py-1 text-xs text-blue-200 transition hover:bg-blue-500/20 disabled:opacity-50"
+                      @click="mailComPoolSelectedEmails = item.email ? [item.email] : []; loginSelectedMailComAccounts()"
+                    >
+                      登录并入池/重试
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else-if="!mailComPoolLoading" class="px-5 py-8 text-center text-sm text-gray-500">
+            邮箱池暂无记录
+          </div>
+        </div>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="mailComImportDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div class="w-full max-w-3xl rounded-2xl border border-gray-800 bg-gray-950 p-5 shadow-2xl">
+        <div class="flex items-center justify-between">
+          <h3 class="text-lg font-semibold text-white">导入 mail.com 邮箱</h3>
+          <button type="button" class="text-gray-400 hover:text-white" @click="closeMailComImportDialog">×</button>
+        </div>
+        <p class="mt-2 text-xs text-gray-500">格式：邮箱----GPT密码----邮箱密码----refreshToken，每行一个。</p>
+        <textarea v-model="mailComImportContent" rows="10" spellcheck="false" class="mt-3 w-full rounded-lg border border-gray-700 bg-gray-900 p-3 font-mono text-xs text-gray-100 focus:border-blue-500 focus:outline-none"></textarea>
+        <div v-if="mailComImportResult" class="mt-3 rounded-lg px-3 py-2 text-xs" :class="mailComImportResultOk ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border border-red-500/20 bg-red-500/10 text-red-300'">
+          {{ mailComImportResult }}
+        </div>
+        <div class="mt-4 flex justify-end gap-2">
+          <button type="button" @click="closeMailComImportDialog" class="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800">取消</button>
+          <button type="button" @click="importMailComAccounts" :disabled="mailComPoolLoading" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500 disabled:opacity-50">
+            {{ mailComPoolLoading ? '导入中...' : '导入并登录入池' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
     <div
       v-if="outlookImportDialogOpen"
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
@@ -868,6 +1099,17 @@ const outlookPoolDeleting = ref(false)
 const outlookPoolError = ref('')
 const outlookPoolStatus = ref(null)
 const outlookPoolSelectedEmails = ref([])
+const mailComPoolStatus = ref(null)
+const mailComPoolLoading = ref(false)
+const mailComPoolError = ref('')
+const mailComImportDialogOpen = ref(false)
+const mailComImportContent = ref('')
+const mailComImportResult = ref('')
+const mailComImportResultOk = ref(true)
+const mailComPoolDialogOpen = ref(false)
+const mailComPoolSelectedEmails = ref([])
+const mailComPoolDeleting = ref(false)
+const mailComPoolLoginBusy = ref(false)
 const registerLogs = ref([])
 const logsLoading = ref(false)
 const logsContainer = ref(null)
@@ -1015,12 +1257,14 @@ const registerAllDomainsSelected = computed(() => {
 })
 const isLuckMailProvider = computed(() => registerForm.value.mailProvider === 'luckmail')
 const isOutlookProvider = computed(() => registerForm.value.mailProvider === 'outlook')
+const isMailComProvider = computed(() => String(registerForm.value.mailProvider || '').trim().toLowerCase() === 'mail.com')
 const isPhoneCpaFlow = computed(() => registerForm.value.registrationFlow === 'phone_cpa')
-const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookProvider.value)
-const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value)
+const registerProviderUsesPool = computed(() => isOutlookProvider.value || isMailComProvider.value)
+const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value && !isPhoneCpaFlow.value)
 const registerProviderPoolMessage = computed(() => {
-  if (isOutlookProvider.value) return 'Outlook 使用已配置的微软邮箱账号池，注册域名选择不参与本次任务。'
-  return 'LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。'
+  if (isOutlookProvider.value) return 'Outlook 邮箱池中选择'
+  if (isMailComProvider.value) return 'mail.com 邮箱池中选择'
+  return ''
 })
 const registerDomainSuffixLabel = computed(() => {
   if (isLuckMailProvider.value) return '@LuckMail'
@@ -1039,6 +1283,7 @@ const registerPreviewEmail = computed(() => {
     : (registerForm.value.domain || 'domain.com')
   if (isLuckMailProvider.value) return 'LuckMail邮箱池中选择'
   if (isOutlookProvider.value) return 'Outlook邮箱池中选择'
+  if (isMailComProvider.value) return 'mail.com邮箱池中选择'
   return `${prefix}@${domain}`
 })
 const luckmailPurchaseLabel = computed(() => {
@@ -1119,6 +1364,18 @@ const outlookPoolAllVisibleSelected = computed(() => {
   if (!emails.length) return false
   const selected = outlookPoolSelectedSet.value
   return emails.every(email => selected.has(email))
+})
+const mailComPoolItems = computed(() => Array.isArray(mailComPoolStatus.value?.items) ? mailComPoolStatus.value.items : [])
+const mailComPoolVisibleEmails = computed(() => mailComPoolItems.value.map(item => item.email).filter(Boolean))
+const mailComPoolSelectedCount = computed(() => mailComPoolSelectedEmails.value.length)
+const mailComPoolAllVisibleSelected = computed(() => {
+  const visible = mailComPoolVisibleEmails.value
+  return visible.length > 0 && visible.every(email => mailComPoolSelectedEmails.value.includes(email))
+})
+const mailComLoginCandidateEmails = computed(() => {
+  const selected = mailComPoolSelectedEmails.value.length ? mailComPoolSelectedEmails.value : mailComPoolVisibleEmails.value
+  const ready = new Set(mailComPoolItems.value.filter(item => item.auth_session_status === 'ready').map(item => item.email))
+  return selected.filter(email => email && !ready.has(email))
 })
 const canSubmitRegister = computed(() => {
   if (!validBatchCount.value) return false
@@ -1251,12 +1508,146 @@ function closeOutlookPoolDialog() {
   outlookPoolDialogOpen.value = false
 }
 
+function openMailComImportDialog() {
+  mailComImportDialogOpen.value = true
+  mailComImportResult.value = ''
+}
+
+function closeMailComImportDialog() {
+  if (mailComPoolLoading.value) return
+  mailComImportDialogOpen.value = false
+}
+
+async function loadMailComPoolStatus() {
+  if (!isMailComProvider.value || mailComPoolLoading.value) return
+  mailComPoolLoading.value = true
+  mailComPoolError.value = ''
+  try {
+    mailComPoolStatus.value = await api.getMailAccountsPoolStatus()
+    const visible = new Set(mailComPoolVisibleEmails.value)
+    mailComPoolSelectedEmails.value = mailComPoolSelectedEmails.value.filter(email => visible.has(email))
+  } catch (e) {
+    mailComPoolStatus.value = null
+    mailComPoolError.value = `读取 mail.com 邮箱池失败: ${e.message}`
+  } finally {
+    mailComPoolLoading.value = false
+  }
+}
+
+async function importMailComAccounts() {
+  if (mailComPoolLoading.value) return
+  const content = mailComImportContent.value.trim()
+  if (!content) {
+    mailComImportResult.value = '请先粘贴 mail.com 账号'
+    mailComImportResultOk.value = false
+    return
+  }
+  mailComPoolLoading.value = true
+  mailComPoolError.value = ''
+  try {
+    const result = await api.importMailAccounts(content)
+    mailComPoolStatus.value = result.pool_status || await api.getMailAccountsPoolStatus()
+    const emails = Array.isArray(result.synced_account_pool?.emails) ? result.synced_account_pool.emails : []
+    mailComImportResult.value = `导入完成：成功 ${result.imported || 0}，跳过 ${result.skipped || 0}，同步账号池 ${emails.length} 个，正在启动登录入池`
+    mailComImportResultOk.value = true
+    if (emails.length) {
+      await api.loginAccountsBatch(emails, {
+        mail_provider: 'mail.com',
+        protocol_only: true,
+        bind_email: false,
+      })
+      emit('task-started')
+    }
+    const visible = new Set(mailComPoolVisibleEmails.value)
+    mailComPoolSelectedEmails.value = mailComPoolSelectedEmails.value.filter(email => visible.has(email))
+  } catch (e) {
+    mailComImportResult.value = `导入失败: ${e.message}`
+    mailComImportResultOk.value = false
+  } finally {
+    mailComPoolLoading.value = false
+  }
+  await loadMailComPoolStatus()
+}
+
+function openMailComPoolDialog() {
+  mailComPoolDialogOpen.value = true
+  loadMailComPoolStatus()
+}
+
+function closeMailComPoolDialog() {
+  if (mailComPoolDeleting.value || mailComPoolLoginBusy.value) return
+  mailComPoolDialogOpen.value = false
+}
+
+function toggleMailComPoolEmail(email, checked) {
+  const value = String(email || '').trim()
+  if (!value) return
+  const selected = new Set(mailComPoolSelectedEmails.value)
+  checked ? selected.add(value) : selected.delete(value)
+  mailComPoolSelectedEmails.value = Array.from(selected)
+}
+
+function toggleMailComPoolVisible(checked) {
+  const selected = new Set(mailComPoolSelectedEmails.value)
+  for (const email of mailComPoolVisibleEmails.value) {
+    checked ? selected.add(email) : selected.delete(email)
+  }
+  mailComPoolSelectedEmails.value = Array.from(selected)
+}
+
+async function loginSelectedMailComAccounts() {
+  if (mailComPoolLoginBusy.value) return
+  const emails = mailComLoginCandidateEmails.value
+  if (!emails.length) {
+    setMessage('没有需要登录入池的 mail.com 账号', false)
+    return
+  }
+  mailComPoolLoginBusy.value = true
+  try {
+    await api.syncMailAccountsToAccountPool(emails)
+    await api.loginAccountsBatch(emails, {
+      mail_provider: 'mail.com',
+      protocol_only: true,
+      bind_email: false,
+    })
+    emit('task-started')
+    setMessage(`已启动 ${emails.length} 个 mail.com 账号登录入池`, true)
+    await loadMailComPoolStatus()
+  } catch (e) {
+    setMessage(`启动 mail.com 登录入池失败: ${e.message}`, false)
+  } finally {
+    mailComPoolLoginBusy.value = false
+  }
+}
+
+async function deleteSelectedMailComPoolEmails() {
+  if (mailComPoolDeleting.value || mailComPoolSelectedCount.value === 0) return
+  const emails = [...mailComPoolSelectedEmails.value]
+  const ok = window.confirm(`确认从 mail.com 邮箱池删除 ${emails.length} 个邮箱?\n\n只会删除 mail邮箱管理中的记录，不会删除本地账号池记录。`)
+  if (!ok) return
+  mailComPoolDeleting.value = true
+  try {
+    const result = await api.deleteMailAccounts(emails)
+    mailComPoolSelectedEmails.value = []
+    await loadMailComPoolStatus()
+    setMessage(`已从 mail.com 邮箱池删除 ${result.deleted || 0} 个邮箱`, true)
+  } catch (e) {
+    setMessage(`删除 mail.com 邮箱失败: ${e.message}`, false)
+  } finally {
+    mailComPoolDeleting.value = false
+  }
+}
+
 function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') return
   if (outlookImportDialogOpen.value) {
     closeOutlookImportDialog()
   } else if (outlookPoolDialogOpen.value) {
     closeOutlookPoolDialog()
+  } else if (mailComImportDialogOpen.value) {
+    closeMailComImportDialog()
+  } else if (mailComPoolDialogOpen.value) {
+    closeMailComPoolDialog()
   }
 }
 
@@ -1850,6 +2241,13 @@ watch(
 )
 
 watch(
+  isMailComProvider,
+  enabled => {
+    if (enabled) loadMailComPoolStatus()
+  }
+)
+
+watch(
   () => registerForm.value.oauthPhoneSmsProvider,
   async (provider, previousProvider) => {
     const normalizedProvider = String(provider || 'phone_pool')
@@ -1892,6 +2290,7 @@ onMounted(() => {
   loadMailProviderOptions()
   loadOAuthPhoneSmsConfig()
   if (isOutlookProvider.value) loadOutlookPoolStatus()
+  if (isMailComProvider.value) loadMailComPoolStatus()
   loadRegisterLogs()
   loadRegisterStats()
   logsTimer = window.setInterval(loadRegisterLogs, 3000)
@@ -1916,6 +2315,7 @@ watch(() => props.runningTask?.task_id, (newId, oldId) => {
   if (oldId && !newId) {
     reloadRegisterDomains()
     if (isOutlookProvider.value) loadOutlookPoolStatus()
+    if (isMailComProvider.value) loadMailComPoolStatus()
     loadRegisterLogs()
     loadRegisterStats()
   }

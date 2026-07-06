@@ -120,6 +120,28 @@ export const api = {
   startCleanup: (maxSeats = null) => request('POST', '/tasks/cleanup', { max_seats: maxSeats }),
   startBindCard: (payload) => request('POST', '/tasks/bind-card', payload),
   startGoPayBind: (payload) => request('POST', '/tasks/gopay-bind', payload),
+  startIdealLongLink: (payload) => request('POST', '/ideal/long-link/start', payload),
+  getIdealLongLinkJob: (jobId) => request('GET', `/ideal/long-link/jobs/${encodeURIComponent(jobId)}`),
+  testIdealProxyChain: (payload) => request('POST', '/ideal/proxy-chain-test', payload),
+  getIdealQrBlob: async (value) => {
+    const headers = { 'Content-Type': 'application/json' }
+    const key = getApiKey()
+    if (key) headers['Authorization'] = `Bearer ${key}`
+    const resp = await fetch('/api/ideal/qr', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ value }),
+    })
+    if (!resp.ok) {
+      let message = `HTTP ${resp.status}`
+      try {
+        const data = await resp.json()
+        message = data?.detail || message
+      } catch {}
+      throw new Error(message)
+    }
+    return resp.blob()
+  },
   preflightPayPal: (payload) => request('POST', '/tasks/paypal/preflight', payload),
   startPayPal: (payload) => request('POST', '/tasks/paypal', payload),
   getPayPalIceConfig: () => request('GET', '/paypal-ice/config'),
@@ -221,6 +243,8 @@ export const api = {
 
   getMailAccounts: () => request('GET', '/mail-accounts'),
   importMailAccounts: (text) => request('POST', '/mail-accounts/import', { text }),
+  getMailAccountsPoolStatus: () => request('GET', '/mail-accounts/pool-status'),
+  syncMailAccountsToAccountPool: (emails = []) => request('POST', '/mail-accounts/sync-account-pool', { emails }),
   saveMailAccount: (item, originalEmail = '') => originalEmail
     ? request('PUT', `/mail-accounts/${encodeURIComponent(originalEmail)}`, item)
     : request('POST', '/mail-accounts', item),
