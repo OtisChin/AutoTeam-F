@@ -1259,10 +1259,11 @@ const isLuckMailProvider = computed(() => registerForm.value.mailProvider === 'l
 const isOutlookProvider = computed(() => registerForm.value.mailProvider === 'outlook')
 const isMailComProvider = computed(() => String(registerForm.value.mailProvider || '').trim().toLowerCase() === 'mail.com')
 const isPhoneCpaFlow = computed(() => registerForm.value.registrationFlow === 'phone_cpa')
-const registerProviderUsesPool = computed(() => isOutlookProvider.value || isMailComProvider.value)
+const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookProvider.value || isMailComProvider.value)
 const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value && !isPhoneCpaFlow.value)
 const registerProviderPoolMessage = computed(() => {
-  if (isOutlookProvider.value) return 'Outlook 邮箱池中选择'
+  if (isLuckMailProvider.value) return 'LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。'
+  if (isOutlookProvider.value) return 'Outlook 使用已配置的微软邮箱账号池，注册域名选择不参与本次任务。'
   if (isMailComProvider.value) return 'mail.com 邮箱池中选择'
   return ''
 })
