@@ -30,6 +30,14 @@ def test_mail_account_routes_delegate_to_storage(monkeypatch):
 
     monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
     monkeypatch.setattr("autotoken.storage.mail_accounts.import_mail_accounts", lambda text: {"imported": 1, "text": text})
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
+        lambda emails=None: {"synced": len(emails or []), "emails": list(emails or []), "skipped": []},
+    )
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.mailcom_pool_status",
+        lambda: {"total": 1, "auth_session_ready": 0, "items": [{"email": "one@mail.com"}]},
+    )
 
     def fake_upsert(payload):
         calls["upsert"] = payload
