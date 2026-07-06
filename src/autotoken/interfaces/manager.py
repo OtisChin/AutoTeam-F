@@ -1978,7 +1978,13 @@ def _save_codex_oauth_bundle_for_account(
         seat_type=seat_type,
         mail_provider=mail_provider,
     )
-    _mark_outlook_email_registered(email, mail_provider=mail_provider, source=source)
+    _sync_provider_registered_email(
+        email,
+        mail_provider=mail_provider,
+        password=password,
+        refresh_token=str(bundle.get("refresh_token") or ""),
+        source=source,
+    )
     update_account(email, **registration.free_codex_oauth_update_fields(auth_file=auth_file, last_active_at=time.time()))
     logger.info("[注册] 协议 Codex OAuth 已保存 CPA JSON: %s plan=%s auth_file=%s", email, plan_type, auth_file)
     _record_outcome(
@@ -3569,7 +3575,12 @@ def create_account_direct(
                 return None
             if blocked.is_duplicate:
                 # 邮箱重复 → 换一个全新的临时邮箱再来，不计入 register_attempts
-                _mark_outlook_email_registered(email, mail_client, source="email_already_in_use")
+                _sync_provider_registered_email(
+                    email,
+                    mail_client,
+                    password=password,
+                    source="email_already_in_use",
+                )
                 duplicate_swaps += 1
                 if duplicate_swaps > MAX_DUPLICATE_SWAPS:
                     logger.error("[直接注册] duplicate 换邮箱已达上限 %d，放弃", MAX_DUPLICATE_SWAPS)
