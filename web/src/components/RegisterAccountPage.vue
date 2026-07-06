@@ -918,7 +918,7 @@
                   <td class="px-5 py-3 align-middle">
                     <input
                       type="checkbox"
-                      :checked="mailComPoolSelectedEmails.includes(item.email)"
+                      :checked="mailComPoolSelectedEmails.includes(normalizeMailComEmail(item.email))"
                       :disabled="mailComPoolDeleting || mailComPoolLoginBusy"
                       class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
                       @change="toggleMailComPoolEmail(item.email, $event.target.checked)"
@@ -945,7 +945,7 @@
                       type="button"
                       :disabled="mailComPoolDeleting || mailComPoolLoginBusy"
                       class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-2.5 py-1 text-xs text-blue-200 transition hover:bg-blue-500/20 disabled:opacity-50"
-                      @click="mailComPoolSelectedEmails = item.email ? [item.email] : []; loginSelectedMailComAccounts()"
+                      @click="mailComPoolSelectedEmails = item.email ? [normalizeMailComEmail(item.email)] : []; loginSelectedMailComAccounts()"
                     >
                       登录并入池/重试
                     </button>
@@ -1366,8 +1366,12 @@ const outlookPoolAllVisibleSelected = computed(() => {
   const selected = outlookPoolSelectedSet.value
   return emails.every(email => selected.has(email))
 })
-const mailComPoolItems = computed(() => Array.isArray(mailComPoolStatus.value?.items) ? mailComPoolStatus.value.items : [])
-const mailComPoolVisibleEmails = computed(() => mailComPoolItems.value.map(item => item.email).filter(Boolean))
+const mailComPoolItems = computed(() => (
+  Array.isArray(mailComPoolStatus.value?.items)
+    ? mailComPoolStatus.value.items.filter(item => isMailComEmail(item?.email))
+    : []
+))
+const mailComPoolVisibleEmails = computed(() => mailComPoolItems.value.map(item => normalizeMailComEmail(item.email)).filter(Boolean))
 const mailComPoolSelectedCount = computed(() => mailComPoolSelectedEmails.value.length)
 const mailComPoolAllVisibleSelected = computed(() => {
   const visible = mailComPoolVisibleEmails.value
@@ -1375,7 +1379,9 @@ const mailComPoolAllVisibleSelected = computed(() => {
 })
 const mailComLoginCandidateEmails = computed(() => {
   const selected = mailComPoolSelectedEmails.value.length ? mailComPoolSelectedEmails.value : mailComPoolVisibleEmails.value
-  const ready = new Set(mailComPoolItems.value.filter(item => item.auth_session_status === 'ready').map(item => item.email))
+  const ready = new Set(mailComPoolItems.value
+    .filter(item => item.auth_session_status === 'ready')
+    .map(item => normalizeMailComEmail(item.email)))
   return selected.filter(email => email && !ready.has(email))
 })
 const canSubmitRegister = computed(() => {
@@ -1519,6 +1525,42 @@ function closeMailComImportDialog() {
   mailComImportDialogOpen.value = false
 }
 
+function normalizeMailComEmail(email) {
+  return String(email || '').trim().toLowerCase()
+}
+
+function isMailComEmail(email) {
+  const normalized = normalizeMailComEmail(email)
+  return normalized.endsWith('@mail.com')
+}
+
+function parseMailComImportContent(content) {
+  const lines = String(content || '').split(/\r?\n/)
+  const emails = []
+  const invalidLines = []
+  const seen = new Set()
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = String(lines[index] || '').trim()
+    if (!line) continue
+    const firstField = line.split('----')[0]?.trim() || ''
+    if (!isMailComEmail(firstField)) {
+      invalidLines.push({
+        lineNumber: index + 1,
+        email: firstField,
+      })
+      continue
+    }
+    const normalizedEmail = normalizeMailComEmail(firstField)
+    if (seen.has(normalizedEmail)) continue
+    seen.add(normalizedEmail)
+    emails.push(normalizedEmail)
+  }
+  return {
+    emails,
+    invalidLines,
+  }
+}
+
 async function loadMailComPoolStatus() {
   if (!isMailComProvider.value || mailComPoolLoading.value) return
   mailComPoolLoading.value = true
@@ -1543,16 +1585,40 @@ async function importMailComAccounts() {
     mailComImportResultOk.value = false
     return
   }
+  const { emails: parsedMailComEmails, invalidLines } = parseMailComImportContent(content)
+  if (invalidLines.length) {
+    const preview = invalidLines
+      .slice(0, 3)
+      .map(item => `第 ${item.lineNumber} 行: ${item.email || '(空邮箱)'}`)
+      .join('；')
+    const suffix = invalidLines.length > 3 ? `；另有 ${invalidLines.length - 3} 行` : ''
+    mailComImportResult.value = `仅支持导入 @mail.com 邮箱，请移除非 mail.com 行：${preview}${suffix}`
+    mailComImportResultOk.value = false
+    return
+  }
+  if (!parsedMailComEmails.length) {
+    mailComImportResult.value = '未解析到可导入的 @mail.com 邮箱'
+    mailComImportResultOk.value = false
+    return
+  }
   mailComPoolLoading.value = true
   mailComPoolError.value = ''
   try {
     const result = await api.importMailAccounts(content)
     mailComPoolStatus.value = result.pool_status || await api.getMailAccountsPoolStatus()
-    const emails = Array.isArray(result.synced_account_pool?.emails) ? result.synced_account_pool.emails : []
-    mailComImportResult.value = `导入完成：成功 ${result.imported || 0}，跳过 ${result.skipped || 0}，同步账号池 ${emails.length} 个，正在启动登录入池`
+    let syncEmails = Array.isArray(result.synced_account_pool?.emails)
+      ? result.synced_account_pool.emails.map(normalizeMailComEmail).filter(isMailComEmail)
+      : []
+    if (!syncEmails.length) {
+      const syncResult = await api.syncMailAccountsToAccountPool(parsedMailComEmails)
+      syncEmails = Array.isArray(syncResult?.emails)
+        ? syncResult.emails.map(normalizeMailComEmail).filter(isMailComEmail)
+        : []
+    }
+    mailComImportResult.value = `导入完成：成功 ${result.imported || 0}，跳过 ${result.skipped || 0}，同步账号池 ${syncEmails.length} 个${syncEmails.length ? '，正在启动登录入池' : ''}`
     mailComImportResultOk.value = true
-    if (emails.length) {
-      await api.loginAccountsBatch(emails, {
+    if (syncEmails.length) {
+      await api.loginAccountsBatch(syncEmails, {
         mail_provider: 'mail.com',
         protocol_only: true,
         bind_email: false,
@@ -1581,7 +1647,7 @@ function closeMailComPoolDialog() {
 }
 
 function toggleMailComPoolEmail(email, checked) {
-  const value = String(email || '').trim()
+  const value = normalizeMailComEmail(email)
   if (!value) return
   const selected = new Set(mailComPoolSelectedEmails.value)
   checked ? selected.add(value) : selected.delete(value)

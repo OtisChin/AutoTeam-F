@@ -33,3 +33,14 @@
 - 命令：`npm --prefix web run build`
 - 结果：成功（exit code 0）
 - 摘要：Vite build 通过，产物输出到 `src/autotoken/web/dist/`；仍有既有 chunk size warning（`assets/index-CTrcR7hK.js` 约 820.89 kB）。
+## 2026-07-06 Task 4 second follow-up fix (Important)
+- 在 `web/src/components/RegisterAccountPage.vue` 的 `importMailComAccounts()` 增加前端预校验：逐行解析首字段邮箱，发现非 `@mail.com` 行时在调用 `api.importMailAccounts()` 前直接拒绝并提示行号/邮箱预览。
+- 将 `mailComPoolItems` 改为仅保留 `@mail.com` 记录，避免管理弹窗展示、选择或操作非 mail.com 数据；相关选择与登录候选邮箱也统一使用规范化后的 `mail.com` 邮箱值。
+- 为导入后自动登录入池补上兜底：当 `result.synced_account_pool?.emails` 为空时，额外调用 `api.syncMailAccountsToAccountPool()`，并优先传入导入内容中解析出的 `@mail.com` 邮箱列表；仅在 sync 返回邮箱后再调用 `loginAccountsBatch()`。
+- `loginAccountsBatch()` 调用保持固定参数：`mail_provider: 'mail.com'`、`protocol_only: true`、`bind_email: false`；未增加浏览器/Playwright 参数。
+- 未改动 `web/src/api.js` 的 ideal API minor 相关内容。
+
+### 验证
+- 命令：`npm --prefix web run build`
+- 结果：成功（exit code 0）
+- 摘要：Vite build 通过，产物输出到 `src/autotoken/web/dist/`；仍有既有 chunk size warning（`assets/index-DNiM5DUU.js` 约 821.98 kB）。
