@@ -50,11 +50,17 @@ def get_mail_client() -> MailProvider:
         from autotoken.mail.outlook import OutlookMailProvider
 
         return OutlookMailProvider()
+    if raw in ("mail.com", "mailcom", "mail_com"):
+        from autotoken.mail.mailcom import MailComMailProvider
+
+        return MailComMailProvider()
     if raw in ("luckmail", "lucky_mail", "lucky-mail"):
         from autotoken.mail.luckmail import LuckMailProvider
 
         return LuckMailProvider()
-    raise ValueError(f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | luckmail)")
+    raise ValueError(
+        f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | mail.com | luckmail)"
+    )
 
 
 # 对外统一后的首选名字。

@@ -32,6 +32,11 @@ MAIL_PROVIDER_OPTIONS = [
         "description": "Outlook/Hotmail 账号池注册",
     },
     {
+        "value": "mail.com",
+        "label": "mail.com",
+        "description": "mail.com SQLite 邮箱池注册",
+    },
+    {
         "value": "luckmail",
         "label": "LuckMail",
         "description": "LuckMail 已购邮箱 token 接码",
@@ -76,6 +81,7 @@ PROVIDER_SETUP_FIELDS = {
         ("OUTLOOK_PROVIDER_PRIORITY", "Outlook 读取优先级", "imap_old,imap_new,graph_api", True),
         ("OUTLOOK_PROXY_URL", "Outlook 邮件读取代理 URL（可选）", "", True),
     ],
+    "mail.com": [],
     "luckmail": [
         ("LUCKMAIL_BASE_URL", "LuckMail API 地址", "https://mail.luckyous.com", True),
         (
@@ -156,6 +162,8 @@ def get_mail_provider(raw: str | None = None) -> str:
         return "cloud-mail"
     if provider in ("outlook", "microsoft_outlook", "hotmail"):
         return "outlook"
+    if provider in ("mail.com", "mailcom", "mail_com"):
+        return "mail.com"
     if provider in ("luckmail", "lucky_mail", "lucky-mail"):
         return "luckmail"
     return provider
@@ -400,6 +408,10 @@ def _verify_temporary_email():
         check_keys = "OUTLOOK_ACCOUNTS_FILE 或 OUTLOOK_ACCOUNTS"
         domain_key = "OUTLOOK_ACCOUNTS_FILE"
         label = "outlook"
+    elif provider == "mail.com":
+        check_keys = "mail_accounts SQLite"
+        domain_key = "mail_accounts"
+        label = "mail.com"
     elif provider == "luckmail":
         accounts_file = os.environ.get("LUCKMAIL_ACCOUNTS_FILE", "")
         accounts_inline = os.environ.get("LUCKMAIL_ACCOUNTS", "")
@@ -412,7 +424,7 @@ def _verify_temporary_email():
         label = "luckmail"
     else:
         logger.error(
-            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | luckmail",
+            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | mail.com | luckmail",
             provider,
         )
         return False
@@ -434,7 +446,7 @@ def _verify_temporary_email():
         logger.error("[验证] 请检查 %s", check_keys)
         return False
 
-    if provider in ("outlook", "luckmail"):
+    if provider in ("outlook", "mail.com", "luckmail"):
         logger.info("[验证] %s 配置验证通过", label)
         return True
 
