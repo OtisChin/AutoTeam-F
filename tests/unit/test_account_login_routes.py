@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi import HTTPException
 
@@ -5,6 +7,7 @@ from autotoken.api_routes.account_login import (
     ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY,
     ACCOUNT_LOGIN_BATCH_MAX_EMAILS,
     AccountEmailBatchParams,
+    MailAccountAuthSessionBatchParams,
     LoginAccountParams,
     create_account_login_router,
 )
@@ -313,6 +316,55 @@ def test_post_accounts_login_batch_mailcom_failure_updates_mail_pool(monkeypatch
     assert captured == [("first@mail.com", "protocol login failed")]
 
 
+def test_post_accounts_login_batch_mailcom_success_syncs_refresh_token_from_auth_file(monkeypatch, tmp_path):
+    started = []
+    auth_file = tmp_path / "codex-first.json"
+    auth_file.write_text(json.dumps({"refresh_token": "rt-login-new"}), encoding="utf-8")
+    rows = [
+        {
+            "email": "first@mail.com",
+            "password": "gpt-pass",
+            "cloudmail_account_id": "first@mail.com",
+            "mail_provider": "mail.com",
+        }
+    ]
+    captured = []
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: rows[0] if email == "first@mail.com" else None)
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.mark_mailcom_registered",
+        lambda email, **kwargs: captured.append((email, kwargs)) or {"email": email},
+    )
+
+    def successful_run(email, _acc, **_kwargs):
+        return {"email": email, "plan": "free", "auth_file": str(auth_file)}
+
+    routes, _accounts = _routes(started, accounts=rows, run_account_codex_login_once=successful_run)
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(
+            emails=["first@mail.com"],
+            mail_provider="mail.com",
+            protocol_only=True,
+            bind_email=False,
+        )
+    )
+
+    result = started[0]["func"]("task-batch")
+
+    assert result["total"] == 1
+    assert result["ok"] == [{"email": "first@mail.com", "plan": "free", "auth_file": str(auth_file)}]
+    assert captured == [
+        (
+            "first@mail.com",
+            {
+                "gpt_password": "gpt-pass",
+                "refresh_token": "rt-login-new",
+                "source": "account_login_success",
+            },
+        )
+    ]
+
+
 def test_post_accounts_login_batch_non_mailcom_failure_does_not_update_mail_pool(monkeypatch):
     started = []
     rows = [{"email": "first@example.com", "cloudmail_account_id": "first@example.com", "mail_provider": "cloud-mail"}]
@@ -345,3 +397,27 @@ def test_post_accounts_login_batch_non_mailcom_failure_does_not_update_mail_pool
     assert result["total"] == 1
     assert result["failed"] == [{"email": "first@example.com", "error": "protocol login failed"}]
     assert captured == []
+
+
+def test_post_mail_accounts_login_auth_session_uses_plain_chatgpt_login_not_oauth(monkeypatch):
+    started = []
+    captured = []
+
+    def forbidden_oauth_login(*_args, **_kwargs):
+        raise AssertionError("mail邮箱管理登录不能走 OAuth 补登录")
+
+    monkeypatch.setattr(
+        "autotoken.services.mailcom_auth_session.login_mailcom_auth_session_once",
+        lambda email, **kwargs: captured.append((email, kwargs)) or {"email": email, "status": "success"},
+    )
+
+    routes, _accounts = _routes(started, run_account_codex_login_once=forbidden_oauth_login)
+    result = routes["post_mail_accounts_login_auth_session"](
+        MailAccountAuthSessionBatchParams(emails=["Finished@mail.com"])
+    )
+    task_result = started[0]["func"]("task-auth-session")
+
+    assert result["command"] == "mail-auth-session"
+    assert task_result["ok"] == [{"email": "finished@mail.com", "status": "success"}]
+    assert task_result["failed"] == []
+    assert captured == [("finished@mail.com", {"progress_callback": captured[0][1]["progress_callback"]})]

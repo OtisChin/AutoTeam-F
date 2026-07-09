@@ -1242,7 +1242,7 @@ function isBindableFreeAccount(acc) {
   if (String(acc?.account_type || '').toLowerCase() !== 'free') return false
   if (!acc?.auth_session_file) return false
   const status = String(acc?.status || '').toLowerCase()
-  if (['fail', 'auth_invalid', 'orphan', 'exhausted', 'standby', 'pending'].includes(status)) return false
+  if (['fail', 'auth_invalid', 'orphan', 'exhausted', 'standby'].includes(status)) return false
   return true
 }
 

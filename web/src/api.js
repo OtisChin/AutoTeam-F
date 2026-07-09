@@ -72,6 +72,7 @@ export const api = {
   updateAccountsExportStatus: (emails, exported) => request('POST', '/accounts/export-status', { emails, exported }),
   loginAccount: (email, payload = {}) => request('POST', '/accounts/login', { ...payload, email }),
   loginAccountsBatch: (emails, payload = {}) => request('POST', '/accounts/login-batch', { ...payload, emails }),
+  loginMailAccountsAuthSession: (emails) => request('POST', '/mail-accounts/login-auth-session', { emails }),
   refreshAccountsQuota: (emails) => request('POST', '/accounts/refresh-quota', { emails }),
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),
   kickAccount: (email) => request('POST', `/accounts/${encodeURIComponent(email)}/kick`),
@@ -120,6 +121,28 @@ export const api = {
   startCleanup: (maxSeats = null) => request('POST', '/tasks/cleanup', { max_seats: maxSeats }),
   startBindCard: (payload) => request('POST', '/tasks/bind-card', payload),
   startGoPayBind: (payload) => request('POST', '/tasks/gopay-bind', payload),
+  startIdealLongLink: (payload) => request('POST', '/ideal/long-link/start', payload),
+  getIdealLongLinkJob: (jobId) => request('GET', `/ideal/long-link/jobs/${encodeURIComponent(jobId)}`),
+  testIdealProxyChain: (payload) => request('POST', '/ideal/proxy-chain-test', payload),
+  getIdealQrBlob: async (value) => {
+    const headers = { 'Content-Type': 'application/json' }
+    const key = getApiKey()
+    if (key) headers['Authorization'] = `Bearer ${key}`
+    const resp = await fetch('/api/ideal/qr', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ value }),
+    })
+    if (!resp.ok) {
+      let message = `HTTP ${resp.status}`
+      try {
+        const data = await resp.json()
+        message = data?.detail || message
+      } catch {}
+      throw new Error(message)
+    }
+    return resp.blob()
+  },
   preflightPayPal: (payload) => request('POST', '/tasks/paypal/preflight', payload),
   startPayPal: (payload) => request('POST', '/tasks/paypal', payload),
   getPayPalIceConfig: () => request('GET', '/paypal-ice/config'),
@@ -220,7 +243,7 @@ export const api = {
   deleteOAuthPhonePoolItems: (ids) => request('POST', '/oauth-phone-pool/delete', { ids }),
 
   getMailAccounts: () => request('GET', '/mail-accounts'),
-  importMailAccounts: (text) => request('POST', '/mail-accounts/import', { text }),
+  importMailAccounts: (text, options = {}) => request('POST', '/mail-accounts/import', { text, ...options }),
   getMailAccountsPoolStatus: () => request('GET', '/mail-accounts/pool-status'),
   syncMailAccountsToAccountPool: (emails = []) => request('POST', '/mail-accounts/sync-account-pool', { emails }),
   saveMailAccount: (item, originalEmail = '') => originalEmail

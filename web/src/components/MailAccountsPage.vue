@@ -168,7 +168,7 @@
             </tr>
             <tr v-if="!filteredRows.length">
               <td colspan="9" class="px-4 py-12 text-center text-gray-500">
-                暂无 mail.com 邮箱账号，点击“导入”粘贴 邮箱----GPT密码----邮箱密码----OpenAI refreshToken
+                暂无 mail.com 邮箱账号，点击“导入”粘贴 邮箱----邮箱密码----chatgpt密码
               </td>
             </tr>
           </tbody>
@@ -185,8 +185,8 @@
 
         <div class="space-y-4 px-5 py-4">
           <template v-if="dialog === 'import'">
-            <p class="text-sm text-gray-400">每行格式：邮箱----GPT密码----邮箱密码----OpenAI refreshToken</p>
-            <textarea v-model="importText" rows="9" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 font-mono text-sm text-white placeholder:text-gray-600" placeholder="aharvey183195@mail.com----gpt-pass----mail-pass----rt.xxxxx"></textarea>
+            <p class="text-sm text-gray-400">每行格式：邮箱----邮箱密码----chatgpt密码；也兼容旧格式：邮箱----GPT密码----邮箱密码----OpenAI refreshToken</p>
+            <textarea v-model="importText" rows="9" class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 font-mono text-sm text-white placeholder:text-gray-600" placeholder="udvmfgzbdgvww@mail.com----mail-pass----gpt-pass"></textarea>
           </template>
 
           <template v-else-if="dialog === 'edit'">
@@ -344,6 +344,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api.js'
+
+const emit = defineEmits(['task-started'])
 
 const rows = ref([])
 const summary = ref({ total: 0, enabled_count: 0, disabled_count: 0, valid_count: 0, invalid_count: 0, unchecked_count: 0 })
@@ -600,7 +602,14 @@ async function submitDialog() {
     if (dialog.value === 'import') {
       const result = await api.importMailAccounts(importText.value)
       syncRows(result)
-      setMessage(`导入 ${result.imported || 0} 条，跳过 ${result.skipped || 0} 条`)
+      const loginEmails = Array.isArray(result.login_emails)
+        ? result.login_emails.map(email => String(email || '').trim().toLowerCase()).filter(Boolean)
+        : []
+      if (loginEmails.length) {
+        await api.loginMailAccountsAuthSession(loginEmails)
+        emit('task-started')
+      }
+      setMessage(`导入 ${result.imported || 0} 条，跳过 ${result.skipped || 0} 条${loginEmails.length ? `，已启动 ${loginEmails.length} 个登陆获取 auth_session` : ''}`)
     } else if (dialog.value === 'edit') {
       await api.saveMailAccount(form.value, editingEmail.value)
       setMessage('mail 邮箱账号已保存')

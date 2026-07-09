@@ -1,0 +1,179 @@
+# Review package: b57c7d6..ccb8c3c
+
+## Commits
+ccb8c3c feat: expose mailcom pool APIs
+
+## Files changed
+ src/autotoken/api_routes/account_register_task.py |  2 +-
+ src/autotoken/api_routes/mail_accounts.py         | 23 +++++++++++++-
+ tests/unit/test_account_register_task_routes.py   | 20 ++++++++++++
+ tests/unit/test_mail_accounts_routes.py           | 38 +++++++++++++++++++++++
+ 4 files changed, 81 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/src/autotoken/api_routes/account_register_task.py b/src/autotoken/api_routes/account_register_task.py
+index 8540f49..6c18e59 100644
+--- a/src/autotoken/api_routes/account_register_task.py
++++ b/src/autotoken/api_routes/account_register_task.py
+@@ -159,21 +159,21 @@ def create_account_register_task_router(
+             logger.info(
+                 "[注册账号] OAuth 接码参数: provider=oasis cdk_pool=%s",
+                 "task_inline" if oauth_oasis_sms_cdks else "configured",
+             )
+         if mode not in ("single", "batch"):
+             raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
+         if jitter_min_seconds > jitter_max_seconds:
+             raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
+ 
+         configured_domains = get_register_domains()
+-        domain_required = mail_provider not in {"luckmail", "outlook"} and not phone_only
++        domain_required = mail_provider not in {"luckmail", "outlook", "mail.com"} and not phone_only
+ 
+         def _clean_domain(value) -> str:
+             return str(value or "").strip().lstrip("@").strip()
+ 
+         def _validate_domain(value: str):
+             if configured_domains and value not in configured_domains:
+                 raise HTTPException(status_code=400, detail=f"域名 @{value} 不在可选列表中")
+ 
+         selected_domain = _clean_domain(params.domain)
+         selected_domains = []
+diff --git a/src/autotoken/api_routes/mail_accounts.py b/src/autotoken/api_routes/mail_accounts.py
+index 07c735a..71bc147 100644
+--- a/src/autotoken/api_routes/mail_accounts.py
++++ b/src/autotoken/api_routes/mail_accounts.py
+@@ -395,24 +395,45 @@ def create_mail_accounts_router() -> APIRouter:
+         from autotoken.storage import mail_accounts
+ 
+         try:
+             validate_text_payload_limits(
+                 params.text,
+                 max_bytes=MAIL_ACCOUNTS_IMPORT_MAX_BYTES,
+                 max_lines=MAIL_ACCOUNTS_IMPORT_MAX_LINES,
+                 label="mail邮箱导入",
+             )
+             result = mail_accounts.import_mail_accounts(params.text)
+-            return {**result, **_response(mail_accounts.list_mail_accounts())}
++            sync_result = mail_accounts.sync_mail_accounts_to_account_pool()
++            pool_status = mail_accounts.mailcom_pool_status()
++            return {
++                **result,
++                **_response(mail_accounts.list_mail_accounts()),
++                "synced_account_pool": sync_result,
++                "pool_status": pool_status,
++            }
+         except ValueError as exc:
+             raise HTTPException(status_code=400, detail=str(exc)) from exc
+ 
++    @router.get("/api/mail-accounts/pool-status")
++    def get_mail_accounts_pool_status():
++        from autotoken.storage import mail_accounts
++
++        return mail_accounts.mailcom_pool_status()
++
++    @router.post("/api/mail-accounts/sync-account-pool")
++    def post_mail_accounts_sync_account_pool(params: MailAccountBatchParams):
++        from autotoken.storage import mail_accounts
++
++        _validate_batch(params.emails)
++        emails = params.emails or None
++        return mail_accounts.sync_mail_accounts_to_account_pool(emails)
++
+     @router.post("/api/mail-accounts")
+     def post_mail_account(params: MailAccountUpsertParams):
+         from autotoken.storage import mail_accounts
+ 
+         try:
+             return mail_accounts.upsert_mail_account(params.model_dump())
+         except ValueError as exc:
+             raise HTTPException(status_code=400, detail=str(exc)) from exc
+ 
+     @router.put("/api/mail-accounts/{email}")
+diff --git a/tests/unit/test_account_register_task_routes.py b/tests/unit/test_account_register_task_routes.py
+index f7ffaa2..ab7d7d4 100644
+--- a/tests/unit/test_account_register_task_routes.py
++++ b/tests/unit/test_account_register_task_routes.py
+@@ -163,10 +163,30 @@ def test_post_add_requires_oasis_cdk_pool(monkeypatch):
+     monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+     monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+ 
+     routes = _routes([], oauth_env={})
+     with pytest.raises(HTTPException) as exc_info:
+         routes["post_add"](ManualRegisterParams(post_register_oauth=True, oauth_phone_sms_provider="oasis"))
+ 
+     assert exc_info.value.status_code == 400
+     assert exc_info.value.detail == "启用 Oasis 前需要先在设置页配置 CDK 池"
++
++
++def test_post_add_mailcom_does_not_require_register_domain(monkeypatch):
++    started = []
++    calls = []
++    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: [])
++    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "")
++    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
++    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "mail.com")
++    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
++
++    routes = _routes(started)
++    result = routes["post_add"](ManualRegisterParams(mail_provider="mail.com", domain="", domains=[]))
++
++    assert result["command"] == "register"
++    assert started[0]["params"]["domain"] == ""
++    assert started[0]["params"]["domains"] == []
++    assert started[0]["kwargs"]["mail_provider"] == "mail.com"
++    assert started[0]["func"]("task-register") == {"created": 1}
++    assert calls[0]["mail_provider"] == "mail.com"
+diff --git a/tests/unit/test_mail_accounts_routes.py b/tests/unit/test_mail_accounts_routes.py
+index ffc315a..16cbead 100644
+--- a/tests/unit/test_mail_accounts_routes.py
++++ b/tests/unit/test_mail_accounts_routes.py
+@@ -216,10 +216,48 @@ def test_fetch_mail_messages_uses_official_mailcom_web_login(monkeypatch):
+ def test_mail_account_check_missing_account_returns_404(monkeypatch):
+     app = _app()
+     monkeypatch.setattr("autotoken.storage.mail_accounts.get_mail_account", lambda _email: None)
+ 
+     try:
+         _endpoint(app, "/api/mail-accounts/check", "POST")(MailAccountBatchParams(emails=["missing@mail.com"]))
+     except HTTPException as exc:
+         assert exc.status_code == 404
+     else:
+         raise AssertionError("missing account check must fail")
++
++
++def test_mail_accounts_import_syncs_account_pool_and_returns_pool_status(monkeypatch):
++    app = _app()
++    monkeypatch.setattr("autotoken.storage.mail_accounts.import_mail_accounts", lambda text: {"imported": 1, "skipped": 0, "total": 1})
++    monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
++        lambda emails=None: {"synced": 1, "emails": ["one@mail.com"], "skipped": []},
++    )
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.mailcom_pool_status",
++        lambda: {"total": 1, "auth_session_ready": 0, "items": [{"email": "one@mail.com"}]},
++    )
++
++    result = _endpoint(app, "/api/mail-accounts/import", "POST")(MailAccountImportParams(text="one@mail.com----g----m----rt"))
++
++    assert result["imported"] == 1
++    assert result["synced_account_pool"]["synced"] == 1
++    assert result["pool_status"]["total"] == 1
++
++
++def test_mail_accounts_pool_status_and_sync_routes(monkeypatch):
++    app = _app()
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.mailcom_pool_status",
++        lambda: {"total": 2, "auth_session_ready": 1, "items": []},
++    )
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
++        lambda emails=None: {"synced": len(emails or []), "emails": list(emails or []), "skipped": []},
++    )
++
++    assert _endpoint(app, "/api/mail-accounts/pool-status", "GET")()["total"] == 2
++    synced = _endpoint(app, "/api/mail-accounts/sync-account-pool", "POST")(
++        MailAccountBatchParams(emails=["one@mail.com", "two@mail.com"])
++    )
++    assert synced["synced"] == 2

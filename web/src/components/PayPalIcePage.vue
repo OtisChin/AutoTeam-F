@@ -831,7 +831,7 @@ function isUsableFreeAccount(account) {
   if (String(account?.account_type || '').toLowerCase() !== 'free') return false
   if (!hasUsableAccountAuth(account)) return false
   const status = String(account?.status || '').toLowerCase()
-  if (['fail', 'auth_invalid', 'orphan', 'pending'].includes(status)) return false
+  if (['fail', 'auth_invalid', 'orphan'].includes(status)) return false
   if (status === 'standby' && !hasUsableCodexAuth(account)) return false
   return true
 }

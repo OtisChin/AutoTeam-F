@@ -1,0 +1,386 @@
+# Review package: f485beb..304d918
+
+## Commits
+304d918 fix: complete provider sync call sites
+3209fff feat: sync mailcom registration status
+
+## Files changed
+ .superpowers/sdd/task-3-report.md       |  36 ++++++++++
+ src/autotoken/interfaces/manager.py     |  70 ++++++++++++++----
+ tests/unit/test_manager_mailcom_sync.py | 122 ++++++++++++++++++++++++++++++++
+ 3 files changed, 216 insertions(+), 12 deletions(-)
+
+## Diff
+diff --git a/.superpowers/sdd/task-3-report.md b/.superpowers/sdd/task-3-report.md
+new file mode 100644
+index 0000000..c80f1ce
+--- /dev/null
++++ b/.superpowers/sdd/task-3-report.md
+@@ -0,0 +1,36 @@
++Status: DONE
++
++Changed Files:
++- D:/code/OpenSource/AutoTeam-F/src/autotoken/interfaces/manager.py
++- D:/code/OpenSource/AutoTeam-F/tests/unit/test_manager_mailcom_sync.py
++
++Commit:
++- 3209fff200fe9b2b1f8d060fbd8e1e94bc4e8ec5
++
++Test Commands and Results:
++- `pytest tests/unit/test_manager_mailcom_sync.py -q` -> failed to launch because `pytest` was not on PATH in this shell.
++- `.venv\\Scripts\\python.exe -m pytest tests/unit/test_manager_mailcom_sync.py -q` -> RED, 2 failed as expected (`_sync_provider_registered_email` missing).
++- `.venv\\Scripts\\python.exe -m pytest tests/unit/test_manager_mailcom_sync.py tests/unit/test_manager_mail_timeout.py tests/unit/test_account_register_task_routes.py -q` -> GREEN, 13 passed.
++
++Self Review:
++- Added a provider-agnostic registration sync helper in manager while preserving Outlook compatibility via the existing wrapper.
++- Hooked mail.com sync into the two Task 3-required success paths: registration success and auth_session save.
++- Added focused unit coverage for both mail.com and Outlook behavior.
++- Kept changes limited to the Task 3 code/test files plus this report file; did not touch the unrelated modified/untracked workspace files listed by the user.
++
++Concerns:
++- None blocking. `refresh_token` support exists in the new helper signature, but Task 3's specified call sites only provided `password`/`source`, so no additional refresh-token propagation was added beyond the brief.
++
++## 2026-07-06 Task 3 follow-up fix
++
++- 修复 `_save_codex_oauth_bundle_for_account()` 中遗留的 `_mark_outlook_email_registered(...)` 调用，改为 `_sync_provider_registered_email(...)`，并传递 `mail_provider`、`password`、`refresh_token`、`source`。
++- 修复 `email_already_in_use` 分支的遗留 Outlook 专用 wrapper 调用，改为通用 `_sync_provider_registered_email(...)`，并传递 `password`、`source`。
++- 补充轻量测试，覆盖：
++  - `_save_codex_oauth_bundle_for_account()` 不再经过旧 wrapper；
++  - duplicate email 分支不再经过旧 wrapper，而是命中新通用 helper。
++
++测试命令：
++- `.venv\\Scripts\\python.exe -m pytest tests/unit/test_manager_mailcom_sync.py tests/unit/test_manager_mail_timeout.py tests/unit/test_account_register_task_routes.py -q`
++
++测试结果：
++- `15 passed in 0.48s`
+diff --git a/src/autotoken/interfaces/manager.py b/src/autotoken/interfaces/manager.py
+index 492a9af..323ad32 100644
+--- a/src/autotoken/interfaces/manager.py
++++ b/src/autotoken/interfaces/manager.py
+@@ -203,30 +203,55 @@ def wrap_mail_client_with_auth_retry(mail_client, *, log_prefix: str = "注册
+ 
+ 
+ def _mail_client_provider_name(mail_client) -> str:
+     provider = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
+     if provider:
+         return provider
+     inner = getattr(mail_client, "_inner", None)
+     return str(getattr(inner, "provider_name", "") or "").strip().lower()
+ 
+ 
+-def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
++def _sync_provider_registered_email(
++    email: str,
++    mail_client=None,
++    *,
++    mail_provider: str | None = None,
++    password: str = "",
++    refresh_token: str = "",
++    source: str = "",
++) -> None:
+     provider = (mail_provider or _mail_client_provider_name(mail_client)).strip().lower() if (mail_provider or mail_client) else ""
+-    if provider != "outlook":
++    if provider == "outlook":
++        try:
++            from autotoken.storage.outlook_pool import mark_registered_email
++
++            mark_registered_email(email, source=source)
++        except Exception as exc:
++            logger.debug("[outlook] 标记已注册邮箱失败: %s", exc, exc_info=True)
+         return
+-    try:
+-        from autotoken.storage.outlook_pool import mark_registered_email
++    if provider in {"mail.com", "mailcom", "mail_com"}:
++        try:
++            from autotoken.storage.mail_accounts import mark_mailcom_registered
+ 
+-        mark_registered_email(email, source=source or "register_success")
+-    except Exception:
+-        logger.debug("[outlook] 写入 Outlook 邮箱池持久注册状态失败: %s", email, exc_info=True)
++            mark_mailcom_registered(
++                email,
++                gpt_password=password,
++                refresh_token=refresh_token,
++                source=source,
++            )
++        except Exception as exc:
++            logger.debug("[mail.com] 标记已注册邮箱失败: %s", exc, exc_info=True)
++        return
++
++
++def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
++    _sync_provider_registered_email(email, mail_client, mail_provider=mail_provider, source=source)
+ 
+ 
+ def _direct_register_code_timeout(mail_client, email: str | None = None) -> int:
+     provider_name = _mail_client_provider_name(mail_client)
+     if provider_name == "outlook":
+         return max(5, OUTLOOK_REGISTER_CODE_TIMEOUT)
+     return MAIL_TIMEOUT
+ 
+ 
+ def _get_account_login_provider(acc: dict | None) -> str:
+@@ -1845,21 +1870,26 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
+         return None
+ 
+     auth_file = save_auth_session(email, data)
+     add_account(
+         email,
+         password,
+         cloudmail_account_id=cloudmail_account_id,
+         seat_type=SEAT_CODEX,
+         mail_provider=mail_provider,
+     )
+-    _mark_outlook_email_registered(email, mail_provider=mail_provider, source="auth_session_saved")
++    _sync_provider_registered_email(
++        email,
++        mail_provider=mail_provider,
++        password=password,
++        source="auth_session_saved",
++    )
+     logger.info("[注册] auth_session 已保存: %s", auth_file)
+     update_account(email, **registration.auth_session_update_fields(last_active_at=time.time()))
+     logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)
+     _record_outcome(
+         "success",
+         plan="free",
+         auth_file=auth_file,
+         source="auth_session",
+         password=password,
+         cloudmail_account_id=cloudmail_account_id,
+@@ -1941,21 +1971,27 @@ def _save_codex_oauth_bundle_for_account(
+     seat_type = registration.team_success_seat_label(plan_type)
+     auth_file = save_auth_file(bundle)
+ 
+     add_account(
+         email,
+         password,
+         cloudmail_account_id=cloudmail_account_id,
+         seat_type=seat_type,
+         mail_provider=mail_provider,
+     )
+-    _mark_outlook_email_registered(email, mail_provider=mail_provider, source=source)
++    _sync_provider_registered_email(
++        email,
++        mail_provider=mail_provider,
++        password=password,
++        refresh_token=str(bundle.get("refresh_token") or ""),
++        source=source,
++    )
+     update_account(email, **registration.free_codex_oauth_update_fields(auth_file=auth_file, last_active_at=time.time()))
+     logger.info("[注册] 协议 Codex OAuth 已保存 CPA JSON: %s plan=%s auth_file=%s", email, plan_type, auth_file)
+     _record_outcome(
+         "success",
+         plan=plan_type,
+         auth_file=auth_file,
+         source=source,
+         password=password,
+         cloudmail_account_id=cloudmail_account_id,
+         mail_provider=mail_provider,
+@@ -3532,21 +3568,26 @@ def create_account_direct(
+                     "phone_blocked",
+                     f"add-phone 手机验证（step={blocked.step}）",
+                     step=blocked.step,
+                     register_attempts=register_attempts,
+                     duplicate_swaps=duplicate_swaps,
+                 )
+                 _record_outcome("phone_blocked", reason=f"add-phone 手机验证 step={blocked.step}", step=blocked.step)
+                 return None
+             if blocked.is_duplicate:
+                 # 邮箱重复 → 换一个全新的临时邮箱再来，不计入 register_attempts
+-                _mark_outlook_email_registered(email, mail_client, source="email_already_in_use")
++                _sync_provider_registered_email(
++                    email,
++                    mail_client,
++                    password=password,
++                    source="email_already_in_use",
++                )
+                 duplicate_swaps += 1
+                 if duplicate_swaps > MAX_DUPLICATE_SWAPS:
+                     logger.error("[直接注册] duplicate 换邮箱已达上限 %d，放弃", MAX_DUPLICATE_SWAPS)
+                     _discard_email("duplicate_exhausted")
+                     record_failure(
+                         email,
+                         "duplicate_exhausted",
+                         f"duplicate 换邮箱已达上限 {MAX_DUPLICATE_SWAPS}",
+                         duplicate_swaps=duplicate_swaps,
+                     )
+@@ -3609,21 +3650,26 @@ def create_account_direct(
+             raise
+ 
+         # 只有真正走完 _register_direct_once 的一次（无论成功失败）才消耗 register_attempts
+         register_attempts += 1
+ 
+         if not success and out_outcome is not None:
+             last_failure_reason = str(out_outcome.get("reason") or last_failure_reason or "")
+ 
+         if success:
+             _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)
+-            _mark_outlook_email_registered(email, mail_client, source="register_success")
++            _sync_provider_registered_email(
++                email,
++                mail_client,
++                password=password,
++                source="register_success",
++            )
+             if not check_team_membership:
+                 try:
+                     logger.info("[注册] 独立注册成功，开始调用 /api/auth/session 保存 auth_session: %s", email)
+                     _progress("register_auth_session_fetch", f"正在保存 auth_session: {email}", email=email)
+                     session_auth = _save_auth_from_session_page(
+                         email,
+                         password,
+                         account_id,
+                         session_data,
+                         out_outcome=out_outcome,
+@@ -4658,21 +4704,21 @@ def cmd_register_accounts(
+                 progress["running"] += 1
+                 _emit_progress()
+ 
+             job_domain = random.choice(domain_pool) if domain_pool else selected_fallback_domain
+             if str(mail_provider or "").strip().lower() == "luckmail" and luckmail_domain_pool:
+                 job_domain = luckmail_domain_pool[job_index % len(luckmail_domain_pool)]
+             outcome = {}
+             provider_label = _mail_client_provider_name(mail_client) or str(mail_provider or "").strip().lower() or "default"
+             register_target = (
+                 f"provider={provider_label}"
+-                if provider_label in {"luckmail", "outlook"}
++                if provider_label in {"luckmail", "outlook", "mail.com"}
+                 else f"domain=@{job_domain or ''}"
+             )
+             logger.info(
+                 "[注册账号] worker-%d 开始第 %d/%d 个 %s",
+                 worker_id,
+                 job_index + 1,
+                 total,
+                 register_target,
+             )
+             try:
+diff --git a/tests/unit/test_manager_mailcom_sync.py b/tests/unit/test_manager_mailcom_sync.py
+new file mode 100644
+index 0000000..55cb0e7
+--- /dev/null
++++ b/tests/unit/test_manager_mailcom_sync.py
+@@ -0,0 +1,122 @@
++from autotoken.interfaces import manager
++
++
++def test_sync_provider_registered_email_marks_mailcom(monkeypatch):
++    calls = []
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.mark_mailcom_registered",
++        lambda email, **kwargs: calls.append((email, kwargs)) or {"email": email},
++    )
++
++    manager._sync_provider_registered_email(
++        "one@mail.com",
++        mail_provider="mail.com",
++        password="gpt-pass",
++        refresh_token="rt-new",
++        source="auth_session_saved",
++    )
++
++    assert calls == [
++        (
++            "one@mail.com",
++            {
++                "gpt_password": "gpt-pass",
++                "refresh_token": "rt-new",
++                "source": "auth_session_saved",
++            },
++        )
++    ]
++
++
++def test_sync_provider_registered_email_keeps_outlook_behavior(monkeypatch):
++    calls = []
++    monkeypatch.setattr(
++        "autotoken.storage.outlook_pool.mark_registered_email",
++        lambda email, source="": calls.append((email, source)),
++    )
++
++    manager._sync_provider_registered_email("one@outlook.com", mail_provider="outlook", source="register_success")
++
++    assert calls == [("one@outlook.com", "register_success")]
++
++
++def test_save_codex_oauth_bundle_uses_generic_sync_helper(monkeypatch):
++    sync_calls = []
++
++    monkeypatch.setattr(manager, "_mark_outlook_email_registered", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy wrapper should not be used")))
++    monkeypatch.setattr(
++        manager,
++        "_sync_provider_registered_email",
++        lambda *args, **kwargs: sync_calls.append((args, kwargs)),
++    )
++    monkeypatch.setattr(manager, "save_auth_file", lambda bundle: "data/auths/codex-one@mail.com-free.json")
++    monkeypatch.setattr(manager, "add_account", lambda *args, **kwargs: None)
++    monkeypatch.setattr(manager, "update_account", lambda *args, **kwargs: None)
++    monkeypatch.setattr(
++        manager.registration,
++        "free_codex_oauth_update_fields",
++        lambda **kwargs: kwargs,
++    )
++
++    manager._save_codex_oauth_bundle_for_account(
++        "one@mail.com",
++        "pw-1",
++        "mail-1",
++        {
++            "access_token": "access-1",
++            "refresh_token": "refresh-1",
++            "id_token": "id-1",
++        },
++        mail_provider="mail.com",
++        source="protocol_oauth",
++    )
++
++    assert sync_calls == [
++        (
++            ("one@mail.com",),
++            {
++                "mail_provider": "mail.com",
++                "password": "pw-1",
++                "refresh_token": "refresh-1",
++                "source": "protocol_oauth",
++            },
++        )
++    ]
++
++
++def test_duplicate_email_path_uses_generic_sync_helper(monkeypatch):
++    sync_calls = []
++    register_attempts = {"count": 0}
++
++    class FakeMailClient:
++        provider_name = "mail.com"
++
++        def create_registration_email(self, prefix=None, domain=None):
++            return ("mail-2", "first@mail.com") if not sync_calls else ("mail-3", "second@mail.com")
++
++    from autotoken.auth.invite import RegisterBlocked
++
++    monkeypatch.setattr(manager, "_mark_outlook_email_registered", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy wrapper should not be used")))
++    monkeypatch.setattr(
++        manager,
++        "_sync_provider_registered_email",
++        lambda *args, **kwargs: sync_calls.append((args, kwargs)),
++    )
++    monkeypatch.setattr(manager, "_save_auth_from_session_page", lambda email, *args, **kwargs: {"email": email})
++    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
++    monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
++
++    def fake_register_once(*args, **kwargs):
++        register_attempts["count"] += 1
++        if register_attempts["count"] == 1:
++            raise RegisterBlocked("email_submit", "duplicate email", is_duplicate=True)
++        return True, {"data": {"sessionToken": "session-1"}}
++
++    monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
++
++    result = manager.create_account_direct(FakeMailClient(), password="pw-2", check_team_membership=False)
++
++    assert result == {"email": "second@mail.com"}
++    assert sync_calls[0][0][0] == "first@mail.com"
++    assert sync_calls[0][0][1].provider_name == "mail.com"
++    assert sync_calls[0][1] == {"password": "pw-2", "source": "email_already_in_use"}

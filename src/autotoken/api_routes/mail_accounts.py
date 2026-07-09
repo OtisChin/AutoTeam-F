@@ -31,6 +31,7 @@ OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
 
 class MailAccountImportParams(BaseModel):
     text: str
+    sync_account_pool: bool = Field(True, validation_alias=AliasChoices("sync_account_pool", "syncAccountPool"))
 
 
 class MailAccountUpsertParams(BaseModel):
@@ -405,15 +406,31 @@ def create_mail_accounts_router() -> APIRouter:
             imported_emails = list(result.get("emails") or [])
             sync_result = (
                 mail_accounts.sync_mail_accounts_to_account_pool(imported_emails)
-                if imported_emails
+                if params.sync_account_pool and imported_emails
                 else {"synced": 0, "emails": [], "skipped": []}
             )
             pool_status = mail_accounts.mailcom_pool_status()
+            synced_emails = {
+                str(email or "").strip().lower()
+                for email in (sync_result.get("emails") or [])
+                if str(email or "").strip()
+            }
+            login_emails = []
+            for item in pool_status.get("items") or []:
+                email = str((item or {}).get("email") or "").strip().lower()
+                if not email or email not in synced_emails:
+                    continue
+                if str((item or {}).get("status") or "").strip().lower() != "enabled":
+                    continue
+                if str((item or {}).get("auth_session_status") or "").strip().lower() == "ready":
+                    continue
+                login_emails.append(email)
             return {
                 **result,
                 **_response(mail_accounts.list_mail_accounts()),
                 "synced_account_pool": sync_result,
                 "pool_status": pool_status,
+                "login_emails": login_emails,
             }
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

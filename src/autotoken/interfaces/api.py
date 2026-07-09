@@ -89,6 +89,7 @@ from autotoken.api_routes.gopay_pro_tasks import (
 from autotoken.api_routes.gopay_pro_tasks import (
     create_gopay_pro_tasks_router,
 )
+from autotoken.api_routes.ideal_link import create_ideal_link_router
 from autotoken.api_routes.interactive_login import (
     AdminCodeParams as _AdminCodeParams,
 )
@@ -1144,6 +1145,7 @@ app.include_router(create_card_pool_router())
 app.include_router(create_register_domain_router())
 app.include_router(create_trade_router())
 app.include_router(create_whatsapp_otp_router())
+app.include_router(create_ideal_link_router())
 
 
 def _normalize_gopay_runtime_concurrency(value: int | str | None, default: int = 1) -> int:

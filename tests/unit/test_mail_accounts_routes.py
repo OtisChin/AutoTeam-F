@@ -263,6 +263,69 @@ def test_mail_accounts_import_syncs_account_pool_and_returns_pool_status(monkeyp
     assert captured["emails"] == ["one@mail.com"]
 
 
+def test_mail_accounts_import_returns_login_emails_for_synced_enabled_accounts_without_auth_session(monkeypatch):
+    app = _app()
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.import_mail_accounts",
+        lambda text: {"imported": 1, "skipped": 0, "total": 1, "emails": ["oldformat@mail.com"]},
+    )
+    monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "oldformat@mail.com"}])
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
+        lambda emails=None: {"synced": 1, "emails": list(emails or []), "skipped": []},
+    )
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.mailcom_pool_status",
+        lambda: {
+            "total": 1,
+            "auth_session_ready": 0,
+            "items": [
+                {
+                    "email": "oldformat@mail.com",
+                    "status": "enabled",
+                    "auth_session_status": "missing",
+                }
+            ],
+        },
+    )
+
+    result = _endpoint(app, "/api/mail-accounts/import", "POST")(
+        MailAccountImportParams(text="oldformat@mail.com----gpt-pass----mail-pass----rt-token")
+    )
+
+    assert result["login_emails"] == ["oldformat@mail.com"]
+
+
+def test_mail_accounts_import_can_skip_dashboard_account_pool_sync(monkeypatch):
+    app = _app()
+    sync_calls = []
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.import_mail_accounts",
+        lambda text: {"imported": 1, "skipped": 0, "total": 1, "emails": ["poolonly@mail.com"]},
+    )
+    monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "poolonly@mail.com"}])
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
+        lambda emails=None: sync_calls.append(list(emails or [])) or {"synced": 1, "emails": list(emails or []), "skipped": []},
+    )
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.mailcom_pool_status",
+        lambda: {"total": 1, "auth_session_ready": 0, "items": [{"email": "poolonly@mail.com"}]},
+    )
+
+    result = _endpoint(app, "/api/mail-accounts/import", "POST")(
+        MailAccountImportParams(
+            text="poolonly@mail.com----mail-pass",
+            sync_account_pool=False,
+        )
+    )
+
+    assert result["imported"] == 1
+    assert result["synced_account_pool"] == {"synced": 0, "emails": [], "skipped": []}
+    assert result["login_emails"] == []
+    assert sync_calls == []
+
+
 def test_mail_accounts_pool_status_and_sync_routes(monkeypatch):
     app = _app()
     monkeypatch.setattr(

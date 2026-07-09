@@ -27,7 +27,45 @@ def test_import_mail_accounts_persists_rows_in_sqlite(monkeypatch, tmp_path):
     assert rows[0]["check_status"] == "unchecked"
 
 
-def test_import_mail_accounts_requires_exactly_four_nonempty_fields(monkeypatch, tmp_path):
+def test_import_mail_accounts_accepts_three_part_mail_password_then_gpt_password(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
+
+    result = mail_accounts.import_mail_accounts(
+        "udvmfgzbdgvww@mail.com----od7Uruke0wT9----1cbl3l9t.qmD"
+    )
+
+    assert result == {
+        "imported": 1,
+        "skipped": 0,
+        "total": 1,
+        "emails": ["udvmfgzbdgvww@mail.com"],
+    }
+    rows = mail_accounts.list_mail_accounts()
+    assert rows[0]["email"] == "udvmfgzbdgvww@mail.com"
+    assert rows[0]["mail_password"] == "od7Uruke0wT9"
+    assert rows[0]["gpt_password"] == "1cbl3l9t.qmD"
+    assert rows[0]["refresh_token"] == ""
+
+
+def test_import_mail_accounts_accepts_two_part_registration_mailbox(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
+
+    result = mail_accounts.import_mail_accounts("pool@mail.com----mail-pass-only")
+
+    assert result == {
+        "imported": 1,
+        "skipped": 0,
+        "total": 1,
+        "emails": ["pool@mail.com"],
+    }
+    rows = mail_accounts.list_mail_accounts()
+    assert rows[0]["email"] == "pool@mail.com"
+    assert rows[0]["mail_password"] == "mail-pass-only"
+    assert rows[0]["gpt_password"] == ""
+    assert rows[0]["refresh_token"] == ""
+
+
+def test_import_mail_accounts_accepts_three_or_four_nonempty_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
 
     result = mail_accounts.import_mail_accounts(

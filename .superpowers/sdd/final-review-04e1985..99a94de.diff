@@ -1,0 +1,1961 @@
+# Review package: 04e1985..99a94de
+
+## Commits
+99a94de chore: untrack sdd scratch reports
+90c5e29 chore: keep existing sdd reports unchanged for task diff
+1a09402 fix: remove unrelated task artifacts
+d103370 fix: harden mailcom pool import gating
+84d65bc fix: restore luckmail register pool logic
+442a410 feat: add mailcom pool UI
+304d918 fix: complete provider sync call sites
+3209fff feat: sync mailcom registration status
+f485beb test(mail-accounts): isolate import route dependencies
+ccb8c3c feat: expose mailcom pool APIs
+b57c7d6 feat: add mailcom mail provider
+
+## Files changed
+ src/autotoken/api_routes/account_register_task.py |   2 +-
+ src/autotoken/api_routes/mail_accounts.py         |  23 +-
+ src/autotoken/interfaces/manager.py               |  70 +++-
+ src/autotoken/mail/__init__.py                    |   8 +-
+ src/autotoken/mail/mailcom.py                     | 118 ++++++
+ src/autotoken/settings/setup_wizard.py            |  16 +-
+ src/autotoken/storage/mail_accounts.py            | 153 ++++++-
+ tests/unit/test_account_register_task_routes.py   |  20 +
+ tests/unit/test_mail_accounts.py                  |  98 +++++
+ tests/unit/test_mail_accounts_routes.py           |  46 +++
+ tests/unit/test_mailcom_mail.py                   |  69 ++++
+ tests/unit/test_manager_mailcom_sync.py           | 122 ++++++
+ web/src/api.js                                    |   2 +
+ web/src/components/RegisterAccountPage.vue        | 473 +++++++++++++++++++++-
+ 14 files changed, 1199 insertions(+), 21 deletions(-)
+
+## Diff
+diff --git a/src/autotoken/api_routes/account_register_task.py b/src/autotoken/api_routes/account_register_task.py
+index 8540f49..6c18e59 100644
+--- a/src/autotoken/api_routes/account_register_task.py
++++ b/src/autotoken/api_routes/account_register_task.py
+@@ -159,21 +159,21 @@ def create_account_register_task_router(
+             logger.info(
+                 "[注册账号] OAuth 接码参数: provider=oasis cdk_pool=%s",
+                 "task_inline" if oauth_oasis_sms_cdks else "configured",
+             )
+         if mode not in ("single", "batch"):
+             raise HTTPException(status_code=400, detail="mode 只支持 single 或 batch")
+         if jitter_min_seconds > jitter_max_seconds:
+             raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
+ 
+         configured_domains = get_register_domains()
+-        domain_required = mail_provider not in {"luckmail", "outlook"} and not phone_only
++        domain_required = mail_provider not in {"luckmail", "outlook", "mail.com"} and not phone_only
+ 
+         def _clean_domain(value) -> str:
+             return str(value or "").strip().lstrip("@").strip()
+ 
+         def _validate_domain(value: str):
+             if configured_domains and value not in configured_domains:
+                 raise HTTPException(status_code=400, detail=f"域名 @{value} 不在可选列表中")
+ 
+         selected_domain = _clean_domain(params.domain)
+         selected_domains = []
+diff --git a/src/autotoken/api_routes/mail_accounts.py b/src/autotoken/api_routes/mail_accounts.py
+index 07c735a..71bc147 100644
+--- a/src/autotoken/api_routes/mail_accounts.py
++++ b/src/autotoken/api_routes/mail_accounts.py
+@@ -395,24 +395,45 @@ def create_mail_accounts_router() -> APIRouter:
+         from autotoken.storage import mail_accounts
+ 
+         try:
+             validate_text_payload_limits(
+                 params.text,
+                 max_bytes=MAIL_ACCOUNTS_IMPORT_MAX_BYTES,
+                 max_lines=MAIL_ACCOUNTS_IMPORT_MAX_LINES,
+                 label="mail邮箱导入",
+             )
+             result = mail_accounts.import_mail_accounts(params.text)
+-            return {**result, **_response(mail_accounts.list_mail_accounts())}
++            sync_result = mail_accounts.sync_mail_accounts_to_account_pool()
++            pool_status = mail_accounts.mailcom_pool_status()
++            return {
++                **result,
++                **_response(mail_accounts.list_mail_accounts()),
++                "synced_account_pool": sync_result,
++                "pool_status": pool_status,
++            }
+         except ValueError as exc:
+             raise HTTPException(status_code=400, detail=str(exc)) from exc
+ 
++    @router.get("/api/mail-accounts/pool-status")
++    def get_mail_accounts_pool_status():
++        from autotoken.storage import mail_accounts
++
++        return mail_accounts.mailcom_pool_status()
++
++    @router.post("/api/mail-accounts/sync-account-pool")
++    def post_mail_accounts_sync_account_pool(params: MailAccountBatchParams):
++        from autotoken.storage import mail_accounts
++
++        _validate_batch(params.emails)
++        emails = params.emails or None
++        return mail_accounts.sync_mail_accounts_to_account_pool(emails)
++
+     @router.post("/api/mail-accounts")
+     def post_mail_account(params: MailAccountUpsertParams):
+         from autotoken.storage import mail_accounts
+ 
+         try:
+             return mail_accounts.upsert_mail_account(params.model_dump())
+         except ValueError as exc:
+             raise HTTPException(status_code=400, detail=str(exc)) from exc
+ 
+     @router.put("/api/mail-accounts/{email}")
+diff --git a/src/autotoken/interfaces/manager.py b/src/autotoken/interfaces/manager.py
+index 492a9af..323ad32 100644
+--- a/src/autotoken/interfaces/manager.py
++++ b/src/autotoken/interfaces/manager.py
+@@ -203,30 +203,55 @@ def wrap_mail_client_with_auth_retry(mail_client, *, log_prefix: str = "注册
+ 
+ 
+ def _mail_client_provider_name(mail_client) -> str:
+     provider = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
+     if provider:
+         return provider
+     inner = getattr(mail_client, "_inner", None)
+     return str(getattr(inner, "provider_name", "") or "").strip().lower()
+ 
+ 
+-def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
++def _sync_provider_registered_email(
++    email: str,
++    mail_client=None,
++    *,
++    mail_provider: str | None = None,
++    password: str = "",
++    refresh_token: str = "",
++    source: str = "",
++) -> None:
+     provider = (mail_provider or _mail_client_provider_name(mail_client)).strip().lower() if (mail_provider or mail_client) else ""
+-    if provider != "outlook":
++    if provider == "outlook":
++        try:
++            from autotoken.storage.outlook_pool import mark_registered_email
++
++            mark_registered_email(email, source=source)
++        except Exception as exc:
++            logger.debug("[outlook] 标记已注册邮箱失败: %s", exc, exc_info=True)
+         return
+-    try:
+-        from autotoken.storage.outlook_pool import mark_registered_email
++    if provider in {"mail.com", "mailcom", "mail_com"}:
++        try:
++            from autotoken.storage.mail_accounts import mark_mailcom_registered
+ 
+-        mark_registered_email(email, source=source or "register_success")
+-    except Exception:
+-        logger.debug("[outlook] 写入 Outlook 邮箱池持久注册状态失败: %s", email, exc_info=True)
++            mark_mailcom_registered(
++                email,
++                gpt_password=password,
++                refresh_token=refresh_token,
++                source=source,
++            )
++        except Exception as exc:
++            logger.debug("[mail.com] 标记已注册邮箱失败: %s", exc, exc_info=True)
++        return
++
++
++def _mark_outlook_email_registered(email: str, mail_client=None, *, mail_provider: str | None = None, source: str = "") -> None:
++    _sync_provider_registered_email(email, mail_client, mail_provider=mail_provider, source=source)
+ 
+ 
+ def _direct_register_code_timeout(mail_client, email: str | None = None) -> int:
+     provider_name = _mail_client_provider_name(mail_client)
+     if provider_name == "outlook":
+         return max(5, OUTLOOK_REGISTER_CODE_TIMEOUT)
+     return MAIL_TIMEOUT
+ 
+ 
+ def _get_account_login_provider(acc: dict | None) -> str:
+@@ -1845,21 +1870,26 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
+         return None
+ 
+     auth_file = save_auth_session(email, data)
+     add_account(
+         email,
+         password,
+         cloudmail_account_id=cloudmail_account_id,
+         seat_type=SEAT_CODEX,
+         mail_provider=mail_provider,
+     )
+-    _mark_outlook_email_registered(email, mail_provider=mail_provider, source="auth_session_saved")
++    _sync_provider_registered_email(
++        email,
++        mail_provider=mail_provider,
++        password=password,
++        source="auth_session_saved",
++    )
+     logger.info("[注册] auth_session 已保存: %s", auth_file)
+     update_account(email, **registration.auth_session_update_fields(last_active_at=time.time()))
+     logger.info("[注册] 已通过 /api/auth/session 写入 auth_session 成功: %s", email)
+     _record_outcome(
+         "success",
+         plan="free",
+         auth_file=auth_file,
+         source="auth_session",
+         password=password,
+         cloudmail_account_id=cloudmail_account_id,
+@@ -1941,21 +1971,27 @@ def _save_codex_oauth_bundle_for_account(
+     seat_type = registration.team_success_seat_label(plan_type)
+     auth_file = save_auth_file(bundle)
+ 
+     add_account(
+         email,
+         password,
+         cloudmail_account_id=cloudmail_account_id,
+         seat_type=seat_type,
+         mail_provider=mail_provider,
+     )
+-    _mark_outlook_email_registered(email, mail_provider=mail_provider, source=source)
++    _sync_provider_registered_email(
++        email,
++        mail_provider=mail_provider,
++        password=password,
++        refresh_token=str(bundle.get("refresh_token") or ""),
++        source=source,
++    )
+     update_account(email, **registration.free_codex_oauth_update_fields(auth_file=auth_file, last_active_at=time.time()))
+     logger.info("[注册] 协议 Codex OAuth 已保存 CPA JSON: %s plan=%s auth_file=%s", email, plan_type, auth_file)
+     _record_outcome(
+         "success",
+         plan=plan_type,
+         auth_file=auth_file,
+         source=source,
+         password=password,
+         cloudmail_account_id=cloudmail_account_id,
+         mail_provider=mail_provider,
+@@ -3532,21 +3568,26 @@ def create_account_direct(
+                     "phone_blocked",
+                     f"add-phone 手机验证（step={blocked.step}）",
+                     step=blocked.step,
+                     register_attempts=register_attempts,
+                     duplicate_swaps=duplicate_swaps,
+                 )
+                 _record_outcome("phone_blocked", reason=f"add-phone 手机验证 step={blocked.step}", step=blocked.step)
+                 return None
+             if blocked.is_duplicate:
+                 # 邮箱重复 → 换一个全新的临时邮箱再来，不计入 register_attempts
+-                _mark_outlook_email_registered(email, mail_client, source="email_already_in_use")
++                _sync_provider_registered_email(
++                    email,
++                    mail_client,
++                    password=password,
++                    source="email_already_in_use",
++                )
+                 duplicate_swaps += 1
+                 if duplicate_swaps > MAX_DUPLICATE_SWAPS:
+                     logger.error("[直接注册] duplicate 换邮箱已达上限 %d，放弃", MAX_DUPLICATE_SWAPS)
+                     _discard_email("duplicate_exhausted")
+                     record_failure(
+                         email,
+                         "duplicate_exhausted",
+                         f"duplicate 换邮箱已达上限 {MAX_DUPLICATE_SWAPS}",
+                         duplicate_swaps=duplicate_swaps,
+                     )
+@@ -3609,21 +3650,26 @@ def create_account_direct(
+             raise
+ 
+         # 只有真正走完 _register_direct_once 的一次（无论成功失败）才消耗 register_attempts
+         register_attempts += 1
+ 
+         if not success and out_outcome is not None:
+             last_failure_reason = str(out_outcome.get("reason") or last_failure_reason or "")
+ 
+         if success:
+             _progress("register_chatgpt_success", f"ChatGPT 注册成功: {email}", email=email)
+-            _mark_outlook_email_registered(email, mail_client, source="register_success")
++            _sync_provider_registered_email(
++                email,
++                mail_client,
++                password=password,
++                source="register_success",
++            )
+             if not check_team_membership:
+                 try:
+                     logger.info("[注册] 独立注册成功，开始调用 /api/auth/session 保存 auth_session: %s", email)
+                     _progress("register_auth_session_fetch", f"正在保存 auth_session: {email}", email=email)
+                     session_auth = _save_auth_from_session_page(
+                         email,
+                         password,
+                         account_id,
+                         session_data,
+                         out_outcome=out_outcome,
+@@ -4658,21 +4704,21 @@ def cmd_register_accounts(
+                 progress["running"] += 1
+                 _emit_progress()
+ 
+             job_domain = random.choice(domain_pool) if domain_pool else selected_fallback_domain
+             if str(mail_provider or "").strip().lower() == "luckmail" and luckmail_domain_pool:
+                 job_domain = luckmail_domain_pool[job_index % len(luckmail_domain_pool)]
+             outcome = {}
+             provider_label = _mail_client_provider_name(mail_client) or str(mail_provider or "").strip().lower() or "default"
+             register_target = (
+                 f"provider={provider_label}"
+-                if provider_label in {"luckmail", "outlook"}
++                if provider_label in {"luckmail", "outlook", "mail.com"}
+                 else f"domain=@{job_domain or ''}"
+             )
+             logger.info(
+                 "[注册账号] worker-%d 开始第 %d/%d 个 %s",
+                 worker_id,
+                 job_index + 1,
+                 total,
+                 register_target,
+             )
+             try:
+diff --git a/src/autotoken/mail/__init__.py b/src/autotoken/mail/__init__.py
+index 99aeea8..5d00123 100644
+--- a/src/autotoken/mail/__init__.py
++++ b/src/autotoken/mail/__init__.py
+@@ -43,22 +43,28 @@ def get_mail_client() -> MailProvider:
+ 
+         return CloudflareTempEmailClient()
+     if raw in ("maillab", "cloud-mail", "cloud_mail"):
+         from autotoken.mail.cloud_mail import CloudMailProviderClient
+ 
+         return CloudMailProviderClient()
+     if raw in ("outlook", "microsoft_outlook", "hotmail"):
+         from autotoken.mail.outlook import OutlookMailProvider
+ 
+         return OutlookMailProvider()
++    if raw in ("mail.com", "mailcom", "mail_com"):
++        from autotoken.mail.mailcom import MailComMailProvider
++
++        return MailComMailProvider()
+     if raw in ("luckmail", "lucky_mail", "lucky-mail"):
+         from autotoken.mail.luckmail import LuckMailProvider
+ 
+         return LuckMailProvider()
+-    raise ValueError(f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | luckmail)")
++    raise ValueError(
++        f"未知 MAIL_PROVIDER={raw!r}(可选: cloudflare_temp_email | cloud-mail | outlook | mail.com | luckmail)"
++    )
+ 
+ 
+ # 对外统一后的首选名字。
+ TemporaryEmailClient = get_mail_client
+ 
+ # 历史兼容别名:已有调用继续可用。
+ CloudMailClient = get_mail_client
+diff --git a/src/autotoken/mail/mailcom.py b/src/autotoken/mail/mailcom.py
+new file mode 100644
+index 0000000..695bc3d
+--- /dev/null
++++ b/src/autotoken/mail/mailcom.py
+@@ -0,0 +1,118 @@
++"""mail.com account-pool mail provider backed by the local SQLite mail_accounts table."""
++
++from __future__ import annotations
++
++import logging
++import threading
++import time
++from typing import Any
++
++from autotoken.mail.base import MailProvider, normalize_email_addr
++
++logger = logging.getLogger(__name__)
++
++
++class MailComMailProvider(MailProvider):
++    provider_name = "mail.com"
++
++    def __init__(self):
++        self._reserved_emails: set[str] = set()
++        self._lock = threading.Lock()
++
++    def login(self) -> str:
++        from autotoken.storage import mail_accounts
++
++        total = len(mail_accounts.list_mail_accounts())
++        if total <= 0:
++            raise RuntimeError("mail.com provider 未导入账号。请先在注册账户页导入 mail.com 邮箱池")
++        logger.info("[mail.com] 已加载 %d 个 mail.com 账号", total)
++        return f"mail.com:{total}"
++
++    def create_temp_email(self, prefix: str | None = None, domain: str | None = None) -> tuple[int | str, str]:
++        requested_domain = str(domain or "").strip().lstrip("@").lower()
++        if requested_domain and requested_domain != "mail.com":
++            raise RuntimeError(f"mail.com provider 不支持 @{requested_domain} 域名")
++        from autotoken.storage import mail_accounts
++
++        with self._lock:
++            for account in mail_accounts.list_available_registration_accounts():
++                email = normalize_email_addr(account.get("email"))
++                if not email or email in self._reserved_emails:
++                    continue
++                self._reserved_emails.add(email)
++                logger.info("[mail.com] 选择注册邮箱: %s", email)
++                return email, email
++        raise RuntimeError("没有可用的 mail.com 账号可用于注册（可能都已注册、已禁用或缺少邮箱密码）")
++
++    def list_accounts(self, size: int = 200) -> list[dict]:
++        from autotoken.storage import mail_accounts
++
++        limit = max(1, int(size or 200))
++        return [
++            {
++                "id": row["email"],
++                "email": row["email"],
++                "accountEmail": row["email"],
++                "provider": self.provider_name,
++                "status": row.get("status"),
++                "check_status": row.get("check_status"),
++            }
++            for row in mail_accounts.list_mail_accounts()[:limit]
++        ]
++
++    def delete_account(self, account_id: int | str) -> dict:
++        email = normalize_email_addr(account_id)
++        with self._lock:
++            self._reserved_emails.discard(email)
++        return {"code": 0, "message": "mail.com account retained"}
++
++    def _resolve_account_id(self, value: int | str | None) -> str:
++        return normalize_email_addr(value)
++
++    def search_emails_by_recipient(
++        self, to_email: str, size: int = 10, account_id: int | str | None = None
++    ) -> list[dict]:
++        email = normalize_email_addr(account_id or to_email)
++        if not email:
++            return []
++        from autotoken.services.mailcom_webmail import fetch_mailcom_messages
++        from autotoken.storage import mail_accounts
++
++        account = mail_accounts.get_mail_account(email)
++        if not account:
++            logger.warning("[mail.com] 未找到收件人对应 mail.com 账号: %s", email)
++            return []
++        messages = fetch_mailcom_messages(account, size=max(1, int(size or 10)))
++        return [self._to_legacy_dict(account, message) for message in messages[:size]]
++
++    def list_emails(self, account_id: int | str, size: int = 10) -> list[dict]:
++        return self.search_emails_by_recipient(str(account_id), size=size, account_id=account_id)
++
++    def delete_emails_for(self, to_email: str) -> int:
++        logger.info("[mail.com] 暂不删除邮件: %s", to_email)
++        return 0
++
++    @staticmethod
++    def _to_legacy_dict(account: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
++        email = normalize_email_addr(account.get("email"))
++        created = message.get("createTime") or message.get("createdAt") or int(time.time())
++        try:
++            created_at = int(float(created))
++        except Exception:
++            created_at = int(time.time())
++        html = str(message.get("html") or message.get("content") or "")
++        text = str(message.get("text") or "")
++        return {
++            "id": str(message.get("id") or f"{email}:{created_at}"),
++            "accountId": email,
++            "email": email,
++            "toEmail": str(message.get("toEmail") or email),
++            "sendEmail": str(message.get("sendEmail") or message.get("from") or ""),
++            "subject": str(message.get("subject") or ""),
++            "text": text,
++            "html": html,
++            "content": html or text,
++            "createTime": created_at,
++            "createdAt": created_at,
++            "raw": message,
++        }
+diff --git a/src/autotoken/settings/setup_wizard.py b/src/autotoken/settings/setup_wizard.py
+index c34ed64..57c2095 100644
+--- a/src/autotoken/settings/setup_wizard.py
++++ b/src/autotoken/settings/setup_wizard.py
+@@ -24,20 +24,25 @@ MAIL_PROVIDER_OPTIONS = [
+     {
+         "value": "cloud-mail",
+         "label": "cloud-mail",
+         "description": "cloud-mail",
+     },
+     {
+         "value": "outlook",
+         "label": "Outlook",
+         "description": "Outlook/Hotmail 账号池注册",
+     },
++    {
++        "value": "mail.com",
++        "label": "mail.com",
++        "description": "mail.com SQLite 邮箱池注册",
++    },
+     {
+         "value": "luckmail",
+         "label": "LuckMail",
+         "description": "LuckMail 已购邮箱 token 接码",
+     },
+ ]
+ 
+ COMMON_SETUP_FIELDS = [
+     ("CPA_URL", "CPA (CLIProxyAPI) 地址（可选）", "", True),
+     ("CPA_KEY", "CPA 管理密钥（可选）", "", True),
+@@ -69,20 +74,21 @@ PROVIDER_SETUP_FIELDS = {
+         ("OUTLOOK_ACCOUNTS", "Outlook 账号池内联（email----password，每行/分号分隔）", "", True),
+         (
+             "OUTLOOK_DEFAULT_CLIENT_ID",
+             "Outlook OAuth 默认 Client ID（可选）",
+             "24d9a0ed-8787-4584-883c-2fd79308940a",
+             True,
+         ),
+         ("OUTLOOK_PROVIDER_PRIORITY", "Outlook 读取优先级", "imap_old,imap_new,graph_api", True),
+         ("OUTLOOK_PROXY_URL", "Outlook 邮件读取代理 URL（可选）", "", True),
+     ],
++    "mail.com": [],
+     "luckmail": [
+         ("LUCKMAIL_BASE_URL", "LuckMail API 地址", "https://mail.luckyous.com", True),
+         (
+             "LUCKMAIL_ACCOUNTS_FILE",
+             "LuckMail 已购邮箱文件路径（默认 data/luckmail_accounts.txt）",
+             "data/luckmail_accounts.txt",
+             True,
+         ),
+         ("LUCKMAIL_ACCOUNTS", "LuckMail 已购邮箱内联（email----tok_xxx，每行/分号分隔）", "", True),
+         ("LUCKMAIL_API_KEY", "LuckMail API Key（可选，用于自动购买邮箱）", "", True),
+@@ -149,20 +155,22 @@ def _verify_cpa_enabled() -> bool:
+ 
+ 
+ def get_mail_provider(raw: str | None = None) -> str:
+     provider = (raw or os.environ.get("MAIL_PROVIDER") or "cloudflare_temp_email").strip().lower()
+     if provider in ("cf_temp_email", "cloudflare_temp_email", ""):
+         return "cloudflare_temp_email"
+     if provider in ("maillab", "cloud-mail", "cloud_mail"):
+         return "cloud-mail"
+     if provider in ("outlook", "microsoft_outlook", "hotmail"):
+         return "outlook"
++    if provider in ("mail.com", "mailcom", "mail_com"):
++        return "mail.com"
+     if provider in ("luckmail", "lucky_mail", "lucky-mail"):
+         return "luckmail"
+     return provider
+ 
+ 
+ def get_required_configs_for_provider(provider: str | None = None):
+     normalized = get_mail_provider(provider)
+     return [
+         ("MAIL_PROVIDER", "Mail Provider", normalized or "cloudflare_temp_email", True),
+         *PROVIDER_SETUP_FIELDS.get(normalized, PROVIDER_SETUP_FIELDS["cloudflare_temp_email"]),
+@@ -393,33 +401,37 @@ def _verify_temporary_email():
+         label = "cloud-mail"
+     elif provider == "outlook":
+         accounts_file = os.environ.get("OUTLOOK_ACCOUNTS_FILE", "")
+         accounts_inline = os.environ.get("OUTLOOK_ACCOUNTS", "")
+         default_file = PROJECT_ROOT / "data" / "outlook_accounts.txt"
+         if not accounts_inline and not accounts_file and not default_file.exists():
+             return
+         check_keys = "OUTLOOK_ACCOUNTS_FILE 或 OUTLOOK_ACCOUNTS"
+         domain_key = "OUTLOOK_ACCOUNTS_FILE"
+         label = "outlook"
++    elif provider == "mail.com":
++        check_keys = "mail_accounts SQLite"
++        domain_key = "mail_accounts"
++        label = "mail.com"
+     elif provider == "luckmail":
+         accounts_file = os.environ.get("LUCKMAIL_ACCOUNTS_FILE", "")
+         accounts_inline = os.environ.get("LUCKMAIL_ACCOUNTS", "")
+         api_key = os.environ.get("LUCKMAIL_API_KEY", "")
+         default_file = PROJECT_ROOT / "data" / "luckmail_accounts.txt"
+         if not accounts_inline and not accounts_file and not default_file.exists() and not api_key:
+             return
+         check_keys = "LUCKMAIL_ACCOUNTS_FILE / LUCKMAIL_ACCOUNTS 或 LUCKMAIL_API_KEY"
+         domain_key = "LUCKMAIL_ACCOUNTS_FILE"
+         label = "luckmail"
+     else:
+         logger.error(
+-            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | luckmail",
++            "[验证] 未知 MAIL_PROVIDER=%s,可选: cloudflare_temp_email | cloud-mail | outlook | mail.com | luckmail",
+             provider,
+         )
+         return False
+ 
+     logger.info("[验证] %s 配置...", label)
+ 
+     # 启动前轻量协议嗅探:base_url 路由指纹与 MAIL_PROVIDER 不一致时提前提示,
+     # 避免用户看到"登录成功 → 创建失败"这种半成功假象(issue #1)。
+     _sniff_provider_mismatch(provider)
+ 
+@@ -427,21 +439,21 @@ def _verify_temporary_email():
+         from autotoken.mail import TemporaryEmailClient
+ 
+         client = TemporaryEmailClient()
+         client.login()
+         logger.info("[验证] %s 登录成功", label)
+     except Exception as e:
+         logger.error("[验证] %s 登录失败: %s", label, e)
+         logger.error("[验证] 请检查 %s", check_keys)
+         return False
+ 
+-    if provider in ("outlook", "luckmail"):
++    if provider in ("outlook", "mail.com", "luckmail"):
+         logger.info("[验证] %s 配置验证通过", label)
+         return True
+ 
+     test_account_id = None
+     try:
+         import uuid as _uuid
+ 
+         test_account_id, test_email = client.create_temp_email(prefix=f"at-test-{_uuid.uuid4().hex[:6]}")
+         logger.info("[验证] %s 创建测试邮箱成功: %s", label, test_email)
+     except Exception as e:
+diff --git a/src/autotoken/storage/mail_accounts.py b/src/autotoken/storage/mail_accounts.py
+index f5e3684..8ad6265 100644
+--- a/src/autotoken/storage/mail_accounts.py
++++ b/src/autotoken/storage/mail_accounts.py
+@@ -2,21 +2,21 @@
+ 
+ from __future__ import annotations
+ 
+ import sqlite3
+ import time
+ from collections.abc import Iterable
+ from typing import Any
+ 
+ from autotoken.core.normalization import normalized_email
+ from autotoken.core.redaction import mask_log_value
+-from autotoken.storage import sqlite_store
++from autotoken.storage import auth_session_store, sqlite_store
+ 
+ MAIL_ACCOUNT_STATUSES = {"enabled", "disabled"}
+ MAIL_ACCOUNT_CHECK_STATUSES = {"unchecked", "valid", "invalid", "error"}
+ 
+ 
+ def _connect() -> sqlite3.Connection:
+     sqlite_store.initialize()
+     conn = sqlite_store.connect()
+     conn.execute(
+         """
+@@ -297,20 +297,171 @@ def delete_mail_accounts(emails: Iterable[str]) -> dict[str, int]:
+     return {"deleted": deleted}
+ 
+ 
+ def clear_mail_accounts() -> dict[str, int]:
+     with _connect() as conn:
+         cur = conn.execute("DELETE FROM mail_accounts")
+         deleted = int(cur.rowcount or 0)
+     return {"deleted": deleted}
+ 
+ 
++def _account_pool_by_email() -> dict[str, dict[str, Any]]:
++    try:
++        from autotoken.storage.accounts import load_accounts
++
++        return {
++            normalized_email(account.get("email")): dict(account)
++            for account in load_accounts()
++            if normalized_email(account.get("email"))
++        }
++    except Exception:
++        return {}
++
++
++def _mailcom_registered_emails() -> set[str]:
++    emails = set(_account_pool_by_email().keys())
++    try:
++        from autotoken.storage.register_failures import list_failures
++
++        for failure in list_failures(500):
++            email = normalized_email(failure.get("email"))
++            if not email:
++                continue
++            category = str(failure.get("category") or "").strip().lower()
++            reason = str(failure.get("reason") or "").strip().lower()
++            if category == "email_already_in_use" or "email_already_in_use" in reason:
++                emails.add(email)
++    except Exception:
++        pass
++    return emails
++
++
++def list_available_registration_accounts() -> list[dict[str, Any]]:
++    registered = _mailcom_registered_emails()
++    rows = []
++    for row in list_mail_accounts():
++        email = normalized_email(row.get("email"))
++        if not email:
++            continue
++        if row.get("status") != "enabled":
++            continue
++        if email in registered:
++            continue
++        if not str(row.get("mail_password") or "").strip():
++            continue
++        rows.append(row)
++    return rows
++
++
++def sync_mail_accounts_to_account_pool(emails: Iterable[str] | None = None) -> dict[str, Any]:
++    selected = {email for email in (normalized_email(item) for item in emails or []) if email}
++    rows = [
++        row
++        for row in list_mail_accounts()
++        if not selected or normalized_email(row.get("email")) in selected
++    ]
++    from autotoken.storage.accounts import SEAT_CODEX, add_account, update_account
++
++    synced = []
++    skipped = []
++    for row in rows:
++        email = normalized_email(row.get("email"))
++        gpt_password = str(row.get("gpt_password") or "").strip()
++        if not email:
++            skipped.append({"email": str(row.get("email") or ""), "reason": "邮箱为空"})
++            continue
++        if not gpt_password:
++            skipped.append({"email": email, "reason": "GPT密码为空"})
++            continue
++        add_account(
++            email,
++            gpt_password,
++            cloudmail_account_id=email,
++            seat_type=SEAT_CODEX,
++            mail_provider="mail.com",
++        )
++        update_account(
++            email,
++            password=gpt_password,
++            cloudmail_account_id=email,
++            mail_provider="mail.com",
++        )
++        synced.append(email)
++    return {"synced": len(synced), "skipped": skipped, "emails": synced}
++
++
++def mailcom_pool_status() -> dict[str, Any]:
++    accounts_by_email = _account_pool_by_email()
++    items = []
++    for row in list_mail_accounts():
++        email = normalized_email(row.get("email"))
++        account = accounts_by_email.get(email or "")
++        auth_session_file = auth_session_store.get_auth_session_file(email) if email else ""
++        auth_ready = bool(auth_session_file)
++        account_status = "missing" if not account else str(account.get("status") or "pending")
++        item = {
++            **row,
++            "account_pool_status": account_status,
++            "auth_session_status": "ready" if auth_ready else "missing",
++            "auth_session_file": auth_session_file,
++            "pool_status": "disabled" if row.get("status") == "disabled" else ("ready" if auth_ready else "available"),
++        }
++        items.append(item)
++
++    available_items = [
++        item
++        for item in items
++        if item.get("status") == "enabled"
++        and item.get("auth_session_status") != "ready"
++        and str(item.get("mail_password") or "").strip()
++    ]
++    return {
++        "items": items,
++        "total": len(items),
++        "available": len(available_items),
++        "auth_session_ready": sum(1 for item in items if item.get("auth_session_status") == "ready"),
++        "not_logged_in": sum(1 for item in items if item.get("status") == "enabled" and item.get("auth_session_status") != "ready"),
++        "disabled": sum(1 for item in items if item.get("status") == "disabled"),
++        "login_failed": sum(1 for item in items if str(item.get("account_pool_status") or "") == "fail"),
++        "next_available_email": available_items[0]["email"] if available_items else "",
++    }
++
++
++def mark_mailcom_registered(
++    email: str,
++    *,
++    gpt_password: str = "",
++    refresh_token: str = "",
++    source: str = "",
++) -> dict[str, Any] | None:
++    current = get_mail_account(email)
++    if not current:
++        return None
++    note_parts = [part for part in [str(current.get("note") or "").strip(), f"已注册:{source or 'registered'}"] if part]
++    payload = {
++        **current,
++        "gpt_password": str(gpt_password or current.get("gpt_password") or "").strip(),
++        "refresh_token": str(refresh_token or current.get("refresh_token") or "").strip(),
++        "check_status": "valid",
++        "note": "；".join(dict.fromkeys(note_parts)),
++    }
++    updated = upsert_mail_account(payload)
++    update_check_result(
++        updated["email"],
++        check_status="valid",
++        access_token=str(updated.get("access_token") or ""),
++        refresh_token=str(updated.get("refresh_token") or ""),
++        error="",
++    )
++    return get_mail_account(updated["email"])
++
++
+ def export_mail_accounts() -> str:
+     lines = []
+     for row in list_mail_accounts():
+         lines.append(
+             "----".join(
+                 [
+                     row["email"],
+                     str(row.get("gpt_password") or ""),
+                     str(row.get("mail_password") or ""),
+                     str(row.get("refresh_token") or ""),
+diff --git a/tests/unit/test_account_register_task_routes.py b/tests/unit/test_account_register_task_routes.py
+index f7ffaa2..ab7d7d4 100644
+--- a/tests/unit/test_account_register_task_routes.py
++++ b/tests/unit/test_account_register_task_routes.py
+@@ -163,10 +163,30 @@ def test_post_add_requires_oasis_cdk_pool(monkeypatch):
+     monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+     monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+ 
+     routes = _routes([], oauth_env={})
+     with pytest.raises(HTTPException) as exc_info:
+         routes["post_add"](ManualRegisterParams(post_register_oauth=True, oauth_phone_sms_provider="oasis"))
+ 
+     assert exc_info.value.status_code == 400
+     assert exc_info.value.detail == "启用 Oasis 前需要先在设置页配置 CDK 池"
++
++
++def test_post_add_mailcom_does_not_require_register_domain(monkeypatch):
++    started = []
++    calls = []
++    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: [])
++    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "")
++    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
++    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "mail.com")
++    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
++
++    routes = _routes(started)
++    result = routes["post_add"](ManualRegisterParams(mail_provider="mail.com", domain="", domains=[]))
++
++    assert result["command"] == "register"
++    assert started[0]["params"]["domain"] == ""
++    assert started[0]["params"]["domains"] == []
++    assert started[0]["kwargs"]["mail_provider"] == "mail.com"
++    assert started[0]["func"]("task-register") == {"created": 1}
++    assert calls[0]["mail_provider"] == "mail.com"
+diff --git a/tests/unit/test_mail_accounts.py b/tests/unit/test_mail_accounts.py
+index c1e753b..4fcb3ec 100644
+--- a/tests/unit/test_mail_accounts.py
++++ b/tests/unit/test_mail_accounts.py
+@@ -70,10 +70,108 @@ def test_delete_and_clear_mail_accounts(monkeypatch, tmp_path):
+ 
+ def test_mail_account_validation_rejects_missing_required_values(monkeypatch, tmp_path):
+     monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
+ 
+     with pytest.raises(ValueError, match="邮箱不能为空"):
+         mail_accounts.upsert_mail_account({"email": "", "refresh_token": "rt"})
+     with pytest.raises(ValueError, match="refreshToken 不能为空"):
+         mail_accounts.upsert_mail_account({"email": "one@mail.com", "refresh_token": ""})
+     with pytest.raises(ValueError, match="只支持 @mail.com"):
+         mail_accounts.upsert_mail_account({"email": "one@outlook.com", "refresh_token": "rt"})
++
++
++def test_mailcom_pool_status_derives_account_pool_and_auth_session(monkeypatch, tmp_path):
++    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
++    mail_accounts.import_mail_accounts(
++        "ready@mail.com----gpt1----mail1----rt1\n"
++        "fresh@mail.com----gpt2----mail2----rt2\n"
++        "disabled@mail.com----gpt3----mail3----rt3\n"
++    )
++    mail_accounts.set_account_statuses(["disabled@mail.com"], "disabled")
++
++    monkeypatch.setattr(
++        "autotoken.storage.accounts.load_accounts",
++        lambda: [
++            {"email": "ready@mail.com", "status": "active", "mail_provider": "mail.com"},
++            {"email": "failed@mail.com", "status": "fail", "mail_provider": "mail.com"},
++        ],
++    )
++    monkeypatch.setattr(
++        "autotoken.storage.auth_session_store.get_auth_session_file",
++        lambda email: f"session/{email}.json" if email == "ready@mail.com" else "",
++    )
++
++    status = mail_accounts.mailcom_pool_status()
++
++    assert status["total"] == 3
++    assert status["available"] == 1
++    assert status["auth_session_ready"] == 1
++    assert status["not_logged_in"] == 1
++    assert status["disabled"] == 1
++    assert status["next_available_email"] == "fresh@mail.com"
++    by_email = {item["email"]: item for item in status["items"]}
++    assert by_email["ready@mail.com"]["auth_session_status"] == "ready"
++    assert by_email["fresh@mail.com"]["account_pool_status"] == "missing"
++
++
++def test_sync_mail_accounts_to_account_pool_creates_and_updates_managed_accounts(monkeypatch, tmp_path):
++    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
++    mail_accounts.import_mail_accounts("one@mail.com----gpt-pass----mail-pass----rt-one")
++    created = []
++    updated = []
++
++    monkeypatch.setattr("autotoken.storage.accounts.add_account", lambda *args, **kwargs: created.append((args, kwargs)))
++    monkeypatch.setattr(
++        "autotoken.storage.accounts.update_account",
++        lambda email, **kwargs: updated.append((email, kwargs)) or {"email": email, **kwargs},
++    )
++    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [])
++
++    result = mail_accounts.sync_mail_accounts_to_account_pool()
++
++    assert result["synced"] == 1
++    assert result["emails"] == ["one@mail.com"]
++    assert created[0][0] == ("one@mail.com", "gpt-pass")
++    assert created[0][1]["cloudmail_account_id"] == "one@mail.com"
++    assert created[0][1]["mail_provider"] == "mail.com"
++    assert updated[0] == (
++        "one@mail.com",
++        {
++            "password": "gpt-pass",
++            "cloudmail_account_id": "one@mail.com",
++            "mail_provider": "mail.com",
++        },
++    )
++
++
++def test_list_available_registration_accounts_skips_registered_disabled_and_missing_password(monkeypatch, tmp_path):
++    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
++    mail_accounts.import_mail_accounts(
++        "used@mail.com----gpt----mail----rt\n"
++        "fresh@mail.com----gpt----mail----rt\n"
++        "nomailpass@mail.com----gpt--------rt\n"
++        "disabled@mail.com----gpt----mail----rt\n"
++    )
++    mail_accounts.set_account_statuses(["disabled@mail.com"], "disabled")
++    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [{"email": "used@mail.com"}])
++
++    rows = mail_accounts.list_available_registration_accounts()
++
++    assert [row["email"] for row in rows] == ["fresh@mail.com"]
++
++
++def test_mark_mailcom_registered_updates_gpt_password_and_note(monkeypatch, tmp_path):
++    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "mail.sqlite3"))
++    mail_accounts.import_mail_accounts("one@mail.com----old-gpt----mail----rt-old")
++
++    updated = mail_accounts.mark_mailcom_registered(
++        "one@mail.com",
++        gpt_password="new-gpt",
++        refresh_token="rt-new",
++        source="auth_session_saved",
++    )
++
++    assert updated["email"] == "one@mail.com"
++    assert updated["gpt_password"] == "new-gpt"
++    assert updated["refresh_token"] == "rt-new"
++    assert updated["check_status"] == "valid"
++    assert "已注册" in updated["note"]
+diff --git a/tests/unit/test_mail_accounts_routes.py b/tests/unit/test_mail_accounts_routes.py
+index ffc315a..79f3da3 100644
+--- a/tests/unit/test_mail_accounts_routes.py
++++ b/tests/unit/test_mail_accounts_routes.py
+@@ -23,20 +23,28 @@ def _endpoint(app, path, method):
+             return route.endpoint
+     raise AssertionError(f"missing route {method} {path}")
+ 
+ 
+ def test_mail_account_routes_delegate_to_storage(monkeypatch):
+     app = _app()
+     calls = {}
+ 
+     monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
+     monkeypatch.setattr("autotoken.storage.mail_accounts.import_mail_accounts", lambda text: {"imported": 1, "text": text})
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
++        lambda emails=None: {"synced": len(emails or []), "emails": list(emails or []), "skipped": []},
++    )
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.mailcom_pool_status",
++        lambda: {"total": 1, "auth_session_ready": 0, "items": [{"email": "one@mail.com"}]},
++    )
+ 
+     def fake_upsert(payload):
+         calls["upsert"] = payload
+         return {"email": payload["email"]}
+ 
+     monkeypatch.setattr("autotoken.storage.mail_accounts.upsert_mail_account", fake_upsert)
+     monkeypatch.setattr("autotoken.storage.mail_accounts.update_mail_account", lambda email, payload: {"email": email, **payload})
+     monkeypatch.setattr("autotoken.storage.mail_accounts.delete_mail_accounts", lambda emails: {"deleted": len(emails)})
+     monkeypatch.setattr("autotoken.storage.mail_accounts.clear_mail_accounts", lambda: {"deleted": 2})
+     monkeypatch.setattr("autotoken.storage.mail_accounts.change_mail_passwords", lambda emails, password: {"updated": len(emails), "password": password})
+@@ -216,10 +224,48 @@ def test_fetch_mail_messages_uses_official_mailcom_web_login(monkeypatch):
+ def test_mail_account_check_missing_account_returns_404(monkeypatch):
+     app = _app()
+     monkeypatch.setattr("autotoken.storage.mail_accounts.get_mail_account", lambda _email: None)
+ 
+     try:
+         _endpoint(app, "/api/mail-accounts/check", "POST")(MailAccountBatchParams(emails=["missing@mail.com"]))
+     except HTTPException as exc:
+         assert exc.status_code == 404
+     else:
+         raise AssertionError("missing account check must fail")
++
++
++def test_mail_accounts_import_syncs_account_pool_and_returns_pool_status(monkeypatch):
++    app = _app()
++    monkeypatch.setattr("autotoken.storage.mail_accounts.import_mail_accounts", lambda text: {"imported": 1, "skipped": 0, "total": 1})
++    monkeypatch.setattr("autotoken.storage.mail_accounts.list_mail_accounts", lambda: [{"email": "one@mail.com"}])
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
++        lambda emails=None: {"synced": 1, "emails": ["one@mail.com"], "skipped": []},
++    )
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.mailcom_pool_status",
++        lambda: {"total": 1, "auth_session_ready": 0, "items": [{"email": "one@mail.com"}]},
++    )
++
++    result = _endpoint(app, "/api/mail-accounts/import", "POST")(MailAccountImportParams(text="one@mail.com----g----m----rt"))
++
++    assert result["imported"] == 1
++    assert result["synced_account_pool"]["synced"] == 1
++    assert result["pool_status"]["total"] == 1
++
++
++def test_mail_accounts_pool_status_and_sync_routes(monkeypatch):
++    app = _app()
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.mailcom_pool_status",
++        lambda: {"total": 2, "auth_session_ready": 1, "items": []},
++    )
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.sync_mail_accounts_to_account_pool",
++        lambda emails=None: {"synced": len(emails or []), "emails": list(emails or []), "skipped": []},
++    )
++
++    assert _endpoint(app, "/api/mail-accounts/pool-status", "GET")()["total"] == 2
++    synced = _endpoint(app, "/api/mail-accounts/sync-account-pool", "POST")(
++        MailAccountBatchParams(emails=["one@mail.com", "two@mail.com"])
++    )
++    assert synced["synced"] == 2
+diff --git a/tests/unit/test_mailcom_mail.py b/tests/unit/test_mailcom_mail.py
+new file mode 100644
+index 0000000..da27197
+--- /dev/null
++++ b/tests/unit/test_mailcom_mail.py
+@@ -0,0 +1,69 @@
++import pytest
++
++from autotoken.mail.mailcom import MailComMailProvider
++
++
++def test_mailcom_provider_selects_available_sqlite_account(monkeypatch):
++    provider = MailComMailProvider()
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.list_available_registration_accounts",
++        lambda: [
++            {
++                "email": "fresh@mail.com",
++                "gpt_password": "gpt-pass",
++                "mail_password": "mail-pass",
++                "refresh_token": "rt",
++            }
++        ],
++    )
++
++    account_id, email = provider.create_temp_email()
++
++    assert account_id == "fresh@mail.com"
++    assert email == "fresh@mail.com"
++    assert provider._resolve_account_id("fresh@mail.com") == "fresh@mail.com"
++
++
++def test_mailcom_provider_exhaustion_message(monkeypatch):
++    provider = MailComMailProvider()
++    monkeypatch.setattr("autotoken.storage.mail_accounts.list_available_registration_accounts", lambda: [])
++
++    with pytest.raises(RuntimeError, match="没有可用的 mail.com 账号"):
++        provider.create_temp_email()
++
++
++def test_mailcom_provider_fetches_messages_via_official_webmail(monkeypatch):
++    provider = MailComMailProvider()
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.get_mail_account",
++        lambda email: {"email": email, "mail_password": "mail-pass", "refresh_token": "rt"},
++    )
++    monkeypatch.setattr(
++        "autotoken.services.mailcom_webmail.fetch_mailcom_messages",
++        lambda account, size=10: [
++            {
++                "id": "m1",
++                "subject": "OpenAI code",
++                "sendEmail": "noreply@openai.com",
++                "toEmail": account["email"],
++                "text": "Your code is 123456",
++                "html": "",
++                "content": "Your code is 123456",
++                "createTime": 1710000000,
++                "createdAt": 1710000000,
++            }
++        ],
++    )
++
++    messages = provider.search_emails_by_recipient("fresh@mail.com", size=5)
++
++    assert messages[0]["accountId"] == "fresh@mail.com"
++    assert messages[0]["toEmail"] == "fresh@mail.com"
++    assert provider.extract_verification_code(messages[0]) == "123456"
++
++
++def test_factory_returns_mailcom_provider(monkeypatch):
++    monkeypatch.setenv("MAIL_PROVIDER", "mail.com")
++    from autotoken.mail import get_mail_client
++
++    assert isinstance(get_mail_client(), MailComMailProvider)
+diff --git a/tests/unit/test_manager_mailcom_sync.py b/tests/unit/test_manager_mailcom_sync.py
+new file mode 100644
+index 0000000..55cb0e7
+--- /dev/null
++++ b/tests/unit/test_manager_mailcom_sync.py
+@@ -0,0 +1,122 @@
++from autotoken.interfaces import manager
++
++
++def test_sync_provider_registered_email_marks_mailcom(monkeypatch):
++    calls = []
++    monkeypatch.setattr(
++        "autotoken.storage.mail_accounts.mark_mailcom_registered",
++        lambda email, **kwargs: calls.append((email, kwargs)) or {"email": email},
++    )
++
++    manager._sync_provider_registered_email(
++        "one@mail.com",
++        mail_provider="mail.com",
++        password="gpt-pass",
++        refresh_token="rt-new",
++        source="auth_session_saved",
++    )
++
++    assert calls == [
++        (
++            "one@mail.com",
++            {
++                "gpt_password": "gpt-pass",
++                "refresh_token": "rt-new",
++                "source": "auth_session_saved",
++            },
++        )
++    ]
++
++
++def test_sync_provider_registered_email_keeps_outlook_behavior(monkeypatch):
++    calls = []
++    monkeypatch.setattr(
++        "autotoken.storage.outlook_pool.mark_registered_email",
++        lambda email, source="": calls.append((email, source)),
++    )
++
++    manager._sync_provider_registered_email("one@outlook.com", mail_provider="outlook", source="register_success")
++
++    assert calls == [("one@outlook.com", "register_success")]
++
++
++def test_save_codex_oauth_bundle_uses_generic_sync_helper(monkeypatch):
++    sync_calls = []
++
++    monkeypatch.setattr(manager, "_mark_outlook_email_registered", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy wrapper should not be used")))
++    monkeypatch.setattr(
++        manager,
++        "_sync_provider_registered_email",
++        lambda *args, **kwargs: sync_calls.append((args, kwargs)),
++    )
++    monkeypatch.setattr(manager, "save_auth_file", lambda bundle: "data/auths/codex-one@mail.com-free.json")
++    monkeypatch.setattr(manager, "add_account", lambda *args, **kwargs: None)
++    monkeypatch.setattr(manager, "update_account", lambda *args, **kwargs: None)
++    monkeypatch.setattr(
++        manager.registration,
++        "free_codex_oauth_update_fields",
++        lambda **kwargs: kwargs,
++    )
++
++    manager._save_codex_oauth_bundle_for_account(
++        "one@mail.com",
++        "pw-1",
++        "mail-1",
++        {
++            "access_token": "access-1",
++            "refresh_token": "refresh-1",
++            "id_token": "id-1",
++        },
++        mail_provider="mail.com",
++        source="protocol_oauth",
++    )
++
++    assert sync_calls == [
++        (
++            ("one@mail.com",),
++            {
++                "mail_provider": "mail.com",
++                "password": "pw-1",
++                "refresh_token": "refresh-1",
++                "source": "protocol_oauth",
++            },
++        )
++    ]
++
++
++def test_duplicate_email_path_uses_generic_sync_helper(monkeypatch):
++    sync_calls = []
++    register_attempts = {"count": 0}
++
++    class FakeMailClient:
++        provider_name = "mail.com"
++
++        def create_registration_email(self, prefix=None, domain=None):
++            return ("mail-2", "first@mail.com") if not sync_calls else ("mail-3", "second@mail.com")
++
++    from autotoken.auth.invite import RegisterBlocked
++
++    monkeypatch.setattr(manager, "_mark_outlook_email_registered", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy wrapper should not be used")))
++    monkeypatch.setattr(
++        manager,
++        "_sync_provider_registered_email",
++        lambda *args, **kwargs: sync_calls.append((args, kwargs)),
++    )
++    monkeypatch.setattr(manager, "_save_auth_from_session_page", lambda email, *args, **kwargs: {"email": email})
++    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
++    monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
++
++    def fake_register_once(*args, **kwargs):
++        register_attempts["count"] += 1
++        if register_attempts["count"] == 1:
++            raise RegisterBlocked("email_submit", "duplicate email", is_duplicate=True)
++        return True, {"data": {"sessionToken": "session-1"}}
++
++    monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
++
++    result = manager.create_account_direct(FakeMailClient(), password="pw-2", check_team_membership=False)
++
++    assert result == {"email": "second@mail.com"}
++    assert sync_calls[0][0][0] == "first@mail.com"
++    assert sync_calls[0][0][1].provider_name == "mail.com"
++    assert sync_calls[0][1] == {"password": "pw-2", "source": "email_already_in_use"}
+diff --git a/web/src/api.js b/web/src/api.js
+index 12252da..fca331a 100644
+--- a/web/src/api.js
++++ b/web/src/api.js
+@@ -214,20 +214,22 @@ export const api = {
+   getOAuthPhonePool: () => request('GET', '/oauth-phone-pool'),
+   getOAuthPhoneRecords: (limit = 300) => request('GET', `/oauth-phone-records?limit=${encodeURIComponent(limit)}`),
+   importOAuthPhonePool: (text) => request('POST', '/oauth-phone-pool/import', { text }),
+   saveOAuthPhonePoolItem: (item) => item?.id
+     ? request('PUT', `/oauth-phone-pool/${encodeURIComponent(item.id)}`, item)
+     : request('POST', '/oauth-phone-pool', item),
+   deleteOAuthPhonePoolItems: (ids) => request('POST', '/oauth-phone-pool/delete', { ids }),
+ 
+   getMailAccounts: () => request('GET', '/mail-accounts'),
+   importMailAccounts: (text) => request('POST', '/mail-accounts/import', { text }),
++  getMailAccountsPoolStatus: () => request('GET', '/mail-accounts/pool-status'),
++  syncMailAccountsToAccountPool: (emails = []) => request('POST', '/mail-accounts/sync-account-pool', { emails }),
+   saveMailAccount: (item, originalEmail = '') => originalEmail
+     ? request('PUT', `/mail-accounts/${encodeURIComponent(originalEmail)}`, item)
+     : request('POST', '/mail-accounts', item),
+   deleteMailAccounts: (emails) => request('POST', '/mail-accounts/delete', { emails }),
+   clearMailAccounts: () => request('POST', '/mail-accounts/clear'),
+   checkMailAccounts: (emails) => request('POST', '/mail-accounts/check', { emails }),
+   fetchMailAccounts: (emails) => request('POST', '/mail-accounts/fetch', { emails }),
+   updateMailAccountStatus: (emails, status) => request('POST', '/mail-accounts/status', { emails, status }),
+   updateMailAccountNote: (emails, note) => request('POST', '/mail-accounts/note', { emails, note }),
+   changeMailAccountPassword: (emails, newPassword) => request('POST', '/mail-accounts/change-password', { emails, newPassword }),
+diff --git a/web/src/components/RegisterAccountPage.vue b/web/src/components/RegisterAccountPage.vue
+index b4d423a..c58f4d7 100644
+--- a/web/src/components/RegisterAccountPage.vue
++++ b/web/src/components/RegisterAccountPage.vue
+@@ -385,20 +385,64 @@
+               <div class="mt-2 text-xs text-gray-500">
+                 下一个可用邮箱：
+                 <span class="font-mono text-gray-300">{{ outlookPoolStatus.next_available_email || '无' }}</span>
+               </div>
+             </div>
+             <div v-else-if="outlookPoolError" class="text-xs text-red-300">
+               {{ outlookPoolError }}
+             </div>
+           </div>
+ 
++          <div v-if="isMailComProvider" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 space-y-3">
++            <div class="flex items-start justify-between gap-3">
++              <div>
++                <div class="text-sm font-medium text-white">mail.com 邮箱池</div>
++                <div class="mt-1 text-xs text-gray-500">导入后会同步账号池，并自动启动 ChatGPT 登录获取 auth_session。</div>
++              </div>
++              <div class="flex flex-wrap justify-end gap-2">
++                <button
++                  type="button"
++                  @click="loadMailComPoolStatus"
++                  :disabled="mailComPoolLoading"
++                  class="px-3 py-1.5 rounded-lg text-xs border bg-gray-900 hover:bg-gray-800 text-gray-300 border-gray-700 transition disabled:opacity-50">
++                  {{ mailComPoolLoading ? '刷新中...' : '刷新状态' }}
++                </button>
++                <button
++                  type="button"
++                  @click="openMailComImportDialog"
++                  class="px-3 py-1.5 rounded-lg text-xs border bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/30 transition">
++                  导入邮箱
++                </button>
++                <button
++                  type="button"
++                  @click="openMailComPoolDialog"
++                  class="px-3 py-1.5 rounded-lg text-xs border bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/30 transition">
++                  管理邮箱池
++                </button>
++              </div>
++            </div>
++            <div v-if="mailComPoolStatus" class="border-y border-gray-800 py-3">
++              <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
++                <div><div class="text-[11px] text-gray-500">邮箱池</div><div class="mt-0.5 text-sm font-medium text-white">{{ mailComPoolStatus.total }}</div></div>
++                <div><div class="text-[11px] text-gray-500">可用</div><div class="mt-0.5 text-sm font-medium text-emerald-300">{{ mailComPoolStatus.available }}</div></div>
++                <div><div class="text-[11px] text-gray-500">auth_session</div><div class="mt-0.5 text-sm font-medium text-blue-300">{{ mailComPoolStatus.auth_session_ready }}</div></div>
++                <div><div class="text-[11px] text-gray-500">未登录</div><div class="mt-0.5 text-sm font-medium text-amber-300">{{ mailComPoolStatus.not_logged_in }}</div></div>
++                <div><div class="text-[11px] text-gray-500">失败</div><div class="mt-0.5 text-sm font-medium text-red-300">{{ mailComPoolStatus.login_failed }}</div></div>
++              </div>
++              <div class="mt-2 text-xs text-gray-500">
++                下一个可用邮箱：
++                <span class="font-mono text-gray-300">{{ mailComPoolStatus.next_available_email || '无' }}</span>
++              </div>
++            </div>
++            <div v-else-if="mailComPoolError" class="text-xs text-red-300">{{ mailComPoolError }}</div>
++          </div>
++
+           <div v-if="registerProviderUsesDomains">
+             <label class="block text-sm text-gray-400 mb-1">注册域名</label>
+             <select
+               v-if="registerForm.mode === 'single'"
+               v-model="registerForm.domain"
+               :disabled="registeringBusy || !registerDomainOptions.length"
+               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+             >
+               <option v-for="domain in registerDomainOptions" :key="domain" :value="domain">
+                 @{{ domain }}
+@@ -746,20 +790,207 @@
+             </div>
+           </div>
+           <div v-else-if="!outlookPoolLoading" class="px-5 py-8 text-center text-sm text-gray-500">
+             邮箱池暂无记录
+           </div>
+         </div>
+       </section>
+     </div>
+   </Teleport>
+ 
++  <Teleport to="body">
++    <div v-if="mailComPoolDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" @click.self="closeMailComPoolDialog">
++      <section
++        role="dialog"
++        aria-modal="true"
++        aria-labelledby="mailcom-pool-title"
++        class="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900 shadow-2xl"
++      >
++        <header class="flex shrink-0 items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
++          <div>
++            <h3 id="mailcom-pool-title" class="text-base font-semibold text-white">管理 mail.com 邮箱池</h3>
++            <p class="mt-1 text-xs text-gray-500">查看登录状态、auth_session 状态，并批量协议登录入池或删除记录。</p>
++          </div>
++          <div class="flex items-center gap-2">
++            <button
++              type="button"
++              :disabled="mailComPoolLoading || mailComPoolDeleting || mailComPoolLoginBusy"
++              class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
++              @click="loadMailComPoolStatus"
++            >
++              {{ mailComPoolLoading ? '刷新中...' : '刷新' }}
++            </button>
++            <button
++              type="button"
++              :disabled="mailComPoolDeleting || mailComPoolLoginBusy"
++              class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-50"
++              @click="closeMailComPoolDialog"
++            >
++              关闭
++            </button>
++          </div>
++        </header>
++
++        <div class="min-h-0 flex-1 overflow-y-auto">
++          <div v-if="mailComPoolStatus" class="grid grid-cols-2 border-b border-gray-800 sm:grid-cols-5">
++            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
++              <div class="text-xs text-gray-500">邮箱池</div>
++              <div class="mt-1 text-xl font-semibold text-white">{{ mailComPoolStatus.total }}</div>
++            </div>
++            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
++              <div class="text-xs text-gray-500">可用</div>
++              <div class="mt-1 text-xl font-semibold text-emerald-300">{{ mailComPoolStatus.available }}</div>
++            </div>
++            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
++              <div class="text-xs text-gray-500">auth_session</div>
++              <div class="mt-1 text-xl font-semibold text-blue-300">{{ mailComPoolStatus.auth_session_ready }}</div>
++            </div>
++            <div class="border-r border-gray-800 px-4 py-3 last:border-r-0">
++              <div class="text-xs text-gray-500">未登录</div>
++              <div class="mt-1 text-xl font-semibold text-amber-300">{{ mailComPoolStatus.not_logged_in }}</div>
++            </div>
++            <div class="px-4 py-3">
++              <div class="text-xs text-gray-500">失败</div>
++              <div class="mt-1 text-xl font-semibold text-red-300">{{ mailComPoolStatus.login_failed }}</div>
++            </div>
++          </div>
++
++          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-5 py-3">
++            <div class="min-w-0 text-xs text-gray-500">
++              下一个可用邮箱：
++              <span class="font-mono text-gray-300">{{ mailComPoolStatus?.next_available_email || '无' }}</span>
++            </div>
++            <div class="flex shrink-0 flex-wrap items-center gap-3">
++              <label class="inline-flex items-center gap-2 text-xs text-gray-400">
++                <input
++                  type="checkbox"
++                  :checked="mailComPoolAllVisibleSelected"
++                  :disabled="mailComPoolDeleting || mailComPoolLoginBusy || !mailComPoolVisibleEmails.length"
++                  class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
++                  @change="toggleMailComPoolVisible($event.target.checked)"
++                />
++                当前列表全选
++              </label>
++              <button
++                type="button"
++                :disabled="mailComPoolDeleting || mailComPoolLoginBusy || !mailComLoginCandidateEmails.length"
++                class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs text-blue-200 transition hover:bg-blue-500/20 disabled:opacity-50"
++                @click="loginSelectedMailComAccounts"
++              >
++                {{ mailComPoolLoginBusy ? '启动中...' : `登录并入池 / 重试 (${mailComLoginCandidateEmails.length})` }}
++              </button>
++              <button
++                type="button"
++                :disabled="mailComPoolDeleting || mailComPoolLoginBusy || mailComPoolSelectedCount === 0"
++                class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50"
++                @click="deleteSelectedMailComPoolEmails"
++              >
++                {{ mailComPoolDeleting ? '删除中...' : `删除所选 (${mailComPoolSelectedCount})` }}
++              </button>
++            </div>
++          </div>
++
++          <div v-if="mailComPoolError" class="mx-5 mt-4 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
++            {{ mailComPoolError }}
++          </div>
++
++          <div v-if="mailComPoolItems.length" class="overflow-x-auto">
++            <table class="min-w-full divide-y divide-gray-800 text-xs">
++              <thead class="bg-gray-950/40 text-left text-gray-500">
++                <tr>
++                  <th class="px-5 py-3">
++                    <input
++                      type="checkbox"
++                      :checked="mailComPoolAllVisibleSelected"
++                      :disabled="mailComPoolDeleting || mailComPoolLoginBusy || !mailComPoolVisibleEmails.length"
++                      class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
++                      @change="toggleMailComPoolVisible($event.target.checked)"
++                    />
++                  </th>
++                  <th class="px-5 py-3 font-medium">邮箱</th>
++                  <th class="px-5 py-3 font-medium">状态</th>
++                  <th class="px-5 py-3 font-medium">auth_session</th>
++                  <th class="px-5 py-3 font-medium">account_pool_status</th>
++                  <th class="px-5 py-3 font-medium">操作</th>
++                </tr>
++              </thead>
++              <tbody class="divide-y divide-gray-800">
++                <tr v-for="item in mailComPoolItems" :key="item.email" class="text-gray-300">
++                  <td class="px-5 py-3 align-middle">
++                    <input
++                      type="checkbox"
++                      :checked="mailComPoolSelectedEmails.includes(normalizeMailComEmail(item.email))"
++                      :disabled="mailComPoolDeleting || mailComPoolLoginBusy"
++                      class="h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-500 focus:ring-blue-500"
++                      @change="toggleMailComPoolEmail(item.email, $event.target.checked)"
++                    />
++                  </td>
++                  <td class="px-5 py-3 align-middle font-mono">{{ item.email || '-' }}</td>
++                  <td class="px-5 py-3 align-middle">
++                    <span :class="item.login_status === 'failed' ? 'text-red-300' : item.login_status === 'ready' ? 'text-emerald-300' : 'text-amber-300'">
++                      {{ item.login_status || item.status || 'unknown' }}
++                    </span>
++                  </td>
++                  <td class="px-5 py-3 align-middle">
++                    <span :class="item.auth_session_status === 'ready' ? 'text-emerald-300' : 'text-gray-400'">
++                      {{ item.auth_session_status || 'missing' }}
++                    </span>
++                  </td>
++                  <td class="px-5 py-3 align-middle">
++                    <span :class="item.account_pool_status === 'synced' ? 'text-blue-300' : 'text-gray-400'">
++                      {{ item.account_pool_status || 'pending' }}
++                    </span>
++                  </td>
++                  <td class="px-5 py-3 align-middle">
++                    <button
++                      type="button"
++                      :disabled="mailComPoolDeleting || mailComPoolLoginBusy"
++                      class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-2.5 py-1 text-xs text-blue-200 transition hover:bg-blue-500/20 disabled:opacity-50"
++                      @click="mailComPoolSelectedEmails = item.email ? [normalizeMailComEmail(item.email)] : []; loginSelectedMailComAccounts()"
++                    >
++                      登录并入池/重试
++                    </button>
++                  </td>
++                </tr>
++              </tbody>
++            </table>
++          </div>
++          <div v-else-if="!mailComPoolLoading" class="px-5 py-8 text-center text-sm text-gray-500">
++            邮箱池暂无记录
++          </div>
++        </div>
++      </section>
++    </div>
++  </Teleport>
++
++  <Teleport to="body">
++    <div v-if="mailComImportDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
++      <div class="w-full max-w-3xl rounded-2xl border border-gray-800 bg-gray-950 p-5 shadow-2xl">
++        <div class="flex items-center justify-between">
++          <h3 class="text-lg font-semibold text-white">导入 mail.com 邮箱</h3>
++          <button type="button" class="text-gray-400 hover:text-white" @click="closeMailComImportDialog">×</button>
++        </div>
++        <p class="mt-2 text-xs text-gray-500">格式：邮箱----GPT密码----邮箱密码----refreshToken，每行一个。</p>
++        <textarea v-model="mailComImportContent" rows="10" spellcheck="false" class="mt-3 w-full rounded-lg border border-gray-700 bg-gray-900 p-3 font-mono text-xs text-gray-100 focus:border-blue-500 focus:outline-none"></textarea>
++        <div v-if="mailComImportResult" class="mt-3 rounded-lg px-3 py-2 text-xs" :class="mailComImportResultOk ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border border-red-500/20 bg-red-500/10 text-red-300'">
++          {{ mailComImportResult }}
++        </div>
++        <div class="mt-4 flex justify-end gap-2">
++          <button type="button" @click="closeMailComImportDialog" class="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800">取消</button>
++          <button type="button" @click="importMailComAccounts" :disabled="mailComPoolLoading" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500 disabled:opacity-50">
++            {{ mailComPoolLoading ? '导入中...' : '导入并登录入池' }}
++          </button>
++        </div>
++      </div>
++    </div>
++  </Teleport>
++
+   <Teleport to="body">
+     <div
+       v-if="outlookImportDialogOpen"
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+       @click.self="closeOutlookImportDialog"
+     >
+       <section
+         role="dialog"
+         aria-modal="true"
+         aria-labelledby="outlook-import-title"
+@@ -861,20 +1092,31 @@ const outlookImportFilename = ref('')
+ const outlookImporting = ref(false)
+ const outlookImportResult = ref('')
+ const outlookImportResultOk = ref(true)
+ const outlookImportDialogOpen = ref(false)
+ const outlookPoolDialogOpen = ref(false)
+ const outlookPoolLoading = ref(false)
+ const outlookPoolDeleting = ref(false)
+ const outlookPoolError = ref('')
+ const outlookPoolStatus = ref(null)
+ const outlookPoolSelectedEmails = ref([])
++const mailComPoolStatus = ref(null)
++const mailComPoolLoading = ref(false)
++const mailComPoolError = ref('')
++const mailComImportDialogOpen = ref(false)
++const mailComImportContent = ref('')
++const mailComImportResult = ref('')
++const mailComImportResultOk = ref(true)
++const mailComPoolDialogOpen = ref(false)
++const mailComPoolSelectedEmails = ref([])
++const mailComPoolDeleting = ref(false)
++const mailComPoolLoginBusy = ref(false)
+ const registerLogs = ref([])
+ const logsLoading = ref(false)
+ const logsContainer = ref(null)
+ const registerCancelBusy = ref(false)
+ const registerCancelRequested = ref(false)
+ const oauthPhoneSmsLoading = ref(false)
+ const oauthPhoneSmsCountriesLoading = ref(false)
+ const oauthPhoneSmsCountryError = ref('')
+ const oauthPhoneSmsCountrySearch = ref('')
+ const oauthPhoneSmsCountryDropdownOpen = ref(false)
+@@ -1008,44 +1250,48 @@ const selectedRegisterDomainsLabel = computed(() => {
+   if (domains.length <= 3) return domains.map(domain => `@${domain}`).join(' / ')
+   return `${domains.slice(0, 3).map(domain => `@${domain}`).join(' / ')} 等 ${domains.length} 个`
+ })
+ const registerAllDomainsSelected = computed(() => {
+   if (!registerDomainOptions.value.length) return false
+   const selected = new Set(selectedRegisterDomains.value)
+   return registerDomainOptions.value.every(domain => selected.has(domain))
+ })
+ const isLuckMailProvider = computed(() => registerForm.value.mailProvider === 'luckmail')
+ const isOutlookProvider = computed(() => registerForm.value.mailProvider === 'outlook')
++const isMailComProvider = computed(() => String(registerForm.value.mailProvider || '').trim().toLowerCase() === 'mail.com')
+ const isPhoneCpaFlow = computed(() => registerForm.value.registrationFlow === 'phone_cpa')
+-const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookProvider.value)
+-const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value)
++const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookProvider.value || isMailComProvider.value)
++const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value && !isPhoneCpaFlow.value)
+ const registerProviderPoolMessage = computed(() => {
++  if (isLuckMailProvider.value) return 'LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。'
+   if (isOutlookProvider.value) return 'Outlook 使用已配置的微软邮箱账号池，注册域名选择不参与本次任务。'
+-  return 'LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。'
++  if (isMailComProvider.value) return 'mail.com 邮箱池中选择'
++  return ''
+ })
+ const registerDomainSuffixLabel = computed(() => {
+   if (isLuckMailProvider.value) return '@LuckMail'
+   if (isOutlookProvider.value) return '@Outlook账号池'
+   if (registerForm.value.mode === 'batch') {
+     return selectedRegisterDomains.value.length
+       ? `@随机域名(${selectedRegisterDomains.value.length})`
+       : '@domain.com'
+   }
+   return `@${registerForm.value.domain || 'domain.com'}`
+ })
+ const registerPreviewEmail = computed(() => {
+   const prefix = registerForm.value.prefix ? `${registerForm.value.prefix}a8k3p` : '__random__'
+   const domain = registerForm.value.mode === 'batch'
+     ? (selectedRegisterDomains.value[0] || 'domain.com')
+     : (registerForm.value.domain || 'domain.com')
+   if (isLuckMailProvider.value) return 'LuckMail邮箱池中选择'
+   if (isOutlookProvider.value) return 'Outlook邮箱池中选择'
++  if (isMailComProvider.value) return 'mail.com邮箱池中选择'
+   return `${prefix}@${domain}`
+ })
+ const luckmailPurchaseLabel = computed(() => {
+   const emailType = registerForm.value.luckmailEmailType || 'ms_imap'
+   const preferredDomain = String(registerForm.value.luckmailPreferredDomain || '').trim().replace(/^@/, '')
+   const domain = preferredDomain ? `@${preferredDomain}` : '自动分配'
+   return `${emailType} / ${domain}`
+ })
+ const registerBehaviorLabel = computed(() => {
+   if (isPhoneCpaFlow.value) return '先用手机号注册 ChatGPT，再绑定当前邮件供应商邮箱并生成 OAuth 凭证'
+@@ -1113,20 +1359,38 @@ const outlookImportResultClass = computed(() => outlookImportResultOk.value
+   : 'bg-red-500/10 text-red-300 border-red-500/20')
+ const outlookPoolVisibleEmails = computed(() => (outlookPoolStatus.value?.accounts || []).map(account => account.email))
+ const outlookPoolSelectedSet = computed(() => new Set(outlookPoolSelectedEmails.value))
+ const outlookPoolSelectedCount = computed(() => outlookPoolSelectedEmails.value.length)
+ const outlookPoolAllVisibleSelected = computed(() => {
+   const emails = outlookPoolVisibleEmails.value
+   if (!emails.length) return false
+   const selected = outlookPoolSelectedSet.value
+   return emails.every(email => selected.has(email))
+ })
++const mailComPoolItems = computed(() => (
++  Array.isArray(mailComPoolStatus.value?.items)
++    ? mailComPoolStatus.value.items.filter(item => isMailComEmail(item?.email))
++    : []
++))
++const mailComPoolVisibleEmails = computed(() => mailComPoolItems.value.map(item => normalizeMailComEmail(item.email)).filter(Boolean))
++const mailComPoolSelectedCount = computed(() => mailComPoolSelectedEmails.value.length)
++const mailComPoolAllVisibleSelected = computed(() => {
++  const visible = mailComPoolVisibleEmails.value
++  return visible.length > 0 && visible.every(email => mailComPoolSelectedEmails.value.includes(email))
++})
++const mailComLoginCandidateEmails = computed(() => {
++  const selected = mailComPoolSelectedEmails.value.length ? mailComPoolSelectedEmails.value : mailComPoolVisibleEmails.value
++  const ready = new Set(mailComPoolItems.value
++    .filter(item => item.auth_session_status === 'ready')
++    .map(item => normalizeMailComEmail(item.email)))
++  return selected.filter(email => email && !ready.has(email))
++})
+ const canSubmitRegister = computed(() => {
+   if (!validBatchCount.value) return false
+   if (registerProviderUsesPool.value) return true
+   return registerForm.value.mode === 'batch'
+     ? selectedRegisterDomains.value.length > 0
+     : Boolean(registerForm.value.domain)
+ })
+ let logsTimer = null
+ let statsTimer = null
+ const statCards = computed(() => {
+@@ -1244,26 +1508,220 @@ function closeOutlookImportDialog() {
+ async function openOutlookPoolDialog() {
+   outlookPoolDialogOpen.value = true
+   await loadOutlookPoolStatus()
+ }
+ 
+ function closeOutlookPoolDialog() {
+   if (outlookPoolDeleting.value) return
+   outlookPoolDialogOpen.value = false
+ }
+ 
++function openMailComImportDialog() {
++  mailComImportDialogOpen.value = true
++  mailComImportResult.value = ''
++}
++
++function closeMailComImportDialog() {
++  if (mailComPoolLoading.value) return
++  mailComImportDialogOpen.value = false
++}
++
++function normalizeMailComEmail(email) {
++  return String(email || '').trim().toLowerCase()
++}
++
++function isMailComEmail(email) {
++  const normalized = normalizeMailComEmail(email)
++  return normalized.endsWith('@mail.com')
++}
++
++function parseMailComImportContent(content) {
++  const lines = String(content || '').split(/\r?\n/)
++  const emails = []
++  const invalidLines = []
++  const seen = new Set()
++  for (let index = 0; index < lines.length; index += 1) {
++    const line = String(lines[index] || '').trim()
++    if (!line) continue
++    const firstField = line.split('----')[0]?.trim() || ''
++    if (!isMailComEmail(firstField)) {
++      invalidLines.push({
++        lineNumber: index + 1,
++        email: firstField,
++      })
++      continue
++    }
++    const normalizedEmail = normalizeMailComEmail(firstField)
++    if (seen.has(normalizedEmail)) continue
++    seen.add(normalizedEmail)
++    emails.push(normalizedEmail)
++  }
++  return {
++    emails,
++    invalidLines,
++  }
++}
++
++async function loadMailComPoolStatus() {
++  if (!isMailComProvider.value || mailComPoolLoading.value) return
++  mailComPoolLoading.value = true
++  mailComPoolError.value = ''
++  try {
++    mailComPoolStatus.value = await api.getMailAccountsPoolStatus()
++    const visible = new Set(mailComPoolVisibleEmails.value)
++    mailComPoolSelectedEmails.value = mailComPoolSelectedEmails.value.filter(email => visible.has(email))
++  } catch (e) {
++    mailComPoolStatus.value = null
++    mailComPoolError.value = `读取 mail.com 邮箱池失败: ${e.message}`
++  } finally {
++    mailComPoolLoading.value = false
++  }
++}
++
++async function importMailComAccounts() {
++  if (mailComPoolLoading.value) return
++  const content = mailComImportContent.value.trim()
++  if (!content) {
++    mailComImportResult.value = '请先粘贴 mail.com 账号'
++    mailComImportResultOk.value = false
++    return
++  }
++  const { emails: parsedMailComEmails, invalidLines } = parseMailComImportContent(content)
++  if (invalidLines.length) {
++    const preview = invalidLines
++      .slice(0, 3)
++      .map(item => `第 ${item.lineNumber} 行: ${item.email || '(空邮箱)'}`)
++      .join('；')
++    const suffix = invalidLines.length > 3 ? `；另有 ${invalidLines.length - 3} 行` : ''
++    mailComImportResult.value = `仅支持导入 @mail.com 邮箱，请移除非 mail.com 行：${preview}${suffix}`
++    mailComImportResultOk.value = false
++    return
++  }
++  if (!parsedMailComEmails.length) {
++    mailComImportResult.value = '未解析到可导入的 @mail.com 邮箱'
++    mailComImportResultOk.value = false
++    return
++  }
++  mailComPoolLoading.value = true
++  mailComPoolError.value = ''
++  try {
++    const result = await api.importMailAccounts(content)
++    mailComPoolStatus.value = result.pool_status || await api.getMailAccountsPoolStatus()
++    let syncEmails = Array.isArray(result.synced_account_pool?.emails)
++      ? result.synced_account_pool.emails.map(normalizeMailComEmail).filter(isMailComEmail)
++      : []
++    if (!syncEmails.length) {
++      const syncResult = await api.syncMailAccountsToAccountPool(parsedMailComEmails)
++      syncEmails = Array.isArray(syncResult?.emails)
++        ? syncResult.emails.map(normalizeMailComEmail).filter(isMailComEmail)
++        : []
++    }
++    mailComImportResult.value = `导入完成：成功 ${result.imported || 0}，跳过 ${result.skipped || 0}，同步账号池 ${syncEmails.length} 个${syncEmails.length ? '，正在启动登录入池' : ''}`
++    mailComImportResultOk.value = true
++    if (syncEmails.length) {
++      await api.loginAccountsBatch(syncEmails, {
++        mail_provider: 'mail.com',
++        protocol_only: true,
++        bind_email: false,
++      })
++      emit('task-started')
++    }
++    const visible = new Set(mailComPoolVisibleEmails.value)
++    mailComPoolSelectedEmails.value = mailComPoolSelectedEmails.value.filter(email => visible.has(email))
++  } catch (e) {
++    mailComImportResult.value = `导入失败: ${e.message}`
++    mailComImportResultOk.value = false
++  } finally {
++    mailComPoolLoading.value = false
++  }
++  await loadMailComPoolStatus()
++}
++
++function openMailComPoolDialog() {
++  mailComPoolDialogOpen.value = true
++  loadMailComPoolStatus()
++}
++
++function closeMailComPoolDialog() {
++  if (mailComPoolDeleting.value || mailComPoolLoginBusy.value) return
++  mailComPoolDialogOpen.value = false
++}
++
++function toggleMailComPoolEmail(email, checked) {
++  const value = normalizeMailComEmail(email)
++  if (!value) return
++  const selected = new Set(mailComPoolSelectedEmails.value)
++  checked ? selected.add(value) : selected.delete(value)
++  mailComPoolSelectedEmails.value = Array.from(selected)
++}
++
++function toggleMailComPoolVisible(checked) {
++  const selected = new Set(mailComPoolSelectedEmails.value)
++  for (const email of mailComPoolVisibleEmails.value) {
++    checked ? selected.add(email) : selected.delete(email)
++  }
++  mailComPoolSelectedEmails.value = Array.from(selected)
++}
++
++async function loginSelectedMailComAccounts() {
++  if (mailComPoolLoginBusy.value) return
++  const emails = mailComLoginCandidateEmails.value
++  if (!emails.length) {
++    setMessage('没有需要登录入池的 mail.com 账号', false)
++    return
++  }
++  mailComPoolLoginBusy.value = true
++  try {
++    await api.syncMailAccountsToAccountPool(emails)
++    await api.loginAccountsBatch(emails, {
++      mail_provider: 'mail.com',
++      protocol_only: true,
++      bind_email: false,
++    })
++    emit('task-started')
++    setMessage(`已启动 ${emails.length} 个 mail.com 账号登录入池`, true)
++    await loadMailComPoolStatus()
++  } catch (e) {
++    setMessage(`启动 mail.com 登录入池失败: ${e.message}`, false)
++  } finally {
++    mailComPoolLoginBusy.value = false
++  }
++}
++
++async function deleteSelectedMailComPoolEmails() {
++  if (mailComPoolDeleting.value || mailComPoolSelectedCount.value === 0) return
++  const emails = [...mailComPoolSelectedEmails.value]
++  const ok = window.confirm(`确认从 mail.com 邮箱池删除 ${emails.length} 个邮箱?\n\n只会删除 mail邮箱管理中的记录，不会删除本地账号池记录。`)
++  if (!ok) return
++  mailComPoolDeleting.value = true
++  try {
++    const result = await api.deleteMailAccounts(emails)
++    mailComPoolSelectedEmails.value = []
++    await loadMailComPoolStatus()
++    setMessage(`已从 mail.com 邮箱池删除 ${result.deleted || 0} 个邮箱`, true)
++  } catch (e) {
++    setMessage(`删除 mail.com 邮箱失败: ${e.message}`, false)
++  } finally {
++    mailComPoolDeleting.value = false
++  }
++}
++
+ function handleGlobalKeydown(event) {
+   if (event.key !== 'Escape') return
+   if (outlookImportDialogOpen.value) {
+     closeOutlookImportDialog()
+   } else if (outlookPoolDialogOpen.value) {
+     closeOutlookPoolDialog()
++  } else if (mailComImportDialogOpen.value) {
++    closeMailComImportDialog()
++  } else if (mailComPoolDialogOpen.value) {
++    closeMailComPoolDialog()
+   }
+ }
+ 
+ async function importOutlookAccounts() {
+   const content = outlookImportContent.value.trim()
+   if (!content || outlookImporting.value) return
+   outlookImporting.value = true
+   outlookImportResult.value = ''
+   try {
+     const result = await api.importOutlookAccounts(content, outlookImportFilename.value || 'pasted.txt')
+@@ -1842,20 +2300,27 @@ watch(
+   }
+ )
+ 
+ watch(
+   isOutlookProvider,
+   enabled => {
+     if (enabled) loadOutlookPoolStatus()
+   }
+ )
+ 
++watch(
++  isMailComProvider,
++  enabled => {
++    if (enabled) loadMailComPoolStatus()
++  }
++)
++
+ watch(
+   () => registerForm.value.oauthPhoneSmsProvider,
+   async (provider, previousProvider) => {
+     const normalizedProvider = String(provider || 'phone_pool')
+     const normalizedPreviousProvider = String(previousProvider || '')
+     const currentCountry = String(registerForm.value.oauthPhoneSmsCountry || '').trim()
+     const currentMaxPrice = String(registerForm.value.oauthPhoneSmsMaxPrice || '').trim()
+     if (normalizedPreviousProvider && !['phone_pool', 'oasis'].includes(normalizedPreviousProvider) && currentCountry) {
+       savedOauthPhoneSmsCountries[normalizedPreviousProvider] = currentCountry
+     }
+@@ -1885,20 +2350,21 @@ watch(
+   { flush: 'sync' }
+ )
+ 
+ onMounted(reloadRegisterDomains)
+ onMounted(() => {
+   window.addEventListener('keydown', handleGlobalKeydown)
+   loadSavedRegisterForm()
+   loadMailProviderOptions()
+   loadOAuthPhoneSmsConfig()
+   if (isOutlookProvider.value) loadOutlookPoolStatus()
++  if (isMailComProvider.value) loadMailComPoolStatus()
+   loadRegisterLogs()
+   loadRegisterStats()
+   logsTimer = window.setInterval(loadRegisterLogs, 3000)
+   statsTimer = window.setInterval(loadRegisterStats, 3000)
+ })
+ onUnmounted(() => {
+   window.removeEventListener('keydown', handleGlobalKeydown)
+   if (logsTimer) {
+     window.clearInterval(logsTimer)
+     logsTimer = null
+@@ -1909,20 +2375,21 @@ onUnmounted(() => {
+   }
+ })
+ watch(() => props.runningTask?.task_id, (newId, oldId) => {
+   if (newId !== oldId) {
+     registerCancelBusy.value = false
+     registerCancelRequested.value = false
+   }
+   if (oldId && !newId) {
+     reloadRegisterDomains()
+     if (isOutlookProvider.value) loadOutlookPoolStatus()
++    if (isMailComProvider.value) loadMailComPoolStatus()
+     loadRegisterLogs()
+     loadRegisterStats()
+   }
+ })
+ watch(() => props.runningTask?.cancel_requested, value => {
+   if (value) registerCancelRequested.value = true
+ }, { immediate: true })
+ 
+ function fmtLogTime(ts) {
+   if (!ts) return '-'

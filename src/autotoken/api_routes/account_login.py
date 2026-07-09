@@ -1,10 +1,12 @@
 """Account Codex login task routes."""
 
+import json
 import os
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -87,6 +89,10 @@ class AccountEmailBatchParams(BaseModel):
         "",
         validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
     )
+
+
+class MailAccountAuthSessionBatchParams(BaseModel):
+    emails: list[str] = Field(default_factory=list)
 
 
 def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) -> dict[str, Any]:
@@ -319,6 +325,58 @@ def create_account_login_router(
                 except Exception as exc:
                     logger.warning("[账号登录] 持久化 mail.com 登录失败状态失败: email=%s error=%s", item_email, exc)
 
+            def _refresh_token_from_login_result(result: Any) -> str:
+                if not isinstance(result, dict):
+                    return ""
+                candidates = [
+                    result.get("refresh_token"),
+                    result.get("refreshToken"),
+                    (result.get("bundle") or {}).get("refresh_token") if isinstance(result.get("bundle"), dict) else "",
+                    (result.get("codex_oauth_bundle") or {}).get("refresh_token")
+                    if isinstance(result.get("codex_oauth_bundle"), dict)
+                    else "",
+                ]
+                for candidate in candidates:
+                    token = str(candidate or "").strip()
+                    if token:
+                        return token
+
+                auth_file = str(result.get("auth_file") or result.get("authFile") or "").strip()
+                if not auth_file:
+                    return ""
+                try:
+                    path = Path(auth_file)
+                    if not path.is_absolute():
+                        path = Path.cwd() / path
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    log_debug = getattr(logger, "debug", None)
+                    if callable(log_debug):
+                        log_debug("[账号登录] 读取 auth_file 提取 refresh_token 失败: file=%s error=%s", auth_file, exc)
+                    return ""
+                if not isinstance(data, dict):
+                    return ""
+                return str(data.get("refresh_token") or data.get("refreshToken") or "").strip()
+
+            def _persist_mailcom_login_success(item_email: str, account: dict[str, Any], result: Any) -> None:
+                provider = str(params.mail_provider or account.get("mail_provider") or "").strip().lower()
+                if provider != "mail.com":
+                    return
+                refresh_token = _refresh_token_from_login_result(result)
+                if not refresh_token:
+                    return
+                try:
+                    from autotoken.storage import mail_accounts
+
+                    mail_accounts.mark_mailcom_registered(
+                        item_email,
+                        gpt_password=str(account.get("password") or ""),
+                        refresh_token=refresh_token,
+                        source="account_login_success",
+                    )
+                except Exception as exc:
+                    logger.warning("[账号登录] 同步 mail.com 登录成功 refreshToken 失败: email=%s error=%s", item_email, exc)
+
             ok = []
             failed = []
             phone_required = []
@@ -472,6 +530,7 @@ def create_account_login_router(
                         failed_count = len(failed)
 
                     if item["kind"] == "ok":
+                        _persist_mailcom_login_success(item_email, item_account, item["result"])
                         append_task_progress(
                             task_id,
                             {
@@ -544,6 +603,97 @@ def create_account_login_router(
             "login-batch",
             _run,
             {"emails": emails, "missing": missing},
+            task_group=TASK_GROUP_OAUTH,
+            pass_task_id=True,
+        )
+
+    @router.post("/api/mail-accounts/login-auth-session", status_code=202)
+    def post_mail_accounts_login_auth_session(params: MailAccountAuthSessionBatchParams):
+        """普通 ChatGPT 登录 mail.com 成品号，只保存 auth_session，不执行 OAuth 补登录。"""
+
+        if len(params.emails or []) > ACCOUNT_LOGIN_BATCH_MAX_EMAILS:
+            raise HTTPException(status_code=400, detail=f"批量登录账号过多，最多支持 {ACCOUNT_LOGIN_BATCH_MAX_EMAILS} 个")
+        emails = []
+        seen = set()
+        for item in params.emails or []:
+            email = normalize_email(item)
+            if email and email not in seen:
+                seen.add(email)
+                emails.append(email)
+        if not emails:
+            raise HTTPException(status_code=400, detail="emails 不能为空")
+
+        def _run(task_id: str = ""):
+            from autotoken.services.mailcom_auth_session import login_mailcom_auth_session_once
+
+            ok = []
+            failed = []
+            total = len(emails)
+            for index, email in enumerate(emails, start=1):
+                append_task_progress(
+                    task_id,
+                    {
+                        "stage": "mail_account_auth_session_login",
+                        "email": email,
+                        "current": index,
+                        "total": total,
+                        "ok": len(ok),
+                        "failed": len(failed),
+                        "message": f"正在登陆 ChatGPT 获取 auth_session: {email} ({index}/{total})",
+                    },
+                )
+                try:
+                    result = login_mailcom_auth_session_once(
+                        email,
+                        progress_callback=lambda event, item_email=email, current=index: append_task_progress(
+                            task_id,
+                            {
+                                **dict(event or {}),
+                                "email": str((event or {}).get("email") or item_email),
+                                "current": current,
+                                "total": total,
+                            },
+                        ),
+                    )
+                    ok.append(result)
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "mail_account_auth_session_login_done",
+                            "email": email,
+                            "current": index,
+                            "total": total,
+                            "ok": len(ok),
+                            "failed": len(failed),
+                            "message": f"登陆成功，已保存 auth_session: {email}",
+                        },
+                    )
+                except Exception as exc:
+                    failed.append({"email": email, "error": str(exc)})
+                    try:
+                        from autotoken.storage import mail_accounts
+
+                        mail_accounts.mark_mailcom_login_failure(email, str(exc))
+                    except Exception as mark_exc:
+                        logger.warning("[mail.com] 登陆失败状态写入失败: email=%s error=%s", email, mark_exc)
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "mail_account_auth_session_login_failed",
+                            "email": email,
+                            "current": index,
+                            "total": total,
+                            "ok": len(ok),
+                            "failed": len(failed),
+                            "message": f"登陆失败: {email}: {exc}",
+                        },
+                    )
+            return {"ok": ok, "failed": failed, "total": total}
+
+        return start_task(
+            "mail-auth-session",
+            _run,
+            {"emails": emails},
             task_group=TASK_GROUP_OAUTH,
             pass_task_id=True,
         )

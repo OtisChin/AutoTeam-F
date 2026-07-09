@@ -3699,7 +3699,7 @@ function isBindableFreeAccount(account) {
   const status = String(account?.status || '').toLowerCase()
   // Quota-exhausted free accounts can still be upgraded through GoPay. Keep
   // standby excluded unless it is a CPA/Codex-auth import with a usable auth file.
-  if (['fail', 'auth_invalid', 'orphan', 'pending'].includes(status)) return false
+  if (['fail', 'auth_invalid', 'orphan'].includes(status)) return false
   if (status === 'standby' && !hasBindableCodexAuth(account)) return false
   return true
 }

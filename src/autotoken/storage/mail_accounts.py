@@ -75,14 +75,14 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return data
 
 
-def _clean_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _clean_payload(payload: dict[str, Any], *, require_refresh_token: bool = True) -> dict[str, Any]:
     email = normalized_email(payload.get("email"))
     if not email:
         raise ValueError("邮箱不能为空")
     if not email.endswith("@mail.com"):
         raise ValueError("mail邮箱管理只支持 @mail.com 邮箱")
     refresh_token = str(payload.get("refresh_token") or payload.get("refreshToken") or "").strip()
-    if not refresh_token:
+    if require_refresh_token and not refresh_token:
         raise ValueError("refreshToken 不能为空")
     return {
         "email": email,
@@ -125,8 +125,8 @@ def get_mail_account(email: str) -> dict[str, Any] | None:
     return _row_to_dict(row) if row else None
 
 
-def upsert_mail_account(payload: dict[str, Any]) -> dict[str, Any]:
-    item = _clean_payload(payload)
+def upsert_mail_account(payload: dict[str, Any], *, require_refresh_token: bool = True) -> dict[str, Any]:
+    item = _clean_payload(payload, require_refresh_token=require_refresh_token)
     now = time.time()
     with _connect() as conn:
         conn.execute(
@@ -171,20 +171,36 @@ def import_mail_accounts(text: str) -> dict[str, Any]:
         if not line:
             continue
         parts = [part.strip() for part in line.split("----")]
-        if len(parts) != 4 or any(not part for part in parts):
+        if len(parts) == 2:
+            email, mail_password = parts
+            gpt_password = ""
+            refresh_token = ""
+            required_parts = [email, mail_password]
+        elif len(parts) == 3:
+            email, mail_password, gpt_password = parts
+            refresh_token = ""
+            required_parts = [email, mail_password, gpt_password]
+        elif len(parts) == 4:
+            email, gpt_password, mail_password, refresh_token = parts
+            required_parts = [email, gpt_password, mail_password, refresh_token]
+        else:
+            skipped += 1
+            continue
+        if any(not part for part in required_parts):
             skipped += 1
             continue
         try:
-            current = get_mail_account(parts[0]) or {}
+            current = get_mail_account(email) or {}
             updated = upsert_mail_account(
                 {
-                    "email": parts[0],
-                    "gpt_password": parts[1],
-                    "mail_password": parts[2],
-                    "refresh_token": parts[3],
+                    "email": email,
+                    "gpt_password": gpt_password,
+                    "mail_password": mail_password,
+                    "refresh_token": refresh_token,
                     "status": current.get("status") or "enabled",
                     "note": current.get("note") or "",
-                }
+                },
+                require_refresh_token=False,
             )
             imported += 1
             email = str(updated.get("email") or "").strip().lower()
@@ -431,6 +447,7 @@ def sync_mail_accounts_to_account_pool(emails: Iterable[str] | None = None) -> d
 
 def mailcom_pool_status() -> dict[str, Any]:
     accounts_by_email = _account_pool_by_email()
+    registered_emails = _mailcom_registered_emails()
     items = []
     for row in list_mail_accounts():
         email = normalized_email(row.get("email"))
@@ -440,6 +457,14 @@ def mailcom_pool_status() -> dict[str, Any]:
         check_status = str(row.get("check_status") or "").strip().lower()
         last_error = str(row.get("last_error") or "").strip()
         account_status = "missing" if not account else str(account.get("status") or "pending")
+        registered = bool(
+            email
+            and (
+                email in registered_emails
+                or account_status in REGISTERED_ACCOUNT_POOL_STATUSES
+                or _mail_account_note_marks_registered(row.get("note"))
+            )
+        )
         if row.get("status") == "disabled":
             login_status = "disabled"
             login_error = ""
@@ -459,6 +484,8 @@ def mailcom_pool_status() -> dict[str, Any]:
             **row,
             "login_status": login_status,
             "login_error": login_error,
+            "registered": registered,
+            "registered_status": "registered" if registered else "unused",
             "account_pool_status": account_status,
             "auth_session_status": "ready" if auth_ready else "missing",
             "auth_session_file": auth_session_file,
@@ -472,6 +499,7 @@ def mailcom_pool_status() -> dict[str, Any]:
         "total": len(items),
         "available": len(available_items),
         "auth_session_ready": sum(1 for item in items if item.get("auth_session_status") == "ready"),
+        "registered": sum(1 for item in items if item.get("registered")),
         "not_logged_in": sum(
             1 for item in items if item.get("login_status") in {"available", "not_logged_in"}
         ),
@@ -524,7 +552,7 @@ def mark_mailcom_registered(
         "check_status": "valid",
         "note": "；".join(dict.fromkeys(note_parts)),
     }
-    updated = upsert_mail_account(payload)
+    updated = upsert_mail_account(payload, require_refresh_token=False)
     update_check_result(
         updated["email"],
         check_status="valid",
