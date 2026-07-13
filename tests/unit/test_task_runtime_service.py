@@ -986,7 +986,7 @@ def test_interrupted_task_snapshot_marks_cancelled_and_caps_progress_events():
 def test_append_task_progress_event_adds_worker_context_and_updates_progress():
     task = {
         "task_id": "task-worker",
-        "command": "gopay-pro",
+        "command": "register",
         "progress": {"stage": "old", "unchanged": True},
         "progress_events": [],
     }
@@ -1012,7 +1012,7 @@ def test_append_task_progress_event_adds_worker_context_and_updates_progress():
 
 
 def test_append_task_progress_event_does_not_double_prefix_worker_message():
-    task = {"task_id": "task-worker", "command": "gopay-pro", "progress_events": []}
+    task = {"task_id": "task-worker", "command": "register", "progress_events": []}
 
     event = append_task_progress_event(
         task,
@@ -1063,7 +1063,7 @@ def test_append_live_task_progress_ignores_blank_or_missing_task_id():
 
 
 def test_append_live_task_progress_appends_to_matching_task_with_worker_context():
-    task = {"task_id": "task-1", "command": "gopay-pro", "progress_events": []}
+    task = {"task_id": "task-1", "command": "register", "progress_events": []}
     live_tasks = {"task-1": task}
 
     updated = append_live_task_progress(

@@ -25,8 +25,44 @@ from autotoken.api_routes.config_io import (
 )
 from autotoken.api_routes.setup import SetupConfig, create_setup_router
 from autotoken.api_routes.status import build_status_response
-from autotoken.core.files import READ_JSON_FILE_MAX_BYTES
 from autotoken.storage.auth_files import AUTH_JSON_FILE_MAX_BYTES
+
+
+async def _request_app(method: str, path: str) -> tuple[int, bytes]:
+    messages = []
+    request_sent = False
+
+    async def receive():
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    await api.app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "root_path": "",
+        },
+        receive,
+        send,
+    )
+    status = next(message["status"] for message in messages if message["type"] == "http.response.start")
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+    return status, body
 
 
 def _build_api_status(include_session_stubs: bool = True):
@@ -163,40 +199,6 @@ def test_valid_token_item_auth_file_ignores_session_file_outside_session_dir(tmp
     monkeypatch.setattr("autotoken.storage.auth_session_store.get_auth_session_file", lambda _email: str(outside))
 
     assert api._valid_token_item_auth_file({"email": "user@example.com", "auth_file": str(outside)}) == ""
-
-
-def test_gopay_pro_account_token_items_ignores_session_file_outside_session_dir(tmp_path, monkeypatch):
-    auth_dir = tmp_path / "auths"
-    session_dir = tmp_path / "auth_session"
-    auth_dir.mkdir()
-    session_dir.mkdir()
-    outside = tmp_path / "outside-session.json"
-    outside.write_text(json.dumps({"access_token": "outside-token"}), encoding="utf-8")
-
-    monkeypatch.setattr("autotoken.storage.auth_storage.AUTH_DIR", auth_dir)
-    monkeypatch.setattr("autotoken.storage.auth_session_store.AUTH_SESSION_DIR", session_dir)
-    monkeypatch.setattr(
-        api,
-        "_load_accounts_with_session_stubs",
-        lambda include_session_stubs=True: [{"email": "user@example.com", "status": "active", "auth_file": ""}],
-    )
-    monkeypatch.setattr("autotoken.storage.auth_session_store.get_auth_session_file", lambda _email: str(outside))
-
-    with pytest.raises(Exception) as exc:
-        api._gopay_pro_account_token_items(["user@example.com"])
-
-    assert "账号缺少可用 auth_file/auth_session" in str(exc.value)
-
-
-def test_gopay_pro_paths_uses_default_pool_paths_for_oversized_config(tmp_path):
-    root = tmp_path / "CNgopay"
-    root.mkdir()
-    (root / "config.json").write_text("x" * (READ_JSON_FILE_MAX_BYTES + 1), encoding="utf-8")
-
-    paths = api._gopay_pro_paths(root)
-
-    assert paths["numbers"] == (root / "pool_numbers.txt").resolve()
-    assert paths["tokens"] == (root / "pool_tokens.txt").resolve()
 
 
 def test_verify_plus_plan_ignores_outside_auth_file_token(tmp_path, monkeypatch):
@@ -470,418 +472,24 @@ def test_start_server_keeps_explicit_local_base_url(monkeypatch):
     assert os.environ["AUTOTOKEN_LOCAL_BASE_URL"] == "https://public.example.com"
 
 
-def _write_gopay_pro_root(root: Path) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "config.json").write_text(
-        json.dumps(
-            {
-                "pool": {
-                    "slots": 1,
-                    "concurrency": 1,
-                    "number_pool_file": "pool_numbers.txt",
-                    "provided_tokens_file": "pool_tokens.txt",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    (root / "pool_numbers.txt").write_text("+628100000000----https://sms.example/record\n", encoding="utf-8")
-    (root / "pool_tokens.txt").write_text("", encoding="utf-8")
-    state_path = root / "runs" / "pool" / "state.json"
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(
-        json.dumps(
-            {
-                "slots": {
-                    "slot-01": {
-                        "id": "slot-01",
-                        "state": "WALLET_READY",
-                        "full_phone": "+628100000000",
-                        "phone": "8100000000",
-                        "access_token": "gopay-access",
-                        "refresh_token": "gopay-refresh",
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT"])
+def test_unknown_api_paths_return_standard_not_found(method):
+    status, body = anyio.run(_request_app, method, "/api/unknown")
+
+    assert status == 404
+    assert json.loads(body) == {"detail": "Not Found"}
 
 
-def test_gopay_pro_script_runner_supports_new_maintenance_commands(tmp_path, monkeypatch):
-    root = tmp_path / "CNgopay"
-    _write_gopay_pro_root(root)
-    script_name = "fix-failed.cmd" if os.name == "nt" else "fix-failed.sh"
-    (root / script_name).write_text("", encoding="utf-8")
-    monkeypatch.setenv("CNGOPAY_ROOT", str(root))
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, _progress: None)
-    monkeypatch.setattr("autotoken.cancel_signal.is_cancelled", lambda: False)
+@pytest.mark.parametrize("path", ["/", "/dashboard/nested"])
+def test_frontend_fallback_still_serves_non_api_paths(path):
+    status, body = anyio.run(_request_app, "GET", path)
 
-    captured = {}
-
-    class FakeProcess:
-        stdout = ["diagnostic ok\n"]
-
-        def __init__(self, command, **_kwargs):
-            captured["command"] = command
-
-        def poll(self):
-            return 0
-
-        def terminate(self):
-            captured["terminated"] = True
-
-        def wait(self):
-            return 0
-
-    monkeypatch.setattr(api.subprocess, "Popen", FakeProcess)
-
-    result = api._run_gopay_pro_script("fix-failed", "task-1", args=["-slot", "slot-01"])
-
-    assert result["exit_code"] == 0
-    assert result["script"] == script_name
-    assert result["args"] == ["-slot", "slot-01"]
-    assert any(script_name in str(part) for part in captured["command"])
-
-
-def test_gopay_pro_script_args_reject_command_interpreter_characters():
-    assert api._safe_gopay_pro_script_args(["--slot", "slot-01", "user@example.com", "a:b/c_1%2"]) == [
-        "--slot",
-        "slot-01",
-        "user@example.com",
-        "a:b/c_1%2",
-    ]
-
-    with pytest.raises(RuntimeError, match="不安全字符"):
-        api._safe_gopay_pro_script_args(["slot-01&whoami"])
-
-
-def test_gopay_pro_register_detects_waf_and_sets_cooldown(tmp_path, monkeypatch):
-    root = tmp_path / "CNgopay"
-    _write_gopay_pro_root(root)
-    script_name = "reg.cmd" if os.name == "nt" else "reg.sh"
-    (root / script_name).write_text("", encoding="utf-8")
-    monkeypatch.setenv("CNGOPAY_ROOT", str(root))
-    monkeypatch.setenv("GOPAY_PRO_WAF_COOLDOWN_SECONDS", "120")
-    monkeypatch.setattr("autotoken.cancel_signal.is_cancelled", lambda: False)
-
-    progress = []
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, payload: progress.append(payload))
-
-    class FakeProcess:
-        stdout = [
-            "[slot-01] ❌ GoPay 注册/登录失败: [failed] signup 失败 (403): "
-            "<!DOCTYPE html><title>WAF Block Page</title>\n"
-        ]
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def poll(self):
-            return 0
-
-        def terminate(self):
-            pass
-
-        def wait(self):
-            return 0
-
-    monkeypatch.setattr(api.subprocess, "Popen", FakeProcess)
-
-    result = api._run_gopay_pro_script("register", "task-1")
-    cooldown = json.loads((root / "runs" / "pool" / "cooldowns.json").read_text(encoding="utf-8"))
-
-    assert result["waf_blocked"] is True
-    assert result["cooldown_remaining_seconds"] > 0
-    assert cooldown["register_waf_reason"]
-    assert any(item["stage"] == "gopay_pro_register_waf_blocked" for item in progress)
-
-
-def test_gopay_pro_register_ratelimit_moves_number_to_cooldown(tmp_path, monkeypatch):
-    root = tmp_path / "CNgopay"
-    _write_gopay_pro_root(root)
-    monkeypatch.setenv("CNGOPAY_ROOT", str(root))
-    monkeypatch.setenv("GOPAY_PRO_RATELIMIT_COOLDOWN_SECONDS", "120")
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, _progress: None)
-    paths = api._gopay_pro_paths(root)
-    state = json.loads((root / "runs" / "pool" / "state.json").read_text(encoding="utf-8"))
-    state["slots"]["slot-01"]["state"] = "FAILED"
-    state["slots"]["slot-01"]["error"] = "注册/登录失败: [ratelimited] 限流，需等 60 分钟"
-    (root / "runs" / "pool" / "state.json").write_text(json.dumps(state), encoding="utf-8")
-
-    result = api._mark_gopay_pro_register_ratelimit_cooldowns("task-1", {"slot-01"}, paths=paths)
-
-    number_lines = (root / "pool_numbers.txt").read_text(encoding="utf-8").splitlines()
-    cooldown = json.loads((root / "runs" / "pool" / "cooldowns.json").read_text(encoding="utf-8"))
-    assert result["count"] == 1
-    assert number_lines[0].startswith("# autotoken-cooldown ")
-    assert "register_ratelimited_numbers" in cooldown
-    assert api._active_pool_lines(number_lines) == []
-
-
-def test_gopay_pro_checkout_401_is_terminal_event():
-    log = "\n".join(
-        [
-            "[12:23:13] [slot-13] ❌ Plus 支付失败: chatgpt checkout 401: {",
-            '"error": {"message": "Could not parse your authentication token. Please try signing in again."}',
-        ]
-    )
-
-    assert api._gopay_pro_text_has_chatgpt_checkout_unauthorized(log)
-    assert api._gopay_pro_harvest_checkout_unauthorized_slots(log) == ["slot-13"]
-    assert api._gopay_pro_harvest_terminal_events(log) == [{"kind": "checkout_unauthorized", "slot_id": "slot-13"}]
+    assert status == 200
+    assert b'<div id="app"></div>' in body
 
 
 def test_normalize_access_token_preserves_trailing_s():
     assert api._normalize_access_token("Bearer new-access,") == "new-access"
-
-
-def test_gopay_pro_midtrans_charge_202_marks_slot(tmp_path, monkeypatch):
-    root = tmp_path / "CNgopay"
-    _write_gopay_pro_root(root)
-    monkeypatch.setenv("CNGOPAY_ROOT", str(root))
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, _progress: None)
-    paths = api._gopay_pro_paths(root)
-    log = "[15:59:07] [slot-01] ❌ Plus 支付失败: midtrans charge denied: status=deny fraud=deny code=202 message=Your transaction is denied.\n"
-
-    slot_ids = api._gopay_pro_midtrans_charge_202_slots(log)
-    marked = api._mark_gopay_pro_midtrans_charge_202_slots("task-1", slot_ids, paths=paths)
-
-    state = json.loads((root / "runs" / "pool" / "state.json").read_text(encoding="utf-8"))
-    assert slot_ids == ["slot-01"]
-    assert marked == 1
-    assert state["slots"]["slot-01"]["midtrans_charge_202"] is True
-    assert "midtrans_charge_202_reason" not in state["slots"]["slot-01"]
-
-
-def test_gopay_pro_harvest_progress_prints_email_for_success(tmp_path, monkeypatch):
-    root = tmp_path / "CNgopay"
-    _write_gopay_pro_root(root)
-    script_name = "harvest.cmd" if os.name == "nt" else "harvest.sh"
-    (root / script_name).write_text("", encoding="utf-8")
-    monkeypatch.setenv("CNGOPAY_ROOT", str(root))
-    monkeypatch.setattr("autotoken.cancel_signal.is_cancelled", lambda: False)
-    state_path = root / "runs" / "pool" / "state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["slots"] = {
-        "slot-01": {
-            "id": "slot-01",
-            "state": "PLUS_PAYING",
-            "full_phone": "+628100000000",
-            "access_token": "access-token-1",
-        }
-    }
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-    paths = api._gopay_pro_paths(root)
-    api._write_gopay_pro_token_map(
-        paths,
-        [
-            {
-                "email": "user@example.com",
-                "access_token": "access-token-1",
-                "account_id": "account-1",
-                "auth_file": "auth.json",
-            }
-        ],
-    )
-
-    progress = []
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, payload: progress.append(payload))
-
-    class FakeProcess:
-        stdout = [
-            "[00:44:00] [slot-01] 开 Plus（phone=+628100000000）\n",
-            "[00:44:01] [slot-01] ✅ Plus 开通成功 charge_ref=A1\n",
-            "[00:44:25] [slot-01] ✅ 换绑完成，稳定号 +628100000000 已释放（token 已清）\n",
-        ]
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def poll(self):
-            return 0
-
-        def terminate(self):
-            pass
-
-        def wait(self):
-            return 0
-
-    monkeypatch.setattr(api.subprocess, "Popen", FakeProcess)
-
-    result = api._run_gopay_pro_script("harvest", "task-1", account_emails=["wrong-order@example.com"])
-
-    assert result["slot_emails"] == {"slot-01": "user@example.com"}
-    messages = [str(item.get("message") or "") for item in progress]
-    assert any("Plus 开通成功" in message and "email=user@example.com" in message for message in messages)
-    assert any("换绑完成" in message and "email=user@example.com" in message for message in messages)
-
-
-def test_gopay_pro_batch_aborts_after_register_waf_without_harvest(tmp_path, monkeypatch):
-    root = tmp_path / "CNgopay"
-    _write_gopay_pro_root(root)
-    state_path = root / "runs" / "pool" / "state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["slots"]["slot-01"]["state"] = "EMPTY"
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-    token = "access-token-1"
-    (root / "pool_tokens.txt").write_text(f"{token}\n", encoding="utf-8")
-    monkeypatch.setenv("CNGOPAY_ROOT", str(root))
-    monkeypatch.setattr("autotoken.cancel_signal.is_cancelled", lambda: False)
-    monkeypatch.setattr(
-        api,
-        "_gopay_pro_account_token_items",
-        lambda _emails: [
-            {
-                "email": "user@example.com",
-                "access_token": token,
-                "refresh_token": "refresh-token",
-                "account_id": "account-1",
-                "auth_file": "",
-            }
-        ],
-    )
-
-    calls = []
-
-    def fake_script(kind, task_id, *, stage="", args=None, suppress_status_table=False, account_emails=None):
-        calls.append(kind)
-        if kind == "register":
-            return {
-                "kind": kind,
-                "script": "reg.cmd",
-                "exit_code": 75,
-                "log_text": "WAF Block Page",
-                "log_tail": "WAF Block Page",
-                "waf_blocked": True,
-                "cooldown_remaining_seconds": 3600,
-            }
-        if kind == "harvest":
-            raise AssertionError("harvest should not run after register WAF")
-        return {"kind": kind, "script": f"{kind}.cmd", "exit_code": 0, "log_text": "", "log_tail": ""}
-
-    monkeypatch.setattr(api, "_append_task_progress", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(api, "_run_gopay_pro_script", fake_script)
-
-    with pytest.raises(RuntimeError, match="WAF"):
-        api._run_gopay_pro_batch_task("task-1", ["user@example.com"], concurrency=1, max_attempts=1)
-
-    assert calls[:3] == ["refresh", "fix-failed", "register"]
-    assert "harvest" not in calls
-
-
-def test_gopay_pro_batch_runs_refresh_and_fix_failed_before_harvest(tmp_path, monkeypatch):
-    root = tmp_path / "CNgopay"
-    _write_gopay_pro_root(root)
-    token = "access-token-1"
-    (root / "pool_tokens.txt").write_text(f"{token}\n", encoding="utf-8")
-    monkeypatch.setenv("CNGOPAY_ROOT", str(root))
-    monkeypatch.setattr("autotoken.cancel_signal.is_cancelled", lambda: False)
-    monkeypatch.setattr(
-        api,
-        "_gopay_pro_account_token_items",
-        lambda _emails: [
-            {
-                "email": "user@example.com",
-                "access_token": token,
-                "refresh_token": "refresh-token",
-                "account_id": "account-1",
-                "auth_file": "",
-            }
-        ],
-    )
-    monkeypatch.setattr(api, "_verify_plus_plan", lambda _item: {"ok": True, "plan_type": "plus"})
-    monkeypatch.setattr(api, "_mark_gopay_pro_success_account", lambda *args, **kwargs: {})
-
-    progress = []
-    calls = []
-
-    def fake_progress(_task_id, payload):
-        progress.append(payload)
-
-    def fake_script(kind, task_id, *, stage="", args=None, suppress_status_table=False, account_emails=None):
-        calls.append({"kind": kind, "stage": stage, "args": args or [], "suppress": suppress_status_table})
-        if kind == "harvest":
-            (root / "pool_tokens.txt").write_text("", encoding="utf-8")
-            log = "\n".join(
-                [
-                    "[slot-01] 开 Plus（phone=+628100000000）",
-                    "[slot-01] [gopay] chatgpt verify ok",
-                    "[slot-01] ✅ Plus 开通成功 charge_ref=A1",
-                    "[slot-01] ✅ 换绑完成，稳定号 +628100000000 已释放（token 已清）",
-                ]
-            )
-            return {"kind": kind, "script": "harvest.cmd", "exit_code": 0, "log_text": log, "log_tail": log}
-        return {"kind": kind, "script": f"{kind}.cmd", "exit_code": 0, "log_text": "", "log_tail": ""}
-
-    monkeypatch.setattr(api, "_append_task_progress", fake_progress)
-    monkeypatch.setattr(api, "_run_gopay_pro_script", fake_script)
-
-    result = api._run_gopay_pro_batch_task("task-1", ["user@example.com"], concurrency=1, max_attempts=1)
-
-    assert result["status"] == "success"
-    assert result["successful_emails"] == ["user@example.com"]
-    assert [call["kind"] for call in calls[:3]] == ["refresh", "fix-failed", "harvest"]
-    assert calls[0]["suppress"] is True
-    assert any(item["stage"] == "gopay_pro_fix_failed_before_batch" for item in progress)
-    token_map = json.loads((root / "runs" / "pool" / "token_map.json").read_text(encoding="utf-8"))
-    assert token not in json.dumps(token_map)
-    assert token_map["tokens"][api._gopay_pro_token_fingerprint(token)]["email"] == "user@example.com"
-
-
-def test_mark_gopay_pro_success_account_ignores_auth_file_outside_auth_dir(tmp_path, monkeypatch):
-    auth_dir = tmp_path / "auths"
-    auth_dir.mkdir()
-    outside = tmp_path / "outside-auth.json"
-    outside.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr("autotoken.storage.auth_storage.AUTH_DIR", auth_dir)
-
-    updates = []
-
-    def fake_update_account(email, **fields):
-        updates.append((email, fields))
-        return {"email": email, **fields}
-
-    monkeypatch.setattr("autotoken.storage.accounts.update_account", fake_update_account)
-    monkeypatch.setattr(api, "_update_account_cpa_auth_plan_type", lambda *_args, **_kwargs: {})
-
-    updated = api._mark_gopay_pro_success_account(
-        "user@example.com",
-        task_id="task-1",
-        message="ok",
-        auth_file=str(outside),
-    )
-
-    assert "auth_file" not in updates[0][1]
-    assert "auth_file" not in updated
-
-
-def test_mark_gopay_pro_success_account_accepts_auth_file_inside_auth_dir(tmp_path, monkeypatch):
-    auth_dir = tmp_path / "auths"
-    auth_dir.mkdir()
-    auth_file = auth_dir / "codex-user@example.com-plus-deadbeef.json"
-    auth_file.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr("autotoken.storage.auth_storage.AUTH_DIR", auth_dir)
-
-    updates = []
-
-    def fake_update_account(email, **fields):
-        updates.append((email, fields))
-        return {"email": email, **fields}
-
-    monkeypatch.setattr("autotoken.storage.accounts.update_account", fake_update_account)
-    monkeypatch.setattr(api, "_update_account_cpa_auth_plan_type", lambda *_args, **_kwargs: {})
-
-    updated = api._mark_gopay_pro_success_account(
-        "user@example.com",
-        task_id="task-1",
-        message="ok",
-        auth_file=str(auth_file),
-    )
-
-    expected = str(auth_file.resolve())
-    assert updates[0][1]["auth_file"] == expected
-    assert updated["auth_file"] == expected
 
 
 def test_auth_middleware_allows_cors_preflight_without_api_key(monkeypatch):

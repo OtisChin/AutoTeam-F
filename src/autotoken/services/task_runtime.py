@@ -18,7 +18,6 @@ TASK_GROUP_DEFAULT = "default"
 TASK_GROUP_REGISTER = "register"
 TASK_GROUP_BIND_CARD = "bind_card"
 TASK_GROUP_GOPAY = "gopay"
-TASK_GROUP_GOPAY_PRO = "gopay_pro"
 TASK_GROUP_PAYPAL = "paypal"
 TASK_GROUP_OAUTH = "oauth"
 TASK_GROUP_QUOTA = "quota"
@@ -29,8 +28,6 @@ COMMAND_TASK_GROUPS = {
     "add": TASK_GROUP_REGISTER,
     "bind-card": TASK_GROUP_BIND_CARD,
     "gopay-bind": TASK_GROUP_GOPAY,
-    "gopay-pro": TASK_GROUP_GOPAY_PRO,
-    "gopay-pro-batch": TASK_GROUP_GOPAY_PRO,
     "paypal": TASK_GROUP_PAYPAL,
     "login": TASK_GROUP_OAUTH,
     "login-batch": TASK_GROUP_OAUTH,
@@ -43,7 +40,7 @@ COMMAND_TASK_GROUPS = {
     "cleanup": TASK_GROUP_TEAM,
 }
 
-EXTENDED_PROGRESS_COMMANDS = {"gopay-pro", "gopay-pro-batch", "register"}
+EXTENDED_PROGRESS_COMMANDS = {"register"}
 DEFAULT_PROGRESS_EVENT_LIMIT = 300
 EXTENDED_PROGRESS_EVENT_LIMIT = 2000
 CancelHook = Callable[[], None]
