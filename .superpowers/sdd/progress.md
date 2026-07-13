@@ -11,4 +11,4 @@ Task 1: complete (commits 38a6ed3..4cb746f, review clean)
 Task 2: complete (commits 93377c9..cef881d, review clean after test-isolation fix)
 Task 3: complete (commits 56c1675..04be0d8, review clean)
 Task 4: complete (commits 9343bd0..19f86dc, review clean)
-Task 5: in progress
+Task 5: complete (verification at d171245, review clean under approved no-new-failures baseline)
