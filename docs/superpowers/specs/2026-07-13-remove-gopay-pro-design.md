@@ -15,7 +15,7 @@ Remove every GoPay Pro feature and implementation from AutoTeam-F while preservi
 - Backend GoPay Pro configuration and task routes under `/api/gopay-pro/*`.
 - GoPay Pro task orchestration, script execution, slot-state management, number-pool handling, event parsing, account-token extraction, task payloads, and task-group definitions.
 - The GoPay Pro frontend page, sidebar entry, page key, API methods, task labels, and dashboard provider presentation.
-- GoPay Pro environment variables, build exclusions, ignore rules, operational documentation, and obsolete design-plan references in the current checkout.
+- GoPay Pro environment variables, build exclusions, ignore rules, operational documentation, and obsolete design-plan references that present the subsystem as currently available.
 - GoPay Pro-specific tests and GoPay Pro assertions embedded in shared tests.
 
 ### Preserve
@@ -75,9 +75,9 @@ Remove GoPay Pro and CNgopay entries from:
 - `.dockerignore`
 - `pyproject.toml`
 - Active architecture and Docker documentation
-- Historical plan text in the current checkout that describes GoPay Pro as an available component
+- Historical plan text that describes GoPay Pro as an available component
 
-Git history itself is not rewritten.
+Git history itself is not rewritten. This approved removal design and its implementation plan remain as change records and are excluded from the removed-feature marker scan.
 
 ### Tests
 
@@ -104,7 +104,7 @@ Add or update route-level coverage to prove that GoPay Pro endpoints are absent 
 ## Verification
 
 1. Confirm `D:\code\OpenSource\AutoTeam-F\CNgopay` does not exist.
-2. Search the current checkout for the exact removed-feature markers:
+2. Search the current checkout, excluding this removal design and its implementation plan, for the exact removed-feature markers:
    - `gopay_pro`
    - `gopay-pro`
    - exact JavaScript identifier/page key `gopayPro` using a word boundary so `gopayProxy*` is not matched
@@ -121,7 +121,7 @@ Add or update route-level coverage to prove that GoPay Pro endpoints are absent 
 ## Acceptance Criteria
 
 - No GoPay Pro functionality is reachable from the API or frontend.
-- No GoPay Pro implementation module, standalone subsystem, test, configuration entry, or current-checkout documentation remains.
+- No GoPay Pro implementation module, standalone subsystem, behavior test, configuration entry, or documentation presenting it as available remains; only the approved removal design and implementation plan may retain historical references.
 - The physical `CNgopay/` directory and its local data are deleted.
 - Ordinary GoPay binding and automatic signup continue to pass their tests.
 - The backend imports successfully, the full Python suite and lint checks pass, and the frontend builds successfully.
