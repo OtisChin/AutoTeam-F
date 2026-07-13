@@ -8,4 +8,5 @@ Legacy Task 4: complete (commits 304d918..90c5e29, review clean)
 # 2026-07-13 Remove GoPay Pro
 
 Task 1: complete (commits 38a6ed3..4cb746f, review clean)
-Task 2: in progress
+Task 2: complete (commits 93377c9..cef881d, review clean after test-isolation fix)
+Task 3: in progress
