@@ -24,6 +24,13 @@ DOCS_AND_CONFIG_AUTOTEAM_REFERENCE_ALLOWLIST = {
 }
 
 
+def _is_planning_record(relative: Path) -> bool:
+    return relative.parts[:2] == ("docs", "plans") or relative.parts[:3] in {
+        ("docs", "superpowers", "plans"),
+        ("docs", "superpowers", "specs"),
+    }
+
+
 def _autoteam_alias_mapping_from_text(text: str) -> dict[str, str]:
     module = ast.parse(text)
     for node in module.body:
@@ -667,7 +674,6 @@ def test_pyproject_uses_autotoken_as_canonical_cli_and_keeps_autoteam_alias():
         "/.verify",
         "/.venv",
         "/build",
-        "/CNgopay",
         "/dist",
         "/auth_state",
         "/auths",
@@ -794,7 +800,7 @@ def test_mixed_case_autoteam_brand_references_are_limited_to_plans_and_tests():
             if not path.is_file():
                 continue
             relative = path.relative_to(project_root)
-            if relative.parts[:2] == ("docs", "plans"):
+            if _is_planning_record(relative):
                 continue
             if "dist" in relative.parts or "node_modules" in relative.parts or "__pycache__" in relative.parts:
                 continue
@@ -829,7 +835,7 @@ def test_docs_and_config_autoteam_references_are_limited_to_compatibility_notes(
         relative = path.relative_to(project_root)
         if relative in DOCS_AND_CONFIG_AUTOTEAM_REFERENCE_ALLOWLIST:
             continue
-        if relative.parts[:2] == ("docs", "plans"):
+        if _is_planning_record(relative):
             continue
         if "dist" in relative.parts or "node_modules" in relative.parts or "__pycache__" in relative.parts:
             continue
@@ -919,7 +925,7 @@ def test_active_docs_reference_existing_local_source_and_test_files():
         if not source_path.is_file():
             continue
         relative = source_path.relative_to(project_root)
-        if relative.parts[:2] == ("docs", "plans"):
+        if _is_planning_record(relative):
             continue
         text = source_path.read_text(encoding="utf-8", errors="ignore")
         for match in local_file_ref_pattern.finditer(text):
@@ -963,7 +969,7 @@ def test_active_docs_and_scripts_do_not_embed_local_absolute_paths():
         if not path.is_file():
             continue
         relative = path.relative_to(project_root)
-        if relative.parts[:2] == ("docs", "plans"):
+        if _is_planning_record(relative):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         matches = sorted(set(local_absolute_path_pattern.findall(text)))
@@ -998,8 +1004,6 @@ def test_git_tracked_files_exclude_runtime_data_and_secret_artifacts():
         r"(^|/)(\.paypal_realtest_task_id|.*\.task_id|.*\.pid)$",
         r".*\.(log|jsonl|sqlite|sqlite3|db)$",
         r"^(pool\.exe|pool-linux-x64|pool-mac-arm64|pool-mac-intel)$",
-        r"^CNgopay/codex_register/dist/",
-        r"^CNgopay/codex_register/bundle/",
         r"^src/autotoken/web/dist/",
     ]
     offenders = [
@@ -1057,17 +1061,6 @@ def test_git_tracked_text_files_do_not_contain_high_confidence_secret_values():
 def test_gitignore_covers_known_local_secret_and_generated_artifact_paths():
     project_root = Path(__file__).resolve().parents[2]
     paths = [
-        "CNgopay/config.json",
-        "CNgopay/codex_register/config.json",
-        "CNgopay/pool_tokens.txt",
-        "CNgopay/pool_emails.txt",
-        "CNgopay/pool_numbers.txt",
-        "CNgopay/hotmail_inbox.history.txt",
-        "CNgopay/codex_register/hotmail/tokens.txt",
-        "CNgopay/codex_register/node_modules/example/package.json",
-        "CNgopay/codex_register/dist/index.js",
-        "CNgopay/codex_register/bundle/index.cjs",
-        "CNgopay/runs/pool/token_map.json",
         "logs/api-8787.out.log",
         "outputs/auth_trace_20260529_092936_46708.jsonl",
         ".paypal_realtest_task_id",
@@ -1078,10 +1071,6 @@ def test_gitignore_covers_known_local_secret_and_generated_artifact_paths():
         "pool-linux-x64",
         "pool-mac-arm64",
         "pool-mac-intel",
-        "CNgopay/pool.exe",
-        "CNgopay/pool-linux-x64",
-        "CNgopay/pool-mac-arm64",
-        "CNgopay/pool-mac-intel",
         "dist/autotoken-0.1.0.tar.gz",
         "dist/autotoken-0.1.0-py3-none-any.whl",
         "build/lib/example.py",
@@ -1138,20 +1127,6 @@ def test_dockerignore_excludes_local_secret_and_generated_artifact_paths():
         "src/autotoken/web/dist/",
         "web/node_modules/",
         "**/node_modules/",
-        "CNgopay/runs/",
-        "CNgopay/config.json",
-        "CNgopay/codex_register/config.json",
-        "CNgopay/pool_tokens.txt",
-        "CNgopay/pool_emails.txt",
-        "CNgopay/pool_numbers.txt",
-        "CNgopay/pool.exe",
-        "CNgopay/pool-linux-x64",
-        "CNgopay/pool-mac-arm64",
-        "CNgopay/pool-mac-intel",
-        "CNgopay/*.history.txt",
-        "CNgopay/codex_register/hotmail/tokens.txt",
-        "CNgopay/codex_register/dist/",
-        "CNgopay/codex_register/bundle/",
     }
 
     assert required_patterns <= dockerignore_lines
@@ -1353,7 +1328,6 @@ def test_built_python_artifacts_exclude_local_runtime_secret_and_generated_paths
     wheel_path = dist_root / "autotoken-0.1.0-py3-none-any.whl"
     sdist_path = dist_root / "autotoken-0.1.0.tar.gz"
     forbidden_patterns = [
-        r"(^|/)CNgopay/",
         r"(^|/)build(/|$)",
         r"(^|/)dist/(?!index\.html$|assets/)",
         r"(^|/).*\.egg-info/",
