@@ -53,6 +53,7 @@ auths.bak-*/
 .vscode/
 .ruff_cache/
 .pre-commit-config.yaml.local
+.worktrees/
 .tmp/
 .pytest_cache/
 .pytest_tmp*/
