@@ -473,7 +473,8 @@ def test_start_server_keeps_explicit_local_base_url(monkeypatch):
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "PUT"])
-def test_unknown_api_paths_return_standard_not_found(method):
+def test_unknown_api_paths_return_standard_not_found(method, monkeypatch):
+    monkeypatch.setattr(api, "API_KEY", "")
     status, body = anyio.run(_request_app, method, "/api/unknown")
 
     assert status == 404
