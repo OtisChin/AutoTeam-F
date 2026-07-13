@@ -199,7 +199,7 @@ def test_gopay_pro_paths_uses_default_pool_paths_for_oversized_config(tmp_path):
     assert paths["tokens"] == (root / "pool_tokens.txt").resolve()
 
 
-def test_gopay_pro_verify_plus_plan_ignores_outside_auth_file_token(tmp_path, monkeypatch):
+def test_verify_plus_plan_ignores_outside_auth_file_token(tmp_path, monkeypatch):
     auth_dir = tmp_path / "auths"
     auth_dir.mkdir()
     outside = tmp_path / "outside.json"
@@ -207,8 +207,8 @@ def test_gopay_pro_verify_plus_plan_ignores_outside_auth_file_token(tmp_path, mo
 
     monkeypatch.setattr("autotoken.storage.auth_storage.AUTH_DIR", auth_dir)
     monkeypatch.setattr("autotoken.storage.auth_session_store.get_auth_session_file", lambda _email: "")
-    monkeypatch.setenv("GOPAY_PRO_PLUS_VERIFY_ATTEMPTS", "1")
-    monkeypatch.setenv("GOPAY_PRO_PLUS_VERIFY_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("OPENAI_PLAN_VERIFY_ATTEMPTS", "1")
+    monkeypatch.setenv("OPENAI_PLAN_VERIFY_INTERVAL_SECONDS", "0")
 
     probed_tokens = []
 
@@ -216,15 +216,15 @@ def test_gopay_pro_verify_plus_plan_ignores_outside_auth_file_token(tmp_path, mo
         probed_tokens.append(access_token)
         return {"ok": False, "reason": "missing_token"}
 
-    monkeypatch.setattr(api, "_gopay_pro_probe_openai_plan", fake_probe)
+    monkeypatch.setattr(api, "_probe_openai_plan", fake_probe)
 
-    result = api._gopay_pro_verify_plus_plan({"email": "user@example.com", "auth_file": str(outside)})
+    result = api._verify_plus_plan({"email": "user@example.com", "auth_file": str(outside)})
 
     assert result["ok"] is False
     assert probed_tokens == [""]
 
 
-def test_gopay_pro_verify_plus_plan_accepts_matching_session_file(tmp_path, monkeypatch):
+def test_verify_plus_plan_accepts_matching_session_file(tmp_path, monkeypatch):
     auth_dir = tmp_path / "auths"
     session_dir = tmp_path / "auth_session"
     auth_dir.mkdir()
@@ -235,8 +235,8 @@ def test_gopay_pro_verify_plus_plan_accepts_matching_session_file(tmp_path, monk
     monkeypatch.setattr("autotoken.storage.auth_storage.AUTH_DIR", auth_dir)
     monkeypatch.setattr("autotoken.storage.auth_session_store.AUTH_SESSION_DIR", session_dir)
     monkeypatch.setattr("autotoken.storage.auth_session_store.get_auth_session_file", lambda _email: str(session_file))
-    monkeypatch.setenv("GOPAY_PRO_PLUS_VERIFY_ATTEMPTS", "1")
-    monkeypatch.setenv("GOPAY_PRO_PLUS_VERIFY_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("OPENAI_PLAN_VERIFY_ATTEMPTS", "1")
+    monkeypatch.setenv("OPENAI_PLAN_VERIFY_INTERVAL_SECONDS", "0")
 
     probed = {}
 
@@ -245,16 +245,16 @@ def test_gopay_pro_verify_plus_plan_accepts_matching_session_file(tmp_path, monk
         probed["account_id"] = account_id
         return {"ok": True, "plan_type": "plus"}
 
-    monkeypatch.setattr(api, "_gopay_pro_probe_openai_plan", fake_probe)
+    monkeypatch.setattr(api, "_probe_openai_plan", fake_probe)
 
-    result = api._gopay_pro_verify_plus_plan({"email": "user@example.com", "auth_file": str(session_file)})
+    result = api._verify_plus_plan({"email": "user@example.com", "auth_file": str(session_file)})
 
     assert result["ok"] is True
     assert result["plan_type"] == "plus"
     assert probed == {"access_token": "session-token", "account_id": "account-id"}
 
 
-def test_gopay_pro_save_refreshed_auth_file_ignores_outside_auth_file(tmp_path, monkeypatch):
+def test_save_refreshed_auth_file_ignores_outside_auth_file(tmp_path, monkeypatch):
     auth_dir = tmp_path / "auths"
     auth_dir.mkdir()
     outside = tmp_path / "outside.json"
@@ -262,7 +262,7 @@ def test_gopay_pro_save_refreshed_auth_file_ignores_outside_auth_file(tmp_path, 
 
     monkeypatch.setattr("autotoken.storage.auth_storage.AUTH_DIR", auth_dir)
 
-    api._gopay_pro_save_refreshed_auth_file(
+    api._save_refreshed_auth_file(
         str(outside),
         {"access_token": "old-token", "refresh_token": "refresh-old"},
         {"access_token": "new-token", "refresh_token": "refresh-new"},
@@ -271,7 +271,7 @@ def test_gopay_pro_save_refreshed_auth_file_ignores_outside_auth_file(tmp_path, 
     assert json.loads(outside.read_text(encoding="utf-8")) == {"access_token": "old-token"}
 
 
-def test_gopay_pro_save_refreshed_auth_file_accepts_auth_dir_file(tmp_path, monkeypatch):
+def test_save_refreshed_auth_file_accepts_auth_dir_file(tmp_path, monkeypatch):
     auth_dir = tmp_path / "auths"
     auth_dir.mkdir()
     auth_file = auth_dir / "codex-user@example.com-plus-deadbeef.json"
@@ -280,7 +280,7 @@ def test_gopay_pro_save_refreshed_auth_file_accepts_auth_dir_file(tmp_path, monk
     monkeypatch.setattr("autotoken.storage.auth_storage.AUTH_DIR", auth_dir)
     monkeypatch.setattr("autotoken.storage.auth_index.upsert_codex_auth_file", lambda *_args, **_kwargs: None)
 
-    api._gopay_pro_save_refreshed_auth_file(
+    api._save_refreshed_auth_file(
         str(auth_file),
         {"access_token": "old-token", "refresh_token": "refresh-old"},
         {"access_token": "new-token", "refresh_token": "refresh-new"},
@@ -790,7 +790,7 @@ def test_gopay_pro_batch_runs_refresh_and_fix_failed_before_harvest(tmp_path, mo
             }
         ],
     )
-    monkeypatch.setattr(api, "_gopay_pro_verify_plus_plan", lambda _item: {"ok": True, "plan_type": "plus"})
+    monkeypatch.setattr(api, "_verify_plus_plan", lambda _item: {"ok": True, "plan_type": "plus"})
     monkeypatch.setattr(api, "_mark_gopay_pro_success_account", lambda *args, **kwargs: {})
 
     progress = []

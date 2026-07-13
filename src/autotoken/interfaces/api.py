@@ -187,6 +187,7 @@ from autotoken.core.files import (
     read_lines_file,
     write_json_atomic,
 )
+from autotoken.core.normalization import normalize_access_token as _core_normalize_access_token
 from autotoken.core.normalization import normalized_email as _core_normalized_email
 from autotoken.core.redaction import (
     compact_log_text as _compact_log_text,
@@ -206,6 +207,7 @@ from autotoken.core.redaction import (
 from autotoken.services import account_cpa_auth as account_cpa_auth_service
 from autotoken.services import account_delete_audit as account_delete_audit_service
 from autotoken.services import account_oauth_results as account_oauth_results_service
+from autotoken.services import account_plan_verification as account_plan_verification_service
 from autotoken.services import account_pool_cleanup as account_pool_cleanup_service
 from autotoken.services import account_presentation as account_presentation_service
 from autotoken.services import account_session_stubs as account_session_stubs_service
@@ -1821,7 +1823,7 @@ app.include_router(
 
 
 def _normalize_access_token(raw_value: str) -> str:
-    return gopay_pro_pool_service.normalize_access_token(raw_value)
+    return _core_normalize_access_token(raw_value)
 
 
 def _extract_account_access_token(email: str) -> str:
@@ -2934,7 +2936,14 @@ def _mark_gopay_pro_success_account(email: str, *, task_id: str, message: str = 
     return updated
 
 
-def _mark_gopay_pro_failed_account(email: str, *, task_id: str, status: str, message: str, failure_stage: str) -> None:
+def _mark_account_plan_verification_failed(
+    email: str,
+    *,
+    task_id: str,
+    status: str,
+    message: str,
+    failure_stage: str,
+) -> None:
     from autotoken.storage.accounts import update_account
 
     normalized = _normalized_email(email)
@@ -2942,7 +2951,7 @@ def _mark_gopay_pro_failed_account(email: str, *, task_id: str, status: str, mes
         return
     update_account(
         normalized,
-        **gopay_pro_accounts_service.failed_account_update_fields(
+        **account_plan_verification_service.verification_failure_update_fields(
             task_id=task_id,
             status=status,
             message=message,
@@ -2952,10 +2961,10 @@ def _mark_gopay_pro_failed_account(email: str, *, task_id: str, status: str, mes
     )
 
 
-def _gopay_pro_probe_openai_plan(access_token: str, account_id: str = "", *, timeout: float = 25.0) -> dict:
+def _probe_openai_plan(access_token: str, account_id: str = "", *, timeout: float = 25.0) -> dict:
     token = _normalize_access_token(access_token)
     if not token:
-        return gopay_pro_accounts_service.usage_probe_missing_token_result()
+        return account_plan_verification_service.usage_probe_missing_token_result()
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -2966,35 +2975,37 @@ def _gopay_pro_probe_openai_plan(access_token: str, account_id: str = "", *, tim
     if account_id:
         headers["Chatgpt-Account-Id"] = account_id
     try:
-        resp = requests.get(
+        response = requests.get(
             "https://chatgpt.com/backend-api/wham/usage",
             headers=headers,
             params={"account_id": account_id} if account_id else None,
             timeout=max(5.0, float(timeout or 25.0)),
         )
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as exc:
-        return gopay_pro_accounts_service.usage_probe_exception_result(kind="网络异常", error=exc)
+        return account_plan_verification_service.usage_probe_exception_result(kind="网络异常", error=exc)
     except requests.exceptions.RequestException as exc:
-        return gopay_pro_accounts_service.usage_probe_exception_result(kind="请求异常", error=exc)
+        return account_plan_verification_service.usage_probe_exception_result(kind="请求异常", error=exc)
     except Exception as exc:
-        return gopay_pro_accounts_service.usage_probe_exception_result(kind="未知异常", error=exc)
-
-    if resp.status_code != 200:
-        return gopay_pro_accounts_service.usage_probe_http_result(status_code=resp.status_code, text=resp.text)
-
+        return account_plan_verification_service.usage_probe_exception_result(kind="未知异常", error=exc)
+    if response.status_code != 200:
+        return account_plan_verification_service.usage_probe_http_result(
+            status_code=response.status_code,
+            text=response.text,
+        )
     try:
-        payload = resp.json()
+        payload = response.json()
     except Exception as exc:
-        return gopay_pro_accounts_service.usage_probe_json_error_result(exc)
-    plan_type = str((payload or {}).get("plan_type") or "").strip().lower()
-    return gopay_pro_accounts_service.usage_probe_ok_result(plan_type)
+        return account_plan_verification_service.usage_probe_json_error_result(exc)
+    return account_plan_verification_service.usage_probe_ok_result(
+        str((payload or {}).get("plan_type") or "").strip().lower()
+    )
 
 
-def _gopay_pro_save_refreshed_auth_file(auth_file: str, auth_data: dict, refreshed: dict) -> None:
+def _save_refreshed_auth_file(auth_file: str, auth_data: dict, refreshed: dict) -> None:
     path = _trusted_token_auth_path(auth_file)
     if not path or not isinstance(auth_data, dict) or not isinstance(refreshed, dict):
         return
-    next_data = gopay_pro_accounts_service.refreshed_auth_data(auth_data, refreshed, now=time.time())
+    next_data = account_plan_verification_service.refreshed_auth_data(auth_data, refreshed, now=time.time())
     path.write_text(json.dumps(next_data, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         from autotoken.storage.auth_index import upsert_codex_auth_file
@@ -3003,10 +3014,10 @@ def _gopay_pro_save_refreshed_auth_file(auth_file: str, auth_data: dict, refresh
         ensure_auth_file_permissions(path)
         upsert_codex_auth_file(path, next_data, main=path.name.startswith("codex-main-"))
     except Exception as exc:
-        logger.warning("[gopay-pro] 刷新后的 CPA auth 索引写入失败: %s", exc)
+        logger.warning("[account-plan] refreshed CPA auth index update failed: %s", exc)
 
 
-def _gopay_pro_verify_plus_plan(item: dict[str, str]) -> dict:
+def _verify_plus_plan(item: dict[str, str]) -> dict:
     email = str(item.get("email") or "").strip()
     auth_file = _valid_token_item_auth_file(item)
     auth_data: dict[str, Any] = {}
@@ -3016,7 +3027,7 @@ def _gopay_pro_verify_plus_plan(item: dict[str, str]) -> dict:
             if auth_path:
                 auth_data = read_auth_json_file(auth_path)
         except Exception as exc:
-            return gopay_pro_accounts_service.plus_plan_auth_file_read_error_result(exc)
+            return account_plan_verification_service.plus_plan_auth_file_read_error_result(exc)
     access_token = _normalize_access_token(
         item.get("access_token") or auth_data.get("access_token") or auth_data.get("accessToken") or ""
     )
@@ -3024,16 +3035,16 @@ def _gopay_pro_verify_plus_plan(item: dict[str, str]) -> dict:
         item.get("refresh_token") or auth_data.get("refresh_token") or auth_data.get("refreshToken") or ""
     ).strip()
     account_id = str(item.get("account_id") or auth_data.get("account_id") or auth_data.get("accountId") or "").strip()
-    attempts = max(1, int(_env_float("GOPAY_PRO_PLUS_VERIFY_ATTEMPTS", 3)))
-    wait_seconds = max(0.0, _env_float("GOPAY_PRO_PLUS_VERIFY_INTERVAL_SECONDS", 5.0))
+    attempts = max(1, int(_env_float("OPENAI_PLAN_VERIFY_ATTEMPTS", 3)))
+    wait_seconds = max(0.0, _env_float("OPENAI_PLAN_VERIFY_INTERVAL_SECONDS", 5.0))
     refreshed_once = False
-    last_probe: dict = gopay_pro_accounts_service.usage_probe_missing_token_result()
+    last_probe: dict = account_plan_verification_service.usage_probe_missing_token_result()
 
     for attempt in range(1, attempts + 1):
-        last_probe = _gopay_pro_probe_openai_plan(access_token, account_id)
+        last_probe = _probe_openai_plan(access_token, account_id)
         plan_type = str(last_probe.get("plan_type") or "").strip().lower()
         if plan_type in {"plus", "pro"}:
-            return gopay_pro_accounts_service.plus_plan_verified_result(plan_type)
+            return account_plan_verification_service.plus_plan_verified_result(plan_type)
 
         if refresh_token and not refreshed_once:
             refreshed_once = True
@@ -3043,7 +3054,7 @@ def _gopay_pro_verify_plus_plan(item: dict[str, str]) -> dict:
                 refreshed = refresh_access_token(refresh_token)
             except Exception as exc:
                 refreshed = None
-                last_probe = gopay_pro_accounts_service.plus_plan_refresh_exception_probe(
+                last_probe = account_plan_verification_service.plus_plan_refresh_exception_probe(
                     last_probe,
                     plan_type=plan_type,
                     error=exc,
@@ -3051,16 +3062,16 @@ def _gopay_pro_verify_plus_plan(item: dict[str, str]) -> dict:
             if refreshed and refreshed.get("access_token"):
                 access_token = _normalize_access_token(refreshed.get("access_token") or access_token)
                 refresh_token = str(refreshed.get("refresh_token") or refresh_token)
-                _gopay_pro_save_refreshed_auth_file(auth_file, auth_data, refreshed)
+                _save_refreshed_auth_file(auth_file, auth_data, refreshed)
                 continue
 
         if attempt < attempts and wait_seconds > 0:
             time.sleep(wait_seconds)
 
-    return gopay_pro_accounts_service.plus_plan_unverified_result(email=email, last_probe=last_probe)
+    return account_plan_verification_service.plus_plan_unverified_result(email=email, last_probe=last_probe)
 
 
-def _gopay_pro_normalize_observed_auth_plan(email: str, auth_file: str, plan_type: str) -> None:
+def _normalize_observed_auth_plan(email: str, auth_file: str, plan_type: str) -> None:
     observed_plan = str(plan_type or "").strip().lower()
     if observed_plan not in {"free", "plus", "pro", "team"}:
         return
@@ -3072,7 +3083,7 @@ def _gopay_pro_normalize_observed_auth_plan(email: str, auth_file: str, plan_typ
         )
     except Exception:
         logger.warning(
-            "[gopay-pro] 同步实测 auth plan_type 失败: email=%s plan=%s",
+            "[account-plan] observed auth plan sync failed: email=%s plan=%s",
             _safe_email_summary(email),
             observed_plan,
             exc_info=True,
@@ -3824,10 +3835,10 @@ def _run_gopay_pro_batch_task(
 
             for token in success_tokens:
                 email = token_to_item[token]["email"]
-                plan_verification = _gopay_pro_verify_plus_plan(token_to_item[token])
+                plan_verification = _verify_plus_plan(token_to_item[token])
                 if not plan_verification.get("ok"):
                     plan_message = str(plan_verification.get("message") or "OpenAI Plus 状态未确认")
-                    _gopay_pro_normalize_observed_auth_plan(
+                    _normalize_observed_auth_plan(
                         email,
                         token_to_item[token].get("auth_file") or "",
                         str(plan_verification.get("plan_type") or ""),
@@ -3839,7 +3850,7 @@ def _run_gopay_pro_batch_task(
                             "message": plan_message,
                         }
                     )
-                    _mark_gopay_pro_failed_account(
+                    _mark_account_plan_verification_failed(
                         email,
                         task_id=task_id,
                         status="pending_manual",
@@ -3948,7 +3959,7 @@ def _run_gopay_pro_batch_task(
                         "message": "token 已被消费，但未匹配到明确成功 slot，未自动回写 Plus",
                     }
                 )
-                _mark_gopay_pro_failed_account(
+                _mark_account_plan_verification_failed(
                     email,
                     task_id=task_id,
                     status="failed",
@@ -3982,7 +3993,7 @@ def _run_gopay_pro_batch_task(
                     failed.append(
                         {"email": email, "failure_stage": "max_attempts", "message": "达到最大重试次数仍未完成"}
                     )
-                    _mark_gopay_pro_failed_account(
+                    _mark_account_plan_verification_failed(
                         email,
                         task_id=task_id,
                         status="failed",
@@ -4099,9 +4110,9 @@ app.include_router(
         update_account_cpa_auth_plan_type=_update_account_cpa_auth_plan_type,
         convert_account_auth_session_to_cpa_auth=_convert_account_auth_session_to_cpa_auth,
         is_main_account_email=_is_main_account_email,
-        verify_plus_plan=_gopay_pro_verify_plus_plan,
-        normalize_observed_auth_plan=_gopay_pro_normalize_observed_auth_plan,
-        mark_failed_account=_mark_gopay_pro_failed_account,
+        verify_plus_plan=_verify_plus_plan,
+        normalize_observed_auth_plan=_normalize_observed_auth_plan,
+        mark_failed_account=_mark_account_plan_verification_failed,
         safe_email_summary=_safe_email_summary,
         current_time=time.time,
     )
