@@ -1853,6 +1853,7 @@ function bindProviderLabel(provider) {
   return {
     paypal: 'PayPal',
     paypal_ice: 'PayPal ICE',
+    pix: 'Pix',
     gopay: 'GoPay',
     card: 'Card',
     external_import: '外部导入',
@@ -1874,6 +1875,7 @@ function bindProviderClass(provider) {
   return {
     paypal: 'bg-blue-500/10 text-blue-300',
     paypal_ice: 'bg-blue-500/10 text-blue-300',
+    pix: 'bg-cyan-500/10 text-cyan-300',
     gopay: 'bg-emerald-500/10 text-emerald-300',
     card: 'bg-amber-500/10 text-amber-300',
     external_import: 'bg-teal-500/10 text-teal-300',

@@ -69,7 +69,7 @@ const items = [
   { key: 'bindcard', group: 'Payments', glyph: 'BC', label: '自动绑卡服务', mobileLabel: '绑卡' },
   { key: 'gopay', group: 'Payments', glyph: 'GP', label: 'GoPay', mobileLabel: 'GoPay' },
   { key: 'ideal', group: 'Payments', glyph: 'ID', label: '荷兰iDEAL', mobileLabel: 'iDEAL' },
-  { key: 'brazilPix', group: 'Payments', glyph: 'PX', label: '巴西pix', mobileLabel: 'Pix' },
+  { key: 'brazilPix', group: 'Payments', glyph: 'PX', label: '巴西Pix', mobileLabel: 'PIX' },
   { key: 'paypal', group: 'Payments', glyph: 'PP', label: 'PayPal', mobileLabel: 'PayPal' },
   { key: 'paypalIce', group: 'Payments', glyph: 'PI', label: 'PayPal ICE', mobileLabel: 'ICE' },
   { key: 'oauthPhones', group: 'OAuth', glyph: 'PH', label: 'OAuth 手机号', mobileLabel: '手机号' },
