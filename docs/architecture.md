@@ -81,6 +81,7 @@ AutoToken-F 用来维护 ChatGPT Team 账号池、认证文件和 CPA 同步状�
 | `accounts.json`, `state.json`, `runtime_config.json` | 本地运行状态 |
 | `auths/`, `auth_state/`, `data/` | 认证文件和持久化数据 |
 | `logs/`, `outputs/`, `screenshots/` | 调试输出 |
+| `web/node_modules/` | 前端依赖 |
 | `src/autotoken/web/dist/` | 本地 Web 构建产物 |
 | `dist/` | Python 构建产物 |
 

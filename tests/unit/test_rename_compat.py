@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import tomllib
@@ -36,7 +36,9 @@ def _autoteam_alias_mapping_from_text(text: str) -> dict[str, str]:
     for node in module.body:
         if not isinstance(node, ast.Assign):
             continue
-        if any(isinstance(target, ast.Name) and target.id == "_REORGANIZED_SUBMODULE_ALIASES" for target in node.targets):
+        if any(
+            isinstance(target, ast.Name) and target.id == "_REORGANIZED_SUBMODULE_ALIASES" for target in node.targets
+        ):
             return ast.literal_eval(node.value)
     raise AssertionError("_REORGANIZED_SUBMODULE_ALIASES assignment not found")
 
@@ -64,11 +66,13 @@ def _python_package_dirs_missing_init(source_root: Path) -> list[str]:
 
 
 def _wheel_python_package_dirs_missing_init(wheel_names: list[str]) -> list[str]:
-    package_dirs = sorted({
-        str(Path(name).parent).replace("\\", "/")
-        for name in wheel_names
-        if name.startswith("autotoken/") and name.endswith(".py")
-    })
+    package_dirs = sorted(
+        {
+            str(Path(name).parent).replace("\\", "/")
+            for name in wheel_names
+            if name.startswith("autotoken/") and name.endswith(".py")
+        }
+    )
     return [
         directory
         for directory in package_dirs
@@ -78,20 +82,12 @@ def _wheel_python_package_dirs_missing_init(wheel_names: list[str]) -> list[str]
 
 def _protocol_register_bundle_files(project_root: Path) -> list[str]:
     bundle_root = project_root / "src" / "autotoken" / "_protocol_register"
-    return sorted(
-        path.relative_to(bundle_root).as_posix()
-        for path in bundle_root.iterdir()
-        if path.is_file()
-    )
+    return sorted(path.relative_to(bundle_root).as_posix() for path in bundle_root.iterdir() if path.is_file())
 
 
 def _oauth_helper_extension_files(project_root: Path) -> list[str]:
     extension_root = project_root / "src" / "autotoken" / "oauth_helper_extension"
-    return sorted(
-        path.relative_to(extension_root).as_posix()
-        for path in extension_root.iterdir()
-        if path.is_file()
-    )
+    return sorted(path.relative_to(extension_root).as_posix() for path in extension_root.iterdir() if path.is_file())
 
 
 def _autotoken_package_data_files(project_root: Path) -> list[str]:
@@ -113,6 +109,37 @@ def _text_artifact_members_containing_old_name(members: dict[str, str]) -> list[
         for name, text in members.items()
         if "autoteam" in name.lower() or any(term in text for term in old_name_terms)
     )
+
+
+def _removed_subsystem_marker_patterns() -> tuple[re.Pattern[str], ...]:
+    snake_name = "gopay" + "_pro"
+    kebab_name = "gopay" + "-pro"
+    legacy_name = "cn" + "gopay"
+    display_name = "GoPay" + " " + "Pro"
+    camel_type_name = "GoPay" + "Pro"
+    camel_value_name = "gopay" + "Pro"
+    return (
+        re.compile(
+            rf"{re.escape(snake_name)}(?:_|\b)|"
+            rf"{re.escape(kebab_name)}(?:-|\b)|"
+            rf"{re.escape(legacy_name)}(?:_|\b)|"
+            rf"{re.escape(display_name)}\b",
+            flags=re.IGNORECASE,
+        ),
+        re.compile(rf"{re.escape(camel_type_name)}[A-Z]|\b{re.escape(camel_value_name)}\b"),
+    )
+
+
+def _contains_removed_subsystem_marker(value: str) -> bool:
+    return any(pattern.search(value) for pattern in _removed_subsystem_marker_patterns())
+
+
+def _allowed_removal_record_paths() -> set[PurePosixPath]:
+    record_stem = "2026-07-13-remove-" + "gopay" + "-pro"
+    return {
+        PurePosixPath("docs/superpowers/specs") / f"{record_stem}-design.md",
+        PurePosixPath("docs/superpowers/plans") / f"{record_stem}.md",
+    }
 
 
 def _legacy_root_alias_metadata_check_script(checks: dict[str, str]) -> str:
@@ -707,9 +734,7 @@ def test_uv_lock_uses_autotoken_as_editable_project_name():
     project_root = Path(__file__).resolve().parents[2]
     lock_text = (project_root / "uv.lock").read_text(encoding="utf-8")
     uv_lock = tomllib.loads(lock_text)
-    editable_packages = [
-        package for package in uv_lock["package"] if package.get("source", {}).get("editable") == "."
-    ]
+    editable_packages = [package for package in uv_lock["package"] if package.get("source", {}).get("editable") == "."]
 
     assert [package["name"] for package in editable_packages] == ["autotoken"]
     assert "autoteam" not in lock_text.lower()
@@ -1006,11 +1031,7 @@ def test_git_tracked_files_exclude_runtime_data_and_secret_artifacts():
         r"^(pool\.exe|pool-linux-x64|pool-mac-arm64|pool-mac-intel)$",
         r"^src/autotoken/web/dist/",
     ]
-    offenders = [
-        path
-        for path in tracked_paths
-        if any(re.search(pattern, path) for pattern in forbidden_patterns)
-    ]
+    offenders = [path for path in tracked_paths if any(re.search(pattern, path) for pattern in forbidden_patterns)]
 
     assert offenders == []
 
@@ -1160,6 +1181,57 @@ def test_built_web_dist_references_existing_autotoken_assets():
         assert "autoteam" not in path.read_text(encoding="utf-8", errors="ignore").lower()
 
 
+def test_built_release_archives_exclude_removed_subsystem_markers():
+    project_root = Path(__file__).resolve().parents[2]
+    dist_root = project_root / "dist"
+    wheel_path = dist_root / "autotoken-0.1.0-py3-none-any.whl"
+    sdist_path = dist_root / "autotoken-0.1.0.tar.gz"
+    allowed_sdist_records = _allowed_removal_record_paths()
+    wheel_hits = set()
+    sdist_hits = set()
+
+    assert wheel_path.is_file()
+    assert sdist_path.is_file()
+
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for name in wheel.namelist():
+            if _contains_removed_subsystem_marker(name):
+                wheel_hits.add(f"member: {name}")
+            if name.endswith("/"):
+                continue
+            try:
+                text = wheel.read(name).decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if _contains_removed_subsystem_marker(text):
+                wheel_hits.add(f"content: {name}")
+
+    with tarfile.open(sdist_path) as sdist:
+        for member in sdist.getmembers():
+            member_path = PurePosixPath(member.name)
+            relative_path = PurePosixPath(*member_path.parts[1:])
+            if relative_path in allowed_sdist_records:
+                continue
+            if _contains_removed_subsystem_marker(member.name):
+                sdist_hits.add(f"member: {member.name}")
+            if not member.isfile():
+                continue
+            member_file = sdist.extractfile(member)
+            if member_file is None:
+                continue
+            try:
+                text = member_file.read().decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if _contains_removed_subsystem_marker(text):
+                sdist_hits.add(f"content: {member.name}")
+
+    assert {
+        "wheel": sorted(wheel_hits),
+        "sdist": sorted(sdist_hits),
+    } == {"wheel": [], "sdist": []}
+
+
 def test_built_python_artifacts_use_autotoken_metadata_and_minimal_legacy_package():
     project_root = Path(__file__).resolve().parents[2]
     dist_root = project_root / "dist"
@@ -1208,24 +1280,33 @@ def test_built_python_artifacts_use_autotoken_metadata_and_minimal_legacy_packag
         "autotoken/storage/sqlite_store.py",
     ]
     assert _wheel_python_package_dirs_missing_init(wheel_names) == []
-    assert sorted(
-        name.removeprefix("autotoken/_protocol_register/")
-        for name in wheel_names
-        if name.startswith("autotoken/_protocol_register/")
-    ) == expected_protocol_bundle_files
-    assert sorted(
-        name.removeprefix("autotoken/oauth_helper_extension/")
-        for name in wheel_names
-        if name.startswith("autotoken/oauth_helper_extension/")
-    ) == expected_oauth_extension_files
-    assert sorted(
-        name.removeprefix("autotoken/")
-        for name in wheel_names
-        if name.startswith("autotoken/")
-        and not name.endswith(".py")
-        and not name.endswith("/")
-        and not name.startswith("autotoken/web/dist/")
-    ) == expected_package_data_files
+    assert (
+        sorted(
+            name.removeprefix("autotoken/_protocol_register/")
+            for name in wheel_names
+            if name.startswith("autotoken/_protocol_register/")
+        )
+        == expected_protocol_bundle_files
+    )
+    assert (
+        sorted(
+            name.removeprefix("autotoken/oauth_helper_extension/")
+            for name in wheel_names
+            if name.startswith("autotoken/oauth_helper_extension/")
+        )
+        == expected_oauth_extension_files
+    )
+    assert (
+        sorted(
+            name.removeprefix("autotoken/")
+            for name in wheel_names
+            if name.startswith("autotoken/")
+            and not name.endswith(".py")
+            and not name.endswith("/")
+            and not name.startswith("autotoken/web/dist/")
+        )
+        == expected_package_data_files
+    )
     assert wheel_oauth_manifest == expected_oauth_manifest
     assert "AutoToken" in wheel_oauth_manifest["name"]
     assert "AutoTeam" not in json.dumps(wheel_oauth_manifest)
@@ -1292,23 +1373,32 @@ def test_built_python_artifacts_use_autotoken_metadata_and_minimal_legacy_packag
         "autotoken-0.1.0/src/autotoken/oauth_helper_extension/content.js",
         "autotoken-0.1.0/src/autotoken/storage/sqlite_store.py",
     ]
-    assert sorted(
-        name.removeprefix("autotoken-0.1.0/src/autotoken/_protocol_register/")
-        for name in sdist_names
-        if name.startswith("autotoken-0.1.0/src/autotoken/_protocol_register/")
-    ) == expected_protocol_bundle_files
-    assert sorted(
-        name.removeprefix("autotoken-0.1.0/src/autotoken/oauth_helper_extension/")
-        for name in sdist_names
-        if name.startswith("autotoken-0.1.0/src/autotoken/oauth_helper_extension/")
-    ) == expected_oauth_extension_files
-    assert sorted(
-        name.removeprefix("autotoken-0.1.0/src/autotoken/")
-        for name in sdist_names
-        if name.startswith("autotoken-0.1.0/src/autotoken/")
-        and not name.endswith(".py")
-        and not name.startswith("autotoken-0.1.0/src/autotoken/web/dist/")
-    ) == expected_package_data_files
+    assert (
+        sorted(
+            name.removeprefix("autotoken-0.1.0/src/autotoken/_protocol_register/")
+            for name in sdist_names
+            if name.startswith("autotoken-0.1.0/src/autotoken/_protocol_register/")
+        )
+        == expected_protocol_bundle_files
+    )
+    assert (
+        sorted(
+            name.removeprefix("autotoken-0.1.0/src/autotoken/oauth_helper_extension/")
+            for name in sdist_names
+            if name.startswith("autotoken-0.1.0/src/autotoken/oauth_helper_extension/")
+        )
+        == expected_oauth_extension_files
+    )
+    assert (
+        sorted(
+            name.removeprefix("autotoken-0.1.0/src/autotoken/")
+            for name in sdist_names
+            if name.startswith("autotoken-0.1.0/src/autotoken/")
+            and not name.endswith(".py")
+            and not name.startswith("autotoken-0.1.0/src/autotoken/web/dist/")
+        )
+        == expected_package_data_files
+    )
     sdist_web_assets = re.findall(r"""(?:src|href)=["']/(assets/[^"']+)["']""", sdist_web_html)
     assert sdist_web_assets
     assert all(f"autotoken-0.1.0/src/autotoken/web/dist/{asset_path}" in sdist_names for asset_path in sdist_web_assets)
@@ -1351,9 +1441,7 @@ def test_built_python_artifacts_exclude_local_runtime_secret_and_generated_paths
         sdist_names = sdist.getnames()
 
     offenders = [
-        name
-        for name in [*wheel_names, *sdist_names]
-        if any(re.search(pattern, name) for pattern in forbidden_patterns)
+        name for name in [*wheel_names, *sdist_names] if any(re.search(pattern, name) for pattern in forbidden_patterns)
     ]
 
     assert offenders == []
