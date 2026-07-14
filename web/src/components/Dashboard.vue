@@ -1854,7 +1854,6 @@ function bindProviderLabel(provider) {
     paypal: 'PayPal',
     paypal_ice: 'PayPal ICE',
     gopay: 'GoPay',
-    gopay_pro: 'GoPay Pro',
     card: 'Card',
     external_import: '外部导入',
   }[String(provider || '').toLowerCase()] || '-'
@@ -1876,7 +1875,6 @@ function bindProviderClass(provider) {
     paypal: 'bg-blue-500/10 text-blue-300',
     paypal_ice: 'bg-blue-500/10 text-blue-300',
     gopay: 'bg-emerald-500/10 text-emerald-300',
-    gopay_pro: 'bg-cyan-500/10 text-cyan-300',
     card: 'bg-amber-500/10 text-amber-300',
     external_import: 'bg-teal-500/10 text-teal-300',
   }[String(provider || '').toLowerCase()] || 'bg-gray-500/10 text-gray-500'

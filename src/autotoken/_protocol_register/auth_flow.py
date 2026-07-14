@@ -1031,7 +1031,7 @@ class AuthFlow:
             return {}
 
     def _handle_add_email_verification(self, mail_provider: MailProvider | None, continue_url: str = "") -> str:
-        """Bind an email during Codex OAuth, matching the CNgopay phone->email->OAuth flow."""
+        """Bind an email during Codex OAuth after the phone verification step."""
         if mail_provider is None:
             logger.warning("Codex OAuth 命中 add-email，但未提供邮箱供应商")
             return continue_url or ""

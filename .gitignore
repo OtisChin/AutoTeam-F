@@ -53,6 +53,7 @@ auths.bak-*/
 .vscode/
 .ruff_cache/
 .pre-commit-config.yaml.local
+.worktrees/
 .tmp/
 .pytest_cache/
 .pytest_tmp*/
@@ -75,7 +76,3 @@ tests/output/
 tests/outputs/
 tests/.pytest_tmp*/
 src/autotoken/web/dist/
-CNgopay/runs/
-CNgopay/**/node_modules/
-CNgopay/**/.vite/
-CNgopay/**/*.tsbuildinfo

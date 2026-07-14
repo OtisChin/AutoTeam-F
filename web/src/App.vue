@@ -59,8 +59,6 @@
 
           <BindCard v-else-if="currentPage === 'gopay'" key="gopay" initial-tab="gopay" standalone @refresh="refresh" />
 
-          <GoPayProPage v-else-if="currentPage === 'gopayPro'" />
-
           <IdealLinkPage v-else-if="currentPage === 'ideal'" />
 
           <PayPalPage v-else-if="currentPage === 'paypal'" />
@@ -148,7 +146,6 @@ import Dashboard from './components/Dashboard.vue'
 import RegisterAccountPage from './components/RegisterAccountPage.vue'
 import BindCard from './components/BindCard.vue'
 import BindCardPool from './components/BindCardPool.vue'
-import GoPayProPage from './components/GoPayProPage.vue'
 import IdealLinkPage from './components/IdealLinkPage.vue'
 import PayPalPage from './components/PayPalPage.vue'
 import PayPalIcePage from './components/PayPalIcePage.vue'
@@ -169,7 +166,7 @@ const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autotoken_current_page'
-const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'gopayPro', 'ideal', 'paypal', 'paypalIce', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
+const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'ideal', 'paypal', 'paypalIce', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
 const IDLE_POLLING_ENABLED = false
@@ -315,8 +312,6 @@ function taskCommandLabel(command) {
     register: '注册账号',
     'bind-card': '绑卡任务',
     'gopay-bind': 'GoPay 绑定',
-    'gopay-pro': 'GoPay Pro',
-    'gopay-pro-batch': 'GoPay Pro 批量',
     paypal: 'PayPal 任务',
     'login-batch': '批量补登录',
     'refresh-quota': '刷新凭证',

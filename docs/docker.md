@@ -71,7 +71,7 @@ docker compose exec autotoken uv run autotoken reconcile
 
 ## 构建上下文
 
-`.dockerignore` 已排除本地密钥、日志、输出、账号池、`node_modules`、CNgopay 运行数据和本地构建产物。构建镜像前仍建议检查：
+`.dockerignore` 已排除本地密钥、日志、输出、账号池、`node_modules` 和本地构建产物。构建镜像前仍建议检查：
 
 ```bash
 git status --short
