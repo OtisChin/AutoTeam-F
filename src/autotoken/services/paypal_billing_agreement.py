@@ -22,10 +22,12 @@ def paypal_ba_payment_method_country(
     paypal_country: str,
     paypal_ba_mode: str = "eu",
 ) -> str:
+    normalized_mode = paypal_ba_extract_mode(paypal_ba_mode)
+    if protocol_no_card and normalized_mode == "gb":
+        return "JP"
     normalized_override = re.sub(r"[^A-Za-z]", "", str(override or "")).upper()[:2]
     if normalized_override:
         return normalized_override
-    normalized_mode = paypal_ba_extract_mode(paypal_ba_mode)
     if protocol_no_card and normalized_mode == "br":
         return "BR"
     if protocol_no_card:
@@ -36,11 +38,29 @@ def paypal_ba_payment_method_country(
 
 def paypal_ba_extract_mode(value: Any) -> str:
     normalized = re.sub(r"[^A-Za-z]", "", str(value or "").lower())
-    if normalized in {"us", "eu", "br"}:
+    if normalized in {"us", "eu", "br", "gb"}:
         return normalized
     if normalized in {"brbrl", "brazil", "brasil"}:
         return "br"
     return "eu"
+
+
+def paypal_ba_token_is_valid(value: Any) -> bool:
+    return str(value or "").strip().upper().startswith("BA-")
+
+
+def paypal_ba_extract_succeeded(result: Mapping[str, Any] | dict[str, Any] | None) -> bool:
+    payload = dict(result or {})
+    return str(payload.get("status") or "").strip().lower() == "success" and paypal_ba_token_is_valid(
+        payload.get("ba_token")
+    )
+
+
+def paypal_payment_link_extract_succeeded(result: Mapping[str, Any] | dict[str, Any] | None) -> bool:
+    # A Stripe pm-redirect URL is only an intermediate checkout artifact.  It
+    # is not a usable PayPal/BA link until it resolves to a PayPal URL carrying
+    # a valid BA token.
+    return paypal_ba_extract_succeeded(result)
 
 
 def paypal_ba_checkout_country(paypal_country: str) -> str:
@@ -48,6 +68,12 @@ def paypal_ba_checkout_country(paypal_country: str) -> str:
     if normalized_country == "JP":
         return "US"
     return normalized_country
+
+
+def paypal_ba_checkout_proxy_country(paypal_ba_mode: str, paypal_country: str) -> str:
+    if paypal_ba_extract_mode(paypal_ba_mode) == "gb":
+        return "GB"
+    return re.sub(r"[^A-Za-z]", "", str(paypal_country or "")).upper()[:2] or "JP"
 
 
 def paypal_ba_timeout_seconds(value: Any, *, default: int = 90) -> int:
@@ -81,16 +107,7 @@ def paypal_extract_result_from_redirect(
     resolve_approve_url: Callable[[Any, str], tuple[str, str]],
 ) -> dict[str, Any]:
     raw_redirect_url = str(redirect_url or "").strip()
-    if paypal_protocol_is_pm_redirect_url(raw_redirect_url):
-        return {
-            "status": "success",
-            "ba_token": "",
-            "approve_url": raw_redirect_url,
-            "provider_redirect_url": raw_redirect_url,
-            "payment_link_type": "paypal_redirect",
-            "checkout_session_id": checkout_session_id,
-            "pm_id": pm_id,
-        }
+
     try:
         approve_url, ba_token = resolve_approve_url(http, raw_redirect_url)
     except Exception as exc:
@@ -109,7 +126,8 @@ def paypal_extract_result_from_redirect(
             "checkout_session_id": checkout_session_id,
             "pm_id": pm_id,
         }
-    if not ba_token:
+    ba_token = str(ba_token or "").strip()
+    if not paypal_ba_token_is_valid(ba_token):
         return {
             "status": "failed",
             "failure_stage": "extract_ba_link_parse",
@@ -239,8 +257,8 @@ def paypal_direct_ba_pre_extracted(
         ba_token = paypal_protocol_extract_ba_token(approve_url)
     if not approve_url and not ba_token:
         return None
-    if not ba_token:
-        raise ValueError("paypal_ba_token 不能为空，或 paypal_approve_url 必须包含 BA token")
+    if not paypal_ba_token_is_valid(ba_token):
+        raise ValueError("paypal_ba_token 必须以 BA- 开头，或 paypal_approve_url 必须包含 BA token")
 
     checkout_session_id = str(getattr(params, "paypal_checkout_session_id", "") or "").strip()
     checkout_url = (

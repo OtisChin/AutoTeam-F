@@ -8976,6 +8976,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
             paypal_country=paypal_country,
             protocol_no_card=protocol_no_card,
             paypal_ba_proxy_region=paypal_ba_proxy_region,
+            paypal_ba_mode=paypal_ba_mode,
             default_proxy_entry=lambda provider: _default_proxy_entry(provider),
         )
     except ValueError as exc:
@@ -9081,11 +9082,12 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
     ) -> dict[str, Any] | None:
         if not protocol_no_card or direct_ba_pre_extracted:
             return None
+        expected_country = paypal_ba_service.paypal_ba_checkout_proxy_country(paypal_ba_mode, paypal_country)
         if not str(selected_proxy_url or "").strip():
             return {
                 "status": "failed",
                 "failure_stage": "paypal_checkout_proxy_country_mismatch",
-                "message": "PayPal checkout 缺少 JP 代理，当前账号跳过",
+                "message": f"PayPal checkout 缺少 {expected_country} 代理，当前账号跳过",
                 "email": candidate_email,
                 "checkout_proxy_url": "",
                 "checkout_proxy_country": "",
@@ -9095,12 +9097,12 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
             }
         exit_location = _paypal_checkout_proxy_exit_location(selected_proxy_url)
         detected_country = str(exit_location.get("country_code") or "").strip().upper()
-        if detected_country == "JP":
+        if detected_country == expected_country:
             return None
         proxy_region = str(exit_location.get("region") or "").strip()
         proxy_city = str(exit_location.get("city") or "").strip()
         proxy_ip = str(exit_location.get("ip") or "").strip()
-        reason = "不是 JP" if detected_country else "无法确认是否为 JP"
+        reason = f"不是 {expected_country}" if detected_country else f"无法确认是否为 {expected_country}"
         return {
             "status": "failed",
             "failure_stage": "paypal_checkout_proxy_country_mismatch",
@@ -9809,7 +9811,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                 )
                             )
                             max_ba_attempts = _paypal_ba_extract_attempts()
-                            if pre_extracted_data.get("status") != "success":
+                            if not paypal_ba_service.paypal_payment_link_extract_succeeded(pre_extracted_data):
                                 _append_task_progress_threadsafe(
                                     paypal_ba_service.paypal_ba_extract_attempt_failed_progress(
                                         email=candidate_email,
@@ -9822,7 +9824,9 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                     )
                                 )
                             for ba_attempt in range(2, max_ba_attempts + 1):
-                                if pre_extracted_data.get("status") == "success" or cancel_signal.is_cancelled():
+                                if paypal_ba_service.paypal_payment_link_extract_succeeded(
+                                    pre_extracted_data
+                                ) or cancel_signal.is_cancelled():
                                     break
                                 _append_task_progress_threadsafe(
                                     paypal_ba_service.paypal_ba_extract_retry_progress(
@@ -9849,7 +9853,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                         is_cancelled=cancel_signal.is_cancelled,
                                     )
                                 )
-                                if pre_extracted_data.get("status") != "success":
+                                if not paypal_ba_service.paypal_payment_link_extract_succeeded(pre_extracted_data):
                                     _append_task_progress_threadsafe(
                                         paypal_ba_service.paypal_ba_extract_attempt_failed_progress(
                                             email=candidate_email,
@@ -9872,7 +9876,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                         checkout_url=effective_checkout_url,
                                     )
                                 )
-                            if pre_extracted_data.get("status") == "success":
+                            if paypal_ba_service.paypal_ba_extract_succeeded(pre_extracted_data):
                                 pre_extracted_data.setdefault("checkout_url", effective_checkout_url)
                                 _append_task_progress_threadsafe(
                                     paypal_ba_service.paypal_ba_extracted_progress(
@@ -9882,7 +9886,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                         ba_token=pre_extracted_data.get("ba_token"),
                                     )
                                 )
-                            else:
+                            elif not paypal_ba_service.paypal_payment_link_extract_succeeded(pre_extracted_data):
                                 _append_task_progress_threadsafe(
                                     paypal_ba_service.paypal_ba_extract_failed_progress(
                                         email=candidate_email,
@@ -9944,8 +9948,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                         if (
                             protocol_no_card
                             and pre_extracted_data
-                            and pre_extracted_data.get("status") != "success"
-                            and not pre_extracted_data.get("ba_token")
+                            and not paypal_ba_service.paypal_ba_extract_succeeded(pre_extracted_data)
                         ):
                             single_result = dict(pre_extracted_data)
                         else:
@@ -10527,7 +10530,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                     )
                                 )
                                 max_ba_attempts = _paypal_ba_extract_attempts()
-                                if pre_extracted_data.get("status") != "success":
+                                if not paypal_ba_service.paypal_payment_link_extract_succeeded(pre_extracted_data):
                                     _append_task_progress(
                                         task_id,
                                         paypal_ba_service.paypal_ba_extract_attempt_failed_progress(
@@ -10540,7 +10543,9 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                         ),
                                     )
                                 for ba_attempt in range(2, max_ba_attempts + 1):
-                                    if pre_extracted_data.get("status") == "success" or cancel_signal.is_cancelled():
+                                    if paypal_ba_service.paypal_payment_link_extract_succeeded(
+                                        pre_extracted_data
+                                    ) or cancel_signal.is_cancelled():
                                         break
                                     _append_task_progress(
                                         task_id,
@@ -10580,7 +10585,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                             is_cancelled=cancel_signal.is_cancelled,
                                         )
                                     )
-                                    if pre_extracted_data.get("status") != "success":
+                                    if not paypal_ba_service.paypal_payment_link_extract_succeeded(pre_extracted_data):
                                         _append_task_progress(
                                             task_id,
                                             paypal_ba_service.paypal_ba_extract_attempt_failed_progress(
@@ -10605,7 +10610,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                             checkout_url=effective_checkout_url,
                                         ),
                                     )
-                                if pre_extracted_data.get("status") == "success":
+                                if paypal_ba_service.paypal_ba_extract_succeeded(pre_extracted_data):
                                     pre_extracted_data.setdefault("checkout_url", effective_checkout_url)
                                     _append_task_progress(
                                         task_id,
@@ -10616,7 +10621,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                                             ba_token=pre_extracted_data.get("ba_token"),
                                         ),
                                     )
-                                else:
+                                elif not paypal_ba_service.paypal_payment_link_extract_succeeded(pre_extracted_data):
                                     _append_task_progress(
                                         task_id,
                                         paypal_ba_service.paypal_ba_extract_failed_progress(
@@ -10700,8 +10705,7 @@ def post_paypal_task(params: PayPalTaskParams, request: Request = None):
                             if (
                                 protocol_no_card
                                 and pre_extracted_data
-                                and pre_extracted_data.get("status") != "success"
-                                and not pre_extracted_data.get("ba_token")
+                                and not paypal_ba_service.paypal_ba_extract_succeeded(pre_extracted_data)
                             ):
                                 single_result = dict(pre_extracted_data)
                             else:

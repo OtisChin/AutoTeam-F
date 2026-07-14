@@ -1,6 +1,6 @@
 import pytest
 
-from autotoken.services import paypal_proxy
+from autotoken.services import paypal_proxy, proxy_runtime
 
 
 def test_is_paypal_tunnel_connection_error_matches_known_browser_errors():
@@ -265,6 +265,51 @@ def test_prepare_paypal_proxy_runtime_rewrites_payment_sticky_for_au_provider():
             default_auth_scheme="socks5",
         )
         == "socks5://region-AU.example:1080"
+    )
+
+
+def test_prepare_paypal_proxy_runtime_uses_gb_checkout_and_jp_provider_for_gb_mode():
+    runtime = paypal_proxy.prepare_paypal_proxy_runtime(
+        proxy_url="",
+        proxy_pool=[],
+        proxy_pool_text="",
+        proxy_api_provider="",
+        proxy_api_url="",
+        paypal_jp_proxy_url=(
+            "socks5://user-region-JP-sid-base-t-120:pass@proxy.example:3010"
+        ),
+        paypal_us_proxy_url="",
+        paypal_country="JP",
+        protocol_no_card=True,
+        paypal_ba_proxy_region="US",
+        paypal_ba_mode="gb",
+        default_proxy_entry=lambda _provider: "",
+    )
+
+    assert "region-GB" in runtime.bind_proxy_url
+    assert runtime.provider_proxy_region == "JP"
+
+
+def test_proxy_url_for_region_and_sid_replaces_routed_username_fields():
+    result = proxy_runtime.proxy_url_for_region_and_sid(
+        "socks5://user-region-JP-sid-old-t-120:pass@proxy.example:3010",
+        "GB",
+        "fresh123",
+    )
+
+    assert result == (
+        "socks5://user-region-GB-sid-fresh123-t-120:pass@proxy.example:3010"
+    )
+
+
+def test_proxy_url_for_region_and_sid_leaves_plain_proxy_unchanged():
+    assert (
+        proxy_runtime.proxy_url_for_region_and_sid(
+            "socks5://user:pass@proxy.example:3010",
+            "GB",
+            "fresh123",
+        )
+        == "socks5://user:pass@proxy.example:3010"
     )
 
 

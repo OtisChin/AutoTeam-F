@@ -203,13 +203,14 @@
 
               <div v-if="isNoCardPayPalMode" class="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
                 <label class="mb-1 block text-sm font-medium text-gray-200">支付 / Billing 国家</label>
-                <select v-model="form.paypalBaPaymentMethodCountry" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running">
+                <select v-model="form.paypalBaPaymentMethodCountry" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy || running || ['br', 'gb'].includes(form.paypalBaMode)">
                   <option value="US">US</option>
                   <option value="AU">AU</option>
                   <option value="BR">BR</option>
+                  <option value="JP">JP</option>
                 </select>
                 <div class="mt-2 text-xs text-gray-500">
-                  checkout 固定走 JP sticky 代理；支付侧与 billing 会跟随这里的国家。
+                  GB 模式固定为 GB checkout/approve + JP 支付侧；其他模式支付侧与 billing 跟随这里的国家。
                 </div>
               </div>
 
@@ -219,6 +220,7 @@
                   <option value="eu">EU 模式（FR/EUR/custom）</option>
                   <option value="us">US 模式（US/USD/hosted）</option>
                   <option value="br">BR 模式（BR/BRL/custom）</option>
+                  <option value="gb">GB 模式（GB/GBP/custom，JP 支付侧）</option>
                 </select>
                 <div class="mt-2 text-xs text-gray-500">
                   {{ paypalBaModeHelp }}
@@ -908,19 +910,25 @@ const isNoCardPayPalMode = computed(() => (
   || (form.value.paypalMode === 'create_account' && form.value.paypalBrowser === 'protocol')
 ))
 const paypalPaymentCountry = computed(() => {
+  if (form.value.paypalBaMode === 'gb') return 'JP'
+  if (form.value.paypalBaMode === 'br') return 'BR'
   const value = String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase()
-  return ['US', 'AU', 'BR'].includes(value) ? value : 'US'
+  return ['US', 'AU', 'BR', 'JP'].includes(value) ? value : 'US'
 })
 const paypalCountry = computed(() => form.value.paypalRegion === 'JP_NOCARD' ? 'JP' : String(form.value.billingCountry || 'US').trim().toUpperCase())
 const paypalLang = computed(() => paypalCountry.value === 'JP' ? 'ja' : 'en')
 const paypalRegionHelp = computed(() => (
   form.value.paypalRegion === 'JP_NOCARD'
-    ? '按 JP/ja 进行 PayPal 协议无卡注册；checkout 固定走 JP sticky，支付侧可切 US/AU，不需要填写卡片信息。'
+    ? form.value.paypalBaMode === 'gb'
+      ? '按 JP/ja 进行 PayPal 协议无卡注册；BA 提链使用 GB checkout/approve + JP update/Stripe/poll。'
+      : '按 JP/ja 进行 PayPal 协议无卡注册；checkout 固定走 JP sticky，支付侧可切 US/AU，不需要填写卡片信息。'
     : '保留现有美区流程，可用浏览器或协议模式，自动注册时按原规则使用卡片。'
 ))
 const paypalBaModeHelp = computed(() => (
   form.value.paypalBaMode === 'br'
     ? '使用 OPLL BR 模式；checkout 走 BR/BRL/custom，支付 / billing 固定走 BR。'
+    : form.value.paypalBaMode === 'gb'
+      ? '使用 OPLL GB 模式；checkout 与 approve 走 GB，update / Stripe / billing / poll 走 JP。'
     : form.value.paypalBaMode === 'us'
       ? `使用 OPLL US 模式；checkout 走 US/USD/custom，支付 / billing 走 ${paypalPaymentCountry.value}。`
       : `使用 OPLL EU 模式；checkout 走 FR/EUR/custom，支付 / billing 走 ${paypalPaymentCountry.value}。`
@@ -937,6 +945,7 @@ const proxyApiProviderHelp = computed(() => {
 })
 const proxySettingSummary = computed(() => {
   if (isNoCardPayPalMode.value) {
+    if (form.value.paypalBaMode === 'gb') return 'GB checkout/approve 与 JP update/Stripe/poll 分别复用各自 sticky 出口。'
     return `checkout 固定复用 JP sticky；支付侧默认复用当前 ${paypalPaymentCountry.value} 代理出口。`
   }
   if (form.value.proxyApiEnabled) {
@@ -1062,13 +1071,13 @@ function applyPayPalRegionDefaults() {
   if (form.value.paypalRegion === 'JP_NOCARD') {
     form.value.paypalMode = 'create_account'
     form.value.paypalBrowser = 'protocol'
-    if (!['eu', 'us', 'br'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
+    if (!['eu', 'us', 'br', 'gb'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
       form.value.paypalBaMode = 'us'
     }
     if (String(form.value.paypalBaMode || '').toLowerCase() === 'br') {
       form.value.paypalBaPaymentMethodCountry = 'BR'
     }
-    if (!['US', 'AU', 'BR'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
+    if (!['US', 'AU', 'BR', 'JP'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
       form.value.paypalBaPaymentMethodCountry = 'US'
     }
     form.value.billingCountry = paypalPaymentCountry.value
@@ -1422,7 +1431,7 @@ function restorePayPalState() {
       if (saved.form.paypalProtocolRoxyFallback === undefined) {
         form.value.paypalProtocolRoxyFallback = false
       }
-      if (!['eu', 'us', 'br'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
+      if (!['eu', 'us', 'br', 'gb'].includes(String(form.value.paypalBaMode || '').toLowerCase())) {
         form.value.paypalBaMode = 'us'
       } else {
         form.value.paypalBaMode = String(form.value.paypalBaMode || 'us').toLowerCase()
@@ -1430,7 +1439,7 @@ function restorePayPalState() {
       if (form.value.paypalBaMode === 'br') {
         form.value.paypalBaPaymentMethodCountry = 'BR'
       }
-      if (!['US', 'AU', 'BR'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
+      if (!['US', 'AU', 'BR', 'JP'].includes(String(form.value.paypalBaPaymentMethodCountry || '').trim().toUpperCase())) {
         form.value.paypalBaPaymentMethodCountry = 'US'
       } else {
         form.value.paypalBaPaymentMethodCountry = String(form.value.paypalBaPaymentMethodCountry || 'US').trim().toUpperCase()
@@ -1979,6 +1988,8 @@ watch(
     const mode = String(form.value.paypalBaMode || '').toLowerCase()
     if (mode === 'br') {
       form.value.paypalBaPaymentMethodCountry = 'BR'
+    } else if (mode === 'gb') {
+      form.value.paypalBaPaymentMethodCountry = 'JP'
     }
     form.value.billingCountry = paypalPaymentCountry.value
   }

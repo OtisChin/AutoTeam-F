@@ -46,6 +46,7 @@ from autotoken.services import paypal_mockaddress as paypal_mockaddress_service
 from autotoken.services import paypal_preflight as paypal_preflight_service
 from autotoken.services import paypal_proxy as paypal_proxy_service
 from autotoken.services import paypal_task_payloads as paypal_task_payloads_service
+from autotoken.services import proxy_runtime as proxy_runtime_service
 from autotoken.services import sms_otp as sms_otp_service
 from autotoken.storage.auth_session_store import load_auth_session
 
@@ -1576,7 +1577,9 @@ def _run_paypal_protocol_flow(
     _payment_method_id = ""
 
     # ---- Pre-extracted BA link path (pplink-style) ----
-    if pre_extracted and pre_extracted.get("ba_token"):
+    if pre_extracted and paypal_billing_agreement_service.paypal_ba_token_is_valid(
+        pre_extracted.get("ba_token")
+    ):
         _approve_url = str(pre_extracted.get("approve_url") or "")
         _ba_token = str(pre_extracted.get("ba_token") or "")
         _payment_method_id = str(pre_extracted.get("pm_id") or "")
@@ -7372,7 +7375,7 @@ def _paypal_extract_result_from_redirect(
 
 def _paypal_pplink_extract_mode(value: str | None) -> str:
     normalized = re.sub(r"[^A-Za-z]", "", str(value or "").lower())
-    if normalized in {"us", "eu", "br"}:
+    if normalized in {"us", "eu", "br", "gb"}:
         return normalized
     if normalized in {"brbrl", "brazil", "brasil"}:
         return "br"
@@ -7398,6 +7401,15 @@ def _paypal_pplink_checkout_config(mode: str) -> dict[str, str]:
             "checkout_ui_mode": "custom",
             "processor_entity": "openai_ie",
             "payment_method_country": "BR",
+        }
+    if normalized_mode == "gb":
+        return {
+            "mode": "gb",
+            "country": "GB",
+            "currency": "GBP",
+            "checkout_ui_mode": "custom",
+            "processor_entity": "openai_ie",
+            "payment_method_country": "JP",
         }
     return {
         "mode": "eu",
@@ -8001,7 +8013,7 @@ def _paypal_pplink_run_exe(
     result.setdefault("checkout_url", f"https://pay.openai.com/c/pay/{checkout_session_id}" if checkout_session_id else "")
     result.setdefault("hosted_checkout_url", result.get("checkout_url", ""))
     result.setdefault("paypal_ba_mode", mode)
-    if result.get("status") == "success":
+    if paypal_billing_agreement_service.paypal_ba_extract_succeeded(result):
         _emit(
             "paypal_extract_done",
             message=f"Extracted BA token: {result.get('ba_token')}",
@@ -8117,30 +8129,54 @@ def _paypal_extract_ba_link_python(
     _emit = _progress_adapter(on_progress)
 
     chat_proxy = str(proxy_url or "").strip() or None
-    stripe_proxy = str(provider_proxy_url or "").strip() if mode == "us" else ""
+    stripe_proxy = str(provider_proxy_url or "").strip() if mode in {"us", "gb"} else ""
     if not stripe_proxy:
         stripe_proxy = str(proxy_url or "").strip()
 
-    def _build_opll_http_sessions(*, force_requests: bool = False) -> tuple[Any, Any]:
-        chat_http = _new_http_session(chat_proxy, require_curl_cffi=False, force_requests=force_requests)
+    if mode == "gb":
+        proxy_seed = str(chat_proxy or stripe_proxy or "").strip()
+        chat_proxy = proxy_runtime_service.proxy_url_for_region_and_sid(
+            proxy_seed,
+            "GB",
+            secrets.token_hex(6),
+        ) or None
+        stripe_proxy = proxy_runtime_service.proxy_url_for_region_and_sid(
+            str(stripe_proxy or proxy_seed),
+            "JP",
+            secrets.token_hex(6),
+        )
+
+    def _configure_opll_chat_http(chat_session: Any) -> None:
         _paypal_opll_configure_chatgpt_http_session(
-            chat_http,
+            chat_session,
             access_token=access_token,
             device_id=resolved_device_id,
             user_agent=chrome_ua,
         )
-        chat_http.headers.update(
+        chat_session.headers.update(
             {
                 "Accept-Language": "en-US,en;q=0.9",
                 "Origin": "https://chatgpt.com",
                 "Referer": "https://chatgpt.com/",
             }
         )
+
+    def _build_opll_http_sessions(*, force_requests: bool = False) -> tuple[Any, Any, Any | None]:
+        chat_http = _new_http_session(chat_proxy, require_curl_cffi=False, force_requests=force_requests)
+        _configure_opll_chat_http(chat_http)
+        update_http = None
+        if mode == "gb":
+            update_http = _new_http_session(
+                stripe_proxy or None,
+                require_curl_cffi=False,
+                force_requests=force_requests,
+            )
+            _configure_opll_chat_http(update_http)
         payment_http = _new_http_session(stripe_proxy or None, require_curl_cffi=False, force_requests=force_requests)
         payment_http.headers.update({"User-Agent": chrome_ua, "Accept": "application/json"})
-        return chat_http, payment_http
+        return chat_http, payment_http, update_http
 
-    http, stripe_http = _build_opll_http_sessions()
+    http, stripe_http, checkout_update_http = _build_opll_http_sessions()
 
     _emit("paypal_extract_warmup", message=f"Warming up ChatGPT session ({mode.upper()})")
     try:
@@ -8164,7 +8200,7 @@ def _paypal_extract_ba_link_python(
         if _paypal_opll_should_retry_with_requests(exc, http):
             logger.info("[paypal_extract] curl_cffi checkout failed on proxy DNS thread, retrying with requests: %s", exc)
             _emit("paypal_extract_checkout_retry", message="Retrying OPLL checkout with requests transport")
-            http, stripe_http = _build_opll_http_sessions(force_requests=True)
+            http, stripe_http, checkout_update_http = _build_opll_http_sessions(force_requests=True)
             try:
                 http.get(
                     "https://chatgpt.com/backend-api/sentinel/ping",
@@ -8230,6 +8266,59 @@ def _paypal_extract_ba_link_python(
         checkout_currency,
         checkout_ui_mode,
     )
+
+    if mode == "gb":
+        _emit("paypal_extract_checkout_update", message="Updating GB checkout from JP")
+        update_payload = {
+            "checkout_session_id": cs_id,
+            "processor_entity": processor_entity,
+            "plan_name": "chatgptplusplan",
+            "price_interval": "month",
+            "seat_quantity": 1,
+            "discount_code": None,
+            "promo_campaign": {
+                "promo_campaign_id": "plus-1-month-free",
+                "is_coupon_from_query_param": False,
+            },
+        }
+        try:
+            update_resp = checkout_update_http.post(
+                "https://chatgpt.com/backend-api/payments/checkout/update",
+                json=update_payload,
+                headers={
+                    "x-openai-target-path": "/backend-api/payments/checkout/update",
+                    "x-openai-target-route": "/backend-api/payments/checkout/update",
+                },
+                timeout=30,
+            )
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "failure_stage": "extract_ba_link_checkout_update",
+                "message": f"ChatGPT checkout update request failed: {exc}",
+                "checkout_session_id": cs_id,
+                "paypal_ba_mode": mode,
+            }
+        if int(getattr(update_resp, "status_code", 0) or 0) >= 300:
+            return {
+                "status": "failed",
+                "failure_stage": "extract_ba_link_checkout_update",
+                "message": (
+                    f"ChatGPT checkout update HTTP {update_resp.status_code}: "
+                    f"{str(getattr(update_resp, 'text', '') or '')[:500]}"
+                ),
+                "checkout_session_id": cs_id,
+                "paypal_ba_mode": mode,
+            }
+        update_result = _response_json(update_resp, "paypal_extract_checkout_update")
+        if update_result.get("success") is not True:
+            return {
+                "status": "failed",
+                "failure_stage": "extract_ba_link_checkout_update",
+                "message": f"ChatGPT checkout update rejected: {update_result}",
+                "checkout_session_id": cs_id,
+                "paypal_ba_mode": mode,
+            }
 
     _emit("paypal_extract_stripe_init", message="Initializing Stripe payment_page")
     try:
@@ -8330,11 +8419,17 @@ def _paypal_extract_ba_link_python(
         result.setdefault("paypal_ba_mode", mode)
         result.setdefault("payment_method_types", sorted(payment_method_types or []))
         result.setdefault("link_shortcut_available", link_shortcut_available)
-        if result.get("status") == "success":
+        if paypal_billing_agreement_service.paypal_ba_extract_succeeded(result):
             _emit(
                 "paypal_extract_done",
                 message=f"Extracted PayPal redirect: {result.get('approve_url') or result.get('provider_redirect_url')}",
                 ba_token=result.get("ba_token"),
+                approve_url=result.get("approve_url"),
+            )
+        elif paypal_billing_agreement_service.paypal_payment_link_extract_succeeded(result):
+            _emit(
+                "paypal_extract_redirect_ready",
+                message="Extracted usable PayPal redirect",
                 approve_url=result.get("approve_url"),
             )
         return result
@@ -8405,7 +8500,7 @@ def _paypal_extract_ba_link_python(
 
     def approve_checkout() -> dict[str, Any]:
         _emit("paypal_extract_approve", message="Approving checkout on ChatGPT")
-        approve_proxy = str(approve_proxy_url or "").strip()
+        approve_proxy = "" if mode == "gb" else str(approve_proxy_url or "").strip()
         if approve_proxy and approve_proxy != str(proxy_url or "").strip():
             try:
                 http.proxies = {"http": approve_proxy, "https": approve_proxy}

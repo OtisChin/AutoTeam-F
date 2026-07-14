@@ -137,6 +137,32 @@ def proxy_url_for_region(proxy_url: str, region: str) -> str:
     return proxy
 
 
+def proxy_url_for_region_and_sid(proxy_url: str, region: str, sid: str) -> str:
+    proxy = str(proxy_url or "").strip()
+    target_sid = re.sub(r"[^A-Za-z0-9]", "", str(sid or ""))
+    if not proxy or not target_sid or "region-" not in proxy:
+        return proxy_url_for_region(proxy, region)
+    scheme_sep = proxy.find("://")
+    auth_end = proxy.rfind("@")
+    if scheme_sep < 0 or auth_end < scheme_sep:
+        return proxy_url_for_region(proxy, region)
+    auth_start = scheme_sep + 3
+    auth = proxy[auth_start:auth_end]
+    username, separator, password = auth.rpartition(":")
+    if not separator or "region-" not in username:
+        return proxy_url_for_region(proxy, region)
+    target_region = re.sub(r"[^A-Za-z]", "", str(region or "").strip().upper())[:2]
+    if target_region:
+        username = re.sub(r"region-[A-Za-z]{2}", f"region-{target_region}", username)
+    if re.search(r"-sid-[^-:@/]+", username):
+        username = re.sub(r"-sid-[^-:@/]+", f"-sid-{target_sid}", username, count=1)
+    elif re.search(r"-t-\d+", username):
+        username = re.sub(r"(?=-t-\d+)", f"-sid-{target_sid}", username, count=1)
+    else:
+        username = f"{username}-sid-{target_sid}"
+    return f"{proxy[:auth_start]}{username}:{password}{proxy[auth_end:]}"
+
+
 def extract_proxy_candidate_from_api_payload(payload: Any) -> str:
     if payload is None:
         return ""

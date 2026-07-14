@@ -1,3 +1,7 @@
+from types import SimpleNamespace
+
+import pytest
+
 from autotoken.services import paypal_billing_agreement as paypal_ba
 
 
@@ -12,8 +16,21 @@ def test_paypal_ba_extract_mode_preserves_supported_regions():
     assert paypal_ba.paypal_ba_extract_mode("us") == "us"
     assert paypal_ba.paypal_ba_extract_mode("eu") == "eu"
     assert paypal_ba.paypal_ba_extract_mode("br") == "br"
+    assert paypal_ba.paypal_ba_extract_mode("GB") == "gb"
     assert paypal_ba.paypal_ba_extract_mode("BR/BRL") == "br"
     assert paypal_ba.paypal_ba_extract_mode("") == "eu"
+
+
+def test_paypal_ba_extract_succeeded_requires_success_status_and_ba_token():
+    assert paypal_ba.paypal_ba_extract_succeeded({"status": "success", "ba_token": "BA-DEMO"}) is True
+    assert paypal_ba.paypal_ba_extract_succeeded({"status": "success", "ba_token": ""}) is False
+    assert paypal_ba.paypal_ba_extract_succeeded({"status": "success", "ba_token": "EC-DEMO"}) is False
+    assert paypal_ba.paypal_ba_extract_succeeded({"status": "failed", "ba_token": "BA-DEMO"}) is False
+
+
+def test_paypal_ba_checkout_proxy_country_uses_gb_only_for_gb_mode():
+    assert paypal_ba.paypal_ba_checkout_proxy_country("gb", "JP") == "GB"
+    assert paypal_ba.paypal_ba_checkout_proxy_country("us", "JP") == "JP"
 
 
 def test_paypal_ba_payment_method_country_prefers_override_then_protocol_rules():
@@ -50,6 +67,24 @@ def test_paypal_ba_payment_method_country_prefers_override_then_protocol_rules()
             paypal_ba_mode="br",
         )
         == "BR"
+    )
+    assert (
+        paypal_ba.paypal_ba_payment_method_country(
+            override="",
+            protocol_no_card=True,
+            paypal_country="JP",
+            paypal_ba_mode="gb",
+        )
+        == "JP"
+    )
+    assert (
+        paypal_ba.paypal_ba_payment_method_country(
+            override="US",
+            protocol_no_card=True,
+            paypal_country="JP",
+            paypal_ba_mode="gb",
+        )
+        == "JP"
     )
     assert (
         paypal_ba.paypal_ba_payment_method_country(
@@ -169,7 +204,7 @@ def test_paypal_extract_result_from_redirect_returns_success_payload():
     }
 
 
-def test_paypal_extract_result_from_redirect_accepts_pm_redirect_without_resolving():
+def test_paypal_extract_result_from_redirect_resolves_pm_redirect_to_ba():
     called = False
 
     def resolve_approve_url(_http, _url):
@@ -187,14 +222,73 @@ def test_paypal_extract_result_from_redirect_accepts_pm_redirect_without_resolvi
 
     assert result == {
         "status": "success",
-        "ba_token": "",
-        "approve_url": "https://pm-redirects.stripe.com/authorize/test",
+        "ba_token": "BA-DEMO",
+        "approve_url": "https://www.paypal.com/pay?token=BA-DEMO",
         "provider_redirect_url": "https://pm-redirects.stripe.com/authorize/test",
-        "payment_link_type": "paypal_redirect",
+        "payment_link_type": "paypal_approve",
         "checkout_session_id": "cs_test",
         "pm_id": "pm_test",
     }
-    assert called is False
+    assert called is True
+
+
+def test_paypal_extract_result_from_redirect_rejects_unresolved_pm_redirect_without_ba():
+    result = paypal_ba.paypal_extract_result_from_redirect(
+        object(),
+        "https://pm-redirects.stripe.com/authorize/test",
+        "cs_test",
+        "pm_test",
+        resolve_approve_url=lambda _http, url: (url, ""),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "extract_ba_link_parse"
+    assert result["approve_url"] == "https://pm-redirects.stripe.com/authorize/test"
+    assert paypal_ba.paypal_ba_extract_succeeded(result) is False
+    assert paypal_ba.paypal_payment_link_extract_succeeded(result) is False
+
+
+def test_paypal_extract_result_from_redirect_rejects_pm_redirect_when_resolution_fails():
+    result = paypal_ba.paypal_extract_result_from_redirect(
+        object(),
+        "https://pm-redirects.stripe.com/authorize/test",
+        "cs_test",
+        "pm_test",
+        resolve_approve_url=lambda _http, _url: (_ for _ in ()).throw(RuntimeError("network down")),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "extract_ba_link_resolve"
+    assert "network down" in result["message"]
+    assert paypal_ba.paypal_payment_link_extract_succeeded(result) is False
+
+
+def test_paypal_extract_result_from_redirect_rejects_non_ba_token():
+    result = paypal_ba.paypal_extract_result_from_redirect(
+        object(),
+        "https://www.paypal.com/pay?token=EC-DEMO",
+        "cs_test",
+        "pm_test",
+        resolve_approve_url=lambda _http, url: (url, "EC-DEMO"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "extract_ba_link_parse"
+    assert result["approve_url"] == "https://www.paypal.com/pay?token=EC-DEMO"
+
+
+def test_paypal_direct_ba_pre_extracted_rejects_non_ba_token():
+    params = SimpleNamespace(
+        paypal_approve_url="",
+        paypal_ba_token="EC-DEMO",
+        paypal_checkout_session_id="cs_test",
+        paypal_checkout_url="",
+        paypal_hosted_checkout_url="",
+        paypal_payment_method_id="",
+    )
+
+    with pytest.raises(ValueError, match="paypal_ba_token 必须以 BA- 开头"):
+        paypal_ba.paypal_direct_ba_pre_extracted(params)
 
 
 def test_paypal_extract_result_from_redirect_reports_resolve_failures():

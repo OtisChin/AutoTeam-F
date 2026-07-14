@@ -1,6 +1,7 @@
 """PayPal task proxy preparation and selection helpers."""
 
 import random
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -118,6 +119,7 @@ def prepare_paypal_proxy_runtime(
     default_proxy_entry: Callable[[str], str],
     paypal_jp_proxy_url: str | None = None,
     paypal_us_proxy_url: str | None = None,
+    paypal_ba_mode: str = "eu",
 ) -> PayPalProxyRuntime:
     raw_proxy_url = str(proxy_url or "").strip()
     api_url = str(proxy_api_url or "").strip()
@@ -143,8 +145,13 @@ def prepare_paypal_proxy_runtime(
             continue
         static_proxy_pool.append(raw_proxy_entry)
 
-    checkout_proxy_region = str(paypal_country or "").strip().upper() or "JP"
-    provider_proxy_region = str(paypal_ba_proxy_region or "").strip().upper() or "US"
+    normalized_ba_mode = re.sub(r"[^A-Za-z]", "", str(paypal_ba_mode or "").lower())
+    checkout_proxy_region = "GB" if normalized_ba_mode == "gb" else (
+        str(paypal_country or "").strip().upper() or "JP"
+    )
+    provider_proxy_region = "JP" if normalized_ba_mode == "gb" else (
+        str(paypal_ba_proxy_region or "").strip().upper() or "US"
+    )
     if protocol_no_card and api_url:
         api_url = proxy_runtime.proxy_api_url_with_region(api_url, checkout_proxy_region)
 
@@ -168,7 +175,9 @@ def prepare_paypal_proxy_runtime(
     explicit_selected_proxy = ""
     if protocol_no_card:
         explicit_selected_proxy = jp_proxy_url
-        if us_proxy_url and provider_proxy_region in {"US", "AU"}:
+        if normalized_ba_mode == "gb" and jp_proxy_url:
+            provider_proxy_url = proxy_runtime.proxy_url_for_region(jp_proxy_url, "JP")
+        elif us_proxy_url and provider_proxy_region in {"US", "AU"}:
             provider_proxy_url = proxy_runtime.proxy_url_for_region(us_proxy_url, provider_proxy_region)
     else:
         country = str(paypal_country or "").strip().upper()

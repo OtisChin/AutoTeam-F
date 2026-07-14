@@ -843,6 +843,47 @@ def test_post_paypal_task_protocol_auto_provisioned_sms_bridge_closed_after_succ
     ]
 
 
+def test_post_paypal_task_passes_gb_mode_to_proxy_runtime(monkeypatch):
+    captured = {}
+    real_prepare = api.paypal_proxy_service.prepare_paypal_proxy_runtime
+
+    def capture_prepare(**kwargs):
+        captured.update(kwargs)
+        return real_prepare(**kwargs)
+
+    monkeypatch.setattr(api.paypal_proxy_service, "prepare_paypal_proxy_runtime", capture_prepare)
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: {
+            "task_id": "task-paypal-gb-runtime",
+            "command": command,
+            "params": params,
+        },
+    )
+
+    api.post_paypal_task(
+        api.PayPalTaskParams(
+            runner_mode="manual_checkout",
+            email="user@example.com",
+            bind_link_payload={"plan_name": "chatgptplusplan"},
+            paypal_mode="create_account",
+            paypal_browser="protocol",
+            paypal_country="JP",
+            paypal_ba_mode="gb",
+            paypal_jp_proxy_url=(
+                "socks5://user-region-JP-sid-base-t-120:pass@proxy.example:3010"
+            ),
+            billing_phone="+819012345678",
+            sms_url="https://sms.example.test/token=demo",
+            manual_confirm=False,
+            autofill_enabled=True,
+        )
+    )
+
+    assert captured["paypal_ba_mode"] == "gb"
+
+
 def test_post_paypal_task_protocol_uses_direct_ba_link_without_checkout_generation(monkeypatch):
     captured = {"progress": []}
     accounts = [{"email": "user@example.com"}]
