@@ -1,9 +1,136 @@
 <template>
   <div class="space-y-5">
-    <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5 md:p-6">
-      <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-2">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div class="inline-flex w-fit rounded-xl border border-gray-800 bg-gray-900/80 p-1">
+          <button
+            @click="activePixTab = 'extract'"
+            class="rounded-lg px-4 py-2 text-sm font-bold transition"
+            :class="activePixTab === 'extract' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'"
+          >提链页</button>
+          <button
+            @click="activePixTab = 'payment'"
+            class="rounded-lg px-4 py-2 text-sm font-bold transition"
+            :class="activePixTab === 'payment' ? 'bg-blue-600 text-white shadow-lg shadow-blue-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'"
+          >支付页</button>
+        </div>
+        <p class="px-2 text-xs text-gray-500">提链和支付分开管理，切换不会清空当前输入。</p>
+      </div>
+    </section>
+
+    <section v-if="activePixTab === 'payment'" class="overflow-hidden rounded-2xl border border-cyan-500/20 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.13),transparent_34%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(2,6,23,0.98))] p-5 shadow-2xl shadow-black/30 md:p-6">
+      <div class="flex flex-col gap-4 border-b border-white/10 pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">独立 PIX 任务</p>
+          <p class="text-xs font-bold uppercase tracking-[0.28em] text-cyan-300">Batch Payment Workspace</p>
+          <h2 class="mt-2 text-2xl font-black text-white md:text-3xl">支付页：链接与 CDK 分开管理</h2>
+          <p class="mt-2 max-w-3xl text-sm text-slate-400">按输入顺序自动配对 Stripe PIX 链接与 CDK，最多同时运行 20 项；每一行会实时显示提交、轮询、成功或待处理状态。</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button @click="importExtractedLinksToPayment" :disabled="paymentBusy" class="rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 text-sm font-bold text-cyan-100 transition hover:bg-cyan-500/20 disabled:opacity-50">导入已提取链接</button>
+          <button @click="runAllPayments" :disabled="paymentBusy || !paymentRunnableCount" class="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-blue-950/40 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50">▶ 全部运行</button>
+          <button @click="clearFinishedPayments" :disabled="paymentBusy" class="rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-2.5 text-sm font-bold text-slate-200 transition hover:bg-slate-800 disabled:opacity-50">清理已结束</button>
+        </div>
+      </div>
+
+      <div class="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <div v-for="card in paymentSummaryCards" :key="card.label" class="relative overflow-hidden rounded-2xl border bg-slate-950/70 p-4" :class="card.class">
+          <div class="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/5"></div>
+          <p class="text-xs font-bold text-slate-400">{{ card.label }}</p>
+          <strong class="mt-2 block text-3xl font-black text-white">{{ card.value }}</strong>
+        </div>
+      </div>
+
+      <div class="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
+        <section class="rounded-2xl border border-slate-800 bg-slate-950/70">
+          <div class="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+            <div class="flex items-center gap-3">
+              <span class="rounded-xl bg-blue-500/10 px-3 py-2 text-xs font-black text-blue-300">01</span>
+              <div>
+                <h3 class="text-lg font-black text-white">链接队列</h3>
+                <p class="text-xs text-slate-500">每行一个 Stripe PIX 链接</p>
+              </div>
+            </div>
+            <span class="rounded-full bg-slate-800 px-3 py-1 text-xs font-bold text-slate-300">{{ paymentLinks.length }} 行</span>
+          </div>
+          <div class="space-y-4 p-5">
+            <label class="block rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+              <span class="mb-2 block text-sm font-bold text-slate-300">粘贴链接</span>
+              <textarea v-model="paymentLinkInput" rows="5" spellcheck="false" placeholder="https://payments.stripe.com/qr/instructions/..." class="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono text-sm text-white placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"></textarea>
+              <div class="mt-3 flex items-center justify-between gap-3">
+                <span class="text-xs text-slate-500">自动忽略空行并标记重复项</span>
+                <button @click="addPaymentLinks" class="rounded-xl border border-blue-500/40 bg-blue-500/10 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/20">加入链接</button>
+              </div>
+            </label>
+            <div class="max-h-72 overflow-y-auto rounded-xl border border-slate-800">
+              <table class="w-full min-w-[760px] text-left text-sm">
+                <thead class="sticky top-0 bg-slate-900 text-xs uppercase tracking-wide text-slate-500">
+                  <tr><th class="px-3 py-2">链接 / 运行情况</th><th class="px-3 py-2">状态</th><th class="px-3 py-2">CDK</th><th class="px-3 py-2 text-right">操作</th></tr>
+                </thead>
+                <tbody class="divide-y divide-slate-900">
+                  <tr v-if="!paymentLinks.length"><td colspan="4" class="px-3 py-8 text-center text-slate-500">暂无链接</td></tr>
+                  <tr v-for="(item, index) in paymentLinks" :key="item.id" class="hover:bg-slate-900/50">
+                    <td class="px-3 py-3">
+                      <div class="flex items-center gap-2 text-xs text-slate-500"><span>#{{ String(index + 1).padStart(2, '0') }}</span><span v-if="item.jobId" class="font-mono">job {{ item.jobId }}</span></div>
+                      <div class="mt-1 max-w-[460px] truncate font-mono text-xs text-slate-300">{{ item.value }}</div>
+                      <div v-if="item.message" class="mt-1 text-xs text-slate-500">{{ item.message }}</div>
+                    </td>
+                    <td class="px-3 py-3"><span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="paymentLinkStatusClass(item.status)">{{ paymentLinkStatusText(item.status) }}</span></td>
+                    <td class="px-3 py-3 font-mono text-xs text-slate-500">{{ maskCdk(item.cdk || '') }}</td>
+                    <td class="px-3 py-3 text-right"><button @click="copy(item.value)" class="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800">复制</button><button @click="removePaymentLink(item.id)" :disabled="paymentBusy" class="ml-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">移除</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="rounded-2xl border border-slate-800 bg-slate-950/70">
+          <div class="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+            <div class="flex items-center gap-3">
+              <span class="rounded-xl bg-violet-500/10 px-3 py-2 text-xs font-black text-violet-300">02</span>
+              <div>
+                <h3 class="text-lg font-black text-white">CDK 池</h3>
+                <p class="text-xs text-slate-500">按顺序自动取用</p>
+              </div>
+            </div>
+            <button @click="showCdks = !showCdks" class="text-xs font-bold text-blue-300 hover:text-blue-200">{{ showCdks ? '隐藏 CDK' : '显示 CDK' }}</button>
+          </div>
+          <div class="space-y-4 p-5">
+            <label class="block rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+              <span class="mb-2 block text-sm font-bold text-slate-300">粘贴 CDK</span>
+              <textarea v-model="paymentCdkInput" rows="5" spellcheck="false" placeholder="PIX-XXXXX-XXXXX-XXXXX-XXXXX" class="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono text-sm text-white placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"></textarea>
+              <div class="mt-3 flex items-center justify-between gap-3">
+                <span class="text-xs text-slate-500">{{ paymentAvailableCdks }} 枚可用</span>
+                <button @click="addPaymentCdks" class="rounded-xl border border-blue-500/40 bg-blue-500/10 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/20">加入 CDK</button>
+              </div>
+            </label>
+            <div class="max-h-72 overflow-y-auto rounded-xl border border-slate-800">
+              <table class="w-full text-left text-sm">
+                <thead class="sticky top-0 bg-slate-900 text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-2">CDK / 使用情况</th><th class="px-3 py-2 text-right">操作</th></tr></thead>
+                <tbody class="divide-y divide-slate-900">
+                  <tr v-if="!paymentCdks.length"><td colspan="2" class="px-3 py-8 text-center text-slate-500">暂无 CDK</td></tr>
+                  <tr v-for="(item, index) in paymentCdks" :key="item.id" class="hover:bg-slate-900/50">
+                    <td class="px-3 py-3">
+                      <div class="flex items-center gap-2 text-xs text-slate-500"><span>#{{ String(index + 1).padStart(2, '0') }}</span><span class="inline-flex rounded-full border px-2 py-0.5 font-bold" :class="paymentCdkStatusClass(item.status)">{{ paymentCdkStatusText(item.status) }}</span></div>
+                      <div class="mt-1 font-mono text-xs text-slate-300">{{ showCdks ? item.value : maskCdk(item.value) }}</div>
+                      <div v-if="item.message" class="mt-1 text-xs text-slate-500">{{ item.message }}</div>
+                    </td>
+                    <td class="px-3 py-3 text-right"><button @click="copy(item.value)" class="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800">复制</button><button @click="removePaymentCdk(item.id)" :disabled="paymentBusy" class="ml-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">移除</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-slate-400">{{ paymentStatusText }}</div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <template v-else>
+      <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5 md:p-6">
+        <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">独立 PIX 任务</p>
           <h2 class="mt-1 text-2xl font-bold text-white">巴西PIX 提链</h2>
           <p class="mt-2 text-sm text-gray-400">在账号池中勾选一个或多个账号执行提链，结果会进入下方链接管理表。</p>
         </div>
@@ -248,15 +375,19 @@
           </tbody>
         </table>
       </div>
-    </section>
+      </section>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { computed, defineComponent, h, nextTick, onMounted, ref } from 'vue'
+import { computed, defineComponent, h, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 
 const PROXY_STORAGE_KEY = 'autotoken_brazil_pix_proxies'
+const PIX_TAB_STORAGE_KEY = 'autotoken_brazil_pix_active_tab'
+const PAYMENT_STATE_STORAGE_KEY = 'autotoken_brazil_pix_payment_state'
+const activePixTab = ref('extract')
 
 const ResultRow = defineComponent({
   props: { label: String, value: String },
@@ -312,6 +443,17 @@ const logs = ref([])
 const currentResult = ref(null)
 const logRef = ref(null)
 
+const PAYMENT_MAX_CONCURRENCY = 20
+const PAYMENT_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'rejected_amount'])
+const paymentLinkInput = ref('')
+const paymentCdkInput = ref('')
+const paymentLinks = ref([])
+const paymentCdks = ref([])
+const paymentBusy = ref(false)
+const paymentRunningCount = ref(0)
+const paymentStatusText = ref('等待加入链接和 CDK。')
+const showCdks = ref(false)
+
 const fields = computed(() => currentResult.value?.fields || {})
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
 const filteredAccounts = computed(() => {
@@ -339,6 +481,366 @@ const badgeClass = computed(() => {
   if (statusError.value) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
   return 'border-gray-700 bg-gray-900 text-gray-400'
 })
+
+const paymentAvailableCdks = computed(() => paymentCdks.value.filter(item => item.status === 'available').length)
+const paymentPendingLinks = computed(() => paymentLinks.value.filter(item => item.status === 'pending').length)
+const paymentRunnableCount = computed(() => Math.min(paymentPendingLinks.value, paymentAvailableCdks.value))
+const paymentSummaryCards = computed(() => [
+  { label: '待处理链接', value: paymentPendingLinks.value, class: 'border-blue-500/30' },
+  { label: '正在运行', value: paymentRunningCount.value, class: 'border-sky-500/30' },
+  { label: '支付成功', value: paymentLinks.value.filter(item => item.status === 'success').length, class: 'border-emerald-500/30' },
+  { label: '需处理', value: paymentLinks.value.filter(item => ['failed', 'needs_action'].includes(item.status)).length + paymentCdks.value.filter(item => item.status === 'failed').length, class: 'border-rose-500/30' },
+  { label: '可用 CDK', value: paymentAvailableCdks.value, class: 'border-violet-500/30' },
+])
+
+
+function makePaymentId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function parseLines(value) {
+  return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean)
+}
+
+function maskCdk(value) {
+  const text = String(value || '')
+  if (!text) return '-'
+  if (text.length <= 10) return text.replace(/.(?=.{3})/g, '•')
+  return `${text.slice(0, 4)}••••••••${text.slice(-4)}`
+}
+
+function paymentLinkStatusText(status) {
+  if (status === 'running') return '正在运行'
+  if (status === 'success') return '成功'
+  if (status === 'failed') return '失败'
+  if (status === 'needs_action') return '需处理'
+  return '待处理'
+}
+
+function paymentLinkStatusClass(status) {
+  if (status === 'running') return 'border-blue-500/30 bg-blue-500/10 text-blue-300'
+  if (status === 'success') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+  if (status === 'failed') return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+  if (status === 'needs_action') return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+  return 'border-slate-700 bg-slate-900 text-slate-400'
+}
+
+function paymentCdkStatusText(status) {
+  if (status === 'reserved') return '已分配'
+  if (status === 'used') return '已核销'
+  if (status === 'failed') return '需处理'
+  return '可用'
+}
+
+function paymentCdkStatusClass(status) {
+  if (status === 'reserved') return 'border-blue-500/30 bg-blue-500/10 text-blue-300'
+  if (status === 'used') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+  if (status === 'failed') return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+  return 'border-violet-500/30 bg-violet-500/10 text-violet-300'
+}
+
+function addPaymentLinks() {
+  const existing = new Set(paymentLinks.value.map(item => normalizePaymentUrl(item.value)))
+  const items = []
+  for (const line of parseLines(paymentLinkInput.value)) {
+    const normalized = normalizePaymentUrl(line)
+    if (existing.has(normalized)) continue
+    existing.add(normalized)
+    items.push({ id: makePaymentId('link'), value: line, status: 'pending', message: '', cdk: '', cdkId: '', jobId: '', statusToken: '' })
+  }
+  if (items.length) paymentLinks.value = [...paymentLinks.value, ...items]
+  paymentLinkInput.value = ''
+  paymentStatusText.value = items.length ? `已加入 ${items.length} 条链接。` : '没有新增链接，可能为空或重复。'
+}
+
+function normalizePaymentUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '')
+}
+
+function normalizePaymentItem(item, kind) {
+  const raw = item && typeof item === 'object' ? item : {}
+  const value = String(raw.value || '').trim()
+  if (!value) return null
+  if (kind === 'cdk') {
+    const status = ['available', 'reserved', 'used', 'failed'].includes(raw.status) ? raw.status : 'available'
+    return {
+      id: String(raw.id || makePaymentId('cdk')),
+      value,
+      status: status === 'reserved' ? 'available' : status,
+      message: status === 'reserved' ? '刷新后已释放，可重新配对。' : String(raw.message || ''),
+      linkId: '',
+      jobId: String(raw.jobId || ''),
+    }
+  }
+  const status = ['pending', 'running', 'success', 'failed', 'needs_action'].includes(raw.status) ? raw.status : 'pending'
+  return {
+    id: String(raw.id || makePaymentId('link')),
+    value,
+    status: status === 'running' ? 'pending' : status,
+    message: status === 'running' ? '刷新后已恢复为待处理，请查询服务端或重新运行。' : String(raw.message || ''),
+    cdk: status === 'running' ? '' : String(raw.cdk || ''),
+    cdkId: status === 'running' ? '' : String(raw.cdkId || ''),
+    jobId: String(raw.jobId || ''),
+    statusToken: String(raw.statusToken || ''),
+    accountEmail: String(raw.accountEmail || ''),
+  }
+}
+
+function loadPaymentState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PAYMENT_STATE_STORAGE_KEY) || '{}')
+    paymentLinks.value = Array.isArray(raw.links) ? raw.links.map(item => normalizePaymentItem(item, 'link')).filter(Boolean) : []
+    paymentCdks.value = Array.isArray(raw.cdks) ? raw.cdks.map(item => normalizePaymentItem(item, 'cdk')).filter(Boolean) : []
+    paymentStatusText.value = paymentLinks.value.length || paymentCdks.value.length ? '已恢复上次支付页数据。' : '等待加入链接和 CDK。'
+  } catch {
+    paymentLinks.value = []
+    paymentCdks.value = []
+    paymentStatusText.value = '支付页缓存读取失败，已重置为空。'
+  }
+}
+
+function savePaymentState() {
+  const snapshot = {
+    links: paymentLinks.value,
+    cdks: paymentCdks.value,
+    savedAt: Date.now(),
+  }
+  localStorage.setItem(PAYMENT_STATE_STORAGE_KEY, JSON.stringify(snapshot))
+}
+
+function dedupeExtractedLinks(items) {
+  const seenAccounts = new Set()
+  const seenUrls = new Set()
+  const result = []
+  for (const item of Array.isArray(items) ? items : []) {
+    const account = String(item?.account_email || '').trim().toLowerCase()
+    const url = normalizePaymentUrl(item?.hosted_instructions_url)
+    if (account) {
+      if (seenAccounts.has(account)) continue
+      seenAccounts.add(account)
+    } else if (url) {
+      if (seenUrls.has(url)) continue
+    }
+    if (url) seenUrls.add(url)
+    result.push(item)
+  }
+  return result
+}
+
+function releasePaymentLinkCdk(link) {
+  if (!link?.cdkId) return
+  const cdk = paymentCdks.value.find(item => item.id === link.cdkId)
+  if (cdk && cdk.status === 'reserved') {
+    cdk.status = 'available'
+    cdk.linkId = ''
+    cdk.message = '链接已被新提链结果覆盖，CDK 已释放。'
+  }
+  link.cdk = ''
+  link.cdkId = ''
+}
+
+function upsertExtractedPaymentLink(record, existingByAccount, existingUrls) {
+  const url = String(record.hosted_instructions_url || '').trim()
+  const normalized = normalizePaymentUrl(url)
+  if (!url || existingUrls.has(normalized)) return 'skipped'
+  const account = String(record.account_email || '').trim()
+  const accountKey = account.toLowerCase()
+  const existing = accountKey ? existingByAccount.get(accountKey) : null
+  if (existing) {
+    if (existing.status === 'running') return 'running'
+    releasePaymentLinkCdk(existing)
+    existing.value = url
+    existing.status = 'pending'
+    existing.message = `来自提链账号 ${account}，已用最新链接覆盖旧链接`
+    existing.jobId = ''
+    existing.statusToken = ''
+    existing.accountEmail = account
+    existingUrls.add(normalized)
+    return 'updated'
+  }
+  const item = {
+    id: makePaymentId('link'),
+    value: url,
+    status: 'pending',
+    message: account ? `来自提链账号 ${account}` : '来自已提取 PIX 链接',
+    cdk: '',
+    cdkId: '',
+    jobId: '',
+    statusToken: '',
+    accountEmail: account,
+  }
+  paymentLinks.value = [...paymentLinks.value, item]
+  if (accountKey) existingByAccount.set(accountKey, item)
+  existingUrls.add(normalized)
+  return 'added'
+}
+
+async function importExtractedLinksToPayment() {
+  try {
+    const data = await api.getBrazilPixLinks()
+    links.value = dedupeExtractedLinks(data.links)
+    const existingUrls = new Set(paymentLinks.value.map(item => normalizePaymentUrl(item.value)))
+    const existingByAccount = new Map(
+      paymentLinks.value
+        .filter(item => String(item.accountEmail || '').trim())
+        .map(item => [String(item.accountEmail || '').trim().toLowerCase(), item]),
+    )
+    let added = 0
+    let updated = 0
+    let running = 0
+    for (const record of links.value) {
+      const result = upsertExtractedPaymentLink(record, existingByAccount, existingUrls)
+      if (result === 'added') added += 1
+      if (result === 'updated') updated += 1
+      if (result === 'running') running += 1
+    }
+    const summary = [`新增 ${added}`, `覆盖 ${updated}`]
+    if (running) summary.push(`运行中未覆盖 ${running}`)
+    paymentStatusText.value = added || updated || running ? `已从提链页导入：${summary.join('，')}。` : '没有可导入的新链接；可能为空或已在队列中。'
+  } catch (error) {
+    paymentStatusText.value = `导入失败：${cleanText(error.message || error)}`
+  }
+}
+
+function addPaymentCdks() {
+  const existing = new Set(paymentCdks.value.map(item => item.value))
+  const items = []
+  for (const line of parseLines(paymentCdkInput.value)) {
+    if (existing.has(line)) continue
+    existing.add(line)
+    items.push({ id: makePaymentId('cdk'), value: line, status: 'available', message: '', linkId: '', jobId: '' })
+  }
+  if (items.length) paymentCdks.value = [...paymentCdks.value, ...items]
+  paymentCdkInput.value = ''
+  paymentStatusText.value = items.length ? `已加入 ${items.length} 枚 CDK。` : '没有新增 CDK，可能为空或重复。'
+}
+
+function removePaymentLink(id) {
+  paymentLinks.value = paymentLinks.value.filter(item => item.id !== id)
+  for (const cdk of paymentCdks.value) {
+    if (cdk.linkId === id && cdk.status === 'reserved') {
+      cdk.status = 'available'
+      cdk.linkId = ''
+      cdk.message = ''
+    }
+  }
+}
+
+function removePaymentCdk(id) {
+  paymentCdks.value = paymentCdks.value.filter(item => item.id !== id)
+  for (const link of paymentLinks.value) {
+    if (link.cdkId === id && link.status === 'pending') {
+      link.cdk = ''
+      link.cdkId = ''
+    }
+  }
+}
+
+function clearFinishedPayments() {
+  paymentLinks.value = paymentLinks.value.filter(item => !['success', 'failed', 'needs_action'].includes(item.status))
+  paymentCdks.value = paymentCdks.value.filter(item => !['used', 'failed'].includes(item.status))
+  paymentStatusText.value = '已清理结束项。'
+}
+
+function nextPaymentPair() {
+  const link = paymentLinks.value.find(item => item.status === 'pending')
+  const cdk = paymentCdks.value.find(item => item.status === 'available')
+  if (!link || !cdk) return null
+  link.cdk = cdk.value
+  link.cdkId = cdk.id
+  cdk.linkId = link.id
+  cdk.status = 'reserved'
+  return { link, cdk }
+}
+
+function setPaymentFailure(link, cdk, message, { cdkFailed = false, linkNeedsAction = true } = {}) {
+  link.status = linkNeedsAction ? 'needs_action' : 'failed'
+  link.message = message
+  if (cdkFailed) {
+    cdk.status = 'failed'
+    cdk.message = message
+  } else {
+    cdk.status = 'available'
+    cdk.linkId = ''
+    cdk.message = '支付未成功，CDK 已释放，可重新配对。'
+  }
+}
+
+function paymentErrorCode(error) {
+  if (error?.code) return String(error.code)
+  const message = String(error?.message || '')
+  const match = message.match(/"code"\s*:\s*"([^"]+)"/) || message.match(/code['"]?\s*[:=]\s*['"]?([a-z0-9_]+)/i)
+  return match?.[1] || ''
+}
+
+async function waitPaymentJob(link) {
+  for (;;) {
+    const data = await api.getBrazilPixPaymentJob(link.jobId, link.statusToken)
+    const job = data.job || {}
+    const status = String(job.status || '')
+    link.message = job.message || status || '处理中'
+    if (PAYMENT_TERMINAL_STATUSES.has(status)) return job
+    await new Promise(resolve => window.setTimeout(resolve, 2000))
+  }
+}
+
+async function runPaymentPair(link, cdk) {
+  paymentRunningCount.value += 1
+  link.status = 'running'
+  link.message = '提交支付任务中...'
+  cdk.status = 'reserved'
+  cdk.message = '已分配，等待支付结果。'
+  try {
+    const submitted = await api.submitBrazilPixPayment({ cdk: cdk.value, link: link.value })
+    link.jobId = submitted.job_id || ''
+    link.statusToken = submitted.status_token || ''
+    cdk.jobId = link.jobId
+    link.message = submitted.message || '已进入支付队列。'
+    if (!link.jobId || !link.statusToken) throw new Error('支付服务未返回 job_id/status_token')
+    const job = await waitPaymentJob(link)
+    if (job.status === 'succeeded') {
+      link.status = 'success'
+      const accountMark = job.account_email ? `账号 ${job.account_email} 已标记 Plus / Pix。` : ''
+      link.message = [job.message || '支付成功，CDK 已核销。', accountMark].filter(Boolean).join(' ')
+      cdk.status = 'used'
+      cdk.message = '支付成功，已核销。'
+      removeAccountFromPixPool(job.account_email || link.accountEmail)
+      reloadAccounts()
+    } else {
+      setPaymentFailure(link, cdk, job.message || job.error_code || `任务结束：${job.status}`)
+    }
+  } catch (error) {
+    const message = cleanText(error.message || error)
+    const code = paymentErrorCode(error)
+    const cdkFailed = ['cdk_invalid', 'cdk_disabled', 'cdk_used'].includes(code)
+    setPaymentFailure(link, cdk, message, { cdkFailed })
+  } finally {
+    paymentRunningCount.value = Math.max(0, paymentRunningCount.value - 1)
+  }
+}
+
+function removeAccountFromPixPool(email) {
+  const target = String(email || '').trim().toLowerCase()
+  if (!target) return
+  accounts.value = accounts.value.filter(account => String(account.email || '').trim().toLowerCase() !== target)
+  selectedAccounts.value = new Set(Array.from(selectedAccounts.value).filter(item => String(item || '').trim().toLowerCase() !== target))
+}
+
+async function runAllPayments() {
+  if (!paymentRunnableCount.value || paymentBusy.value) return
+  paymentBusy.value = true
+  paymentStatusText.value = `开始支付，最多并发 ${PAYMENT_MAX_CONCURRENCY} 项。`
+  const workers = Array.from({ length: Math.min(PAYMENT_MAX_CONCURRENCY, paymentRunnableCount.value) }, async () => {
+    for (;;) {
+      const pair = nextPaymentPair()
+      if (!pair) return
+      await runPaymentPair(pair.link, pair.cdk)
+    }
+  })
+  await Promise.all(workers)
+  paymentBusy.value = false
+  paymentStatusText.value = `支付队列已结束：成功 ${paymentLinks.value.filter(item => item.status === 'success').length}，需处理 ${paymentLinks.value.filter(item => ['failed', 'needs_action'].includes(item.status)).length}。`
+}
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
@@ -422,7 +924,7 @@ async function reloadAccounts() {
 async function refreshLinks() {
   try {
     const data = await api.getBrazilPixLinks()
-    links.value = Array.isArray(data.links) ? data.links : []
+    links.value = dedupeExtractedLinks(data.links)
     const available = new Set(links.value.map(link => link.id))
     selectedLinkIds.value = new Set(Array.from(selectedLinkIds.value).filter(id => available.has(id)))
   } catch (error) {
@@ -537,14 +1039,14 @@ async function deleteSelectedLinks() {
   const ids = Array.from(selectedLinkIds.value)
   if (!ids.length) return
   const data = await api.deleteBrazilPixLinks(ids)
-  links.value = Array.isArray(data.links) ? data.links : []
+  links.value = dedupeExtractedLinks(data.links)
   selectedLinkIds.value = new Set()
   setStatus(`已删除 ${data.deleted || ids.length} 条链接。`)
 }
 
 async function clearLinks() {
   const data = await api.clearBrazilPixLinks()
-  links.value = Array.isArray(data.links) ? data.links : []
+  links.value = dedupeExtractedLinks(data.links)
   selectedLinkIds.value = new Set()
   setStatus(`已清空 ${data.deleted || 0} 条链接。`)
 }
@@ -564,6 +1066,17 @@ function exportLinks() {
 
 onMounted(() => {
   form.value.proxies = localStorage.getItem(PROXY_STORAGE_KEY) || ''
+  const savedTab = localStorage.getItem(PIX_TAB_STORAGE_KEY)
+  if (savedTab === 'payment' || savedTab === 'extract') activePixTab.value = savedTab
+  loadPaymentState()
   reloadAll()
 })
+
+watch(activePixTab, (tab) => {
+  localStorage.setItem(PIX_TAB_STORAGE_KEY, tab)
+  if (tab === 'extract') reloadAll()
+})
+
+watch(paymentLinks, savePaymentState, { deep: true })
+watch(paymentCdks, savePaymentState, { deep: true })
 </script>

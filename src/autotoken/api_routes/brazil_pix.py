@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+import requests
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from autotoken.core.paths import PROJECT_ROOT
@@ -22,11 +23,14 @@ from autotoken.storage.auth_session_store import delete_auth_session
 AUTH_SESSION_DIR = PROJECT_ROOT / "data" / "auth_session"
 LINKS_FILE = PROJECT_ROOT / "data" / "brazil_pix_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "brazil_pix_account_status.json"
+PIX_CDK_API_BASE = "https://pix.iceaix.com"
 MAX_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 3
 JOBS: dict[str, dict[str, Any]] = {}
+PAYMENT_JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
-LINKS_LOCK = threading.Lock()
+PAYMENT_JOBS_LOCK = threading.RLock()
+LINKS_LOCK = threading.RLock()
 ACCOUNT_STATUS_LOCK = threading.RLock()
 
 
@@ -51,6 +55,11 @@ class BrazilPixBatchStartRequest(BrazilPixStartRequest):
 
 class BrazilPixDeleteLinksRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
+
+
+class BrazilPixPaymentSubmitRequest(BaseModel):
+    cdk: str
+    link: str
 
 
 ACCOUNT_STATUS_PENDING = "pending"
@@ -121,7 +130,10 @@ def _pix_pool_excluded_emails() -> set[str]:
             continue
         account_type = str(account.get("account_type") or "").strip().lower()
         status = str(account.get("status") or "").strip().lower()
-        if account_type == account_store.ACCOUNT_TYPE_PLUS or status == account_store.STATUS_PLUS:
+        bind_provider = str(account.get("last_bind_provider") or "").strip().lower()
+        bind_status = str(account.get("last_bind_status") or "").strip().lower()
+        pix_bound = bind_provider == "pix" and bind_status in {"success", "succeeded", "ok"}
+        if account_type == account_store.ACCOUNT_TYPE_PLUS or status == account_store.STATUS_PLUS or pix_bound:
             excluded.add(email)
     return excluded
 
@@ -271,6 +283,28 @@ def _parse_proxies(value: str | list[str]) -> list[str]:
     return lines
 
 
+def _dedupe_link_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen_accounts: set[str] = set()
+    seen_urls: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        email = str(item.get("account_email") or "").strip().lower()
+        url = _normalize_payment_link(item.get("hosted_instructions_url"))
+        if email:
+            if email in seen_accounts:
+                continue
+            seen_accounts.add(email)
+        elif url:
+            if url in seen_urls:
+                continue
+        if url:
+            seen_urls.add(url)
+        deduped.append(item)
+    return deduped
+
+
 def _load_links() -> list[dict[str, Any]]:
     with LINKS_LOCK:
         try:
@@ -279,13 +313,18 @@ def _load_links() -> list[dict[str, Any]]:
             return []
         if not isinstance(data, list):
             return []
-        return [item for item in data if isinstance(item, dict)]
+        items = [item for item in data if isinstance(item, dict)]
+        deduped = _dedupe_link_items(items)
+        if len(deduped) != len(items):
+            LINKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LINKS_FILE.write_text(json.dumps(deduped[:1000], ensure_ascii=False, indent=2), encoding="utf-8")
+        return deduped
 
 
 def _save_links(items: list[dict[str, Any]]) -> None:
     with LINKS_LOCK:
         LINKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        LINKS_FILE.write_text(json.dumps(items[:1000], ensure_ascii=False, indent=2), encoding="utf-8")
+        LINKS_FILE.write_text(json.dumps(_dedupe_link_items(items)[:1000], ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _link_record_from_result(job_id: str, account_email: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -315,9 +354,15 @@ def _append_link(record: dict[str, Any]) -> None:
             data = []
         items = data if isinstance(data, list) else []
         items = [item for item in items if isinstance(item, dict)]
+        record_email = str(record.get("account_email") or "").strip().lower()
+        record_url = _normalize_payment_link(record.get("hosted_instructions_url"))
+        if record_email:
+            items = [item for item in items if str(item.get("account_email") or "").strip().lower() != record_email]
+        elif record_url:
+            items = [item for item in items if _normalize_payment_link(item.get("hosted_instructions_url")) != record_url]
         items.insert(0, record)
         LINKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        LINKS_FILE.write_text(json.dumps(items[:1000], ensure_ascii=False, indent=2), encoding="utf-8")
+        LINKS_FILE.write_text(json.dumps(_dedupe_link_items(items)[:1000], ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _append_log(job_id: str, message: str) -> None:
@@ -328,6 +373,63 @@ def _append_log(job_id: str, message: str) -> None:
             return
         job["logs"].append(line)
         job["logs"] = job["logs"][-500:]
+
+
+def _payment_api_json(resp: requests.Response) -> dict[str, Any]:
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {"ok": False, "code": f"http_{resp.status_code}", "message": resp.text[:500] or "支付服务返回非 JSON 响应"}
+    if not resp.ok:
+        message = data.get("message") if isinstance(data, dict) else ""
+        raise HTTPException(status_code=resp.status_code, detail=data if isinstance(data, dict) else {"message": message or str(data)})
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail={"message": "支付服务响应格式错误"})
+    return data
+
+
+def _payment_api_error(exc: requests.RequestException) -> HTTPException:
+    return HTTPException(status_code=502, detail={"ok": False, "code": "payment_api_unreachable", "message": f"支付服务请求失败：{exc}"})
+
+
+def _normalize_payment_link(value: Any) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def _account_email_for_payment_link(link: str) -> str:
+    target = _normalize_payment_link(link)
+    if not target:
+        return ""
+    for item in _load_links():
+        hosted_url = _normalize_payment_link(item.get("hosted_instructions_url"))
+        if hosted_url == target:
+            return str(item.get("account_email") or "").strip()
+    return ""
+
+
+def _mark_payment_success_account(job_id: str, message: str = "PIX CDK payment succeeded") -> dict[str, Any]:
+    with PAYMENT_JOBS_LOCK:
+        payment_job = PAYMENT_JOBS.get(job_id) or {}
+        if payment_job.get("account_marked"):
+            return dict(payment_job.get("account_update") or {})
+        email = str(payment_job.get("account_email") or "").strip()
+        link = str(payment_job.get("link") or "")
+    if not email:
+        email = _account_email_for_payment_link(link)
+    if not email:
+        return {}
+    updated = _mark_account_plus_pix(email, message)
+    result = {
+        "email": email,
+        "account_type": str(updated.get("account_type") or ""),
+        "last_bind_provider": str(updated.get("last_bind_provider") or ""),
+    }
+    with PAYMENT_JOBS_LOCK:
+        if job_id in PAYMENT_JOBS:
+            PAYMENT_JOBS[job_id]["account_email"] = email
+            PAYMENT_JOBS[job_id]["account_marked"] = True
+            PAYMENT_JOBS[job_id]["account_update"] = result
+    return result
 
 
 def _is_job_cancel_requested(job_id: str) -> bool:
@@ -741,5 +843,61 @@ def create_brazil_pix_router() -> APIRouter:
         count = len(_load_links())
         _save_links([])
         return {"deleted": count, "links": []}
+
+    @router.post("/api/brazil-pix/payment/submit")
+    def submit_brazil_pix_payment(req: BrazilPixPaymentSubmitRequest) -> dict[str, Any]:
+        cdk = str(req.cdk or "").strip()
+        link = str(req.link or "").strip()
+        if not cdk or not link:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "CDK 和链接不能为空"})
+        try:
+            resp = requests.post(
+                f"{PIX_CDK_API_BASE}/api/submit",
+                json={"cdk": cdk, "link": link},
+                headers={"Content-Type": "application/json"},
+                timeout=70,
+            )
+        except requests.RequestException as exc:
+            raise _payment_api_error(exc) from exc
+        data = _payment_api_json(resp)
+        job_id = str(data.get("job_id") or "").strip()
+        if job_id:
+            with PAYMENT_JOBS_LOCK:
+                PAYMENT_JOBS[job_id] = {
+                    "job_id": job_id,
+                    "status_token": str(data.get("status_token") or ""),
+                    "link": link,
+                    "cdk": cdk,
+                    "account_email": _account_email_for_payment_link(link),
+                    "account_marked": False,
+                    "account_update": {},
+                    "created_at": time.time(),
+                }
+        return data
+
+    @router.get("/api/brazil-pix/payment/jobs/{job_id}")
+    def get_brazil_pix_payment_job(job_id: str, token: str = Query("")) -> dict[str, Any]:
+        clean_job_id = str(job_id or "").strip()
+        clean_token = str(token or "").strip()
+        if not clean_job_id or not clean_token:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "job_id 和 token 不能为空"})
+        try:
+            resp = requests.get(
+                f"{PIX_CDK_API_BASE}/api/jobs/{clean_job_id}",
+                params={"token": clean_token},
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise _payment_api_error(exc) from exc
+        data = _payment_api_json(resp)
+        job = data.get("job") if isinstance(data.get("job"), dict) else {}
+        if str(job.get("status") or "") == "succeeded":
+            account_update = _mark_payment_success_account(clean_job_id, str(job.get("message") or "PIX CDK payment succeeded"))
+            if account_update:
+                job["account_email"] = account_update.get("email") or ""
+                job["account_type"] = account_update.get("account_type") or ""
+                job["last_bind_provider"] = account_update.get("last_bind_provider") or ""
+                job["account_marked_plus"] = True
+        return data
 
     return router

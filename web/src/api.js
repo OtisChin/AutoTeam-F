@@ -40,6 +40,8 @@ async function request(method, path, body = null) {
     }
     const err = new Error(msg)
     err.status = resp.status
+    err.data = data
+    err.code = data?.detail?.code || data?.code || ''
     throw err
   }
   return data
@@ -132,6 +134,8 @@ export const api = {
   getBrazilPixLinks: () => request('GET', '/brazil-pix/links'),
   deleteBrazilPixLinks: (ids) => request('POST', '/brazil-pix/links/delete', { ids }),
   clearBrazilPixLinks: () => request('POST', '/brazil-pix/links/clear'),
+  submitBrazilPixPayment: (payload) => request('POST', '/brazil-pix/payment/submit', payload),
+  getBrazilPixPaymentJob: (jobId, token) => request('GET', `/brazil-pix/payment/jobs/${encodeURIComponent(jobId)}?token=${encodeURIComponent(token)}`),
   getIdealQrBlob: async (value) => {
     const headers = { 'Content-Type': 'application/json' }
     const key = getApiKey()

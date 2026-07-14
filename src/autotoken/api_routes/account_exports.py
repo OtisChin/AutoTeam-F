@@ -33,7 +33,7 @@ def create_account_exports_router(
     @router.post("/api/accounts/export-credentials")
     def export_account_credentials(params: AccountCredentialExportParams):
         """导出本地账号池账密，固定格式: 邮箱-----密码/Token-----接码地址。"""
-        from autotoken.commerce.trade import credential_export_line_for_account, outlook_mailapi_urls_by_email
+        from autotoken.commerce.trade import credential_export_line_for_account, outlook_accounts_by_email
         from autotoken.storage.accounts import ACCOUNT_SOURCE_AUTH_SESSION_STUB, load_accounts, update_account
 
         validate_list_payload_limit(params.emails, max_items=ACCOUNT_EXPORT_MAX_EMAILS, label="账号导出")
@@ -67,9 +67,18 @@ def create_account_exports_router(
                 continue
             export_rows.append(account)
 
-        outlook_mailapi_urls = outlook_mailapi_urls_by_email()
+        outlook_accounts = outlook_accounts_by_email()
+        outlook_mailapi_urls = {
+            email: item["mailapi_url"]
+            for email, item in outlook_accounts.items()
+            if str(item.get("mailapi_url") or "").strip()
+        }
         content = "\n".join(
-            credential_export_line_for_account(account, outlook_mailapi_urls=outlook_mailapi_urls)
+            credential_export_line_for_account(
+                account,
+                outlook_mailapi_urls=outlook_mailapi_urls,
+                outlook_accounts=outlook_accounts,
+            )
             for account in export_rows
         )
         exported_at = current_time()

@@ -407,8 +407,8 @@ def credential_password_for_account(account: dict) -> str:
     return str(account.get("password") or "")
 
 
-def outlook_mailapi_urls_by_email() -> dict[str, str]:
-    """Return imported Outlook/Hotmail mailapi URLs keyed by mailbox email."""
+def outlook_accounts_by_email() -> dict[str, dict[str, str]]:
+    """Return imported Outlook/Hotmail source credentials keyed by mailbox email."""
     try:
         from autotoken.mail.outlook import OutlookMailProvider
     except Exception:
@@ -417,19 +417,35 @@ def outlook_mailapi_urls_by_email() -> dict[str, str]:
         provider = OutlookMailProvider()
     except Exception:
         return {}
-    urls: dict[str, str] = {}
+    rows: dict[str, dict[str, str]] = {}
     for account in getattr(provider, "accounts", []) or []:
         email = _normalized_email(getattr(account, "email", ""))
-        mailapi_url = str(getattr(account, "mailapi_url", "") or "").strip()
-        if email and mailapi_url:
-            urls[email] = mailapi_url
-    return urls
+        if not email:
+            continue
+        rows[email] = {
+            "email": email,
+            "password": str(getattr(account, "password", "") or "").strip(),
+            "client_id": str(getattr(account, "client_id", "") or "").strip(),
+            "refresh_token": str(getattr(account, "refresh_token", "") or "").strip(),
+            "mailapi_url": str(getattr(account, "mailapi_url", "") or "").strip(),
+        }
+    return rows
+
+
+def outlook_mailapi_urls_by_email() -> dict[str, str]:
+    """Return imported Outlook/Hotmail mailapi URLs keyed by mailbox email."""
+    return {
+        email: item["mailapi_url"]
+        for email, item in outlook_accounts_by_email().items()
+        if str(item.get("mailapi_url") or "").strip()
+    }
 
 
 def credential_export_line_for_account(
     account: dict,
     *,
     outlook_mailapi_urls: dict[str, str] | None = None,
+    outlook_accounts: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Render account credentials as: email-----secret-----mail access URL."""
     email = _normalized_email(account.get("email"))
@@ -437,11 +453,23 @@ def credential_export_line_for_account(
     credential_secret = credential_password_for_account(account)
     mail_provider = str(account.get("mail_provider") or "").strip().lower()
     cloudmail_token = str(account.get("cloudmail_account_id") or "").strip()
-    mailapi_urls = outlook_mailapi_urls if outlook_mailapi_urls is not None else outlook_mailapi_urls_by_email()
+    outlook_rows = outlook_accounts if outlook_accounts is not None else outlook_accounts_by_email()
+    outlook_source = outlook_rows.get(email, {}) if isinstance(outlook_rows, dict) else {}
+    is_outlook_account = mail_provider == "outlook" or bool(outlook_source)
+    mailapi_urls = outlook_mailapi_urls if outlook_mailapi_urls is not None else {
+        key: item["mailapi_url"]
+        for key, item in outlook_rows.items()
+        if isinstance(item, dict) and str(item.get("mailapi_url") or "").strip()
+    }
     mailapi_url = str(account.get("mailapi_url") or mailapi_urls.get(email, "") or "").strip()
+    outlook_password = str(outlook_source.get("password") or "").strip()
+    outlook_client_id = str(outlook_source.get("client_id") or "").strip()
+    outlook_refresh_token = str(outlook_source.get("refresh_token") or "").strip()
 
     if mailapi_url:
         return f"{email}-----{password}-----{mailapi_url}"
+    if is_outlook_account:
+        return f"{email}-----{outlook_password or password}-----{outlook_client_id}-----{outlook_refresh_token}"
     if mail_provider == "luckmail" or cloudmail_token.startswith("tok_"):
         return f"{email}-----{credential_secret}-----{OUTLOOK_TOKEN_DELIVERY_URL}"
     return f"{email}-----{password}-----{DOMAIN_CREDENTIAL_DELIVERY_URL}"
@@ -603,7 +631,12 @@ def _inventory_format_counts(accounts: list[dict], main_email: str, allocated: s
         "all_formats": 0,
     }
     missing_credentials_count = 0
-    outlook_urls = outlook_mailapi_urls_by_email()
+    outlook_accounts = outlook_accounts_by_email()
+    outlook_urls = {
+        email: item["mailapi_url"]
+        for email, item in outlook_accounts.items()
+        if str(item.get("mailapi_url") or "").strip()
+    }
 
     for account in accounts:
         email = _normalized_email(account.get("email"))
@@ -636,7 +669,13 @@ def _inventory_format_counts(accounts: list[dict], main_email: str, allocated: s
             has_sub = any(record.is_valid for record in records)
         except Exception:
             has_sub = False
-        has_credentials = bool(credential_export_line_for_account(account, outlook_mailapi_urls=outlook_urls))
+        has_credentials = bool(
+            credential_export_line_for_account(
+                account,
+                outlook_mailapi_urls=outlook_urls,
+                outlook_accounts=outlook_accounts,
+            )
+        )
 
         if has_cpa:
             counts["cpa"] += 1

@@ -51,6 +51,51 @@ def test_accounts_include_pix_status_from_links_and_status_file(monkeypatch, tmp
     assert accounts["new@example.com"]["pix_status_text"] == "未提链"
 
 
+def test_append_link_replaces_existing_link_for_same_account(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    brazil_pix._append_link(
+        {
+            "id": "old",
+            "account_email": "replace@example.com",
+            "hosted_instructions_url": "https://payments.stripe.com/qr/instructions/old",
+            "created_at": "old-time",
+        }
+    )
+    brazil_pix._append_link(
+        {
+            "id": "new",
+            "account_email": "replace@example.com",
+            "hosted_instructions_url": "https://payments.stripe.com/qr/instructions/new",
+            "created_at": "new-time",
+        }
+    )
+
+    links = brazil_pix._load_links()
+
+    assert len(links) == 1
+    assert links[0]["id"] == "new"
+    assert links[0]["hosted_instructions_url"].endswith("/new")
+
+
+def test_load_links_rewrites_legacy_duplicates(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    brazil_pix.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {"id": "latest", "account_email": "same@example.com", "hosted_instructions_url": "https://pay/new"},
+                {"id": "old", "account_email": "same@example.com", "hosted_instructions_url": "https://pay/old"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    links = brazil_pix._load_links()
+    stored = json.loads(brazil_pix.LINKS_FILE.read_text(encoding="utf-8"))
+
+    assert [item["id"] for item in links] == ["latest"]
+    assert [item["id"] for item in stored] == ["latest"]
+
+
 def test_accounts_exclude_plus_from_pix_pool(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     _write_session(auth_dir, "plus@example.com")
@@ -65,6 +110,29 @@ def test_accounts_exclude_plus_from_pix_pool(monkeypatch, tmp_path):
     accounts = {item["email"] for item in brazil_pix._iter_auth_accounts_with_pix_status()}
 
     assert "plus@example.com" not in accounts
+    assert "free@example.com" in accounts
+
+
+def test_accounts_exclude_pix_bound_success_from_pix_pool(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    _write_session(auth_dir, "pixbound@example.com")
+    _write_session(auth_dir, "free@example.com")
+    brazil_pix.account_store.save_accounts(
+        [
+            {
+                "email": "pixbound@example.com",
+                "status": "active",
+                "account_type": "free",
+                "last_bind_provider": "pix",
+                "last_bind_status": "success",
+            },
+            {"email": "free@example.com", "status": "active", "account_type": "free"},
+        ]
+    )
+
+    accounts = {item["email"] for item in brazil_pix._iter_auth_accounts_with_pix_status()}
+
+    assert "pixbound@example.com" not in accounts
     assert "free@example.com" in accounts
 
 
@@ -381,3 +449,93 @@ def test_batch_job_cancel_skips_not_started_accounts(monkeypatch, tmp_path):
     assert len(job["result"]["successes"]) == 1
     assert len(job["result"]["skipped"]) == 2
     assert job["running_count"] == 0
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, data: dict):
+        self.status_code = status_code
+        self._data = data
+        self.text = json.dumps(data)
+        self.ok = 200 <= status_code < 400
+
+    def json(self):
+        return self._data
+
+
+def _route_endpoint(path: str, method: str):
+    router = brazil_pix.create_brazil_pix_router()
+    for route in router.routes:
+        if getattr(route, "path", "") == path and method.upper() in getattr(route, "methods", set()):
+            return route.endpoint
+    raise AssertionError(f"route not found: {method} {path}")
+
+
+def test_payment_submit_proxies_pix_cdk_api(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeResponse(
+            202,
+            {
+                "ok": True,
+                "job_id": "job123",
+                "status_token": "token123",
+                "status": "queued",
+                "message": "已进入支付队列",
+            },
+        )
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+
+    endpoint = _route_endpoint("/api/brazil-pix/payment/submit", "POST")
+    data = endpoint(brazil_pix.BrazilPixPaymentSubmitRequest(cdk="PIX-1", link="https://payments.stripe.com/qr/instructions/abc"))
+
+    assert data["job_id"] == "job123"
+    assert calls[0][0] == "https://pix.iceaix.com/api/submit"
+    assert calls[0][1]["json"] == {"cdk": "PIX-1", "link": "https://payments.stripe.com/qr/instructions/abc"}
+    assert calls[0][1]["timeout"] == 70
+
+
+def test_payment_job_query_proxies_pix_cdk_api(monkeypatch):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeResponse(200, {"ok": True, "job": {"job_id": "job123", "status": "succeeded", "message": ""}})
+
+    monkeypatch.setattr(brazil_pix.requests, "get", fake_get)
+
+    endpoint = _route_endpoint("/api/brazil-pix/payment/jobs/{job_id}", "GET")
+    data = endpoint("job123", token="token123")
+
+    assert data["job"]["status"] == "succeeded"
+    assert calls[0][0] == "https://pix.iceaix.com/api/jobs/job123"
+    assert calls[0][1]["params"] == {"token": "token123"}
+
+
+def test_payment_success_marks_link_account_plus_pix(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    email = "buyer@example.com"
+    link = "https://payments.stripe.com/qr/instructions/abc"
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"}])
+    brazil_pix.LINKS_FILE.write_text(json.dumps([{"account_email": email, "hosted_instructions_url": link}]), encoding="utf-8")
+    brazil_pix.PAYMENT_JOBS.clear()
+    brazil_pix.PAYMENT_JOBS["job123"] = {"job_id": "job123", "link": link, "status_token": "token123"}
+
+    def fake_get(url, **kwargs):
+        return _FakeResponse(200, {"ok": True, "job": {"job_id": "job123", "status": "succeeded", "message": "支付成功"}})
+
+    monkeypatch.setattr(brazil_pix.requests, "get", fake_get)
+
+    endpoint = _route_endpoint("/api/brazil-pix/payment/jobs/{job_id}", "GET")
+    data = endpoint("job123", token="token123")
+
+    account = brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email)
+    assert data["job"]["account_email"] == email
+    assert data["job"]["account_type"] == "plus"
+    assert data["job"]["last_bind_provider"] == "pix"
+    assert data["job"]["account_marked_plus"] is True
+    assert account["account_type"] == "plus"
+    assert account["last_bind_provider"] == "pix"
+    assert account["last_bind_status"] == "success"

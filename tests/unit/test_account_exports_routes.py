@@ -43,6 +43,71 @@ def test_export_account_credentials_rejects_too_many_raw_emails():
         raise AssertionError("oversized credential export selection must fail")
 
 
+def test_export_account_credentials_uses_original_outlook_oauth_line(monkeypatch):
+    app = _app()
+    updates = []
+    account = {
+        "email": "User@Outlook.com",
+        "password": "chatgpt-password",
+        "mail_provider": "outlook",
+        "account_source": "managed",
+    }
+    outlook_source = {
+        "user@outlook.com": {
+            "email": "user@outlook.com",
+            "password": "mail-password",
+            "client_id": "client-id",
+            "refresh_token": "refresh-token",
+            "mailapi_url": "",
+        }
+    }
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.update_account",
+        lambda email, **kwargs: updates.append((email, kwargs)) or {**account, **kwargs},
+    )
+    monkeypatch.setattr("autotoken.commerce.trade.outlook_accounts_by_email", lambda: outlook_source)
+
+    result = _endpoint(app, "/api/accounts/export-credentials", "POST")(
+        AccountCredentialExportParams(emails=["user@outlook.com"])
+    )
+
+    assert result["content"] == "user@outlook.com-----mail-password-----client-id-----refresh-token"
+    assert result["count"] == 1
+    assert updates[0][0] == "user@outlook.com"
+    assert updates[0][1]["credentials_exported"] is True
+
+
+def test_export_account_credentials_keeps_mailapi_outlook_legacy_line(monkeypatch):
+    app = _app()
+    account = {
+        "email": "Mailapi@Outlook.com",
+        "password": "chatgpt-password",
+        "mail_provider": "outlook",
+        "account_source": "managed",
+    }
+    outlook_source = {
+        "mailapi@outlook.com": {
+            "email": "mailapi@outlook.com",
+            "password": "",
+            "client_id": "",
+            "refresh_token": "",
+            "mailapi_url": "https://mailapi.icu/key?type=html&orderNo=secret",
+        }
+    }
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {**account, **kwargs})
+    monkeypatch.setattr("autotoken.commerce.trade.outlook_accounts_by_email", lambda: outlook_source)
+
+    result = _endpoint(app, "/api/accounts/export-credentials", "POST")(
+        AccountCredentialExportParams(emails=["mailapi@outlook.com"])
+    )
+
+    assert result["content"] == "mailapi@outlook.com-----chatgpt-password-----https://mailapi.icu/key?type=html&orderNo=secret"
+
+
 def test_update_accounts_export_status_rejects_too_many_raw_emails():
     app = _app()
 
