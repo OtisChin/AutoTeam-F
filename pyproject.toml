@@ -40,7 +40,6 @@ exclude = [
     "/.verify",
     "/.venv",
     "/build",
-    "/CNgopay",
     "/dist",
     "/auth_state",
     "/auths",

@@ -1,13 +1,15 @@
 import ast
 import importlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import tarfile
+import warnings
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import tomllib
@@ -24,12 +26,21 @@ DOCS_AND_CONFIG_AUTOTEAM_REFERENCE_ALLOWLIST = {
 }
 
 
+def _is_planning_record(relative: Path) -> bool:
+    return relative.parts[:2] == ("docs", "plans") or relative.parts[:3] in {
+        ("docs", "superpowers", "plans"),
+        ("docs", "superpowers", "specs"),
+    }
+
+
 def _autoteam_alias_mapping_from_text(text: str) -> dict[str, str]:
     module = ast.parse(text)
     for node in module.body:
         if not isinstance(node, ast.Assign):
             continue
-        if any(isinstance(target, ast.Name) and target.id == "_REORGANIZED_SUBMODULE_ALIASES" for target in node.targets):
+        if any(
+            isinstance(target, ast.Name) and target.id == "_REORGANIZED_SUBMODULE_ALIASES" for target in node.targets
+        ):
             return ast.literal_eval(node.value)
     raise AssertionError("_REORGANIZED_SUBMODULE_ALIASES assignment not found")
 
@@ -57,11 +68,13 @@ def _python_package_dirs_missing_init(source_root: Path) -> list[str]:
 
 
 def _wheel_python_package_dirs_missing_init(wheel_names: list[str]) -> list[str]:
-    package_dirs = sorted({
-        str(Path(name).parent).replace("\\", "/")
-        for name in wheel_names
-        if name.startswith("autotoken/") and name.endswith(".py")
-    })
+    package_dirs = sorted(
+        {
+            str(Path(name).parent).replace("\\", "/")
+            for name in wheel_names
+            if name.startswith("autotoken/") and name.endswith(".py")
+        }
+    )
     return [
         directory
         for directory in package_dirs
@@ -71,20 +84,12 @@ def _wheel_python_package_dirs_missing_init(wheel_names: list[str]) -> list[str]
 
 def _protocol_register_bundle_files(project_root: Path) -> list[str]:
     bundle_root = project_root / "src" / "autotoken" / "_protocol_register"
-    return sorted(
-        path.relative_to(bundle_root).as_posix()
-        for path in bundle_root.iterdir()
-        if path.is_file()
-    )
+    return sorted(path.relative_to(bundle_root).as_posix() for path in bundle_root.iterdir() if path.is_file())
 
 
 def _oauth_helper_extension_files(project_root: Path) -> list[str]:
     extension_root = project_root / "src" / "autotoken" / "oauth_helper_extension"
-    return sorted(
-        path.relative_to(extension_root).as_posix()
-        for path in extension_root.iterdir()
-        if path.is_file()
-    )
+    return sorted(path.relative_to(extension_root).as_posix() for path in extension_root.iterdir() if path.is_file())
 
 
 def _autotoken_package_data_files(project_root: Path) -> list[str]:
@@ -106,6 +111,304 @@ def _text_artifact_members_containing_old_name(members: dict[str, str]) -> list[
         for name, text in members.items()
         if "autoteam" in name.lower() or any(term in text for term in old_name_terms)
     )
+
+
+def _removed_subsystem_marker_patterns() -> tuple[re.Pattern[str], ...]:
+    snake_name = "gopay" + "_pro"
+    kebab_name = "gopay" + "-pro"
+    legacy_name = "cn" + "gopay"
+    display_name = "GoPay" + " " + "Pro"
+    camel_type_name = "GoPay" + "Pro"
+    camel_value_name = "gopay" + "Pro"
+    return (
+        re.compile(
+            rf"{re.escape(snake_name)}(?:_|\b)|"
+            rf"{re.escape(kebab_name)}(?:-|\b)|"
+            rf"{re.escape(legacy_name)}|"
+            rf"{re.escape(display_name)}\b",
+            flags=re.IGNORECASE,
+        ),
+        re.compile(rf"{re.escape(camel_type_name)}[A-Z]|\b{re.escape(camel_value_name)}\b"),
+    )
+
+
+def _contains_removed_subsystem_marker(value: str | bytes) -> bool:
+    patterns = _removed_subsystem_marker_patterns()
+    if isinstance(value, bytes):
+        return any(
+            re.search(pattern.pattern.encode("ascii"), value, flags=pattern.flags & ~re.UNICODE) for pattern in patterns
+        )
+    return any(pattern.search(value) for pattern in patterns)
+
+
+def _allowed_removal_record_paths(canonical_root: PurePosixPath) -> set[PurePosixPath]:
+    record_stem = "2026-07-13-remove-" + "gopay" + "-pro"
+    return {
+        canonical_root / "docs/superpowers/specs" / f"{record_stem}-design.md",
+        canonical_root / "docs/superpowers/plans" / f"{record_stem}.md",
+    }
+
+
+def _wheel_removed_subsystem_hits(wheel_path: Path) -> list[str]:
+    hits = set()
+    seen_names = set()
+
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for info in wheel.infolist():
+            name = info.filename
+            if name in seen_names:
+                hits.add(f"duplicate member: {name}")
+            seen_names.add(name)
+            if _contains_removed_subsystem_marker(name):
+                hits.add(f"member: {name}")
+            payload = wheel.read(info)
+            if _contains_removed_subsystem_marker(payload):
+                hits.add(f"content: {name}")
+            if info.is_dir() and info.file_size != 0:
+                hits.add(f"directory member has payload: {name}")
+
+    return sorted(hits)
+
+
+def _sdist_removed_subsystem_hits(
+    sdist_path: Path,
+    canonical_root: PurePosixPath,
+    allowed_records: set[PurePosixPath],
+) -> list[str]:
+    hits = set()
+    allowed_record_members = {record: [] for record in allowed_records}
+
+    with tarfile.open(sdist_path) as sdist:
+        for member in sdist.getmembers():
+            member_path = PurePosixPath(member.name)
+            if member_path in allowed_record_members:
+                allowed_record_members[member_path].append(member)
+
+            if "\\" in member.name or member_path.is_absolute() or ".." in member_path.parts:
+                hits.add(f"unsafe member path: {member.name}")
+                has_canonical_root = False
+            else:
+                has_canonical_root = member_path == canonical_root or (
+                    member_path.parts[: len(canonical_root.parts)] == canonical_root.parts
+                )
+                if not has_canonical_root:
+                    hits.add(f"noncanonical member root: {member.name}")
+
+            if has_canonical_root and member_path in allowed_records and member.isfile():
+                continue
+            if _contains_removed_subsystem_marker(member.name):
+                hits.add(f"member: {member.name}")
+            if member.issym() or member.islnk():
+                link_path = PurePosixPath(member.linkname)
+                if _contains_removed_subsystem_marker(member.linkname):
+                    hits.add(f"link target marker: {member.name} -> {member.linkname}")
+                if "\\" in member.linkname or link_path.is_absolute() or ".." in link_path.parts:
+                    hits.add(f"unsafe link target: {member.name} -> {member.linkname}")
+            if not member.isfile() and not member.isdir():
+                hits.add(f"unsupported member type: {member.name}")
+            if not member.isfile():
+                continue
+            member_file = sdist.extractfile(member)
+            if member_file is None:
+                continue
+            if _contains_removed_subsystem_marker(member_file.read()):
+                hits.add(f"content: {member.name}")
+
+    for record, members in allowed_record_members.items():
+        if len(members) != 1:
+            hits.add(f"allowed removal record count: {record}: {len(members)}")
+        if any(not member.isfile() for member in members):
+            hits.add(f"allowed removal record is not a regular file: {record}")
+
+    return sorted(hits)
+
+
+def test_removed_subsystem_marker_detection_matches_only_retired_identifiers():
+    legacy_name = "cn" + "gopay"
+    positive_values = [
+        "gopay" + "_pro",
+        "gopay" + "-pro",
+        "CN" + "gopay" + "Backup",
+        legacy_name + "2",
+        "GoPay" + " " + "Pro",
+        "GoPay" + "ProTask",
+        "gopay" + "Pro",
+    ]
+    negative_values = [
+        "gopay_protocol",
+        "gopayProxy",
+    ]
+
+    assert all(_contains_removed_subsystem_marker(value) for value in positive_values)
+    assert not any(_contains_removed_subsystem_marker(value) for value in negative_values)
+
+
+def _write_test_sdist(sdist_path: Path, members: list[tuple[str, bytes | None]]) -> None:
+    with tarfile.open(sdist_path, "w:gz") as sdist:
+        for name, payload in members:
+            member = tarfile.TarInfo(name)
+            if payload is None:
+                member.type = tarfile.DIRTYPE
+                sdist.addfile(member)
+                continue
+            member.size = len(payload)
+            sdist.addfile(member, io.BytesIO(payload))
+
+
+def test_wheel_archive_scan_checks_raw_bytes(tmp_path):
+    wheel_path = tmp_path / "fixture.whl"
+    retired_payload = b"\xff" + ("cn" + "gopay" + "Backup").encode("ascii")
+
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        wheel.writestr("payload.bin", retired_payload)
+
+    assert _wheel_removed_subsystem_hits(wheel_path) == ["content: payload.bin"]
+
+
+def test_wheel_archive_scan_rejects_duplicate_names_and_reads_each_entry(tmp_path):
+    wheel_path = tmp_path / "fixture.whl"
+    retired_payload = ("cn" + "gopay" + "Backup").encode("ascii")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(wheel_path, "w") as wheel:
+            wheel.writestr("payload.txt", retired_payload)
+            wheel.writestr("payload.txt", b"clean")
+
+    assert _wheel_removed_subsystem_hits(wheel_path) == [
+        "content: payload.txt",
+        "duplicate member: payload.txt",
+    ]
+
+
+def test_wheel_archive_scan_rejects_directory_entries_with_payload(tmp_path):
+    wheel_path = tmp_path / "fixture.whl"
+    retired_payload = ("CN" + "gopay" + "Backup").encode("ascii")
+
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        wheel.writestr("payload/", retired_payload)
+
+    assert _wheel_removed_subsystem_hits(wheel_path) == [
+        "content: payload/",
+        "directory member has payload: payload/",
+    ]
+
+
+def test_sdist_archive_scan_checks_raw_bytes(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    retired_payload = b"\xff" + ("cn" + "gopay" + "Backup").encode("ascii")
+    members = [(record.as_posix(), b"removal record") for record in allowed_records]
+    members.append(((canonical_root / "payload.bin").as_posix(), retired_payload))
+    _write_test_sdist(sdist_path, members)
+
+    assert _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records) == [
+        f"content: {canonical_root}/payload.bin"
+    ]
+
+
+def test_sdist_archive_scan_rejects_noncanonical_member_paths(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    members = [(record.as_posix(), b"removal record") for record in allowed_records]
+    members.extend(
+        [
+            ("/absolute.txt", b"clean"),
+            (f"{canonical_root}/../escape.txt", b"clean"),
+            ("other-root/clean.txt", b"clean"),
+        ]
+    )
+    _write_test_sdist(sdist_path, members)
+
+    assert _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records) == [
+        "noncanonical member root: other-root/clean.txt",
+        "unsafe member path: /absolute.txt",
+        f"unsafe member path: {canonical_root}/../escape.txt",
+    ]
+
+
+def test_sdist_archive_scan_rejects_backslash_member_names(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    unsafe_name = f"{canonical_root}/dir\\..\\..\\escape"
+    members = [(record.as_posix(), b"removal record") for record in allowed_records]
+    members.append((unsafe_name, b"clean"))
+    _write_test_sdist(sdist_path, members)
+
+    assert _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records) == [
+        f"unsafe member path: {unsafe_name}"
+    ]
+
+
+def test_sdist_archive_scan_rejects_links_and_scans_targets(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    marker_link_name = "CN" + "gopay" + "Backup"
+    symlink_name = (canonical_root / "marker-link").as_posix()
+    hardlink_name = (canonical_root / "escape-link").as_posix()
+
+    with tarfile.open(sdist_path, "w:gz") as sdist:
+        for record in allowed_records:
+            payload = b"removal record"
+            member = tarfile.TarInfo(record.as_posix())
+            member.size = len(payload)
+            sdist.addfile(member, io.BytesIO(payload))
+
+        symlink = tarfile.TarInfo(symlink_name)
+        symlink.type = tarfile.SYMTYPE
+        symlink.linkname = marker_link_name
+        sdist.addfile(symlink)
+
+        hardlink = tarfile.TarInfo(hardlink_name)
+        hardlink.type = tarfile.LNKTYPE
+        hardlink.linkname = "../../escape"
+        sdist.addfile(hardlink)
+
+    hits = _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records)
+
+    assert f"link target marker: {symlink_name} -> {marker_link_name}" in hits
+    assert f"unsafe link target: {hardlink_name} -> ../../escape" in hits
+    assert f"unsupported member type: {symlink_name}" in hits
+    assert f"unsupported member type: {hardlink_name}" in hits
+
+
+def test_sdist_archive_scan_does_not_allow_records_under_another_root(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    allowed_record = next(iter(allowed_records))
+    alternate_record = PurePosixPath("other-root", *allowed_record.parts[1:])
+    members = [(record.as_posix(), b"removal record") for record in allowed_records]
+    members.append((alternate_record.as_posix(), b"removal record"))
+    _write_test_sdist(sdist_path, members)
+
+    assert f"noncanonical member root: {alternate_record}" in _sdist_removed_subsystem_hits(
+        sdist_path, canonical_root, allowed_records
+    )
+
+
+def test_sdist_archive_scan_requires_each_allowed_record_once_as_a_regular_file(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    missing_record, repeated_record = sorted(allowed_records, key=str)
+    _write_test_sdist(
+        sdist_path,
+        [
+            (repeated_record.as_posix(), b"removal record"),
+            (repeated_record.as_posix(), None),
+        ],
+    )
+
+    hits = _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records)
+
+    assert f"allowed removal record count: {missing_record}: 0" in hits
+    assert f"allowed removal record count: {repeated_record}: 2" in hits
+    assert f"allowed removal record is not a regular file: {repeated_record}" in hits
 
 
 def _legacy_root_alias_metadata_check_script(checks: dict[str, str]) -> str:
@@ -667,7 +970,6 @@ def test_pyproject_uses_autotoken_as_canonical_cli_and_keeps_autoteam_alias():
         "/.verify",
         "/.venv",
         "/build",
-        "/CNgopay",
         "/dist",
         "/auth_state",
         "/auths",
@@ -701,9 +1003,7 @@ def test_uv_lock_uses_autotoken_as_editable_project_name():
     project_root = Path(__file__).resolve().parents[2]
     lock_text = (project_root / "uv.lock").read_text(encoding="utf-8")
     uv_lock = tomllib.loads(lock_text)
-    editable_packages = [
-        package for package in uv_lock["package"] if package.get("source", {}).get("editable") == "."
-    ]
+    editable_packages = [package for package in uv_lock["package"] if package.get("source", {}).get("editable") == "."]
 
     assert [package["name"] for package in editable_packages] == ["autotoken"]
     assert "autoteam" not in lock_text.lower()
@@ -794,7 +1094,7 @@ def test_mixed_case_autoteam_brand_references_are_limited_to_plans_and_tests():
             if not path.is_file():
                 continue
             relative = path.relative_to(project_root)
-            if relative.parts[:2] == ("docs", "plans"):
+            if _is_planning_record(relative):
                 continue
             if "dist" in relative.parts or "node_modules" in relative.parts or "__pycache__" in relative.parts:
                 continue
@@ -829,7 +1129,7 @@ def test_docs_and_config_autoteam_references_are_limited_to_compatibility_notes(
         relative = path.relative_to(project_root)
         if relative in DOCS_AND_CONFIG_AUTOTEAM_REFERENCE_ALLOWLIST:
             continue
-        if relative.parts[:2] == ("docs", "plans"):
+        if _is_planning_record(relative):
             continue
         if "dist" in relative.parts or "node_modules" in relative.parts or "__pycache__" in relative.parts:
             continue
@@ -919,7 +1219,7 @@ def test_active_docs_reference_existing_local_source_and_test_files():
         if not source_path.is_file():
             continue
         relative = source_path.relative_to(project_root)
-        if relative.parts[:2] == ("docs", "plans"):
+        if _is_planning_record(relative):
             continue
         text = source_path.read_text(encoding="utf-8", errors="ignore")
         for match in local_file_ref_pattern.finditer(text):
@@ -963,7 +1263,7 @@ def test_active_docs_and_scripts_do_not_embed_local_absolute_paths():
         if not path.is_file():
             continue
         relative = path.relative_to(project_root)
-        if relative.parts[:2] == ("docs", "plans"):
+        if _is_planning_record(relative):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         matches = sorted(set(local_absolute_path_pattern.findall(text)))
@@ -998,15 +1298,9 @@ def test_git_tracked_files_exclude_runtime_data_and_secret_artifacts():
         r"(^|/)(\.paypal_realtest_task_id|.*\.task_id|.*\.pid)$",
         r".*\.(log|jsonl|sqlite|sqlite3|db)$",
         r"^(pool\.exe|pool-linux-x64|pool-mac-arm64|pool-mac-intel)$",
-        r"^CNgopay/codex_register/dist/",
-        r"^CNgopay/codex_register/bundle/",
         r"^src/autotoken/web/dist/",
     ]
-    offenders = [
-        path
-        for path in tracked_paths
-        if any(re.search(pattern, path) for pattern in forbidden_patterns)
-    ]
+    offenders = [path for path in tracked_paths if any(re.search(pattern, path) for pattern in forbidden_patterns)]
 
     assert offenders == []
 
@@ -1057,17 +1351,6 @@ def test_git_tracked_text_files_do_not_contain_high_confidence_secret_values():
 def test_gitignore_covers_known_local_secret_and_generated_artifact_paths():
     project_root = Path(__file__).resolve().parents[2]
     paths = [
-        "CNgopay/config.json",
-        "CNgopay/codex_register/config.json",
-        "CNgopay/pool_tokens.txt",
-        "CNgopay/pool_emails.txt",
-        "CNgopay/pool_numbers.txt",
-        "CNgopay/hotmail_inbox.history.txt",
-        "CNgopay/codex_register/hotmail/tokens.txt",
-        "CNgopay/codex_register/node_modules/example/package.json",
-        "CNgopay/codex_register/dist/index.js",
-        "CNgopay/codex_register/bundle/index.cjs",
-        "CNgopay/runs/pool/token_map.json",
         "logs/api-8787.out.log",
         "outputs/auth_trace_20260529_092936_46708.jsonl",
         ".paypal_realtest_task_id",
@@ -1078,10 +1361,6 @@ def test_gitignore_covers_known_local_secret_and_generated_artifact_paths():
         "pool-linux-x64",
         "pool-mac-arm64",
         "pool-mac-intel",
-        "CNgopay/pool.exe",
-        "CNgopay/pool-linux-x64",
-        "CNgopay/pool-mac-arm64",
-        "CNgopay/pool-mac-intel",
         "dist/autotoken-0.1.0.tar.gz",
         "dist/autotoken-0.1.0-py3-none-any.whl",
         "build/lib/example.py",
@@ -1138,20 +1417,6 @@ def test_dockerignore_excludes_local_secret_and_generated_artifact_paths():
         "src/autotoken/web/dist/",
         "web/node_modules/",
         "**/node_modules/",
-        "CNgopay/runs/",
-        "CNgopay/config.json",
-        "CNgopay/codex_register/config.json",
-        "CNgopay/pool_tokens.txt",
-        "CNgopay/pool_emails.txt",
-        "CNgopay/pool_numbers.txt",
-        "CNgopay/pool.exe",
-        "CNgopay/pool-linux-x64",
-        "CNgopay/pool-mac-arm64",
-        "CNgopay/pool-mac-intel",
-        "CNgopay/*.history.txt",
-        "CNgopay/codex_register/hotmail/tokens.txt",
-        "CNgopay/codex_register/dist/",
-        "CNgopay/codex_register/bundle/",
     }
 
     assert required_patterns <= dockerignore_lines
@@ -1183,6 +1448,22 @@ def test_built_web_dist_references_existing_autotoken_assets():
     assert all((dist_root / asset_path).is_file() for asset_path in asset_paths)
     for path in [index_html, *(dist_root / asset_path for asset_path in asset_paths)]:
         assert "autoteam" not in path.read_text(encoding="utf-8", errors="ignore").lower()
+
+
+def test_built_release_archives_exclude_removed_subsystem_markers():
+    project_root = Path(__file__).resolve().parents[2]
+    dist_root = project_root / "dist"
+    wheel_path = dist_root / "autotoken-0.1.0-py3-none-any.whl"
+    sdist_path = dist_root / "autotoken-0.1.0.tar.gz"
+    canonical_sdist_root = PurePosixPath("autotoken-0.1.0")
+    allowed_sdist_records = _allowed_removal_record_paths(canonical_sdist_root)
+    assert wheel_path.is_file()
+    assert sdist_path.is_file()
+
+    assert {
+        "wheel": _wheel_removed_subsystem_hits(wheel_path),
+        "sdist": _sdist_removed_subsystem_hits(sdist_path, canonical_sdist_root, allowed_sdist_records),
+    } == {"wheel": [], "sdist": []}
 
 
 def test_built_python_artifacts_use_autotoken_metadata_and_minimal_legacy_package():
@@ -1233,24 +1514,33 @@ def test_built_python_artifacts_use_autotoken_metadata_and_minimal_legacy_packag
         "autotoken/storage/sqlite_store.py",
     ]
     assert _wheel_python_package_dirs_missing_init(wheel_names) == []
-    assert sorted(
-        name.removeprefix("autotoken/_protocol_register/")
-        for name in wheel_names
-        if name.startswith("autotoken/_protocol_register/")
-    ) == expected_protocol_bundle_files
-    assert sorted(
-        name.removeprefix("autotoken/oauth_helper_extension/")
-        for name in wheel_names
-        if name.startswith("autotoken/oauth_helper_extension/")
-    ) == expected_oauth_extension_files
-    assert sorted(
-        name.removeprefix("autotoken/")
-        for name in wheel_names
-        if name.startswith("autotoken/")
-        and not name.endswith(".py")
-        and not name.endswith("/")
-        and not name.startswith("autotoken/web/dist/")
-    ) == expected_package_data_files
+    assert (
+        sorted(
+            name.removeprefix("autotoken/_protocol_register/")
+            for name in wheel_names
+            if name.startswith("autotoken/_protocol_register/")
+        )
+        == expected_protocol_bundle_files
+    )
+    assert (
+        sorted(
+            name.removeprefix("autotoken/oauth_helper_extension/")
+            for name in wheel_names
+            if name.startswith("autotoken/oauth_helper_extension/")
+        )
+        == expected_oauth_extension_files
+    )
+    assert (
+        sorted(
+            name.removeprefix("autotoken/")
+            for name in wheel_names
+            if name.startswith("autotoken/")
+            and not name.endswith(".py")
+            and not name.endswith("/")
+            and not name.startswith("autotoken/web/dist/")
+        )
+        == expected_package_data_files
+    )
     assert wheel_oauth_manifest == expected_oauth_manifest
     assert "AutoToken" in wheel_oauth_manifest["name"]
     assert "AutoTeam" not in json.dumps(wheel_oauth_manifest)
@@ -1317,23 +1607,32 @@ def test_built_python_artifacts_use_autotoken_metadata_and_minimal_legacy_packag
         "autotoken-0.1.0/src/autotoken/oauth_helper_extension/content.js",
         "autotoken-0.1.0/src/autotoken/storage/sqlite_store.py",
     ]
-    assert sorted(
-        name.removeprefix("autotoken-0.1.0/src/autotoken/_protocol_register/")
-        for name in sdist_names
-        if name.startswith("autotoken-0.1.0/src/autotoken/_protocol_register/")
-    ) == expected_protocol_bundle_files
-    assert sorted(
-        name.removeprefix("autotoken-0.1.0/src/autotoken/oauth_helper_extension/")
-        for name in sdist_names
-        if name.startswith("autotoken-0.1.0/src/autotoken/oauth_helper_extension/")
-    ) == expected_oauth_extension_files
-    assert sorted(
-        name.removeprefix("autotoken-0.1.0/src/autotoken/")
-        for name in sdist_names
-        if name.startswith("autotoken-0.1.0/src/autotoken/")
-        and not name.endswith(".py")
-        and not name.startswith("autotoken-0.1.0/src/autotoken/web/dist/")
-    ) == expected_package_data_files
+    assert (
+        sorted(
+            name.removeprefix("autotoken-0.1.0/src/autotoken/_protocol_register/")
+            for name in sdist_names
+            if name.startswith("autotoken-0.1.0/src/autotoken/_protocol_register/")
+        )
+        == expected_protocol_bundle_files
+    )
+    assert (
+        sorted(
+            name.removeprefix("autotoken-0.1.0/src/autotoken/oauth_helper_extension/")
+            for name in sdist_names
+            if name.startswith("autotoken-0.1.0/src/autotoken/oauth_helper_extension/")
+        )
+        == expected_oauth_extension_files
+    )
+    assert (
+        sorted(
+            name.removeprefix("autotoken-0.1.0/src/autotoken/")
+            for name in sdist_names
+            if name.startswith("autotoken-0.1.0/src/autotoken/")
+            and not name.endswith(".py")
+            and not name.startswith("autotoken-0.1.0/src/autotoken/web/dist/")
+        )
+        == expected_package_data_files
+    )
     sdist_web_assets = re.findall(r"""(?:src|href)=["']/(assets/[^"']+)["']""", sdist_web_html)
     assert sdist_web_assets
     assert all(f"autotoken-0.1.0/src/autotoken/web/dist/{asset_path}" in sdist_names for asset_path in sdist_web_assets)
@@ -1353,7 +1652,6 @@ def test_built_python_artifacts_exclude_local_runtime_secret_and_generated_paths
     wheel_path = dist_root / "autotoken-0.1.0-py3-none-any.whl"
     sdist_path = dist_root / "autotoken-0.1.0.tar.gz"
     forbidden_patterns = [
-        r"(^|/)CNgopay/",
         r"(^|/)build(/|$)",
         r"(^|/)dist/(?!index\.html$|assets/)",
         r"(^|/).*\.egg-info/",
@@ -1377,9 +1675,7 @@ def test_built_python_artifacts_exclude_local_runtime_secret_and_generated_paths
         sdist_names = sdist.getnames()
 
     offenders = [
-        name
-        for name in [*wheel_names, *sdist_names]
-        if any(re.search(pattern, name) for pattern in forbidden_patterns)
+        name for name in [*wheel_names, *sdist_names] if any(re.search(pattern, name) for pattern in forbidden_patterns)
     ]
 
     assert offenders == []

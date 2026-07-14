@@ -173,12 +173,6 @@ export const api = {
     return resp.text()
   },
 
-  getGoPayProStatus: () => request('GET', '/gopay-pro/status'),
-  saveGoPayProConfig: (payload) => request('PUT', '/gopay-pro/config', payload),
-  importGoPayProNumbers: (text) => request('POST', '/gopay-pro/numbers', { text }),
-  updateGoPayProSlot: (payload) => request('POST', '/gopay-pro/slot', payload),
-  startGoPayProTask: (kind) => request('POST', '/gopay-pro/task', { kind }),
-  startGoPayProBatch: (payload) => request('POST', '/gopay-pro/batch', payload),
   getWhatsAppOtpStatus: () => request('GET', '/whatsapp-otp/status'),
   startWhatsAppOtp: (payload = {}) => request('POST', '/whatsapp-otp/start', payload),
   stopWhatsAppOtp: () => request('POST', '/whatsapp-otp/stop'),
