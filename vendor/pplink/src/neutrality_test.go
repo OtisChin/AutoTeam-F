@@ -62,7 +62,7 @@ func TestSourceTreeExcludesRetiredSubsystemMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if firstLine := strings.SplitN(string(moduleData), "\n", 2)[0]; firstLine != "module autotoken-pplink" {
+	if firstLine := strings.TrimSpace(strings.SplitN(string(moduleData), "\n", 2)[0]); firstLine != "module autotoken-pplink" {
 		t.Fatalf("module line = %q", firstLine)
 	}
 

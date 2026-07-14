@@ -845,12 +845,18 @@ def test_post_paypal_task_protocol_auto_provisioned_sms_bridge_closed_after_succ
 
 def test_post_paypal_task_passes_gb_mode_to_proxy_runtime(monkeypatch):
     captured = {}
+    accounts = [{"email": "user@example.com"}]
     real_prepare = api.paypal_proxy_service.prepare_paypal_proxy_runtime
 
     def capture_prepare(**kwargs):
         captured.update(kwargs)
         return real_prepare(**kwargs)
 
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.find_account",
+        lambda rows, email: accounts[0] if email == "user@example.com" else None,
+    )
     monkeypatch.setattr(api.paypal_proxy_service, "prepare_paypal_proxy_runtime", capture_prepare)
     monkeypatch.setattr(
         api,
