@@ -1,11 +1,13 @@
 import ast
 import importlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import tarfile
+import warnings
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -122,7 +124,7 @@ def _removed_subsystem_marker_patterns() -> tuple[re.Pattern[str], ...]:
         re.compile(
             rf"{re.escape(snake_name)}(?:_|\b)|"
             rf"{re.escape(kebab_name)}(?:-|\b)|"
-            rf"{re.escape(legacy_name)}(?:_|\b)|"
+            rf"{re.escape(legacy_name)}|"
             rf"{re.escape(display_name)}\b",
             flags=re.IGNORECASE,
         ),
@@ -130,16 +132,283 @@ def _removed_subsystem_marker_patterns() -> tuple[re.Pattern[str], ...]:
     )
 
 
-def _contains_removed_subsystem_marker(value: str) -> bool:
-    return any(pattern.search(value) for pattern in _removed_subsystem_marker_patterns())
+def _contains_removed_subsystem_marker(value: str | bytes) -> bool:
+    patterns = _removed_subsystem_marker_patterns()
+    if isinstance(value, bytes):
+        return any(
+            re.search(pattern.pattern.encode("ascii"), value, flags=pattern.flags & ~re.UNICODE) for pattern in patterns
+        )
+    return any(pattern.search(value) for pattern in patterns)
 
 
-def _allowed_removal_record_paths() -> set[PurePosixPath]:
+def _allowed_removal_record_paths(canonical_root: PurePosixPath) -> set[PurePosixPath]:
     record_stem = "2026-07-13-remove-" + "gopay" + "-pro"
     return {
-        PurePosixPath("docs/superpowers/specs") / f"{record_stem}-design.md",
-        PurePosixPath("docs/superpowers/plans") / f"{record_stem}.md",
+        canonical_root / "docs/superpowers/specs" / f"{record_stem}-design.md",
+        canonical_root / "docs/superpowers/plans" / f"{record_stem}.md",
     }
+
+
+def _wheel_removed_subsystem_hits(wheel_path: Path) -> list[str]:
+    hits = set()
+    seen_names = set()
+
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for info in wheel.infolist():
+            name = info.filename
+            if name in seen_names:
+                hits.add(f"duplicate member: {name}")
+            seen_names.add(name)
+            if _contains_removed_subsystem_marker(name):
+                hits.add(f"member: {name}")
+            payload = wheel.read(info)
+            if _contains_removed_subsystem_marker(payload):
+                hits.add(f"content: {name}")
+            if info.is_dir() and info.file_size != 0:
+                hits.add(f"directory member has payload: {name}")
+
+    return sorted(hits)
+
+
+def _sdist_removed_subsystem_hits(
+    sdist_path: Path,
+    canonical_root: PurePosixPath,
+    allowed_records: set[PurePosixPath],
+) -> list[str]:
+    hits = set()
+    allowed_record_members = {record: [] for record in allowed_records}
+
+    with tarfile.open(sdist_path) as sdist:
+        for member in sdist.getmembers():
+            member_path = PurePosixPath(member.name)
+            if member_path in allowed_record_members:
+                allowed_record_members[member_path].append(member)
+
+            if "\\" in member.name or member_path.is_absolute() or ".." in member_path.parts:
+                hits.add(f"unsafe member path: {member.name}")
+                has_canonical_root = False
+            else:
+                has_canonical_root = member_path == canonical_root or (
+                    member_path.parts[: len(canonical_root.parts)] == canonical_root.parts
+                )
+                if not has_canonical_root:
+                    hits.add(f"noncanonical member root: {member.name}")
+
+            if has_canonical_root and member_path in allowed_records and member.isfile():
+                continue
+            if _contains_removed_subsystem_marker(member.name):
+                hits.add(f"member: {member.name}")
+            if member.issym() or member.islnk():
+                link_path = PurePosixPath(member.linkname)
+                if _contains_removed_subsystem_marker(member.linkname):
+                    hits.add(f"link target marker: {member.name} -> {member.linkname}")
+                if "\\" in member.linkname or link_path.is_absolute() or ".." in link_path.parts:
+                    hits.add(f"unsafe link target: {member.name} -> {member.linkname}")
+            if not member.isfile() and not member.isdir():
+                hits.add(f"unsupported member type: {member.name}")
+            if not member.isfile():
+                continue
+            member_file = sdist.extractfile(member)
+            if member_file is None:
+                continue
+            if _contains_removed_subsystem_marker(member_file.read()):
+                hits.add(f"content: {member.name}")
+
+    for record, members in allowed_record_members.items():
+        if len(members) != 1:
+            hits.add(f"allowed removal record count: {record}: {len(members)}")
+        if any(not member.isfile() for member in members):
+            hits.add(f"allowed removal record is not a regular file: {record}")
+
+    return sorted(hits)
+
+
+def test_removed_subsystem_marker_detection_matches_only_retired_identifiers():
+    legacy_name = "cn" + "gopay"
+    positive_values = [
+        "gopay" + "_pro",
+        "gopay" + "-pro",
+        "CN" + "gopay" + "Backup",
+        legacy_name + "2",
+        "GoPay" + " " + "Pro",
+        "GoPay" + "ProTask",
+        "gopay" + "Pro",
+    ]
+    negative_values = [
+        "gopay_protocol",
+        "gopayProxy",
+    ]
+
+    assert all(_contains_removed_subsystem_marker(value) for value in positive_values)
+    assert not any(_contains_removed_subsystem_marker(value) for value in negative_values)
+
+
+def _write_test_sdist(sdist_path: Path, members: list[tuple[str, bytes | None]]) -> None:
+    with tarfile.open(sdist_path, "w:gz") as sdist:
+        for name, payload in members:
+            member = tarfile.TarInfo(name)
+            if payload is None:
+                member.type = tarfile.DIRTYPE
+                sdist.addfile(member)
+                continue
+            member.size = len(payload)
+            sdist.addfile(member, io.BytesIO(payload))
+
+
+def test_wheel_archive_scan_checks_raw_bytes(tmp_path):
+    wheel_path = tmp_path / "fixture.whl"
+    retired_payload = b"\xff" + ("cn" + "gopay" + "Backup").encode("ascii")
+
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        wheel.writestr("payload.bin", retired_payload)
+
+    assert _wheel_removed_subsystem_hits(wheel_path) == ["content: payload.bin"]
+
+
+def test_wheel_archive_scan_rejects_duplicate_names_and_reads_each_entry(tmp_path):
+    wheel_path = tmp_path / "fixture.whl"
+    retired_payload = ("cn" + "gopay" + "Backup").encode("ascii")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(wheel_path, "w") as wheel:
+            wheel.writestr("payload.txt", retired_payload)
+            wheel.writestr("payload.txt", b"clean")
+
+    assert _wheel_removed_subsystem_hits(wheel_path) == [
+        "content: payload.txt",
+        "duplicate member: payload.txt",
+    ]
+
+
+def test_wheel_archive_scan_rejects_directory_entries_with_payload(tmp_path):
+    wheel_path = tmp_path / "fixture.whl"
+    retired_payload = ("CN" + "gopay" + "Backup").encode("ascii")
+
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        wheel.writestr("payload/", retired_payload)
+
+    assert _wheel_removed_subsystem_hits(wheel_path) == [
+        "content: payload/",
+        "directory member has payload: payload/",
+    ]
+
+
+def test_sdist_archive_scan_checks_raw_bytes(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    retired_payload = b"\xff" + ("cn" + "gopay" + "Backup").encode("ascii")
+    members = [(record.as_posix(), b"removal record") for record in allowed_records]
+    members.append(((canonical_root / "payload.bin").as_posix(), retired_payload))
+    _write_test_sdist(sdist_path, members)
+
+    assert _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records) == [
+        f"content: {canonical_root}/payload.bin"
+    ]
+
+
+def test_sdist_archive_scan_rejects_noncanonical_member_paths(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    members = [(record.as_posix(), b"removal record") for record in allowed_records]
+    members.extend(
+        [
+            ("/absolute.txt", b"clean"),
+            (f"{canonical_root}/../escape.txt", b"clean"),
+            ("other-root/clean.txt", b"clean"),
+        ]
+    )
+    _write_test_sdist(sdist_path, members)
+
+    assert _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records) == [
+        "noncanonical member root: other-root/clean.txt",
+        "unsafe member path: /absolute.txt",
+        f"unsafe member path: {canonical_root}/../escape.txt",
+    ]
+
+
+def test_sdist_archive_scan_rejects_backslash_member_names(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    unsafe_name = f"{canonical_root}/dir\\..\\..\\escape"
+    members = [(record.as_posix(), b"removal record") for record in allowed_records]
+    members.append((unsafe_name, b"clean"))
+    _write_test_sdist(sdist_path, members)
+
+    assert _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records) == [
+        f"unsafe member path: {unsafe_name}"
+    ]
+
+
+def test_sdist_archive_scan_rejects_links_and_scans_targets(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    marker_link_name = "CN" + "gopay" + "Backup"
+    symlink_name = (canonical_root / "marker-link").as_posix()
+    hardlink_name = (canonical_root / "escape-link").as_posix()
+
+    with tarfile.open(sdist_path, "w:gz") as sdist:
+        for record in allowed_records:
+            payload = b"removal record"
+            member = tarfile.TarInfo(record.as_posix())
+            member.size = len(payload)
+            sdist.addfile(member, io.BytesIO(payload))
+
+        symlink = tarfile.TarInfo(symlink_name)
+        symlink.type = tarfile.SYMTYPE
+        symlink.linkname = marker_link_name
+        sdist.addfile(symlink)
+
+        hardlink = tarfile.TarInfo(hardlink_name)
+        hardlink.type = tarfile.LNKTYPE
+        hardlink.linkname = "../../escape"
+        sdist.addfile(hardlink)
+
+    hits = _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records)
+
+    assert f"link target marker: {symlink_name} -> {marker_link_name}" in hits
+    assert f"unsafe link target: {hardlink_name} -> ../../escape" in hits
+    assert f"unsupported member type: {symlink_name}" in hits
+    assert f"unsupported member type: {hardlink_name}" in hits
+
+
+def test_sdist_archive_scan_does_not_allow_records_under_another_root(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    allowed_record = next(iter(allowed_records))
+    alternate_record = PurePosixPath("other-root", *allowed_record.parts[1:])
+    members = [(record.as_posix(), b"removal record") for record in allowed_records]
+    members.append((alternate_record.as_posix(), b"removal record"))
+    _write_test_sdist(sdist_path, members)
+
+    assert f"noncanonical member root: {alternate_record}" in _sdist_removed_subsystem_hits(
+        sdist_path, canonical_root, allowed_records
+    )
+
+
+def test_sdist_archive_scan_requires_each_allowed_record_once_as_a_regular_file(tmp_path):
+    sdist_path = tmp_path / "fixture.tar.gz"
+    canonical_root = PurePosixPath("autotoken-0.1.0")
+    allowed_records = _allowed_removal_record_paths(canonical_root)
+    missing_record, repeated_record = sorted(allowed_records, key=str)
+    _write_test_sdist(
+        sdist_path,
+        [
+            (repeated_record.as_posix(), b"removal record"),
+            (repeated_record.as_posix(), None),
+        ],
+    )
+
+    hits = _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records)
+
+    assert f"allowed removal record count: {missing_record}: 0" in hits
+    assert f"allowed removal record count: {repeated_record}: 2" in hits
+    assert f"allowed removal record is not a regular file: {repeated_record}" in hits
 
 
 def _legacy_root_alias_metadata_check_script(checks: dict[str, str]) -> str:
@@ -1186,49 +1455,14 @@ def test_built_release_archives_exclude_removed_subsystem_markers():
     dist_root = project_root / "dist"
     wheel_path = dist_root / "autotoken-0.1.0-py3-none-any.whl"
     sdist_path = dist_root / "autotoken-0.1.0.tar.gz"
-    allowed_sdist_records = _allowed_removal_record_paths()
-    wheel_hits = set()
-    sdist_hits = set()
-
+    canonical_sdist_root = PurePosixPath("autotoken-0.1.0")
+    allowed_sdist_records = _allowed_removal_record_paths(canonical_sdist_root)
     assert wheel_path.is_file()
     assert sdist_path.is_file()
 
-    with zipfile.ZipFile(wheel_path) as wheel:
-        for name in wheel.namelist():
-            if _contains_removed_subsystem_marker(name):
-                wheel_hits.add(f"member: {name}")
-            if name.endswith("/"):
-                continue
-            try:
-                text = wheel.read(name).decode("utf-8")
-            except UnicodeDecodeError:
-                continue
-            if _contains_removed_subsystem_marker(text):
-                wheel_hits.add(f"content: {name}")
-
-    with tarfile.open(sdist_path) as sdist:
-        for member in sdist.getmembers():
-            member_path = PurePosixPath(member.name)
-            relative_path = PurePosixPath(*member_path.parts[1:])
-            if relative_path in allowed_sdist_records:
-                continue
-            if _contains_removed_subsystem_marker(member.name):
-                sdist_hits.add(f"member: {member.name}")
-            if not member.isfile():
-                continue
-            member_file = sdist.extractfile(member)
-            if member_file is None:
-                continue
-            try:
-                text = member_file.read().decode("utf-8")
-            except UnicodeDecodeError:
-                continue
-            if _contains_removed_subsystem_marker(text):
-                sdist_hits.add(f"content: {member.name}")
-
     assert {
-        "wheel": sorted(wheel_hits),
-        "sdist": sorted(sdist_hits),
+        "wheel": _wheel_removed_subsystem_hits(wheel_path),
+        "sdist": _sdist_removed_subsystem_hits(sdist_path, canonical_sdist_root, allowed_sdist_records),
     } == {"wheel": [], "sdist": []}
 
 

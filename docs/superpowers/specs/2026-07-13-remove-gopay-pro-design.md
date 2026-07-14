@@ -1,6 +1,7 @@
 # Remove GoPay Pro Design
 
-**Date:** 2026-07-13  
+**Date:** 2026-07-13
+
 **Status:** Approved for implementation planning
 
 ## Goal
