@@ -857,6 +857,7 @@ def test_post_paypal_task_passes_gb_mode_to_proxy_runtime(monkeypatch):
         "autotoken.storage.accounts.find_account",
         lambda rows, email: accounts[0] if email == "user@example.com" else None,
     )
+    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _account: "data/auth_session/user@example.com.json")
     monkeypatch.setattr(api.paypal_proxy_service, "prepare_paypal_proxy_runtime", capture_prepare)
     monkeypatch.setattr(
         api,
