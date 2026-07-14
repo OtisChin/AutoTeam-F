@@ -52,6 +52,7 @@ from autotoken.api_routes.bind_card_task import (
     create_bind_card_task_router,
 )
 from autotoken.api_routes.bind_link import create_bind_link_router
+from autotoken.api_routes.brazil_pix import create_brazil_pix_router
 from autotoken.api_routes.card_pool import create_card_pool_router
 from autotoken.api_routes.config_io import create_config_io_router
 from autotoken.api_routes.cpa_to_sub2api import create_cpa_to_sub2api_router
@@ -1145,6 +1146,7 @@ app.include_router(create_card_pool_router())
 app.include_router(create_register_domain_router())
 app.include_router(create_trade_router())
 app.include_router(create_whatsapp_otp_router())
+app.include_router(create_brazil_pix_router())
 app.include_router(create_ideal_link_router())
 
 
