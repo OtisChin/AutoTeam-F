@@ -12,6 +12,7 @@ dependencies = [
     "rich>=14.3.4",
     "uvicorn[standard]>=0.44.0",
     "xvfbwrapper>=0.2.9; sys_platform == 'linux'",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
