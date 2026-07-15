@@ -465,7 +465,7 @@
               </td>
               <td class="px-4 py-3 text-gray-500">{{ i + 1 }}</td>
               <td class="px-4 py-3">
-                <div class="font-mono text-xs text-gray-200">{{ acc.email }}</div>
+                <div class="font-mono text-xs text-gray-200">{{ displayEmail(acc) }}</div>
                 <div v-if="acc.hub_source_name" class="mt-1 text-[11px] text-violet-300">
                   Hub: {{ acc.hub_source_name }}
                 </div>
@@ -854,13 +854,18 @@
                 <div class="font-mono break-all">邮箱-----密码-----https://gptcode.external.cc.cd/</div>
               </div>
               <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
-                <div class="font-semibold text-gray-100 mb-1">Outlook / LuckMail</div>
+                <div class="font-semibold text-gray-100 mb-1">LuckMail</div>
                 <div class="font-mono break-all">邮箱-----token-----https://mail.cpacc.us.ci/</div>
               </div>
               <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
-                <div class="font-semibold text-gray-100 mb-1">Hotmail / Outlook 邮箱</div>
+                <div class="font-semibold text-gray-100 mb-1">Outlook OAuth 邮箱</div>
+                <div class="font-mono break-all">邮箱----密码----client-id----refresh-token</div>
+                <div class="mt-1 text-gray-500">邮箱大小写按 Outlook 账号池原始记录导出。</div>
+              </div>
+              <div class="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
+                <div class="font-semibold text-gray-100 mb-1">Outlook mailapi 邮箱</div>
                 <div class="font-mono break-all">邮箱-----密码-----https://mailapi.icu/key?type=html&orderNo=...</div>
-                <div class="mt-1 text-gray-500">每个 Hotmail 账号对应自己的接码地址。</div>
+                <div class="mt-1 text-gray-500">mailapi 类型保持原来的三段式导出。</div>
               </div>
             </div>
           </div>
@@ -1237,6 +1242,10 @@ function isPlusAccount(acc) {
   return String(acc?.account_type || '').toLowerCase() === 'plus'
 }
 
+function displayEmail(acc) {
+  return acc?.display_email || acc?.original_email || acc?.email || ''
+}
+
 function isBindableFreeAccount(acc) {
   if (!acc?.email || acc?.is_main_account) return false
   if (String(acc?.account_type || '').toLowerCase() !== 'free') return false
@@ -1348,7 +1357,7 @@ const filteredAccounts = computed(() => {
   return allAccounts.value
     .map((acc, index) => ({ acc, index }))
     .filter(({ acc }) => {
-    const email = String(acc?.email || '').toLowerCase()
+    const email = `${acc?.email || ''} ${displayEmail(acc)}`.toLowerCase()
     const status = normalizedStatus(acc?.status)
     const accountType = String(acc?.account_type || 'unknown')
     const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
@@ -2001,6 +2010,8 @@ function exportAccounts() {
     },
     accounts: rows.map(acc => ({
       email: acc.email || '',
+      display_email: displayEmail(acc),
+      original_email: acc.original_email || '',
       status: acc.status || '',
       seat_type: acc.seat_type || '',
       auth_file: acc.auth_file || '',

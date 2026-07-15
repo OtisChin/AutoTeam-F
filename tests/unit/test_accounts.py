@@ -39,6 +39,18 @@ def test_add_and_update_account_persists_data(tmp_path, monkeypatch):
     assert accounts.load_accounts()[0]["auth_file"] == "auth.json"
 
 
+def test_add_account_preserves_original_email_case(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(accounts, "get_admin_email", lambda: "")
+
+    accounts.add_account("AmandaMiller143152@hotmail.com", "secret", mail_provider="outlook")
+    created = accounts.load_accounts()[0]
+
+    assert created["email"] == "amandamiller143152@hotmail.com"
+    assert created["original_email"] == "AmandaMiller143152@hotmail.com"
+
+
 def test_update_account_only_rewrites_target_row(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)

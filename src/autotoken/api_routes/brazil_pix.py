@@ -456,6 +456,13 @@ def _is_token_invalidated_error(error: Any) -> bool:
     )
 
 
+def _is_non_zero_after_promo_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    return ("promo" in text or "套 promo" in text or "套promo" in text) and (
+        "金额不是 0" in text or "amount is not 0" in text or "amount not 0" in text
+    )
+
+
 def _mark_account_plus_pix(email: str, message: str = "User is already paid") -> dict[str, Any]:
     account_store.ensure_session_only_account(email)
     updated = account_store.update_account(
@@ -622,6 +629,23 @@ def _run_batch_account(
                             "elapsed_s": round(time.monotonic() - started, 1),
                             "attempts": attempt,
                             "error": f"账号已失效，已从账号池删除：{last_error}",
+                            "cleanup": cleanup,
+                        },
+                        "status": status,
+                        "account_deleted": True,
+                    }
+                if _is_non_zero_after_promo_error(last_error):
+                    cleanup = _delete_invalid_account(email)
+                    status = _set_account_status(email, ACCOUNT_STATUS_FAILED, error=last_error, job_id=job_id)
+                    _append_log(job_id, f"[{index}/{total}] 账号套 promo 后金额非 0，已从账号池删除：{email} cleanup={cleanup}")
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": f"套 promo 后金额非 0，已从账号池删除：{last_error}",
                             "cleanup": cleanup,
                         },
                         "status": status,

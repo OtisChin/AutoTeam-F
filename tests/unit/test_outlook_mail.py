@@ -21,7 +21,7 @@ def test_parse_outlook_account_line_supports_codex_console_format():
         "User@Outlook.com----mail-pass----client-id----refresh-token"
     )
 
-    assert account.email == "user@outlook.com"
+    assert account.email == "User@Outlook.com"
     assert account.password == "mail-pass"
     assert account.client_id == "client-id"
     assert account.refresh_token == "refresh-token"
@@ -33,7 +33,7 @@ def test_parse_outlook_account_line_supports_mailapi_url_format():
         "LisaTaylor6398@hotmail.com----https://mailapi.icu/key?type=html&orderNo=f5706957db1af386"
     )
 
-    assert account.email == "lisataylor6398@hotmail.com"
+    assert account.email == "LisaTaylor6398@hotmail.com"
     assert account.password == ""
     assert account.mailapi_url == "https://mailapi.icu/key?type=html&orderNo=f5706957db1af386"
     assert account.has_mailapi()
@@ -47,7 +47,7 @@ def test_parse_outlook_account_line_supports_pipe_refresh_token_before_client_id
         "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
     )
 
-    assert account.email == "user@hotmail.com"
+    assert account.email == "User@Hotmail.com"
     assert account.password == "mail-pass"
     assert account.client_id == "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
     assert account.refresh_token.startswith("M.C556_BAY")

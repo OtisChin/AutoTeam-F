@@ -423,7 +423,7 @@ def outlook_accounts_by_email() -> dict[str, dict[str, str]]:
         if not email:
             continue
         rows[email] = {
-            "email": email,
+            "email": str(getattr(account, "email", "") or "").strip() or email,
             "password": str(getattr(account, "password", "") or "").strip(),
             "client_id": str(getattr(account, "client_id", "") or "").strip(),
             "refresh_token": str(getattr(account, "refresh_token", "") or "").strip(),
@@ -462,14 +462,15 @@ def credential_export_line_for_account(
         if isinstance(item, dict) and str(item.get("mailapi_url") or "").strip()
     }
     mailapi_url = str(account.get("mailapi_url") or mailapi_urls.get(email, "") or "").strip()
+    export_email = str(outlook_source.get("email") or account.get("original_email") or email).strip()
     outlook_password = str(outlook_source.get("password") or "").strip()
     outlook_client_id = str(outlook_source.get("client_id") or "").strip()
     outlook_refresh_token = str(outlook_source.get("refresh_token") or "").strip()
 
     if mailapi_url:
-        return f"{email}-----{password}-----{mailapi_url}"
+        return f"{export_email}-----{password}-----{mailapi_url}"
     if is_outlook_account:
-        return f"{email}-----{outlook_password or password}-----{outlook_client_id}-----{outlook_refresh_token}"
+        return f"{export_email}----{outlook_password or password}----{outlook_client_id}----{outlook_refresh_token}"
     if mail_provider == "luckmail" or cloudmail_token.startswith("tok_"):
         return f"{email}-----{credential_secret}-----{OUTLOOK_TOKEN_DELIVERY_URL}"
     return f"{email}-----{password}-----{DOMAIN_CREDENTIAL_DELIVERY_URL}"

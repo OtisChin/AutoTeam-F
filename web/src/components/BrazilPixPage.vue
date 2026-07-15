@@ -206,6 +206,14 @@
             </button>
             <button @click="reloadAll" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">刷新账号/链接</button>
             <button @click="saveProxy" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存代理</button>
+            <button
+              @click="retryFailedAccounts"
+              :disabled="busy || !retryFailedEmails.length"
+              class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50"
+              title="一键重试上一轮提链失败且仍在账号池中的账号"
+            >
+              失败重试{{ retryFailedEmails.length ? ` (${retryFailedEmails.length})` : '' }}
+            </button>
           </div>
 
           <div class="text-sm" :class="statusError ? 'text-rose-300' : 'text-gray-400'">{{ statusText }}</div>
@@ -223,6 +231,12 @@
 
         <div class="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
           <input v-model.trim="accountFilter" placeholder="搜索账号邮箱" class="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" />
+          <select v-model="accountStatusFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+            <option value="all">全部状态</option>
+            <option value="pending">未提链</option>
+            <option value="failed">提链失败</option>
+            <option value="success">已提链</option>
+          </select>
           <div class="flex flex-wrap gap-2">
             <button @click="selectAllFiltered" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button>
             <button @click="clearSelectedAccounts" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
@@ -434,6 +448,7 @@ const links = ref([])
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const accountFilter = ref('')
+const accountStatusFilter = ref('all')
 const busy = ref(false)
 const canceling = ref(false)
 const currentJob = ref(null)
@@ -442,6 +457,7 @@ const statusError = ref(false)
 const logs = ref([])
 const currentResult = ref(null)
 const logRef = ref(null)
+const lastFailedEmails = ref([])
 
 const PAYMENT_MAX_CONCURRENCY = 20
 const PAYMENT_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'rejected_amount'])
@@ -456,10 +472,36 @@ const showCdks = ref(false)
 
 const fields = computed(() => currentResult.value?.fields || {})
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
+const accountEmailByLower = computed(() => {
+  const map = new Map()
+  for (const account of accounts.value) {
+    const email = String(account.email || '').trim()
+    if (email) map.set(email.toLowerCase(), email)
+  }
+  return map
+})
+const retryFailedEmails = computed(() => {
+  const available = accountEmailByLower.value
+  const seen = new Set()
+  const emails = []
+  for (const email of lastFailedEmails.value) {
+    const accountEmail = available.get(String(email || '').trim().toLowerCase())
+    if (!accountEmail) continue
+    const key = accountEmail.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    emails.push(accountEmail)
+  }
+  return emails
+})
 const filteredAccounts = computed(() => {
   const needle = accountFilter.value.toLowerCase()
-  if (!needle) return accounts.value
-  return accounts.value.filter(account => String(account.email || '').toLowerCase().includes(needle))
+  const status = accountStatusFilter.value
+  return accounts.value.filter(account => {
+    const matchesEmail = !needle || String(account.email || '').toLowerCase().includes(needle)
+    const matchesStatus = status === 'all' || accountStatus(account) === status
+    return matchesEmail && matchesStatus
+  })
 })
 const progressText = computed(() => {
   const total = currentJob.value?.total || 0
@@ -851,6 +893,22 @@ function setStatus(text, isError = false) {
   statusError.value = isError
 }
 
+function rememberFailedEmails(result) {
+  const errors = Array.isArray(result?.errors) ? result.errors : []
+  const seen = new Set()
+  const emails = []
+  for (const item of errors) {
+    const email = String(item?.email || '').trim()
+    if (!email) continue
+    if (item?.cleanup) continue
+    const key = email.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    emails.push(email)
+  }
+  lastFailedEmails.value = emails
+}
+
 function ttlText(seconds) {
   const value = Number(seconds || 0)
   if (!value) return '-'
@@ -954,18 +1012,21 @@ async function poll(jobId) {
     }
     if (data.status === 'success') {
       currentResult.value = data.result || {}
+      rememberFailedEmails(currentResult.value)
       setStatus('提链任务已完成，链接已写入管理表。')
       await Promise.all([refreshLinks(), reloadAccounts()])
       return
     }
     if (data.status === 'cancelled') {
       currentResult.value = data.result || { batch: true, successes: [], errors: [], skipped: data.skipped || [] }
+      rememberFailedEmails(currentResult.value)
       setStatus('提链任务已取消；已完成的链接已写入管理表。')
       await Promise.all([refreshLinks(), reloadAccounts()])
       return
     }
     if (data.status === 'error') {
       currentResult.value = data.result || null
+      rememberFailedEmails(currentResult.value)
       await Promise.all([refreshLinks(), reloadAccounts()])
       throw new Error(data.error || '生成失败')
     }
@@ -974,8 +1035,8 @@ async function poll(jobId) {
   }
 }
 
-function validateStart() {
-  if (!selectedEmails.value.length) {
+function validateStart(emails = selectedEmails.value) {
+  if (!emails.length) {
     setStatus('请在账号池中选择至少一个账号。', true)
     return false
   }
@@ -987,20 +1048,21 @@ function validateStart() {
   return true
 }
 
-async function start() {
-  if (!validateStart()) return
+async function startWithEmails(emails, actionText = '提取') {
+  const accountEmails = Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
+  if (!validateStart(accountEmails)) return
   busy.value = true
   canceling.value = false
   logs.value = []
   currentResult.value = null
   currentJob.value = null
-  setStatus(`任务已提交，正在为 ${selectedEmails.value.length} 个账号提取 PIX，并发 ${form.value.concurrency}。`)
+  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PIX，并发 ${form.value.concurrency}。`)
   try {
     saveProxy()
     const payload = { ...form.value }
-    const data = await api.startBrazilPixBatch({ ...payload, accountEmails: selectedEmails.value })
+    const data = await api.startBrazilPixBatch({ ...payload, accountEmails })
     if (!data.job_id) throw new Error('后端没有返回任务 ID')
-    currentJob.value = { id: data.job_id, status: 'queued', total: selectedEmails.value.length, completed: 0, concurrency: form.value.concurrency, running_count: 0 }
+    currentJob.value = { id: data.job_id, status: 'queued', total: accountEmails.length, completed: 0, concurrency: form.value.concurrency, running_count: 0 }
     await poll(data.job_id)
   } catch (error) {
     setStatus(cleanText(error.message || error), true)
@@ -1008,6 +1070,21 @@ async function start() {
     busy.value = false
     canceling.value = false
   }
+}
+
+async function start() {
+  await startWithEmails(selectedEmails.value, '提取')
+}
+
+async function retryFailedAccounts() {
+  await reloadAccounts()
+  const emails = retryFailedEmails.value
+  if (!emails.length) {
+    setStatus('上一轮没有可重试的失败账号。', true)
+    return
+  }
+  selectedAccounts.value = new Set(emails)
+  await startWithEmails(emails, '重试提取')
 }
 
 async function cancelJob() {

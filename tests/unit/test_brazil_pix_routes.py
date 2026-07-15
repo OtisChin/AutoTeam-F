@@ -391,6 +391,48 @@ def test_batch_job_deletes_token_invalidated_account(monkeypatch, tmp_path):
     assert "账号已失效，已从账号池删除" in job["result"]["errors"][0]["error"]
 
 
+def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    email = "promo@example.com"
+    _write_session(auth_dir, email, "promo-token-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"}])
+    brazil_pix.JOBS.clear()
+    job_id = "pix-promo-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "account_statuses": {},
+    }
+
+    def fake_generate_pix_trial(cfg, log):
+        raise RuntimeError("套 promo 后金额不是 0: 9990")
+
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate(
+        {
+            "accountEmails": [email],
+            "proxies": "socks5h://proxy.example:1080",
+        }
+    )
+    brazil_pix._run_batch_job(job_id, req)
+
+    account = brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email)
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "error"
+    assert account is None
+    assert not (auth_dir / "promo@example_com.json").exists()
+    assert "套 promo 后金额非 0，已从账号池删除" in job["result"]["errors"][0]["error"]
+
+
 def test_batch_job_cancel_skips_not_started_accounts(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     for index in range(3):

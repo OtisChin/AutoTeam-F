@@ -54,7 +54,7 @@ def test_export_account_credentials_uses_original_outlook_oauth_line(monkeypatch
     }
     outlook_source = {
         "user@outlook.com": {
-            "email": "user@outlook.com",
+            "email": "User@Outlook.com",
             "password": "mail-password",
             "client_id": "client-id",
             "refresh_token": "refresh-token",
@@ -73,7 +73,7 @@ def test_export_account_credentials_uses_original_outlook_oauth_line(monkeypatch
         AccountCredentialExportParams(emails=["user@outlook.com"])
     )
 
-    assert result["content"] == "user@outlook.com-----mail-password-----client-id-----refresh-token"
+    assert result["content"] == "User@Outlook.com----mail-password----client-id----refresh-token"
     assert result["count"] == 1
     assert updates[0][0] == "user@outlook.com"
     assert updates[0][1]["credentials_exported"] is True
@@ -89,7 +89,7 @@ def test_export_account_credentials_keeps_mailapi_outlook_legacy_line(monkeypatc
     }
     outlook_source = {
         "mailapi@outlook.com": {
-            "email": "mailapi@outlook.com",
+            "email": "Mailapi@Outlook.com",
             "password": "",
             "client_id": "",
             "refresh_token": "",
@@ -105,7 +105,7 @@ def test_export_account_credentials_keeps_mailapi_outlook_legacy_line(monkeypatc
         AccountCredentialExportParams(emails=["mailapi@outlook.com"])
     )
 
-    assert result["content"] == "mailapi@outlook.com-----chatgpt-password-----https://mailapi.icu/key?type=html&orderNo=secret"
+    assert result["content"] == "Mailapi@Outlook.com-----chatgpt-password-----https://mailapi.icu/key?type=html&orderNo=secret"
 
 
 def test_update_accounts_export_status_rejects_too_many_raw_emails():

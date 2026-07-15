@@ -155,8 +155,8 @@ class OutlookMailProvider(MailProvider):
         else:
             parts = [p.strip() for p in value.split(":")]
 
-        email = normalize_email_addr(parts[0] if parts else "")
-        if "@" not in email:
+        email = str(parts[0] if parts else "").strip()
+        if "@" not in normalize_email_addr(email):
             return None
         password = parts[1] if len(parts) > 1 else ""
         if OutlookMailProvider._looks_like_url(password):

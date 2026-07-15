@@ -778,7 +778,7 @@ def test_post_import_outlook_accounts_appends_valid_unique_lines(tmp_path, monke
     assert result["imported"] == 2
     assert result["duplicates"] == 1
     assert result["invalid"] == 1
-    assert result["first_imported_email"] == "newuser@hotmail.com"
+    assert result["first_imported_email"] == "NewUser@hotmail.com"
     assert saved.startswith("NewUser@hotmail.com----https://mailapi.icu/key?type=html&orderNo=new\n")
     assert "NewUser@hotmail.com----https://mailapi.icu/key?type=html&orderNo=new" in saved
     assert "Oauth@outlook.com----pass----client-id----refresh-token" in saved
@@ -812,7 +812,7 @@ def test_get_outlook_accounts_status_marks_registered_and_redacts_secrets(tmp_pa
             [
                 "registered@hotmail.com----secret-password",
                 "blocked@outlook.com----https://mailapi.icu/key?type=html&orderNo=secret-order",
-                "ready@outlook.com----mail-pass----client-id----refresh-token",
+                "Ready@outlook.com----mail-pass----client-id----refresh-token",
             ]
         ),
         encoding="utf-8",
@@ -832,12 +832,12 @@ def test_get_outlook_accounts_status_marks_registered_and_redacts_secrets(tmp_pa
     assert result["available"] == 1
     assert result["registered"] == 1
     assert result["unavailable"] == 1
-    assert result["next_available_email"] == "ready@outlook.com"
+    assert result["next_available_email"] == "Ready@outlook.com"
     statuses = {item["email"]: item["status"] for item in result["accounts"]}
     assert statuses == {
         "registered@hotmail.com": "registered",
         "blocked@outlook.com": "unavailable",
-        "ready@outlook.com": "available",
+        "Ready@outlook.com": "available",
     }
     serialized = json.dumps(result)
     assert "secret-password" not in serialized

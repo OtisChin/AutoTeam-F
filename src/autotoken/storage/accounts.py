@@ -66,7 +66,12 @@ def _db_path() -> Path:
 
 def _normalize_account_record(account: dict) -> dict:
     acc = dict(account or {})
-    acc["email"] = _normalized_email(acc.get("email"))
+    raw_email = str(acc.get("email") or "").strip()
+    original_email = str(acc.get("original_email") or acc.get("display_email") or "").strip()
+    acc["email"] = _normalized_email(raw_email)
+    if not original_email and raw_email and raw_email != acc["email"]:
+        original_email = raw_email
+    acc["original_email"] = original_email or acc["email"]
     acc.setdefault("password", "")
     acc.setdefault("cloudmail_account_id", None)
     acc.setdefault("mail_provider", None)
@@ -227,6 +232,9 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                     desired["mail_provider"] = mail_provider
                 if mailapi_url and not existing.get("mailapi_url"):
                     desired["mailapi_url"] = mailapi_url
+                raw_email = str(email or "").strip()
+                if raw_email and raw_email != normalized and not existing.get("original_email"):
+                    desired["original_email"] = raw_email
                 if existing.get("account_source") == ACCOUNT_SOURCE_AUTH_SESSION_STUB:
                     desired["account_source"] = ACCOUNT_SOURCE_MANAGED
                 for key, value in desired.items():
@@ -241,6 +249,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                 conn,
                 {
                     "email": normalized,
+                    "original_email": str(email or "").strip() or normalized,
                     "password": password,
                     "cloudmail_account_id": cloudmail_account_id,
                     "mail_provider": mail_provider or None,

@@ -71,6 +71,43 @@ def test_display_account_type_preserves_explicit_type_and_falls_back_from_status
     assert account_presentation.display_account_type({"status": "unknown"}) == "free"
 
 
+def test_sanitize_account_exposes_display_email_from_original_email():
+    sanitized = account_presentation.sanitize_account_with_indexes(
+        {"email": "amandamiller143152@hotmail.com", "original_email": "AmandaMiller143152@hotmail.com", "status": "active"},
+        None,
+        {},
+        {},
+        "",
+        normalize_email=lambda value: str(value or "").strip().lower(),
+        resolve_status_auth_file_func=lambda _account: "",
+        resolve_codex_auth_file_func=lambda _account: "",
+    )
+
+    assert sanitized["email"] == "amandamiller143152@hotmail.com"
+    assert sanitized["display_email"] == "AmandaMiller143152@hotmail.com"
+
+
+def test_sanitize_account_uses_outlook_source_email_for_existing_lowercase_account():
+    sanitized = account_presentation.sanitize_account_with_indexes(
+        {"email": "amandamiller143152@hotmail.com", "mail_provider": "outlook", "status": "active"},
+        None,
+        {},
+        {},
+        "",
+        normalize_email=lambda value: str(value or "").strip().lower(),
+        resolve_status_auth_file_func=lambda _account: "",
+        resolve_codex_auth_file_func=lambda _account: "",
+        outlook_accounts={
+            "amandamiller143152@hotmail.com": {
+                "email": "AmandaMiller143152@hotmail.com",
+            }
+        },
+    )
+
+    assert sanitized["email"] == "amandamiller143152@hotmail.com"
+    assert sanitized["display_email"] == "AmandaMiller143152@hotmail.com"
+
+
 def test_codex_auth_file_is_synthetic_checks_flag_and_token(tmp_path):
     flagged = tmp_path / "flagged.json"
     flagged.write_text(json.dumps({"id_token_synthetic": True}), encoding="utf-8")

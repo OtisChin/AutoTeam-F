@@ -212,6 +212,12 @@ def sanitize_accounts_batch(
                 auth_session_files[emails[0]] = auth_session_file
         except Exception:
             pass
+    try:
+        from autotoken.commerce.trade import outlook_accounts_by_email
+
+        outlook_accounts = outlook_accounts_by_email()
+    except Exception:
+        outlook_accounts = {}
 
     sanitized_rows = []
     for acc in accounts:
@@ -227,6 +233,7 @@ def sanitize_accounts_batch(
                 normalize_email=normalize_email,
                 resolve_status_auth_file_func=resolve_status_auth_file_func,
                 resolve_codex_auth_file_func=resolve_codex_auth_file_func,
+                outlook_accounts=outlook_accounts,
             )
         )
     return sanitized_rows
@@ -242,11 +249,16 @@ def sanitize_account_with_indexes(
     normalize_email: Callable[[str | None], str],
     resolve_status_auth_file_func: Callable[[dict], str],
     resolve_codex_auth_file_func: Callable[[dict], str],
+    outlook_accounts: dict[str, dict] | None = None,
 ) -> dict:
     sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
     email = normalize_email(acc.get("email"))
+    outlook_source = (outlook_accounts or {}).get(email, {}) if isinstance(outlook_accounts, dict) else {}
+    source_email = str((outlook_source or {}).get("email") or "").strip()
+    display_email = str(source_email or acc.get("original_email") or acc.get("display_email") or acc.get("email") or "").strip()
     is_main = bool(email and main_email and email == main_email)
     sanitized["is_main_account"] = is_main
+    sanitized["display_email"] = display_email or email
     raw_status = str(acc.get("status") or "").strip().lower()
     status = normalize_display_status(raw_status)
     if is_main:
