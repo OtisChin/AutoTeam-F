@@ -13,7 +13,7 @@ from typing import Any
 
 import requests
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.brazil_pix import PixJobConfig, generate_pix_trial
@@ -58,19 +58,36 @@ class BrazilPixDeleteLinksRequest(BaseModel):
 
 
 class BrazilPixPaymentSubmitRequest(BaseModel):
-    cdk: str
-    link: str
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    cdk: str = Field("", validation_alias=AliasChoices("cdk", "CDK", "code", "value"))
+    link: str = Field("", validation_alias=AliasChoices("link", "url", "paymentLink", "payment_link"))
+
+    @field_validator("cdk", "link", mode="before")
+    @classmethod
+    def _coerce_payment_submit_text(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            for key in ("value", "cdk", "CDK", "code", "link", "url", "paymentLink", "payment_link"):
+                nested = value.get(key)
+                if nested is not None:
+                    return str(nested).strip()
+            return ""
+        return str(value).strip()
 
 
 ACCOUNT_STATUS_PENDING = "pending"
 ACCOUNT_STATUS_RUNNING = "running"
 ACCOUNT_STATUS_SUCCESS = "success"
 ACCOUNT_STATUS_FAILED = "failed"
+ACCOUNT_STATUS_PAID = "paid"
 ACCOUNT_STATUS_LABELS = {
     ACCOUNT_STATUS_PENDING: "未提链",
     ACCOUNT_STATUS_RUNNING: "提链中",
     ACCOUNT_STATUS_SUCCESS: "已提链",
     ACCOUNT_STATUS_FAILED: "提链失败",
+    ACCOUNT_STATUS_PAID: "已支付",
 }
 
 
@@ -118,12 +135,12 @@ def _extract_token(value: Any) -> str:
     return ""
 
 
-def _pix_pool_excluded_emails() -> set[str]:
-    excluded: set[str] = set()
+def _pix_paid_emails() -> set[str]:
+    paid: set[str] = set()
     try:
         accounts = account_store.load_accounts()
     except Exception:
-        return excluded
+        return paid
     for account in accounts:
         email = str(account.get("email") or "").strip().lower()
         if not email:
@@ -134,22 +151,40 @@ def _pix_pool_excluded_emails() -> set[str]:
         bind_status = str(account.get("last_bind_status") or "").strip().lower()
         pix_bound = bind_provider == "pix" and bind_status in {"success", "succeeded", "ok"}
         if account_type == account_store.ACCOUNT_TYPE_PLUS or status == account_store.STATUS_PLUS or pix_bound:
-            excluded.add(email)
-    return excluded
+            paid.add(email)
+    return paid
 
 
-def _iter_auth_accounts() -> list[dict[str, Any]]:
+def _dashboard_account_email_keys() -> set[str]:
+    try:
+        return {
+            str(account.get("email") or "").strip().lower()
+            for account in account_store.load_accounts()
+            if str(account.get("email") or "").strip()
+        }
+    except Exception:
+        return set()
+
+
+def _pix_pool_excluded_emails() -> set[str]:
+    return _pix_paid_emails()
+
+
+def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
     now = time.time()
     accounts: list[dict[str, Any]] = []
     if not AUTH_SESSION_DIR.exists():
         return accounts
-    excluded_emails = _pix_pool_excluded_emails()
+    dashboard_emails = _dashboard_account_email_keys()
+    excluded_emails = set() if include_paid else _pix_pool_excluded_emails()
     for path in sorted(AUTH_SESSION_DIR.glob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
         email = _auth_email_from_path(path, data)
+        if dashboard_emails and email.lower() not in dashboard_emails:
+            continue
         if email.lower() in excluded_emails:
             continue
         token = _extract_token(data)
@@ -223,10 +258,17 @@ def _set_account_status(email: str, status: str, *, error: str = "", job_id: str
     return item
 
 
-def _account_status_snapshot(email: str, statuses: dict[str, dict[str, Any]], linked_emails: set[str]) -> dict[str, Any]:
+def _account_status_snapshot(
+    email: str,
+    statuses: dict[str, dict[str, Any]],
+    linked_emails: set[str],
+    paid_emails: set[str] | None = None,
+) -> dict[str, Any]:
     key = str(email or "").strip().lower()
     item = dict(statuses.get(key) or {})
-    if not item and key in linked_emails:
+    if key in (paid_emails or set()):
+        item = {"status": ACCOUNT_STATUS_PAID, "error": "", "job_id": "", "updated_at": ""}
+    elif not item and key in linked_emails:
         item = {"status": ACCOUNT_STATUS_SUCCESS, "error": "", "job_id": "", "updated_at": ""}
     status = _normalize_account_status(item.get("status"))
     return {
@@ -239,21 +281,23 @@ def _account_status_snapshot(email: str, statuses: dict[str, dict[str, Any]], li
 
 
 def _iter_auth_accounts_with_pix_status() -> list[dict[str, Any]]:
-    accounts = _iter_auth_accounts()
+    accounts = _iter_auth_accounts(include_paid=True)
     statuses = _load_account_statuses()
+    paid_emails = _pix_paid_emails()
     linked_emails = {
         str(item.get("account_email") or "").strip().lower()
         for item in _load_links()
         if str(item.get("account_email") or "").strip()
     }
     for account in accounts:
-        snapshot = _account_status_snapshot(account["email"], statuses, linked_emails)
+        snapshot = _account_status_snapshot(account["email"], statuses, linked_emails, paid_emails)
         account.update(
             {
                 "pix_status": snapshot["status"],
                 "pix_status_text": snapshot["status_text"],
                 "pix_error": snapshot["error"],
                 "pix_status_updated_at": snapshot["updated_at"],
+                "pix_selectable": snapshot["status"] != ACCOUNT_STATUS_PAID,
             }
         )
     return accounts
@@ -327,6 +371,71 @@ def _save_links(items: list[dict[str, Any]]) -> None:
         LINKS_FILE.write_text(json.dumps(_dedupe_link_items(items)[:1000], ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _known_account_email_keys() -> set[str]:
+    keys: set[str] = _dashboard_account_email_keys()
+    if keys:
+        return keys
+    try:
+        for account in _iter_auth_accounts():
+            email = str(account.get("email") or "").strip().lower()
+            if email:
+                keys.add(email)
+    except Exception:
+        pass
+    return keys
+
+
+def _load_links_pruning_deleted_accounts() -> tuple[list[dict[str, Any]], int]:
+    items = _load_links()
+    known_emails = _known_account_email_keys()
+    paid_emails = _pix_paid_emails()
+    kept: list[dict[str, Any]] = []
+    removed_emails: set[str] = set()
+    for item in items:
+        email = str(item.get("account_email") or "").strip().lower()
+        if email and (email not in known_emails or email in paid_emails):
+            removed_emails.add(email)
+            continue
+        kept.append(item)
+    if len(kept) != len(items):
+        _save_links(kept)
+        with ACCOUNT_STATUS_LOCK:
+            statuses = _load_account_statuses()
+            changed = False
+            for email in removed_emails:
+                changed = statuses.pop(email, None) is not None or changed
+            if changed:
+                _save_account_statuses(statuses)
+    return kept, len(items) - len(kept)
+
+
+def delete_account_artifacts(email: str) -> dict[str, Any]:
+    """Remove Brazil PIX link/status records that belong to a deleted account."""
+    target = str(email or "").strip().lower()
+    if not target:
+        return {"links_deleted": 0, "status_deleted": False}
+
+    items = _load_links()
+    kept = [
+        item
+        for item in items
+        if str(item.get("account_email") or "").strip().lower() != target
+    ]
+    if len(kept) != len(items):
+        _save_links(kept)
+
+    with ACCOUNT_STATUS_LOCK:
+        statuses = _load_account_statuses()
+        status_deleted = statuses.pop(target, None) is not None
+        if status_deleted:
+            _save_account_statuses(statuses)
+
+    return {
+        "links_deleted": len(items) - len(kept),
+        "status_deleted": status_deleted,
+    }
+
+
 def _link_record_from_result(job_id: str, account_email: str, result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
     billing = fields.get("billing") if isinstance(fields.get("billing"), dict) else result.get("billing") or {}
@@ -375,15 +484,35 @@ def _append_log(job_id: str, message: str) -> None:
         job["logs"] = job["logs"][-500:]
 
 
-def _payment_api_json(resp: requests.Response) -> dict[str, Any]:
+def _payment_api_response_body(resp: requests.Response) -> dict[str, Any]:
     try:
         data = resp.json()
     except ValueError:
         data = {"ok": False, "code": f"http_{resp.status_code}", "message": resp.text[:500] or "支付服务返回非 JSON 响应"}
-    if not resp.ok:
-        message = data.get("message") if isinstance(data, dict) else ""
-        raise HTTPException(status_code=resp.status_code, detail=data if isinstance(data, dict) else {"message": message or str(data)})
     if not isinstance(data, dict):
+        return {"ok": False, "code": "bad_payment_api_response", "message": "支付服务响应格式错误", "raw": str(data)[:500]}
+    return data
+
+
+def _payment_api_json(resp: requests.Response) -> dict[str, Any]:
+    data = _payment_api_response_body(resp)
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=data)
+    if data.get("code") == "bad_payment_api_response":
+        raise HTTPException(status_code=502, detail={"message": "支付服务响应格式错误"})
+    return data
+
+
+def _payment_api_submit_json(resp: requests.Response) -> dict[str, Any]:
+    data = _payment_api_response_body(resp)
+    if not resp.ok:
+        result = dict(data)
+        result["ok"] = False
+        result["http_status"] = resp.status_code
+        result.setdefault("code", f"http_{resp.status_code}")
+        result.setdefault("message", "支付服务拒绝提交")
+        return result
+    if data.get("code") == "bad_payment_api_response":
         raise HTTPException(status_code=502, detail={"message": "支付服务响应格式错误"})
     return data
 
@@ -850,7 +979,8 @@ def create_brazil_pix_router() -> APIRouter:
 
     @router.get("/api/brazil-pix/links")
     def get_brazil_pix_links() -> dict[str, Any]:
-        return {"links": _load_links()}
+        links, pruned_deleted_accounts = _load_links_pruning_deleted_accounts()
+        return {"links": links, "pruned_deleted_accounts": pruned_deleted_accounts}
 
     @router.post("/api/brazil-pix/links/delete")
     def delete_brazil_pix_links(req: BrazilPixDeleteLinksRequest) -> dict[str, Any]:
@@ -869,7 +999,8 @@ def create_brazil_pix_router() -> APIRouter:
         return {"deleted": count, "links": []}
 
     @router.post("/api/brazil-pix/payment/submit")
-    def submit_brazil_pix_payment(req: BrazilPixPaymentSubmitRequest) -> dict[str, Any]:
+    def submit_brazil_pix_payment(req: BrazilPixPaymentSubmitRequest | None = None) -> dict[str, Any]:
+        req = req or BrazilPixPaymentSubmitRequest()
         cdk = str(req.cdk or "").strip()
         link = str(req.link or "").strip()
         if not cdk or not link:
@@ -883,7 +1014,7 @@ def create_brazil_pix_router() -> APIRouter:
             )
         except requests.RequestException as exc:
             raise _payment_api_error(exc) from exc
-        data = _payment_api_json(resp)
+        data = _payment_api_submit_json(resp)
         job_id = str(data.get("job_id") or "").strip()
         if job_id:
             with PAYMENT_JOBS_LOCK:

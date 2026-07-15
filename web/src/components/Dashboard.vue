@@ -1040,6 +1040,7 @@ const failuresLoading = ref(false)
 
 const OAUTH_PROXY_STORAGE_KEY = 'autotoken.dashboard.oauthProxy'
 const OAUTH_EMAIL_STORAGE_KEY = 'autotoken.dashboard.oauthEmailCfg'
+const BRAZIL_PIX_PAYMENT_STATE_STORAGE_KEY = 'autotoken_brazil_pix_payment_state'
 
 function loadOauthEmailConfig() {
   if (oauthEmailLoaded.value) return
@@ -1602,6 +1603,54 @@ async function deleteAccountsInChunks(emails, onProgress = null) {
   }
 
   return combined
+}
+
+function cleanupBrazilPixPaymentStateForEmails(emails) {
+  const targets = new Set(
+    (Array.isArray(emails) ? emails : [emails])
+      .map(email => String(email || '').trim().toLowerCase())
+      .filter(Boolean)
+  )
+  if (!targets.size) return { linksRemoved: 0, cdksReleased: 0 }
+
+  try {
+    const state = JSON.parse(localStorage.getItem(BRAZIL_PIX_PAYMENT_STATE_STORAGE_KEY) || '{}')
+    const links = Array.isArray(state.links) ? state.links : []
+    const cdks = Array.isArray(state.cdks) ? state.cdks : []
+    const removedLinkIds = new Set()
+    const keptLinks = []
+
+    for (const link of links) {
+      const accountEmail = String(link?.accountEmail || '').trim().toLowerCase()
+      if (accountEmail && targets.has(accountEmail)) {
+        if (link?.id) removedLinkIds.add(String(link.id))
+        continue
+      }
+      keptLinks.push(link)
+    }
+
+    if (!removedLinkIds.size && keptLinks.length === links.length) {
+      return { linksRemoved: 0, cdksReleased: 0 }
+    }
+
+    let cdksReleased = 0
+    const nextCdks = cdks.map(cdk => {
+      if (cdk?.linkId && removedLinkIds.has(String(cdk.linkId)) && cdk.status === 'reserved') {
+        cdksReleased += 1
+        return { ...cdk, status: 'available', linkId: '', message: '关联账号已从仪表盘删除，CDK 已释放。' }
+      }
+      return cdk
+    })
+
+    localStorage.setItem(
+      BRAZIL_PIX_PAYMENT_STATE_STORAGE_KEY,
+      JSON.stringify({ ...state, links: keptLinks, cdks: nextCdks, savedAt: Date.now() })
+    )
+    return { linksRemoved: links.length - keptLinks.length, cdksReleased }
+  } catch (error) {
+    console.warn('cleanupBrazilPixPaymentStateForEmails failed', error)
+    return { linksRemoved: 0, cdksReleased: 0, error: String(error?.message || error) }
+  }
 }
 
 function clearFilters() {
@@ -2434,7 +2483,9 @@ async function removeAccount(email) {
   message.value = ''
   try {
     const result = await api.deleteAccount(email)
-    message.value = result.message || `已删除 ${email}`
+    const pixCleanup = cleanupBrazilPixPaymentStateForEmails([email])
+    const pixText = pixCleanup.linksRemoved ? `，已同步删除 PIX 支付页链接 ${pixCleanup.linksRemoved} 条` : ''
+    message.value = `${result.message || `已删除 ${email}`}${pixText}`
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     emit('refresh')
   } catch (e) {
@@ -2471,12 +2522,15 @@ async function batchDelete() {
     })
     const s = r?.summary || {}
     const failed = (r?.results || []).filter(x => !x.ok)
+    const succeededEmails = (r?.results || []).filter(x => x.ok).map(x => x.email)
+    const pixCleanup = cleanupBrazilPixPaymentStateForEmails(succeededEmails)
+    const pixText = pixCleanup.linksRemoved ? `，已同步删除 PIX 支付页链接 ${pixCleanup.linksRemoved} 条` : ''
     if (failed.length === 0) {
-      message.value = `批量删除完成:成功 ${s.ok}/${s.total}${s.batches > 1 ? `，分 ${s.batches} 批` : ''}`
+      message.value = `批量删除完成:成功 ${s.ok}/${s.total}${s.batches > 1 ? `，分 ${s.batches} 批` : ''}${pixText}`
       messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     } else {
       const head = failed.slice(0, 3).map(x => `${x.email}: ${x.error}`).join('; ')
-      message.value = `批量删除部分失败(成功 ${s.ok}/${s.total}${s.batches > 1 ? `，分 ${s.batches} 批` : ''}):${head}${failed.length > 3 ? ' …' : ''}`
+      message.value = `批量删除部分失败(成功 ${s.ok}/${s.total}${s.batches > 1 ? `，分 ${s.batches} 批` : ''}${pixText}):${head}${failed.length > 3 ? ' …' : ''}`
       messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
     }
     clearSelection()

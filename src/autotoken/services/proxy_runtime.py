@@ -85,11 +85,16 @@ def normalize_proxy_api_provider(value: str) -> str:
     raise ValueError("代理 API 供应商暂只支持 1024proxy 或 cliproxy")
 
 
-def default_proxy_api_url(provider: str, _proxy_url: str = "") -> str:
+def _normalize_proxy_api_country(value: str, fallback: str = "JP") -> str:
+    return re.sub(r"[^A-Za-z]", "", str(value or fallback).strip().upper())[:2] or fallback
+
+
+def default_proxy_api_url(provider: str, _proxy_url: str = "", *, country: str = "JP") -> str:
     normalized_provider = normalize_proxy_api_provider(provider)
+    region = _normalize_proxy_api_country(country, "JP")
     if normalized_provider == "1024proxy":
-        return "https://white.1024proxy.com/white/api?region=JP&num=1&time=10&format=1&type=json"
-    return "https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json"
+        return f"https://white.1024proxy.com/white/api?region={region}&num=1&time=10&format=1&type=json"
+    return f"https://api.cliproxy.io/white/api?region={region}&num=1&time=30&format=n&type=json"
 
 
 def default_paypal_proxy_api_url(provider: str, *, country: str = "US", protocol_no_card: bool = False) -> str:
@@ -299,6 +304,7 @@ def build_oauth_proxy_selector(
     proxy_pool_text: str | None = None,
     proxy_api_provider: str | None = None,
     proxy_api_url: str | None = None,
+    proxy_api_country: str | None = None,
     default_auth_scheme: str = "socks5h",
 ):
     raw_proxy_url = str(proxy_url or "").strip()
@@ -308,8 +314,11 @@ def build_oauth_proxy_selector(
         raise ValueError(f"OAuth 代理格式错误: {raw_proxy_url} ({exc})") from exc
     provider = normalize_proxy_api_provider(proxy_api_provider) if proxy_api_provider else ""
     api_url = str(proxy_api_url or "").strip()
+    api_country = _normalize_proxy_api_country(proxy_api_country or "JP", "JP")
     if provider and not api_url:
-        api_url = default_proxy_api_url(provider, raw_proxy_url)
+        api_url = default_proxy_api_url(provider, raw_proxy_url, country=api_country)
+    elif api_url and proxy_api_country:
+        api_url = proxy_api_url_with_region(api_url, api_country)
 
     normalized_pool: list[str] = []
     for raw_pool_proxy in parse_proxy_pool_values(proxy_pool, proxy_pool_text):

@@ -9,10 +9,15 @@ def _logger():
     return type("Logger", (), {"info": lambda *_args, **_kwargs: None})()
 
 
-def _routes(started, progress=None, *, oauth_env=None, proxy_meta=None):
+def _routes(started, progress=None, *, oauth_env=None, proxy_meta=None, proxy_selector_calls=None):
     progress = progress if progress is not None else []
     oauth_env = oauth_env if oauth_env is not None else {}
     proxy_meta = proxy_meta if proxy_meta is not None else {}
+    proxy_selector_calls = proxy_selector_calls if proxy_selector_calls is not None else []
+
+    def build_oauth_proxy_selector(**kwargs):
+        proxy_selector_calls.append(kwargs)
+        return lambda: "http://proxy.example:8080", proxy_meta
 
     def start_task(command, func, params, *args, **kwargs):
         started.append({"command": command, "func": func, "params": params, "args": args, "kwargs": kwargs})
@@ -22,7 +27,7 @@ def _routes(started, progress=None, *, oauth_env=None, proxy_meta=None):
         start_task=start_task,
         normalize_proxy_url=lambda value: f"normalized:{value}",
         normalize_proxy_api_provider=lambda value: str(value or "").strip().lower(),
-        build_oauth_proxy_selector=lambda **_kwargs: (lambda: "http://proxy.example:8080", proxy_meta),
+        build_oauth_proxy_selector=build_oauth_proxy_selector,
         normalize_oauth_phone_sms_provider=lambda value: str(value or "").strip().lower(),
         normalize_oauth_smsbower_country=lambda value: str(value or "").strip().upper(),
         normalize_oauth_hero_sms_country=lambda value: str(value or "").strip().lower(),
@@ -81,6 +86,25 @@ def test_post_add_batch_deduplicates_and_validates_domains(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "域名 @missing.com 不在可选列表中"
+
+
+def test_post_add_proxy_api_country_is_passed_to_selector(monkeypatch):
+    started = []
+    proxy_selector_calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    routes = _routes(started, proxy_selector_calls=proxy_selector_calls)
+    result = routes["post_add"](
+        ManualRegisterParams(proxy_api_provider="cliproxy", proxy_api_country="us")
+    )
+
+    assert result["params"]["proxy_api_provider"] == "cliproxy"
+    assert result["params"]["proxy_api_country"] == "US"
+    assert proxy_selector_calls[0]["proxy_api_provider"] == "cliproxy"
+    assert proxy_selector_calls[0]["proxy_api_country"] == "US"
 
 
 def test_post_add_rejects_invalid_registration_flow(monkeypatch):

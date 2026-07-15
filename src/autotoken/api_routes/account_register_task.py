@@ -52,6 +52,7 @@ class ManualRegisterParams(BaseModel):
     )
     proxy_url: str | None = Field(None, validation_alias=AliasChoices("proxy_url", "proxyUrl"))
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
+    proxy_api_country: str = Field("JP", validation_alias=AliasChoices("proxy_api_country", "proxyApiCountry"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
 
 
@@ -220,12 +221,16 @@ def create_account_register_task_router(
         proxy_api_provider = (
             normalize_proxy_api_provider(params.proxy_api_provider) if params.proxy_api_provider else ""
         )
+        proxy_api_country = "".join(
+            ch for ch in str(params.proxy_api_country or "JP").strip().upper() if ch.isalpha()
+        )[:2] or "JP"
         proxy_api_url = str(params.proxy_api_url or "").strip()
         if proxy_api_provider or proxy_api_url:
             register_proxy_selector, register_proxy_meta = build_oauth_proxy_selector(
                 proxy_url=normalized_proxy_url,
                 proxy_api_provider=proxy_api_provider or "1024proxy",
                 proxy_api_url=proxy_api_url,
+                proxy_api_country=proxy_api_country,
             )
 
         task_params = {
@@ -255,6 +260,7 @@ def create_account_register_task_router(
             "register_mode": register_mode,
             "proxy_url_present": bool(normalized_proxy_url),
             "proxy_api_provider": proxy_api_provider,
+            "proxy_api_country": proxy_api_country if (proxy_api_provider or proxy_api_url) else "",
             "proxy_api_url_present": bool(proxy_api_url),
             **register_proxy_meta,
         }

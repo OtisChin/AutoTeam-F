@@ -22,6 +22,16 @@ class DeleteBatchParams(BaseModel):
     continue_on_error: bool = True
 
 
+def cleanup_brazil_pix_account_artifacts(email: str) -> dict[str, Any]:
+    try:
+        from autotoken.api_routes import brazil_pix
+
+        return brazil_pix.delete_account_artifacts(email)
+    except Exception as exc:
+        logger.debug("[账号删除] 清理 Brazil PIX 记录失败 %s: %s", email, exc)
+        return {"links_deleted": 0, "status_deleted": False, "error": str(exc)}
+
+
 def create_account_management_router(
     *,
     playwright_lock: Any,
@@ -60,6 +70,7 @@ def create_account_management_router(
             else:
                 cleanup = delete_managed_account(email, remove_remote=False, remove_cloudmail=False)
             cleanup["auth_session_deleted"] = delete_auth_session(email)
+            cleanup["brazil_pix"] = cleanup_brazil_pix_account_artifacts(email)
             return {
                 "message": "账号删除完成",
                 "deleted_email": email,
@@ -209,6 +220,7 @@ def create_account_management_router(
                             sync_cpa_after=False,
                         )
                         cleanup["auth_session_deleted"] = delete_auth_session(email)
+                        cleanup["brazil_pix"] = cleanup_brazil_pix_account_artifacts(email)
                         results.append({"email": email, "ok": True, "cleanup": cleanup})
                     except Exception as exc:
                         logger.error("[批量删除] %s 失败: %s", email, exc)

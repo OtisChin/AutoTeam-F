@@ -291,22 +291,36 @@
               />
               <span>
                 <span class="text-gray-100">启用动态代理 API</span>
-                <span class="block text-xs text-gray-500">每个账号注册前提取一条日本代理；浏览器注册、协议注册和注册后 OAuth 共用本次代理。</span>
+                <span class="block text-xs text-gray-500">每个账号注册前按所选国家提取一条代理；浏览器注册、协议注册和注册后 OAuth 共用本次代理。</span>
               </span>
             </label>
-            <div>
-              <label class="block text-xs text-gray-500 mb-1">动态代理供应商</label>
-              <select
-                v-model="registerForm.proxyApiProvider"
-                :disabled="registeringBusy"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-              >
-                <option value="1024proxy">1024proxy</option>
-                <option value="cliproxy">Cliproxy</option>
-              </select>
-              <div class="mt-1 text-xs text-gray-500">
-                {{ registerForm.proxyApiEnabled ? registerProxyApiHelp : '启用动态代理 API 后会使用这里选择的供应商。' }}
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">动态代理供应商</label>
+                <select
+                  v-model="registerForm.proxyApiProvider"
+                  :disabled="registeringBusy"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="1024proxy">1024proxy</option>
+                  <option value="cliproxy">Cliproxy</option>
+                </select>
               </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">代理国家</label>
+                <select
+                  v-model="registerForm.proxyApiCountry"
+                  :disabled="registeringBusy"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option v-for="option in registerProxyCountryOptions" :key="`register-proxy-${option.country}`" :value="option.country">
+                    {{ option.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <div class="mt-1 text-xs text-gray-500">
+              {{ registerForm.proxyApiEnabled ? registerProxyApiHelp : '启用动态代理 API 后会使用这里选择的供应商和国家。' }}
             </div>
           </div>
 
@@ -1049,6 +1063,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { bindCountryOptions } from '../bindLinkPayload.js'
 
 const REGISTER_FORM_STORAGE_KEY = 'autotoken_register_form_v1'
 const OAUTH_PHONE_SMS_COUNTRIES_CACHE_KEY = 'autotoken_oauth_phone_sms_countries_v2'
@@ -1142,6 +1157,7 @@ const registerForm = ref({
   proxyUrl: '',
   proxyApiEnabled: false,
   proxyApiProvider: '1024proxy',
+  proxyApiCountry: 'JP',
 })
 const mailProviderLoading = ref(false)
 const mailProviderOptions = ref([])
@@ -1243,6 +1259,20 @@ const isMailComProvider = computed(() => String(registerForm.value.mailProvider 
 const isPhoneCpaFlow = computed(() => registerForm.value.registrationFlow === 'phone_cpa')
 const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookProvider.value || isMailComProvider.value)
 const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value && !isPhoneCpaFlow.value)
+function normalizeRegisterProxyCountry(value) {
+  return String(value || 'JP').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2) || 'JP'
+}
+const registerProxyCountryOptions = computed(() => {
+  const options = [
+    ...bindCountryOptions,
+    { country: 'BR', currency: 'BRL', label: '巴西（BRL）' },
+  ]
+  const selected = normalizeRegisterProxyCountry(registerForm.value.proxyApiCountry)
+  if (!options.some(option => option.country === selected)) {
+    options.push({ country: selected, currency: '', label: `${selected}` })
+  }
+  return options
+})
 const registerProviderPoolMessage = computed(() => {
   if (isLuckMailProvider.value) return 'LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。'
   if (isOutlookProvider.value) return 'Outlook 使用已配置的微软邮箱账号池，注册域名选择不参与本次任务。'
@@ -1286,15 +1316,18 @@ const registerBehaviorLabel = computed(() => {
   return `${registerMode}${flowDesc}`
 })
 const registerProxyApiHelp = computed(() => {
+  const country = normalizeRegisterProxyCountry(registerForm.value.proxyApiCountry)
+  const countryLabel = registerProxyCountryOptions.value.find(option => option.country === country)?.label || country
   if (registerForm.value.proxyApiProvider === 'cliproxy') {
-    return '运行时使用 Cliproxy 日本白名单 API，每个账号注册前提取一条。'
+    return `运行时使用 Cliproxy ${countryLabel} 白名单 API，每个账号注册前提取一条。`
   }
-  return '运行时使用 1024proxy 日本白名单 API，每个账号注册前提取一条。'
+  return `运行时使用 1024proxy ${countryLabel} 白名单 API，每个账号注册前提取一条。`
 })
 const registerProxyLabel = computed(() => {
   const fixedProxy = String(registerForm.value.proxyUrl || '').trim()
   if (registerForm.value.proxyApiEnabled) {
-    return `动态 API / ${registerForm.value.proxyApiProvider || '1024proxy'}`
+    const country = normalizeRegisterProxyCountry(registerForm.value.proxyApiCountry)
+    return `动态 API / ${registerForm.value.proxyApiProvider || '1024proxy'} / ${country}`
   }
   return fixedProxy ? '指定代理' : '未启用'
 })
@@ -1842,6 +1875,7 @@ function loadSavedRegisterForm() {
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || ''))
         ? String(saved.proxyApiProvider)
         : '1024proxy',
+      proxyApiCountry: normalizeRegisterProxyCountry(saved.proxyApiCountry),
     }
   } catch (e) {
     console.error('loadSavedRegisterForm', e)
@@ -1893,6 +1927,7 @@ function saveRegisterForm() {
       proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(registerForm.value.proxyApiProvider || ''))
         ? registerForm.value.proxyApiProvider
         : '1024proxy',
+      proxyApiCountry: normalizeRegisterProxyCountry(registerForm.value.proxyApiCountry),
     })
     )
   } catch (e) {
@@ -2199,6 +2234,9 @@ async function submitManualRegister() {
       oauth_oasis_sms_cdks: oauthUsesProvider && oauthProvider === 'oasis' ? registerForm.value.oauthOasisSmsCdks : '',
       proxy_url: registerForm.value.proxyApiEnabled ? '' : (registerForm.value.proxyUrl || ''),
       proxy_api_provider: registerForm.value.proxyApiEnabled ? registerForm.value.proxyApiProvider : '',
+      proxy_api_country: registerForm.value.proxyApiEnabled
+        ? normalizeRegisterProxyCountry(registerForm.value.proxyApiCountry)
+        : '',
     }
     await api.startAdd(payload)
     emit('task-started')

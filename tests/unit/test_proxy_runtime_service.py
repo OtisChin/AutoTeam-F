@@ -36,6 +36,9 @@ def test_proxy_api_url_detection_and_provider_defaults():
     assert proxy_runtime.default_proxy_api_url("cliproxy") == (
         "https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json"
     )
+    assert proxy_runtime.default_proxy_api_url("cliproxy", country="us") == (
+        "https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json"
+    )
     assert proxy_runtime.default_paypal_proxy_api_url("1024") == (
         "https://white.1024proxy.com/white/api?region=US&num=1&time=10&format=1&type=json"
     )
@@ -119,3 +122,30 @@ def test_build_oauth_proxy_selector_treats_proxy_pool_api_url_as_api(monkeypatch
         "proxy_api_url_present": True,
     }
     assert selector() == "socks5h://user-c:pass-c@3.3.3.3:8080"
+
+
+def test_build_oauth_proxy_selector_uses_proxy_api_country(monkeypatch):
+    requested_urls = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = "4.4.4.4:8080:user-d:pass-d"
+
+    def fake_get(url, timeout):
+        requested_urls.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr(proxy_runtime.requests, "get", fake_get)
+
+    selector, meta = proxy_runtime.build_oauth_proxy_selector(
+        proxy_api_provider="cliproxy",
+        proxy_api_country="us",
+        default_auth_scheme="socks5h",
+    )
+
+    assert meta["proxy_api_provider"] == "cliproxy"
+    assert selector() == "socks5h://user-d:pass-d@4.4.4.4:8080"
+    assert requested_urls == [
+        "https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json"
+    ]

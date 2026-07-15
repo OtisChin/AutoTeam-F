@@ -1,12 +1,19 @@
 from fastapi import FastAPI, HTTPException
+import pytest
 
 from autotoken import account_ops, accounts, admin_state, auth_session_store, chatgpt_api, manager
+import autotoken.api_routes.account_management as account_management
 from autotoken.api_routes.account_management import (
     ACCOUNT_DELETE_BATCH_MAX_EMAILS,
     AccountTypeUpdateParams,
     DeleteBatchParams,
     create_account_management_router,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_brazil_pix_cleanup(monkeypatch):
+    monkeypatch.setattr(account_management, "cleanup_brazil_pix_account_artifacts", lambda _email: {"links_deleted": 0})
 
 
 class FakeLock:
@@ -69,6 +76,7 @@ def test_account_management_delete_uses_remote_cleanup_when_lock_and_admin_avail
     monkeypatch.setattr(admin_state, "get_admin_session_token", lambda: "session-token")
     monkeypatch.setattr(admin_state, "get_chatgpt_account_id", lambda: "account-id")
     monkeypatch.setattr(auth_session_store, "delete_auth_session", lambda email: email == "User@example.com")
+    monkeypatch.setattr(account_management, "cleanup_brazil_pix_account_artifacts", lambda email: {"links_deleted": 1})
 
     def fake_delete_managed_account(email, *, remove_remote, remove_cloudmail):
         calls["delete"] = {
@@ -84,7 +92,7 @@ def test_account_management_delete_uses_remote_cleanup_when_lock_and_admin_avail
 
     assert result["remote_cleanup"] is True
     assert result["remote_cleanup_skipped"] is False
-    assert result["cleanup"] == {"removed": True, "auth_session_deleted": True}
+    assert result["cleanup"] == {"removed": True, "auth_session_deleted": True, "brazil_pix": {"links_deleted": 1}}
     assert calls["delete"] == {
         "email": "User@example.com",
         "remove_remote": True,

@@ -4,6 +4,9 @@ import json
 import threading
 import time
 
+import pytest
+from fastapi import HTTPException
+
 from autotoken.api_routes import brazil_pix
 from autotoken.storage import auth_session_store
 
@@ -96,7 +99,105 @@ def test_load_links_rewrites_legacy_duplicates(monkeypatch, tmp_path):
     assert [item["id"] for item in stored] == ["latest"]
 
 
-def test_accounts_exclude_plus_from_pix_pool(monkeypatch, tmp_path):
+def test_delete_account_artifacts_removes_links_and_status(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    brazil_pix.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {"id": "remove", "account_email": "Deleted@example.com", "hosted_instructions_url": "https://pay/remove"},
+                {"id": "keep", "account_email": "keep@example.com", "hosted_instructions_url": "https://pay/keep"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    brazil_pix.ACCOUNT_STATUS_FILE.write_text(
+        json.dumps(
+            {
+                "deleted@example.com": {"status": "failed", "error": "boom"},
+                "keep@example.com": {"status": "success", "error": ""},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = brazil_pix.delete_account_artifacts("deleted@example.com")
+
+    assert result == {"links_deleted": 1, "status_deleted": True}
+    assert [item["id"] for item in brazil_pix._load_links()] == ["keep"]
+    statuses = json.loads(brazil_pix.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert "deleted@example.com" not in statuses
+    assert "keep@example.com" in statuses
+
+
+def test_load_links_pruning_deleted_accounts_removes_orphan_links(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    _write_session(auth_dir, "keep@example.com")
+    brazil_pix.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {"id": "stale", "account_email": "deleted@example.com", "hosted_instructions_url": "https://pay/stale"},
+                {"id": "keep", "account_email": "keep@example.com", "hosted_instructions_url": "https://pay/keep"},
+                {"id": "manual", "account_email": "", "hosted_instructions_url": "https://pay/manual"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    brazil_pix.ACCOUNT_STATUS_FILE.write_text(
+        json.dumps({"deleted@example.com": {"status": "success"}, "keep@example.com": {"status": "success"}}),
+        encoding="utf-8",
+    )
+
+    links, pruned = brazil_pix._load_links_pruning_deleted_accounts()
+
+    assert pruned == 1
+    assert [item["id"] for item in links] == ["keep", "manual"]
+    stored = json.loads(brazil_pix.LINKS_FILE.read_text(encoding="utf-8"))
+    assert [item["id"] for item in stored] == ["keep", "manual"]
+    statuses = json.loads(brazil_pix.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert "deleted@example.com" not in statuses
+    assert "keep@example.com" in statuses
+
+
+def test_auth_accounts_ignore_leftover_session_when_dashboard_pool_has_accounts(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    _write_session(auth_dir, "deleted@example.com")
+    _write_session(auth_dir, "keep@example.com")
+    brazil_pix.account_store.save_accounts(
+        [{"email": "keep@example.com", "status": "personal", "account_type": "free"}]
+    )
+
+    accounts = {item["email"] for item in brazil_pix._iter_auth_accounts_with_pix_status()}
+
+    assert accounts == {"keep@example.com"}
+
+
+def test_load_links_pruning_deleted_accounts_removes_paid_links(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    _write_session(auth_dir, "paid@example.com")
+    _write_session(auth_dir, "free@example.com")
+    brazil_pix.account_store.save_accounts(
+        [
+            {"email": "paid@example.com", "status": "active", "account_type": "plus"},
+            {"email": "free@example.com", "status": "active", "account_type": "free"},
+        ]
+    )
+    brazil_pix.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {"id": "paid", "account_email": "paid@example.com", "hosted_instructions_url": "https://pay/paid"},
+                {"id": "free", "account_email": "free@example.com", "hosted_instructions_url": "https://pay/free"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    links, pruned = brazil_pix._load_links_pruning_deleted_accounts()
+
+    assert pruned == 1
+    assert [item["id"] for item in links] == ["free"]
+
+
+def test_accounts_show_plus_as_paid_but_exclude_from_selectable_auth_pool(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     _write_session(auth_dir, "plus@example.com")
     _write_session(auth_dir, "free@example.com")
@@ -107,13 +208,18 @@ def test_accounts_exclude_plus_from_pix_pool(monkeypatch, tmp_path):
         ]
     )
 
-    accounts = {item["email"] for item in brazil_pix._iter_auth_accounts_with_pix_status()}
+    accounts = {item["email"]: item for item in brazil_pix._iter_auth_accounts_with_pix_status()}
+    selectable = {item["email"] for item in brazil_pix._iter_auth_accounts()}
 
-    assert "plus@example.com" not in accounts
-    assert "free@example.com" in accounts
+    assert accounts["plus@example.com"]["pix_status"] == "paid"
+    assert accounts["plus@example.com"]["pix_status_text"] == "已支付"
+    assert accounts["plus@example.com"]["pix_selectable"] is False
+    assert accounts["free@example.com"]["pix_status"] == "pending"
+    assert "plus@example.com" not in selectable
+    assert "free@example.com" in selectable
 
 
-def test_accounts_exclude_pix_bound_success_from_pix_pool(monkeypatch, tmp_path):
+def test_accounts_show_pix_bound_success_as_paid_but_exclude_from_selectable_auth_pool(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     _write_session(auth_dir, "pixbound@example.com")
     _write_session(auth_dir, "free@example.com")
@@ -130,10 +236,15 @@ def test_accounts_exclude_pix_bound_success_from_pix_pool(monkeypatch, tmp_path)
         ]
     )
 
-    accounts = {item["email"] for item in brazil_pix._iter_auth_accounts_with_pix_status()}
+    accounts = {item["email"]: item for item in brazil_pix._iter_auth_accounts_with_pix_status()}
+    selectable = {item["email"] for item in brazil_pix._iter_auth_accounts()}
 
-    assert "pixbound@example.com" not in accounts
-    assert "free@example.com" in accounts
+    assert accounts["pixbound@example.com"]["pix_status"] == "paid"
+    assert accounts["pixbound@example.com"]["pix_status_text"] == "已支付"
+    assert accounts["pixbound@example.com"]["pix_selectable"] is False
+    assert accounts["free@example.com"]["pix_status"] == "pending"
+    assert "pixbound@example.com" not in selectable
+    assert "free@example.com" in selectable
 
 
 def test_batch_job_updates_account_statuses(monkeypatch, tmp_path):
@@ -537,6 +648,56 @@ def test_payment_submit_proxies_pix_cdk_api(monkeypatch):
     assert calls[0][0] == "https://pix.iceaix.com/api/submit"
     assert calls[0][1]["json"] == {"cdk": "PIX-1", "link": "https://payments.stripe.com/qr/instructions/abc"}
     assert calls[0][1]["timeout"] == 70
+
+
+def test_payment_submit_request_accepts_legacy_payload_shapes():
+    request = brazil_pix.BrazilPixPaymentSubmitRequest.model_validate(
+        {
+            "CDK": {"value": " PIX-LEGACY "},
+            "paymentLink": {"url": " https://payments.stripe.com/qr/instructions/legacy "},
+        }
+    )
+
+    assert request.cdk == "PIX-LEGACY"
+    assert request.link == "https://payments.stripe.com/qr/instructions/legacy"
+
+
+def test_payment_submit_bad_body_returns_400_not_validation_422(monkeypatch):
+    def should_not_post(*args, **kwargs):
+        raise AssertionError("empty payment submit body should not call PIX CDK API")
+
+    monkeypatch.setattr(brazil_pix.requests, "post", should_not_post)
+
+    endpoint = _route_endpoint("/api/brazil-pix/payment/submit", "POST")
+    with pytest.raises(HTTPException) as exc:
+        endpoint(None)
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "bad_body"
+
+
+def test_payment_submit_returns_upstream_rejection_as_data(monkeypatch):
+    def fake_post(url, **kwargs):
+        return _FakeResponse(
+            422,
+            {
+                "ok": False,
+                "code": "invalid_link",
+                "message": "不是受支持的 Stripe PIX 链接",
+            },
+        )
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+
+    endpoint = _route_endpoint("/api/brazil-pix/payment/submit", "POST")
+    data = endpoint(brazil_pix.BrazilPixPaymentSubmitRequest(cdk="PIX-1", link="https://payments.stripe.com/qr/instructions/bad"))
+
+    assert data == {
+        "ok": False,
+        "code": "invalid_link",
+        "message": "不是受支持的 Stripe PIX 链接",
+        "http_status": 422,
+    }
 
 
 def test_payment_job_query_proxies_pix_cdk_api(monkeypatch):

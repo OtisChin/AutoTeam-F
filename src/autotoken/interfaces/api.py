@@ -1485,6 +1485,7 @@ def _build_oauth_proxy_selector(
     proxy_pool_text: str | None = None,
     proxy_api_provider: str | None = None,
     proxy_api_url: str | None = None,
+    proxy_api_country: str | None = None,
 ):
     """Return a per-account OAuth proxy selector.
 
@@ -1498,6 +1499,7 @@ def _build_oauth_proxy_selector(
             proxy_pool_text=proxy_pool_text,
             proxy_api_provider=proxy_api_provider,
             proxy_api_url=proxy_api_url,
+            proxy_api_country=proxy_api_country,
             default_auth_scheme=PAYPAL_PROXY_DEFAULT_SCHEME,
         )
     except ValueError as exc:
