@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 
 from autotoken.core.files import READ_LINES_FILE_MAX_BYTES
@@ -143,6 +145,45 @@ def test_search_emails_by_recipient_reads_mailapi_html(monkeypatch):
     assert len(messages) == 1
     assert messages[0]["accountId"] == "user@hotmail.com"
     assert client.extract_verification_code(messages[0]) == "123456"
+
+
+def test_search_emails_by_recipient_decodes_mailapi_html_viewer_body(monkeypatch):
+    client = OutlookMailProvider()
+    client.accounts = [
+        OutlookMailProvider._parse_account_line(
+            "user@hotmail.com----https://mailapi.icu/key?type=html&orderNo=abc"
+        )
+    ]
+    mail_body = """
+    <html>
+      <head><style>.main{color:#202123}</style></head>
+      <body>
+        <p>Enter this temporary verification code to continue:</p>
+        <p>849957</p>
+      </body>
+    </html>
+    """
+    encoded_body = base64.b64encode(mail_body.encode()).decode()
+    viewer_html = f"""
+    <html><body>
+      <div class="mail-list-subject">Your temporary ChatGPT verification code</div>
+      <span class="mail-list-date">2026-07-16 01:03:22</span>
+      <div class="verification-code">验证码: FONT-FACE</div>
+      <div class="email-content" data-mail-body="{encoded_body}"></div>
+    </body></html>
+    """
+
+    def fake_get(*args, **kwargs):
+        return FakeResponse(None, text=viewer_html)
+
+    monkeypatch.setattr("autotoken.mail.outlook.curl_requests.get", fake_get)
+
+    messages = client.search_emails_by_recipient("user@hotmail.com", account_id="user@hotmail.com")
+
+    assert len(messages) == 1
+    assert messages[0]["subject"] == "Your temporary ChatGPT verification code"
+    assert messages[0]["createTime"] > 0
+    assert client.extract_verification_code(messages[0]) == "849957"
 
 
 def test_search_emails_by_recipient_reads_mailapi_json(monkeypatch):

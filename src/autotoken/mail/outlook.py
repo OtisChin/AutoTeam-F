@@ -8,6 +8,8 @@ for registration, then poll that same mailbox for OpenAI verification mail.
 from __future__ import annotations
 
 import email as email_pkg
+import base64
+import html as html_lib
 import imaplib
 import json
 import logging
@@ -373,6 +375,9 @@ class OutlookMailProvider(MailProvider):
 
         if not text.strip():
             return []
+        messages = self._messages_from_mailapi_html_page(account, text)
+        if messages:
+            return messages[:count]
         return [self._mailapi_item_to_message(account, text, index=0)]
 
     @classmethod
@@ -382,6 +387,71 @@ class OutlookMailProvider(MailProvider):
             for idx, item in enumerate(cls._mailapi_payload_items(payload))
             if (msg := cls._mailapi_item_to_message(account, item, index=idx))
         ]
+
+    @classmethod
+    def _messages_from_mailapi_html_page(cls, account: OutlookAccount, page_html: str) -> list[OutlookMessage]:
+        """Extract real mail bodies from mailapi.icu's rendered HTML viewer.
+
+        `https://mailapi.icu/key?type=html&orderNo=...` may return a browser
+        viewer instead of JSON.  The visible viewer contains misleading text
+        such as `验证码: FONT-FACE`, while the actual email HTML is base64
+        encoded in `data-mail-body`.  Decode those bodies before running the
+        normal OTP extractor, otherwise no 6-digit code is visible to the
+        parser.
+        """
+        text = str(page_html or "")
+        if "data-mail-body" not in text:
+            return []
+
+        encoded_bodies = [
+            html_lib.unescape(match.group(2)).strip()
+            for match in re.finditer(r"data-mail-body=(['\"])(.*?)\1", text, re.IGNORECASE | re.DOTALL)
+            if match.group(2)
+        ]
+        if not encoded_bodies:
+            return []
+
+        subjects = [
+            html_to_visible_text(match.group(2))
+            for match in re.finditer(
+                r"<div[^>]*class=(['\"])[^'\"]*\bmail-list-subject\b[^'\"]*\1[^>]*>(.*?)</div>",
+                text,
+                re.IGNORECASE | re.DOTALL,
+            )
+        ]
+        dates = [
+            html_to_visible_text(match.group(2))
+            for match in re.finditer(
+                r"<span[^>]*class=(['\"])[^'\"]*\bmail-list-date\b[^'\"]*\1[^>]*>(.*?)</span>",
+                text,
+                re.IGNORECASE | re.DOTALL,
+            )
+        ]
+
+        messages: list[OutlookMessage] = []
+        seen_bodies: set[str] = set()
+        for idx, encoded in enumerate(encoded_bodies):
+            try:
+                padded = encoded + ("=" * (-len(encoded) % 4))
+                body = base64.b64decode(padded).decode("utf-8", errors="replace").strip()
+            except Exception:
+                logger.debug("[outlook] %s mailapi HTML viewer body 解码失败", account.email, exc_info=True)
+                continue
+            if not body or body in seen_bodies:
+                continue
+            seen_bodies.add(body)
+            item = {
+                "id": f"{account.email}:mailapi-html:{idx}",
+                "subject": subjects[idx] if idx < len(subjects) else "",
+                "html": body,
+                "content": body,
+                "createdAt": dates[idx] if idx < len(dates) else "",
+                "raw": {"source": "mailapi_html_viewer"},
+            }
+            msg = cls._mailapi_item_to_message(account, item, index=idx)
+            if msg:
+                messages.append(msg)
+        return messages
 
     @classmethod
     def _mailapi_payload_items(cls, payload: Any) -> list[Any]:
@@ -478,8 +548,10 @@ class OutlookMailProvider(MailProvider):
             "code",
             "otp",
         )
-        if not html and cls._looks_like_html(text):
-            html, text = text, html_to_visible_text(text)
+        if cls._looks_like_html(text):
+            if not html:
+                html = text
+            text = html_to_visible_text(text)
         if not (subject or text or html):
             return None
 
