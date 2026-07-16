@@ -1087,57 +1087,6 @@ def test_account_login_uses_luckmail_provider_for_token_account_id(monkeypatch):
     assert captured["login"]["mail_account_id"] == "tok_luck"
 
 
-def test_paypal_ice_bound_account_login_keeps_active_status(monkeypatch):
-    captured = {}
-    updates = []
-    account = {
-        "email": "plus@example.com",
-        "password": "pw",
-        "status": accounts.STATUS_ACTIVE,
-        "account_type": accounts.ACCOUNT_TYPE_PLUS,
-        "last_bind_provider": "paypal_ice",
-        "cloudmail_account_id": "tok_luck",
-    }
-
-    class FakeMailClient:
-        def login(self):
-            pass
-
-    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
-        captured["login"] = {
-            "email": email,
-            "native_oauth": native_oauth,
-            "mail_account_id": mail_account_id,
-        }
-        return {
-            "email": email,
-            "access_token": "token",
-            "refresh_token": "refresh",
-            "id_token": "id",
-            "account_id": "acct-plus",
-            "plan_type": "plus",
-        }
-
-    monkeypatch.delenv("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL", raising=False)
-    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
-    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
-    monkeypatch.setattr("autotoken.codex_auth.login_codex_via_browser", fake_login)
-    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
-    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: updates.append((email, kwargs)))
-
-    result = api._run_account_codex_login_once(account["email"], account)
-
-    assert result["email"] == "plus@example.com"
-    assert captured["login"]["mail_account_id"] == "tok_luck"
-    assert any(
-        email == "plus@example.com"
-        and update.get("status") == accounts.STATUS_ACTIVE
-        and update.get("account_type") == accounts.ACCOUNT_TYPE_PLUS
-        for email, update in updates
-    )
-
-
 def test_account_login_restores_missing_luckmail_token_before_browser_oauth(monkeypatch):
     captured = {}
     account = {

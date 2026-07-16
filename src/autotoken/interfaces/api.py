@@ -124,8 +124,6 @@ from autotoken.api_routes.payment_task_models import (
 from autotoken.api_routes.payment_task_models import (
     PayPalTaskParams as _PayPalTaskParams,
 )
-from autotoken.api_routes.paypal_ice import create_paypal_ice_router, repair_paypal_ice_account_bind_metadata
-from autotoken.api_routes.paypal_ice_phone_pool import create_paypal_ice_phone_pool_router
 from autotoken.api_routes.paypal_sms_config import create_paypal_sms_config_router
 from autotoken.api_routes.register_domain import create_register_domain_router
 from autotoken.api_routes.rekberinaja_config import create_rekberinaja_config_router
@@ -660,18 +658,6 @@ app.include_router(create_rekberinaja_config_router(mask_secret=_mask_secret_for
 app.include_router(create_oauth_phone_sms_config_router(mask_secret=_mask_secret_for_config))
 app.include_router(create_gopay_auto_signup_config_router(mask_secret=_mask_secret_for_config))
 app.include_router(create_paypal_sms_config_router(mask_secret=_mask_secret_for_config))
-app.include_router(
-    create_paypal_ice_router(
-        mask_secret=_mask_secret_for_config,
-        start_oauth_login=lambda payload: post_account_login(_LoginAccountParams(**payload)),
-        get_task=lambda task_id: _tasks.get(task_id)
-        or next(
-            (task for task in _merged_task_snapshots(compact=False) if str(task.get("task_id") or "") == task_id),
-            None,
-        ),
-    )
-)
-app.include_router(create_paypal_ice_phone_pool_router())
 
 
 # ---------------------------------------------------------------------------
@@ -1655,7 +1641,6 @@ def _session_only_account_stub(email: str) -> dict:
 
 
 def _load_accounts_with_session_stubs(*, include_session_stubs: bool = True) -> list[dict]:
-    repair_paypal_ice_account_bind_metadata()
     return account_session_stubs_service.load_accounts_with_session_stubs(
         include_session_stubs=include_session_stubs,
         normalize_email=_normalized_email,
@@ -2931,7 +2916,7 @@ def _run_account_codex_login_once(
     if (
         next_account_type == ACCOUNT_TYPE_PLUS
         and current_status == STATUS_ACTIVE
-        and current_bind_provider in {"paypal", "paypal_ice"}
+        and current_bind_provider == "paypal"
     ):
         next_status = STATUS_ACTIVE
     else:

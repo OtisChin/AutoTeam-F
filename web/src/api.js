@@ -157,30 +157,6 @@ export const api = {
   },
   preflightPayPal: (payload) => request('POST', '/tasks/paypal/preflight', payload),
   startPayPal: (payload) => request('POST', '/tasks/paypal', payload),
-  getPayPalIceConfig: () => request('GET', '/paypal-ice/config'),
-  savePayPalIceConfig: (payload) => request('PUT', '/paypal-ice/config', payload),
-  getPayPalIceAccount: () => request('GET', '/paypal-ice/account'),
-  checkPayPalIceTrial: (payload) => request('POST', '/paypal-ice/trial-check', payload),
-  checkPayPalIceSubscription: (payload) => request('POST', '/paypal-ice/subscription', payload),
-  listPayPalIceJobs: () => request('GET', '/paypal-ice/jobs'),
-  createPayPalIceJob: (payload) => request('POST', '/paypal-ice/jobs', payload),
-  cancelPayPalIceJobs: (jobIds) => request('POST', '/paypal-ice/jobs/cancel-local', { job_ids: jobIds }),
-  getPayPalIceJob: (jobId) => request('GET', `/paypal-ice/jobs/${encodeURIComponent(jobId)}`),
-  releasePayPalIcePhone: (jobId) => request('POST', `/paypal-ice/jobs/${encodeURIComponent(jobId)}/release-phone`),
-  getPayPalIcePhonePool: () => request('GET', '/paypal-ice/phone-pool'),
-  addPayPalIcePhone: (payload) => request('POST', '/paypal-ice/phone-pool', payload),
-  updatePayPalIcePhone: (itemId, payload) => request('PUT', `/paypal-ice/phone-pool/${encodeURIComponent(itemId)}`, payload),
-  deletePayPalIcePhones: (ids) => request('POST', '/paypal-ice/phone-pool/delete', { ids }),
-  importPayPalIcePhones: (text) => request('POST', '/paypal-ice/phone-pool/import', { text }),
-  releasePayPalIcePhones: (payload) => request('POST', '/paypal-ice/phone-pool/release', payload),
-  exportPayPalIcePhones: async () => {
-    const headers = { 'Content-Type': 'application/json' }
-    const key = getApiKey()
-    if (key) headers['Authorization'] = "Bearer " + key
-    const resp = await fetch('/api/paypal-ice/phone-pool/export', { headers })
-    if (!resp.ok) throw new Error("HTTP " + resp.status)
-    return resp.text()
-  },
 
   getWhatsAppOtpStatus: () => request('GET', '/whatsapp-otp/status'),
   startWhatsAppOtp: (payload = {}) => request('POST', '/whatsapp-otp/start', payload),

@@ -65,7 +65,6 @@
 
           <PayPalPage v-else-if="currentPage === 'paypal'" />
 
-          <PayPalIcePage v-else-if="currentPage === 'paypalIce'" @refresh="refresh" />
 
           <OAuthPhonePoolPage v-else-if="currentPage === 'oauthPhones'" />
 
@@ -151,7 +150,6 @@ import BindCardPool from './components/BindCardPool.vue'
 import IdealLinkPage from './components/IdealLinkPage.vue'
 import BrazilPixPage from './components/BrazilPixPage.vue'
 import PayPalPage from './components/PayPalPage.vue'
-import PayPalIcePage from './components/PayPalIcePage.vue'
 import OAuthPhonePoolPage from './components/OAuthPhonePoolPage.vue'
 import OAuthPhoneRecordsPage from './components/OAuthPhoneRecordsPage.vue'
 import MailAccountsPage from './components/MailAccountsPage.vue'
@@ -169,7 +167,7 @@ const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autotoken_current_page'
-const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'ideal', 'brazilPix', 'paypal', 'paypalIce', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
+const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'ideal', 'brazilPix', 'paypal', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
 const IDLE_POLLING_ENABLED = false
@@ -418,7 +416,7 @@ function buildDashboardStatusFromAccounts(accounts) {
       ...acc,
       raw_status: acc?.raw_status || status,
       status: normalized,
-      last_bind_provider: lastBindProvider || (status === 'paypal_ice' ? 'paypal_ice' : ''),
+      last_bind_provider: lastBindProvider,
     }
   })
   const summary = {

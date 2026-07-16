@@ -71,7 +71,6 @@ const items = [
   { key: 'ideal', group: 'Payments', glyph: 'ID', label: '荷兰iDEAL', mobileLabel: 'iDEAL' },
   { key: 'brazilPix', group: 'Payments', glyph: 'PX', label: '巴西Pix', mobileLabel: 'PIX' },
   { key: 'paypal', group: 'Payments', glyph: 'PP', label: 'PayPal', mobileLabel: 'PayPal' },
-  { key: 'paypalIce', group: 'Payments', glyph: 'PI', label: 'PayPal ICE', mobileLabel: 'ICE' },
   { key: 'oauthPhones', group: 'OAuth', glyph: 'PH', label: 'OAuth 手机号', mobileLabel: '手机号' },
   { key: 'oauthPhoneRecords', group: 'OAuth', glyph: 'OR', label: 'OAuth 取号记录', mobileLabel: '取号' },
   { key: 'oauth', group: 'OAuth', glyph: 'OA', label: 'OAuth 登录', mobileLabel: 'OAuth' },
