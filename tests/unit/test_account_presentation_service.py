@@ -60,7 +60,7 @@ def test_sanitize_account_with_indexes_normalizes_legacy_plus_statuses():
         assert sanitized["status"] == "active"
         assert sanitized["raw_status"] == status
         assert sanitized["account_type"] == "plus"
-        assert sanitized["last_bind_provider"] == ("paypal_ice" if status == "paypal_ice" else "")
+        assert sanitized["last_bind_provider"] == ""
 
 
 def test_display_account_type_preserves_explicit_type_and_falls_back_from_status():

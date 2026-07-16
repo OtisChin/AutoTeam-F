@@ -1910,7 +1910,6 @@ function accountTypeLabel(type) {
 function bindProviderLabel(provider) {
   return {
     paypal: 'PayPal',
-    paypal_ice: 'PayPal ICE',
     pix: 'Pix',
     gopay: 'GoPay',
     card: 'Card',
@@ -1924,15 +1923,13 @@ function effectiveBindProvider(acc) {
   const provider = String(acc?.last_bind_provider || '').trim().toLowerCase()
   if (provider) return provider
   const rawStatus = String(acc?.raw_status || acc?.status || '').trim().toLowerCase()
-  if (rawStatus === 'paypal_ice') return 'paypal_ice'
-  const bindMessage = String(acc?.last_bind_message || '').trim().toLowerCase()
-  return bindMessage.includes('paypal ice') ? 'paypal_ice' : ''
+  if (rawStatus === 'paypal_ice') return ''
+  return ''
 }
 
 function bindProviderClass(provider) {
   return {
     paypal: 'bg-blue-500/10 text-blue-300',
-    paypal_ice: 'bg-blue-500/10 text-blue-300',
     pix: 'bg-cyan-500/10 text-cyan-300',
     gopay: 'bg-emerald-500/10 text-emerald-300',
     card: 'bg-amber-500/10 text-amber-300',

@@ -268,8 +268,6 @@ def sanitize_account_with_indexes(
     sanitized["status"] = status
     sanitized["account_type"] = display_account_type(acc)
     bind_provider = str(acc.get("last_bind_provider") or "").strip().lower()
-    if not bind_provider and raw_status == "paypal_ice":
-        bind_provider = "paypal_ice"
     sanitized["last_bind_provider"] = bind_provider
     sanitized["credentials_exported"] = bool(acc.get("credentials_exported"))
     sanitized["credentials_exported_at"] = acc.get("credentials_exported_at")
