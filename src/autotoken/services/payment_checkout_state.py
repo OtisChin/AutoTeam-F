@@ -560,7 +560,7 @@ def classify_paypal_checkout_state(url: str, body_text: str):
     return None
 
 
-def classify_paypal_stripe_payment_page(payload: dict[str, Any] | None):
+def classify_stripe_payment_page(payload: dict[str, Any] | None):
     data = payload if isinstance(payload, dict) else {}
     setup_intent = data.get("setup_intent") if isinstance(data.get("setup_intent"), dict) else {}
     payment_intent = data.get("payment_intent") if isinstance(data.get("payment_intent"), dict) else {}

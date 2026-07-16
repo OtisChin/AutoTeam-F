@@ -130,7 +130,7 @@ PLAYWRIGHT_PROXY_USERNAME = os.environ.get("PLAYWRIGHT_PROXY_USERNAME", "").stri
 PLAYWRIGHT_PROXY_PASSWORD = os.environ.get("PLAYWRIGHT_PROXY_PASSWORD", "").strip()
 PLAYWRIGHT_PROXY_BYPASS = os.environ.get("PLAYWRIGHT_PROXY_BYPASS", "").strip()
 PLAYWRIGHT_BACKGROUND = _get_bool_env("PLAYWRIGHT_BACKGROUND", True)
-PAYPAL_PROXY_DEFAULT_SCHEME = os.environ.get("PAYPAL_PROXY_DEFAULT_SCHEME", "socks5h").strip() or "socks5h"
+PROXY_DEFAULT_AUTH_SCHEME = os.environ.get("AUTOTOKEN_PROXY_DEFAULT_AUTH_SCHEME", "socks5h").strip() or "socks5h"
 
 # RoxyBrowser API 配置
 ROXYBROWSER_API_HOST = os.environ.get("ROXYBROWSER_API_HOST", "http://127.0.0.1:50000").strip().rstrip("/")

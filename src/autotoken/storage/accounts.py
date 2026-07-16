@@ -23,7 +23,6 @@ STATUS_STANDBY = "standby"  # 已移出 team，等待额度恢复
 STATUS_PENDING = "pending"  # 已邀请，等待注册完成
 STATUS_PERSONAL = "personal"  # 已主动退出 team，走个人号 Codex OAuth，不再参与 Team 轮转
 STATUS_PLUS = "plus"  # 已通过 GoPay/支付流程升级为 Plus，不再参与号池选择
-STATUS_PAYPAL_ICE = "paypal_ice"  # 旧状态兼容：PayPal ICE 应记录为 last_bind_provider，账号状态仍为 active
 STATUS_AUTH_INVALID = "auth_invalid"  # auth_file token 已不可用(401/403),待 reconcile 清理或重登
 STATUS_ORPHAN = "orphan"  # 在 workspace 里占着席位,但本地没 auth_file(残废,待人工介入或兜底 kick)
 STATUS_FAIL = "fail"  # 已废弃账号,不再参与号池/轮转
@@ -78,11 +77,6 @@ def _normalize_account_record(account: dict) -> dict:
     acc.setdefault("mailapi_url", None)
     acc.setdefault("status", STATUS_PENDING)
     acc.setdefault("account_type", ACCOUNT_TYPE_FREE)
-    if str(acc.get("status") or "").strip().lower() == STATUS_PAYPAL_ICE:
-        acc["status"] = STATUS_ACTIVE
-        acc["account_type"] = ACCOUNT_TYPE_PLUS
-        if not acc.get("last_bind_provider"):
-            acc["last_bind_provider"] = "paypal_ice"
     acc.setdefault("seat_type", SEAT_UNKNOWN)
     acc.setdefault("auth_file", None)
     acc.setdefault("quota_exhausted_at", None)

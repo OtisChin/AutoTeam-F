@@ -63,8 +63,6 @@
 
           <BrazilPixPage v-else-if="currentPage === 'brazilPix'" />
 
-          <PayPalPage v-else-if="currentPage === 'paypal'" />
-
 
           <OAuthPhonePoolPage v-else-if="currentPage === 'oauthPhones'" />
 
@@ -149,7 +147,6 @@ import BindCard from './components/BindCard.vue'
 import BindCardPool from './components/BindCardPool.vue'
 import IdealLinkPage from './components/IdealLinkPage.vue'
 import BrazilPixPage from './components/BrazilPixPage.vue'
-import PayPalPage from './components/PayPalPage.vue'
 import OAuthPhonePoolPage from './components/OAuthPhonePoolPage.vue'
 import OAuthPhoneRecordsPage from './components/OAuthPhoneRecordsPage.vue'
 import MailAccountsPage from './components/MailAccountsPage.vue'
@@ -167,7 +164,7 @@ const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autotoken_current_page'
-const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'ideal', 'brazilPix', 'paypal', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
+const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'ideal', 'brazilPix', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
 const IDLE_POLLING_ENABLED = false
@@ -313,7 +310,6 @@ function taskCommandLabel(command) {
     register: '注册账号',
     'bind-card': '绑卡任务',
     'gopay-bind': 'GoPay 绑定',
-    paypal: 'PayPal 任务',
     'login-batch': '批量补登录',
     'refresh-quota': '刷新凭证',
     check: '额度检测',
@@ -347,11 +343,6 @@ function taskStageLabel(stage) {
     gopay_wallet_auto_signup_done: 'GoPay 钱包已就绪',
     gopay_pending_retry_wait: '等待重试',
     gopay_pending_retry_account: '正在重试账号',
-    paypal_pending_retry_wait: 'PayPal 待重试等待',
-    paypal_pending_retry_started: 'PayPal 待重试开始',
-    paypal_pending_retry_queued: 'PayPal 加入待重试池',
-    paypal_pending_retry_account: 'PayPal 正在重试账号',
-    paypal_pending_retry_failed: 'PayPal 待重试失败',
     binding: '绑卡中',
     completed: '流程完成',
     failed: '流程失败',
@@ -410,7 +401,7 @@ function withTimeout(promise, ms, label) {
 function buildDashboardStatusFromAccounts(accounts) {
   const rows = (Array.isArray(accounts) ? accounts : []).map(acc => {
     const status = String(acc?.status || '').trim().toLowerCase()
-    const normalized = ['personal', 'plus', 'paypal_ice'].includes(status) ? 'active' : status
+    const normalized = ['personal', 'plus'].includes(status) ? 'active' : status
     const lastBindProvider = String(acc?.last_bind_provider || '').trim().toLowerCase()
     return {
       ...acc,

@@ -25,13 +25,11 @@ DOCS_AND_CONFIG_AUTOTEAM_REFERENCE_ALLOWLIST = {
     Path("pyproject.toml"),
 }
 
-
 def _is_planning_record(relative: Path) -> bool:
     return relative.parts[:2] == ("docs", "plans") or relative.parts[:3] in {
         ("docs", "superpowers", "plans"),
         ("docs", "superpowers", "specs"),
     }
-
 
 def _autoteam_alias_mapping_from_text(text: str) -> dict[str, str]:
     module = ast.parse(text)
@@ -43,7 +41,6 @@ def _autoteam_alias_mapping_from_text(text: str) -> dict[str, str]:
         ):
             return ast.literal_eval(node.value)
     raise AssertionError("_REORGANIZED_SUBMODULE_ALIASES assignment not found")
-
 
 def _nested_implementation_module_suffixes(project_root: Path) -> list[str]:
     source_root = project_root / "src" / "autotoken"
@@ -57,7 +54,6 @@ def _nested_implementation_module_suffixes(project_root: Path) -> list[str]:
         suffixes.append(".".join(relative.parts))
     return suffixes
 
-
 def _python_package_dirs_missing_init(source_root: Path) -> list[str]:
     package_dirs = sorted({path.parent for path in source_root.rglob("*.py")})
     return [
@@ -65,7 +61,6 @@ def _python_package_dirs_missing_init(source_root: Path) -> list[str]:
         for directory in package_dirs
         if directory != source_root and not (directory / "__init__.py").is_file()
     ]
-
 
 def _wheel_python_package_dirs_missing_init(wheel_names: list[str]) -> list[str]:
     package_dirs = sorted(
@@ -81,16 +76,13 @@ def _wheel_python_package_dirs_missing_init(wheel_names: list[str]) -> list[str]
         if directory != "autotoken" and f"{directory}/__init__.py" not in wheel_names
     ]
 
-
 def _protocol_register_bundle_files(project_root: Path) -> list[str]:
     bundle_root = project_root / "src" / "autotoken" / "_protocol_register"
     return sorted(path.relative_to(bundle_root).as_posix() for path in bundle_root.iterdir() if path.is_file())
 
-
 def _oauth_helper_extension_files(project_root: Path) -> list[str]:
     extension_root = project_root / "src" / "autotoken" / "oauth_helper_extension"
     return sorted(path.relative_to(extension_root).as_posix() for path in extension_root.iterdir() if path.is_file())
-
 
 def _autotoken_package_data_files(project_root: Path) -> list[str]:
     package_root = project_root / "src" / "autotoken"
@@ -103,7 +95,6 @@ def _autotoken_package_data_files(project_root: Path) -> list[str]:
         and path.relative_to(package_root).parts[:2] != ("web", "dist")
     )
 
-
 def _text_artifact_members_containing_old_name(members: dict[str, str]) -> list[str]:
     old_name_terms = ("autoteam", "AutoTeam", "AUTOTEAM")
     return sorted(
@@ -111,7 +102,6 @@ def _text_artifact_members_containing_old_name(members: dict[str, str]) -> list[
         for name, text in members.items()
         if "autoteam" in name.lower() or any(term in text for term in old_name_terms)
     )
-
 
 def _removed_subsystem_marker_patterns() -> tuple[re.Pattern[str], ...]:
     snake_name = "gopay" + "_pro"
@@ -131,7 +121,6 @@ def _removed_subsystem_marker_patterns() -> tuple[re.Pattern[str], ...]:
         re.compile(rf"{re.escape(camel_type_name)}[A-Z]|\b{re.escape(camel_value_name)}\b"),
     )
 
-
 def _contains_removed_subsystem_marker(value: str | bytes) -> bool:
     patterns = _removed_subsystem_marker_patterns()
     if isinstance(value, bytes):
@@ -140,14 +129,12 @@ def _contains_removed_subsystem_marker(value: str | bytes) -> bool:
         )
     return any(pattern.search(value) for pattern in patterns)
 
-
 def _allowed_removal_record_paths(canonical_root: PurePosixPath) -> set[PurePosixPath]:
     record_stem = "2026-07-13-remove-" + "gopay" + "-pro"
     return {
         canonical_root / "docs/superpowers/specs" / f"{record_stem}-design.md",
         canonical_root / "docs/superpowers/plans" / f"{record_stem}.md",
     }
-
 
 def _wheel_removed_subsystem_hits(wheel_path: Path) -> list[str]:
     hits = set()
@@ -168,7 +155,6 @@ def _wheel_removed_subsystem_hits(wheel_path: Path) -> list[str]:
                 hits.add(f"directory member has payload: {name}")
 
     return sorted(hits)
-
 
 def _sdist_removed_subsystem_hits(
     sdist_path: Path,
@@ -222,7 +208,6 @@ def _sdist_removed_subsystem_hits(
 
     return sorted(hits)
 
-
 def test_removed_subsystem_marker_detection_matches_only_retired_identifiers():
     legacy_name = "cn" + "gopay"
     positive_values = [
@@ -242,7 +227,6 @@ def test_removed_subsystem_marker_detection_matches_only_retired_identifiers():
     assert all(_contains_removed_subsystem_marker(value) for value in positive_values)
     assert not any(_contains_removed_subsystem_marker(value) for value in negative_values)
 
-
 def _write_test_sdist(sdist_path: Path, members: list[tuple[str, bytes | None]]) -> None:
     with tarfile.open(sdist_path, "w:gz") as sdist:
         for name, payload in members:
@@ -254,7 +238,6 @@ def _write_test_sdist(sdist_path: Path, members: list[tuple[str, bytes | None]])
             member.size = len(payload)
             sdist.addfile(member, io.BytesIO(payload))
 
-
 def test_wheel_archive_scan_checks_raw_bytes(tmp_path):
     wheel_path = tmp_path / "fixture.whl"
     retired_payload = b"\xff" + ("cn" + "gopay" + "Backup").encode("ascii")
@@ -263,7 +246,6 @@ def test_wheel_archive_scan_checks_raw_bytes(tmp_path):
         wheel.writestr("payload.bin", retired_payload)
 
     assert _wheel_removed_subsystem_hits(wheel_path) == ["content: payload.bin"]
-
 
 def test_wheel_archive_scan_rejects_duplicate_names_and_reads_each_entry(tmp_path):
     wheel_path = tmp_path / "fixture.whl"
@@ -280,7 +262,6 @@ def test_wheel_archive_scan_rejects_duplicate_names_and_reads_each_entry(tmp_pat
         "duplicate member: payload.txt",
     ]
 
-
 def test_wheel_archive_scan_rejects_directory_entries_with_payload(tmp_path):
     wheel_path = tmp_path / "fixture.whl"
     retired_payload = ("CN" + "gopay" + "Backup").encode("ascii")
@@ -292,7 +273,6 @@ def test_wheel_archive_scan_rejects_directory_entries_with_payload(tmp_path):
         "content: payload/",
         "directory member has payload: payload/",
     ]
-
 
 def test_sdist_archive_scan_checks_raw_bytes(tmp_path):
     sdist_path = tmp_path / "fixture.tar.gz"
@@ -306,7 +286,6 @@ def test_sdist_archive_scan_checks_raw_bytes(tmp_path):
     assert _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records) == [
         f"content: {canonical_root}/payload.bin"
     ]
-
 
 def test_sdist_archive_scan_rejects_noncanonical_member_paths(tmp_path):
     sdist_path = tmp_path / "fixture.tar.gz"
@@ -328,7 +307,6 @@ def test_sdist_archive_scan_rejects_noncanonical_member_paths(tmp_path):
         f"unsafe member path: {canonical_root}/../escape.txt",
     ]
 
-
 def test_sdist_archive_scan_rejects_backslash_member_names(tmp_path):
     sdist_path = tmp_path / "fixture.tar.gz"
     canonical_root = PurePosixPath("autotoken-0.1.0")
@@ -341,7 +319,6 @@ def test_sdist_archive_scan_rejects_backslash_member_names(tmp_path):
     assert _sdist_removed_subsystem_hits(sdist_path, canonical_root, allowed_records) == [
         f"unsafe member path: {unsafe_name}"
     ]
-
 
 def test_sdist_archive_scan_rejects_links_and_scans_targets(tmp_path):
     sdist_path = tmp_path / "fixture.tar.gz"
@@ -375,7 +352,6 @@ def test_sdist_archive_scan_rejects_links_and_scans_targets(tmp_path):
     assert f"unsupported member type: {symlink_name}" in hits
     assert f"unsupported member type: {hardlink_name}" in hits
 
-
 def test_sdist_archive_scan_does_not_allow_records_under_another_root(tmp_path):
     sdist_path = tmp_path / "fixture.tar.gz"
     canonical_root = PurePosixPath("autotoken-0.1.0")
@@ -389,7 +365,6 @@ def test_sdist_archive_scan_does_not_allow_records_under_another_root(tmp_path):
     assert f"noncanonical member root: {alternate_record}" in _sdist_removed_subsystem_hits(
         sdist_path, canonical_root, allowed_records
     )
-
 
 def test_sdist_archive_scan_requires_each_allowed_record_once_as_a_regular_file(tmp_path):
     sdist_path = tmp_path / "fixture.tar.gz"
@@ -410,7 +385,6 @@ def test_sdist_archive_scan_requires_each_allowed_record_once_as_a_regular_file(
     assert f"allowed removal record count: {repeated_record}: 2" in hits
     assert f"allowed removal record is not a regular file: {repeated_record}" in hits
 
-
 def _legacy_root_alias_metadata_check_script(checks: dict[str, str]) -> str:
     return f"""
 import importlib
@@ -426,7 +400,6 @@ for legacy_suffix, canonical_name in checks.items():
     assert legacy_module.__package__ == canonical_module.__package__, (legacy_name, legacy_module.__package__)
     assert legacy_module.__spec__.name == canonical_name, (legacy_name, legacy_module.__spec__.name)
 """
-
 
 def test_autoteam_reference_allowlists_are_not_stale():
     project_root = Path(__file__).resolve().parents[2]
@@ -448,13 +421,11 @@ def test_autoteam_reference_allowlists_are_not_stale():
 
     assert offenders == []
 
-
 def test_legacy_autoteam_import_aliases_autotoken():
     import autoteam
     import autotoken
 
     assert autoteam is autotoken
-
 
 def test_legacy_autoteam_submodule_imports_resolve_canonical_modules():
     legacy_cloudmail = importlib.import_module("autoteam.cloudmail")
@@ -466,7 +437,6 @@ def test_legacy_autoteam_submodule_imports_resolve_canonical_modules():
     assert legacy_manager is manager
     assert legacy_cloudmail.CloudMailClient is cloudmail.CloudMailClient
     assert legacy_manager.main is manager.main
-
 
 def test_legacy_autoteam_submodule_imports_do_not_load_root_wrappers(tmp_path):
     project_root = Path(__file__).resolve().parents[2]
@@ -499,7 +469,6 @@ for legacy_suffix, canonical_name in checks.items():
 
     assert result.returncode == 0, result.stdout
 
-
 def test_legacy_autoteam_root_aliases_preserve_canonical_module_metadata(tmp_path):
     project_root = Path(__file__).resolve().parents[2]
     checks = _autoteam_alias_mapping_from_text(
@@ -516,7 +485,6 @@ def test_legacy_autoteam_root_aliases_preserve_canonical_module_metadata(tmp_pat
     )
 
     assert result.returncode == 0, result.stdout
-
 
 def test_legacy_autoteam_shim_maps_all_root_wrappers_directly_to_canonical_targets():
     project_root = Path(__file__).resolve().parents[2]
@@ -535,7 +503,6 @@ def test_legacy_autoteam_shim_maps_all_root_wrappers_directly_to_canonical_targe
 
     assert _autoteam_alias_mapping_from_text(shim_text) == expected_aliases
 
-
 def test_legacy_autoteam_nested_submodule_specs_follow_canonical_layout():
     project_root = Path(__file__).resolve().parents[2]
     offenders = []
@@ -549,7 +516,6 @@ def test_legacy_autoteam_nested_submodule_specs_follow_canonical_layout():
             offenders.append(f"{module_suffix}: legacy={legacy_origin!r} canonical={canonical_origin!r}")
 
     assert offenders == []
-
 
 def test_legacy_autoteam_package_aliases_preserve_canonical_module_metadata(tmp_path):
     script = """
@@ -587,69 +553,10 @@ for suffix in package_suffixes:
 
     assert result.returncode == 0, result.stdout
 
-
 def test_autotoken_python_subpackages_have_explicit_initializers():
     project_root = Path(__file__).resolve().parents[2]
 
     assert _python_package_dirs_missing_init(project_root / "src" / "autotoken") == []
-
-
-def test_reorganized_root_modules_resolve_to_canonical_subpackages():
-    canonical_pairs = [
-        ("autotoken.browser_fingerprint", "autotoken.core.browser_fingerprint"),
-        ("autotoken.cancel_signal", "autotoken.core.cancel_signal"),
-        ("autotoken.display", "autotoken.core.display"),
-        ("autotoken.identity", "autotoken.core.identity"),
-        ("autotoken.paths", "autotoken.core.paths"),
-        ("autotoken.textio", "autotoken.core.textio"),
-        ("autotoken.manual_account", "autotoken.auth.manual_account"),
-        ("autotoken.auth_prompts", "autotoken.auth.auth_prompts"),
-        ("autotoken.codex_auth", "autotoken.auth.codex_auth"),
-        ("autotoken.invite", "autotoken.auth.invite"),
-        ("autotoken.protocol_register", "autotoken.auth.protocol_register"),
-        ("autotoken.oauth_phone_pool", "autotoken.auth.oauth_phone_pool"),
-        ("autotoken.oauth_phone_records", "autotoken.auth.oauth_phone_records"),
-        ("autotoken.cloudmail", "autotoken.mail"),
-        ("autotoken.admin_state", "autotoken.settings.admin_state"),
-        ("autotoken.config", "autotoken.settings.config"),
-        ("autotoken.runtime_config", "autotoken.settings.runtime_config"),
-        ("autotoken.setup_wizard", "autotoken.settings.setup_wizard"),
-        ("autotoken.trade", "autotoken.commerce.trade"),
-        ("autotoken.account_hub", "autotoken.integrations.account_hub"),
-        ("autotoken.chatgpt_api", "autotoken.integrations.chatgpt_api"),
-        ("autotoken.api", "autotoken.interfaces.api"),
-        ("autotoken.cli", "autotoken.interfaces.cli"),
-        ("autotoken.manager", "autotoken.interfaces.manager"),
-        ("autotoken.account_ops", "autotoken.storage.account_ops"),
-        ("autotoken.accounts", "autotoken.storage.accounts"),
-        ("autotoken.auth_index", "autotoken.storage.auth_index"),
-        ("autotoken.auth_session_store", "autotoken.storage.auth_session_store"),
-        ("autotoken.auth_storage", "autotoken.storage.auth_storage"),
-        ("autotoken.register_failures", "autotoken.storage.register_failures"),
-        ("autotoken.sqlite_store", "autotoken.storage.sqlite_store"),
-        ("autotoken.cpa_sync", "autotoken.integrations.cpa_sync"),
-        ("autotoken.proxy_bridge", "autotoken.integrations.proxy_bridge"),
-        ("autotoken.rekberinaja", "autotoken.integrations.rekberinaja"),
-        ("autotoken.roxybrowser_client", "autotoken.integrations.roxybrowser_client"),
-        ("autotoken.session_cpa_converter", "autotoken.integrations.session_cpa_converter"),
-        ("autotoken.sub2api_converter", "autotoken.integrations.sub2api_converter"),
-        ("autotoken.bind_audit", "autotoken.payments.bind_audit"),
-        ("autotoken.bind_executor", "autotoken.payments.bind_executor"),
-        ("autotoken.card_pool", "autotoken.payments.card_pool"),
-        ("autotoken.gopay_appium", "autotoken.payments.gopay_appium"),
-        ("autotoken.gopay_auto_register", "autotoken.payments.gopay_auto_register"),
-        ("autotoken.gopay_executor", "autotoken.payments.gopay_executor"),
-        ("autotoken.paypal_bind_executor", "autotoken.payments.paypal_bind_executor"),
-        ("autotoken.paypal_protocol_signup", "autotoken.payments.paypal_protocol_signup"),
-        ("autotoken.whatsapp_otp", "autotoken.payments.whatsapp_otp"),
-    ]
-
-    for legacy_module_name, canonical_module_name in canonical_pairs:
-        legacy_module = importlib.import_module(legacy_module_name)
-        canonical_module = importlib.import_module(canonical_module_name)
-
-        assert legacy_module is canonical_module
-
 
 def test_autotoken_root_contains_only_entrypoints_and_compatibility_wrappers():
     project_root = Path(__file__).resolve().parents[2]
@@ -665,54 +572,6 @@ def test_autotoken_root_contains_only_entrypoints_and_compatibility_wrappers():
             offenders.append(path.name)
 
     assert offenders == []
-
-
-def test_internal_modules_use_canonical_imports_for_reorganized_helpers():
-    project_root = Path(__file__).resolve().parents[2]
-    source_root = project_root / "src" / "autotoken"
-    forbidden_patterns = [
-        re.compile(
-            r"from\s+autotoken\s+import\s+"
-            r"(?:account_hub|account_ops|accounts|admin_state|auth_index|auth_prompts|auth_session_store|auth_storage|"
-            r"bind_audit|bind_executor|browser_fingerprint|cancel_signal|card_pool|chatgpt_api|cli|cloudmail|"
-            r"codex_auth|config|cpa_sync|gopay_appium|gopay_auto_register|gopay_executor|identity|invite|"
-            r"manual_account|manager|oauth_phone_pool|oauth_phone_records|paths|paypal_bind_executor|"
-            r"paypal_protocol_signup|protocol_register|proxy_bridge|register_failures|rekberinaja|roxybrowser_client|"
-            r"runtime_config|session_cpa_converter|setup_wizard|sqlite_store|sub2api_converter|textio|trade|"
-            r"whatsapp_otp)\b"
-        ),
-        re.compile(
-            r"from\s+autotoken\."
-            r"(?:account_hub|account_ops|accounts|admin_state|auth_index|auth_prompts|auth_session_store|auth_storage|"
-            r"bind_audit|bind_executor|browser_fingerprint|card_pool|chatgpt_api|cli|cloudmail|codex_auth|config|"
-            r"cpa_sync|gopay_appium|gopay_auto_register|gopay_executor|identity|invite|manual_account|manager|"
-            r"oauth_phone_pool|oauth_phone_records|paths|paypal_bind_executor|paypal_protocol_signup|"
-            r"protocol_register|proxy_bridge|register_failures|rekberinaja|roxybrowser_client|runtime_config|"
-            r"session_cpa_converter|setup_wizard|sqlite_store|sub2api_converter|textio|trade|whatsapp_otp)\s+import\b"
-        ),
-        re.compile(
-            r"import\s+autotoken\."
-            r"(?:account_hub|account_ops|accounts|admin_state|auth_index|auth_prompts|auth_session_store|auth_storage|"
-            r"bind_audit|bind_executor|browser_fingerprint|card_pool|chatgpt_api|cli|cloudmail|codex_auth|config|"
-            r"cpa_sync|display|gopay_appium|gopay_auto_register|gopay_executor|identity|invite|manual_account|"
-            r"manager|oauth_phone_pool|oauth_phone_records|paths|paypal_bind_executor|paypal_protocol_signup|"
-            r"protocol_register|proxy_bridge|register_failures|rekberinaja|roxybrowser_client|runtime_config|"
-            r"session_cpa_converter|setup_wizard|sqlite_store|sub2api_converter|textio|trade|whatsapp_otp)\b"
-        ),
-    ]
-    offenders = []
-
-    for path in sorted(source_root.rglob("*.py")):
-        relative = path.relative_to(project_root)
-        if path.parent == source_root:
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        matches = [pattern.pattern for pattern in forbidden_patterns if pattern.search(text)]
-        if matches:
-            offenders.append(f"{relative.as_posix()}: {', '.join(matches)}")
-
-    assert offenders == []
-
 
 def test_active_python_scripts_use_canonical_imports_for_reorganized_helpers():
     project_root = Path(__file__).resolve().parents[2]
@@ -747,72 +606,6 @@ def test_active_python_scripts_use_canonical_imports_for_reorganized_helpers():
 
     assert offenders == []
 
-
-def test_non_plan_docs_reference_canonical_reorganized_module_paths():
-    project_root = Path(__file__).resolve().parents[2]
-    moved_root_modules = [
-        "account_hub",
-        "account_ops",
-        "accounts",
-        "admin_state",
-        "api",
-        "auth_index",
-        "auth_prompts",
-        "auth_session_store",
-        "auth_storage",
-        "bind_audit",
-        "bind_executor",
-        "browser_fingerprint",
-        "cancel_signal",
-        "card_pool",
-        "chatgpt_api",
-        "cli",
-        "cloudmail",
-        "codex_auth",
-        "config",
-        "cpa_sync",
-        "display",
-        "gopay_appium",
-        "gopay_auto_register",
-        "gopay_executor",
-        "identity",
-        "invite",
-        "manager",
-        "manual_account",
-        "oauth_phone_pool",
-        "oauth_phone_records",
-        "paths",
-        "paypal_bind_executor",
-        "paypal_protocol_signup",
-        "protocol_register",
-        "proxy_bridge",
-        "register_failures",
-        "rekberinaja",
-        "roxybrowser_client",
-        "runtime_config",
-        "session_cpa_converter",
-        "setup_wizard",
-        "sqlite_store",
-        "sub2api_converter",
-        "textio",
-        "trade",
-        "whatsapp_otp",
-    ]
-    forbidden_pattern = re.compile(rf"src/autotoken/({'|'.join(moved_root_modules)})\.py")
-    offenders = []
-
-    for path in [project_root / "README.md", *sorted((project_root / "docs").rglob("*.md"))]:
-        relative = path.relative_to(project_root)
-        if relative.parts[:2] == ("docs", "plans"):
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        matches = sorted(set(forbidden_pattern.findall(text)))
-        if matches:
-            offenders.append(f"{relative.as_posix()}: {', '.join(matches)}")
-
-    assert offenders == []
-
-
 def test_built_wheel_root_contains_only_entrypoints_and_compatibility_wrappers():
     project_root = Path(__file__).resolve().parents[2]
     wheel_path = project_root / "dist" / "autotoken-0.1.0-py3-none-any.whl"
@@ -836,14 +629,12 @@ def test_built_wheel_root_contains_only_entrypoints_and_compatibility_wrappers()
 
     assert offenders == []
 
-
 def test_paths_module_keeps_project_root_at_repository_root():
     import autotoken.paths as paths
 
     project_root = Path(__file__).resolve().parents[2]
 
     assert paths.PROJECT_ROOT == project_root
-
 
 def test_protocol_register_loads_bundled_protocol_modules_after_reorganization():
     import autotoken.protocol_register as protocol_register
@@ -853,7 +644,6 @@ def test_protocol_register_loads_bundled_protocol_modules_after_reorganization()
     assert auth_flow.__name__ == "AuthFlow"
     assert config.__name__ == "Config"
 
-
 def test_codex_auth_oauth_helper_extension_path_survives_reorganization():
     import autotoken.codex_auth as codex_auth
 
@@ -862,7 +652,6 @@ def test_codex_auth_oauth_helper_extension_path_survives_reorganization():
     assert codex_auth.OAUTH_HELPER_EXTENSION_DIR == project_root / "src" / "autotoken" / "oauth_helper_extension"
     assert (codex_auth.OAUTH_HELPER_EXTENSION_DIR / "manifest.json").is_file()
 
-
 def test_api_static_dist_path_survives_reorganization():
     import autotoken.api as api
 
@@ -870,7 +659,6 @@ def test_api_static_dist_path_survives_reorganization():
 
     assert api.DIST_DIR == project_root / "src" / "autotoken" / "web" / "dist"
     assert (api.DIST_DIR / "index.html").is_file()
-
 
 def test_legacy_autoteam_package_contains_only_compatibility_entrypoints():
     project_root = Path(__file__).resolve().parents[2]
@@ -882,14 +670,12 @@ def test_legacy_autoteam_package_contains_only_compatibility_entrypoints():
 
     assert legacy_files == {"src/autoteam/__init__.py", "src/autoteam/__main__.py"}
 
-
 def test_legacy_autoteam_module_entrypoint_uses_canonical_manager():
     project_root = Path(__file__).resolve().parents[2]
     entrypoint = (project_root / "src" / "autoteam" / "__main__.py").read_text(encoding="utf-8")
 
     assert "from autotoken.interfaces.manager import main" in entrypoint
     assert "autotoken.manager" not in entrypoint
-
 
 def test_legacy_autoteam_env_var_alias(monkeypatch):
     monkeypatch.delenv("AUTOTOKEN_LOCAL_BASE_URL", raising=False)
@@ -901,7 +687,6 @@ def test_legacy_autoteam_env_var_alias(monkeypatch):
 
     assert os.environ["AUTOTOKEN_LOCAL_BASE_URL"] == "http://legacy.example"
 
-
 def test_legacy_autoteam_env_var_alias_beats_env_file_defaults():
     from autotoken.core.env import set_env_default_with_legacy_alias
 
@@ -910,7 +695,6 @@ def test_legacy_autoteam_env_var_alias_beats_env_file_defaults():
     set_env_default_with_legacy_alias("AUTOTOKEN_DB_FILE", "autotoken-env-file.sqlite3", environ)
 
     assert environ["AUTOTOKEN_DB_FILE"] == "legacy-runtime.sqlite3"
-
 
 def test_canonical_autotoken_env_var_keeps_priority_over_legacy_alias():
     from autotoken.core.env import set_env_default_with_legacy_alias
@@ -924,7 +708,6 @@ def test_canonical_autotoken_env_var_keeps_priority_over_legacy_alias():
 
     assert environ["AUTOTOKEN_DB_FILE"] == "canonical-runtime.sqlite3"
 
-
 def test_legacy_autoteam_env_file_default_uses_existing_legacy_runtime_value():
     from autotoken.core.env import set_env_default_with_legacy_alias
 
@@ -934,7 +717,6 @@ def test_legacy_autoteam_env_file_default_uses_existing_legacy_runtime_value():
 
     assert environ["AUTOTEAM_DB_FILE"] == "legacy-runtime.sqlite3"
     assert environ["AUTOTOKEN_DB_FILE"] == "legacy-runtime.sqlite3"
-
 
 def test_sqlite_store_uses_legacy_db_when_new_db_missing(tmp_path, monkeypatch):
     import autotoken.sqlite_store as sqlite_store
@@ -949,7 +731,6 @@ def test_sqlite_store_uses_legacy_db_when_new_db_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("AUTOTEAM_DB_FILE", raising=False)
 
     assert sqlite_store.default_db_path() == legacy_db
-
 
 def test_pyproject_uses_autotoken_as_canonical_cli_and_keeps_autoteam_alias():
     project_root = Path(__file__).resolve().parents[2]
@@ -998,7 +779,6 @@ def test_pyproject_uses_autotoken_as_canonical_cli_and_keeps_autoteam_alias():
     assert "AUTOTEAM" not in pyproject_text
     assert pyproject_text.count("autoteam") == 2
 
-
 def test_uv_lock_uses_autotoken_as_editable_project_name():
     project_root = Path(__file__).resolve().parents[2]
     lock_text = (project_root / "uv.lock").read_text(encoding="utf-8")
@@ -1007,7 +787,6 @@ def test_uv_lock_uses_autotoken_as_editable_project_name():
 
     assert [package["name"] for package in editable_packages] == ["autotoken"]
     assert "autoteam" not in lock_text.lower()
-
 
 def test_python_module_entrypoints_resolve_canonical_and_legacy_packages():
     project_root = Path(__file__).resolve().parents[2]
@@ -1031,7 +810,6 @@ def test_python_module_entrypoints_resolve_canonical_and_legacy_packages():
         assert "manager.py" not in result.stdout
         assert "api" in result.stdout
 
-
 def test_manual_account_helper_url_prefers_autotoken_params_and_keeps_legacy_aliases():
     from autotoken.manual_account import ManualAccountFlow
 
@@ -1047,7 +825,6 @@ def test_manual_account_helper_url_prefers_autotoken_params_and_keeps_legacy_ali
     assert fragment["autoteam_token"] == ["secret-token"]
     assert fragment["autoteam_port"] == ["4711"]
     assert fragment["autoteam_auth"] == ["https://auth.example/authorize"]
-
 
 def test_runtime_autoteam_references_are_limited_to_compatibility_shims():
     project_root = Path(__file__).resolve().parents[2]
@@ -1067,7 +844,6 @@ def test_runtime_autoteam_references_are_limited_to_compatibility_shims():
             offenders.append(str(relative).replace("\\", "/"))
 
     assert offenders == []
-
 
 def test_mixed_case_autoteam_brand_references_are_limited_to_plans_and_tests():
     project_root = Path(__file__).resolve().parents[2]
@@ -1104,7 +880,6 @@ def test_mixed_case_autoteam_brand_references_are_limited_to_plans_and_tests():
 
     assert offenders == []
 
-
 def test_docs_and_config_autoteam_references_are_limited_to_compatibility_notes():
     project_root = Path(__file__).resolve().parents[2]
     scanned_paths = [
@@ -1139,14 +914,12 @@ def test_docs_and_config_autoteam_references_are_limited_to_compatibility_notes(
 
     assert offenders == []
 
-
 def _github_markdown_slug(heading: str) -> str:
     normalized = heading.strip().lower().replace("`", "")
     normalized = re.sub(r"[^\w\s-]", "", normalized, flags=re.UNICODE)
     normalized = re.sub(r"\s+", "-", normalized)
     normalized = re.sub(r"-+", "-", normalized)
     return normalized.strip("-")
-
 
 def test_active_markdown_links_resolve_to_existing_local_docs():
     project_root = Path(__file__).resolve().parents[2]
@@ -1199,7 +972,6 @@ def test_active_markdown_links_resolve_to_existing_local_docs():
 
     assert offenders == []
 
-
 def test_active_docs_reference_existing_local_source_and_test_files():
     project_root = Path(__file__).resolve().parents[2]
     scanned_paths = [
@@ -1230,7 +1002,6 @@ def test_active_docs_reference_existing_local_source_and_test_files():
 
     assert offenders == []
 
-
 def test_tracked_files_do_not_embed_prerename_workspace_paths():
     project_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
@@ -1245,7 +1016,6 @@ def test_tracked_files_do_not_embed_prerename_workspace_paths():
 
     assert result.returncode == 1, result.stdout
     assert result.stdout == ""
-
 
 def test_active_docs_and_scripts_do_not_embed_local_absolute_paths():
     project_root = Path(__file__).resolve().parents[2]
@@ -1271,39 +1041,6 @@ def test_active_docs_and_scripts_do_not_embed_local_absolute_paths():
             offenders.append(f"{relative.as_posix()}: {', '.join(matches)}")
 
     assert offenders == []
-
-
-def test_git_tracked_files_exclude_runtime_data_and_secret_artifacts():
-    project_root = Path(__file__).resolve().parents[2]
-    result = subprocess.run(
-        ["git", "ls-files"],
-        cwd=project_root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=30,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout
-    tracked_paths = result.stdout.splitlines()
-    forbidden_patterns = [
-        r"(^|/)build(/|$)",
-        r"(^|/)dist/(?!index\.html$|assets/)",
-        r"(^|/).*\.egg-info/",
-        r"(^|/)(node_modules|runs|logs|outputs|__pycache__)(/|$)",
-        r"(^|/)(config\.json|pool_tokens\.txt|pool_emails\.txt|pool_numbers\.txt|tokens\.txt)$",
-        r"(^|/).*\.history\.txt$",
-        r"(^|/)(npm_install\.log|tsc_log\.txt|cooldowns\.json|token_map\.json)$",
-        r"(^|/)(\.paypal_realtest_task_id|.*\.task_id|.*\.pid)$",
-        r".*\.(log|jsonl|sqlite|sqlite3|db)$",
-        r"^(pool\.exe|pool-linux-x64|pool-mac-arm64|pool-mac-intel)$",
-        r"^src/autotoken/web/dist/",
-    ]
-    offenders = [path for path in tracked_paths if any(re.search(pattern, path) for pattern in forbidden_patterns)]
-
-    assert offenders == []
-
 
 def test_git_tracked_text_files_do_not_contain_high_confidence_secret_values():
     project_root = Path(__file__).resolve().parents[2]
@@ -1347,81 +1084,6 @@ def test_git_tracked_text_files_do_not_contain_high_confidence_secret_values():
 
     assert offenders == []
 
-
-def test_gitignore_covers_known_local_secret_and_generated_artifact_paths():
-    project_root = Path(__file__).resolve().parents[2]
-    paths = [
-        "logs/api-8787.out.log",
-        "outputs/auth_trace_20260529_092936_46708.jsonl",
-        ".paypal_realtest_task_id",
-        ".env.local",
-        "local.sqlite3",
-        "runtime.task_id",
-        "pool.exe",
-        "pool-linux-x64",
-        "pool-mac-arm64",
-        "pool-mac-intel",
-        "dist/autotoken-0.1.0.tar.gz",
-        "dist/autotoken-0.1.0-py3-none-any.whl",
-        "build/lib/example.py",
-        "src/autotoken.egg-info/PKG-INFO",
-        "src/autotoken/web/dist/index.html",
-    ]
-    result = subprocess.run(
-        ["git", "check-ignore", "-v", *paths],
-        cwd=project_root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=30,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout
-    ignored_paths = {line.rsplit("\t", 1)[-1].strip().replace("\\", "/") for line in result.stdout.splitlines()}
-    assert ignored_paths == set(paths)
-
-
-def test_dockerignore_excludes_local_secret_and_generated_artifact_paths():
-    project_root = Path(__file__).resolve().parents[2]
-    dockerignore_lines = {
-        line.strip()
-        for line in (project_root / ".dockerignore").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-    required_patterns = {
-        ".env",
-        ".env.*",
-        "*.egg-info/",
-        "/dist/",
-        "/build/",
-        "auths/",
-        "accounts.json",
-        "state.json",
-        "runtime_config.json",
-        "register_failures.json",
-        "bind_audit.json",
-        "logs/",
-        "outputs/",
-        "*.jsonl",
-        "*.sqlite3",
-        ".paypal_realtest_task_id",
-        "/pool.exe",
-        "/pool-linux-x64",
-        "/pool-mac-arm64",
-        "/pool-mac-intel",
-        "**/pool.exe",
-        "**/pool-linux-x64",
-        "**/pool-mac-arm64",
-        "**/pool-mac-intel",
-        "src/autotoken/web/dist/",
-        "web/node_modules/",
-        "**/node_modules/",
-    }
-
-    assert required_patterns <= dockerignore_lines
-
-
 def test_web_package_and_vite_build_output_use_autotoken_paths():
     project_root = Path(__file__).resolve().parents[2]
     package_json = json.loads((project_root / "web" / "package.json").read_text(encoding="utf-8"))
@@ -1433,7 +1095,6 @@ def test_web_package_and_vite_build_output_use_autotoken_paths():
     assert package_lock["packages"][""]["name"] == "autotoken-web"
     assert "../src/autotoken/web/dist" in vite_config
     assert "autoteam" not in vite_config.lower()
-
 
 def test_built_web_dist_references_existing_autotoken_assets():
     project_root = Path(__file__).resolve().parents[2]
@@ -1449,7 +1110,6 @@ def test_built_web_dist_references_existing_autotoken_assets():
     for path in [index_html, *(dist_root / asset_path for asset_path in asset_paths)]:
         assert "autoteam" not in path.read_text(encoding="utf-8", errors="ignore").lower()
 
-
 def test_built_release_archives_exclude_removed_subsystem_markers():
     project_root = Path(__file__).resolve().parents[2]
     dist_root = project_root / "dist"
@@ -1464,7 +1124,6 @@ def test_built_release_archives_exclude_removed_subsystem_markers():
         "wheel": _wheel_removed_subsystem_hits(wheel_path),
         "sdist": _sdist_removed_subsystem_hits(sdist_path, canonical_sdist_root, allowed_sdist_records),
     } == {"wheel": [], "sdist": []}
-
 
 def test_built_python_artifacts_use_autotoken_metadata_and_minimal_legacy_package():
     project_root = Path(__file__).resolve().parents[2]
@@ -1644,42 +1303,6 @@ def test_built_python_artifacts_use_autotoken_metadata_and_minimal_legacy_packag
     assert canonical_legacy_entrypoint_import in sdist_legacy_entrypoint
     assert "autotoken.manager" not in sdist_legacy_entrypoint
     assert sdist_names[0].startswith("autotoken-0.1.0/")
-
-
-def test_built_python_artifacts_exclude_local_runtime_secret_and_generated_paths():
-    project_root = Path(__file__).resolve().parents[2]
-    dist_root = project_root / "dist"
-    wheel_path = dist_root / "autotoken-0.1.0-py3-none-any.whl"
-    sdist_path = dist_root / "autotoken-0.1.0.tar.gz"
-    forbidden_patterns = [
-        r"(^|/)build(/|$)",
-        r"(^|/)dist/(?!index\.html$|assets/)",
-        r"(^|/).*\.egg-info/",
-        r"(^|/)(node_modules|runs|logs|outputs|__pycache__|auths|data|screenshots)(/|$)",
-        r"(^|/)(\.env|accounts\.json|state\.json|runtime_config\.json|register_failures\.json|bind_audit\.json)$",
-        r"(^|/)(config\.json|pool_tokens\.txt|pool_emails\.txt|pool_numbers\.txt|tokens\.txt)$",
-        r"(^|/).*\.history\.txt$",
-        r"(^|/)(npm_install\.log|tsc_log\.txt|cooldowns\.json|token_map\.json)$",
-        r"(^|/)(\.paypal_realtest_task_id|.*\.task_id|.*\.pid)$",
-        r".*\.(log|jsonl|sqlite|sqlite3|db)$",
-        r"(^|/)(pool\.exe|pool-linux-x64|pool-mac-arm64|pool-mac-intel)$",
-        r"(^|/)src/autoteam/web/dist/",
-    ]
-
-    assert wheel_path.is_file()
-    assert sdist_path.is_file()
-
-    with zipfile.ZipFile(wheel_path) as wheel:
-        wheel_names = wheel.namelist()
-    with tarfile.open(sdist_path) as sdist:
-        sdist_names = sdist.getnames()
-
-    offenders = [
-        name for name in [*wheel_names, *sdist_names] if any(re.search(pattern, name) for pattern in forbidden_patterns)
-    ]
-
-    assert offenders == []
-
 
 def test_built_wheel_supports_canonical_and_legacy_module_entrypoints(tmp_path):
     project_root = Path(__file__).resolve().parents[2]

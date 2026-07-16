@@ -1146,7 +1146,7 @@ def run_protocol_card_bind_task(
                 device_id=device_id,
                 profile=profile,
             )
-            classified = payment_checkout_state_service.classify_paypal_stripe_payment_page(confirm_payload)
+            classified = payment_checkout_state_service.classify_stripe_payment_page(confirm_payload)
             if classified and classified.get("status") == "failed":
                 classified["confirmation_token_id"] = confirmation_token_id
                 classified["checkout_session_id"] = checkout_session_id
@@ -1273,7 +1273,7 @@ def run_protocol_card_bind_task(
             processor_entity,
             profile,
         )
-        classified = payment_checkout_state_service.classify_paypal_stripe_payment_page(confirm_payload)
+        classified = payment_checkout_state_service.classify_stripe_payment_page(confirm_payload)
         if classified and classified.get("status") == "failed":
             classified["payment_method_id"] = payment_method_id
             classified["checkout_session_id"] = checkout_session_id

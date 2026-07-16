@@ -155,8 +155,6 @@ export const api = {
     }
     return resp.blob()
   },
-  preflightPayPal: (payload) => request('POST', '/tasks/paypal/preflight', payload),
-  startPayPal: (payload) => request('POST', '/tasks/paypal', payload),
 
   getWhatsAppOtpStatus: () => request('GET', '/whatsapp-otp/status'),
   startWhatsAppOtp: (payload = {}) => request('POST', '/whatsapp-otp/start', payload),
@@ -187,8 +185,6 @@ export const api = {
   getOAuthPhoneSmsConfig: () => request('GET', '/config/oauth-phone-sms'),
   getOAuthPhoneSmsCountries: (provider = '') => request('GET', `/config/oauth-phone-sms/countries${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`),
   saveOAuthPhoneSmsConfig: (cfg) => request('PUT', '/config/oauth-phone-sms', cfg),
-  getPayPalSmsConfig: () => request('GET', '/config/paypal-sms'),
-  savePayPalSmsConfig: (cfg) => request('PUT', '/config/paypal-sms', cfg),
   getRekberinajaConfig: () => request('GET', '/config/rekberinaja'),
   saveRekberinajaConfig: (cfg) => request('PUT', '/config/rekberinaja', cfg),
   getRoxyBrowserConfig: () => request('GET', '/config/roxybrowser'),

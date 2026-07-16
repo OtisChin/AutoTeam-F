@@ -10,7 +10,6 @@ from autotoken import api, gopay_auto_register, gopay_executor
 from autotoken.api_routes.roxybrowser_config import build_roxybrowser_config_response
 from autotoken.api_routes.trade import TradeHistoryDownloadParams, TradeQueryParams
 
-
 @pytest.fixture(autouse=True)
 def _clear_gopay_reusable_wallet_pool(monkeypatch):
     monkeypatch.setattr(api, "_gopay_auto_signup_no_transfer_bind_wait_seconds", lambda: 0)
@@ -51,7 +50,6 @@ def _clear_gopay_reusable_wallet_pool(monkeypatch):
     with api._GOPAY_REUSABLE_WALLET_POOL_LOCK:
         api._GOPAY_REUSABLE_WALLET_POOL.clear()
 
-
 def test_remove_pool_accounts_persists_delete_audit(monkeypatch):
     audit_dir = Path(".pytest_tmp")
     audit_dir.mkdir(exist_ok=True)
@@ -89,14 +87,12 @@ def test_remove_pool_accounts_persists_delete_audit(monkeypatch):
     assert rows[0]["cloudmail_account_id_present"] is True
     assert rows[0]["last_bind_task_id"] == "task-1"
 
-
 class FakeUnlockedLock:
     def acquire(self, blocking=False):
         return False
 
     def release(self):
         raise AssertionError("release should not be called when acquire returns False")
-
 
 def test_delete_accounts_batch_cleans_auth_session_only_accounts(monkeypatch):
     captured = {"deleted_sessions": [], "managed": []}
@@ -126,7 +122,6 @@ def test_delete_accounts_batch_cleans_auth_session_only_accounts(monkeypatch):
     assert captured["deleted_sessions"] == ["ghost@example.com"]
     assert captured["managed"][0][0] == "ghost@example.com"
 
-
 def test_delete_accounts_batch_reports_missing_only_when_no_record_or_session(monkeypatch):
     monkeypatch.setattr(api, "_playwright_lock", FakeUnlockedLock())
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [])
@@ -136,7 +131,6 @@ def test_delete_accounts_batch_reports_missing_only_when_no_record_or_session(mo
 
     assert result["summary"]["ok"] == 0
     assert result["results"] == [{"email": "missing@example.com", "ok": False, "error": "账号不存在"}]
-
 
 def test_update_accounts_export_status_marks_selected_accounts(monkeypatch):
     saved = {}
@@ -173,7 +167,6 @@ def test_update_accounts_export_status_marks_selected_accounts(monkeypatch):
     assert saved["first@example.com"]["credentials_exported"] is True
     assert isinstance(saved["first@example.com"]["credentials_exported_at"], float)
 
-
 def test_update_accounts_export_status_can_clear_export_flag(monkeypatch):
     account = {"email": "first@example.com", "credentials_exported": True, "credentials_exported_at": 123.0}
     captured = {}
@@ -207,7 +200,6 @@ def test_update_accounts_export_status_can_clear_export_flag(monkeypatch):
         "credentials_exported": False,
         "credentials_exported_at": None,
     }
-
 
 def test_post_bind_card_task_starts_background_task(monkeypatch):
     captured = {}
@@ -259,7 +251,6 @@ def test_post_bind_card_task_starts_background_task(monkeypatch):
         "timeout_seconds": 900,
     }
 
-
 def test_post_bind_card_task_requires_existing_account(monkeypatch):
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [])
     monkeypatch.setattr("autotoken.accounts.find_account", lambda accounts, email: None)
@@ -275,7 +266,6 @@ def test_post_bind_card_task_requires_existing_account(monkeypatch):
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "账号不存在"
-
 
 def test_post_bind_card_task_rejects_unavailable_card(monkeypatch):
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
@@ -296,3246 +286,6 @@ def test_post_bind_card_task_rejects_unavailable_card(monkeypatch):
 
     assert exc.value.status_code == 400
     assert exc.value.detail == "卡当前状态为 binding，不可用于绑卡"
-
-
-def test_post_paypal_task_starts_manual_checkout_task(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-
-    def fake_start_task(command, func, params, *args, **kwargs):
-        captured["command"] = command
-        captured["func"] = func
-        captured["params"] = params
-        captured["kwargs"] = kwargs
-        return {"task_id": "task-paypal", "command": command, "params": params}
-
-    monkeypatch.setattr(api, "_start_task", fake_start_task)
-
-    result = api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            proxy_url="socks5://host:1080",
-            proxy_label="res-us-01",
-            manual_confirm=False,
-            paypal_email="paypal@example.com",
-            paypal_password="secret-pass",
-            autofill_enabled=True,
-            billing_name="James Smith",
-            billing_phone="1234567890",
-            billing_country="US",
-            billing_state="NY",
-            billing_city="New York",
-            billing_zip="10001",
-            billing_address1="123 Main St",
-            billing_address2="Apt 1",
-            timeout_seconds=900,
-            pending_retry_attempts=5,
-            paypal_concurrency=5,
-        )
-    )
-
-    assert result["task_id"] == "task-paypal"
-    assert captured["command"] == "paypal"
-    assert captured["params"] == {
-        "runner_mode": "manual_checkout",
-        "email": "user@example.com",
-        "account_emails": [],
-        "checkout_url": "https://pay.openai.com/demo",
-        "bind_link_payload": {},
-        "proxy_url": "socks5://host:1080",
-        "proxy_pool_count": 0,
-        "proxy_api_url_present": False,
-        "proxy_label": "res-us-01",
-        "proxy_bypass": None,
-        "manual_confirm": False,
-        "paypal_browser": "chromium",
-        "paypal_mode": "existing_account",
-        "paypal_country": "US",
-        "paypal_lang": "en",
-        "paypal_email": "paypal@example.com",
-        "sms_url_present": False,
-        "otp_channel": "sms",
-        "phone_account_count": 0,
-        "paypal_direct_ba_link_present": False,
-        "paypal_direct_ba_checkout_reference_present": False,
-        "paypal_card_number_present": False,
-        "paypal_card_expiry_present": False,
-        "paypal_card_cvv_present": False,
-        "paypal_auto_login": True,
-        "autofill_enabled": True,
-        "billing_name": "James Smith",
-        "billing_email": "",
-        "billing_phone": "1234567890",
-        "billing_country": "US",
-        "billing_state": "NY",
-        "billing_city": "New York",
-        "billing_zip": "10001",
-        "billing_address1": "123 Main St",
-        "billing_address2": "Apt 1",
-        "timeout_seconds": 900,
-        "auto_oauth_after_success": False,
-        "pending_retry_attempts": 3,
-        "paypal_concurrency": 3,
-        "roxybrowser_workspace_id": "",
-        "roxybrowser_profile_id": "",
-        "roxybrowser_auto_create_profile": False,
-    }
-    assert "pass_task_id" not in captured["kwargs"]
-
-
-def test_post_paypal_task_requires_checkout_url(monkeypatch):
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-
-    with pytest.raises(api.HTTPException) as exc:
-        api.post_paypal_task(
-            api.PayPalTaskParams(
-                runner_mode="manual_checkout",
-                email="user@example.com",
-                checkout_url="",
-            )
-        )
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "checkout_url 不能为空，或提供 bind_link_payload 用于自动生成链接"
-
-
-def test_post_paypal_task_auto_mode_requires_paypal_credentials(monkeypatch):
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-
-    with pytest.raises(api.HTTPException) as exc:
-        api.post_paypal_task(
-            api.PayPalTaskParams(
-                runner_mode="manual_checkout",
-                email="user@example.com",
-                checkout_url="https://pay.openai.com/demo",
-                manual_confirm=False,
-                paypal_email="paypal@example.com",
-            )
-        )
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "已有账号模式需要 paypal_password"
-
-
-def test_post_paypal_task_accepts_create_account_mode(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-
-    def fake_start_task(command, func, params, *args, **kwargs):
-        captured["command"] = command
-        captured["params"] = params
-        return {"task_id": "task-paypal-signup", "command": command, "params": params}
-
-    monkeypatch.setattr(api, "_start_task", fake_start_task)
-
-    result = api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_name="James Smith",
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-            paypal_card_number="4111111111111111",
-            paypal_card_expiry="03/30",
-            paypal_card_cvv="996",
-        )
-    )
-
-    assert result["task_id"] == "task-paypal-signup"
-    assert captured["command"] == "paypal"
-    assert captured["params"]["paypal_mode"] == "create_account"
-    assert captured["params"]["sms_url_present"] is True
-    assert captured["params"]["paypal_card_number_present"] is True
-    assert captured["params"]["paypal_card_expiry_present"] is True
-    assert captured["params"]["paypal_card_cvv_present"] is True
-    assert captured["params"]["paypal_auto_login"] is False
-
-
-def test_post_paypal_task_create_account_mode_requires_sms_and_card(monkeypatch):
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-
-    with pytest.raises(api.HTTPException) as exc:
-        api.post_paypal_task(
-            api.PayPalTaskParams(
-                runner_mode="manual_checkout",
-                email="user@example.com",
-                checkout_url="https://pay.openai.com/demo",
-                manual_confirm=False,
-                paypal_mode="create_account",
-                autofill_enabled=True,
-                billing_phone="+13105550100",
-            )
-        )
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "自动注册模式需要 sms_url"
-
-    with pytest.raises(api.HTTPException) as exc:
-        api.post_paypal_task(
-            api.PayPalTaskParams(
-                runner_mode="manual_checkout",
-                email="user@example.com",
-                checkout_url="https://pay.openai.com/demo",
-                manual_confirm=False,
-                paypal_mode="create_account",
-                billing_phone="+13105550100",
-                sms_url="https://sms.example.test/token=demo",
-                billing_name="James Smith",
-                billing_country="US",
-                billing_state="CA",
-                billing_city="Los Angeles",
-                billing_zip="90001",
-                billing_address1="742 Evergreen Terrace",
-            )
-        )
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "自动注册模式需要 paypal_card_number"
-
-
-def test_post_paypal_task_create_account_autofill_allows_generator_card(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"command": command, "params": params})
-            or {"task_id": "task-paypal-autofill-card", "command": command, "params": params}
-        ),
-    )
-
-    result = api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-            autofill_enabled=True,
-        )
-    )
-
-    assert result["task_id"] == "task-paypal-autofill-card"
-
-
-def test_post_paypal_task_protocol_jp_create_account_allows_no_card(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"command": command, "params": params})
-            or {"task_id": "task-paypal-jp-nocard", "command": command, "params": params}
-        ),
-    )
-
-    result = api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_browser="protocol",
-            paypal_fallback_browser="roxybrowser",
-            paypal_country="JP",
-            paypal_lang="ja",
-            billing_name="James Smith",
-            billing_phone="+819012345678",
-            billing_country="JP",
-            billing_state="Tokyo",
-            billing_city="Chiyoda",
-            billing_zip="100-0001",
-            billing_address1="1-1 Chiyoda",
-            sms_url="https://sms.example.test/token=demo",
-            autofill_enabled=False,
-        )
-    )
-
-    assert result["task_id"] == "task-paypal-jp-nocard"
-    assert captured["command"] == "paypal"
-    assert captured["params"]["paypal_browser"] == "protocol"
-    assert captured["params"]["paypal_country"] == "JP"
-    assert captured["params"]["paypal_lang"] == "ja"
-    assert captured["params"]["paypal_card_number_present"] is False
-    assert captured["params"]["autofill_enabled"] is False
-    assert captured["params"]["paypal_card_number_present"] is False
-
-
-def test_post_paypal_task_protocol_auto_provisions_sms_from_env(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        api.paypal_phone_pool_service,
-        "paypal_sms_auto_provision_enabled",
-        lambda **kwargs: kwargs["paypal_mode"] == "create_account" and kwargs["protocol_no_card"],
-    )
-    monkeypatch.setattr(
-        api.paypal_phone_pool_service,
-        "provision_paypal_phone_account_from_env",
-        lambda **_kwargs: {
-            "phone_number": "+819012345678",
-            "sms_url": "http://127.0.0.1:8787/otp/gopay-signup/bridge-token",
-            "otp_channel": "sms",
-            "sms_provider": "hero_sms",
-            "activation_id": "activation-1",
-            "bridge_token": "bridge-token",
-        },
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"command": command, "params": params})
-            or {"task_id": "task-paypal-auto-sms", "command": command, "params": params}
-        ),
-    )
-
-    result = api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_browser="protocol",
-            paypal_fallback_browser="roxybrowser",
-            paypal_country="JP",
-            paypal_lang="ja",
-            billing_name="James Smith",
-            billing_country="JP",
-            billing_state="Tokyo",
-            billing_city="Chiyoda",
-            billing_zip="100-0001",
-            billing_address1="1-1 Chiyoda",
-            autofill_enabled=False,
-        )
-    )
-
-    assert result["task_id"] == "task-paypal-auto-sms"
-    assert captured["command"] == "paypal"
-    assert captured["params"]["phone_account_count"] == 1
-    assert captured["params"]["phone_accounts"] == [
-        {
-            "phone_number": "+819012345678",
-            "sms_url_present": True,
-            "otp_channel": "sms",
-        }
-    ]
-    assert captured["params"]["sms_url_present"] is True
-    assert captured["params"]["paypal_sms_auto_provisioned"] is True
-    assert captured["params"]["paypal_sms_provider"] == "hero_sms"
-    assert "bridge-token" not in str(captured["params"])
-    assert "activation-1" not in str(captured["params"])
-
-
-def test_post_paypal_task_protocol_uses_explicit_paypal_sms_env(monkeypatch):
-    captured = {}
-
-    monkeypatch.setenv("PAYPAL_SMS_URL", "https://sms.example/token")
-    monkeypatch.setenv("PAYPAL_PHONE_NUMBER", "+819012345678")
-    monkeypatch.delenv("PAYPAL_SMS_PROVIDER", raising=False)
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        api.paypal_phone_pool_service,
-        "provision_paypal_phone_account_from_env",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("explicit env must not buy a phone")),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"command": command, "params": params})
-            or {"task_id": "task-paypal-explicit-sms-env", "command": command, "params": params}
-        ),
-    )
-
-    result = api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_browser="protocol",
-            paypal_fallback_browser="roxybrowser",
-            paypal_country="JP",
-            paypal_lang="ja",
-            billing_name="James Smith",
-            billing_country="JP",
-            billing_state="Tokyo",
-            billing_city="Chiyoda",
-            billing_zip="100-0001",
-            billing_address1="1-1 Chiyoda",
-            autofill_enabled=False,
-        )
-    )
-
-    assert result["task_id"] == "task-paypal-explicit-sms-env"
-    assert captured["params"]["sms_url_present"] is True
-    assert captured["params"]["phone_account_count"] == 1
-    assert captured["params"]["phone_accounts"] == [
-        {
-            "phone_number": "+819012345678",
-            "sms_url_present": True,
-            "otp_channel": "sms",
-        }
-    ]
-    assert captured["params"]["billing_phone"] == "+819012345678"
-    assert "https://sms.example/token" not in str(captured["params"])
-
-
-def test_post_paypal_task_protocol_auto_provisioned_sms_bridge_closed_after_success(monkeypatch):
-    captured = {"progress": []}
-    closed = []
-    accounts = [{"email": "user@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.storage.accounts.add_account", lambda *args, **kwargs: None)
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(
-        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
-        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
-    )
-    monkeypatch.setattr(
-        api.paypal_phone_pool_service,
-        "paypal_sms_auto_provision_enabled",
-        lambda **kwargs: kwargs["paypal_mode"] == "create_account" and kwargs["protocol_no_card"],
-    )
-    monkeypatch.setattr(
-        api.paypal_phone_pool_service,
-        "provision_paypal_phone_account_from_env",
-        lambda **_kwargs: {
-            "phone_number": "+819012345678",
-            "sms_url": "http://127.0.0.1:8787/otp/gopay-signup/bridge-token",
-            "otp_channel": "sms",
-            "sms_provider": "hero_sms",
-            "bridge_token": "bridge-token",
-        },
-    )
-    monkeypatch.setattr(
-        api.paypal_phone_pool_service,
-        "close_paypal_sms_bridges",
-        lambda phone_accounts, *, success: closed.append((phone_accounts, success)),
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._extract_auth_session_context",
-        lambda _email: {"access_token": "extract-token"},
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
-        lambda **_kwargs: {
-            "status": "success",
-            "ba_token": "BA-TEST",
-            "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-TEST",
-            "checkout_url": "https://pay.openai.com/c/pay/cs_demo#hash",
-            "checkout_session_id": "cs_demo",
-        },
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "checkout_url": kwargs["checkout_url"],
-            "return_url": "https://chatgpt.com/checkout/verify?stripe_session_id=cs_demo",
-            "paypal_user_id": "paypal-user",
-        },
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-auto-sms-close", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            paypal_lang="ja",
-            paypal_jp_proxy_url="socks5://jp.example.test:1080",
-            autofill_enabled=True,
-        )
-    )
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert closed == [
-        (
-            [
-                {
-                    "phone_number": "+819012345678",
-                    "sms_url": "http://127.0.0.1:8787/otp/gopay-signup/bridge-token",
-                    "otp_channel": "sms",
-                    "bridge_token": "bridge-token",
-                    "sms_provider": "hero_sms",
-                }
-            ],
-            True,
-        )
-    ]
-
-
-def test_post_paypal_task_passes_gb_mode_to_proxy_runtime(monkeypatch):
-    captured = {}
-    accounts = [{"email": "user@example.com"}]
-    real_prepare = api.paypal_proxy_service.prepare_paypal_proxy_runtime
-
-    def capture_prepare(**kwargs):
-        captured.update(kwargs)
-        return real_prepare(**kwargs)
-
-    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.storage.accounts.find_account",
-        lambda rows, email: accounts[0] if email == "user@example.com" else None,
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _account: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api.paypal_proxy_service, "prepare_paypal_proxy_runtime", capture_prepare)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: {
-            "task_id": "task-paypal-gb-runtime",
-            "command": command,
-            "params": params,
-        },
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            paypal_mode="create_account",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            paypal_ba_mode="gb",
-            paypal_jp_proxy_url=(
-                "socks5://user-region-JP-sid-base-t-120:pass@proxy.example:3010"
-            ),
-            billing_phone="+819012345678",
-            sms_url="https://sms.example.test/token=demo",
-            manual_confirm=False,
-            autofill_enabled=True,
-        )
-    )
-
-    assert captured["paypal_ba_mode"] == "gb"
-
-
-def test_post_paypal_task_protocol_uses_direct_ba_link_without_checkout_generation(monkeypatch):
-    captured = {"progress": []}
-    accounts = [{"email": "user@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.storage.accounts.add_account", lambda *args, **kwargs: None)
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        api,
-        "_extract_account_access_token",
-        lambda _email: (_ for _ in ()).throw(AssertionError("direct BA mode should not load access token")),
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("direct BA mode should not extract BA link")),
-    )
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["bind_kwargs"] = kwargs
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "checkout_url": kwargs["checkout_url"],
-            "return_url": "https://chatgpt.com/checkout/verify?stripe_session_id=cs_direct",
-            "paypal_user_id": "paypal-user",
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-direct-ba", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_browser="protocol",
-            paypal_fallback_browser="roxybrowser",
-            paypal_country="JP",
-            paypal_lang="ja",
-            autofill_enabled=True,
-            billing_phone="+819012345678",
-            sms_url="https://sms.example/token",
-            paypal_approve_url="https://www.paypal.com/pay?token=BA-DIRECT123",
-            paypal_checkout_session_id="cs_direct",
-            paypal_payment_method_id="pm_direct",
-        )
-    )
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["params"]["checkout_url"] == ""
-    assert captured["params"].get("paypal_fallback_browser", "") == "roxybrowser"
-    assert captured["params"]["paypal_direct_ba_link_present"] is True
-    assert captured["params"]["paypal_direct_ba_checkout_reference_present"] is True
-    assert captured["bind_kwargs"]["checkout_url"] == ""
-    assert captured["bind_kwargs"]["paypal_fallback_browser"] == "roxybrowser"
-    assert captured["bind_kwargs"]["pre_extracted"] == {
-        "status": "success",
-        "ba_token": "BA-DIRECT123",
-        "approve_url": "https://www.paypal.com/pay?token=BA-DIRECT123",
-        "checkout_session_id": "cs_direct",
-        "checkout_url": "",
-        "hosted_checkout_url": "",
-        "pm_id": "pm_direct",
-    }
-
-
-def test_post_paypal_task_preflight_accepts_direct_ba_without_access_token(monkeypatch):
-    accounts = [{"email": "user@example.com", "auth_file": "data/auth_session/user@example.com.json"}]
-
-    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.storage.accounts.find_account",
-        lambda rows, email: accounts[0] if email == "user@example.com" else None,
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        api,
-        "_extract_account_access_token",
-        lambda _email: (_ for _ in ()).throw(AssertionError("direct BA preflight should not load access token")),
-    )
-
-    result = api.post_paypal_task_preflight(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            billing_phone="+819012345678",
-            sms_url="https://sms.example/token",
-            paypal_approve_url="https://www.paypal.com/pay?token=BA-DIRECT123",
-            paypal_checkout_session_id="cs_direct",
-        )
-    )
-
-    assert result["ok"] is True
-    assert result["mode"] == "direct_ba"
-    assert result["checks"]["browser_fallback"] is False
-    assert result["checks"]["local_access_token"] == "not_required"
-    assert result["sms_source"] == "request_sms_url"
-    assert result["missing"] == []
-
-
-def test_post_paypal_task_preflight_reports_missing_sms_config(monkeypatch):
-    accounts = [{"email": "user@example.com", "auth_file": "data/auth_session/user@example.com.json"}]
-
-    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.storage.accounts.find_account",
-        lambda rows, email: accounts[0] if email == "user@example.com" else None,
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        "autotoken.settings.setup_wizard._read_env",
-        lambda: {},
-    )
-
-    result = api.post_paypal_task_preflight(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            billing_phone="",
-            paypal_ba_token="BA-DIRECT123",
-            paypal_checkout_session_id="cs_direct",
-        )
-    )
-
-    assert result["ok"] is False
-    assert result["mode"] == "direct_ba"
-    assert result["checks"]["sms"] is False
-    assert any("PAYPAL_SMS_URL" in item or "PayPal SMS provider" in item for item in result["missing"])
-
-
-def test_post_paypal_task_protocol_rejects_direct_ba_batch_reuse(monkeypatch):
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr("autotoken.accounts.find_account", lambda accounts, email: accounts[0])
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-
-    with pytest.raises(api.HTTPException) as exc:
-        api.post_paypal_task(
-            api.PayPalTaskParams(
-                runner_mode="manual_checkout",
-                email="user@example.com",
-                account_emails=["user@example.com", "second@example.com"],
-                checkout_url="",
-                manual_confirm=False,
-                paypal_mode="create_account",
-                paypal_browser="protocol",
-                paypal_country="JP",
-                billing_phone="+819012345678",
-                sms_url="https://sms.example/token",
-                paypal_ba_token="BA-DIRECT123",
-                paypal_checkout_session_id="cs_direct",
-            )
-        )
-
-    assert exc.value.status_code == 400
-    assert "只支持单账号任务" in exc.value.detail
-
-
-def test_post_paypal_task_rejects_direct_ba_outside_protocol_create_account(monkeypatch):
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr("autotoken.accounts.find_account", lambda accounts, email: accounts[0])
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-
-    with pytest.raises(api.HTTPException) as exc:
-        api.post_paypal_task(
-            api.PayPalTaskParams(
-                runner_mode="manual_checkout",
-                email="user@example.com",
-                checkout_url="",
-                manual_confirm=False,
-                paypal_mode="existing_account",
-                paypal_browser="chromium",
-                paypal_email="paypal@example.com",
-                paypal_password="secret-pass",
-                paypal_ba_token="BA-DIRECT123",
-                paypal_checkout_session_id="cs_direct",
-            )
-        )
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "直连 PayPal BA/link 模式只支持 create_account + protocol/no-card"
-
-
-def test_post_paypal_task_legacy_jp_nocard_region_forces_protocol(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"command": command, "params": params})
-            or {"task_id": "task-paypal-jp-nocard-legacy", "command": command, "params": params}
-        ),
-    )
-
-    result = api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            bind_link_payload={
-                "billing_details": {"country": "JP", "currency": "JPY"},
-                "checkout_ui_mode": "hosted",
-            },
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_region="JP_NOCARD",
-            paypal_browser="protocol",
-            billing_name="James Smith",
-            billing_phone="+819012345678",
-            billing_state="Tokyo",
-            billing_city="Chiyoda",
-            billing_zip="100-0001",
-            billing_address1="1-1 Chiyoda",
-            sms_url="https://sms.example.test/token=demo",
-            autofill_enabled=False,
-        )
-    )
-
-    assert result["task_id"] == "task-paypal-jp-nocard-legacy"
-    assert captured["params"]["paypal_browser"] == "protocol"
-    assert captured["params"].get("paypal_fallback_browser", "") == ""
-    assert captured["params"]["paypal_region"] == "JP_NOCARD"
-    assert captured["params"]["paypal_country"] == "JP"
-    assert captured["params"]["paypal_lang"] == "ja"
-    assert captured["params"]["bind_link_payload"]["billing_details"]["country"] == "US"
-    assert captured["params"]["bind_link_payload"]["billing_details"]["currency"] == "USD"
-
-
-def test_post_paypal_task_rejects_manual_confirm_with_autofill():
-    with pytest.raises(api.HTTPException) as exc:
-        api.post_paypal_task(
-            api.PayPalTaskParams(
-                runner_mode="manual_checkout",
-                email="user@example.com",
-                checkout_url="https://pay.openai.com/demo",
-                manual_confirm=True,
-                autofill_enabled=True,
-            )
-        )
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "手动确认模式与自动生成账单信息不能同时开启"
-
-
-def test_post_paypal_task_rejects_legacy_runner_mode():
-    with pytest.raises(api.HTTPException) as exc:
-        api.post_paypal_task(api.PayPalTaskParams(runner_mode="legacy_pipeline"))
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "不支持的 PayPal 运行模式"
-
-
-def test_paypal_task_runner_create_account_records_success(monkeypatch):
-    captured = {"progress": [], "cpa_calls": [], "plan_updates": []}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        "autotoken.accounts.update_account",
-        lambda email, **kwargs: (
-            captured.setdefault("updates", []).append((email, kwargs)) or {"email": email, **kwargs}
-        ),
-    )
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    def fake_convert_session(email, *, account=None, force_account_type=None):
-        captured["cpa_calls"].append((email, force_account_type))
-        return {
-            "email": email,
-            "auth_file": f"data/auths/{email}.json",
-            "filename": f"codex-{email}-plus-demo.json",
-            "plan_type": "plus",
-            "id_token_synthetic": True,
-            "refresh_token_present": False,
-            "account": None,
-        }
-
-    monkeypatch.setattr(api, "_convert_account_auth_session_to_cpa_auth", fake_convert_session)
-
-    def fake_update_account_cpa_auth_plan_type(email, *, account=None, plan_type="plus"):
-        captured["plan_updates"].append((email, account, plan_type))
-        return {"auth_file": f"data/auths/{email}.json", "plan_type": plan_type}
-
-    monkeypatch.setattr(api, "_update_account_cpa_auth_plan_type", fake_update_account_cpa_auth_plan_type)
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"] = kwargs
-        kwargs["on_progress"]({"stage": "paypal_authorize", "message": "已进入 PayPal 页面"})
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": ["data/paypal-success.png"],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params, "command": command, "task_kwargs": kwargs})
-            or {"task_id": "task-paypal-local-success", "command": command, "params": params}
-        ),
-    )
-
-    result = api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            proxy_url="socks5://user:pass@proxy.example.test:1080",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_email="fresh@example.com",
-            paypal_password="Secret123!",
-            sms_url="https://sms.example.test/token=demo",
-            otp_channel="sms",
-            paypal_card_number="4111111111111111",
-            paypal_card_expiry="03/30",
-            paypal_card_cvv="996",
-            autofill_enabled=True,
-            billing_name="James Smith",
-            billing_phone="+13105550100",
-            billing_country="US",
-            billing_state="CA",
-            billing_city="Los Angeles",
-            billing_zip="90001",
-            billing_address1="742 Evergreen Terrace",
-            billing_address2="Apt 2",
-            timeout_seconds=180,
-        )
-    )
-
-    assert result["task_id"] == "task-paypal-local-success"
-    assert captured["command"] == "paypal"
-    assert captured["params"]["paypal_mode"] == "create_account"
-
-    task_result = captured["func"]()
-
-    assert task_result["status"] == "success"
-    assert task_result["task_status"] == "completed"
-    assert task_result["provider"] == "paypal"
-    assert task_result["email"] == "user@example.com"
-    assert task_result["paypal_mode"] == "create_account"
-    assert task_result["paypal_auto_login"] is True
-    assert task_result["autofill_enabled"] is True
-    assert task_result["screenshot_paths"] == ["data/paypal-success.png"]
-    assert "session_cpa_converted_emails" not in task_result
-    assert captured["cpa_calls"] == []
-    assert len(captured["plan_updates"]) == 1
-    plan_email, plan_account, plan_type = captured["plan_updates"][0]
-    assert plan_email == "user@example.com"
-    assert plan_type == "plus"
-    assert plan_account["email"] == "user@example.com"
-    assert plan_account["account_type"] == "plus"
-    assert plan_account["auth_file"] == "data/auths/user@example.com.json"
-    assert captured["run_kwargs"]["paypal_mode"] == "create_account"
-    assert captured["run_kwargs"]["paypal_email"] == "fresh@example.com"
-    assert captured["run_kwargs"]["paypal_password"] == "Secret123!"
-    assert captured["run_kwargs"]["proxy_url"] == "socks5://user:pass@proxy.example.test:1080"
-    assert captured["run_kwargs"]["sms_url"] == "https://sms.example.test/token=demo"
-    assert captured["run_kwargs"]["otp_channel"] == "sms"
-    assert captured["run_kwargs"]["phone_accounts"] == []
-    assert captured["run_kwargs"]["timeout_seconds"] == 180
-    assert captured["run_kwargs"]["autofill_payload"] == {
-        "name": "James Smith",
-        "email": "user@example.com",
-        "phone": "+13105550100",
-        "country": "US",
-        "state": "CA",
-        "city": "Los Angeles",
-        "zip": "90001",
-        "address1": "742 Evergreen Terrace",
-        "address2": "Apt 2",
-        "card_number": "4111111111111111",
-        "card_expiry": "03/30",
-        "card_cvv": "996",
-    }
-    assert captured["updates"] == [
-        (
-            "user@example.com",
-            {
-                "last_bind_status": "success",
-                "last_bind_at": captured["updates"][0][1]["last_bind_at"],
-                "last_bind_provider": "paypal",
-                "last_checkout_url": "https://pay.openai.com/demo",
-                "last_proxy_label": "",
-                "last_bind_task_id": captured["updates"][0][1]["last_bind_task_id"],
-                "last_bind_message": "PayPal 绑定完成",
-                "last_bind_failure_stage": "",
-                "status": "active",
-                "account_type": "plus",
-                "seat_type": "codex",
-                "account_source": "managed",
-                "plus_bound_at": captured["updates"][0][1]["plus_bound_at"],
-            },
-        )
-    ]
-    assert captured["audit"]["status"] == "success"
-    assert captured["audit"]["task_status"] == "completed"
-    assert captured["audit"]["flow"] == "paypal_create_account"
-    assert captured["audit"]["provider"] == "paypal"
-    assert [event["stage"] for event in captured["progress"]] == [
-        "paypal_starting",
-        "paypal_authorize",
-        "paypal_oauth_login_skipped",
-        "paypal_completed",
-    ]
-
-
-def test_post_paypal_task_create_account_passes_phone_accounts(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda *_args, **_kwargs: None)
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"] = kwargs
-        return {
-            "status": "failed",
-            "failure_stage": "paypal_phone_rejected",
-            "message": "PayPal 拒绝当前手机号，请更换手机号",
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-phone-pool", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            pending_retry_attempts=0,
-            phone_accounts=[
-                api.GoPayPhoneAccountParams(
-                    phone_number="+18352880840",
-                    sms_url="https://sms.example/one",
-                    otp_channel="sms",
-                ),
-                api.GoPayPhoneAccountParams(
-                    phone_number="+18352623053",
-                    sms_url="https://sms.example/two",
-                    otp_channel="sms",
-                ),
-            ],
-        )
-    )
-
-    with pytest.raises(api.TaskResultError):
-        captured["func"]()
-
-    assert captured["params"]["phone_account_count"] == 2
-    assert captured["run_kwargs"]["sms_url"] == "https://sms.example/one"
-    assert captured["run_kwargs"]["phone_accounts"] == [
-        {"phone_number": "+18352880840", "sms_url": "https://sms.example/one", "otp_channel": "sms"},
-        {"phone_number": "+18352623053", "sms_url": "https://sms.example/two", "otp_channel": "sms"},
-    ]
-    assert captured["run_kwargs"]["autofill_payload"]["phone"] == "+18352880840"
-
-
-def test_post_paypal_task_keeps_roxybrowser_mode(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda *_args, **_kwargs: None)
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"] = kwargs
-        return {
-            "status": "failed",
-            "failure_stage": "post_submit",
-            "message": "PayPal 任务失败",
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-roxybrowser", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=True,
-            paypal_browser="roxybrowser",
-            roxybrowser_workspace_id="workspace-1",
-            pending_retry_attempts=0,
-        )
-    )
-
-    with pytest.raises(api.TaskResultError):
-        captured["func"]()
-
-    assert captured["run_kwargs"]["paypal_browser"] == "roxybrowser"
-    assert captured["run_kwargs"]["roxybrowser_workspace_id"] == "workspace-1"
-
-
-def test_post_paypal_task_roxybrowser_auto_create_allows_parallel_without_profile(monkeypatch):
-    captured = {"calls": [], "progress": []}
-    accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((account for account in rows if account["email"] == email), None),
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["calls"].append(kwargs)
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "ok",
-            "checkout_url": kwargs["checkout_url"],
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-roxybrowser-auto", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            account_emails=["first@example.com", "second@example.com"],
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=True,
-            paypal_browser="roxybrowser",
-            roxybrowser_profile_id="should-be-ignored",
-            roxybrowser_auto_create_profile=True,
-            paypal_concurrency=2,
-            pending_retry_attempts=0,
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert result["concurrency"] == 2
-    assert captured["params"]["roxybrowser_auto_create_profile"] is True
-    assert captured["params"]["roxybrowser_profile_id"] == ""
-    assert all(call["roxybrowser_profile_id"] == "" for call in captured["calls"])
-    assert any(event["stage"] == "paypal_parallel_started" for event in captured["progress"])
-
-
-def test_post_paypal_task_batch_skips_invalid_phone_within_same_task(monkeypatch):
-    captured = {"calls": []}
-    progress_events = []
-    accounts = [
-        {"email": "first@example.com"},
-        {"email": "second@example.com"},
-    ]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((account for account in rows if account["email"] == email), None),
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: progress_events.append(progress))
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["calls"].append(kwargs)
-        if kwargs["email"] == "first@example.com":
-            kwargs["on_progress"](
-                {
-                    "stage": "paypal_phone_rejected_waiting_dismiss",
-                    "rejected_phone": "+18352880840",
-                    "message": "PayPal 拒绝当前手机号，请更换手机号",
-                }
-            )
-            return {
-                "status": "failed",
-                "failure_stage": "paypal_phone_rejected",
-                "message": "PayPal 拒绝当前手机号，请更换手机号",
-                "screenshot_paths": [],
-            }
-        return {
-            "status": "failed",
-            "failure_stage": "post_submit",
-            "message": "second failed",
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-phone-pool-batch", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            account_emails=["first@example.com", "second@example.com"],
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            pending_retry_attempts=0,
-            phone_accounts=[
-                api.GoPayPhoneAccountParams(
-                    phone_number="+18352880840",
-                    sms_url="https://sms.example/one",
-                    otp_channel="sms",
-                ),
-                api.GoPayPhoneAccountParams(
-                    phone_number="+18352623053",
-                    sms_url="https://sms.example/two",
-                    otp_channel="sms",
-                ),
-            ],
-        )
-    )
-
-    with pytest.raises(api.TaskResultError):
-        captured["func"]()
-
-    assert len(captured["calls"]) == 2
-    assert captured["calls"][0]["phone_accounts"] == [
-        {"phone_number": "+18352880840", "sms_url": "https://sms.example/one", "otp_channel": "sms"},
-        {"phone_number": "+18352623053", "sms_url": "https://sms.example/two", "otp_channel": "sms"},
-    ]
-    assert captured["calls"][0]["sms_url"] == "https://sms.example/one"
-    assert captured["calls"][0]["autofill_payload"]["phone"] == "+18352880840"
-    assert captured["calls"][1]["phone_accounts"] == [
-        {"phone_number": "+18352623053", "sms_url": "https://sms.example/two", "otp_channel": "sms"},
-    ]
-    assert captured["calls"][1]["sms_url"] == "https://sms.example/two"
-    assert captured["calls"][1]["autofill_payload"]["phone"] == "+18352623053"
-    assert any(
-        event.get("stage") == "paypal_phone_rejected_waiting_dismiss"
-        and event.get("invalid_phone_numbers") == ["+18352880840"]
-        for event in progress_events
-    )
-
-
-def test_post_paypal_task_batch_skips_invalid_phone_when_account_uses_phone_field(monkeypatch):
-    captured = {"calls": []}
-    accounts = [
-        {"email": "first@example.com"},
-        {"email": "second@example.com"},
-    ]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((account for account in rows if account["email"] == email), None),
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda *_args, **_kwargs: None)
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["calls"].append(kwargs)
-        if kwargs["email"] == "first@example.com":
-            kwargs["on_progress"](
-                {
-                    "stage": "paypal_phone_rejected_final",
-                    "rejected_phone": "+18352880840",
-                    "message": "PayPal 拒绝当前手机号，请更换手机号",
-                }
-            )
-            return {
-                "status": "failed",
-                "failure_stage": "paypal_phone_rejected",
-                "message": "PayPal 拒绝当前手机号，请更换手机号",
-                "screenshot_paths": [],
-            }
-        return {
-            "status": "failed",
-            "failure_stage": "post_submit",
-            "message": "second failed",
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-phone-key-batch", "command": command, "params": params}
-        ),
-    )
-
-    params = api.PayPalTaskParams(
-        runner_mode="manual_checkout",
-        email="first@example.com",
-        account_emails=["first@example.com", "second@example.com"],
-        checkout_url="https://pay.openai.com/demo",
-        manual_confirm=False,
-        paypal_mode="create_account",
-        autofill_enabled=True,
-        pending_retry_attempts=0,
-    )
-    params.phone_accounts = [
-        {"phone": "+18352880840", "sms_url": "https://sms.example/one", "otp_channel": "sms"},
-        {"phone": "+18352623053", "sms_url": "https://sms.example/two", "otp_channel": "sms"},
-    ]
-
-    api.post_paypal_task(params)
-
-    with pytest.raises(api.TaskResultError):
-        captured["func"]()
-
-    assert len(captured["calls"]) == 2
-    assert captured["calls"][1]["phone_accounts"] == [
-        {"phone_number": "+18352623053", "sms_url": "https://sms.example/two", "otp_channel": "sms"},
-    ]
-    assert captured["calls"][1]["sms_url"] == "https://sms.example/two"
-    assert captured["calls"][1]["autofill_payload"]["phone"] == "+18352623053"
-
-
-def test_post_paypal_task_parallel_leases_distinct_phone_accounts(monkeypatch):
-    captured = {"calls": [], "progress": []}
-    call_lock = threading.Lock()
-    accounts = [
-        {"email": "first@example.com"},
-        {"email": "second@example.com"},
-        {"email": "third@example.com"},
-    ]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((account for account in rows if account["email"] == email), None),
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    def fake_run_paypal_bind_task(**kwargs):
-        with call_lock:
-            captured["calls"].append(kwargs)
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "ok",
-            "checkout_url": kwargs["checkout_url"],
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-parallel", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            account_emails=["first@example.com", "second@example.com", "third@example.com"],
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            pending_retry_attempts=0,
-            paypal_concurrency=3,
-            phone_accounts=[
-                api.GoPayPhoneAccountParams(phone_number="+18352880840", sms_url="https://sms.example/one"),
-                api.GoPayPhoneAccountParams(phone_number="+18352623053", sms_url="https://sms.example/two"),
-                api.GoPayPhoneAccountParams(phone_number="+18352881761", sms_url="https://sms.example/three"),
-            ],
-        )
-    )
-
-    result = captured["func"]()
-
-    used_phones = sorted(call["phone_accounts"][0]["phone_number"] for call in captured["calls"])
-    assert result["status"] == "success"
-    assert result["concurrency"] == 3
-    assert used_phones == sorted(["+18352880840", "+18352623053", "+18352881761"])
-    assert any(event["stage"] == "paypal_parallel_started" for event in captured["progress"])
-
-
-def test_paypal_task_runner_auto_oauth_after_success(monkeypatch):
-    captured = {"progress": [], "oauth_calls": [], "updates": []}
-    oauth_done = threading.Event()
-    account = {"email": "user@example.com", "password": "pw", "account_type": "free"}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda accounts, email: account if email == "user@example.com" else None,
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        "autotoken.accounts.update_account",
-        lambda email, **kwargs: captured["updates"].append((email, kwargs)) or {"email": email, **kwargs},
-    )
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda _email: "access-token-demo")
-    monkeypatch.setattr(
-        api,
-        "_convert_account_auth_session_to_cpa_auth",
-        lambda *_args, **_kwargs: pytest.fail("CPA conversion should not run when auto_oauth_after_success is true"),
-    )
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"] = kwargs
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-        }
-
-    def fake_codex_login(email, acc, *, headless=False):
-        captured["oauth_calls"].append((email, acc, headless))
-        oauth_done.set()
-        return {"email": email, "plan": "plus", "auth_file": f"data/auths/{email}.json"}
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(api, "_run_account_codex_login_once", fake_codex_login)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-oauth", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-            auto_oauth_after_success=True,
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert result["task_status"] == "completed"
-    assert result["oauth_scheduled_emails"] == ["user@example.com"]
-    assert "session_cpa_converted_emails" not in result
-    assert oauth_done.wait(2)
-    assert captured["oauth_calls"] == [("user@example.com", account, False)]
-    stages = [event["stage"] for event in captured["progress"]]
-    assert "paypal_oauth_login_started" in stages
-    assert "paypal_oauth_login_done" in stages
-    assert "paypal_session_cpa_convert_started" not in stages
-
-
-def test_paypal_task_runner_marks_already_paid_as_success(monkeypatch):
-    captured = {"progress": [], "cpa_calls": []}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        "autotoken.accounts.update_account",
-        lambda email, **kwargs: (
-            captured.setdefault("updates", []).append((email, kwargs)) or {"email": email, **kwargs}
-        ),
-    )
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda _email: "access-token-demo")
-    monkeypatch.setattr(
-        api,
-        "_convert_account_auth_session_to_cpa_auth",
-        lambda email, *, account=None, force_account_type=None: (
-            captured["cpa_calls"].append((email, force_account_type))
-            or {
-                "email": email,
-                "auth_file": f"data/auths/{email}.json",
-                "filename": f"codex-{email}-plus-demo.json",
-                "id_token_synthetic": True,
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            api.HTTPException(status_code=400, detail="User is already paid")
-        ),
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("already-paid checkout should not open browser")),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-paid", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    task_result = captured["func"]()
-
-    assert task_result["status"] == "success"
-    assert task_result["task_status"] == "completed"
-    assert task_result["user_paid_skip"] is True
-    assert captured["updates"][0][1]["last_bind_status"] == "success"
-    assert captured["updates"][0][1]["account_type"] == "plus"
-    assert captured["updates"][0][1]["status"] == "active"
-    assert captured["audit"]["status"] == "success"
-    assert captured["audit"]["task_status"] == "completed"
-    assert captured["cpa_calls"] == []
-    assert [event["stage"] for event in captured["progress"]] == [
-        "paypal_starting",
-        "paypal_oauth_login_skipped",
-        "paypal_completed",
-    ]
-
-
-def test_paypal_batch_uses_candidate_email_for_autofill_payload(monkeypatch):
-    captured = {"run_kwargs": [], "progress": [], "updates": [], "progress_callbacks": []}
-    accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((account for account in rows if account["email"] == email), None),
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        "autotoken.accounts.update_account",
-        lambda email, **kwargs: captured["updates"].append((email, kwargs)) or {"email": email, **kwargs},
-    )
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"].append(kwargs)
-        captured["progress_callbacks"].append(kwargs["on_progress"])
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-batch", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            account_emails=["first@example.com", "second@example.com"],
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert result["successful_emails"] == ["first@example.com", "second@example.com"]
-    assert [kwargs["email"] for kwargs in captured["run_kwargs"]] == ["first@example.com", "second@example.com"]
-    assert [kwargs["autofill_payload"]["email"] for kwargs in captured["run_kwargs"]] == [
-        "first@example.com",
-        "second@example.com",
-    ]
-    captured["progress_callbacks"][0]({"stage": "paypal_delayed_probe"})
-    captured["progress_callbacks"][1]({"stage": "paypal_delayed_probe"})
-    delayed_progress = [
-        progress for progress in captured["progress"] if progress["stage"] == "paypal_delayed_probe"
-    ]
-    assert [(progress["email"], progress["current"], progress["total"]) for progress in delayed_progress] == [
-        ("first@example.com", 1, 2),
-        ("second@example.com", 2, 2),
-    ]
-
-
-def test_paypal_batch_refreshes_access_token_after_checkout_401(monkeypatch):
-    captured = {"run_kwargs": [], "progress": [], "updates": [], "removed": []}
-    accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((account for account in rows if account["email"] == email), None),
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(
-        api, "_refresh_account_access_token", lambda email: f"fresh-{email}" if email == "first@example.com" else ""
-    )
-    monkeypatch.setattr(
-        "autotoken.accounts.update_account",
-        lambda email, **kwargs: captured["updates"].append((email, kwargs)) or {"email": email, **kwargs},
-    )
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        api,
-        "_remove_pool_accounts_from_local_and_mail",
-        lambda emails, **_kwargs: captured["removed"].append((list(emails), _kwargs)) or list(emails),
-    )
-
-    checkout_calls = []
-
-    def fake_generate_checkout(access_token, _payload):
-        checkout_calls.append(access_token)
-        if access_token == "token-first@example.com":
-            raise api.HTTPException(status_code=401, detail={"code": "unauthorized_unknown"})
-        if access_token == "fresh-first@example.com":
-            return {"url": "https://pay.openai.com/c/pay/cs_first"}
-        return {"url": "https://pay.openai.com/c/pay/cs_second"}
-
-    monkeypatch.setattr(api, "_generate_checkout_link", fake_generate_checkout)
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"].append(kwargs)
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "检测到 PayPal/支付成功页面",
-            "screenshot_paths": [],
-            "checkout_url": kwargs["checkout_url"],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-checkout-401", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            account_emails=["first@example.com", "second@example.com"],
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert result["task_status"] == "completed"
-    assert result["successful_emails"] == ["first@example.com", "second@example.com"]
-    assert result["failed_emails"] == []
-    assert result["removed_pool_emails"] == []
-    assert checkout_calls == ["token-first@example.com", "fresh-first@example.com", "token-second@example.com"]
-    assert [kwargs["email"] for kwargs in captured["run_kwargs"]] == ["first@example.com", "second@example.com"]
-    assert captured["run_kwargs"][0]["checkout_url"] == "https://pay.openai.com/c/pay/cs_first"
-    assert captured["run_kwargs"][1]["checkout_url"] == "https://pay.openai.com/c/pay/cs_second"
-    assert captured["removed"] == []
-    assert not any(event["stage"] == "paypal_checkout_auth_invalid_rotate" for event in captured["progress"])
-    assert any(event["stage"] == "paypal_checkout_token_refreshed" for event in captured["progress"])
-    assert captured["updates"][0][0] == "first@example.com"
-    assert captured["updates"][0][1]["last_bind_provider"] == "paypal"
-    assert captured["updates"][1][0] == "second@example.com"
-    assert captured["updates"][1][1]["last_bind_provider"] == "paypal"
-
-
-def test_paypal_batch_falls_back_to_browser_checkout_when_refresh_token_unchanged(monkeypatch):
-    captured = {"run_kwargs": [], "progress": [], "updates": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/first@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(api, "_refresh_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(
-        "autotoken.accounts.update_account",
-        lambda email, **kwargs: captured["updates"].append((email, kwargs)) or {"email": email, **kwargs},
-    )
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    checkout_calls = []
-    browser_calls = []
-
-    def fake_generate_checkout(access_token, _payload):
-        checkout_calls.append(access_token)
-        raise api.HTTPException(status_code=401, detail={"code": "unauthorized_unknown"})
-
-    def fake_generate_checkout_via_browser(access_token, _payload, **kwargs):
-        browser_calls.append((access_token, kwargs))
-        return {"url": "https://pay.openai.com/c/pay/cs_browser", "attempt": "browser_target"}
-
-    monkeypatch.setattr(api, "_generate_checkout_link", fake_generate_checkout)
-    monkeypatch.setattr(api, "_generate_checkout_link_via_browser", fake_generate_checkout_via_browser)
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"].append(kwargs)
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "检测到 PayPal/支付成功页面",
-            "screenshot_paths": [],
-            "checkout_url": kwargs["checkout_url"],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-browser-fallback", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            account_emails=["first@example.com"],
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_url="socks5://user:pass@127.0.0.1:1080",
-            proxy_bypass="<local>",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            paypal_browser="camoufox",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert checkout_calls == ["token-first@example.com"]
-    assert browser_calls == [
-        (
-            "token-first@example.com",
-            {
-                "email": "first@example.com",
-                "proxy_url": "socks5://user:pass@127.0.0.1:1080",
-                "proxy_bypass": "<local>",
-                "paypal_browser": "camoufox",
-                "roxybrowser_workspace_id": "",
-                "roxybrowser_profile_id": "",
-            },
-        )
-    ]
-    assert captured["run_kwargs"][0]["checkout_url"] == "https://pay.openai.com/c/pay/cs_browser"
-    assert any(event["stage"] == "paypal_checkout_browser_fallback" for event in captured["progress"])
-    assert any(event["stage"] == "paypal_checkout_browser_generated" for event in captured["progress"])
-
-
-def test_generate_checkout_browser_uses_autoregister_like_launch_args(monkeypatch):
-    captured = {}
-
-    class FakePage:
-        def __init__(self):
-            self.url = "about:blank"
-
-        def goto(self, *args, **kwargs):
-            captured.setdefault("goto", []).append((args, kwargs))
-
-        def evaluate(self, script, payload):
-            captured["evaluate_payload"] = payload
-            return {
-                "ok": True,
-                "status": 200,
-                "url": "https://chatgpt.com/checkout/openai_llc/cs_demo",
-                "checkout_session_id": "cs_demo",
-                "processor_entity": "openai_llc",
-                "attempt": "browser_target",
-            }
-
-    class FakeChatGPTApi:
-        def __init__(self):
-            self.page = FakePage()
-            self.oai_device_id = ""
-
-        def _launch_browser(self, **kwargs):
-            captured["launch_kwargs"] = kwargs
-            self.page = FakePage()
-
-        def _wait_for_cloudflare(self):
-            captured["wait_for_cloudflare"] = True
-
-        def stop(self):
-            captured["stopped"] = True
-
-    monkeypatch.setattr("autotoken.chatgpt_api.ChatGPTTeamAPI", FakeChatGPTApi)
-    monkeypatch.setattr(
-        "autotoken.auth_session_store.load_auth_session",
-        lambda _email: {"device_id": "device-1", "sessionToken": "session-1", "cookie_header": "cookie-1"},
-    )
-    monkeypatch.setattr(
-        "autotoken.services.chatgpt_session.inject_chatgpt_browser_cookies",
-        lambda *args, **kwargs: captured.setdefault("cookies", []).append((args, kwargs)),
-    )
-    monkeypatch.setattr(api.time, "sleep", lambda _seconds: None)
-
-    result = api._generate_checkout_link_via_browser(
-        "token-demo",
-        {"checkout_ui_mode": "hosted"},
-        email="user@example.com",
-        proxy_url="socks5://user:pass@127.0.0.1:1080",
-        proxy_bypass="<local>",
-        paypal_browser="camoufox",
-    )
-
-    assert result["url"] == "https://chatgpt.com/checkout/openai_llc/cs_demo"
-    assert captured["launch_kwargs"]["background"] is False
-    assert captured["launch_kwargs"]["locale"] == "en-US"
-    assert captured["launch_kwargs"]["accept_language"] == "en-US,en;q=0.9"
-    assert captured["launch_kwargs"]["randomize_fingerprint"] is False
-    assert captured["launch_kwargs"]["use_camoufox"] is True
-    assert captured["launch_kwargs"]["use_roxybrowser"] is False
-    assert captured["launch_kwargs"]["proxy_url"] == "socks5://user:pass@127.0.0.1:1080"
-    assert captured["launch_kwargs"]["proxy_bypass"] == "<local>"
-    assert captured["evaluate_payload"]["accessToken"] == "token-demo"
-    assert captured["stopped"] is True
-
-
-def test_paypal_batch_randomizes_proxy_pool_per_candidate(monkeypatch):
-    captured = {"run_kwargs": [], "progress": [], "updates": []}
-    accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((account for account in rows if account["email"] == email), None),
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(
-        "autotoken.accounts.update_account",
-        lambda email, **kwargs: captured["updates"].append((email, kwargs)) or {"email": email, **kwargs},
-    )
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    selected = []
-
-    def fake_choice(values):
-        value = values[len(selected) % len(values)]
-        selected.append(value)
-        return value
-
-    monkeypatch.setattr(api.random, "choice", fake_choice)
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda _token, _payload, **_kwargs: {"url": "https://pay.openai.com/c/pay/cs_demo"},
-    )
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"].append(kwargs)
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-            "checkout_url": kwargs["checkout_url"],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-proxy-pool", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            account_emails=["first@example.com", "second@example.com"],
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_pool_text="1.1.1.1:8080:user:pass\nsocks5://u:p@2.2.2.2:1080",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert selected == ["http://user:pass@1.1.1.1:8080", "socks5://u:p@2.2.2.2:1080"]
-    assert [kwargs["proxy_url"] for kwargs in captured["run_kwargs"]] == selected
-    assert [event["stage"] for event in captured["progress"]].count("paypal_proxy_selected") == 2
-
-
-def test_paypal_batch_fetches_proxy_api_per_candidate(monkeypatch):
-    captured = {"run_kwargs": [], "progress": [], "updates": []}
-    accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
-    api_proxies = [
-        "1.1.1.1:8080:user-a:pass-a",
-        "2.2.2.2:8080:user-b:pass-b",
-    ]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account",
-        lambda rows, email: next((account for account in rows if account["email"] == email), None),
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda _token, _payload, **_kwargs: {"url": "https://pay.openai.com/c/pay/cs_demo"},
-    )
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "text/plain"}
-
-        def __init__(self, text):
-            self.text = text
-
-    def fake_get(url, timeout):
-        assert "dashboard.1024proxy.com/getporxy/traffic" in url
-        return FakeResponse(api_proxies.pop(0))
-
-    monkeypatch.setattr(api.requests, "get", fake_get)
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"].append(kwargs)
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-            "checkout_url": kwargs["checkout_url"],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-proxy-api", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            account_emails=["first@example.com", "second@example.com"],
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_api_url="https://dashboard.1024proxy.com/getporxy/traffic?demo=1",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert [kwargs["proxy_url"] for kwargs in captured["run_kwargs"]] == [
-        "socks5h://user-a:pass-a@1.1.1.1:8080",
-        "socks5h://user-b:pass-b@2.2.2.2:8080",
-    ]
-    assert [event["stage"] for event in captured["progress"]].count("paypal_proxy_api_selected") == 2
-
-
-def test_paypal_proxy_pool_text_can_contain_proxy_api_url(monkeypatch):
-    captured = {"run_kwargs": [], "progress": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda _token, _payload, **_kwargs: {"url": "https://pay.openai.com/c/pay/cs_demo"},
-    )
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "application/json"}
-        text = '{"data":["3.3.3.3:8080:user-c:pass-c"]}'
-
-        def json(self):
-            return {"data": ["3.3.3.3:8080:user-c:pass-c"]}
-
-    monkeypatch.setattr(api.requests, "get", lambda url, timeout: FakeResponse())
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: (
-            captured["run_kwargs"].append(kwargs)
-            or {
-                "status": "success",
-                "failure_stage": "",
-                "message": "PayPal 绑定完成",
-                "screenshot_paths": [],
-                "checkout_url": kwargs["checkout_url"],
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-proxy-api-text", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_pool_text="https://dashboard.1024proxy.com/getporxy/traffic?demo=1",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["params"]["proxy_api_url_present"] is True
-    assert captured["params"]["proxy_pool_count"] == 0
-    assert captured["run_kwargs"][0]["proxy_url"] == "socks5h://user-c:pass-c@3.3.3.3:8080"
-
-
-def test_paypal_cliproxy_api_uses_fixed_proxy_entry(monkeypatch):
-    captured = {"run_kwargs": [], "progress": [], "api_calls": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda _token, _payload, **_kwargs: {"url": "https://pay.openai.com/c/pay/cs_demo"},
-    )
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "application/json"}
-        text = '{"code":0,"msg":"success"}'
-
-        def json(self):
-            return {"code": 0, "msg": "success"}
-
-    def fake_get(url, timeout):
-        captured["api_calls"].append((url, timeout))
-        return FakeResponse()
-
-    monkeypatch.setattr(api.requests, "get", fake_get)
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: (
-            captured["run_kwargs"].append(kwargs)
-            or {
-                "status": "success",
-                "failure_stage": "",
-                "message": "PayPal 绑定完成",
-                "screenshot_paths": [],
-                "checkout_url": kwargs["checkout_url"],
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-cliproxy-api", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_url="socks5://user:pass@cliproxy.example:3010",
-            proxy_api_url="https://api.cliproxy.example/rotate?port=3010",
-            proxy_api_provider="cliproxy",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["api_calls"] == [("https://api.cliproxy.example/rotate?port=3010", 30)]
-    assert captured["run_kwargs"][0]["proxy_url"] == "socks5://user:pass@cliproxy.example:3010"
-    assert captured["params"]["proxy_api_provider"] == "cliproxy"
-    selected_events = [event for event in captured["progress"] if event.get("stage") == "paypal_proxy_api_selected"]
-    assert selected_events[0]["proxy_api_provider"] == "cliproxy"
-
-
-def test_paypal_1024proxy_provider_uses_backend_default_api(monkeypatch):
-    captured = {"run_kwargs": [], "progress": [], "api_calls": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda _token, _payload, **_kwargs: {"url": "https://pay.openai.com/c/pay/cs_demo"},
-    )
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "application/json"}
-        text = '[{"host":"4.4.4.4","port":"8080"}]'
-
-        def json(self):
-            return [{"host": "4.4.4.4", "port": "8080"}]
-
-    def fake_get(url, timeout):
-        captured["api_calls"].append((url, timeout))
-        return FakeResponse()
-
-    monkeypatch.setattr(api.requests, "get", fake_get)
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: (
-            captured["run_kwargs"].append(kwargs)
-            or {
-                "status": "success",
-                "failure_stage": "",
-                "message": "PayPal 绑定完成",
-                "screenshot_paths": [],
-                "checkout_url": kwargs["checkout_url"],
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-default-proxy-api", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_api_provider="1024proxy",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["api_calls"] == [
-        ("https://white.1024proxy.com/white/api?region=US&num=1&time=10&format=1&type=json", 30)
-    ]
-    assert captured["run_kwargs"][0]["proxy_url"] == "socks5h://4.4.4.4:8080"
-    assert captured["params"]["proxy_api_provider"] == "1024proxy"
-    selected_events = [event for event in captured["progress"] if event.get("stage") == "paypal_proxy_api_selected"]
-    assert selected_events[0]["proxy_api_provider"] == "1024proxy"
-
-
-def test_paypal_cliproxy_provider_uses_backend_default_api(monkeypatch):
-    captured = {"run_kwargs": [], "progress": [], "api_calls": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda _token, _payload, **_kwargs: {"url": "https://pay.openai.com/c/pay/cs_demo"},
-    )
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "application/json"}
-        text = '[{"host":"5.5.5.5","port":"9090"}]'
-
-        def json(self):
-            return [{"host": "5.5.5.5", "port": "9090"}]
-
-    monkeypatch.setattr(
-        api.requests, "get", lambda url, timeout: captured["api_calls"].append((url, timeout)) or FakeResponse()
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: (
-            captured["run_kwargs"].append(kwargs)
-            or {
-                "status": "success",
-                "failure_stage": "",
-                "message": "PayPal 绑定完成",
-                "screenshot_paths": [],
-                "checkout_url": kwargs["checkout_url"],
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-default-cliproxy", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_api_provider="cliproxy",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+13105550100",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["api_calls"] == [
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json", 30)
-    ]
-    assert captured["run_kwargs"][0]["proxy_url"] == "socks5h://5.5.5.5:9090"
-
-
-def test_paypal_protocol_cliproxy_api_uses_us_provider_stage_proxy(monkeypatch):
-    captured = {"extract_kwargs": {}, "run_kwargs": [], "progress": [], "api_calls": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
-    monkeypatch.setattr(
-        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
-        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
-    )
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda _token, _payload, **_kwargs: {"url": "https://pay.openai.com/c/pay/cs_demo"},
-    )
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "text/plain"}
-
-        def __init__(self, text):
-            self.text = text
-
-    def fake_get(url, timeout):
-        captured["api_calls"].append((url, timeout))
-        if "region=US" in url:
-            return FakeResponse("107.150.109.49:7104")
-        return FakeResponse("103.49.62.181:19004")
-
-    monkeypatch.setattr(api.requests, "get", fake_get)
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._extract_auth_session_context",
-        lambda _email: {
-            "access_token": "extract-token",
-            "session_token": "session-token",
-            "cookie_header": "__Secure-next-auth.session-token=session-token",
-        },
-    )
-
-    def fake_extract(**kwargs):
-        captured["extract_kwargs"] = kwargs
-        return {
-            "status": "success",
-            "ba_token": "BA-US",
-            "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-US",
-            "checkout_url": "https://pay.openai.com/c/pay/cs_demo#hash",
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor._paypal_extract_ba_link", fake_extract)
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: (
-            captured["run_kwargs"].append(kwargs)
-            or {
-                "status": "success",
-                "failure_stage": "",
-                "message": "PayPal 绑定完成",
-                "screenshot_paths": [],
-                "checkout_url": kwargs["checkout_url"],
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-protocol-provider-proxy", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_api_url="https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=txt",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            paypal_ba_mode="us",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+819012345678",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=10&format=n&type=txt", 30),
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=10&format=n&type=txt", 30),
-    ]
-    assert captured["extract_kwargs"]["proxy_url"] == "socks5h://103.49.62.181:19004"
-    assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://107.150.109.49:7104"
-    assert captured["extract_kwargs"]["paypal_ba_mode"] == "us"
-    assert captured["params"]["proxy_api_provider"] == "cliproxy"
-    assert any(event.get("stage") == "paypal_provider_proxy_selected" for event in captured["progress"])
-
-
-def test_paypal_protocol_cliproxy_provider_defaults_to_jp_then_us_provider(monkeypatch):
-    captured = {"extract_kwargs": {}, "progress": [], "api_calls": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
-    monkeypatch.setattr(
-        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
-        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
-    )
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        api,
-        "_generate_checkout_link",
-        lambda _token, _payload, **_kwargs: {"url": "https://pay.openai.com/c/pay/cs_demo"},
-    )
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "text/plain"}
-
-        def __init__(self, text):
-            self.text = text
-
-    def fake_get(url, timeout):
-        captured["api_calls"].append((url, timeout))
-        if "region=US" in url:
-            return FakeResponse("107.150.109.49:7104")
-        return FakeResponse("103.49.62.181:19004")
-
-    monkeypatch.setattr(api.requests, "get", fake_get)
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._extract_auth_session_context",
-        lambda _email: {
-            "access_token": "extract-token",
-            "session_token": "session-token",
-            "cookie_header": "__Secure-next-auth.session-token=session-token",
-        },
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
-        lambda **kwargs: (
-            captured.update({"extract_kwargs": kwargs})
-            or {
-                "status": "success",
-                "ba_token": "BA-TEST",
-                "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-TEST",
-                "checkout_url": "https://pay.openai.com/c/pay/cs_demo#hash",
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-            "checkout_url": kwargs["checkout_url"],
-        },
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-default-jp-cliproxy", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_api_provider="cliproxy",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+819012345678",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json", 30),
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json", 30),
-    ]
-    assert captured["extract_kwargs"]["proxy_url"] == "socks5h://103.49.62.181:19004"
-    assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://107.150.109.49:7104"
-    assert captured["extract_kwargs"]["payment_method_country"] == "US"
-    assert captured["extract_kwargs"]["paypal_ba_mode"] == "eu"
-    assert captured["params"]["proxy_api_provider"] == "cliproxy"
-    assert captured["params"]["proxy_api_url_present"] is True
-
-
-def test_paypal_protocol_payment_country_override_updates_provider_region(monkeypatch):
-    captured = {"extract_kwargs": {}, "progress": [], "api_calls": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
-    monkeypatch.setattr(
-        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
-        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
-    )
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "text/plain"}
-
-        def __init__(self, text):
-            self.text = text
-
-    def fake_get(url, timeout):
-        captured["api_calls"].append((url, timeout))
-        if "region=AU" in url:
-            return FakeResponse("203.0.113.7:7104")
-        return FakeResponse("103.49.62.181:19004")
-
-    monkeypatch.setattr(api.requests, "get", fake_get)
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._extract_auth_session_context",
-        lambda _email: {
-            "access_token": "extract-token",
-            "session_token": "session-token",
-            "cookie_header": "__Secure-next-auth.session-token=session-token",
-        },
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
-        lambda **kwargs: (
-            captured.update({"extract_kwargs": kwargs})
-            or {
-                "status": "success",
-                "ba_token": "BA-AU",
-                "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-AU",
-                "checkout_url": "https://pay.openai.com/c/pay/cs_demo#hash",
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-            "checkout_url": kwargs["checkout_url"],
-        },
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-au-provider-proxy", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_api_provider="cliproxy",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            paypal_ba_mode="us",
-            paypal_ba_payment_method_country="AU",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+819012345678",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json", 30),
-        ("https://api.cliproxy.io/white/api?region=AU&num=1&time=30&format=n&type=json", 30),
-    ]
-    assert captured["extract_kwargs"]["provider_proxy_url"] == "socks5h://203.0.113.7:7104"
-    assert captured["extract_kwargs"]["payment_method_country"] == "AU"
-
-
-def test_paypal_protocol_requires_jp_checkout_proxy_before_extract(monkeypatch):
-    captured = {"progress": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
-    monkeypatch.setattr(
-        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
-        lambda *_args, **_kwargs: {
-            "country_code": "US",
-            "region": "California",
-            "city": "Los Angeles",
-            "ip": "203.0.113.20",
-        },
-    )
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
-        lambda **_kwargs: pytest.fail("BA extraction should not start when checkout proxy is not JP"),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-jp-guard", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_url="socks5h://198.51.100.8:1080",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+819012345678",
-            sms_url="https://sms.example.test/token=demo",
-            pending_retry_attempts=0,
-        )
-    )
-
-    with pytest.raises(api.TaskResultError) as exc_info:
-        captured["func"]()
-
-    result = exc_info.value.task_result
-    assert result["status"] == "failed"
-    assert result["failure_stage"] == "paypal_checkout_proxy_country_mismatch"
-    assert result["checkout_proxy_country"] == "US"
-    assert any(event["stage"] == "paypal_checkout_proxy_country_mismatch" for event in captured["progress"])
-
-
-def test_paypal_protocol_blocks_when_checkout_proxy_country_probe_is_unknown(monkeypatch):
-    captured = {"progress": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
-    monkeypatch.setattr("autotoken.services.paypal_proxy.paypal_proxy_exit_location", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._paypal_extract_ba_link",
-        lambda **_kwargs: pytest.fail("BA extraction should not start when checkout proxy country is unknown"),
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-jp-guard-unknown", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_url="socks5h://198.51.100.8:1080",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+819012345678",
-            sms_url="https://sms.example.test/token=demo",
-            pending_retry_attempts=0,
-        )
-    )
-
-    with pytest.raises(api.TaskResultError) as exc_info:
-        captured["func"]()
-
-    result = exc_info.value.task_result
-    assert result["status"] == "failed"
-    assert result["failure_stage"] == "paypal_checkout_proxy_country_mismatch"
-    assert result["checkout_proxy_country"] == ""
-    assert "无法确认是否为 JP" in result["message"]
-    assert any(event["stage"] == "paypal_checkout_proxy_country_mismatch" for event in captured["progress"])
-
-
-def test_paypal_protocol_ba_retry_reuses_same_sticky_proxies(monkeypatch):
-    captured = {"progress": [], "api_calls": [], "extract_calls": []}
-    accounts = [{"email": "first@example.com"}]
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: accounts)
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda rows, email: accounts[0] if email == "first@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(api, "_extract_account_access_token", lambda email: f"token-{email}")
-    monkeypatch.setattr(api, "_probe_proxy_exit_ip", lambda _proxy: "")
-    monkeypatch.setattr(
-        "autotoken.services.paypal_proxy.paypal_proxy_exit_location",
-        lambda *_args, **_kwargs: {"country_code": "JP", "region": "Tokyo", "city": "Tokyo", "ip": "198.51.100.8"},
-    )
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "text/plain"}
-
-        def __init__(self, text):
-            self.text = text
-
-    def fake_get(url, timeout):
-        captured["api_calls"].append((url, timeout))
-        if "region=US" in url:
-            return FakeResponse("107.150.109.49:7104")
-        return FakeResponse("103.49.62.181:19004")
-
-    monkeypatch.setattr(api.requests, "get", fake_get)
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor._extract_auth_session_context",
-        lambda _email: {
-            "access_token": "extract-token",
-            "session_token": "session-token",
-            "cookie_header": "__Secure-next-auth.session-token=session-token",
-        },
-    )
-
-    attempt = {"count": 0}
-
-    def fake_extract(**kwargs):
-        attempt["count"] += 1
-        captured["extract_calls"].append((kwargs["proxy_url"], kwargs["provider_proxy_url"]))
-        if attempt["count"] == 1:
-            return {
-                "status": "failed",
-                "failure_stage": "extract_ba_link_pplink_timeout",
-                "message": "timeout",
-            }
-        return {
-            "status": "success",
-            "ba_token": "BA-RETRY",
-            "approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-RETRY",
-            "checkout_url": "https://pay.openai.com/c/pay/cs_demo#hash",
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor._paypal_extract_ba_link", fake_extract)
-    monkeypatch.setattr(
-        "autotoken.paypal_bind_executor.run_paypal_bind_task",
-        lambda **kwargs: {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-            "checkout_url": kwargs["checkout_url"],
-        },
-    )
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-sticky-retry", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="first@example.com",
-            bind_link_payload={"plan_name": "chatgptplusplan"},
-            proxy_api_provider="cliproxy",
-            paypal_browser="protocol",
-            paypal_country="JP",
-            paypal_ba_mode="us",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            billing_phone="+819012345678",
-            sms_url="https://sms.example.test/token=demo",
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert captured["api_calls"][:2] == [
-        ("https://api.cliproxy.io/white/api?region=JP&num=1&time=30&format=n&type=json", 30),
-        ("https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json", 30),
-    ]
-    assert len(captured["api_calls"]) == 2
-    assert captured["extract_calls"] == [
-        ("socks5h://103.49.62.181:19004", "socks5h://107.150.109.49:7104"),
-        ("socks5h://103.49.62.181:19004", "socks5h://107.150.109.49:7104"),
-    ]
-
-
-def test_paypal_proxy_api_rejects_html_response(monkeypatch):
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "text/html"}
-        text = "<!doctype html><html><body>login</body></html>"
-
-    monkeypatch.setattr(api.requests, "get", lambda url, timeout: FakeResponse())
-
-    with pytest.raises(RuntimeError, match="返回 HTML 页面"):
-        api._fetch_proxy_from_api_url(
-            "https://dashboard.1024proxy.com/getporxy/traffic?demo=1",
-            default_auth_scheme="socks5h",
-            provider="1024proxy",
-        )
-
-
-def test_paypal_task_runner_existing_account_raises_task_result_error(monkeypatch):
-    captured = {"progress": []}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr(
-        "autotoken.accounts.update_account",
-        lambda email, **kwargs: captured.setdefault("updates", []).append((email, kwargs)),
-    )
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda payload: captured.setdefault("audit", payload))
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["run_kwargs"] = kwargs
-        kwargs["on_progress"]({"stage": "paypal_login_password", "message": "正在填写 PayPal 密码"})
-        return {
-            "status": "needs_review",
-            "failure_stage": "paypal_authorize",
-            "message": "等待 PayPal 登录/授权超时，需要人工确认",
-            "screenshot_paths": ["data/paypal-needs-review.png"],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-local-fail", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="existing_account",
-            paypal_email="paypal@example.com",
-            paypal_password="Secret123!",
-            timeout_seconds=180,
-            pending_retry_attempts=0,
-        )
-    )
-
-    with pytest.raises(api.TaskResultError) as exc:
-        captured["func"]()
-
-    task_result = exc.value.task_result
-
-    assert task_result["status"] == "needs_review"
-    assert task_result["failure_stage"] == "paypal_authorize"
-    assert task_result["task_status"] == "failed"
-    assert task_result["provider"] == "paypal"
-    assert task_result["paypal_mode"] == "existing_account"
-    assert task_result["paypal_auto_login"] is True
-    assert task_result["screenshot_paths"] == ["data/paypal-needs-review.png"]
-    assert captured["run_kwargs"]["paypal_mode"] == "existing_account"
-    assert captured["run_kwargs"]["paypal_email"] == "paypal@example.com"
-    assert captured["run_kwargs"]["paypal_password"] == "Secret123!"
-    assert captured["updates"] == [
-        (
-            "user@example.com",
-            {
-                "last_bind_status": "needs_review",
-                "last_bind_at": captured["updates"][0][1]["last_bind_at"],
-                "last_checkout_url": "https://pay.openai.com/demo",
-                "last_proxy_label": "",
-                "last_bind_task_id": captured["updates"][0][1]["last_bind_task_id"],
-                "last_bind_message": "等待 PayPal 登录/授权超时，需要人工确认",
-                "last_bind_failure_stage": "paypal_authorize",
-            },
-        )
-    ]
-    assert captured["audit"]["status"] == "needs_review"
-    assert captured["audit"]["task_status"] == "failed"
-    assert captured["audit"]["flow"] == "paypal_existing_account"
-    assert [event["stage"] for event in captured["progress"]] == [
-        "paypal_starting",
-        "paypal_login_password",
-        "paypal_finished",
-    ]
-
-
-def test_paypal_task_runner_retries_transient_failure_from_pending_pool(monkeypatch):
-    captured = {"progress": [], "calls": []}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.accounts.add_account", lambda *args, **kwargs: None)
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(api.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(
-        api,
-        "_convert_account_auth_session_to_cpa_auth",
-        lambda _email, **_kwargs: {"auth_file": "cpa.json", "filename": "cpa.json"},
-    )
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["calls"].append(kwargs)
-        if len(captured["calls"]) == 1:
-            return {
-                "status": "needs_review",
-                "failure_stage": "paypal_authorize",
-                "message": "等待 PayPal 登录/授权超时，需要人工确认",
-                "screenshot_paths": [],
-            }
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-retry", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="existing_account",
-            paypal_email="paypal@example.com",
-            paypal_password="Secret123!",
-            pending_retry_attempts=1,
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert result.get("pending_retry_emails") in (None, [])
-    assert result["retried_emails"] == ["user@example.com"]
-    assert len(captured["calls"]) == 2
-    assert any(event["stage"] == "paypal_pending_retry_queued" for event in captured["progress"])
-    wait_events = [event for event in captured["progress"] if event["stage"] == "paypal_pending_retry_wait"]
-    assert wait_events
-    assert wait_events[0]["wait_seconds"] == 60.0
-    assert any(event["stage"] == "paypal_pending_retry_account" for event in captured["progress"])
-
-
-def test_paypal_task_runner_pending_retry_backoff_uses_60_then_120(monkeypatch):
-    captured = {"progress": [], "calls": [], "sleeps": []}
-
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
-    monkeypatch.setattr(
-        "autotoken.accounts.find_account", lambda accounts, email: accounts[0] if email == "user@example.com" else None
-    )
-    monkeypatch.setattr(api, "_resolve_status_auth_file", lambda _acc: "data/auth_session/user@example.com.json")
-    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: {"email": email, **kwargs})
-    monkeypatch.setattr("autotoken.accounts.add_account", lambda *args, **kwargs: None)
-    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _payload: None)
-    monkeypatch.setattr(api, "_append_task_progress", lambda _task_id, progress: captured["progress"].append(progress))
-    monkeypatch.setattr(api.time, "sleep", lambda seconds: captured["sleeps"].append(seconds))
-
-    def fake_run_paypal_bind_task(**kwargs):
-        captured["calls"].append(kwargs)
-        if len(captured["calls"]) < 3:
-            return {
-                "status": "failed",
-                "failure_stage": "paypal_card_linked",
-                "message": "This card has already been added to another PayPal account.",
-                "screenshot_paths": [],
-            }
-        return {
-            "status": "success",
-            "failure_stage": "",
-            "message": "PayPal 绑定完成",
-            "screenshot_paths": [],
-        }
-
-    monkeypatch.setattr("autotoken.paypal_bind_executor.run_paypal_bind_task", fake_run_paypal_bind_task)
-    monkeypatch.setattr(
-        api,
-        "_start_task",
-        lambda command, func, params, *args, **kwargs: (
-            captured.update({"func": func, "params": params})
-            or {"task_id": "task-paypal-retry-backoff", "command": command, "params": params}
-        ),
-    )
-
-    api.post_paypal_task(
-        api.PayPalTaskParams(
-            runner_mode="manual_checkout",
-            email="user@example.com",
-            checkout_url="https://pay.openai.com/demo",
-            manual_confirm=False,
-            paypal_mode="create_account",
-            autofill_enabled=True,
-            pending_retry_attempts=2,
-            phone_accounts=[
-                api.GoPayPhoneAccountParams(
-                    phone_number="+18352880840",
-                    sms_url="https://sms.example/one",
-                    otp_channel="sms",
-                ),
-            ],
-        )
-    )
-
-    result = captured["func"]()
-
-    assert result["status"] == "success"
-    assert len(captured["calls"]) == 3
-    assert captured["sleeps"] == [60.0, 120.0]
-    wait_events = [event for event in captured["progress"] if event["stage"] == "paypal_pending_retry_wait"]
-    assert [event["wait_seconds"] for event in wait_events] == [60.0, 120.0]
-
-
-def test_paypal_pending_retry_reason_treats_phone_limit_card_limit_and_return_timeout_as_retryable():
-    assert (
-        api._paypal_pending_retry_reason(
-            {
-                "status": "failed",
-                "failure_stage": "paypal_phone_rejected",
-                "message": "PayPal 拒绝当前手机号，请更换手机号",
-            }
-        )
-        == "paypal_phone_rejected"
-    )
-    assert (
-        api._paypal_pending_retry_reason(
-            {
-                "status": "failed",
-                "failure_stage": "paypal_account_limited",
-                "message": "Your account is limited. Please check your PayPal Account Overview page for information on how to resolve this problem.",
-            }
-        )
-        == "paypal_account_limited"
-    )
-    assert (
-        api._paypal_pending_retry_reason(
-            {
-                "status": "failed",
-                "failure_stage": "paypal_card_linked",
-                "message": "This card has already been added to another PayPal account.",
-            }
-        )
-        == "paypal_card_linked"
-    )
-    assert (
-        api._paypal_pending_retry_reason(
-            {
-                "status": "needs_review",
-                "failure_stage": "paypal_return_timeout",
-                "message": "等待回跳超时，需要人工确认",
-            }
-        )
-        == "paypal_return_timeout"
-    )
-
 
 def test_post_gopay_bind_task_starts_background_task(monkeypatch):
     captured = {}
@@ -3579,7 +329,6 @@ def test_post_gopay_bind_task_starts_background_task(monkeypatch):
     assert captured["params"]["checkout_ui_mode"] == "hosted"
     assert captured["params"]["pending_retry_attempts"] == 3
 
-
 def test_post_gopay_bind_task_accepts_batch_accounts(monkeypatch):
     captured = {}
     accounts = [{"email": "user@example.com"}, {"email": "backup@example.com"}]
@@ -3609,7 +358,6 @@ def test_post_gopay_bind_task_accepts_batch_accounts(monkeypatch):
 
     assert result["task_id"] == "task-457"
     assert captured["params"]["account_emails"] == ["user@example.com", "backup@example.com"]
-
 
 def test_gopay_task_runner_auto_registers_then_binds(monkeypatch):
     captured = {"mail_login": 0}
@@ -3706,7 +454,6 @@ def test_gopay_task_runner_auto_registers_then_binds(monkeypatch):
     assert task_result["status"] == "success"
     assert task_result["email"] == "new@example.com"
     assert captured["audit"]["email"] == "new@example.com"
-
 
 def test_gopay_task_runner_auto_register_count_registers_and_binds_sequentially(monkeypatch):
     captured = {"mail_login": 0, "register_kwargs": [], "run_emails": [], "run_phone_numbers": []}
@@ -3810,7 +557,6 @@ def test_gopay_task_runner_auto_register_count_registers_and_binds_sequentially(
         assert update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
         assert update["plus_bound_at"] == update["last_bind_at"]
 
-
 def test_gopay_task_runner_auto_register_retries_pending_after_first_round(monkeypatch):
     captured = {"mail_login": 0, "progress": [], "run_emails": [], "slept": []}
     registered_emails = ["new1@example.com", "new2@example.com"]
@@ -3900,7 +646,6 @@ def test_gopay_task_runner_auto_register_retries_pending_after_first_round(monke
     retry_events = [progress for progress in captured["progress"] if progress["stage"] == "gopay_pending_retry_account"]
     assert retry_events and retry_events[0]["retry_round"] == 1
 
-
 def test_gopay_task_runner_auto_register_retries_gopay_payment_process(monkeypatch):
     captured = {"mail_login": 0, "progress": [], "run_emails": [], "slept": []}
 
@@ -3985,7 +730,6 @@ def test_gopay_task_runner_auto_register_retries_gopay_payment_process(monkeypat
     queued = [progress for progress in captured["progress"] if progress["stage"] == "gopay_pending_retry_queued"]
     assert queued and queued[0]["reason"] == "gopay_payment_process"
 
-
 def test_gopay_task_runner_auto_register_does_not_retry_checkout_not_approved(monkeypatch):
     captured = {"mail_login": 0, "progress": [], "run_emails": [], "slept": []}
 
@@ -4062,7 +806,6 @@ def test_gopay_task_runner_auto_register_does_not_retry_checkout_not_approved(mo
     assert result["retried_emails"] == []
     assert not any(progress["stage"] == "gopay_pending_retry_queued" for progress in captured["progress"])
 
-
 def test_gopay_task_runner_auto_register_splits_register_success_from_bind_failure(monkeypatch):
     captured = {"mail_login": 0, "progress": [], "slept": []}
 
@@ -4137,7 +880,6 @@ def test_gopay_task_runner_auto_register_splits_register_success_from_bind_failu
     assert any(progress["stage"] == "gopay_pending_retry_failed" for progress in captured["progress"])
     assert 12.5 in captured["slept"]
 
-
 def test_gopay_params_accept_camel_case_auto_register_payload():
     params = api.GoPayBindTaskParams.model_validate(
         {
@@ -4164,7 +906,6 @@ def test_gopay_params_accept_camel_case_auto_register_payload():
     assert params.auto_register_password == "Password123!"
     assert params.pending_retry_attempts == 2
 
-
 def test_post_task_skip_current_sets_gopay_skip_signal(monkeypatch):
     signal = api.threading.Event()
     progress_updates = []
@@ -4189,7 +930,6 @@ def test_post_task_skip_current_sets_gopay_skip_signal(monkeypatch):
     assert task["skip_current_requested"] is True
     assert result["task_id"] == "task-skip"
     assert progress_updates[-1]["stage"] == "gopay_skip_current_requested"
-
 
 def test_run_gopay_bind_task_skips_current_account_and_continues(monkeypatch):
     skip_state = {"requested": False}
@@ -4222,7 +962,6 @@ def test_run_gopay_bind_task_skips_current_account_and_continues(monkeypatch):
     assert result["status"] == "success"
     assert result["email_used"] == "second@example.com"
     assert result["skipped_emails"] == ["first@example.com"]
-
 
 def test_run_gopay_bind_task_rotates_phone_accounts_with_candidates(monkeypatch):
     calls = []
@@ -4268,7 +1007,6 @@ def test_run_gopay_bind_task_rotates_phone_accounts_with_candidates(monkeypatch)
     assert result["status"] == "success"
     assert result["email_used"] == "second@example.com"
 
-
 def test_run_gopay_bind_task_rotates_on_gopay_wallet_payment_process_failure(monkeypatch):
     calls = []
     progress_events = []
@@ -4309,7 +1047,6 @@ def test_run_gopay_bind_task_rotates_on_gopay_wallet_payment_process_failure(mon
     assert result["retried_emails"] == ["first@example.com"]
     assert slept == [60.0]
     assert any(event["stage"] == "gopay_payment_process_failed_rotate" for event in progress_events)
-
 
 def test_run_gopay_bind_task_retries_pending_blocked_candidate_once(monkeypatch):
     calls = []
@@ -4352,7 +1089,6 @@ def test_run_gopay_bind_task_retries_pending_blocked_candidate_once(monkeypatch)
     assert any(event["stage"] == "gopay_pending_retry_account" for event in progress_events)
     assert slept == [60.0]
 
-
 def test_run_gopay_bind_task_retries_http_403_candidate_once(monkeypatch):
     calls = []
     progress_events = []
@@ -4393,7 +1129,6 @@ def test_run_gopay_bind_task_retries_http_403_candidate_once(monkeypatch):
     assert queued[0]["reason"] == "http_403"
     assert any(event["stage"] == "gopay_retryable_failure_rotate" for event in progress_events)
     assert slept == [60.0]
-
 
 def test_run_gopay_bind_task_queues_gopay_authorize_too_many_attempts(monkeypatch):
     calls = []
@@ -4436,7 +1171,6 @@ def test_run_gopay_bind_task_queues_gopay_authorize_too_many_attempts(monkeypatc
     assert any(event["stage"] == "gopay_rate_limited_retry" for event in progress_events)
     assert slept == [60.0]
 
-
 def test_auto_signup_wallet_already_linked_fails_without_midtrans_sleep(monkeypatch):
     progress_events = []
     slept = []
@@ -4477,7 +1211,6 @@ def test_auto_signup_wallet_already_linked_fails_without_midtrans_sleep(monkeypa
     assert "midtrans_already_linked_auto_wallet_failed" in stages
     assert "midtrans_already_linked" not in stages
 
-
 def test_run_gopay_bind_task_retries_local_cooldown_skip_once(monkeypatch):
     calls = []
     slept = []
@@ -4508,7 +1241,6 @@ def test_run_gopay_bind_task_retries_local_cooldown_skip_once(monkeypatch):
     assert result["retried_emails"] == ["first@example.com"]
     assert result.get("skipped_cooldown_emails", []) == []
     assert slept == [60.0]
-
 
 def test_run_gopay_bind_task_retries_pending_blocked_candidate_by_round(monkeypatch):
     calls = []
@@ -4554,7 +1286,6 @@ def test_run_gopay_bind_task_retries_pending_blocked_candidate_by_round(monkeypa
     ]
     assert retry_rounds == [1, 2]
 
-
 def test_run_gopay_bind_task_rotates_on_nonzero_amount_guard(monkeypatch):
     calls = []
     progress_events = []
@@ -4587,7 +1318,6 @@ def test_run_gopay_bind_task_rotates_on_nonzero_amount_guard(monkeypatch):
     assert result["email_used"] == "second@example.com"
     assert result["nonzero_blocked_emails"] == ["first@example.com"]
     assert any(event["stage"] == "gopay_nonzero_amount_blocked_rotate" for event in progress_events)
-
 
 def test_run_gopay_bind_task_rotates_on_token_invalidated(monkeypatch):
     calls = []
@@ -4629,7 +1359,6 @@ def test_run_gopay_bind_task_rotates_on_token_invalidated(monkeypatch):
         for event in progress_events
     )
     assert not any(event["stage"] == "gopay_pending_retry_queued" for event in progress_events)
-
 
 def test_run_gopay_bind_task_marks_token_invalidated_without_auth_session_refresh(monkeypatch):
     calls = []
@@ -4685,7 +1414,6 @@ def test_run_gopay_bind_task_marks_token_invalidated_without_auth_session_refres
     assert not any(event["stage"] == "gopay_auth_session_refresh_done" for event in progress_events)
     assert any(event["stage"] == "gopay_auth_session_refresh_failed" for event in progress_events)
 
-
 def test_run_gopay_bind_task_treats_user_is_paid_as_success(monkeypatch):
     calls = []
     progress_events = []
@@ -4721,7 +1449,6 @@ def test_run_gopay_bind_task_treats_user_is_paid_as_success(monkeypatch):
     assert result["message"] == "GoPay 批量绑定完成: 成功 2/2 个账号"
     assert any(event["stage"] == "chatgpt_user_paid_skip" for event in progress_events)
 
-
 def test_run_gopay_bind_task_rotates_on_generic_account_failure(monkeypatch):
     calls = []
 
@@ -4752,7 +1479,6 @@ def test_run_gopay_bind_task_rotates_on_generic_account_failure(monkeypatch):
     assert result["email_used"] == "second@example.com"
     assert result["failed_emails"] == ["first@example.com"]
     assert result["token_invalidated_emails"] == []
-
 
 def test_run_gopay_bind_task_retries_already_linked_once(monkeypatch):
     calls = []
@@ -4790,7 +1516,6 @@ def test_run_gopay_bind_task_retries_already_linked_once(monkeypatch):
     assert slept == [60.0]
     assert any(event["stage"] == "gopay_already_linked_retry" for event in progress_events)
 
-
 def test_run_gopay_bind_task_shows_rate_limit_message_for_midtrans_429(monkeypatch):
     calls = []
     slept = []
@@ -4823,7 +1548,6 @@ def test_run_gopay_bind_task_shows_rate_limit_message_for_midtrans_429(monkeypat
     assert result["failed_emails"] == ["first@example.com", "second@example.com"]
     assert result["retried_emails"] == ["first@example.com", "second@example.com"]
     assert slept == [60.0]
-
 
 def test_run_gopay_bind_task_retries_gopay_otp_failure_once(monkeypatch):
     calls = []
@@ -4861,7 +1585,6 @@ def test_run_gopay_bind_task_retries_gopay_otp_failure_once(monkeypatch):
     assert result["retried_emails"] == ["first@example.com"]
     assert slept == [60.0]
     assert any(event["stage"] == "gopay_otp_retry" for event in progress_events)
-
 
 def test_gopay_task_runner_raises_on_failed_executor_result(monkeypatch):
     captured = {}
@@ -4925,7 +1648,6 @@ def test_gopay_task_runner_raises_on_failed_executor_result(monkeypatch):
     assert captured["run_kwargs"]["country_code"] == "62"
     assert progress_updates[-1]["stage"] == "failed"
 
-
 def test_gopay_task_runner_marks_success_account_plus(monkeypatch):
     captured = {"updates": [], "progress": []}
 
@@ -4981,7 +1703,6 @@ def test_gopay_task_runner_marks_success_account_plus(monkeypatch):
     assert "cpa_sync" not in result
     assert captured["audit"]["task_status"] == "completed"
 
-
 def test_gopay_task_runner_passes_whatsapp_otp_channel_and_default_url(monkeypatch):
     captured = {"updates": [], "progress": []}
 
@@ -5033,7 +1754,6 @@ def test_gopay_task_runner_passes_whatsapp_otp_channel_and_default_url(monkeypat
     assert captured["run_kwargs"]["otp_channel"] == "whatsapp"
     assert captured["run_kwargs"]["sms_url"] == "http://127.0.0.1:8787/otp/whatsapp/latest"
     assert captured["run_kwargs"]["phone_accounts"][0]["sms_url"] == "http://127.0.0.1:8787/otp/whatsapp/latest"
-
 
 def test_gopay_task_runner_marks_all_batch_success_accounts_plus(monkeypatch):
     captured = {"updates": [], "progress": []}
@@ -5088,7 +1808,6 @@ def test_gopay_task_runner_marks_all_batch_success_accounts_plus(monkeypatch):
         assert update["status"] == accounts_module.STATUS_ACTIVE
         assert update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
         assert update["plus_bound_at"] == update["last_bind_at"]
-
 
 def test_gopay_task_runner_persists_session_only_batch_success_as_plus(monkeypatch, tmp_path):
     captured = {"progress": []}
@@ -5149,7 +1868,6 @@ def test_gopay_task_runner_persists_session_only_batch_success_as_plus(monkeypat
     assert saved["second@example.com"]["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
     assert saved["first@example.com"]["status"] == accounts_module.STATUS_ACTIVE
     assert saved["second@example.com"]["status"] == accounts_module.STATUS_ACTIVE
-
 
 def test_gopay_auto_signup_existing_accounts_continues_after_success(monkeypatch):
     captured = {"updates": [], "progress": [], "calls": [], "registered": 0}
@@ -5223,7 +1941,6 @@ def test_gopay_auto_signup_existing_accounts_continues_after_success(monkeypatch
     assert result["successful_emails"] == ["first@example.com", "second@example.com"]
     assert len(result["auto_signup_account_results"]) == 2
     assert [email for email, _update in captured["updates"]] == ["first@example.com", "second@example.com"]
-
 
 def test_gopay_auto_signup_existing_accounts_continues_after_failure(monkeypatch):
     captured = {"updates": [], "progress": [], "calls": [], "registered": 0}
@@ -5304,7 +2021,6 @@ def test_gopay_auto_signup_existing_accounts_continues_after_failure(monkeypatch
     assert result["failed_emails"][0]["email"] == "first@example.com"
     assert [email for email, _update in captured["updates"]] == ["second@example.com"]
 
-
 def test_gopay_auto_signup_probe_error_does_not_keep_buying_numbers(monkeypatch):
     captured = {"progress": [], "registered": 0}
     accounts = [{"email": "first@example.com"}]
@@ -5348,7 +2064,6 @@ def test_gopay_auto_signup_probe_error_does_not_keep_buying_numbers(monkeypatch)
     assert captured["registered"] == 1
     assert result["task_status"] == "failed"
     assert any(item.get("stage") == "gopay_wallet_auto_signup_probe_failed" for item in captured["progress"])
-
 
 def test_gopay_auto_signup_rate_limited_stops_auto_register_batch(monkeypatch):
     captured = {"mail_login": 0, "progress": [], "registered": 0, "registered_accounts": []}
@@ -5432,7 +2147,6 @@ def test_gopay_auto_signup_rate_limited_stops_auto_register_batch(monkeypatch):
     assert any(item.get("stage") == "gopay_wallet_auto_signup_rate_limited" for item in captured["progress"])
     assert not any(item.get("stage") == "gopay_wallet_auto_signup_retry" for item in captured["progress"])
 
-
 def test_gopay_auto_signup_rate_limited_stops_existing_accounts_batch(monkeypatch):
     captured = {"progress": [], "registered": 0, "calls": []}
     accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
@@ -5487,7 +2201,6 @@ def test_gopay_auto_signup_rate_limited_stops_existing_accounts_batch(monkeypatc
     assert any(item.get("stage") == "gopay_wallet_auto_signup_rate_limited" for item in captured["progress"])
     assert not any(item.get("stage") == "gopay_wallet_auto_signup_retry" for item in captured["progress"])
 
-
 def test_gopay_auto_signup_network_error_does_not_buy_new_number(monkeypatch):
     captured = {"progress": [], "registered": 0, "calls": []}
     accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
@@ -5540,7 +2253,6 @@ def test_gopay_auto_signup_network_error_does_not_buy_new_number(monkeypatch):
     assert result["failure_stage"] == "gopay_wallet_network_error"
     assert any(item.get("stage") == "gopay_wallet_auto_signup_network_error" for item in captured["progress"])
     assert not any(item.get("stage") == "gopay_wallet_auto_signup_retry" for item in captured["progress"])
-
 
 def test_gopay_task_runner_marks_batch_success_account_plus_immediately(monkeypatch):
     captured = {"updates": [], "progress": []}
@@ -5613,7 +2325,6 @@ def test_gopay_task_runner_marks_batch_success_account_plus_immediately(monkeypa
     success_progress = [progress for progress in captured["progress"] if progress["stage"] == "gopay_account_bound"]
     assert [progress["successful"] for progress in success_progress] == [1, 2]
     assert success_progress[-1]["successful_emails"] == ["first@example.com", "second@example.com"]
-
 
 def test_gopay_task_runner_auto_oauth_after_success(monkeypatch):
     captured = {"updates": [], "progress": [], "oauth_calls": []}
@@ -5690,7 +2401,6 @@ def test_gopay_task_runner_auto_oauth_after_success(monkeypatch):
     assert all(update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS for _email, update in captured["updates"])
     assert all("credentials_exported" not in update for _email, update in captured["updates"])
     assert all("credentials_exported_at" not in update for _email, update in captured["updates"])
-
 
 def test_gopay_task_runner_converts_session_to_cpa_when_oauth_not_selected(monkeypatch):
     captured = {"updates": [], "progress": [], "cpa_calls": []}
@@ -5770,7 +2480,6 @@ def test_gopay_task_runner_converts_session_to_cpa_when_oauth_not_selected(monke
     assert "gopay_oauth_login_started" not in stages
     assert all(update["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS for _email, update in captured["updates"])
 
-
 def test_gopay_task_runner_auto_oauth_retries_twice_after_success(monkeypatch):
     captured = {"updates": [], "progress": [], "oauth_calls": []}
     oauth_done = threading.Event()
@@ -5841,7 +2550,6 @@ def test_gopay_task_runner_auto_oauth_retries_twice_after_success(monkeypatch):
     assert stages.count("gopay_oauth_login_done") == 1
     assert "gopay_oauth_login_failed" not in stages
 
-
 def test_update_account_type_updates_local_account(monkeypatch):
     captured = {}
     account = {"email": "user@example.com", "status": "pending", "account_type": "free"}
@@ -5859,7 +2567,6 @@ def test_update_account_type_updates_local_account(monkeypatch):
     assert result["account"]["email"] == "user@example.com"
     assert result["account"]["account_type"] == "plus"
 
-
 def test_update_account_type_rejects_invalid_type(monkeypatch):
     monkeypatch.setattr("autotoken.admin_state.get_admin_email", lambda: "owner@example.com")
 
@@ -5867,7 +2574,6 @@ def test_update_account_type_rejects_invalid_type(monkeypatch):
         _account_management_update_account_type("user@example.com", "bad")
 
     assert exc.value.status_code == 400
-
 
 def test_update_account_type_rejects_main_account(monkeypatch):
     monkeypatch.setattr("autotoken.admin_state.get_admin_email", lambda: "owner@example.com")
@@ -5877,20 +2583,17 @@ def test_update_account_type_rejects_main_account(monkeypatch):
 
     assert exc.value.status_code == 400
 
-
 def _account_management_update_account_type(email, account_type):
     from autotoken.api_routes.account_management import AccountTypeUpdateParams
 
     routes = _account_management_routes()
     return routes["update_account_type"](email, AccountTypeUpdateParams(account_type=account_type))
 
-
 def _account_management_delete_accounts_batch(emails, continue_on_error=True):
     from autotoken.api_routes.account_management import DeleteBatchParams
 
     routes = _account_management_routes()
     return routes["delete_accounts_batch"](DeleteBatchParams(emails=emails, continue_on_error=continue_on_error))
-
 
 def _account_management_routes():
     from autotoken.api_routes.account_management import create_account_management_router
@@ -5905,7 +2608,6 @@ def _account_management_routes():
             sanitize_account=api._sanitize_account,
         ).routes
     }
-
 
 def _account_exports_routes():
     from autotoken.api_routes.account_exports import (
@@ -5925,16 +2627,13 @@ def _account_exports_routes():
     }
     return routes, AccountCredentialExportParams, AccountExportStatusUpdateParams
 
-
 def _export_account_credentials(**kwargs):
     routes, AccountCredentialExportParams, _AccountExportStatusUpdateParams = _account_exports_routes()
     return routes["export_account_credentials"](AccountCredentialExportParams(**kwargs))
 
-
 def _update_accounts_export_status(**kwargs):
     routes, _AccountCredentialExportParams, AccountExportStatusUpdateParams = _account_exports_routes()
     return routes["update_accounts_export_status"](AccountExportStatusUpdateParams(**kwargs))
-
 
 def _export_account_sub_auths(emails):
     from autotoken.api_routes.account_cpa_auths import AccountEmailBatchParams, create_account_cpa_auths_router
@@ -5949,7 +2648,6 @@ def _export_account_sub_auths(emails):
         ).routes
     }
     return routes["export_account_sub_auths"](AccountEmailBatchParams(emails=emails))
-
 
 def _export_account_cpa_auths(emails):
     from autotoken.api_routes.account_cpa_auths import AccountEmailBatchParams, create_account_cpa_auths_router
@@ -5968,7 +2666,6 @@ def _export_account_cpa_auths(emails):
         ).routes
     }
     return routes["export_account_cpa_auths"](AccountEmailBatchParams(emails=emails))
-
 
 def test_export_account_credentials_uses_fixed_three_column_format(monkeypatch):
     captured = {"updates": []}
@@ -6001,7 +2698,6 @@ def test_export_account_credentials_uses_fixed_three_column_format(monkeypatch):
             {"credentials_exported": True, "credentials_exported_at": 1777777777.0},
         )
     ]
-
 
 def test_export_account_credentials_skips_session_only_stubs(monkeypatch):
     from autotoken import accounts as accounts_module
@@ -6036,7 +2732,6 @@ def test_export_account_credentials_skips_session_only_stubs(monkeypatch):
         )
     ]
 
-
 def test_export_account_credentials_uses_luckmail_token_as_password(monkeypatch):
     monkeypatch.setattr(
         "autotoken.accounts.load_accounts",
@@ -6057,7 +2752,6 @@ def test_export_account_credentials_uses_luckmail_token_as_password(monkeypatch)
     )
 
     assert result["content"] == "luck@example.com-----tok_luckmail_secret-----https://mail.cpacc.us.ci/"
-
 
 def test_export_account_credentials_uses_hotmail_mailapi_url(monkeypatch):
     monkeypatch.setattr(
@@ -6083,7 +2777,6 @@ def test_export_account_credentials_uses_hotmail_mailapi_url(monkeypatch):
         "user@hotmail.com-----login-password-----https://mailapi.icu/key?type=html&orderNo=abc"
     )
 
-
 def test_export_account_credentials_allows_already_exported_accounts(monkeypatch):
     monkeypatch.setattr(
         "autotoken.accounts.load_accounts",
@@ -6106,7 +2799,6 @@ def test_export_account_credentials_allows_already_exported_accounts(monkeypatch
     assert result["count"] == 1
     assert result["content"] == "exported@example.com-----pw-----https://gptcode.external.cc.cd/"
     assert result["exported_emails"] == ["exported@example.com"]
-
 
 def test_public_plus_extractor_history_routes_to_trade(monkeypatch):
     captured = {}
@@ -6137,7 +2829,6 @@ def test_public_plus_extractor_history_routes_to_trade(monkeypatch):
     assert captured["history"] == ("100-20260526-PLUS-ABCDEF123456", "secret")
     assert captured["download"] == ("100-20260526-PLUS-ABCDEF123456", "secret", "batch-1")
 
-
 def test_export_account_credentials_ignores_legacy_empty_format(monkeypatch):
     monkeypatch.setattr(
         "autotoken.accounts.load_accounts",
@@ -6148,7 +2839,6 @@ def test_export_account_credentials_ignores_legacy_empty_format(monkeypatch):
     result = _export_account_credentials(line_format=" ")
 
     assert result["content"] == "user@example.com-----pw-----https://gptcode.external.cc.cd/"
-
 
 def test_export_account_cpa_auths_returns_existing_data_auths_file(tmp_path, monkeypatch):
     auth_dir = tmp_path / "data" / "auths"
@@ -6184,7 +2874,6 @@ def test_export_account_cpa_auths_returns_existing_data_auths_file(tmp_path, mon
     ]
     decoded = json.loads(base64.b64decode(result["content_base64"]).decode("utf-8"))
     assert decoded == payload
-
 
 def test_export_account_sub_auths_returns_sub2api_json(tmp_path, monkeypatch):
     def fake_jwt(payload):
@@ -6241,7 +2930,6 @@ def test_export_account_sub_auths_returns_sub2api_json(tmp_path, monkeypatch):
     assert decoded["accounts"][0]["platform"] == "openai"
     assert decoded["accounts"][0]["credentials"]["email"] == "user@example.com"
     assert decoded["accounts"][0]["credentials"]["refresh_token"] == "refresh-token"
-
 
 def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
     captured = {"progress": []}
@@ -6308,7 +2996,6 @@ def test_post_accounts_login_batch_starts_single_background_task(monkeypatch):
     ]
     assert any(progress["message"] == "补登录成功: second@example.com" for progress in captured["progress"])
 
-
 def test_post_accounts_refresh_quota_marks_401_account_fail(tmp_path, monkeypatch):
     auth_file = tmp_path / "codex-user.json"
     auth_file.write_text(
@@ -6357,7 +3044,6 @@ def test_post_accounts_refresh_quota_marks_401_account_fail(tmp_path, monkeypatc
     assert updates["user@example.com"]["status"] == "fail"
     assert updates["user@example.com"]["discarded_reason"] == "quota_refresh_401"
     assert updates["user@example.com"]["last_bind_failure_stage"] == "auth_401"
-
 
 def test_post_accounts_refresh_quota_skips_fail_accounts_without_reactivating(tmp_path, monkeypatch):
     auth_file = tmp_path / "codex-user.json"
@@ -6408,7 +3094,6 @@ def test_post_accounts_refresh_quota_skips_fail_accounts_without_reactivating(tm
     assert updates == {}
     assert quota_calls == []
 
-
 def test_post_accounts_refresh_quota_does_not_mark_free_account_exhausted(tmp_path, monkeypatch):
     auth_file = tmp_path / "codex-user.json"
     auth_file.write_text(json.dumps({"access_token": "token", "account": {"id": "account-free"}}), encoding="utf-8")
@@ -6454,7 +3139,6 @@ def test_post_accounts_refresh_quota_does_not_mark_free_account_exhausted(tmp_pa
     assert updates["free@example.com"]["last_quota"]["primary_pct"] == 100
     assert updates["free@example.com"]["quota_resets_at"] == 1710000000
 
-
 def test_post_accounts_refresh_quota_keeps_network_errors_out_of_fail(tmp_path, monkeypatch):
     auth_file = tmp_path / "codex-user.json"
     auth_file.write_text(json.dumps({"access_token": "token"}), encoding="utf-8")
@@ -6493,7 +3177,6 @@ def test_post_accounts_refresh_quota_keeps_network_errors_out_of_fail(tmp_path, 
     assert result["result"]["network_error"] == [{"email": "user@example.com", "reason": "network_error"}]
     assert updates == {}
 
-
 def test_post_accounts_refresh_quota_empty_emails_defaults_to_all_non_main(tmp_path, monkeypatch):
     auth_file = tmp_path / "codex-user.json"
     auth_file.write_text(json.dumps({"access_token": "token"}), encoding="utf-8")
@@ -6531,7 +3214,6 @@ def test_post_accounts_refresh_quota_empty_emails_defaults_to_all_non_main(tmp_p
 
     assert result["params"]["emails"] == ["first@example.com", "second@example.com"]
     assert checked == ["first@example.com", "second@example.com"]
-
 
 def test_post_account_login_keeps_account_when_oauth_requires_phone(monkeypatch):
     from autotoken.codex_auth import CodexOAuthPhoneRequired
@@ -6573,7 +3255,6 @@ def test_post_account_login_keeps_account_when_oauth_requires_phone(monkeypatch)
     assert captured["error"].task_result["removed_pool_emails"] == []
     assert captured["progress"][-1]["stage"] == "account_login_phone_required"
 
-
 def test_post_account_login_removes_account_when_oauth_account_deactivated(monkeypatch):
     from autotoken.codex_auth import CodexOAuthAccountDeactivated
 
@@ -6611,7 +3292,6 @@ def test_post_account_login_removes_account_when_oauth_account_deactivated(monke
     assert captured["removed"] == ["dead@example.com"]
     assert captured["error"].task_result["failure_stage"] == "oauth_account_deactivated"
     assert captured["progress"][-1]["stage"] == "account_login_deactivated_removed"
-
 
 def test_post_accounts_login_batch_continues_after_phone_required(monkeypatch):
     from autotoken.codex_auth import CodexOAuthPhoneRequired
@@ -6654,7 +3334,6 @@ def test_post_accounts_login_batch_continues_after_phone_required(monkeypatch):
     assert captured["pass_task_id"] is True
     assert captured["result"]["phone_required"][0]["email"] == "phone@example.com"
     assert any(progress["stage"] == "account_login_phone_required" for progress in captured["progress"])
-
 
 def test_gopay_task_runner_removes_rejected_batch_accounts(monkeypatch):
     captured = {"updates": [], "deleted_accounts": [], "deleted_sessions": [], "mail_deleted": []}
@@ -6733,7 +3412,6 @@ def test_gopay_task_runner_removes_rejected_batch_accounts(monkeypatch):
     assert captured["updates"][-1][1]["account_type"] == accounts_module.ACCOUNT_TYPE_PLUS
     assert captured["audit"]["removed_pool_emails"] == ["primary@example.com"]
 
-
 def test_gopay_task_runner_removes_nonzero_blocked_accounts(monkeypatch):
     captured = {"updates": [], "deleted_accounts": [], "deleted_sessions": [], "mail_deleted": []}
     accounts = [
@@ -6807,7 +3485,6 @@ def test_gopay_task_runner_removes_nonzero_blocked_accounts(monkeypatch):
     assert captured["deleted_sessions"] == ["primary@example.com"]
     assert captured["mail_deleted"] == []
     assert captured["updates"][-1][0] == "backup@example.com"
-
 
 def test_gopay_task_runner_removes_payment_process_failed_accounts(monkeypatch):
     captured = {"updates": [], "deleted_accounts": [], "deleted_sessions": [], "mail_deleted": []}
@@ -6884,7 +3561,6 @@ def test_gopay_task_runner_removes_payment_process_failed_accounts(monkeypatch):
     assert captured["updates"][-1][0] == "backup@example.com"
     assert captured["audit"]["removed_pool_emails"] == ["primary@example.com"]
 
-
 def test_gopay_task_runner_removes_token_invalidated_accounts(monkeypatch):
     captured = {"updates": [], "deleted_accounts": [], "deleted_sessions": []}
     accounts = [
@@ -6953,7 +3629,6 @@ def test_gopay_task_runner_removes_token_invalidated_accounts(monkeypatch):
     failed_updates = [item for item in captured["updates"] if item[0] == "primary@example.com"]
     assert failed_updates == []
     assert captured["audit"]["removed_pool_emails"] == ["primary@example.com"]
-
 
 def test_gopay_task_runner_removes_token_invalidated_account_from_checkout_message(monkeypatch):
     captured = {"updates": [], "deleted_accounts": [], "deleted_sessions": []}
@@ -7024,7 +3699,6 @@ def test_gopay_task_runner_removes_token_invalidated_account_from_checkout_messa
     assert captured["deleted_sessions"] == ["primary@example.com"]
     assert captured["updates"] == []
     assert captured["audit"]["removed_pool_emails"] == ["primary@example.com"]
-
 
 def test_gopay_task_runner_removes_account_when_auth_session_refresh_fails(monkeypatch):
     captured = {"updates": [], "progress": [], "deleted_accounts": [], "deleted_sessions": []}
@@ -7101,7 +3775,6 @@ def test_gopay_task_runner_removes_account_when_auth_session_refresh_fails(monke
     assert result["token_invalidated_removed_emails"] == ["primary@example.com"]
     assert any(progress["stage"] == "gopay_auth_session_refresh_failed" for progress in captured["progress"])
 
-
 def test_post_gopay_bind_task_requires_phone(monkeypatch):
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
     monkeypatch.setattr("autotoken.accounts.find_account", lambda accounts, email: accounts[0])
@@ -7119,7 +3792,6 @@ def test_post_gopay_bind_task_requires_phone(monkeypatch):
 
     assert exc.value.status_code == 400
     assert exc.value.detail == "phone_number 不能为空"
-
 
 def test_post_gopay_bind_task_allows_gopay_auto_signup_without_phone(monkeypatch):
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
@@ -7162,7 +3834,6 @@ def test_post_gopay_bind_task_allows_gopay_auto_signup_without_phone(monkeypatch
     assert captured["params"]["gopay_auto_signup_sms_provider"] == "smscloud"
     assert captured["params"]["gopay_auto_signup_hero_sms_api_key_present"] is True
     assert "gopay_auto_signup_hero_sms_api_key" not in captured["params"]
-
 
 def test_post_gopay_bind_task_uses_saved_appium_signup_config(monkeypatch):
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"email": "user@example.com"}])
@@ -7208,7 +3879,6 @@ def test_post_gopay_bind_task_uses_saved_appium_signup_config(monkeypatch):
     assert captured["params"]["gopay_auto_signup_mode"] == "appium"
     assert captured["params"]["gopay_appium_url"] == "http://127.0.0.1:4724"
     assert captured["params"]["gopay_appium_adb_serial"] == "emulator-5564"
-
 
 def test_gopay_task_runner_passes_saved_appium_config_to_wallet_signup(monkeypatch):
     captured = {"progress": [], "closed": []}
@@ -7296,7 +3966,6 @@ def test_gopay_task_runner_passes_saved_appium_config_to_wallet_signup(monkeypat
     assert captured["run_kwargs"]["phone_number"] == "87761973970"
     assert captured["closed"] == [True]
 
-
 def test_gopay_auto_signup_existing_accounts_can_run_in_parallel(monkeypatch):
     captured = {"progress": [], "run_emails": [], "wallets": [], "closed": []}
     emails = [f"user{i}@example.com" for i in range(1, 11)]
@@ -7375,7 +4044,6 @@ def test_gopay_auto_signup_existing_accounts_can_run_in_parallel(monkeypatch):
     assert set(captured["run_emails"]) == set(emails)
     assert len(captured["wallets"]) == 10
     assert any(progress["stage"] == "gopay_parallel_started" for progress in captured["progress"])
-
 
 def test_gopay_auto_signup_parallel_honors_configured_concurrency(monkeypatch):
     captured = {
@@ -7484,7 +4152,6 @@ def test_gopay_auto_signup_parallel_honors_configured_concurrency(monkeypatch):
     ]
     assert max(worker_indexes) <= 5
 
-
 def test_gopay_auto_signup_parallel_counts_retried_failure_once(monkeypatch):
     captured = {"progress": [], "calls": [], "registered": 0}
     emails = ["failed@example.com", "success@example.com"]
@@ -7584,7 +4251,6 @@ def test_gopay_auto_signup_parallel_counts_retried_failure_once(monkeypatch):
     assert [event["retry_round"] for event in queued_events] == [1, 2]
     assert [event["source_retry_round"] for event in queued_events] == [0, 1]
 
-
 def test_gopay_task_runner_auto_signs_up_wallet_before_bind(monkeypatch):
     captured = {"progress": [], "closed": []}
     account = {"email": "user@example.com"}
@@ -7670,7 +4336,6 @@ def test_gopay_task_runner_auto_signs_up_wallet_before_bind(monkeypatch):
     assert any(progress["stage"] == "gopay_wallet_auto_signup_done" for progress in captured["progress"])
     assert captured["closed"] == [True]
 
-
 def test_gopay_task_runner_retains_sms_session_when_bind_fails_after_signup(monkeypatch):
     captured = {"progress": [], "closed": []}
     account = {"email": "user@example.com"}
@@ -7733,7 +4398,6 @@ def test_gopay_task_runner_retains_sms_session_when_bind_fails_after_signup(monk
     assert captured["closed"] == []
     assert result["reusable_gopay_wallets"][0]["sms_url"] == "http://127.0.0.1:8787/otp/gopay-signup/demo"
     assert any(progress["stage"] == "gopay_wallet_preserved" for progress in captured["progress"])
-
 
 def test_gopay_auto_signup_discards_already_linked_wallet_and_reregisters(monkeypatch):
     captured = {"progress": [], "closed": [], "run_kwargs": [], "signup_calls": 0}
@@ -7808,7 +4472,6 @@ def test_gopay_auto_signup_discards_already_linked_wallet_and_reregisters(monkey
     assert any(progress["stage"] == "gopay_wallet_already_linked_retry" for progress in captured["progress"])
     assert not any(progress["stage"] == "gopay_wallet_preserved" for progress in captured["progress"])
 
-
 def test_gopay_auto_signup_discards_charge_denied_wallet_and_reregisters(monkeypatch):
     captured = {"progress": [], "closed": [], "run_kwargs": [], "signup_calls": 0}
     account = {"email": "user@example.com"}
@@ -7881,7 +4544,6 @@ def test_gopay_auto_signup_discards_charge_denied_wallet_and_reregisters(monkeyp
     assert any(progress["stage"] == "gopay_wallet_charge_denied_discarded" for progress in captured["progress"])
     assert any(progress["stage"] == "gopay_wallet_charge_denied_retry" for progress in captured["progress"])
     assert not any(progress["stage"] == "gopay_wallet_preserved" for progress in captured["progress"])
-
 
 def test_gopay_auto_signup_reuses_wallet_pool_across_tasks(monkeypatch):
     captured = {"progress": [], "closed": [], "run_kwargs": [], "signup_calls": 0, "funcs": []}
@@ -7959,7 +4621,6 @@ def test_gopay_auto_signup_reuses_wallet_pool_across_tasks(monkeypatch):
     assert [item["phone_number"] for item in captured["run_kwargs"]] == ["87761973970", "87761973970"]
     assert any(progress["stage"] == "gopay_wallet_reused" for progress in captured["progress"])
 
-
 def _account_overview_get_accounts(include_session_stubs=True):
     from autotoken.api_routes.account_overview import create_account_overview_router
 
@@ -7973,7 +4634,6 @@ def _account_overview_get_accounts(include_session_stubs=True):
         ).routes
     }
     return routes["get_accounts"](include_session_stubs=include_session_stubs)
-
 
 def test_get_accounts_can_include_auth_session_only_free_stubs(monkeypatch):
     from autotoken import accounts as accounts_module
@@ -7997,13 +4657,11 @@ def test_get_accounts_can_include_auth_session_only_free_stubs(monkeypatch):
     assert rows[0]["account_source"] == accounts_module.ACCOUNT_SOURCE_AUTH_SESSION_STUB
     assert rows[0]["auth_session_file"]
 
-
 def test_get_accounts_can_opt_out_of_auth_session_stubs(monkeypatch):
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [])
     monkeypatch.setattr("autotoken.auth_session_store.list_auth_session_emails", lambda: ["free@example.com"])
 
     assert _account_overview_get_accounts(include_session_stubs=False) == []
-
 
 def test_gopay_auto_signup_discards_reused_wallet_when_sms_bridge_is_unusable(monkeypatch):
     captured = {"progress": [], "closed": [], "run_kwargs": [], "signup_calls": 0, "funcs": []}
@@ -8087,7 +4745,6 @@ def test_gopay_auto_signup_discards_reused_wallet_when_sms_bridge_is_unusable(mo
     assert [item["phone_number"] for item in captured["run_kwargs"]] == ["87761973971", "87761973972"]
     assert any(progress["stage"] == "gopay_wallet_reuse_discarded" for progress in captured["progress"])
 
-
 def test_gopay_task_runner_funds_auto_wallet_before_bind_when_rekberinaja_enabled(monkeypatch):
     captured = {"progress": [], "closed": [], "funded": []}
     account = {"email": "user@example.com"}
@@ -8157,7 +4814,6 @@ def test_gopay_task_runner_funds_auto_wallet_before_bind_when_rekberinaja_enable
     assert captured["run_kwargs"]["phone_number"] == "87761973970"
     assert any(progress["stage"] == "gopay_wallet_funding_started" for progress in captured["progress"])
     assert any(progress["stage"] == "gopay_wallet_funding_done" for progress in captured["progress"])
-
 
 def test_gopay_auto_signup_transfer_skips_rekberinaja_when_gopay_balance_ready(monkeypatch):
     captured = {"progress": [], "funded": [], "run_kwargs": None, "balance_calls": []}
@@ -8230,7 +4886,6 @@ def test_gopay_auto_signup_transfer_skips_rekberinaja_when_gopay_balance_ready(m
     assert captured["funded"] == []
     assert captured["run_kwargs"]["phone_number"] == "87761973970"
     assert any(progress["stage"] == "gopay_wallet_funding_skipped" for progress in captured["progress"])
-
 
 def test_gopay_auto_signup_transfer_polls_gopay_balance_after_rekberinaja(monkeypatch):
     captured = {"progress": [], "sleep": [], "funded": [], "run_kwargs": None, "balance_calls": []}
@@ -8308,7 +4963,6 @@ def test_gopay_auto_signup_transfer_polls_gopay_balance_after_rekberinaja(monkey
     assert any(progress["stage"] == "gopay_wallet_funding_done" for progress in captured["progress"])
     assert any(progress["stage"] == "gopay_wallet_balance_ready" for progress in captured["progress"])
 
-
 def test_gopay_auto_signup_waits_before_bind_when_rekberinaja_transfer_disabled(monkeypatch):
     captured = {"progress": [], "sleep": [], "run_kwargs": None}
     account = {"email": "user@example.com"}
@@ -8378,7 +5032,6 @@ def test_gopay_auto_signup_waits_before_bind_when_rekberinaja_transfer_disabled(
     assert captured["sleep"] and captured["sleep"][0] <= 60
     assert any(progress["stage"] == "gopay_wallet_no_transfer_bind_wait" for progress in captured["progress"])
     assert not any(progress["stage"] == "gopay_wallet_funding_started" for progress in captured["progress"])
-
 
 def test_gopay_auto_signup_queries_balance_before_bind_when_token_available(monkeypatch):
     captured = {"progress": [], "sleep": [], "run_kwargs": None, "balance_calls": []}
@@ -8456,7 +5109,6 @@ def test_gopay_auto_signup_queries_balance_before_bind_when_token_available(monk
     assert any(progress["stage"] == "gopay_wallet_balance_checked" for progress in captured["progress"])
     assert any(progress["stage"] == "gopay_wallet_balance_ready" for progress in captured["progress"])
     assert not any(progress["stage"] == "gopay_wallet_no_transfer_bind_wait" for progress in captured["progress"])
-
 
 def test_gopay_auto_signup_discards_wallet_and_reregisters_when_balance_not_ready(monkeypatch):
     captured = {"progress": [], "sleep": [], "run_kwargs": None, "balance_calls": [], "closed": [], "signup_calls": 0}
@@ -8556,7 +5208,6 @@ def test_gopay_auto_signup_discards_wallet_and_reregisters_when_balance_not_read
     assert [(progress["current"], progress["attempt"], progress["max_attempts"]) for progress in retry_progress] == [
         (1, 2, 10)
     ]
-
 
 def test_gopay_auto_signup_switches_to_transfer_after_three_missing_official_rp(monkeypatch):
     captured = {
@@ -8659,7 +5310,6 @@ def test_gopay_auto_signup_switches_to_transfer_after_three_missing_official_rp(
     assert any(progress["stage"] == "gopay_wallet_balance_auto_transfer_enabled" for progress in captured["progress"])
     assert any(progress["stage"] == "gopay_wallet_funding_started" for progress in captured["progress"])
     assert any(progress["stage"] == "gopay_wallet_funding_done" for progress in captured["progress"])
-
 
 def test_gopay_auto_signup_disables_transfer_after_three_1001_balances(monkeypatch):
     captured = {
@@ -8782,7 +5432,6 @@ def test_gopay_auto_signup_disables_transfer_after_three_1001_balances(monkeypat
         for progress in captured["progress"]
     )
 
-
 def test_gopay_auto_signup_stops_after_three_funded_balance_insufficient(monkeypatch):
     captured = {
         "progress": [],
@@ -8891,7 +5540,6 @@ def test_gopay_auto_signup_stops_after_three_funded_balance_insufficient(monkeyp
     assert captured["closed"] == [(1, False), (2, False), (3, False)]
     assert any(progress["stage"] == "gopay_wallet_balance_insufficient_limit" for progress in captured["progress"])
 
-
 def test_gopay_auto_signup_retries_same_wallet_when_no_transfer_balance_pending(monkeypatch):
     captured = {"progress": [], "sleep": [], "run_kwargs": [], "calls": 0}
     account = {"email": "user@example.com"}
@@ -8968,7 +5616,6 @@ def test_gopay_auto_signup_retries_same_wallet_when_no_transfer_balance_pending(
     assert any(progress["stage"] == "gopay_wallet_balance_abandoned" for progress in captured["progress"])
     assert not any(progress["stage"] == "gopay_wallet_no_transfer_balance_wait" for progress in captured["progress"])
 
-
 def test_gopay_auto_signup_preserves_wallet_after_no_transfer_balance_retry_exhausted(monkeypatch):
     captured = {"progress": [], "sleep": [], "calls": 0}
     account = {"email": "user@example.com"}
@@ -9036,7 +5683,6 @@ def test_gopay_auto_signup_preserves_wallet_after_no_transfer_balance_retry_exha
     assert captured["sleep"] == []
     assert any(progress["stage"] == "gopay_wallet_balance_abandoned" for progress in captured["progress"])
     assert not any(progress["stage"] == "gopay_wallet_preserved" for progress in captured["progress"])
-
 
 def test_gopay_reused_wallet_skips_duplicate_funding_after_debited_rekberinaja_failure(monkeypatch):
     from autotoken.rekberinaja import RekberinajaError
@@ -9127,7 +5773,6 @@ def test_gopay_reused_wallet_skips_duplicate_funding_after_debited_rekberinaja_f
     assert any(progress["stage"] == "gopay_wallet_funding_failed" for progress in captured["progress"])
     assert any(progress["stage"] == "gopay_wallet_funding_skipped" for progress in captured["progress"])
 
-
 def test_gopay_auto_signup_batch_registers_new_wallet_after_consuming_failure(monkeypatch):
     captured = {"progress": [], "closed": [], "run_kwargs": [], "signup_calls": 0}
     accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
@@ -9210,7 +5855,6 @@ def test_gopay_auto_signup_batch_registers_new_wallet_after_consuming_failure(mo
     assert captured["run_kwargs"][0]["phone_number"] == "87761973971"
     assert captured["run_kwargs"][1]["phone_number"] == "87761973972"
 
-
 def test_gopay_auto_signup_batch_reuses_wallet_after_chatgpt_account_failure(monkeypatch):
     captured = {"progress": [], "closed": [], "run_kwargs": [], "signup_calls": 0}
     accounts = [{"email": "first@example.com"}, {"email": "second@example.com"}]
@@ -9289,7 +5933,6 @@ def test_gopay_auto_signup_batch_reuses_wallet_after_chatgpt_account_failure(mon
     assert captured["run_kwargs"][1]["phone_number"] == "87761973970"
     assert any(progress["stage"] == "gopay_wallet_preserved" for progress in captured["progress"])
 
-
 def test_roxybrowser_config_response_uses_runtime_env(monkeypatch):
     monkeypatch.setenv("ROXYBROWSER_API_HOST", "127.0.0.1:50000")
     monkeypatch.setenv("ROXYBROWSER_API_TOKEN", "secret-token")
@@ -9301,7 +5944,6 @@ def test_roxybrowser_config_response_uses_runtime_env(monkeypatch):
     assert "workspace_id" not in cfg
     assert "dir_id" not in cfg
     assert cfg["configured"] is True
-
 
 def test_roxybrowser_config_response_marks_missing_token(monkeypatch):
     monkeypatch.setenv("ROXYBROWSER_API_HOST", "http://127.0.0.1:50000")

@@ -23,7 +23,7 @@ def quota_snapshot_status(quota_info: dict | None) -> str:
 
 def normalize_display_status(status: object) -> str:
     normalized = str(status or "").strip().lower()
-    if normalized in {"personal", "plus", "paypal_ice"}:
+    if normalized in {"personal", "plus"}:
         return "active"
     return normalized
 

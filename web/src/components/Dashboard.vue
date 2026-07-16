@@ -1885,7 +1885,7 @@ function statusLabel(s) {
 
 function normalizedStatus(status) {
   const normalized = String(status || '').trim().toLowerCase()
-  return ['personal', 'plus', 'paypal_ice'].includes(normalized) ? 'active' : normalized
+  return ['personal', 'plus'].includes(normalized) ? 'active' : normalized
 }
 
 function accountTypeClass(type) {
@@ -1909,7 +1909,6 @@ function accountTypeLabel(type) {
 
 function bindProviderLabel(provider) {
   return {
-    paypal: 'PayPal',
     pix: 'Pix',
     gopay: 'GoPay',
     card: 'Card',
@@ -1923,13 +1922,11 @@ function effectiveBindProvider(acc) {
   const provider = String(acc?.last_bind_provider || '').trim().toLowerCase()
   if (provider) return provider
   const rawStatus = String(acc?.raw_status || acc?.status || '').trim().toLowerCase()
-  if (rawStatus === 'paypal_ice') return ''
   return ''
 }
 
 function bindProviderClass(provider) {
   return {
-    paypal: 'bg-blue-500/10 text-blue-300',
     pix: 'bg-cyan-500/10 text-cyan-300',
     gopay: 'bg-emerald-500/10 text-emerald-300',
     card: 'bg-amber-500/10 text-amber-300',

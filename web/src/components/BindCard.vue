@@ -1711,7 +1711,7 @@
           <div class="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-3 text-xs text-gray-400 space-y-1">
             <div>有效代理：<span class="text-gray-200">{{ gopayProxyPoolEntries.length }}</span></div>
             <div>轮换方式：<span class="text-gray-200">每次注册 GoPay 钱包前随机选择一条。</span></div>
-            <div>支持格式与 PayPal 页面一致：协议 URL、host:port:user:pass、user:pass@host:port 等。</div>
+            <div>支持格式：协议 URL、host:port:user:pass、user:pass@host:port 等。</div>
           </div>
         </div>
 

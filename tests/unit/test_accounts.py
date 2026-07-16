@@ -3,21 +3,6 @@ import time
 
 from autotoken import accounts
 
-
-def test_legacy_paypal_ice_status_normalizes_to_active_plus_channel():
-    normalized = accounts._normalize_account_record(
-        {
-            "email": "ice@example.com",
-            "status": accounts.STATUS_PAYPAL_ICE,
-            "account_type": accounts.ACCOUNT_TYPE_FREE,
-        }
-    )
-
-    assert normalized["status"] == accounts.STATUS_ACTIVE
-    assert normalized["account_type"] == accounts.ACCOUNT_TYPE_PLUS
-    assert normalized["last_bind_provider"] == "paypal_ice"
-
-
 def test_add_and_update_account_persists_data(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
@@ -38,7 +23,6 @@ def test_add_and_update_account_persists_data(tmp_path, monkeypatch):
     assert updated["auth_file"] == "auth.json"
     assert accounts.load_accounts()[0]["auth_file"] == "auth.json"
 
-
 def test_add_account_preserves_original_email_case(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
@@ -49,7 +33,6 @@ def test_add_account_preserves_original_email_case(tmp_path, monkeypatch):
 
     assert created["email"] == "amandamiller143152@hotmail.com"
     assert created["original_email"] == "AmandaMiller143152@hotmail.com"
-
 
 def test_update_account_only_rewrites_target_row(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
@@ -75,7 +58,6 @@ def test_update_account_only_rewrites_target_row(tmp_path, monkeypatch):
 
     assert after == before
 
-
 def test_ensure_session_only_account_persists_auth_session_stub(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
@@ -90,7 +72,6 @@ def test_ensure_session_only_account_persists_auth_session_stub(tmp_path, monkey
     assert created["account_source"] == accounts.ACCOUNT_SOURCE_AUTH_SESSION_STUB
     assert accounts.load_accounts()[0]["account_source"] == accounts.ACCOUNT_SOURCE_AUTH_SESSION_STUB
 
-
 def test_ensure_session_only_account_does_not_overwrite_managed_account(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
@@ -102,7 +83,6 @@ def test_ensure_session_only_account_does_not_overwrite_managed_account(tmp_path
     assert original["status"] == accounts.STATUS_PENDING
     assert original["account_source"] == accounts.ACCOUNT_SOURCE_MANAGED
     assert original["password"] == "secret"
-
 
 def test_get_active_accounts_excludes_main_account(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
@@ -120,7 +100,6 @@ def test_get_active_accounts_excludes_main_account(tmp_path, monkeypatch):
     active = accounts.get_active_accounts()
 
     assert [item["email"] for item in active] == ["member@example.com"]
-
 
 def test_get_standby_accounts_orders_recovered_first_and_skips_main_account(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"

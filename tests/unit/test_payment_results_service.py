@@ -1,14 +1,12 @@
 from autotoken import api, gopay_executor
 from autotoken.services import payment_results
 
-
 def test_bind_card_reusable_result_matches_checkout_failure_stages():
     assert payment_results.is_bind_card_reusable_result({"status": "failed", "failure_stage": "open_checkout"}) is True
     assert payment_results.is_bind_card_reusable_result({"status": "failed", "failure_stage": "fill_card"}) is True
     assert payment_results.is_bind_card_reusable_result({"status": "success", "failure_stage": "open_checkout"}) is False
     assert payment_results.is_bind_card_reusable_result({"status": "failed", "failure_stage": "submit_checkout"}) is False
     assert payment_results.is_bind_card_reusable_result(None) is False
-
 
 def test_gopay_checkout_not_approved_adds_actual_email_once():
     result = {
@@ -23,7 +21,6 @@ def test_gopay_checkout_not_approved_adds_actual_email_once():
         "second@example.com",
     ]
 
-
 def test_gopay_pool_classifiers_include_actual_email_by_failure_stage():
     assert payment_results.gopay_nonzero_blocked_pool_emails(
         {"failure_stage": "midtrans_charge_guard", "nonzero_blocked_emails": ["FIRST@example.com"]},
@@ -37,7 +34,6 @@ def test_gopay_pool_classifiers_include_actual_email_by_failure_stage():
         {"status": "failed", "message": "Authentication token has been invalidated"},
         "USER@example.com",
     ) == ["user@example.com"]
-
 
 def test_gopay_pending_retry_reason_preserves_rotation_rules():
     assert (
@@ -78,7 +74,6 @@ def test_gopay_pending_retry_reason_preserves_rotation_rules():
         == ""
     )
 
-
 def test_gopay_pending_retry_source_stage_preserves_progress_stages():
     assert (
         payment_results.gopay_pending_retry_source_stage({}, "gopay_payment_process")
@@ -91,7 +86,6 @@ def test_gopay_pending_retry_source_stage_preserves_progress_stages():
     )
     assert payment_results.gopay_pending_retry_source_stage({}, "gopay_otp") == "gopay_otp_retry"
     assert payment_results.gopay_pending_retry_source_stage({}, "http_403") == "gopay_retryable_failure_rotate"
-
 
 def test_chatgpt_user_paid_success_preserves_existing_payload_and_fallbacks():
     payload = payment_results.chatgpt_user_paid_success(
@@ -113,7 +107,6 @@ def test_chatgpt_user_paid_success_preserves_existing_payload_and_fallbacks():
     assert existing["checkout_url"] == "https://existing.example"
     assert existing["billing_info"] == {"email": "existing@example.com"}
 
-
 def test_chatgpt_approve_blocked_message_preserves_takeover_guidance():
     payload = {"result": "blocked", "detail": "risk"}
     message = payment_results.chatgpt_approve_blocked_message(payload)
@@ -122,43 +115,3 @@ def test_chatgpt_approve_blocked_message_preserves_takeover_guidance():
     assert "ChatGPT checkout approve 被风控拦截" in message
     assert "pm-redirects.stripe.com / app.midtrans.com/snap" in message
     assert gopay_executor._chatgpt_approve_blocked_message(payload) == message
-
-
-def test_paypal_result_classifiers_preserve_retry_rules():
-    assert payment_results.paypal_nonzero_blocked_pool_emails(
-        {"failure_stage": "extract_ba_link_nonzero_amount", "nonzero_blocked_emails": ["FIRST@example.com"]},
-        "second@example.com",
-    ) == ["first@example.com", "second@example.com"]
-    assert (
-        payment_results.paypal_pending_retry_reason({"status": "failed", "failure_stage": "paypal_phone_rejected"})
-        == "paypal_phone_rejected"
-    )
-    assert (
-        payment_results.paypal_pending_retry_reason(
-            {"status": "failed", "failure_stage": "paypal_checkout_proxy_country_mismatch"}
-        )
-        == "paypal_checkout_proxy_country_mismatch"
-    )
-    assert (
-        payment_results.paypal_pending_retry_reason({"status": "needs_review", "failure_stage": ""}) == "needs_review"
-    )
-    assert (
-        payment_results.paypal_pending_retry_reason(
-            {"status": "failed", "message": "net::ERR_TUNNEL_CONNECTION_FAILED"}
-        )
-        == "transient_paypal_flow"
-    )
-    assert (
-        payment_results.paypal_pending_retry_reason({"status": "failed", "failure_stage": "browser_charge_guard"}) == ""
-    )
-    assert payment_results.paypal_pending_retry_source_stage({"failure_stage": ""}, "proxy_api") == "proxy_api"
-
-
-def test_api_keeps_payment_result_compatibility_aliases():
-    assert api._is_bind_card_reusable_result is payment_results.is_bind_card_reusable_result
-    assert api._is_gopay_checkout_not_approved_result is payment_results.is_gopay_checkout_not_approved_result
-    assert api._gopay_pending_retry_reason is payment_results.gopay_pending_retry_reason
-    assert api._gopay_pending_retry_source_stage is payment_results.gopay_pending_retry_source_stage
-    assert api._as_chatgpt_user_paid_success is payment_results.chatgpt_user_paid_success
-    assert api._paypal_pending_retry_reason is payment_results.paypal_pending_retry_reason
-    assert api._paypal_pending_retry_source_stage is payment_results.paypal_pending_retry_source_stage

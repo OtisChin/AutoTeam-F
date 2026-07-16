@@ -137,7 +137,7 @@ RECONCILE_KICK_GHOST=true
 
 | 前缀 | 用途 |
 |------|------|
-| `ROXYBROWSER_*` | PayPal 页面选择 RoxyBrowser 模式 |
+| `ROXYBROWSER_*` | 浏览器自动化使用 RoxyBrowser 模式 |
 | `GOPAY_AUTO_SIGNUP_*` | 自动注册 GoPay 钱包 |
 | `REKBERINAJA_*` | GoPay 充值辅助 |
 | `WHATSAPP_*`, `ANDROID_ADB_PATH` | 从 Android/ADB 读取 WhatsApp OTP |

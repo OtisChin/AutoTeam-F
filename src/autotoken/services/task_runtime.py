@@ -18,7 +18,6 @@ TASK_GROUP_DEFAULT = "default"
 TASK_GROUP_REGISTER = "register"
 TASK_GROUP_BIND_CARD = "bind_card"
 TASK_GROUP_GOPAY = "gopay"
-TASK_GROUP_PAYPAL = "paypal"
 TASK_GROUP_OAUTH = "oauth"
 TASK_GROUP_QUOTA = "quota"
 TASK_GROUP_TEAM = "team"
@@ -28,7 +27,6 @@ COMMAND_TASK_GROUPS = {
     "add": TASK_GROUP_REGISTER,
     "bind-card": TASK_GROUP_BIND_CARD,
     "gopay-bind": TASK_GROUP_GOPAY,
-    "paypal": TASK_GROUP_PAYPAL,
     "login": TASK_GROUP_OAUTH,
     "login-batch": TASK_GROUP_OAUTH,
     "refresh-quota": TASK_GROUP_QUOTA,

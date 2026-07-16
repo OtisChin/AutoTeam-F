@@ -126,7 +126,7 @@ def create_bind_card_task_router(
                 if proxy_api_url and not proxy_api_provider:
                     proxy_api_provider = proxy_runtime.infer_proxy_api_provider_from_url(proxy_api_url)
                 if proxy_api_provider and not proxy_api_url:
-                    proxy_api_url = proxy_runtime.default_paypal_proxy_api_url(
+                    proxy_api_url = proxy_runtime.default_proxy_api_url(
                         proxy_api_provider,
                         country=proxy_api_country,
                     )

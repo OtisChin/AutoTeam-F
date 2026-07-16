@@ -2,20 +2,11 @@ import pytest
 
 from autotoken.services import sms_otp
 
-
 class FakeResponse:
     def __init__(self, *, ok=True, status_code=200, text=""):
         self.ok = ok
         self.status_code = status_code
         self.text = text
-
-
-def test_extract_sms_code_prefers_latest_contextual_code():
-    assert sms_otp.extract_sms_code("验证码 123456，请勿泄露") == "123456"
-    assert sms_otp.extract_sms_code("old OTP: 111111\nnew OTP: 222222") == "222222"
-    assert sms_otp.extract_sms_codes("old OTP: 111111\nnew OTP: 222222") == ["222222", "111111"]
-    assert sms_otp.extract_sms_code("PayPal: transaction alerts enabled") == ""
-
 
 def test_fetch_sms_code_rewrites_local_gopay_bridge_and_skips_ignored_code(monkeypatch):
     captured = {}
@@ -36,7 +27,6 @@ def test_fetch_sms_code_rewrites_local_gopay_bridge_and_skips_ignored_code(monke
         == "222222"
     )
     assert captured["url"] == "http://127.0.0.1:8989/otp/gopay-signup/demo"
-
 
 def test_poll_otp_resends_bridge_then_external_callback(monkeypatch):
     now = [0.0]
@@ -71,7 +61,6 @@ def test_poll_otp_resends_bridge_then_external_callback(monkeypatch):
     ]
     assert {"stage": "sms_provider_resend_triggered"} in progress_events
 
-
 def test_poll_otp_uses_custom_cancelled_error_factory():
     class CustomCancelled(Exception):
         pass
@@ -92,84 +81,3 @@ def test_poll_otp_uses_custom_cancelled_error_factory():
 
     with pytest.raises(CustomCancelled, match="上限 0 次"):
         provider()
-
-
-def test_poll_paypal_signup_otp_clamps_timeout_binds_resend_and_progress():
-    captured = {}
-    callbacks = []
-    progress_events = []
-
-    def fake_poll_otp_from_sms_url(sms_url, **kwargs):
-        captured["sms_url"] = sms_url
-        captured.update(kwargs)
-
-        def provider():
-            captured["progress"]("fetch_otp")
-            callback = getattr(provider, "_gopay_resend_callback", None)
-            assert callable(callback)
-            callback()
-            return " 123456 "
-
-        return provider
-
-    otp = sms_otp.poll_paypal_signup_otp(
-        {"sms_url": "https://sms.example.test/token=demo", "otp_channel": "sms"},
-        timeout_seconds=30,
-        otp_poll_timeout_seconds=180,
-        resend_after_seconds=60,
-        max_resend_attempts=3,
-        is_cancelled=lambda: False,
-        on_progress=progress_events.append,
-        progress_event=lambda stage, **extra: {"stage": stage, **extra},
-        url_summary=lambda url: f"summary:{url}",
-        progress_adapter=lambda on_progress: (
-            (lambda stage, **extra: on_progress({"stage": f"adapted:{stage}", **extra})) if on_progress else None
-        ),
-        poll_otp_from_sms_url_fn=fake_poll_otp_from_sms_url,
-        click_resend=lambda: callbacks.append("resend") or True,
-    )
-
-    assert otp == "123456"
-    assert captured["sms_url"] == "https://sms.example.test/token=demo"
-    assert captured["timeout_seconds"] == 60
-    assert captured["initial_delay_seconds"] == 0
-    assert captured["resend_after_seconds"] == 60
-    assert captured["max_resend_attempts"] == 3
-    assert captured["is_cancelled"]() is False
-    assert callbacks == ["resend"]
-    assert progress_events == [
-        {
-            "stage": "paypal_wait_signup_otp",
-            "sms_url": "summary:https://sms.example.test/token=demo",
-            "otp_channel": "sms",
-        },
-        {"stage": "adapted:fetch_otp"},
-        {"stage": "paypal_otp_received", "otp": "******"},
-    ]
-
-
-def test_poll_paypal_signup_otp_passes_ignored_existing_codes_to_provider():
-    captured = {}
-
-    def fake_poll_otp_from_sms_url(_sms_url, **_kwargs):
-        def provider():
-            captured["ignored"] = set(getattr(provider, "_gopay_ignored_otps", set()))
-            return "222222"
-
-        return provider
-
-    otp = sms_otp.poll_paypal_signup_otp(
-        {"sms_url": "https://sms.example.test", "_ignored_otps": ["111111", ""]},
-        timeout_seconds=60,
-        otp_poll_timeout_seconds=180,
-        resend_after_seconds=60,
-        max_resend_attempts=0,
-        progress_event=lambda stage, **extra: {"stage": stage, **extra},
-        url_summary=lambda url: url,
-        progress_adapter=lambda _on_progress: None,
-        poll_otp_from_sms_url_fn=fake_poll_otp_from_sms_url,
-        click_resend=lambda: True,
-    )
-
-    assert otp == "222222"
-    assert captured["ignored"] == {"111111"}

@@ -47,7 +47,7 @@ def _camoufox_effective_proxy_url(proxy_url: str | None):
     """Return (effective_proxy_url, bridge) for Camoufox.
 
     Camoufox can use unauthenticated SOCKS proxies directly. Keeping those direct
-    avoids routing PayPal traffic through our local HTTP CONNECT bridge.
+    avoids routing browser automation traffic through our local HTTP CONNECT bridge.
     """
     raw = str(proxy_url or "").strip()
     if not raw:
@@ -314,7 +314,7 @@ class ChatGPTTeamAPI:
             return
         _emit_browser_progress(
             on_progress,
-            "paypal_browser_data_clear_started",
+            "browser_data_clear_started",
             f"{browser_label}：正在清空浏览器缓存、Cookie 和权限数据",
             browser=browser_label,
             reason=reason,
@@ -347,7 +347,7 @@ class ChatGPTTeamAPI:
             )
         _emit_browser_progress(
             on_progress,
-            "paypal_browser_data_clear_done",
+            "browser_data_clear_done",
             f"{browser_label}：浏览器运行数据已清空 ({', '.join(cleared) if cleared else 'fresh context'})",
             browser=browser_label,
             reason=reason,
@@ -361,7 +361,7 @@ class ChatGPTTeamAPI:
         locale: str = "en-US",
         on_progress=None,
     ):
-        """使用 Camoufox (Firefox 反检测浏览器) 启动浏览器，用于 PayPal 等高风控场景。
+        """使用 Camoufox (Firefox 反检测浏览器) 启动浏览器，用于 high-risk browser automation scenarios。
 
         Camoufox 基于 Firefox 内核，TLS/JA3 指纹与 Chromium 完全不同，
         且内置引擎级别的指纹随机化（Canvas, WebGL, fonts, navigator 等），
@@ -451,7 +451,7 @@ class ChatGPTTeamAPI:
         if resolved_profile_id:
             _emit_browser_progress(
                 on_progress,
-                "paypal_roxybrowser_cache_clear_started",
+                "roxybrowser_cache_clear_started",
                 "RoxyBrowser：正在清空所选窗口的本地缓存和云端缓存",
                 browser="RoxyBrowser",
                 dir_id=resolved_profile_id,
@@ -459,7 +459,7 @@ class ChatGPTTeamAPI:
         else:
             _emit_browser_progress(
                 on_progress,
-                "paypal_roxybrowser_fresh_profile",
+                "roxybrowser_fresh_profile",
                 (
                     "RoxyBrowser：未指定窗口，将自动创建新窗口"
                     if force_new_profile
@@ -479,7 +479,7 @@ class ChatGPTTeamAPI:
         except Exception as exc:
             _emit_browser_progress(
                 on_progress,
-                "paypal_roxybrowser_launch_failed",
+                "roxybrowser_launch_failed",
                 f"RoxyBrowser：启动窗口失败: {str(exc)[:220]}",
                 level="warn",
                 browser="RoxyBrowser",
@@ -490,7 +490,7 @@ class ChatGPTTeamAPI:
         if getattr(launch, "reused_existing_profile", False):
             _emit_browser_progress(
                 on_progress,
-                "paypal_roxybrowser_reused_idle_profile",
+                "roxybrowser_reused_idle_profile",
                 (
                     "RoxyBrowser：已自动复用空闲窗口并清空缓存，"
                     f"目标指纹 {launch.requested_os or 'unknown'} {launch.requested_os_version or ''}".rstrip()
@@ -504,7 +504,7 @@ class ChatGPTTeamAPI:
         elif launch.created_profile:
             _emit_browser_progress(
                 on_progress,
-                "paypal_roxybrowser_created_profile",
+                "roxybrowser_created_profile",
                 (
                     "RoxyBrowser：已自动创建新窗口，"
                     f"目标指纹 {launch.requested_os or 'unknown'} {launch.requested_os_version or ''}".rstrip()
@@ -518,7 +518,7 @@ class ChatGPTTeamAPI:
         if resolved_profile_id:
             _emit_browser_progress(
                 on_progress,
-                "paypal_roxybrowser_cache_clear_done",
+                "roxybrowser_cache_clear_done",
                 "RoxyBrowser：窗口本地缓存和云端缓存已清空",
                 browser="RoxyBrowser",
                 workspace_id=launch.workspace_id,
@@ -554,7 +554,7 @@ class ChatGPTTeamAPI:
                 connect_error = exc
                 _emit_browser_progress(
                     on_progress,
-                    "paypal_roxybrowser_connect_failed",
+                    "roxybrowser_connect_failed",
                     f"RoxyBrowser：连接调试端口失败: {str(exc)[:220]}",
                     level="warn",
                     browser="RoxyBrowser",
@@ -609,7 +609,7 @@ class ChatGPTTeamAPI:
         )
         _emit_browser_progress(
             on_progress,
-            "paypal_roxybrowser_runtime_fingerprint",
+            "roxybrowser_runtime_fingerprint",
             runtime_message,
             level=runtime_level,
             browser="RoxyBrowser",
@@ -671,7 +671,7 @@ class ChatGPTTeamAPI:
             if not waiting_emitted:
                 _emit_browser_progress(
                     on_progress,
-                    "paypal_roxybrowser_waiting_page_stable",
+                    "roxybrowser_waiting_page_stable",
                     "RoxyBrowser：正在等待 iOS 页面窗口初始化完成",
                     browser="RoxyBrowser",
                     workspace_id=getattr(launch, "workspace_id", None),
@@ -682,7 +682,7 @@ class ChatGPTTeamAPI:
             time.sleep(0.8)
         _emit_browser_progress(
             on_progress,
-            "paypal_roxybrowser_page_stable_timeout",
+            "roxybrowser_page_stable_timeout",
             "RoxyBrowser：等待页面窗口稳定超时，将使用当前存活页面继续",
             level="warn",
             browser="RoxyBrowser",
@@ -711,7 +711,7 @@ class ChatGPTTeamAPI:
         created_dir = bool(getattr(self, "_roxybrowser_created_dir", False))
         _emit_browser_progress(
             on_progress,
-            "paypal_roxybrowser_relaunch_cleanup",
+            "roxybrowser_relaunch_cleanup",
             "RoxyBrowser：正在释放旧窗口会话后重新启动",
             level="warn",
             browser="RoxyBrowser",

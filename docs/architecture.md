@@ -21,7 +21,7 @@ AutoToken-F 用来维护 ChatGPT Team 账号池、认证文件和 CPA 同步状�
 | `core/` | 路径、文本 IO、环境兼容、浏览器指纹、取消信号等基础能力 |
 | `settings/` | 静态配置、运行时配置、管理员状态、首次配置向导 |
 | `storage/` | 账号池、认证文件、SQLite、失败记录持久化 |
-| `payments/` | 绑卡、GoPay、PayPal、WhatsApp OTP 等支付相关流程 |
+| `payments/` | 绑卡、GoPay、WhatsApp OTP 等支付相关流程 |
 | `integrations/` | ChatGPT API、CPA、RoxyBrowser、代理桥、Rekberinaja、导入导出转换 |
 | `services/` | 可复用业务决策和任务运行时逻辑 |
 | `mail/` | 临时邮箱与账号池邮箱 provider |

@@ -375,7 +375,7 @@ def generate_fingerprint(
 
 def get_context_options(fp: BrowserFingerprint) -> dict[str, Any]:
     """返回可直接 **解包传给 browser.new_context() 的参数字典。"""
-    # Client Hints headers — PayPal/Cloudflare 重点检测这些
+    # Client Hints headers — payment/Cloudflare 重点检测这些
     sec_ch_ua = f'"Chromium";v="{fp.chrome_version}", "Google Chrome";v="{fp.chrome_version}", "Not-A.Brand";v="99"'
     sec_ch_ua_platform = '"Windows"' if fp.platform == "Win32" else '"macOS"'
 
