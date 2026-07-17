@@ -694,16 +694,18 @@ const tempCdkAvailableConcurrency = computed(() => {
   const maxConcurrency = Number(info.max_concurrency)
   const activeJobs = Number(info.active_jobs || 0)
   const balance = Number(info.balance)
-  if (!Number.isFinite(maxConcurrency) || maxConcurrency <= 0) return 0
+  if (!Number.isFinite(maxConcurrency) || maxConcurrency <= 0) {
+    return Number.isFinite(balance) ? Math.max(0, balance) : 0
+  }
   const freeSlots = Math.max(0, maxConcurrency - (Number.isFinite(activeJobs) ? activeJobs : 0))
   const usableBalance = Number.isFinite(balance) ? Math.max(0, balance) : freeSlots
   return Math.max(0, Math.min(freeSlots, usableBalance))
 })
 const tempCdkConcurrencyHint = computed(() => {
-  if (!tempCdkStatus.value) return '默认 5；不设本地上限，填写 CDK 后会自动按余额和接口并发限制。'
+  if (!tempCdkStatus.value) return '默认 5；最大并发不做本地限制，CDK 余额仅用于展示和任务分配。'
   const available = tempCdkAvailableConcurrency.value
   if (available <= 0) return '当前 CDK 没有可用并发或余额，请稍后再试或更换 CDK。'
-  return `默认 5，当前 CDK 可用并发 ${available}；超过会自动降到可用值。`
+  return `默认 5，已查 CDK 当前可用并发约 ${available}；不会自动改写你填写的并发数。`
 })
 
 
@@ -749,19 +751,6 @@ function tempCdkStateClass(state) {
   if (text === 'temporarily_reserved' || text === 'concurrency_full') return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
   if (['disabled', 'expired', 'exhausted', 'invalid'].includes(text)) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
   return 'border-gray-700 bg-gray-900 text-gray-300'
-}
-
-function clampTempConcurrencyFromStatus(options = {}) {
-  const notify = Boolean(options.notify)
-  const available = tempCdkAvailableConcurrency.value
-  tempForm.value.concurrency = Math.max(1, Number(tempForm.value.concurrency || 1))
-  if (!tempCdkStatus.value || available <= 0) return ''
-  if (tempForm.value.concurrency <= available) return ''
-  const before = tempForm.value.concurrency
-  tempForm.value.concurrency = available
-  const message = `CDK 当前可用并发 ${available}，已从 ${before} 自动降到 ${available}。`
-  if (notify) setStatus(message)
-  return message
 }
 
 function paymentLinkStatusText(status) {
@@ -1607,8 +1596,7 @@ async function checkTempCdkStatus(options = {}) {
     const info = summary
     const balance = formatCdkMetric(info.balance)
     const stateText = tempCdkStateText(info.state)
-    const clampMessage = clampTempConcurrencyFromStatus({ notify: false })
-    if (!silent) setStatus(`CDK 池余额：${balance}，状态：${stateText}，已查 ${summary.checked_count}/${summary.total_count} 个。${clampMessage ? ` ${clampMessage}` : ''}`)
+    if (!silent) setStatus(`CDK 池余额：${balance}，状态：${stateText}，已查 ${summary.checked_count}/${summary.total_count} 个。`)
     return data
   } catch (error) {
     const message = cleanText(error.message || error)
@@ -1678,12 +1666,8 @@ async function startWithEmails(emails, actionText = '提取') {
     if (tempMode) {
       tempCdkBalanceExpanded.value = true
       await checkTempCdkStatus({ silent: true, force: true })
-      if (tempCdkStatus.value && tempCdkAvailableConcurrency.value <= 0) {
-        throw new Error('CDK 当前没有可用并发或余额，请稍后再试或更换 CDK。')
-      }
-      const clampMessage = clampTempConcurrencyFromStatus({ notify: false })
-      concurrency = tempForm.value.concurrency
-      setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PIX，并发 ${concurrency}。${clampMessage ? ` ${clampMessage}` : ''}`, false, task)
+      concurrency = Math.max(1, Number(tempForm.value.concurrency || 5))
+      setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PIX，并发 ${concurrency}。`, false, task)
       data = await api.startBrazilPixTempBatch({
         accountEmails,
         cdk: tempCdkLines()[0] || '',

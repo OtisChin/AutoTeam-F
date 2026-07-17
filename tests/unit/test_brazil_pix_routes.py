@@ -1323,3 +1323,59 @@ def test_temp_batch_job_allows_concurrency_above_ten(monkeypatch, tmp_path):
     assert job["concurrency"] == 12
     assert len(job["result"]["successes"]) == 12
     assert max_active > 10
+
+
+def test_temp_batch_job_keeps_requested_concurrency_when_cdk_reports_one_slot(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    emails = [f"slot{index}@example.com" for index in range(10)]
+    for index, email in enumerate(emails):
+        _write_session(auth_dir, email, f"slot-token-{index}-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"} for email in emails])
+    brazil_pix.JOBS.clear()
+    job_id = "temp-keep-concurrency-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "concurrency": 10,
+        "cancel_requested": False,
+        "running_count": 0,
+        "skipped": [],
+        "account_statuses": {},
+        "temp": True,
+    }
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/cdk/status"):
+            return _FakeResponse(200, {"ok": True, "cdk": {"valid": True, "balance": 10, "max_concurrency": 1}})
+        remote_id = str(kwargs["json"]["credential"]).split("-")[2]
+        return _FakeResponse(
+            202,
+            {
+                "job_id": f"remote-{remote_id}",
+                "job_token": "remote-token",
+                "status": "success",
+                "link": f"https://payments.stripe.com/qr/instructions/{remote_id}",
+                "pix_copy_paste": "pix-temp-code",
+                "amount": "0",
+            },
+        )
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+
+    req = brazil_pix.BrazilPixTempBatchStartRequest.model_validate(
+        {"accountEmails": emails, "cdk": "CDK-ONE-SLOT", "concurrency": 10}
+    )
+    brazil_pix._run_temp_batch_job(job_id, req)
+
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "success"
+    assert job["concurrency"] == 10
+    assert len(job["result"]["successes"]) == 10
