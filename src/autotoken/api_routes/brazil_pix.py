@@ -106,6 +106,10 @@ def _auth_email_from_path(path: Path, data: dict[str, Any]) -> str:
     email = str(data.get("email") or "").strip()
     if email:
         return email
+    user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    email = str(user.get("email") or "").strip()
+    if email:
+        return email
     stem = path.stem
     return stem.replace("_", ".") if "@" in stem else stem
 

@@ -171,6 +171,24 @@ def test_auth_accounts_ignore_leftover_session_when_dashboard_pool_has_accounts(
     assert accounts == {"keep@example.com"}
 
 
+def test_auth_accounts_include_phone_registered_session_by_nested_user_email(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    phone = "+5511999998888"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "5511999998888.json").write_text(
+        json.dumps({"accessToken": "phone-token-" + "x" * 80, "user": {"email": phone}}),
+        encoding="utf-8",
+    )
+    brazil_pix.account_store.save_accounts(
+        [{"email": phone, "status": "active", "account_type": "free"}]
+    )
+
+    accounts = {item["email"]: item for item in brazil_pix._iter_auth_accounts_with_pix_status()}
+
+    assert phone in accounts
+    assert accounts[phone]["pix_status"] == "pending"
+
+
 def test_load_links_pruning_deleted_accounts_removes_paid_links(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     _write_session(auth_dir, "paid@example.com")

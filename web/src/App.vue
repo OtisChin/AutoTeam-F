@@ -59,6 +59,11 @@
 
           <BindCard v-else-if="currentPage === 'gopay'" key="gopay" initial-tab="gopay" standalone @refresh="refresh" />
 
+          <section v-else-if="currentPage === 'paypal'" class="rounded-xl border border-gray-800 bg-gray-900 p-5 shadow-2xl">
+            <h2 class="text-xl font-bold text-white">PayPal</h2>
+            <p class="mt-2 text-sm text-gray-400">功能待定</p>
+          </section>
+
           <IdealLinkPage v-else-if="currentPage === 'ideal'" />
 
           <BrazilPixPage v-else-if="currentPage === 'brazilPix'" />
@@ -164,7 +169,7 @@ const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autotoken_current_page'
-const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'ideal', 'brazilPix', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
+const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'paypal', 'ideal', 'brazilPix', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
 const IDLE_POLLING_ENABLED = false
