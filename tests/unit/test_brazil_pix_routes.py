@@ -1164,6 +1164,21 @@ def test_temp_batch_job_allocates_multiple_cdks_by_balance(monkeypatch, tmp_path
     assert len(brazil_pix.JOBS[job_id]["result"]["successes"]) == 4
 
 
+def test_temp_cdk_assignments_stop_balance_checks_once_enough_quota(monkeypatch):
+    checked_cdks = []
+
+    def fake_balance(cdk):
+        checked_cdks.append(cdk)
+        return {"CDK-A": 3, "CDK-B": 2, "CDK-C": 99}[cdk]
+
+    monkeypatch.setattr(brazil_pix, "_temp_cdk_balance", fake_balance)
+
+    assignments = brazil_pix._temp_cdk_assignments(["CDK-A", "CDK-B", "CDK-C"], 4)
+
+    assert assignments == ["CDK-A", "CDK-A", "CDK-A", "CDK-B"]
+    assert checked_cdks == ["CDK-A", "CDK-B"]
+
+
 def test_temp_cdk_balance_treats_api_ok_false_as_zero():
     assert brazil_pix._temp_cdk_balance_from_status({"ok": False, "message": "invalid cdk"}) == 0
 
@@ -1200,6 +1215,46 @@ def test_temp_cdk_status_proxies_olimap_balance_api(monkeypatch):
     assert calls[0][1]["timeout"] == 20
     assert data["cdk"]["balance"] == 7
     assert data["cdk"]["max_concurrency"] == 10
+
+
+def test_temp_cdk_status_uses_short_ttl_cache(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeResponse(200, {"ok": True, "cdk": {"valid": True, "balance": 9}})
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+
+    endpoint = _route_endpoint("/api/brazil-pix/temp/cdk/status", "POST")
+    first = endpoint(brazil_pix.BrazilPixTempCdkStatusRequest(cdk="CDK-CACHED"))
+    second = endpoint(brazil_pix.BrazilPixTempCdkStatusRequest(cdk="CDK-CACHED"))
+
+    assert first["cdk"]["balance"] == 9
+    assert second["cdk"]["balance"] == 9
+    assert len(calls) == 1
+
+
+def test_temp_cdk_status_returns_cached_value_when_upstream_rate_limited(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if len(calls) == 1:
+            return _FakeResponse(200, {"ok": True, "cdk": {"valid": True, "balance": 5}})
+        return _FakeResponse(429, {"ok": False, "message": "Too Many Requests"})
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+    endpoint = _route_endpoint("/api/brazil-pix/temp/cdk/status", "POST")
+
+    first = endpoint(brazil_pix.BrazilPixTempCdkStatusRequest(cdk="CDK-RATE"))
+    second = endpoint(brazil_pix.BrazilPixTempCdkStatusRequest(cdk="CDK-RATE", force=True))
+
+    assert first["cdk"]["balance"] == 5
+    assert second["cdk"]["balance"] == 5
+    assert second["cached"] is True
+    assert second["stale"] is True
+    assert len(calls) == 2
 
 
 def test_temp_batch_job_allows_concurrency_above_ten(monkeypatch, tmp_path):

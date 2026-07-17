@@ -33,6 +33,13 @@ JOBS_LOCK = threading.Lock()
 PAYMENT_JOBS_LOCK = threading.RLock()
 LINKS_LOCK = threading.RLock()
 ACCOUNT_STATUS_LOCK = threading.RLock()
+TEMP_CDK_STATUS_CACHE_TTL_S = 120
+TEMP_CDK_STATUS_STALE_TTL_S = 1800
+TEMP_CDK_STATUS_MIN_INTERVAL_S = 0.25
+TEMP_CDK_STATUS_CACHE: dict[str, dict[str, Any]] = {}
+TEMP_CDK_STATUS_CACHE_LOCK = threading.RLock()
+TEMP_CDK_STATUS_RATE_LOCK = threading.Lock()
+TEMP_CDK_STATUS_LAST_REQUEST_AT = 0.0
 
 
 class BrazilPixStartRequest(BaseModel):
@@ -66,6 +73,7 @@ class BrazilPixTempBatchStartRequest(BaseModel):
 
 class BrazilPixTempCdkStatusRequest(BaseModel):
     cdk: str = ""
+    force: bool = False
 
 
 class BrazilPixDeleteLinksRequest(BaseModel):
@@ -987,8 +995,63 @@ def _temp_success_result(account_email: str, remote_job_id: str, data: dict[str,
     }
 
 
-def _temp_cdk_status_data(cdk: str) -> dict[str, Any]:
+def _temp_cdk_cache_key(cdk: str) -> str:
+    return str(cdk or "").strip().lower()
+
+
+def _get_temp_cdk_status_cache(cdk: str, *, allow_stale: bool = False) -> dict[str, Any] | None:
+    key = _temp_cdk_cache_key(cdk)
+    if not key:
+        return None
+    now = time.time()
+    max_age = TEMP_CDK_STATUS_STALE_TTL_S if allow_stale else TEMP_CDK_STATUS_CACHE_TTL_S
+    with TEMP_CDK_STATUS_CACHE_LOCK:
+        item = TEMP_CDK_STATUS_CACHE.get(key)
+        if not item:
+            return None
+        age = now - float(item.get("ts") or 0)
+        if age < 0 or age > max_age:
+            return None
+        data = item.get("data")
+        if not isinstance(data, dict):
+            return None
+        result = dict(data)
+        result["cached"] = True
+        result["stale"] = age > TEMP_CDK_STATUS_CACHE_TTL_S
+        result["cache_age_s"] = round(age, 1)
+        return result
+
+
+def _set_temp_cdk_status_cache(cdk: str, data: dict[str, Any]) -> None:
+    key = _temp_cdk_cache_key(cdk)
+    if not key:
+        return
+    clean = dict(data)
+    clean.pop("cached", None)
+    clean.pop("stale", None)
+    clean.pop("cache_age_s", None)
+    clean.pop("upstream_error", None)
+    with TEMP_CDK_STATUS_CACHE_LOCK:
+        TEMP_CDK_STATUS_CACHE[key] = {"ts": time.time(), "data": clean}
+
+
+def _wait_temp_cdk_status_rate_limit() -> None:
+    global TEMP_CDK_STATUS_LAST_REQUEST_AT
+    with TEMP_CDK_STATUS_RATE_LOCK:
+        now = time.monotonic()
+        wait_s = TEMP_CDK_STATUS_LAST_REQUEST_AT + TEMP_CDK_STATUS_MIN_INTERVAL_S - now
+        if wait_s > 0:
+            time.sleep(wait_s)
+        TEMP_CDK_STATUS_LAST_REQUEST_AT = time.monotonic()
+
+
+def _temp_cdk_status_data(cdk: str, *, force: bool = False) -> dict[str, Any]:
+    if not force:
+        cached = _get_temp_cdk_status_cache(cdk)
+        if cached is not None:
+            return cached
     try:
+        _wait_temp_cdk_status_rate_limit()
         resp = requests.post(
             f"{TEMP_PIX_CDK_API_BASE}/cdk/status",
             json={"cdk": cdk},
@@ -996,8 +1059,38 @@ def _temp_cdk_status_data(cdk: str) -> dict[str, Any]:
             timeout=20,
         )
     except requests.RequestException as exc:
+        cached = _get_temp_cdk_status_cache(cdk, allow_stale=True)
+        if cached is not None:
+            cached["stale"] = True
+            cached["upstream_error"] = str(exc)
+            return cached
         raise RuntimeError(f"临时 CDK 余额查询失败: {exc}") from exc
-    return _temp_external_json(resp)
+    try:
+        data = resp.json()
+    except ValueError:
+        cached = _get_temp_cdk_status_cache(cdk, allow_stale=True)
+        if cached is not None:
+            cached["stale"] = True
+            cached["upstream_error"] = f"HTTP {resp.status_code} non-json"
+            return cached
+        raise RuntimeError(f"临时 CDK 余额服务返回非 JSON: HTTP {resp.status_code} {resp.text[:300]}") from None
+    if not isinstance(data, dict):
+        cached = _get_temp_cdk_status_cache(cdk, allow_stale=True)
+        if cached is not None:
+            cached["stale"] = True
+            cached["upstream_error"] = f"bad response: {str(data)[:120]}"
+            return cached
+        raise RuntimeError(f"临时 CDK 余额服务响应格式错误: {str(data)[:300]}")
+    if not resp.ok:
+        cached = _get_temp_cdk_status_cache(cdk, allow_stale=True)
+        if cached is not None:
+            cached["stale"] = True
+            cached["upstream_error"] = data.get("message") or data.get("error") or f"HTTP {resp.status_code}"
+            return cached
+        message = data.get("message") or data.get("error") or data.get("detail") or f"HTTP {resp.status_code}"
+        raise RuntimeError(f"临时 CDK 余额服务拒绝请求: {message}")
+    _set_temp_cdk_status_cache(cdk, data)
+    return data
 
 
 def _temp_cdk_balance_from_status(data: dict[str, Any]) -> int | None:
@@ -1054,6 +1147,8 @@ def _temp_cdk_assignments(cdks: list[str], total_accounts: int, log=None) -> lis
         known_balances.append((cdk, balance))
         if balance > 0:
             expanded.extend([cdk] * balance)
+            if len(expanded) >= total_accounts:
+                break
 
     if expanded:
         assignments = expanded[:total_accounts]
@@ -1448,29 +1543,12 @@ def create_brazil_pix_router() -> APIRouter:
         if not cdk:
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "CDK 不能为空"})
         try:
-            resp = requests.post(
-                f"{TEMP_PIX_CDK_API_BASE}/cdk/status",
-                json={"cdk": cdk},
-                headers={"Content-Type": "application/json"},
-                timeout=20,
-            )
-        except requests.RequestException as exc:
+            return _temp_cdk_status_data(cdk, force=bool(req.force))
+        except RuntimeError as exc:
             raise HTTPException(
                 status_code=502,
-                detail={"ok": False, "code": "temp_cdk_api_unreachable", "message": f"临时 CDK 余额服务请求失败：{exc}"},
+                detail={"ok": False, "code": "temp_cdk_api_unreachable", "message": str(exc)},
             ) from exc
-        try:
-            data = resp.json()
-        except ValueError:
-            raise HTTPException(
-                status_code=502,
-                detail={"ok": False, "code": f"http_{resp.status_code}", "message": resp.text[:500] or "临时 CDK 余额服务返回非 JSON 响应"},
-            ) from None
-        if not isinstance(data, dict):
-            raise HTTPException(status_code=502, detail={"ok": False, "code": "bad_temp_cdk_response", "message": "临时 CDK 余额服务响应格式错误"})
-        if not resp.ok:
-            raise HTTPException(status_code=resp.status_code, detail=data)
-        return data
 
     @router.post("/api/brazil-pix/jobs/{job_id}/cancel")
     def cancel_brazil_pix_job(job_id: str) -> dict[str, Any]:

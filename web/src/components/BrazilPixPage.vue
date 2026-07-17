@@ -499,8 +499,9 @@ const PIX_TASKS_STORAGE_KEY = 'autotoken_brazil_pix_tasks'
 const PIX_TAB_STORAGE_KEY = 'autotoken_brazil_pix_active_tab'
 const PAYMENT_STATE_STORAGE_KEY = 'autotoken_brazil_pix_payment_state'
 const TEMP_FORM_STORAGE_KEY = 'autotoken_brazil_pix_temp_form'
-const TEMP_CDK_STATUS_POLL_MS = 15000
-const TEMP_CDK_STATUS_SAMPLE_LIMIT = 20
+const TEMP_CDK_STATUS_POLL_MS = 60000
+const TEMP_CDK_STATUS_SAMPLE_LIMIT = 5
+const TEMP_CDK_STATUS_REQUEST_DELAY_MS = 350
 const activePixTab = ref('extract')
 let tempCdkStatusTimer = null
 let tempCdkStatusDebounce = null
@@ -1562,15 +1563,23 @@ async function checkTempCdkStatus(options = {}) {
   tempCdkStatusError.value = ''
   try {
     const sampledCdks = cdks.slice(0, TEMP_CDK_STATUS_SAMPLE_LIMIT)
-    const results = await Promise.all(sampledCdks.map(async cdk => {
+    const results = []
+    for (const cdk of sampledCdks) {
       try {
-        const data = await api.getBrazilPixTempCdkStatus({ cdk })
-        return { cdk, ok: true, info: data?.cdk || {}, data }
+        const data = await api.getBrazilPixTempCdkStatus({ cdk, force })
+        results.push({ cdk, ok: true, info: data?.cdk || {}, data })
       } catch (error) {
-        return { cdk, ok: false, error: cleanText(error.message || error), info: {} }
+        results.push({ cdk, ok: false, error: cleanText(error.message || error), info: {} })
       }
-    }))
+      if (sampledCdks.length > 1) {
+        await new Promise(resolve => window.setTimeout(resolve, TEMP_CDK_STATUS_REQUEST_DELAY_MS))
+      }
+    }
     const validResults = results.filter(item => item.ok && item.info && item.info.valid !== false)
+    if (results.length && !validResults.length && tempCdkStatus.value) {
+      tempCdkStatusError.value = '本轮 CDK 余额查询失败，已保留上一次余额，稍后自动重试。'
+      return tempCdkStatus.value
+    }
     const numberSum = (name) => validResults.reduce((sum, item) => {
       const value = Number(item.info?.[name])
       return sum + (Number.isFinite(value) ? value : 0)
@@ -1592,7 +1601,7 @@ async function checkTempCdkStatus(options = {}) {
     if (results.length && !validResults.length) {
       tempCdkStatusError.value = '已查询的 CDK 均不可用。'
     } else if (cdks.length > TEMP_CDK_STATUS_SAMPLE_LIMIT) {
-      tempCdkStatusError.value = `已自动查询前 ${TEMP_CDK_STATUS_SAMPLE_LIMIT} 个 CDK；提交时仍会使用全部 ${cdks.length} 个。`
+      tempCdkStatusError.value = `已低频查询前 ${TEMP_CDK_STATUS_SAMPLE_LIMIT} 个 CDK；提交时仍会使用全部 ${cdks.length} 个。`
     }
     const data = tempCdkStatus.value
     const info = summary
