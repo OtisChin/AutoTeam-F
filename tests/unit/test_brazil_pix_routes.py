@@ -419,7 +419,7 @@ def test_batch_job_honors_concurrency(monkeypatch, tmp_path):
     assert max_active >= 2
 
 
-def test_batch_job_retries_failed_account_up_to_three_attempts(monkeypatch, tmp_path):
+def test_batch_job_retries_failed_account_up_to_five_attempts(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     _write_session(auth_dir, "retry@example.com", "retry-token-" + "x" * 80)
     brazil_pix.JOBS.clear()
@@ -438,11 +438,12 @@ def test_batch_job_retries_failed_account_up_to_three_attempts(monkeypatch, tmp_
         "account_statuses": {},
     }
     calls = 0
+    monkeypatch.setattr(brazil_pix.time, "sleep", lambda _seconds: None)
 
     def fake_generate_pix_trial(cfg, log):
         nonlocal calls
         calls += 1
-        if calls < 3:
+        if calls < 5:
             raise RuntimeError(f"temporary failure {calls}")
         return {
             "fields": {
@@ -464,10 +465,10 @@ def test_batch_job_retries_failed_account_up_to_three_attempts(monkeypatch, tmp_
     brazil_pix._run_batch_job(job_id, req)
 
     job = brazil_pix.JOBS[job_id]
-    assert calls == 3
+    assert calls == 5
     assert job["status"] == "success"
     assert job["result"]["successes"][0]["email"] == "retry@example.com"
-    assert job["result"]["successes"][0]["attempts"] == 3
+    assert job["result"]["successes"][0]["attempts"] == 5
     assert not job["result"]["errors"]
 
 

@@ -788,6 +788,47 @@ def normalize_pix_proxy_url(value: str) -> str:
     return normalize_proxy_url(raw)
 
 
+def pix_proxy_with_fresh_sid(proxy_url: str, region: str = "BR") -> tuple[str, str]:
+    """Return a proxy URL with a fresh session id when the provider format exposes one.
+
+    Supported common formats:
+    - credentials containing ``sid-<old>-t-``
+    - URL query parameters named sid/session/session_id/sessionid
+    - Kookeey-style password suffix ``-REGION-SID`` before ``@``
+    """
+    proxy = str(proxy_url or "").strip()
+    if not proxy:
+        return "", ""
+    sid = uuid.uuid4().hex[:8]
+
+    refreshed, count = re.subn(r"(sid-)[^-:@/?#]+(-t-)", rf"\g<1>{sid}\g<2>", proxy, count=1)
+    if count:
+        return refreshed, sid
+
+    refreshed, count = re.subn(
+        r"([?&](?:sid|session|session_id|sessionid)=)[^&#]+",
+        rf"\g<1>{sid}",
+        proxy,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if count:
+        return refreshed, sid
+
+    normalized_region = re.escape(str(region or "BR").strip().upper() or "BR")
+    refreshed, count = re.subn(
+        rf"(:[^:@/?#]*-{normalized_region}-)[A-Za-z0-9]{{4,32}}(@)",
+        lambda m: f"{m.group(1)}{sid}{m.group(2)}",
+        proxy,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if count:
+        return refreshed, sid
+
+    return proxy, "static"
+
+
 class DirectProxyContext:
     def __init__(self, proxy_url: str):
         self.url = proxy_url
@@ -811,7 +852,9 @@ def build_pix_dynamic_proxy(cfg: PixJobConfig, stage_index: int) -> tuple[str, s
     direct = [normalize_pix_proxy_url(item) for item in (cfg.direct_proxies or []) if str(item or "").strip()]
     if direct:
         idx = stage_index % len(direct)
-        return direct[idx], f"direct-{idx + 1}"
+        proxy, sid = pix_proxy_with_fresh_sid(direct[idx], cfg.region)
+        sid_label = f"sid={sid}" if sid and sid != "static" else "static"
+        return proxy, f"direct-{idx + 1} {sid_label}"
     return build_kookeey_proxy(cfg.kookeey_user, cfg.kookeey_pass, cfg.kookeey_endpoint, cfg.region)
 
 

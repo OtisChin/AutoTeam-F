@@ -37,3 +37,34 @@ def test_brazil_pix_address_pool_has_been_replaced_with_valid_real_addresses():
         assert postal_code[5:6] == "-"
         assert postal_code[6:].isdigit()
         assert isinstance(ddd, int)
+
+
+def test_build_pix_dynamic_proxy_refreshes_direct_proxy_sid_marker():
+    cfg = brazil_pix.PixJobConfig(
+        access_token="token",
+        direct_proxies=["socks5h://user:sid-oldsid-t-token@proxy.example:1080"],
+    )
+
+    first_url, first_label = brazil_pix.build_pix_dynamic_proxy(cfg, 0)
+    second_url, second_label = brazil_pix.build_pix_dynamic_proxy(cfg, 1)
+
+    assert "sid-oldsid-t-" not in first_url
+    assert "sid-oldsid-t-" not in second_url
+    assert first_url != second_url
+    assert first_label.startswith("direct-1 sid=")
+    assert second_label.startswith("direct-1 sid=")
+
+
+def test_build_pix_dynamic_proxy_refreshes_kookeey_style_direct_proxy_sid():
+    cfg = brazil_pix.PixJobConfig(
+        access_token="token",
+        region="BR",
+        direct_proxies=["gate.kookeey.info:1000:user:pass-BR-OLDSID1"],
+    )
+
+    url, label = brazil_pix.build_pix_dynamic_proxy(cfg, 0)
+
+    assert url.startswith("socks5h://user:pass-BR-")
+    assert "OLDSID1" not in url
+    assert "@gate.kookeey.info:1000" in url
+    assert label.startswith("direct-1 sid=")
