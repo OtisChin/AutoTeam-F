@@ -2876,6 +2876,8 @@ def _complete_direct_about_you(page):
         submitted = False
         for btn_selector in (
             'button:has-text("完成帐户创建")',
+            'button:has-text("创建帐户")',
+            'button:has-text("创建账号")',
             'button:has-text("Create account")',
             'button:has-text("Continue")',
             'button:has-text("继续")',
@@ -2884,7 +2886,12 @@ def _complete_direct_about_you(page):
             try:
                 btn = page.locator(btn_selector).first
                 if btn.is_visible(timeout=1000):
-                    btn.click()
+                    try:
+                        btn.click()
+                    except Exception:
+                        handle = btn.element_handle(timeout=1000)
+                        if handle:
+                            page.evaluate("(el) => el.click()", handle)
                     submitted = True
                     break
             except Exception:
@@ -2892,15 +2899,40 @@ def _complete_direct_about_you(page):
 
         if not submitted:
             try:
+                clicked = page.evaluate(
+                    """() => {
+                    const visible = (el) => {
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                    };
+                    const labels = /(完成帐户创建|完成账号创建|创建帐户|创建账号|create account|continue|继续)/i;
+                    for (const el of Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))) {
+                        const text = String(el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '');
+                        if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+                        if (labels.test(text)) {
+                            el.scrollIntoView({block: 'center', inline: 'center'});
+                            el.click();
+                            return text || 'submit';
+                        }
+                    }
+                    return '';
+                }"""
+                )
+                submitted = bool(clicked)
+            except Exception:
+                submitted = False
+
+        if not submitted:
+            try:
                 page.keyboard.press("Enter")
             except Exception:
                 pass
 
-        next_step = _wait_for_direct_register_step(
-            page,
-            {"profile", "completed", "code", "password", "email", "google"},
-            timeout=12,
-        )
+        # 新版 auth.openai.com about-you 提交后经常要 20-35s 才从 profile
+        # 跳到 chatgpt.com。这里必须等待“离开 profile”，不能把 profile 本身
+        # 当成完成等待的结果，否则会立即返回并重复提交。
+        next_step = _wait_for_direct_step_change(page, "profile", timeout=35)
         logger.info("[直接注册] 提交资料后状态: %s | URL: %s", next_step, page.url)
 
         # 提交 about-you 后最容易撞 add-phone：这里直接检测并 raise，让上层放弃账号
