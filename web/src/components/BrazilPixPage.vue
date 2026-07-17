@@ -9,12 +9,17 @@
             :class="activePixTab === 'extract' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'"
           >提链页</button>
           <button
+            @click="activePixTab = 'tempExtract'"
+            class="rounded-lg px-4 py-2 text-sm font-bold transition"
+            :class="activePixTab === 'tempExtract' ? 'bg-amber-600 text-white shadow-lg shadow-amber-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'"
+          >临时提链页</button>
+          <button
             @click="activePixTab = 'payment'"
             class="rounded-lg px-4 py-2 text-sm font-bold transition"
             :class="activePixTab === 'payment' ? 'bg-blue-600 text-white shadow-lg shadow-blue-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'"
           >支付页</button>
         </div>
-        <p class="px-2 text-xs text-gray-500">提链和支付分开管理，切换不会清空当前输入。</p>
+        <p class="px-2 text-xs text-gray-500">正式提链、临时提链和支付分开管理，切换不会清空当前输入。</p>
       </div>
     </section>
 
@@ -137,9 +142,9 @@
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5 md:p-6">
         <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">独立 PIX 任务</p>
-          <h2 class="mt-1 text-2xl font-bold text-white">巴西PIX 提链</h2>
-          <p class="mt-2 text-sm text-gray-400">在账号池中勾选一个或多个账号执行提链，结果会进入下方链接管理表。</p>
+            <p class="text-xs font-semibold uppercase tracking-[0.18em]" :class="isTempExtract ? 'text-amber-400' : 'text-gray-500'">{{ isTempExtract ? 'Olimap CDK API' : '独立 PIX 任务' }}</p>
+          <h2 class="mt-1 text-2xl font-bold text-white">{{ isTempExtract ? '巴西PIX 临时提链' : '巴西PIX 提链' }}</h2>
+          <p class="mt-2 text-sm text-gray-400">{{ isTempExtract ? '使用 olimap CDK API：账号池 + CDK，无需代理、地址或地区参数，结果仍写入下方链接管理表。' : '在账号池中勾选一个或多个账号执行提链，结果会进入下方链接管理表。' }}</p>
         </div>
         <span class="inline-flex w-fit items-center gap-2 rounded-xl border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-300">
           <span class="h-2.5 w-2.5 rounded-full" :class="busy ? 'bg-blue-400' : 'bg-emerald-400'"></span>
@@ -152,10 +157,73 @@
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
         <div class="border-b border-gray-800 pb-4">
           <p class="text-xs font-semibold text-gray-500">任务输入</p>
-          <h3 class="mt-1 text-xl font-bold text-white">BR 代理</h3>
+          <h3 class="mt-1 text-xl font-bold text-white">{{ isTempExtract ? '临时 CDK' : 'BR 代理' }}</h3>
         </div>
 
         <div class="mt-5 space-y-5">
+          <div v-if="isTempExtract" class="space-y-5">
+            <label class="block">
+              <span class="mb-2 block text-sm font-semibold text-gray-300">临时提链 CDK 池</span>
+              <textarea
+                v-model.trim="tempForm.cdk"
+                rows="6"
+                spellcheck="false"
+                placeholder="一行一个 olimap 临时提链 CDK"
+                class="w-full rounded-xl border border-amber-500/40 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-amber-500 focus:outline-none"
+                :disabled="busy"
+              ></textarea>
+              <span class="mt-1 block text-xs text-gray-500">一行一个 CDK；当前 {{ tempCdkLines().length }} 个。提交到 olimap 时会按账号顺序分配 CDK。</span>
+            </label>
+
+            <div class="space-y-3 rounded-xl border border-gray-800 bg-gray-900/40 p-4">
+              <button type="button" @click="tempCdkBalanceExpanded = !tempCdkBalanceExpanded" class="flex w-full flex-wrap items-center justify-between gap-3 text-left">
+                <div>
+                  <p class="text-sm font-semibold text-gray-200">CDK 余额</p>
+                  <p class="mt-1 text-xs text-gray-500">{{ tempCdkBalanceExpanded ? '调用 olimap 余额接口，显示剩余额度、预留额度和并发上限。' : '默认收起，开始临时提链时自动展开。' }}</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="inline-flex rounded-full border px-3 py-1.5 text-xs font-bold" :class="tempCdkStatusBusy ? 'border-blue-500/30 bg-blue-500/10 text-blue-300' : 'border-gray-700 bg-gray-950 text-gray-400'">
+                    {{ tempCdkStatusBusy ? '自动刷新中...' : (tempCdkLines().length ? `自动轮询中 · ${tempCdkLines().length} 个` : '等待 CDK') }}
+                  </span>
+                  <span class="text-xs text-gray-500">{{ tempCdkBalanceExpanded ? '收起' : '展开' }}</span>
+                </div>
+              </button>
+              <template v-if="tempCdkBalanceExpanded">
+                <div v-if="tempCdkStatusError" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{{ tempCdkStatusError }}</div>
+                <div v-if="tempCdkStatus" class="grid grid-cols-2 gap-3">
+                  <div v-for="card in tempCdkBalanceCards" :key="card.label" class="rounded-xl border bg-gray-950/80 p-3" :class="card.class">
+                    <p class="text-xs text-gray-500">{{ card.label }}</p>
+                    <strong class="mt-1 block text-xl font-black text-white">{{ card.value }}</strong>
+                  </div>
+                  <div class="col-span-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                    <span class="inline-flex rounded-full border px-2 py-1 font-bold" :class="tempCdkStateClass(tempCdkInfo.state)">{{ tempCdkStateText(tempCdkInfo.state) }}</span>
+                    <span>有效：{{ tempCdkInfo.valid === false ? '否' : '是' }}</span>
+                    <span v-if="tempCdkInfo.total_count">已查：{{ tempCdkInfo.checked_count || 0 }}/{{ tempCdkInfo.total_count }}</span>
+                    <span v-if="tempCdkInfo.expires_at">到期：{{ tempCdkInfo.expires_at }}</span>
+                    <span>当前可用并发：{{ tempCdkAvailableConcurrency || 0 }}</span>
+                  </div>
+                </div>
+                <div v-else-if="!tempCdkStatusError" class="rounded-lg border border-dashed border-gray-800 px-3 py-3 text-xs text-gray-500">
+                  输入 CDK 后会自动查询并轮询刷新余额。
+                </div>
+              </template>
+            </div>
+
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
+              <input
+                v-model.number="tempForm.concurrency"
+                type="number"
+                min="1"
+                class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-amber-500 focus:outline-none"
+                :disabled="busy"
+              />
+              <span class="mt-1 block text-xs text-gray-500">{{ tempCdkConcurrencyHint }}</span>
+            </label>
+
+          </div>
+
+          <div v-else class="space-y-5">
           <label class="block">
             <span class="mb-2 block text-sm font-semibold text-gray-300">BR 代理列表</span>
             <textarea
@@ -203,16 +271,17 @@
               </label>
             </div>
           </details>
+          </div>
 
           <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
-            <button @click="start" :disabled="busy" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50">
-              {{ busy ? '提取中...' : `开始提链 (${selectedEmails.length})` }}
+            <button @click="start" :disabled="busy" class="rounded-lg px-5 py-2.5 text-sm font-semibold text-white transition disabled:opacity-50" :class="isTempExtract ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500'">
+              {{ busy ? '提取中...' : `${isTempExtract ? '开始临时提链' : '开始提链'} (${selectedEmails.length})` }}
             </button>
             <button v-if="busy" @click="cancelJob" :disabled="canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
               {{ canceling ? '取消中...' : '取消提链' }}
             </button>
             <button @click="reloadAll" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">刷新账号/链接</button>
-            <button @click="saveProxy" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存代理</button>
+            <button v-if="!isTempExtract" @click="saveProxy" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存代理</button>
             <button
               @click="retryFailedAccounts"
               :disabled="busy || !retryFailedEmails.length"
@@ -248,6 +317,13 @@
           <div class="flex flex-wrap gap-2">
             <button @click="selectAllFiltered" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button>
             <button @click="clearSelectedAccounts" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
+            <button
+              @click="deleteSelectedPixAccounts"
+              :disabled="busy || deletingPixAccounts.size > 0 || !selectedEmails.length"
+              class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              删除选中{{ selectedEmails.length ? ` (${selectedEmails.length})` : '' }}
+            </button>
           </div>
         </div>
 
@@ -259,11 +335,12 @@
                 <th class="px-3 py-2">邮箱</th>
                 <th class="px-3 py-2">有效期</th>
                 <th class="px-3 py-2">提链状态</th>
+                <th class="px-3 py-2 text-right">操作</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-900">
               <tr v-if="!filteredAccounts.length">
-                <td colspan="4" class="px-3 py-10 text-center text-gray-500">暂无账号</td>
+                <td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td>
               </tr>
               <tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50">
                 <td class="px-3 py-2">
@@ -275,6 +352,16 @@
                   <span class="inline-flex rounded-full border px-2 py-1 font-semibold" :class="accountStatusClass(account)" :title="accountStatusError(account)">
                     {{ accountStatusText(account) }}
                   </span>
+                </td>
+                <td class="px-3 py-2 text-right">
+                  <button
+                    @click="deletePixAccount(account.email)"
+                    :disabled="busy || deletingPixAccounts.has(account.email)"
+                    class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="从 PIX 账号池和仪表盘账号池中删除该账号"
+                  >
+                    {{ deletingPixAccounts.has(account.email) ? '删除中' : '删除' }}
+                  </button>
                 </td>
               </tr>
             </tbody>
@@ -403,13 +490,21 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 
 const PROXY_STORAGE_KEY = 'autotoken_brazil_pix_proxies'
+const PIX_FORM_STORAGE_KEY = 'autotoken_brazil_pix_form'
+const PIX_TASKS_STORAGE_KEY = 'autotoken_brazil_pix_tasks'
 const PIX_TAB_STORAGE_KEY = 'autotoken_brazil_pix_active_tab'
 const PAYMENT_STATE_STORAGE_KEY = 'autotoken_brazil_pix_payment_state'
+const TEMP_FORM_STORAGE_KEY = 'autotoken_brazil_pix_temp_form'
+const TEMP_CDK_STATUS_POLL_MS = 15000
+const TEMP_CDK_STATUS_SAMPLE_LIMIT = 20
 const activePixTab = ref('extract')
+let tempCdkStatusTimer = null
+let tempCdkStatusDebounce = null
+let componentUnmounted = false
 
 const ResultRow = defineComponent({
   props: { label: String, value: String },
@@ -451,21 +546,38 @@ const form = ref({
   kookeeyPass: '',
   kookeeyEndpoint: 'gate.kookeey.info:1000',
 })
+const tempForm = ref({
+  cdk: '',
+  concurrency: 5,
+})
+const tempCdkStatus = ref(null)
+const tempCdkStatusBusy = ref(false)
+const tempCdkStatusError = ref('')
+const tempCdkBalanceExpanded = ref(false)
 const accounts = ref([])
 const links = ref([])
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
-const busy = ref(false)
-const canceling = ref(false)
-const currentJob = ref(null)
-const statusText = ref('等待提交任务。')
-const statusError = ref(false)
-const logs = ref([])
-const currentResult = ref(null)
 const logRef = ref(null)
 const lastFailedEmails = ref([])
+const deletingPixAccounts = ref(new Set())
+
+function createExtractTaskState() {
+  return {
+    busy: ref(false),
+    canceling: ref(false),
+    currentJob: ref(null),
+    statusText: ref('等待提交任务。'),
+    statusError: ref(false),
+    logs: ref([]),
+    currentResult: ref(null),
+  }
+}
+
+const extractTask = createExtractTaskState()
+const tempTask = createExtractTaskState()
 
 const PAYMENT_MAX_CONCURRENCY = 20
 const PAYMENT_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'rejected_amount'])
@@ -479,8 +591,17 @@ const paymentRunningCount = ref(0)
 const paymentStatusText = ref('等待加入链接和 CDK。')
 const showCdks = ref(false)
 
-const fields = computed(() => currentResult.value?.fields || {})
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
+const isTempExtract = computed(() => activePixTab.value === 'tempExtract')
+const activeExtractTask = computed(() => isTempExtract.value ? tempTask : extractTask)
+const busy = computed(() => activeExtractTask.value.busy.value)
+const canceling = computed(() => activeExtractTask.value.canceling.value)
+const currentJob = computed(() => activeExtractTask.value.currentJob.value)
+const statusText = computed(() => activeExtractTask.value.statusText.value)
+const statusError = computed(() => activeExtractTask.value.statusError.value)
+const logs = computed(() => activeExtractTask.value.logs.value)
+const currentResult = computed(() => activeExtractTask.value.currentResult.value)
+const fields = computed(() => currentResult.value?.fields || {})
 const accountEmailByLower = computed(() => {
   const map = new Map()
   for (const account of accounts.value) {
@@ -552,6 +673,37 @@ const paymentSummaryCards = computed(() => [
   { label: '需处理', value: paymentLinks.value.filter(item => ['failed', 'needs_action'].includes(item.status)).length + paymentCdks.value.filter(item => item.status === 'failed').length, class: 'border-rose-500/30' },
   { label: '可用 CDK', value: paymentAvailableCdks.value, class: 'border-violet-500/30' },
 ])
+const tempCdkInfo = computed(() => {
+  const info = tempCdkStatus.value?.summary || tempCdkStatus.value?.cdk
+  return info && typeof info === 'object' ? info : {}
+})
+const tempCdkBalanceCards = computed(() => {
+  const info = tempCdkInfo.value
+  return [
+    { label: '剩余额度', value: formatCdkMetric(info.balance), class: 'border-emerald-500/30' },
+    { label: '总额度', value: formatCdkMetric(info.quota_total), class: 'border-amber-500/30' },
+    { label: '已成功', value: formatCdkMetric(info.used_success), class: 'border-blue-500/30' },
+    { label: '预留中', value: formatCdkMetric(info.reserved), class: 'border-violet-500/30' },
+    { label: '活跃任务', value: formatCdkMetric(info.active_jobs), class: 'border-sky-500/30' },
+    { label: '最大并发', value: formatCdkMetric(info.max_concurrency), class: 'border-gray-700' },
+  ]
+})
+const tempCdkAvailableConcurrency = computed(() => {
+  const info = tempCdkInfo.value
+  const maxConcurrency = Number(info.max_concurrency)
+  const activeJobs = Number(info.active_jobs || 0)
+  const balance = Number(info.balance)
+  if (!Number.isFinite(maxConcurrency) || maxConcurrency <= 0) return 0
+  const freeSlots = Math.max(0, maxConcurrency - (Number.isFinite(activeJobs) ? activeJobs : 0))
+  const usableBalance = Number.isFinite(balance) ? Math.max(0, balance) : freeSlots
+  return Math.max(0, Math.min(freeSlots, usableBalance))
+})
+const tempCdkConcurrencyHint = computed(() => {
+  if (!tempCdkStatus.value) return '默认 5；不设本地上限，填写 CDK 后会自动按余额和接口并发限制。'
+  const available = tempCdkAvailableConcurrency.value
+  if (available <= 0) return '当前 CDK 没有可用并发或余额，请稍后再试或更换 CDK。'
+  return `默认 5，当前 CDK 可用并发 ${available}；超过会自动降到可用值。`
+})
 
 
 function makePaymentId(prefix) {
@@ -562,11 +714,53 @@ function parseLines(value) {
   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean)
 }
 
+function tempCdkLines() {
+  return Array.from(new Set(parseLines(tempForm.value.cdk)))
+}
+
 function maskCdk(value) {
   const text = String(value || '')
   if (!text) return '-'
   if (text.length <= 10) return text.replace(/.(?=.{3})/g, '•')
   return `${text.slice(0, 4)}••••••••${text.slice(-4)}`
+}
+
+function formatCdkMetric(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  return String(value)
+}
+
+function tempCdkStateText(state) {
+  const text = String(state || '').trim()
+  if (text === 'active') return '可用'
+  if (text === 'temporarily_reserved') return '额度预留中'
+  if (text === 'concurrency_full') return '并发已满'
+  if (text === 'disabled') return '已停用'
+  if (text === 'expired') return '已过期'
+  if (text === 'exhausted') return '已用完'
+  if (text === 'invalid') return '无效'
+  return text || '未知状态'
+}
+
+function tempCdkStateClass(state) {
+  const text = String(state || '').trim()
+  if (text === 'active') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+  if (text === 'temporarily_reserved' || text === 'concurrency_full') return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+  if (['disabled', 'expired', 'exhausted', 'invalid'].includes(text)) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+  return 'border-gray-700 bg-gray-900 text-gray-300'
+}
+
+function clampTempConcurrencyFromStatus(options = {}) {
+  const notify = Boolean(options.notify)
+  const available = tempCdkAvailableConcurrency.value
+  tempForm.value.concurrency = Math.max(1, Number(tempForm.value.concurrency || 1))
+  if (!tempCdkStatus.value || available <= 0) return ''
+  if (tempForm.value.concurrency <= available) return ''
+  const before = tempForm.value.concurrency
+  tempForm.value.concurrency = available
+  const message = `CDK 当前可用并发 ${available}，已从 ${before} 自动降到 ${available}。`
+  if (notify) setStatus(message)
+  return message
 }
 
 function paymentLinkStatusText(status) {
@@ -666,6 +860,80 @@ function savePaymentState() {
     savedAt: Date.now(),
   }
   localStorage.setItem(PAYMENT_STATE_STORAGE_KEY, JSON.stringify(snapshot))
+}
+
+function loadExtractFormState() {
+  form.value.proxies = localStorage.getItem(PROXY_STORAGE_KEY) || ''
+  try {
+    const raw = JSON.parse(localStorage.getItem(PIX_FORM_STORAGE_KEY) || '{}')
+    form.value.concurrency = Math.max(1, Math.min(10, Number(raw.concurrency || form.value.concurrency || 1)))
+    form.value.localProxy = String(raw.localProxy || '')
+    form.value.kookeeyUser = String(raw.kookeeyUser || '')
+    form.value.kookeeyPass = String(raw.kookeeyPass || '')
+    form.value.kookeeyEndpoint = String(raw.kookeeyEndpoint || form.value.kookeeyEndpoint || 'gate.kookeey.info:1000')
+  } catch {
+    form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
+  }
+}
+
+function saveExtractFormState() {
+  localStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
+  localStorage.setItem(PIX_FORM_STORAGE_KEY, JSON.stringify({
+    concurrency: Math.max(1, Math.min(10, Number(form.value.concurrency || 1))),
+    localProxy: form.value.localProxy || '',
+    kookeeyUser: form.value.kookeeyUser || '',
+    kookeeyPass: form.value.kookeeyPass || '',
+    kookeeyEndpoint: form.value.kookeeyEndpoint || 'gate.kookeey.info:1000',
+    savedAt: Date.now(),
+  }))
+}
+
+function loadTempFormState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TEMP_FORM_STORAGE_KEY) || '{}')
+    tempForm.value.cdk = String(raw.cdk || '')
+    tempForm.value.concurrency = Math.max(1, Number(raw.concurrency || 5))
+  } catch {
+    tempForm.value.concurrency = 5
+  }
+}
+
+function saveTempFormState() {
+  localStorage.setItem(TEMP_FORM_STORAGE_KEY, JSON.stringify({
+    cdk: tempForm.value.cdk || '',
+    concurrency: Math.max(1, Number(tempForm.value.concurrency || 5)),
+    savedAt: Date.now(),
+  }))
+}
+
+function taskKey(task) {
+  return task === tempTask ? 'tempExtract' : 'extract'
+}
+
+function taskForKey(key) {
+  return key === 'tempExtract' ? tempTask : extractTask
+}
+
+function loadStoredPixTasks() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PIX_TASKS_STORAGE_KEY) || '{}')
+    return raw && typeof raw === 'object' ? raw : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveStoredPixTask(key, payload) {
+  const tasks = loadStoredPixTasks()
+  tasks[key] = { ...payload, savedAt: Date.now() }
+  localStorage.setItem(PIX_TASKS_STORAGE_KEY, JSON.stringify(tasks))
+}
+
+function clearStoredPixTask(key, jobId = '') {
+  const tasks = loadStoredPixTasks()
+  if (jobId && tasks[key]?.jobId && tasks[key].jobId !== jobId) return
+  delete tasks[key]
+  localStorage.setItem(PIX_TASKS_STORAGE_KEY, JSON.stringify(tasks))
 }
 
 function dedupeExtractedLinks(items) {
@@ -1022,9 +1290,9 @@ function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
-function setStatus(text, isError = false) {
-  statusText.value = text
-  statusError.value = isError
+function setStatus(text, isError = false, task = activeExtractTask.value) {
+  task.statusText.value = text
+  task.statusError.value = isError
 }
 
 function rememberFailedEmails(result) {
@@ -1138,44 +1406,123 @@ async function reloadAll() {
   await refreshLinks()
 }
 
-async function poll(jobId) {
+async function deletePixAccount(email) {
+  const target = String(email || '').trim()
+  if (!target || deletingPixAccounts.value.has(target)) return
+  if (!window.confirm(`确认从 PIX 账号池和仪表盘账号池中删除 ${target}？`)) return
+  deletingPixAccounts.value = new Set([...deletingPixAccounts.value, target])
+  try {
+    const data = await api.deleteBrazilPixAccount(target)
+    selectedAccounts.value = new Set(Array.from(selectedAccounts.value).filter(item => item !== target))
+    removeAccountFromPixPool(target)
+    await Promise.all([reloadAccounts(), refreshLinks()])
+    const pix = data.pix || {}
+    setStatus(`已删除账号 ${target}：仪表盘账号 ${data.dashboard_account_deleted ? '已删除' : '未找到'}，认证 ${data.auth_session_deleted ? '已删除' : '未找到'}，PIX 链接 ${pix.links_deleted || 0} 条。`)
+  } catch (error) {
+    setStatus(`删除账号失败：${cleanText(error.message || error)}`, true)
+  } finally {
+    const next = new Set(deletingPixAccounts.value)
+    next.delete(target)
+    deletingPixAccounts.value = next
+  }
+}
+
+async function deleteSelectedPixAccounts() {
+  const emails = selectedEmails.value.map(email => String(email || '').trim()).filter(Boolean)
+  if (!emails.length || deletingPixAccounts.value.size) return
+  if (!window.confirm(`确认批量删除选中的 ${emails.length} 个账号？这些账号会同时从 PIX 账号池和仪表盘账号池删除。`)) return
+  deletingPixAccounts.value = new Set(emails)
+  try {
+    const data = await api.deleteBrazilPixAccounts(emails)
+    const deleted = new Set((data.results || []).map(item => String(item.email || '').trim()).filter(Boolean))
+    selectedAccounts.value = new Set(Array.from(selectedAccounts.value).filter(email => !deleted.has(email)))
+    for (const email of deleted) removeAccountFromPixPool(email)
+    await Promise.all([reloadAccounts(), refreshLinks()])
+    const linkCount = (data.results || []).reduce((sum, item) => sum + Number(item.pix?.links_deleted || 0), 0)
+    setStatus(`已批量删除 ${data.deleted || deleted.size} 个账号，清理 PIX 链接 ${linkCount} 条。`)
+  } catch (error) {
+    setStatus(`批量删除账号失败：${cleanText(error.message || error)}`, true)
+  } finally {
+    deletingPixAccounts.value = new Set()
+  }
+}
+
+async function poll(jobId, task = activeExtractTask.value) {
+  const key = taskKey(task)
   let lastSyncedCompleted = 0
   for (;;) {
+    if (componentUnmounted) return
     const data = await api.getBrazilPixJob(jobId)
     const completed = Number(data.completed || 0)
     const total = Number(data.total || 0)
     const shouldSyncIncremental = data.result && completed > lastSyncedCompleted && ['running', 'cancelling'].includes(data.status)
-    currentJob.value = data
-    if (data.result) currentResult.value = data.result
-    logs.value = Array.isArray(data.logs) ? data.logs : []
+    task.currentJob.value = data
+    if (data.result) task.currentResult.value = data.result
+    task.logs.value = Array.isArray(data.logs) ? data.logs : []
     await nextTick()
-    if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight
+    if (activeExtractTask.value === task && logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight
     if (shouldSyncIncremental) {
       lastSyncedCompleted = completed
       await refreshLinks()
     }
     if (data.status === 'success') {
-      currentResult.value = data.result || {}
-      rememberFailedEmails(currentResult.value)
-      setStatus('提链任务已完成，链接已写入管理表。')
+      task.currentResult.value = data.result || {}
+      rememberFailedEmails(task.currentResult.value)
+      setStatus('提链任务已完成，链接已写入管理表。', false, task)
+      clearStoredPixTask(key, jobId)
       await Promise.all([refreshLinks(), reloadAccounts()])
       return
     }
     if (data.status === 'cancelled') {
-      currentResult.value = data.result || { batch: true, successes: [], errors: [], skipped: data.skipped || [] }
-      rememberFailedEmails(currentResult.value)
-      setStatus('提链任务已取消；已完成的链接已写入管理表。')
+      task.currentResult.value = data.result || { batch: true, successes: [], errors: [], skipped: data.skipped || [] }
+      rememberFailedEmails(task.currentResult.value)
+      setStatus('提链任务已取消；已完成的链接已写入管理表。', false, task)
+      clearStoredPixTask(key, jobId)
       await Promise.all([refreshLinks(), reloadAccounts()])
       return
     }
     if (data.status === 'error') {
-      currentResult.value = data.result || null
-      rememberFailedEmails(currentResult.value)
+      task.currentResult.value = data.result || null
+      rememberFailedEmails(task.currentResult.value)
+      clearStoredPixTask(key, jobId)
       await Promise.all([refreshLinks(), reloadAccounts()])
       throw new Error(data.error || '生成失败')
     }
-    setStatus(total ? `任务执行中，已完成 ${completed}/${total}，已记录 ${logs.value.length} 条日志。` : `任务执行中，已记录 ${logs.value.length} 条日志。`)
+    setStatus(total ? `任务执行中，已完成 ${completed}/${total}，已记录 ${task.logs.value.length} 条日志。` : `任务执行中，已记录 ${task.logs.value.length} 条日志。`, false, task)
     await new Promise(resolve => window.setTimeout(resolve, 1000))
+  }
+}
+
+function resumeStoredPixTasks() {
+  const stored = loadStoredPixTasks()
+  for (const key of ['extract', 'tempExtract']) {
+    const saved = stored[key] || {}
+    const jobId = String(saved.jobId || '').trim()
+    if (!jobId) continue
+    const task = taskForKey(key)
+    task.busy.value = true
+    task.canceling.value = false
+    task.currentJob.value = {
+      id: jobId,
+      status: 'queued',
+      total: Number(saved.total || saved.accountCount || 0),
+      completed: 0,
+      concurrency: Number(saved.concurrency || 1),
+      running_count: 0,
+    }
+    task.logs.value = []
+    task.statusError.value = false
+    task.statusText.value = key === 'tempExtract'
+      ? '已恢复临时提链任务，正在重新同步后端进度。'
+      : '已恢复提链任务，正在重新同步后端进度。'
+    poll(jobId, task).catch(error => {
+      if (componentUnmounted) return
+      setStatus(`恢复任务失败：${cleanText(error.message || error)}`, true, task)
+    }).finally(() => {
+      if (componentUnmounted) return
+      task.busy.value = false
+      task.canceling.value = false
+    })
   }
 }
 
@@ -1183,6 +1530,14 @@ function validateStart(emails = selectedEmails.value) {
   if (!emails.length) {
     setStatus('请在账号池中选择至少一个账号。', true)
     return false
+  }
+  if (isTempExtract.value) {
+    tempForm.value.concurrency = Math.max(1, Number(tempForm.value.concurrency || 5))
+    if (!tempCdkLines().length) {
+      setStatus('请填写临时提链 CDK。', true)
+      return false
+    }
+    return true
   }
   form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
   if (!form.value.proxies.trim() && (!form.value.kookeeyUser || !form.value.kookeeyPass)) {
@@ -1192,32 +1547,167 @@ function validateStart(emails = selectedEmails.value) {
   return true
 }
 
+async function checkTempCdkStatus(options = {}) {
+  const silent = Boolean(options.silent)
+  const force = Boolean(options.force)
+  const cdks = tempCdkLines()
+  if (!cdks.length) {
+    tempCdkStatus.value = null
+    tempCdkStatusError.value = '请先填写临时提链 CDK。'
+    if (!silent) setStatus(tempCdkStatusError.value, true)
+    return null
+  }
+  if (tempCdkStatusBusy.value && !force) return tempCdkStatus.value
+  tempCdkStatusBusy.value = true
+  tempCdkStatusError.value = ''
+  try {
+    const sampledCdks = cdks.slice(0, TEMP_CDK_STATUS_SAMPLE_LIMIT)
+    const results = await Promise.all(sampledCdks.map(async cdk => {
+      try {
+        const data = await api.getBrazilPixTempCdkStatus({ cdk })
+        return { cdk, ok: true, info: data?.cdk || {}, data }
+      } catch (error) {
+        return { cdk, ok: false, error: cleanText(error.message || error), info: {} }
+      }
+    }))
+    const validResults = results.filter(item => item.ok && item.info && item.info.valid !== false)
+    const numberSum = (name) => validResults.reduce((sum, item) => {
+      const value = Number(item.info?.[name])
+      return sum + (Number.isFinite(value) ? value : 0)
+    }, 0)
+    const summary = {
+      valid: validResults.length > 0,
+      state: validResults.length ? 'active' : 'invalid',
+      balance: numberSum('balance'),
+      quota_total: numberSum('quota_total'),
+      used_success: numberSum('used_success'),
+      reserved: numberSum('reserved'),
+      active_jobs: numberSum('active_jobs'),
+      max_concurrency: numberSum('max_concurrency'),
+      checked_count: sampledCdks.length,
+      total_count: cdks.length,
+      failed_count: results.filter(item => !item.ok).length,
+    }
+    tempCdkStatus.value = { ok: true, summary, items: results }
+    if (results.length && !validResults.length) {
+      tempCdkStatusError.value = '已查询的 CDK 均不可用。'
+    } else if (cdks.length > TEMP_CDK_STATUS_SAMPLE_LIMIT) {
+      tempCdkStatusError.value = `已自动查询前 ${TEMP_CDK_STATUS_SAMPLE_LIMIT} 个 CDK；提交时仍会使用全部 ${cdks.length} 个。`
+    }
+    const data = tempCdkStatus.value
+    const info = summary
+    const balance = formatCdkMetric(info.balance)
+    const stateText = tempCdkStateText(info.state)
+    const clampMessage = clampTempConcurrencyFromStatus({ notify: false })
+    if (!silent) setStatus(`CDK 池余额：${balance}，状态：${stateText}，已查 ${summary.checked_count}/${summary.total_count} 个。${clampMessage ? ` ${clampMessage}` : ''}`)
+    return data
+  } catch (error) {
+    const message = cleanText(error.message || error)
+    tempCdkStatus.value = null
+    tempCdkStatusError.value = message || '查询 CDK 余额失败。'
+    if (!silent) setStatus(`查询 CDK 余额失败：${tempCdkStatusError.value}`, true)
+    return null
+  } finally {
+    tempCdkStatusBusy.value = false
+  }
+}
+
+function stopTempCdkStatusPolling() {
+  if (tempCdkStatusTimer) {
+    window.clearInterval(tempCdkStatusTimer)
+    tempCdkStatusTimer = null
+  }
+}
+
+function stopTempCdkStatusTimers() {
+  stopTempCdkStatusPolling()
+  if (tempCdkStatusDebounce) {
+    window.clearTimeout(tempCdkStatusDebounce)
+    tempCdkStatusDebounce = null
+  }
+}
+
+function startTempCdkStatusPolling() {
+  stopTempCdkStatusPolling()
+  if (!isTempExtract.value || !tempCdkLines().length) return
+  checkTempCdkStatus({ silent: true })
+  tempCdkStatusTimer = window.setInterval(() => {
+    if (!isTempExtract.value || !tempCdkLines().length) {
+      stopTempCdkStatusPolling()
+      return
+    }
+    checkTempCdkStatus({ silent: true })
+  }, TEMP_CDK_STATUS_POLL_MS)
+}
+
+function scheduleTempCdkStatusPolling() {
+  if (tempCdkStatusDebounce) window.clearTimeout(tempCdkStatusDebounce)
+  if (!isTempExtract.value || !tempCdkLines().length) {
+    stopTempCdkStatusTimers()
+    return
+  }
+  tempCdkStatusDebounce = window.setTimeout(() => {
+    tempCdkStatusDebounce = null
+    startTempCdkStatusPolling()
+  }, 600)
+}
+
 async function startWithEmails(emails, actionText = '提取') {
   const accountEmails = Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
   if (!validateStart(accountEmails)) return
-  busy.value = true
-  canceling.value = false
-  logs.value = []
-  currentResult.value = null
-  currentJob.value = null
-  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PIX，并发 ${form.value.concurrency}。`)
+  const tempMode = isTempExtract.value
+  const task = tempMode ? tempTask : extractTask
+  task.busy.value = true
+  task.canceling.value = false
+  task.logs.value = []
+  task.currentResult.value = null
+  task.currentJob.value = null
+  let concurrency = tempMode ? tempForm.value.concurrency : form.value.concurrency
+  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PIX，并发 ${concurrency}。`, false, task)
   try {
-    saveProxy()
-    const payload = { ...form.value }
-    const data = await api.startBrazilPixBatch({ ...payload, accountEmails })
+    let data
+    if (tempMode) {
+      tempCdkBalanceExpanded.value = true
+      await checkTempCdkStatus({ silent: true, force: true })
+      if (tempCdkStatus.value && tempCdkAvailableConcurrency.value <= 0) {
+        throw new Error('CDK 当前没有可用并发或余额，请稍后再试或更换 CDK。')
+      }
+      const clampMessage = clampTempConcurrencyFromStatus({ notify: false })
+      concurrency = tempForm.value.concurrency
+      setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PIX，并发 ${concurrency}。${clampMessage ? ` ${clampMessage}` : ''}`, false, task)
+      data = await api.startBrazilPixTempBatch({
+        accountEmails,
+        cdk: tempCdkLines()[0] || '',
+        cdks: tempCdkLines(),
+        concurrency,
+      })
+    } else {
+      saveProxy()
+      const payload = { ...form.value }
+      data = await api.startBrazilPixBatch({ ...payload, accountEmails })
+    }
     if (!data.job_id) throw new Error('后端没有返回任务 ID')
-    currentJob.value = { id: data.job_id, status: 'queued', total: accountEmails.length, completed: 0, concurrency: form.value.concurrency, running_count: 0 }
-    await poll(data.job_id)
+    task.currentJob.value = { id: data.job_id, status: 'queued', total: accountEmails.length, completed: 0, concurrency, running_count: 0 }
+    saveStoredPixTask(taskKey(task), {
+      jobId: data.job_id,
+      mode: tempMode ? 'temp' : 'extract',
+      accountCount: accountEmails.length,
+      accountEmails,
+      concurrency,
+      actionText,
+      startedAt: Date.now(),
+    })
+    await poll(data.job_id, task)
   } catch (error) {
-    setStatus(cleanText(error.message || error), true)
+    setStatus(cleanText(error.message || error), true, task)
   } finally {
-    busy.value = false
-    canceling.value = false
+    task.busy.value = false
+    task.canceling.value = false
   }
 }
 
 async function start() {
-  await startWithEmails(selectedEmails.value, '提取')
+  await startWithEmails(selectedEmails.value, isTempExtract.value ? '临时提取' : '提取')
 }
 
 async function retryFailedAccounts() {
@@ -1228,24 +1718,25 @@ async function retryFailedAccounts() {
     return
   }
   selectedAccounts.value = new Set(emails)
-  await startWithEmails(emails, '重试提取')
+  await startWithEmails(emails, isTempExtract.value ? '重试临时提取' : '重试提取')
 }
 
 async function cancelJob() {
-  const jobId = currentJob.value?.id
-  if (!jobId || canceling.value) return
-  canceling.value = true
+  const task = activeExtractTask.value
+  const jobId = task.currentJob.value?.id
+  if (!jobId || task.canceling.value) return
+  task.canceling.value = true
   try {
     await api.cancelBrazilPixJob(jobId)
-    setStatus('已发送取消请求，正在停止未开始的账号。')
+    setStatus('已发送取消请求，正在停止未开始的账号。', false, task)
   } catch (error) {
-    setStatus(`取消失败：${cleanText(error.message || error)}`, true)
-    canceling.value = false
+    setStatus(`取消失败：${cleanText(error.message || error)}`, true, task)
+    task.canceling.value = false
   }
 }
 
 function saveProxy() {
-  localStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
+  saveExtractFormState()
   if (!busy.value) setStatus('代理列表已保存。')
 }
 
@@ -1286,25 +1777,46 @@ function exportLinks() {
 }
 
 onMounted(() => {
-  form.value.proxies = localStorage.getItem(PROXY_STORAGE_KEY) || ''
+  componentUnmounted = false
+  loadExtractFormState()
+  loadTempFormState()
   const savedTab = localStorage.getItem(PIX_TAB_STORAGE_KEY)
-  if (savedTab === 'payment' || savedTab === 'extract') activePixTab.value = savedTab
+  if (['payment', 'extract', 'tempExtract'].includes(savedTab)) activePixTab.value = savedTab
   loadPaymentState()
   reloadAll().then(() => {
     const removed = prunePaymentLinksByImportableAccounts(links.value)
     if (removed) paymentStatusText.value = `已同步当前账号池，移除 ${removed} 条已支付或已删除账号的本地旧链接。`
   })
+  if (activePixTab.value === 'tempExtract') scheduleTempCdkStatusPolling()
+  resumeStoredPixTasks()
 })
 
 watch(activePixTab, (tab) => {
   localStorage.setItem(PIX_TAB_STORAGE_KEY, tab)
-  if (tab === 'extract') reloadAll()
+  if (tab === 'extract' || tab === 'tempExtract') reloadAll()
+  if (tab === 'tempExtract') scheduleTempCdkStatusPolling()
+  else stopTempCdkStatusTimers()
   if (tab === 'payment') {
     reloadAll().then(() => {
       const removed = prunePaymentLinksByImportableAccounts(links.value)
       if (removed) paymentStatusText.value = `已同步当前账号池，移除 ${removed} 条已支付或已删除账号的本地旧链接。`
     })
   }
+})
+
+watch(() => tempForm.value.cdk, () => {
+  tempCdkStatus.value = null
+  tempCdkStatusError.value = ''
+  scheduleTempCdkStatusPolling()
+})
+
+watch(form, saveExtractFormState, { deep: true })
+
+watch(tempForm, saveTempFormState, { deep: true })
+
+onBeforeUnmount(() => {
+  componentUnmounted = true
+  stopTempCdkStatusTimers()
 })
 
 watch(paymentLinks, savePaymentState, { deep: true })

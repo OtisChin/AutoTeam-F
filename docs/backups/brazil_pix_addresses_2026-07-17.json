@@ -1,0 +1,1031 @@
+[
+  {
+    "line1": "Avenida Paulista 1578",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01310-200",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Augusta 2690",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01412-100",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua da Consolacao 3126",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01416-000",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Brigadeiro Faria Lima 3477",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04538-133",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Oscar Freire 379",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01426-001",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Haddock Lobo 595",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01414-001",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Reboucas 3970",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "05402-600",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Bela Cintra 1225",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01415-001",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Ibirapuera 3103",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04029-200",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Vergueiro 3185",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04101-300",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Santo Amaro 3487",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04505-000",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Teodoro Sampaio 2550",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "05406-200",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Angelica 2345",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01228-200",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua da Consolacao 222",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01302-000",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida 9 de Julho 3180",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01406-000",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Pamplona 145",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01405-000",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Europa 158",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01449-000",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Estados Unidos 1456",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01427-002",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Brasil 1376",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01430-001",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Joaquim Floriano 466",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04534-002",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Engenheiro Luis Carlos Berrini 105",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04571-010",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Gomes de Carvalho 1507",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04547-005",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida das Nacoes Unidas 12901",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04578-910",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Funchal 418",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "04551-060",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Magalhaes de Castro 12000",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "05502-001",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua dos Pinheiros 498",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "05422-000",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Europa 655",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01449-001",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Cincinato Braga 340",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01333-010",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Paulista 1000",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01310-100",
+    "ddd": 11
+  },
+  {
+    "line1": "Rua Augusta 1508",
+    "city": "Sao Paulo",
+    "state": "SP",
+    "postal_code": "01304-001",
+    "ddd": 11
+  },
+  {
+    "line1": "Avenida Francisco Glicerio 1239",
+    "city": "Campinas",
+    "state": "SP",
+    "postal_code": "13012-000",
+    "ddd": 19
+  },
+  {
+    "line1": "Rua Barreto Leme 1985",
+    "city": "Campinas",
+    "state": "SP",
+    "postal_code": "13010-200",
+    "ddd": 19
+  },
+  {
+    "line1": "Avenida Norte Sul 777",
+    "city": "Campinas",
+    "state": "SP",
+    "postal_code": "13025-320",
+    "ddd": 19
+  },
+  {
+    "line1": "Rua Coronel Quirino 1632",
+    "city": "Campinas",
+    "state": "SP",
+    "postal_code": "13025-001",
+    "ddd": 19
+  },
+  {
+    "line1": "Avenida Ana Costa 555",
+    "city": "Santos",
+    "state": "SP",
+    "postal_code": "11060-003",
+    "ddd": 13
+  },
+  {
+    "line1": "Rua Conselheiro Nebias 444",
+    "city": "Santos",
+    "state": "SP",
+    "postal_code": "11045-002",
+    "ddd": 13
+  },
+  {
+    "line1": "Avenida Sao Joao 2400",
+    "city": "Sao Jose dos Campos",
+    "state": "SP",
+    "postal_code": "12242-000",
+    "ddd": 12
+  },
+  {
+    "line1": "Rua Euclides Miragaia 400",
+    "city": "Sao Jose dos Campos",
+    "state": "SP",
+    "postal_code": "12245-820",
+    "ddd": 12
+  },
+  {
+    "line1": "Avenida Atlantica 1702",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22021-001",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua Visconde de Piraja 550",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22410-003",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Nossa Senhora de Copacabana 540",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22020-001",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua Barata Ribeiro 502",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22040-001",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Vieira Souto 460",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22420-002",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua Prudente de Morais 1145",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22420-043",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Epitacio Pessoa 3000",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22471-003",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua Voluntarios da Patria 445",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22270-000",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Rio Branco 156",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "20040-003",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua da Assembleia 10",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "20011-000",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Presidente Vargas 3131",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "20210-030",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua do Catete 311",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22220-000",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida das Americas 7000",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22640-100",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua Dias Ferreira 190",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22431-050",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Ataulfo de Paiva 1079",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22440-034",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua Jardim Botanico 674",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22461-000",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Borges de Medeiros 3407",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22470-001",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua Sao Clemente 298",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "22260-000",
+    "ddd": 21
+  },
+  {
+    "line1": "Rua da Conceicao 188",
+    "city": "Niteroi",
+    "state": "RJ",
+    "postal_code": "24020-086",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Ernani do Amaral Peixoto 500",
+    "city": "Niteroi",
+    "state": "RJ",
+    "postal_code": "24020-070",
+    "ddd": 21
+  },
+  {
+    "line1": "Avenida Afonso Pena 1500",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30130-007",
+    "ddd": 31
+  },
+  {
+    "line1": "Rua da Bahia 1148",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30160-011",
+    "ddd": 31
+  },
+  {
+    "line1": "Avenida do Contorno 6480",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30110-044",
+    "ddd": 31
+  },
+  {
+    "line1": "Rua dos Timbiras 1697",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30140-061",
+    "ddd": 31
+  },
+  {
+    "line1": "Avenida Getulio Vargas 1420",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30112-021",
+    "ddd": 31
+  },
+  {
+    "line1": "Rua da Paisagem 220",
+    "city": "Nova Lima",
+    "state": "MG",
+    "postal_code": "34006-059",
+    "ddd": 31
+  },
+  {
+    "line1": "Avenida Raja Gabaglia 2000",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30350-563",
+    "ddd": 31
+  },
+  {
+    "line1": "Rua Claudio Manoel 1162",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30140-100",
+    "ddd": 31
+  },
+  {
+    "line1": "Avenida Bias Fortes 382",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30170-010",
+    "ddd": 31
+  },
+  {
+    "line1": "Rua Sao Paulo 1401",
+    "city": "Belo Horizonte",
+    "state": "MG",
+    "postal_code": "30170-131",
+    "ddd": 31
+  },
+  {
+    "line1": "Avenida Joao Naves de Avila 1331",
+    "city": "Uberlandia",
+    "state": "MG",
+    "postal_code": "38400-042",
+    "ddd": 34
+  },
+  {
+    "line1": "Rua Santos Dumont 500",
+    "city": "Uberlandia",
+    "state": "MG",
+    "postal_code": "38400-062",
+    "ddd": 34
+  },
+  {
+    "line1": "Rua XV de Novembro 1299",
+    "city": "Curitiba",
+    "state": "PR",
+    "postal_code": "80060-000",
+    "ddd": 41
+  },
+  {
+    "line1": "Avenida Sete de Setembro 2775",
+    "city": "Curitiba",
+    "state": "PR",
+    "postal_code": "80230-010",
+    "ddd": 41
+  },
+  {
+    "line1": "Rua Marechal Deodoro 630",
+    "city": "Curitiba",
+    "state": "PR",
+    "postal_code": "80010-010",
+    "ddd": 41
+  },
+  {
+    "line1": "Avenida Batel 1750",
+    "city": "Curitiba",
+    "state": "PR",
+    "postal_code": "80420-090",
+    "ddd": 41
+  },
+  {
+    "line1": "Rua Comendador Araujo 731",
+    "city": "Curitiba",
+    "state": "PR",
+    "postal_code": "80420-000",
+    "ddd": 41
+  },
+  {
+    "line1": "Avenida Candido de Abreu 526",
+    "city": "Curitiba",
+    "state": "PR",
+    "postal_code": "80530-000",
+    "ddd": 41
+  },
+  {
+    "line1": "Rua Visconde do Rio Branco 1480",
+    "city": "Curitiba",
+    "state": "PR",
+    "postal_code": "80420-210",
+    "ddd": 41
+  },
+  {
+    "line1": "Avenida Iguacu 2820",
+    "city": "Curitiba",
+    "state": "PR",
+    "postal_code": "80240-030",
+    "ddd": 41
+  },
+  {
+    "line1": "Avenida Higienopolis 1000",
+    "city": "Londrina",
+    "state": "PR",
+    "postal_code": "86020-080",
+    "ddd": 43
+  },
+  {
+    "line1": "Rua Sergipe 800",
+    "city": "Londrina",
+    "state": "PR",
+    "postal_code": "86010-380",
+    "ddd": 43
+  },
+  {
+    "line1": "Setor Comercial Sul Quadra 2 Bloco C",
+    "city": "Brasilia",
+    "state": "DF",
+    "postal_code": "70302-000",
+    "ddd": 61
+  },
+  {
+    "line1": "SHS Quadra 6 Bloco A",
+    "city": "Brasilia",
+    "state": "DF",
+    "postal_code": "70316-000",
+    "ddd": 61
+  },
+  {
+    "line1": "SCLS 210 Bloco B",
+    "city": "Brasilia",
+    "state": "DF",
+    "postal_code": "70273-520",
+    "ddd": 61
+  },
+  {
+    "line1": "SQN 308 Bloco A",
+    "city": "Brasilia",
+    "state": "DF",
+    "postal_code": "70747-010",
+    "ddd": 61
+  },
+  {
+    "line1": "SHIN QL 10 Conjunto 4",
+    "city": "Brasilia",
+    "state": "DF",
+    "postal_code": "71525-045",
+    "ddd": 61
+  },
+  {
+    "line1": "SBN Quadra 1 Bloco A",
+    "city": "Brasilia",
+    "state": "DF",
+    "postal_code": "70040-010",
+    "ddd": 61
+  },
+  {
+    "line1": "CLN 202 Bloco B",
+    "city": "Brasilia",
+    "state": "DF",
+    "postal_code": "70832-525",
+    "ddd": 61
+  },
+  {
+    "line1": "SEPS 705/905 Bloco C",
+    "city": "Brasilia",
+    "state": "DF",
+    "postal_code": "70390-055",
+    "ddd": 61
+  },
+  {
+    "line1": "Avenida Goias 200",
+    "city": "Goiania",
+    "state": "GO",
+    "postal_code": "74010-010",
+    "ddd": 62
+  },
+  {
+    "line1": "Rua 18 500",
+    "city": "Goiania",
+    "state": "GO",
+    "postal_code": "74120-080",
+    "ddd": 62
+  },
+  {
+    "line1": "Avenida T-63 1500",
+    "city": "Goiania",
+    "state": "GO",
+    "postal_code": "74230-100",
+    "ddd": 62
+  },
+  {
+    "line1": "Rua 87 500",
+    "city": "Goiania",
+    "state": "GO",
+    "postal_code": "74093-300",
+    "ddd": 62
+  },
+  {
+    "line1": "Avenida Boa Viagem 5200",
+    "city": "Recife",
+    "state": "PE",
+    "postal_code": "51030-000",
+    "ddd": 81
+  },
+  {
+    "line1": "Rua da Aurora 1253",
+    "city": "Recife",
+    "state": "PE",
+    "postal_code": "50050-000",
+    "ddd": 81
+  },
+  {
+    "line1": "Avenida Conselheiro Aguiar 2333",
+    "city": "Recife",
+    "state": "PE",
+    "postal_code": "51111-010",
+    "ddd": 81
+  },
+  {
+    "line1": "Rua Sete de Setembro 235",
+    "city": "Recife",
+    "state": "PE",
+    "postal_code": "50050-030",
+    "ddd": 81
+  },
+  {
+    "line1": "Avenida Governador Agamenon Magalhaes 2655",
+    "city": "Recife",
+    "state": "PE",
+    "postal_code": "52020-000",
+    "ddd": 81
+  },
+  {
+    "line1": "Rua do Hospicio 371",
+    "city": "Recife",
+    "state": "PE",
+    "postal_code": "50050-050",
+    "ddd": 81
+  },
+  {
+    "line1": "Rua Chile 21",
+    "city": "Salvador",
+    "state": "BA",
+    "postal_code": "40026-032",
+    "ddd": 71
+  },
+  {
+    "line1": "Avenida Tancredo Neves 2539",
+    "city": "Salvador",
+    "state": "BA",
+    "postal_code": "41820-021",
+    "ddd": 71
+  },
+  {
+    "line1": "Rua da Graca 300",
+    "city": "Salvador",
+    "state": "BA",
+    "postal_code": "40150-055",
+    "ddd": 71
+  },
+  {
+    "line1": "Rua Alagoinhas 400",
+    "city": "Salvador",
+    "state": "BA",
+    "postal_code": "41940-620",
+    "ddd": 71
+  },
+  {
+    "line1": "Avenida Orlando Gomes 1000",
+    "city": "Salvador",
+    "state": "BA",
+    "postal_code": "41650-010",
+    "ddd": 71
+  },
+  {
+    "line1": "Avenida Anita Garibaldi 1800",
+    "city": "Salvador",
+    "state": "BA",
+    "postal_code": "41940-450",
+    "ddd": 71
+  },
+  {
+    "line1": "Avenida Beira Mar 4060",
+    "city": "Fortaleza",
+    "state": "CE",
+    "postal_code": "60165-121",
+    "ddd": 85
+  },
+  {
+    "line1": "Rua Barao do Rio Branco 1071",
+    "city": "Fortaleza",
+    "state": "CE",
+    "postal_code": "60025-061",
+    "ddd": 85
+  },
+  {
+    "line1": "Avenida Dom Luis 1200",
+    "city": "Fortaleza",
+    "state": "CE",
+    "postal_code": "60160-230",
+    "ddd": 85
+  },
+  {
+    "line1": "Rua Monsenhor Tabosa 1100",
+    "city": "Fortaleza",
+    "state": "CE",
+    "postal_code": "60165-010",
+    "ddd": 85
+  },
+  {
+    "line1": "Avenida Santos Dumont 3131",
+    "city": "Fortaleza",
+    "state": "CE",
+    "postal_code": "60175-172",
+    "ddd": 85
+  },
+  {
+    "line1": "Rua Dragao do Mar 81",
+    "city": "Fortaleza",
+    "state": "CE",
+    "postal_code": "60060-390",
+    "ddd": 85
+  },
+  {
+    "line1": "Avenida Borges de Medeiros 1501",
+    "city": "Porto Alegre",
+    "state": "RS",
+    "postal_code": "90110-150",
+    "ddd": 51
+  },
+  {
+    "line1": "Rua dos Andradas 1234",
+    "city": "Porto Alegre",
+    "state": "RS",
+    "postal_code": "90020-008",
+    "ddd": 51
+  },
+  {
+    "line1": "Avenida Ipiranga 6681",
+    "city": "Porto Alegre",
+    "state": "RS",
+    "postal_code": "90619-900",
+    "ddd": 51
+  },
+  {
+    "line1": "Rua Mostardeiro 322",
+    "city": "Porto Alegre",
+    "state": "RS",
+    "postal_code": "90430-000",
+    "ddd": 51
+  },
+  {
+    "line1": "Avenida Independencia 1205",
+    "city": "Porto Alegre",
+    "state": "RS",
+    "postal_code": "90035-075",
+    "ddd": 51
+  },
+  {
+    "line1": "Rua Padre Chagas 66",
+    "city": "Porto Alegre",
+    "state": "RS",
+    "postal_code": "90570-080",
+    "ddd": 51
+  },
+  {
+    "line1": "Avenida Beira Mar Norte 1426",
+    "city": "Florianopolis",
+    "state": "SC",
+    "postal_code": "88015-700",
+    "ddd": 48
+  },
+  {
+    "line1": "Rua Felipe Schmidt 415",
+    "city": "Florianopolis",
+    "state": "SC",
+    "postal_code": "88010-001",
+    "ddd": 48
+  },
+  {
+    "line1": "Avenida Mauro Ramos 1501",
+    "city": "Florianopolis",
+    "state": "SC",
+    "postal_code": "88020-301",
+    "ddd": 48
+  },
+  {
+    "line1": "Rua Bocaiuva 2125",
+    "city": "Florianopolis",
+    "state": "SC",
+    "postal_code": "88015-530",
+    "ddd": 48
+  },
+  {
+    "line1": "Rua do Principe 123",
+    "city": "Joinville",
+    "state": "SC",
+    "postal_code": "89201-000",
+    "ddd": 47
+  },
+  {
+    "line1": "Avenida Getulio Vargas 500",
+    "city": "Joinville",
+    "state": "SC",
+    "postal_code": "89202-000",
+    "ddd": 47
+  },
+  {
+    "line1": "Avenida Eduardo Ribeiro 520",
+    "city": "Manaus",
+    "state": "AM",
+    "postal_code": "69010-001",
+    "ddd": 92
+  },
+  {
+    "line1": "Rua 10 de Julho 500",
+    "city": "Manaus",
+    "state": "AM",
+    "postal_code": "69010-060",
+    "ddd": 92
+  },
+  {
+    "line1": "Avenida Djalma Batista 1661",
+    "city": "Manaus",
+    "state": "AM",
+    "postal_code": "69050-010",
+    "ddd": 92
+  },
+  {
+    "line1": "Rua Ramos Ferreira 1200",
+    "city": "Manaus",
+    "state": "AM",
+    "postal_code": "69010-120",
+    "ddd": 92
+  },
+  {
+    "line1": "Avenida Presidente Vargas 800",
+    "city": "Belem",
+    "state": "PA",
+    "postal_code": "66017-000",
+    "ddd": 91
+  },
+  {
+    "line1": "Rua Santo Antonio 300",
+    "city": "Belem",
+    "state": "PA",
+    "postal_code": "66010-095",
+    "ddd": 91
+  },
+  {
+    "line1": "Avenida Magalhaes Barata 1000",
+    "city": "Belem",
+    "state": "PA",
+    "postal_code": "66630-040",
+    "ddd": 91
+  },
+  {
+    "line1": "Avenida Engenheiro Roberto Freire 3100",
+    "city": "Natal",
+    "state": "RN",
+    "postal_code": "59090-000",
+    "ddd": 84
+  },
+  {
+    "line1": "Rua Joao Pessoa 300",
+    "city": "Natal",
+    "state": "RN",
+    "postal_code": "59025-500",
+    "ddd": 84
+  },
+  {
+    "line1": "Avenida Epitacio Pessoa 1251",
+    "city": "Joao Pessoa",
+    "state": "PB",
+    "postal_code": "58030-001",
+    "ddd": 83
+  },
+  {
+    "line1": "Rua Duque de Caxias 500",
+    "city": "Joao Pessoa",
+    "state": "PB",
+    "postal_code": "58010-820",
+    "ddd": 83
+  },
+  {
+    "line1": "Avenida Fernandes Lima 2500",
+    "city": "Maceio",
+    "state": "AL",
+    "postal_code": "57050-000",
+    "ddd": 82
+  },
+  {
+    "line1": "Rua do Comercio 300",
+    "city": "Maceio",
+    "state": "AL",
+    "postal_code": "57020-000",
+    "ddd": 82
+  },
+  {
+    "line1": "Avenida Beira Mar 1000",
+    "city": "Aracaju",
+    "state": "SE",
+    "postal_code": "49025-040",
+    "ddd": 79
+  },
+  {
+    "line1": "Rua Laranjeiras 500",
+    "city": "Aracaju",
+    "state": "SE",
+    "postal_code": "49010-000",
+    "ddd": 79
+  },
+  {
+    "line1": "Avenida Nossa Senhora da Penha 1495",
+    "city": "Vitoria",
+    "state": "ES",
+    "postal_code": "29045-402",
+    "ddd": 27
+  },
+  {
+    "line1": "Rua Sete de Setembro 50",
+    "city": "Vitoria",
+    "state": "ES",
+    "postal_code": "29015-000",
+    "ddd": 27
+  },
+  {
+    "line1": "Avenida Afonso Pena 4000",
+    "city": "Campo Grande",
+    "state": "MS",
+    "postal_code": "79002-075",
+    "ddd": 67
+  },
+  {
+    "line1": "Rua 14 de Julho 1800",
+    "city": "Campo Grande",
+    "state": "MS",
+    "postal_code": "79002-330",
+    "ddd": 67
+  },
+  {
+    "line1": "Avenida Historiador Rubens de Mendonca 2000",
+    "city": "Cuiaba",
+    "state": "MT",
+    "postal_code": "78050-000",
+    "ddd": 65
+  },
+  {
+    "line1": "Rua Barao de Melgaco 3000",
+    "city": "Cuiaba",
+    "state": "MT",
+    "postal_code": "78005-300",
+    "ddd": 65
+  },
+  {
+    "line1": "Avenida Frei Serafim 2000",
+    "city": "Teresina",
+    "state": "PI",
+    "postal_code": "64001-020",
+    "ddd": 86
+  },
+  {
+    "line1": "Rua Coelho Rodrigues 500",
+    "city": "Teresina",
+    "state": "PI",
+    "postal_code": "64000-080",
+    "ddd": 86
+  },
+  {
+    "line1": "Avenida dos Holandeses 1",
+    "city": "Sao Luis",
+    "state": "MA",
+    "postal_code": "65075-650",
+    "ddd": 98
+  },
+  {
+    "line1": "Rua Grande 500",
+    "city": "Sao Luis",
+    "state": "MA",
+    "postal_code": "65070-260",
+    "ddd": 98
+  }
+]

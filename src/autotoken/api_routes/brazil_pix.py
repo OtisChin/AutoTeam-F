@@ -24,6 +24,7 @@ AUTH_SESSION_DIR = PROJECT_ROOT / "data" / "auth_session"
 LINKS_FILE = PROJECT_ROOT / "data" / "brazil_pix_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "brazil_pix_account_status.json"
 PIX_CDK_API_BASE = "https://pix.iceaix.com"
+TEMP_PIX_CDK_API_BASE = "https://pix.olimap.top/api/v1"
 MAX_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 3
 JOBS: dict[str, dict[str, Any]] = {}
@@ -53,8 +54,26 @@ class BrazilPixBatchStartRequest(BrazilPixStartRequest):
     concurrency: int = 1
 
 
+class BrazilPixTempBatchStartRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    account_emails: list[str] = Field(default_factory=list, alias="accountEmails")
+    cdk: str = ""
+    cdks: list[str] = Field(default_factory=list)
+    max_accounts: int = Field(0, alias="maxAccounts")
+    concurrency: int = 5
+
+
+class BrazilPixTempCdkStatusRequest(BaseModel):
+    cdk: str = ""
+
+
 class BrazilPixDeleteLinksRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
+
+
+class BrazilPixDeleteAccountsRequest(BaseModel):
+    emails: list[str] = Field(default_factory=list)
 
 
 class BrazilPixPaymentSubmitRequest(BaseModel):
@@ -440,6 +459,20 @@ def delete_account_artifacts(email: str) -> dict[str, Any]:
     }
 
 
+def _delete_brazil_pix_account_everywhere(email: str) -> dict[str, Any]:
+    clean_email = str(email or "").strip()
+    pix_cleanup = delete_account_artifacts(clean_email)
+    dashboard_account_deleted = bool(account_store.delete_account(clean_email))
+    auth_session_deleted = bool(delete_auth_session(clean_email))
+    return {
+        "ok": True,
+        "email": clean_email,
+        "dashboard_account_deleted": dashboard_account_deleted,
+        "auth_session_deleted": auth_session_deleted,
+        "pix": pix_cleanup,
+    }
+
+
 def _link_record_from_result(job_id: str, account_email: str, result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
     billing = fields.get("billing") if isinstance(fields.get("billing"), dict) else result.get("billing") or {}
@@ -585,8 +618,16 @@ def _is_already_paid_error(error: Any) -> bool:
 def _is_token_invalidated_error(error: Any) -> bool:
     text = str(error or "").lower()
     return ("401" in text or "status\": 401" in text or "status 401" in text) and (
-        "token_invalidated" in text or "authentication token has been invalidated" in text
+        "token_invalidated" in text
+        or "token_revoked" in text
+        or "authentication token has been invalidated" in text
+        or "invalidated oauth token" in text
     )
+
+
+def _is_no_organization_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    return "no_organization" in text or "must be a member of an organization" in text
 
 
 def _is_non_zero_after_promo_error(error: Any) -> bool:
@@ -653,11 +694,17 @@ def _run_job(job_id: str, req: BrazilPixStartRequest) -> None:
             JOBS[job_id]["finished_at"] = time.time()
         log("任务完成")
     except Exception as exc:
+        error = str(exc)
+        if account_email and _is_token_invalidated_error(error):
+            cleanup = _delete_invalid_account(account_email)
+            error = f"账号已失效，已从账号池删除：{error}"
+            _set_account_status(account_email, ACCOUNT_STATUS_FAILED, error=error, job_id=job_id)
+            _append_log(job_id, f"账号 token 已失效，已从账号池删除：{account_email} cleanup={cleanup}")
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "error"
-            JOBS[job_id]["error"] = str(exc)
+            JOBS[job_id]["error"] = error
             JOBS[job_id]["finished_at"] = time.time()
-        _append_log(job_id, f"失败: {exc}")
+        _append_log(job_id, f"失败: {error}")
 
 
 def _select_batch_accounts(req: BrazilPixBatchStartRequest) -> list[dict[str, Any]]:
@@ -680,6 +727,41 @@ def _batch_concurrency(req: BrazilPixBatchStartRequest, total: int) -> int:
     except Exception:
         requested = 1
     return max(1, min(MAX_BATCH_CONCURRENCY, total, requested))
+
+
+def _temp_batch_concurrency(req: BrazilPixTempBatchStartRequest, total: int) -> int:
+    try:
+        requested = int(req.concurrency or 5)
+    except Exception:
+        requested = 5
+    return max(1, min(total, requested))
+
+
+def _requested_temp_concurrency(req: BrazilPixTempBatchStartRequest) -> int:
+    try:
+        return max(1, int(req.concurrency or 5))
+    except Exception:
+        return 5
+
+
+def _temp_cdks(req: BrazilPixTempBatchStartRequest) -> list[str]:
+    values: list[str] = []
+    for value in req.cdks or []:
+        text = str(value or "").strip()
+        if text:
+            values.append(text)
+    single = str(req.cdk or "").strip()
+    if single:
+        values.append(single)
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
 
 
 def _rotate_proxies_for_account(proxies: list[str], account_index: int) -> list[str]:
@@ -767,6 +849,26 @@ def _run_batch_account(
                         "status": status,
                         "account_deleted": True,
                     }
+                if _is_no_organization_error(last_error):
+                    cleanup = _delete_invalid_account(email)
+                    status = _set_account_status(email, ACCOUNT_STATUS_FAILED, error=last_error, job_id=job_id)
+                    _append_log(
+                        job_id,
+                        f"[{index}/{total}] 账号缺少 Platform organization，注册未完整完成，已从账号池删除：{email} cleanup={cleanup}",
+                    )
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": f"账号缺少 Platform organization，已从账号池删除：{last_error}",
+                            "cleanup": cleanup,
+                        },
+                        "status": status,
+                        "account_deleted": True,
+                    }
                 if _is_non_zero_after_promo_error(last_error):
                     cleanup = _delete_invalid_account(email)
                     status = _set_account_status(email, ACCOUNT_STATUS_FAILED, error=last_error, job_id=job_id)
@@ -810,6 +912,354 @@ def _run_batch_account(
         return {"ok": False, "email": email, "error": item, "status": status}
     finally:
         _set_job_running_delta(job_id, -1)
+
+
+def _temp_external_json(resp: requests.Response) -> dict[str, Any]:
+    try:
+        data = resp.json()
+    except ValueError:
+        raise RuntimeError(f"临时提链服务返回非 JSON: HTTP {resp.status_code} {resp.text[:300]}") from None
+    if not isinstance(data, dict):
+        raise RuntimeError(f"临时提链服务响应格式错误: {str(data)[:300]}")
+    if not resp.ok:
+        message = data.get("message") or data.get("error") or data.get("detail") or f"HTTP {resp.status_code}"
+        raise RuntimeError(f"临时提链服务拒绝请求: {message}")
+    return data
+
+
+def _temp_nested_job(data: dict[str, Any]) -> dict[str, Any]:
+    job = data.get("job") if isinstance(data.get("job"), dict) else {}
+    return job or data
+
+
+def _temp_sources(data: dict[str, Any]) -> list[dict[str, Any]]:
+    job = _temp_nested_job(data)
+    job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    data_result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    sources: list[dict[str, Any]] = []
+    for source in (job_result, job, data_result, data):
+        if isinstance(source, dict) and source not in sources:
+            sources.append(source)
+    return sources
+
+
+def _temp_field(data: dict[str, Any], *names: str) -> str:
+    for source in _temp_sources(data):
+        for name in names:
+            value = source.get(name) if isinstance(source, dict) else None
+            if str(value or "").strip():
+                return str(value).strip()
+    return ""
+
+
+def _temp_status(data: dict[str, Any]) -> str:
+    return _temp_field(data, "status", "state").strip().lower()
+
+
+def _temp_success_result(account_email: str, remote_job_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    fields = {
+        "amount": _temp_field(data, "amount", "expected_amount") or "0",
+        "cs_id": _temp_field(data, "cs_id", "checkout_session_id", "checkoutSessionId"),
+        "pix_copy_paste": _temp_field(data, "pix_copy_paste", "pixCopyPaste", "copy_paste", "qr_code", "qrCode"),
+        "hosted_instructions_url": _temp_field(
+            data,
+            "hosted_instructions_url",
+            "hostedInstructionsUrl",
+            "pix_hosted_instructions_url",
+            "pixHostedInstructionsUrl",
+            "link",
+            "url",
+            "payment_link",
+            "paymentLink",
+        ),
+        "image_url_png": _temp_field(data, "image_url_png", "imageUrlPng", "pix_image_url_png", "pixImageUrlPng", "qr_image", "qrImage"),
+        "image_url_svg": _temp_field(data, "image_url_svg", "imageUrlSvg", "pix_image_url_svg", "pixImageUrlSvg"),
+        "chatgpt_checkout_url": _temp_field(data, "chatgpt_checkout_url", "chatgptCheckoutUrl"),
+    }
+    if not fields["hosted_instructions_url"] and not fields["pix_copy_paste"]:
+        raise RuntimeError(f"临时提链成功但未返回 PIX 链接或复制码: remote_job={remote_job_id}")
+    return {
+        "ok": True,
+        "account_email": account_email,
+        "amount": fields["amount"],
+        "fields": fields,
+        "remote_job_id": remote_job_id,
+    }
+
+
+def _temp_cdk_status_data(cdk: str) -> dict[str, Any]:
+    try:
+        resp = requests.post(
+            f"{TEMP_PIX_CDK_API_BASE}/cdk/status",
+            json={"cdk": cdk},
+            headers={"Content-Type": "application/json"},
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"临时 CDK 余额查询失败: {exc}") from exc
+    return _temp_external_json(resp)
+
+
+def _temp_cdk_balance_from_status(data: dict[str, Any]) -> int | None:
+    if data.get("ok") is False:
+        return 0
+    sources: list[dict[str, Any]] = []
+    for value in (
+        data.get("cdk"),
+        data.get("data"),
+        data.get("result"),
+        data,
+    ):
+        if isinstance(value, dict) and value not in sources:
+            sources.append(value)
+    for source in sources:
+        valid = source.get("valid")
+        state = str(source.get("state") or source.get("status") or "").strip().lower()
+        if valid is False or state in {"invalid", "disabled", "expired", "blocked"}:
+            return 0
+        for name in ("balance", "remaining", "quota_remaining", "quotaRemaining", "available"):
+            if name not in source:
+                continue
+            try:
+                return max(0, int(float(str(source.get(name)).strip())))
+            except Exception:
+                continue
+    return None
+
+
+def _temp_cdk_balance(cdk: str) -> int | None:
+    data = _temp_cdk_status_data(cdk)
+    return _temp_cdk_balance_from_status(data)
+
+
+def _temp_cdk_assignments(cdks: list[str], total_accounts: int, log=None) -> list[str]:
+    if total_accounts <= 0 or not cdks:
+        return []
+    if len(cdks) == 1:
+        return [cdks[0]] * total_accounts
+
+    expanded: list[str] = []
+    known_balances: list[tuple[str, int]] = []
+    unknown_cdks: list[str] = []
+    for cdk in cdks:
+        try:
+            balance = _temp_cdk_balance(cdk)
+        except Exception as exc:
+            balance = None
+            if callable(log):
+                log(f"CDK 余额查询失败，暂按备用轮询处理：{cdk[:8]}... {exc}")
+        if balance is None:
+            unknown_cdks.append(cdk)
+            continue
+        known_balances.append((cdk, balance))
+        if balance > 0:
+            expanded.extend([cdk] * balance)
+
+    if expanded:
+        assignments = expanded[:total_accounts]
+        if len(assignments) < total_accounts:
+            fallback_cdks = [cdk for cdk, balance in known_balances if balance > 0] or unknown_cdks or cdks
+            if callable(log):
+                log(f"CDK 已知余额 {len(expanded)} 小于账号数 {total_accounts}，剩余账号按 CDK 池轮询补齐")
+            while len(assignments) < total_accounts:
+                assignments.append(fallback_cdks[(len(assignments) - len(expanded)) % len(fallback_cdks)])
+        if callable(log):
+            positive = sum(1 for _, balance in known_balances if balance > 0)
+            log(f"CDK 余额分配完成：已查询 {len(known_balances)}/{len(cdks)} 个，余额可用 CDK {positive} 个，总额度 {len(expanded)}")
+        return assignments
+
+    if callable(log):
+        log("CDK 余额未查到可用额度，回退为按 CDK 列表轮询分配")
+    return [cdks[index % len(cdks)] for index in range(total_accounts)]
+
+
+def _create_temp_external_job(credential: str, cdk: str) -> tuple[str, str, dict[str, Any]]:
+    try:
+        resp = requests.post(
+            f"{TEMP_PIX_CDK_API_BASE}/jobs",
+            json={"credential": credential, "cdk": cdk},
+            headers={"Content-Type": "application/json"},
+            timeout=70,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"临时提链服务请求失败: {exc}") from exc
+    data = _temp_external_json(resp)
+    remote_job_id = _temp_field(data, "job_id", "jobId", "id")
+    job_token = _temp_field(data, "job_token", "jobToken", "token", "status_token", "statusToken")
+    if not remote_job_id:
+        raise RuntimeError(f"临时提链服务未返回 job_id: {str(data)[:300]}")
+    if not job_token:
+        raise RuntimeError(f"临时提链服务未返回 job_token: {str(data)[:300]}")
+    return remote_job_id, job_token, data
+
+
+def _poll_temp_external_job(remote_job_id: str, job_token: str, *, cancel_check=None) -> dict[str, Any]:
+    terminal_success = {"succeeded", "success", "completed", "done"}
+    terminal_failed = {"failed", "error", "cancelled", "canceled", "interrupted"}
+    last_data: dict[str, Any] = {}
+    for _ in range(90):
+        if callable(cancel_check) and cancel_check():
+            raise RuntimeError("任务已取消")
+        try:
+            resp = requests.get(
+                f"{TEMP_PIX_CDK_API_BASE}/jobs/{remote_job_id}",
+                headers={"Authorization": f"Bearer {job_token}"},
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"临时提链服务查询失败: {exc}") from exc
+        data = _temp_external_json(resp)
+        last_data = data
+        status = _temp_status(data)
+        if status in terminal_success:
+            return data
+        if status in terminal_failed:
+            message = _temp_field(data, "message", "error", "error_message", "errorMessage") or status
+            raise RuntimeError(f"临时提链失败: {message}")
+        time.sleep(2.0)
+    raise RuntimeError(f"临时提链轮询超时: {str(last_data)[:300]}")
+
+
+def _delete_temp_external_job(remote_job_id: str, job_token: str) -> None:
+    if not remote_job_id or not job_token:
+        return
+    try:
+        requests.delete(
+            f"{TEMP_PIX_CDK_API_BASE}/jobs/{remote_job_id}",
+            headers={"Authorization": f"Bearer {job_token}"},
+            timeout=20,
+        )
+    except Exception:
+        pass
+
+
+def _run_temp_batch_account(
+    job_id: str,
+    req: BrazilPixTempBatchStartRequest,
+    account: dict[str, Any],
+    cdk: str,
+    index: int,
+    total: int,
+) -> dict[str, Any]:
+    email = account["email"]
+    started = time.monotonic()
+    if _is_job_cancel_requested(job_id):
+        _append_log(job_id, f"[{index}/{total}] 跳过账号：{email}（任务已取消）")
+        return {"skipped": True, "email": email, "status": _set_account_status(email, ACCOUNT_STATUS_PENDING, job_id=job_id)}
+    _set_job_running_delta(job_id, 1)
+    _append_log(job_id, f"[{index}/{total}] 临时提链开始账号：{email}")
+    try:
+        _set_account_status(email, ACCOUNT_STATUS_RUNNING, job_id=job_id)
+        token = _load_token_for_email(email)
+        if not token:
+            raise RuntimeError("账号缺少有效 accessToken")
+        cdk = str(cdk or "").strip()
+        if not cdk:
+            raise RuntimeError("临时提链缺少 CDK")
+        remote_job_id, job_token, created = _create_temp_external_job(token, cdk)
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            if job is not None:
+                external_jobs = job.setdefault("external_jobs", {})
+                external_jobs[email] = {"job_id": remote_job_id, "job_token": job_token}
+        _append_log(job_id, f"[{index}/{total}] 已提交 olimap 临时提链任务：{remote_job_id}")
+        if _temp_status(created) in {"succeeded", "success", "completed", "done"}:
+            data = created
+        else:
+            data = _poll_temp_external_job(remote_job_id, job_token, cancel_check=lambda: _is_job_cancel_requested(job_id))
+        result = _temp_success_result(email, remote_job_id, data)
+        record = _link_record_from_result(job_id, email, result)
+        _append_link(record)
+        status = _set_account_status(email, ACCOUNT_STATUS_SUCCESS, job_id=job_id)
+        compact = {
+            "email": email,
+            "elapsed_s": round(time.monotonic() - started, 1),
+            "attempts": 1,
+            "link": record,
+            "remote_job_id": remote_job_id,
+        }
+        _append_log(job_id, f"[{index}/{total}] 临时提链成功：{email} remote_job={remote_job_id}")
+        return {"ok": True, "email": email, "success": compact, "status": status}
+    except Exception as exc:
+        error = str(exc)
+        item = {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "attempts": 1, "error": error}
+        status = _set_account_status(email, ACCOUNT_STATUS_FAILED, error=error, job_id=job_id)
+        _append_log(job_id, f"[{index}/{total}] 临时提链失败：{email} {error}")
+        return {"ok": False, "email": email, "error": item, "status": status}
+    finally:
+        _set_job_running_delta(job_id, -1)
+
+
+def _run_temp_batch_job(job_id: str, req: BrazilPixTempBatchStartRequest) -> None:
+    def log(message: str) -> None:
+        _append_log(job_id, message)
+
+    try:
+        accounts = _select_batch_accounts(
+            BrazilPixBatchStartRequest(accountEmails=req.account_emails, maxAccounts=req.max_accounts, concurrency=req.concurrency)
+        )
+        if not accounts:
+            raise RuntimeError("没有可用账号，请先选择账号池账号或刷新账号池")
+        cdks = _temp_cdks(req)
+        if not cdks:
+            raise RuntimeError("请填写临时提链 CDK")
+        concurrency = _temp_batch_concurrency(req, len(accounts))
+        successes: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        account_statuses: dict[str, dict[str, Any]] = {}
+        for account in accounts:
+            email = account["email"]
+            account_statuses[email] = _set_account_status(email, ACCOUNT_STATUS_PENDING, job_id=job_id)
+        with JOBS_LOCK:
+            JOBS[job_id]["status"] = "running"
+            JOBS[job_id]["total"] = len(accounts)
+            JOBS[job_id]["completed"] = 0
+            JOBS[job_id]["concurrency"] = concurrency
+            JOBS[job_id]["running_count"] = 0
+            JOBS[job_id]["cancel_requested"] = False
+            JOBS[job_id]["skipped"] = []
+            JOBS[job_id]["account_statuses"] = account_statuses
+            JOBS[job_id]["temp"] = True
+            JOBS[job_id]["external_jobs"] = {}
+        log(f"临时提链任务开始：{len(accounts)} 个账号，并发 {concurrency}")
+        completed = 0
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            cdk_assignments = _temp_cdk_assignments(cdks, len(accounts), log)
+            futures = [
+                executor.submit(_run_temp_batch_account, job_id, req, account, cdk_assignments[index - 1], index, len(accounts))
+                for index, account in enumerate(accounts, start=1)
+            ]
+            for future in as_completed(futures):
+                item = future.result()
+                email = str(item.get("email") or "")
+                if item.get("skipped"):
+                    skipped.append({"email": email, "reason": item.get("reason") or "任务已取消"})
+                elif item.get("ok"):
+                    successes.append(item["success"])
+                else:
+                    errors.append(item["error"])
+                if email:
+                    account_statuses[email] = item.get("status") or {}
+                completed += 1
+                with JOBS_LOCK:
+                    JOBS[job_id]["completed"] = completed
+                    JOBS[job_id]["account_statuses"] = account_statuses
+                    JOBS[job_id]["skipped"] = skipped
+                    JOBS[job_id]["result"] = {"batch": True, "successes": successes, "errors": errors, "skipped": skipped}
+        with JOBS_LOCK:
+            cancelled = bool(JOBS[job_id].get("cancel_requested"))
+            has_non_error_outcome = bool(successes or skipped)
+            JOBS[job_id]["status"] = "cancelled" if cancelled else ("success" if has_non_error_outcome else "error")
+            JOBS[job_id]["error"] = "任务已取消" if cancelled else ("" if has_non_error_outcome else "全部账号失败")
+            JOBS[job_id]["finished_at"] = time.time()
+        log(f"临时提链任务完成：成功 {len(successes)}，失败 {len(errors)}，跳过 {len(skipped)}")
+    except Exception as exc:
+        with JOBS_LOCK:
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = str(exc)
+            JOBS[job_id]["finished_at"] = time.time()
+        _append_log(job_id, f"失败: {exc}")
 
 
 def _run_batch_job(job_id: str, req: BrazilPixBatchStartRequest) -> None:
@@ -894,6 +1344,29 @@ def create_brazil_pix_router() -> APIRouter:
     def get_brazil_pix_accounts() -> dict[str, Any]:
         return {"accounts": _iter_auth_accounts_with_pix_status()}
 
+    @router.delete("/api/brazil-pix/accounts/{email}")
+    def delete_brazil_pix_account(email: str) -> dict[str, Any]:
+        clean_email = str(email or "").strip()
+        if not clean_email:
+            raise HTTPException(status_code=400, detail="email required")
+        return _delete_brazil_pix_account_everywhere(clean_email)
+
+    @router.post("/api/brazil-pix/accounts/delete")
+    def delete_brazil_pix_accounts(req: BrazilPixDeleteAccountsRequest) -> dict[str, Any]:
+        seen: set[str] = set()
+        emails: list[str] = []
+        for email in req.emails:
+            clean_email = str(email or "").strip()
+            key = clean_email.lower()
+            if not clean_email or key in seen:
+                continue
+            seen.add(key)
+            emails.append(clean_email)
+        if not emails:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请选择要删除的账号"})
+        results = [_delete_brazil_pix_account_everywhere(email) for email in emails]
+        return {"ok": True, "deleted": len(results), "results": results}
+
     @router.post("/api/brazil-pix/start")
     def start_brazil_pix(req: BrazilPixStartRequest) -> dict[str, str]:
         job_id = uuid.uuid4().hex[:12]
@@ -940,9 +1413,69 @@ def create_brazil_pix_router() -> APIRouter:
         thread.start()
         return {"job_id": job_id}
 
+    @router.post("/api/brazil-pix/temp/batch/start")
+    def start_brazil_pix_temp_batch(req: BrazilPixTempBatchStartRequest) -> dict[str, str]:
+        if not _temp_cdks(req):
+            raise HTTPException(status_code=400, detail="请填写临时提链 CDK")
+        job_id = uuid.uuid4().hex[:12]
+        with JOBS_LOCK:
+            JOBS[job_id] = {
+                "id": job_id,
+                "status": "queued",
+                "logs": [],
+                "result": None,
+                "error": None,
+                "created_at": time.time(),
+                "finished_at": None,
+                "account_email": "",
+                "total": 0,
+                "completed": 0,
+                "concurrency": _requested_temp_concurrency(req),
+                "cancel_requested": False,
+                "running_count": 0,
+                "skipped": [],
+                "account_statuses": {},
+                "temp": True,
+                "external_jobs": {},
+            }
+        thread = threading.Thread(target=_run_temp_batch_job, args=(job_id, req), daemon=True)
+        thread.start()
+        return {"job_id": job_id}
+
+    @router.post("/api/brazil-pix/temp/cdk/status")
+    def get_brazil_pix_temp_cdk_status(req: BrazilPixTempCdkStatusRequest) -> dict[str, Any]:
+        cdk = str(req.cdk or "").strip()
+        if not cdk:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "CDK 不能为空"})
+        try:
+            resp = requests.post(
+                f"{TEMP_PIX_CDK_API_BASE}/cdk/status",
+                json={"cdk": cdk},
+                headers={"Content-Type": "application/json"},
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"ok": False, "code": "temp_cdk_api_unreachable", "message": f"临时 CDK 余额服务请求失败：{exc}"},
+            ) from exc
+        try:
+            data = resp.json()
+        except ValueError:
+            raise HTTPException(
+                status_code=502,
+                detail={"ok": False, "code": f"http_{resp.status_code}", "message": resp.text[:500] or "临时 CDK 余额服务返回非 JSON 响应"},
+            ) from None
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=502, detail={"ok": False, "code": "bad_temp_cdk_response", "message": "临时 CDK 余额服务响应格式错误"})
+        if not resp.ok:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+        return data
+
     @router.post("/api/brazil-pix/jobs/{job_id}/cancel")
     def cancel_brazil_pix_job(job_id: str) -> dict[str, Any]:
         should_log = False
+        external_jobs: dict[str, dict[str, Any]] = {}
         with JOBS_LOCK:
             job = JOBS.get(job_id)
             if not job:
@@ -952,7 +1485,11 @@ def create_brazil_pix_router() -> APIRouter:
             job["cancel_requested"] = True
             if job.get("status") in {"queued", "running"}:
                 job["status"] = "cancelling"
+            external_jobs = dict(job.get("external_jobs") or {}) if job.get("temp") else {}
             should_log = True
+        for external in external_jobs.values():
+            if isinstance(external, dict):
+                _delete_temp_external_job(str(external.get("job_id") or ""), str(external.get("job_token") or ""))
         if should_log:
             _append_log(job_id, "收到取消请求：正在停止未开始的账号，已运行账号会跑到当前步骤结束")
         return {"ok": True, "job_id": job_id, "status": "cancelling", "cancel_requested": True}

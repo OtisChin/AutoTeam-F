@@ -1869,6 +1869,27 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         )
         return None
 
+    try:
+        from autotoken.auth.codex_auth import _extract_account_id_from_auth_session
+
+        account_id = _extract_account_id_from_auth_session(data)
+    except Exception:
+        account = data.get("account") if isinstance(data, dict) else {}
+        account_id = ""
+        if isinstance(account, dict):
+            account_id = str(account.get("id") or account.get("account_id") or "").strip()
+        account_id = account_id or str(data.get("accountId") or data.get("account_id") or "").strip()
+    if not account_id:
+        logger.warning(
+            "[注册] /api/auth/session 未返回 account/org 上下文，视为 Platform organization 未完成: %s",
+            email,
+        )
+        _record_outcome(
+            "session_auth_no_organization",
+            reason="/api/auth/session 未返回 account/org 上下文",
+        )
+        return None
+
     auth_file = save_auth_session(email, data)
     add_account(
         email,
@@ -3713,9 +3734,45 @@ def create_account_direct(
                         logger.info("[注册] auth_session 已保存，重新登录 OAuth 未完成，等待手动补登录: %s", email)
                         _progress("register_auth_session_saved", f"auth_session 已保存，等待手动补登录: {email}", email=email)
                         return session_auth
-                    logger.warning("[注册] /api/auth/session 未生成 auth_session 文件，继续按注册成功收尾: %s", email)
+                    last_failure_reason = "注册未完成：未生成可用 auth_session，无法确认 Platform organization"
+                    logger.warning("[注册] %s: %s", email, last_failure_reason)
+                    _discard_email("auth_session_missing")
+                    record_failure(
+                        email,
+                        "auth_session_missing",
+                        last_failure_reason,
+                        register_attempts=register_attempts + 1,
+                        duplicate_swaps=duplicate_swaps,
+                    )
+                    _record_outcome("auth_session_missing", reason=last_failure_reason)
+                    _progress(
+                        "register_auth_session_missing",
+                        f"{last_failure_reason}: {email}",
+                        email=email,
+                        level="error",
+                        reason=last_failure_reason,
+                    )
+                    return None
                 except Exception as exc:
-                    logger.warning("[注册] /api/auth/session 提取 access_token 失败: %s", exc)
+                    last_failure_reason = f"注册未完成：保存 auth_session 异常，无法确认 Platform organization: {exc}"
+                    logger.warning("[注册] %s: %s", email, last_failure_reason)
+                    _discard_email("auth_session_exception")
+                    record_failure(
+                        email,
+                        "auth_session_exception",
+                        last_failure_reason,
+                        register_attempts=register_attempts + 1,
+                        duplicate_swaps=duplicate_swaps,
+                    )
+                    _record_outcome("auth_session_exception", reason=last_failure_reason)
+                    _progress(
+                        "register_auth_session_exception",
+                        f"{last_failure_reason}: {email}",
+                        email=email,
+                        level="error",
+                        reason=last_failure_reason,
+                    )
+                    return None
             break
 
         if check_team_membership and _is_email_in_team(email):

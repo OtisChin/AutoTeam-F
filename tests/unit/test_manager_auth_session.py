@@ -30,6 +30,46 @@ class FakeResponse:
         return {"token": "response-token"}
 
 
+def test_protocol_register_does_not_record_account_when_auth_session_save_fails(monkeypatch):
+    events = []
+
+    class FakeMailClient:
+        provider_name = "outlook"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return "mailbox-1", "half-finished@example.com"
+
+        def delete_account(self, account_id):
+            events.append(("delete_mailbox", account_id))
+            return {"code": 0}
+
+    def fake_register_once(*args, **kwargs):
+        return True, {
+            "data": {
+                "sessionToken": "session-token",
+                "accessToken": "access-token",
+            }
+        }
+
+    monkeypatch.setattr("autotoken.auth.protocol_register.register_once", fake_register_once)
+    monkeypatch.setattr(manager, "_save_auth_from_session_page", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager, "add_account", lambda *args, **kwargs: events.append(("add_account", args, kwargs)))
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: events.append(("failure", args, kwargs)))
+    monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: None)
+
+    result = manager.create_account_direct(
+        FakeMailClient(),
+        password="pw",
+        check_team_membership=False,
+        register_mode="protocol",
+    )
+
+    assert result is None
+    assert not any(event[0] == "add_account" for event in events)
+    assert any(event[0] == "failure" and event[1][1] == "auth_session_missing" for event in events)
+
+
 class FakeContext:
     def cookies(self, url):
         assert url == "https://chatgpt.com"
@@ -200,6 +240,30 @@ def test_fetch_auth_session_retries_after_403_and_keeps_context():
     assert page.goto_urls == ["https://chatgpt.com/"]
 
 
+def test_save_auth_from_session_page_rejects_session_without_account_context(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(manager.registration, "replace_outcome", lambda *args, **kwargs: events.append(kwargs))
+    monkeypatch.setattr(
+        "autotoken.auth_session_store.save_auth_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not save incomplete session")),
+    )
+    monkeypatch.setattr(
+        "autotoken.accounts.add_account",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not add incomplete account")),
+    )
+
+    result = manager._save_auth_from_session_page(
+        "no-org@example.com",
+        "pw",
+        "mailbox-1",
+        {"status": 200, "data": {"accessToken": "access-token", "sessionToken": "session-token"}},
+    )
+
+    assert result is None
+    assert events[-1]["status"] == "session_auth_no_organization"
+
+
 def test_save_auth_from_session_page_records_active_auth_session_account(monkeypatch):
     captured = {"add": [], "update": []}
 
@@ -217,7 +281,7 @@ def test_save_auth_from_session_page_records_active_auth_session_account(monkeyp
         "user@example.com",
         "pw",
         "mail-1",
-        {"status": 200, "data": {"accessToken": "access"}},
+        {"status": 200, "data": {"accessToken": "access", "accountId": "account-id"}},
         mail_provider="outlook",
     )
 

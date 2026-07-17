@@ -69,7 +69,7 @@ class OutlookMailProvider(MailProvider):
     provider_name = "outlook"
 
     IMAP_OLD_HOST = "outlook.office365.com"
-    IMAP_NEW_HOST = "outlook.live.com"
+    IMAP_NEW_HOST = "outlook.office365.com"
     IMAP_PORT = 993
     SEARCH_MAILBOXES = (
         "INBOX",
@@ -86,10 +86,13 @@ class OutlookMailProvider(MailProvider):
     TOKEN_ENDPOINTS = {
         "imap_old": ("https://login.live.com/oauth20_token.srf", ""),
         "imap_new": (
-            "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
             "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
         ),
-        "graph_api": ("https://login.microsoftonline.com/common/oauth2/v2.0/token", "https://graph.microsoft.com/.default"),
+        "graph_api": (
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            "https://graph.microsoft.com/Mail.Read offline_access",
+        ),
     }
 
     _token_cache: dict[tuple[str, str], dict[str, Any]] = {}

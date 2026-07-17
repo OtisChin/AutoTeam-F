@@ -30,6 +30,49 @@ def test_parse_outlook_account_line_supports_codex_console_format():
     assert account.has_oauth()
 
 
+def test_graph_token_refresh_uses_delegated_mail_read_scope(monkeypatch):
+    client = OutlookMailProvider()
+    account = OutlookMailProvider._parse_account_line(
+        "User@Outlook.com----mail-pass----client-id----refresh-token"
+    )
+    requests = []
+
+    def fake_post(url, **kwargs):
+        requests.append((url, kwargs))
+        return FakeResponse({"access_token": "access-token", "expires_in": 3600})
+
+    monkeypatch.setattr("autotoken.mail.outlook.curl_requests.post", fake_post)
+
+    assert client._get_access_token(account, "graph_api") == "access-token"
+
+    url, kwargs = requests[0]
+    assert url == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    assert kwargs["data"]["client_id"] == "client-id"
+    assert kwargs["data"]["refresh_token"] == "refresh-token"
+    assert kwargs["data"]["scope"] == "https://graph.microsoft.com/Mail.Read offline_access"
+
+
+def test_imap_oauth_refresh_uses_common_endpoint_and_office365_host(monkeypatch):
+    client = OutlookMailProvider()
+    account = OutlookMailProvider._parse_account_line(
+        "User@Outlook.com----mail-pass----client-id----refresh-token"
+    )
+    requests = []
+
+    def fake_post(url, **kwargs):
+        requests.append((url, kwargs))
+        return FakeResponse({"access_token": "access-token", "expires_in": 3600})
+
+    monkeypatch.setattr("autotoken.mail.outlook.curl_requests.post", fake_post)
+
+    assert client._get_access_token(account, "imap_new") == "access-token"
+
+    url, kwargs = requests[0]
+    assert url == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    assert kwargs["data"]["scope"] == "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+    assert client.IMAP_NEW_HOST == "outlook.office365.com"
+
+
 def test_parse_outlook_account_line_supports_mailapi_url_format():
     account = OutlookMailProvider._parse_account_line(
         "LisaTaylor6398@hotmail.com----https://mailapi.icu/key?type=html&orderNo=f5706957db1af386"

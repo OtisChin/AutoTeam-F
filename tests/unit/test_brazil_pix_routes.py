@@ -321,6 +321,45 @@ def test_batch_job_updates_account_statuses(monkeypatch, tmp_path):
     assert statuses["bad@example.com"]["status"] == "failed"
 
 
+def test_single_job_deletes_token_revoked_account(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    email = "single-revoked@example.com"
+    _write_session(auth_dir, email, "single-revoked-token-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"}])
+    brazil_pix.JOBS.clear()
+    job_id = "pix-single-revoked-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "account_statuses": {},
+        "cancel_requested": False,
+        "running_count": 0,
+    }
+
+    def fake_generate_pix_trial(cfg, log):
+        raise RuntimeError(
+            'checkout failed: { "error": { "message": "Encountered invalidated oauth token for user, failing request", "code": "token_revoked" }, "status": 401 }'
+        )
+
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+
+    req = brazil_pix.BrazilPixStartRequest.model_validate({"accountEmail": email, "proxies": "socks5h://proxy.example:1080"})
+    brazil_pix._run_job(job_id, req)
+
+    account = brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email)
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "error"
+    assert account is None
+    assert not (auth_dir / "single-revoked@example_com.json").exists()
+    assert "账号已失效，已从账号池删除" in job["error"]
+
+
 def test_batch_job_honors_concurrency(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     for index in range(3):
@@ -518,6 +557,94 @@ def test_batch_job_deletes_token_invalidated_account(monkeypatch, tmp_path):
     assert account is None
     assert not (auth_dir / "invalid@example_com.json").exists()
     assert "账号已失效，已从账号池删除" in job["result"]["errors"][0]["error"]
+
+
+def test_batch_job_deletes_token_revoked_oauth_account(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    email = "revoked@example.com"
+    _write_session(auth_dir, email, "revoked-token-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"}])
+    brazil_pix.JOBS.clear()
+    job_id = "pix-revoked-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "account_statuses": {},
+    }
+
+    def fake_generate_pix_trial(cfg, log):
+        raise RuntimeError(
+            'checkout failed: { "error": { "message": "Encountered invalidated oauth token for user, failing request", "type": null, "code": "token_revoked", "param": null }, "status": 401 }'
+        )
+
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate(
+        {
+            "accountEmails": [email],
+            "proxies": "socks5h://proxy.example:1080",
+        }
+    )
+    brazil_pix._run_batch_job(job_id, req)
+
+    account = brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email)
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "error"
+    assert account is None
+    assert not (auth_dir / "revoked@example_com.json").exists()
+    assert "账号已失效，已从账号池删除" in job["result"]["errors"][0]["error"]
+
+
+def test_batch_job_deletes_no_organization_account(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    email = "no-org@example.com"
+    _write_session(auth_dir, email, "no-org-token-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"}])
+    brazil_pix.JOBS.clear()
+    job_id = "pix-no-org-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "account_statuses": {},
+    }
+
+    def fake_generate_pix_trial(cfg, log):
+        raise RuntimeError(
+            'checkout failed: { "error": { "message": "You must be a member of an organization to use the API.", "code": "no_organization" }, "status": 400 }'
+        )
+
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate(
+        {
+            "accountEmails": [email],
+            "proxies": "socks5h://proxy.example:1080",
+        }
+    )
+    brazil_pix._run_batch_job(job_id, req)
+
+    account = brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email)
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "error"
+    assert account is None
+    assert not (auth_dir / "no-org@example_com.json").exists()
+    assert "账号缺少 Platform organization，已从账号池删除" in job["result"]["errors"][0]["error"]
 
 
 def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch, tmp_path):
@@ -760,3 +887,383 @@ def test_payment_success_marks_link_account_plus_pix(monkeypatch, tmp_path):
     assert account["account_type"] == "plus"
     assert account["last_bind_provider"] == "pix"
     assert account["last_bind_status"] == "success"
+
+
+def test_delete_pix_account_removes_dashboard_account_session_and_pix_artifacts(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    email = "delete-me@example.com"
+    _write_session(auth_dir, email, "delete-token-" + "x" * 80)
+    brazil_pix.account_store.save_accounts(
+        [
+            {"email": email, "status": "active", "account_type": "free"},
+            {"email": "keep@example.com", "status": "active", "account_type": "free"},
+        ]
+    )
+    brazil_pix.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {"id": "remove", "account_email": email, "hosted_instructions_url": "https://pay/remove"},
+                {"id": "keep", "account_email": "keep@example.com", "hosted_instructions_url": "https://pay/keep"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    brazil_pix.ACCOUNT_STATUS_FILE.write_text(
+        json.dumps({email: {"status": "failed", "error": "boom"}, "keep@example.com": {"status": "success"}}),
+        encoding="utf-8",
+    )
+
+    endpoint = _route_endpoint("/api/brazil-pix/accounts/{email}", "DELETE")
+    data = endpoint(email)
+
+    assert data["ok"] is True
+    assert data["email"] == email
+    assert data["dashboard_account_deleted"] is True
+    assert data["auth_session_deleted"] is True
+    assert data["pix"]["links_deleted"] == 1
+    assert data["pix"]["status_deleted"] is True
+    assert brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email) is None
+    assert brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), "keep@example.com") is not None
+    assert not (auth_dir / "delete-me@example_com.json").exists()
+    links = brazil_pix._load_links()
+    assert [item["id"] for item in links] == ["keep"]
+    statuses = json.loads(brazil_pix.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert email not in statuses
+    assert "keep@example.com" in statuses
+
+
+def test_delete_pix_accounts_batch_removes_each_account_and_keeps_others(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    remove_emails = ["remove-a@example.com", "remove-b@example.com"]
+    keep_email = "keep@example.com"
+    for email in [*remove_emails, keep_email]:
+        _write_session(auth_dir, email, f"token-{email}-" + "x" * 80)
+    brazil_pix.account_store.save_accounts(
+        [{"email": email, "status": "active", "account_type": "free"} for email in [*remove_emails, keep_email]]
+    )
+    brazil_pix.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {"id": "remove-a", "account_email": remove_emails[0], "hosted_instructions_url": "https://pay/remove-a"},
+                {"id": "remove-b", "account_email": remove_emails[1], "hosted_instructions_url": "https://pay/remove-b"},
+                {"id": "keep", "account_email": keep_email, "hosted_instructions_url": "https://pay/keep"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    brazil_pix.ACCOUNT_STATUS_FILE.write_text(
+        json.dumps({email: {"status": "failed"} for email in [*remove_emails, keep_email]}),
+        encoding="utf-8",
+    )
+
+    endpoint = _route_endpoint("/api/brazil-pix/accounts/delete", "POST")
+    data = endpoint(brazil_pix.BrazilPixDeleteAccountsRequest(emails=[*remove_emails, remove_emails[0], ""]))
+
+    assert data["ok"] is True
+    assert data["deleted"] == 2
+    assert [item["email"] for item in data["results"]] == remove_emails
+    assert all(item["dashboard_account_deleted"] for item in data["results"])
+    assert all(item["auth_session_deleted"] for item in data["results"])
+    assert [item["pix"]["links_deleted"] for item in data["results"]] == [1, 1]
+    remaining_accounts = {item["email"] for item in brazil_pix.account_store.load_accounts()}
+    assert remaining_accounts == {keep_email}
+    assert [item["id"] for item in brazil_pix._load_links()] == ["keep"]
+    statuses = json.loads(brazil_pix.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert set(statuses) == {keep_email}
+    for email in remove_emails:
+        assert not (auth_dir / f"{email.replace('.', '_')}.json").exists()
+
+
+def test_temp_batch_job_uses_olimap_cdk_api_and_saves_link(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    _write_session(auth_dir, "temp@example.com", "temp-token-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": "temp@example.com", "status": "active", "account_type": "free"}])
+    brazil_pix.JOBS.clear()
+    job_id = "temp-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "concurrency": 1,
+        "cancel_requested": False,
+        "running_count": 0,
+        "skipped": [],
+        "account_statuses": {},
+        "temp": True,
+    }
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        return _FakeResponse(202, {"job_id": "remote-1", "job_token": "remote-token"})
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        return _FakeResponse(
+            200,
+            {
+                "job": {
+                    "job_id": "remote-1",
+                    "status": "success",
+                    "result": {
+                        "pix_hosted_instructions_url": "https://payments.stripe.com/qr/instructions/temp",
+                        "pix_copy_paste": "pix-temp-code",
+                        "pix_image_url_png": "https://pay.example/qr.png",
+                        "amount": "0",
+                    },
+                }
+            },
+        )
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+    monkeypatch.setattr(brazil_pix.requests, "get", fake_get)
+
+    req = brazil_pix.BrazilPixTempBatchStartRequest.model_validate(
+        {"accountEmails": ["temp@example.com"], "cdk": "CDK-TEMP", "concurrency": 1}
+    )
+    brazil_pix._run_temp_batch_job(job_id, req)
+
+    assert calls[0][0] == "post"
+    assert calls[0][1] == "https://pix.olimap.top/api/v1/jobs"
+    assert calls[0][2]["json"]["cdk"] == "CDK-TEMP"
+    assert calls[0][2]["json"]["credential"] == "temp-token-" + "x" * 80
+    assert calls[1][0] == "get"
+    assert calls[1][1] == "https://pix.olimap.top/api/v1/jobs/remote-1"
+    assert calls[1][2]["headers"]["Authorization"] == "Bearer remote-token"
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "success"
+    assert job["result"]["successes"][0]["email"] == "temp@example.com"
+    links = brazil_pix._load_links()
+    assert links[0]["account_email"] == "temp@example.com"
+    assert links[0]["hosted_instructions_url"] == "https://payments.stripe.com/qr/instructions/temp"
+    assert links[0]["pix_copy_paste"] == "pix-temp-code"
+    assert links[0]["image_url_png"] == "https://pay.example/qr.png"
+
+
+def test_temp_batch_job_distributes_multiple_cdks_across_accounts(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    emails = [f"multi{index}@example.com" for index in range(3)]
+    for index, email in enumerate(emails):
+        _write_session(auth_dir, email, f"multi-token-{index}-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"} for email in emails])
+    brazil_pix.JOBS.clear()
+    job_id = "temp-multi-cdk-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "concurrency": 1,
+        "cancel_requested": False,
+        "running_count": 0,
+        "skipped": [],
+        "account_statuses": {},
+        "temp": True,
+    }
+    posted_cdks = []
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/cdk/status"):
+            return _FakeResponse(200, {"ok": True, "cdk": {"valid": True, "balance": 1}})
+        cdk = kwargs["json"]["cdk"]
+        posted_cdks.append(cdk)
+        return _FakeResponse(
+            202,
+            {
+                "job_id": f"remote-{len(posted_cdks)}",
+                "job_token": "remote-token",
+                "status": "success",
+                "link": f"https://payments.stripe.com/qr/instructions/{cdk}",
+                "pix_copy_paste": f"pix-{cdk}",
+                "amount": "0",
+            },
+        )
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+
+    req = brazil_pix.BrazilPixTempBatchStartRequest.model_validate(
+        {"accountEmails": emails, "cdks": ["CDK-1", "CDK-2", "CDK-3"], "concurrency": 1}
+    )
+    brazil_pix._run_temp_batch_job(job_id, req)
+
+    assert posted_cdks == ["CDK-1", "CDK-2", "CDK-3"]
+    assert brazil_pix.JOBS[job_id]["status"] == "success"
+    assert len(brazil_pix.JOBS[job_id]["result"]["successes"]) == 3
+
+
+def test_temp_batch_job_allocates_multiple_cdks_by_balance(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    emails = [f"quota{index}@example.com" for index in range(4)]
+    for index, email in enumerate(emails):
+        _write_session(auth_dir, email, f"quota-token-{index}-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"} for email in emails])
+    brazil_pix.JOBS.clear()
+    job_id = "temp-cdk-balance-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "concurrency": 1,
+        "cancel_requested": False,
+        "running_count": 0,
+        "skipped": [],
+        "account_statuses": {},
+        "temp": True,
+    }
+    balances = {"CDK-A": 3, "CDK-B": 1}
+    posted_cdks = []
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/cdk/status"):
+            cdk = kwargs["json"]["cdk"]
+            return _FakeResponse(200, {"ok": True, "cdk": {"valid": True, "balance": balances[cdk]}})
+        cdk = kwargs["json"]["cdk"]
+        posted_cdks.append(cdk)
+        return _FakeResponse(
+            202,
+            {
+                "job_id": f"remote-{len(posted_cdks)}",
+                "job_token": "remote-token",
+                "status": "success",
+                "link": f"https://payments.stripe.com/qr/instructions/{cdk}-{len(posted_cdks)}",
+                "pix_copy_paste": f"pix-{cdk}",
+                "amount": "0",
+            },
+        )
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+
+    req = brazil_pix.BrazilPixTempBatchStartRequest.model_validate(
+        {"accountEmails": emails, "cdks": ["CDK-A", "CDK-B"], "concurrency": 1}
+    )
+    brazil_pix._run_temp_batch_job(job_id, req)
+
+    assert posted_cdks == ["CDK-A", "CDK-A", "CDK-A", "CDK-B"]
+    assert brazil_pix.JOBS[job_id]["status"] == "success"
+    assert len(brazil_pix.JOBS[job_id]["result"]["successes"]) == 4
+
+
+def test_temp_cdk_balance_treats_api_ok_false_as_zero():
+    assert brazil_pix._temp_cdk_balance_from_status({"ok": False, "message": "invalid cdk"}) == 0
+
+
+def test_temp_cdk_status_proxies_olimap_balance_api(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeResponse(
+            200,
+            {
+                "ok": True,
+                "cdk": {
+                    "valid": True,
+                    "state": "active",
+                    "balance": 7,
+                    "quota_total": 10,
+                    "used_success": 2,
+                    "reserved": 1,
+                    "active_jobs": 1,
+                    "max_concurrency": 10,
+                },
+            },
+        )
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+
+    endpoint = _route_endpoint("/api/brazil-pix/temp/cdk/status", "POST")
+    data = endpoint(brazil_pix.BrazilPixTempCdkStatusRequest(cdk="CDK-TEMP"))
+
+    assert calls[0][0] == "https://pix.olimap.top/api/v1/cdk/status"
+    assert calls[0][1]["json"] == {"cdk": "CDK-TEMP"}
+    assert calls[0][1]["timeout"] == 20
+    assert data["cdk"]["balance"] == 7
+    assert data["cdk"]["max_concurrency"] == 10
+
+
+def test_temp_batch_job_allows_concurrency_above_ten(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    emails = [f"temp{index}@example.com" for index in range(12)]
+    for index, email in enumerate(emails):
+        _write_session(auth_dir, email, f"temp-token-{index}-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"} for email in emails])
+    brazil_pix.JOBS.clear()
+    job_id = "temp-concurrency-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "concurrency": 12,
+        "cancel_requested": False,
+        "running_count": 0,
+        "skipped": [],
+        "account_statuses": {},
+        "temp": True,
+    }
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    above_ten = threading.Event()
+
+    def fake_post(url, **kwargs):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active > 10:
+                above_ten.set()
+        above_ten.wait(0.25)
+        with lock:
+            active -= 1
+        remote_id = str(kwargs["json"]["credential"]).split("-")[2]
+        return _FakeResponse(
+            202,
+            {
+                "job_id": f"remote-{remote_id}",
+                "job_token": "remote-token",
+                "status": "success",
+                "link": f"https://payments.stripe.com/qr/instructions/{remote_id}",
+                "pix_copy_paste": "pix-temp-code",
+                "amount": "0",
+            },
+        )
+
+    monkeypatch.setattr(brazil_pix.requests, "post", fake_post)
+
+    req = brazil_pix.BrazilPixTempBatchStartRequest.model_validate(
+        {"accountEmails": emails, "cdk": "CDK-TEMP", "concurrency": 12}
+    )
+    brazil_pix._run_temp_batch_job(job_id, req)
+
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "success"
+    assert job["concurrency"] == 12
+    assert len(job["result"]["successes"]) == 12
+    assert max_active > 10
