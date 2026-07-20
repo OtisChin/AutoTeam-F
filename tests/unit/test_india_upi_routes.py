@@ -107,3 +107,14 @@ def test_links_delete_and_clear_use_upi_file():
     assert deleted["deleted"] == 1
     assert [item["id"] for item in deleted["links"]] == ["keep"]
     assert cleared == {"deleted": 1, "links": []}
+
+
+def test_main_api_mounts_india_upi_router():
+    from autotoken.interfaces.api import app
+
+    paths = {getattr(route, "path", "") for route in app.routes}
+
+    assert "/api/india-upi/accounts" in paths
+    assert "/api/india-upi/batch/start" in paths
+    assert "/api/india-upi/jobs/{job_id}" in paths
+    assert "/api/india-upi/links" in paths

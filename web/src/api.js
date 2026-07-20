@@ -140,6 +140,14 @@ export const api = {
   clearBrazilPixLinks: () => request('POST', '/brazil-pix/links/clear'),
   submitBrazilPixPayment: (payload) => request('POST', '/brazil-pix/payment/submit', payload),
   getBrazilPixPaymentJob: (jobId, token) => request('GET', `/brazil-pix/payment/jobs/${encodeURIComponent(jobId)}?token=${encodeURIComponent(token)}`),
+  getIndiaUpiAccounts: () => request('GET', '/india-upi/accounts'),
+  startIndiaUpi: (payload) => request('POST', '/india-upi/start', payload),
+  startIndiaUpiBatch: (payload) => request('POST', '/india-upi/batch/start', payload),
+  getIndiaUpiJob: (jobId) => request('GET', `/india-upi/jobs/${encodeURIComponent(jobId)}`),
+  cancelIndiaUpiJob: (jobId) => request('POST', `/india-upi/jobs/${encodeURIComponent(jobId)}/cancel`),
+  getIndiaUpiLinks: () => request('GET', '/india-upi/links'),
+  deleteIndiaUpiLinks: (ids) => request('POST', '/india-upi/links/delete', { ids }),
+  clearIndiaUpiLinks: () => request('POST', '/india-upi/links/clear'),
   getIdealQrBlob: async (value) => {
     const headers = { 'Content-Type': 'application/json' }
     const key = getApiKey()
