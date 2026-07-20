@@ -30,7 +30,7 @@
       <section class="overflow-hidden rounded-2xl border border-gray-800 bg-gray-950/70">
         <div class="flex flex-col gap-3 border-b border-gray-800 p-5 lg:flex-row lg:items-center lg:justify-between"><div><p class="text-xs font-semibold text-gray-500">账号池选择</p><h3 class="mt-1 text-xl font-bold text-white">选择提链账号</h3></div><span class="rounded-full bg-gray-900 px-3 py-1.5 text-xs font-bold text-gray-400">已选 {{ selectedEmails.length }} / {{ filteredAccounts.length }}</span></div>
         <div class="flex flex-col gap-3 p-5 sm:flex-row"><input v-model.trim="accountFilter" placeholder="搜索账号邮箱" class="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-emerald-500 focus:outline-none" /><select v-model="accountStatusFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-200 focus:border-emerald-500 focus:outline-none"><option value="all">全部状态</option><option value="pending">未提链</option><option value="running">提链中</option><option value="success">已提链</option><option value="failed">提链失败</option><option value="paid">已支付</option></select><button @click="selectAllFiltered" class="rounded-lg border border-gray-700 px-3 py-2 text-sm font-bold text-gray-200 hover:bg-gray-800">全选当前</button><button @click="clearSelectedAccounts" class="rounded-lg border border-gray-700 px-3 py-2 text-sm font-bold text-gray-400 hover:bg-gray-800">清空选择</button></div>
-        <div class="max-h-[420px] overflow-auto border-t border-gray-800"><table class="w-full min-w-[640px] text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-12 px-4 py-3"></th><th class="px-4 py-3">邮箱</th><th class="px-4 py-3">有效期</th><th class="px-4 py-3">提链状态</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!filteredAccounts.length"><td colspan="4" class="px-4 py-10 text-center text-gray-500">暂无匹配账号</td></tr><tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50"><td class="px-4 py-3"><input type="checkbox" :checked="selectedAccounts.has(account.email)" :disabled="!accountSelectable(account)" @change="toggleAccount(account.email)" class="h-4 w-4 accent-emerald-500 disabled:opacity-40" /></td><td class="px-4 py-3 font-mono text-xs text-gray-200">{{ account.email }}</td><td class="px-4 py-3 text-gray-400">{{ ttlText(account.ttl_seconds) }}</td><td class="px-4 py-3"><span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="accountStatusClass(account)">{{ accountStatusText(account) }}</span><p v-if="accountStatusError(account)" class="mt-1 max-w-xs truncate text-xs text-rose-300" :title="accountStatusError(account)">{{ accountStatusError(account) }}</p></td></tr></tbody></table></div>
+        <div class="max-h-[420px] overflow-auto border-t border-gray-800"><table class="w-full min-w-[640px] text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-12 px-4 py-3"></th><th class="px-4 py-3">邮箱</th><th class="px-4 py-3">有效期</th><th class="px-4 py-3">提链状态</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!filteredAccounts.length"><td colspan="4" class="px-4 py-10 text-center text-gray-500">暂无匹配账号</td></tr><tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50"><td class="px-4 py-3"><input type="checkbox" :checked="selectedAccounts.has(account.email)" :disabled="!accountSelectable(account)" @change="toggleAccount(account.email)" class="h-4 w-4 accent-emerald-500 disabled:opacity-40" /></td><td class="px-4 py-3 font-mono text-xs text-gray-200">{{ account.email }}</td><td class="px-4 py-3 text-gray-400">{{ ttlText(account.ttl_seconds) }}</td><td class="px-4 py-3"><span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="accountStatusClass(account)" :title="accountStatusUpdatedAt(account) ? `状态更新：${accountStatusUpdatedAt(account)}` : ''">{{ accountStatusText(account) }}</span><p v-if="accountStatusError(account)" class="mt-1 max-w-xs truncate text-xs text-rose-300" :title="accountStatusError(account)">{{ accountStatusError(account) }}</p></td></tr></tbody></table></div>
       </section>
     </div>
 
@@ -44,12 +44,12 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 
 const FORM_STORAGE_KEY = 'autotoken_india_upi_form'
 const JOB_STORAGE_KEY = 'autotoken_india_upi_job'
-const TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled', 'not_implemented'])
+const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 
 const form = ref({ proxies: '', concurrency: 1, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '' })
 const accounts = ref([])
@@ -76,7 +76,8 @@ function setStatus(message, error = false) { statusText.value = message; statusE
 function cleanError(error) { return String(error?.message || error || '未知错误') }
 function accountJobStatus(account) { const statuses = currentJob.value?.account_statuses || {}; return statuses[account.email] || statuses[String(account.email || '').toLowerCase()] }
 function ttlText(seconds) { const value = Number(seconds); if (!Number.isFinite(value) || value < 0) return '-'; if (value < 60) return `${Math.floor(value)}s`; if (value < 3600) return `${Math.ceil(value / 60)}m`; return `${Math.ceil(value / 3600)}h` }
-function accountStatusText(account) { const status = accountJobStatus(account)?.status || account.upi_status || 'pending'; return ({ pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' })[status] || account.upi_status_text || '未提链' }
+function accountStatusText(account) { const status = accountJobStatus(account)?.status || account.upi_status || 'pending'; return account.upi_status_text || ({ pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' })[status] || '未提链' }
+function accountStatusUpdatedAt(account) { return account.upi_status_updated_at || '' }
 function accountStatusClass(account) { const status = accountJobStatus(account)?.status || account.upi_status || 'pending'; return ({ running: 'border-blue-500/30 bg-blue-500/10 text-blue-300', success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300', failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300', paid: 'border-violet-500/30 bg-violet-500/10 text-violet-300' })[status] || 'border-gray-700 bg-gray-900 text-gray-400' }
 function accountStatusError(account) { return accountJobStatus(account)?.error || account.upi_error || '' }
 function accountSelectable(account) { return account.upi_selectable !== false && (accountJobStatus(account)?.status || account.upi_status) !== 'paid' }
@@ -126,17 +127,19 @@ async function start() {
 }
 
 async function pollJob(jobId) {
+  if (!isMounted) return
   const job = await api.getIndiaUpiJob(jobId)
+  if (!isMounted) return
   currentJob.value = job
   logs.value = Array.isArray(job.logs) ? job.logs : []
   currentResult.value = job.result || null
-  busy.value = !['success', 'error', 'cancelled', 'not_implemented'].includes(String(job.status || ''))
+  busy.value = !TERMINAL_STATUSES.has(String(job.status || ''))
   statusText.value = job.error || currentResult.value?.message || '任务状态已更新。'
   statusError.value = String(job.status || '') === 'error'
   if (TERMINAL_STATUSES.has(String(job.status || ''))) { localStorage.removeItem(JOB_STORAGE_KEY); await Promise.all([refreshAccounts(), refreshLinks()]); return }
   localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify({ jobId, savedAt: Date.now() }))
   await new Promise(resolve => window.setTimeout(resolve, 1000))
-  if (busy.value) await pollJob(jobId)
+  if (isMounted && busy.value) await pollJob(jobId)
 }
 
 async function reloadAll() { try { await Promise.all([refreshAccounts(), refreshLinks()]); setStatus('账号和链接已刷新。') } catch (error) { setStatus(`刷新失败：${cleanError(error)}`, true) } }
@@ -145,8 +148,10 @@ function saveProxy() { localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(for
 async function deleteSelectedLinks() { const ids = Array.from(selectedLinkIds.value); if (!ids.length) return; try { const data = await api.deleteIndiaUpiLinks(ids); links.value = Array.isArray(data.links) ? data.links : []; selectedLinkIds.value = new Set(); setStatus(`已删除 ${data.deleted || ids.length} 条链接。`) } catch (error) { setStatus(`删除失败：${cleanError(error)}`, true) } }
 async function clearLinks() { if (!links.value.length) return; try { const data = await api.clearIndiaUpiLinks(); links.value = Array.isArray(data.links) ? data.links : []; selectedLinkIds.value = new Set(); setStatus(`已清空 ${data.deleted || 0} 条链接。`) } catch (error) { setStatus(`清空失败：${cleanError(error)}`, true) } }
 function exportLinks() { const blob = new Blob([JSON.stringify(links.value, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `india-upi-links-${Date.now()}.json`; anchor.click(); URL.revokeObjectURL(url); setStatus('链接 JSON 已导出。') }
-async function copy(value) { const text = String(value || ''); if (!text) return; try { await navigator.clipboard?.writeText(text); setStatus('已复制 UPI 链接。') } catch (error) { setStatus(`复制失败：${cleanError(error)}`, true) } }
+async function copy(value) { const text = String(value || ''); if (!text) return; if (!navigator.clipboard?.writeText) { setStatus('当前环境不支持复制。', true); return } try { await navigator.clipboard.writeText(text); setStatus('已复制 UPI 链接。') } catch (error) { setStatus(`复制失败：${cleanError(error)}`, true) } }
 
+let isMounted = true
+onUnmounted(() => { isMounted = false })
 onMounted(async () => {
   try { Object.assign(form.value, JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) || '{}')) } catch { /* ignore malformed local state */ }
   await reloadAll()
