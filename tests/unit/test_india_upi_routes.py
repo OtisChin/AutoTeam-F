@@ -94,6 +94,22 @@ def test_cancel_marks_non_terminal_job_cancelled():
     assert india_upi.JOBS["job-1"]["finished_at"] is not None
 
 
+def test_cancel_does_not_rewrite_failed_job():
+    app = _app()
+    india_upi.JOBS["job-1"] = {
+        "id": "job-1", "status": "failed", "logs": [], "result": None, "error": "upstream failed",
+        "created_at": 1.0, "finished_at": 2.0, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    result = _endpoint(app, "/api/india-upi/jobs/{job_id}/cancel", "POST")("job-1")
+
+    assert result == {"ok": True, "job_id": "job-1", "status": "failed", "cancel_requested": False}
+    assert india_upi.JOBS["job-1"]["status"] == "failed"
+    assert india_upi.JOBS["job-1"]["finished_at"] == 2.0
+
+
 def test_links_delete_and_clear_use_upi_file():
     app = _app()
     india_upi.LINKS_FILE.write_text(json.dumps([

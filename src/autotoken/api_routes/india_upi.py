@@ -23,7 +23,7 @@ UPI_STATUS_PAID = "paid"
 UPI_STATUS_TEXT = {"pending": "未提链", "running": "提链中", "success": "已提链", "failed": "提链失败", "paid": "已支付"}
 JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.RLock()
-TERMINAL_STATUSES = {"success", "error", "cancelled", "not_implemented"}
+TERMINAL_STATUSES = {"success", "error", "failed", "cancelled", "not_implemented"}
 
 
 class IndiaUpiStartRequest(BaseModel):
