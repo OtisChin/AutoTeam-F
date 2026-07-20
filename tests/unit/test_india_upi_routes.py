@@ -45,6 +45,32 @@ def test_accounts_default_to_pending_upi_status(monkeypatch):
     assert result["accounts"][0]["upi_selectable"] is True
 
 
+def test_accounts_exclude_sensitive_account_fields(monkeypatch):
+    app = _app()
+    monkeypatch.setattr(india_upi.account_store, "load_accounts", lambda: [{
+        "email": "user@example.com",
+        "status": "active",
+        "account_type": "plus",
+        "seat_type": "individual",
+        "ttl_seconds": 3600,
+        "expires_at": "2026-07-21T00:00:00Z",
+        "last_active_at": "2026-07-20T00:00:00Z",
+        "note": "safe metadata",
+        "password": "secret-password",
+        "cloudmail_account_id": "cloudmail-id",
+        "auth_file": "auth.json",
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "cookies": {"session": "secret-cookie"},
+        "unexpected_secret": "must-not-leak",
+    }])
+
+    row = _endpoint(app, "/api/india-upi/accounts", "GET")()["accounts"][0]
+
+    assert {"email", "status", "account_type", "seat_type", "ttl_seconds", "expires_at", "last_active_at", "note"} <= row.keys()
+    assert not {"password", "cloudmail_account_id", "auth_file", "access_token", "refresh_token", "cookies", "unexpected_secret"} & row.keys()
+
+
 def test_batch_start_creates_not_implemented_job(monkeypatch):
     app = _app()
     monkeypatch.setattr(india_upi.account_store, "load_accounts", lambda: [{"email": "user@example.com"}])

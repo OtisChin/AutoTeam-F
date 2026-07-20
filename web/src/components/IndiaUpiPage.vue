@@ -5,7 +5,7 @@
         <div>
           <p class="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-400">India UPI</p>
           <h2 class="mt-1 text-2xl font-bold text-white">印度UPI 提链</h2>
-          <p class="mt-2 text-sm text-gray-400">选择账号并配置 IN 代理后，批量提取并集中管理 UPI 链接。</p>
+          <p class="mt-2 text-sm text-gray-400">此 UI 与 API 为预留占位；后端核心提链尚未接入，当前不能提取或管理 UPI 链接。</p>
         </div>
         <span class="inline-flex w-fit items-center gap-2 rounded-xl border px-3 py-2 text-sm" :class="statusError ? 'border-rose-500/30 bg-rose-500/10 text-rose-200' : 'border-gray-800 bg-gray-900 text-gray-300'">
           <span class="h-2.5 w-2.5 rounded-full" :class="busy ? 'bg-blue-400' : statusError ? 'bg-rose-400' : 'bg-emerald-400'"></span>
@@ -50,6 +50,7 @@ import { api } from '../api.js'
 const FORM_STORAGE_KEY = 'autotoken_india_upi_form'
 const JOB_STORAGE_KEY = 'autotoken_india_upi_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
+const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
 
 const form = ref({ proxies: '', concurrency: 1, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '' })
 const accounts = ref([])
@@ -76,7 +77,7 @@ function setStatus(message, error = false) { statusText.value = message; statusE
 function cleanError(error) { return String(error?.message || error || '未知错误') }
 function accountJobStatus(account) { const statuses = currentJob.value?.account_statuses || {}; return statuses[account.email] || statuses[String(account.email || '').toLowerCase()] }
 function ttlText(seconds) { const value = Number(seconds); if (!Number.isFinite(value) || value < 0) return '-'; if (value < 60) return `${Math.floor(value)}s`; if (value < 3600) return `${Math.ceil(value / 60)}m`; return `${Math.ceil(value / 3600)}h` }
-function accountStatusText(account) { const status = accountJobStatus(account)?.status || account.upi_status || 'pending'; return account.upi_status_text || ({ pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' })[status] || '未提链' }
+function accountStatusText(account) { const jobStatus = accountJobStatus(account); if (jobStatus) return jobStatus.status_text || ACCOUNT_STATUS_TEXT[jobStatus.status] || '未提链'; return account.upi_status_text || ACCOUNT_STATUS_TEXT[account.upi_status] || '未提链' }
 function accountStatusUpdatedAt(account) { return account.upi_status_updated_at || '' }
 function accountStatusClass(account) { const status = accountJobStatus(account)?.status || account.upi_status || 'pending'; return ({ running: 'border-blue-500/30 bg-blue-500/10 text-blue-300', success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300', failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300', paid: 'border-violet-500/30 bg-violet-500/10 text-violet-300' })[status] || 'border-gray-700 bg-gray-900 text-gray-400' }
 function accountStatusError(account) { return accountJobStatus(account)?.error || account.upi_error || '' }
@@ -135,7 +136,7 @@ async function pollJob(jobId) {
   currentResult.value = job.result || null
   busy.value = !TERMINAL_STATUSES.has(String(job.status || ''))
   statusText.value = job.error || currentResult.value?.message || '任务状态已更新。'
-  statusError.value = String(job.status || '') === 'error'
+  statusError.value = ['error', 'failed'].includes(String(job.status || ''))
   if (TERMINAL_STATUSES.has(String(job.status || ''))) { localStorage.removeItem(JOB_STORAGE_KEY); await Promise.all([refreshAccounts(), refreshLinks()]); return }
   localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify({ jobId, savedAt: Date.now() }))
   await new Promise(resolve => window.setTimeout(resolve, 1000))

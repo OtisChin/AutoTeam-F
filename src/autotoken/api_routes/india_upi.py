@@ -21,6 +21,9 @@ MAX_BATCH_CONCURRENCY = 10
 UPI_STATUS_PENDING = "pending"
 UPI_STATUS_PAID = "paid"
 UPI_STATUS_TEXT = {"pending": "未提链", "running": "提链中", "success": "已提链", "failed": "提链失败", "paid": "已支付"}
+ACCOUNT_UI_FIELDS = (
+    "email", "status", "account_type", "seat_type", "ttl_seconds", "expires_at", "last_active_at", "note",
+)
 JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.RLock()
 TERMINAL_STATUSES = {"success", "error", "failed", "cancelled", "not_implemented"}
@@ -100,7 +103,15 @@ def _iter_auth_accounts_with_upi_status() -> list[dict[str, Any]]:
         status = str(item.get("status") or UPI_STATUS_PENDING)
         if status not in UPI_STATUS_TEXT:
             status = UPI_STATUS_PENDING
-        rows.append({**account, "upi_status": status, "upi_status_text": str(item.get("status_text") or UPI_STATUS_TEXT[status]), "upi_error": str(item.get("error") or ""), "upi_status_updated_at": item.get("updated_at"), "upi_selectable": status != UPI_STATUS_PAID})
+        rows.append({
+            field: account.get(field) for field in ACCOUNT_UI_FIELDS
+        } | {
+            "upi_status": status,
+            "upi_status_text": str(item.get("status_text") or UPI_STATUS_TEXT[status]),
+            "upi_error": str(item.get("error") or ""),
+            "upi_status_updated_at": item.get("updated_at"),
+            "upi_selectable": status != UPI_STATUS_PAID,
+        })
     return rows
 
 
