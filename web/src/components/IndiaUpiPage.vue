@@ -155,7 +155,7 @@ onUnmounted(() => { isMounted = false })
 onMounted(async () => {
   try { Object.assign(form.value, JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) || '{}')) } catch { /* ignore malformed local state */ }
   await reloadAll()
-  try { const saved = JSON.parse(localStorage.getItem(JOB_STORAGE_KEY) || '{}'); if (saved.jobId) { busy.value = true; await pollJob(saved.jobId) } } catch { localStorage.removeItem(JOB_STORAGE_KEY) }
+  try { const saved = JSON.parse(localStorage.getItem(JOB_STORAGE_KEY) || '{}'); if (saved.jobId) { busy.value = true; await pollJob(saved.jobId) } } catch (error) { localStorage.removeItem(JOB_STORAGE_KEY); currentJob.value = null; busy.value = false; setStatus(`恢复任务失败：${cleanError(error)}`, true) }
 })
 watch(form, () => localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value)), { deep: true })
 </script>
