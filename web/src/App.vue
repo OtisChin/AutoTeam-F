@@ -59,10 +59,7 @@
 
           <BindCard v-else-if="currentPage === 'gopay'" key="gopay" initial-tab="gopay" standalone @refresh="refresh" />
 
-          <section v-else-if="currentPage === 'paypal'" class="rounded-xl border border-gray-800 bg-gray-900 p-5 shadow-2xl">
-            <h2 class="text-xl font-bold text-white">PayPal</h2>
-            <p class="mt-2 text-sm text-gray-400">功能待定</p>
-          </section>
+          <UsPaypalPage v-else-if="currentPage === 'paypal'" />
 
           <IdealLinkPage v-else-if="currentPage === 'ideal'" />
 
@@ -154,6 +151,7 @@ import BindCardPool from './components/BindCardPool.vue'
 import IdealLinkPage from './components/IdealLinkPage.vue'
 import BrazilPixPage from './components/BrazilPixPage.vue'
 import IndiaUpiPage from './components/IndiaUpiPage.vue'
+import UsPaypalPage from './components/UsPaypalPage.vue'
 import OAuthPhonePoolPage from './components/OAuthPhonePoolPage.vue'
 import OAuthPhoneRecordsPage from './components/OAuthPhoneRecordsPage.vue'
 import MailAccountsPage from './components/MailAccountsPage.vue'
