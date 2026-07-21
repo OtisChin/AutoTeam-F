@@ -141,6 +141,8 @@ export const api = {
   submitBrazilPixPayment: (payload) => request('POST', '/brazil-pix/payment/submit', payload),
   getBrazilPixPaymentJob: (jobId, token) => request('GET', `/brazil-pix/payment/jobs/${encodeURIComponent(jobId)}?token=${encodeURIComponent(token)}`),
   getIndiaUpiAccounts: () => request('GET', '/india-upi/accounts'),
+  deleteIndiaUpiAccount: (email) => request('DELETE', `/india-upi/accounts/${encodeURIComponent(email)}`),
+  deleteIndiaUpiAccounts: (emails) => request('POST', '/india-upi/accounts/delete', { emails }),
   startIndiaUpi: (payload) => request('POST', '/india-upi/start', payload),
   startIndiaUpiBatch: (payload) => request('POST', '/india-upi/batch/start', payload),
   getIndiaUpiJob: (jobId) => request('GET', `/india-upi/jobs/${encodeURIComponent(jobId)}`),

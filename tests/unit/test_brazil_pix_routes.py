@@ -171,6 +171,22 @@ def test_auth_accounts_ignore_leftover_session_when_dashboard_pool_has_accounts(
     assert accounts == {"keep@example.com"}
 
 
+def test_auth_accounts_order_by_dashboard_updated_at_desc(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    _write_session(auth_dir, "old@example.com")
+    _write_session(auth_dir, "new@example.com")
+    _write_session(auth_dir, "middle@example.com")
+    monkeypatch.setattr(brazil_pix.account_store, "load_accounts", lambda: [
+        {"email": "old@example.com", "status": "active", "account_type": "free", "updated_at": 100.0},
+        {"email": "new@example.com", "status": "active", "account_type": "free", "updated_at": 300.0},
+        {"email": "middle@example.com", "status": "active", "account_type": "free", "updated_at": 200.0},
+    ])
+
+    accounts = brazil_pix._iter_auth_accounts(include_paid=True)
+
+    assert [item["email"] for item in accounts] == ["new@example.com", "middle@example.com", "old@example.com"]
+
+
 def test_auth_accounts_include_phone_registered_session_by_nested_user_email(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     phone = "+5511999998888"

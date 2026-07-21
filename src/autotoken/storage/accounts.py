@@ -120,6 +120,7 @@ def _row_to_account(row) -> dict:
             "auth_file": data.get("auth_file", row["auth_file"]),
             "credentials_exported": bool(row["credentials_exported"]),
             "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
     )
     return _normalize_account_record(data)

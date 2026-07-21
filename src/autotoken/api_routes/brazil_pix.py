@@ -187,14 +187,18 @@ def _pix_paid_emails() -> set[str]:
 
 
 def _dashboard_account_email_keys() -> set[str]:
+    return set(_dashboard_accounts_by_email())
+
+
+def _dashboard_accounts_by_email() -> dict[str, dict[str, Any]]:
     try:
         return {
-            str(account.get("email") or "").strip().lower()
+            str(account.get("email") or "").strip().lower(): account
             for account in account_store.load_accounts()
             if str(account.get("email") or "").strip()
         }
     except Exception:
-        return set()
+        return {}
 
 
 def _pix_pool_excluded_emails() -> set[str]:
@@ -206,7 +210,8 @@ def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
     accounts: list[dict[str, Any]] = []
     if not AUTH_SESSION_DIR.exists():
         return accounts
-    dashboard_emails = _dashboard_account_email_keys()
+    dashboard_accounts = _dashboard_accounts_by_email()
+    dashboard_emails = set(dashboard_accounts)
     excluded_emails = set() if include_paid else _pix_pool_excluded_emails()
     for path in sorted(AUTH_SESSION_DIR.glob("*.json")):
         try:
@@ -224,15 +229,17 @@ def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
         exp = _decode_jwt_exp(token)
         if exp and exp <= now + 300:
             continue
+        dashboard_account = dashboard_accounts.get(email.lower()) or {}
         accounts.append(
             {
                 "email": email,
                 "auth_file": str(path),
                 "expires_at": exp,
                 "ttl_seconds": max(0, int(exp - now)) if exp else 0,
+                "updated_at": dashboard_account.get("updated_at") or path.stat().st_mtime,
             }
         )
-    accounts.sort(key=lambda item: ("example.com" in item["email"].lower(), item["email"].lower()))
+    accounts.sort(key=lambda item: (float(item.get("updated_at") or 0), item["email"].lower()), reverse=True)
     return accounts
 
 

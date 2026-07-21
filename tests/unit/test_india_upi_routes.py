@@ -36,6 +36,10 @@ def test_accounts_default_to_pending_upi_status(monkeypatch):
         {"email": "user@example.com", "status": "active", "account_type": "free", "ttl_seconds": 3600},
         {"email": "plus@example.com", "status": "active", "account_type": "plus", "ttl_seconds": 7200},
     ])
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "user@example.com", "auth_file": "auth-user.json"},
+        {"email": "plus@example.com", "auth_file": "auth-plus.json"},
+    ])
 
     result = _endpoint(app, "/api/india-upi/accounts", "GET")()
 
@@ -43,6 +47,9 @@ def test_accounts_default_to_pending_upi_status(monkeypatch):
     assert result["accounts"][0]["upi_status"] == "pending"
     assert result["accounts"][0]["upi_status_text"] == "未提链"
     assert result["accounts"][0]["upi_selectable"] is True
+    assert result["accounts"][1]["upi_status"] == "paid"
+    assert result["accounts"][1]["upi_status_text"] == "已支付"
+    assert result["accounts"][1]["upi_selectable"] is False
 
 
 def test_accounts_exclude_sensitive_account_fields(monkeypatch):
@@ -64,6 +71,9 @@ def test_accounts_exclude_sensitive_account_fields(monkeypatch):
         "cookies": {"session": "secret-cookie"},
         "unexpected_secret": "must-not-leak",
     }])
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "user@example.com", "auth_file": "auth.json", "ttl_seconds": 3600}
+    ])
 
     row = _endpoint(app, "/api/india-upi/accounts", "GET")()["accounts"][0]
 
@@ -71,9 +81,25 @@ def test_accounts_exclude_sensitive_account_fields(monkeypatch):
     assert not {"password", "cloudmail_account_id", "auth_file", "access_token", "refresh_token", "cookies", "unexpected_secret"} & row.keys()
 
 
-def test_batch_start_creates_not_implemented_job(monkeypatch):
+def test_accounts_list_only_auth_runnable_accounts(monkeypatch):
+    app = _app()
+    monkeypatch.setattr(india_upi.account_store, "load_accounts", lambda: [
+        {"email": "with-auth@example.com", "status": "active", "account_type": "free"},
+        {"email": "missing-auth@example.com", "status": "active", "account_type": "free"},
+    ])
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "with-auth@example.com", "auth_file": "auth.json"}
+    ])
+
+    result = _endpoint(app, "/api/india-upi/accounts", "GET")()
+
+    assert [row["email"] for row in result["accounts"]] == ["with-auth@example.com"]
+
+
+def test_batch_start_creates_queued_job(monkeypatch):
     app = _app()
     monkeypatch.setattr(india_upi.account_store, "load_accounts", lambda: [{"email": "user@example.com"}])
+    monkeypatch.setattr(india_upi.threading, "Thread", lambda *args, **kwargs: type("DummyThread", (), {"start": lambda self: None})())
 
     result = _endpoint(app, "/api/india-upi/batch/start", "POST")(
         india_upi.IndiaUpiBatchStartRequest.model_validate({
@@ -84,11 +110,84 @@ def test_batch_start_creates_not_implemented_job(monkeypatch):
     )
     job = _endpoint(app, "/api/india-upi/jobs/{job_id}", "GET")(result["job_id"])
 
-    assert job["status"] == "not_implemented"
+    assert job["status"] == "queued"
     assert job["total"] == 1
-    assert job["completed"] == 0
-    assert job["result"]["implemented"] is False
-    assert "印度UPI 后端核心提链功能待接入" in "\n".join(job["logs"])
+    assert job["concurrency"] == 2
+
+
+def test_batch_job_generates_upi_link_and_records_status(monkeypatch, tmp_path):
+    email = "user@example.com"
+    captured = {}
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_generate_upi_trial(cfg, log):
+        captured["cfg"] = cfg
+        log("fake upi success")
+        return {
+            "ok": True,
+            "amount": "199900",
+            "fields": {
+                "upi_link": "https://payments.stripe.com/upi/instructions/test",
+                "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/test",
+                "qr_image_url_png": "https://payments.stripe.com/qr/test.png",
+                "cs_id": "cs_test",
+                "billing": {"country": "IN"},
+            },
+            "billing": {"country": "IN"},
+        }
+
+    monkeypatch.setattr(india_upi, "generate_upi_trial", fake_generate_upi_trial)
+    job_id = "upi-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "host:1000:user:pass",
+        "concurrency": 1,
+        "promoMode": "skip",
+    })
+    india_upi._run_batch_job(job_id, req)
+
+    job = india_upi.JOBS[job_id]
+    assert job["status"] == "success"
+    assert job["completed"] == 1
+    assert job["result"]["successes"][0]["link"]["upi_link"] == "https://payments.stripe.com/upi/instructions/test"
+    assert captured["cfg"].access_token == "token-user@example.com"
+    assert captured["cfg"].apply_promo is False
+    assert json.loads(india_upi.LINKS_FILE.read_text(encoding="utf-8"))[0]["account_email"] == email
+    statuses = json.loads(india_upi.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert statuses[email]["status"] == "success"
+
+
+def test_batch_job_passes_apply_promo_mode(monkeypatch):
+    email = "promo@example.com"
+    captured = {}
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda _email: "token")
+
+    def fake_generate_upi_trial(cfg, log):
+        captured["apply_promo"] = cfg.apply_promo
+        return {"ok": True, "amount": "0", "fields": {"upi_link": "upi://ok", "cs_id": "cs_test"}, "billing": {}}
+
+    monkeypatch.setattr(india_upi, "generate_upi_trial", fake_generate_upi_trial)
+    job_id = "upi-promo-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({"accountEmails": [email], "proxies": "p", "promoMode": "promo"})
+    india_upi._run_batch_job(job_id, req)
+
+    assert captured["apply_promo"] is True
 
 
 def test_start_requires_selected_account():
@@ -103,7 +202,7 @@ def test_start_requires_selected_account():
     assert exc.value.detail["code"] == "bad_body"
 
 
-def test_cancel_marks_non_terminal_job_cancelled():
+def test_cancel_marks_non_terminal_job_cancelling():
     app = _app()
     india_upi.JOBS["job-1"] = {
         "id": "job-1", "status": "queued", "logs": [], "result": None, "error": None,
@@ -115,9 +214,11 @@ def test_cancel_marks_non_terminal_job_cancelled():
     result = _endpoint(app, "/api/india-upi/jobs/{job_id}/cancel", "POST")("job-1")
 
     assert result["ok"] is True
-    assert result["status"] == "cancelled"
+    assert result["status"] == "cancelling"
+    assert india_upi.JOBS["job-1"]["status"] == "cancelling"
     assert india_upi.JOBS["job-1"]["cancel_requested"] is True
-    assert india_upi.JOBS["job-1"]["finished_at"] is not None
+    assert india_upi.JOBS["job-1"]["finished_at"] is None
+    assert "收到取消请求" in "\n".join(india_upi.JOBS["job-1"]["logs"])
 
 
 def test_cancel_does_not_rewrite_failed_job():
@@ -151,12 +252,38 @@ def test_links_delete_and_clear_use_upi_file():
     assert cleared == {"deleted": 1, "links": []}
 
 
+def test_delete_upi_account_removes_account_auth_links_and_status(monkeypatch):
+    app = _app()
+    deleted_accounts = []
+    deleted_auth = []
+    monkeypatch.setattr(india_upi.account_store, "delete_account", lambda email: deleted_accounts.append(email) or True)
+    monkeypatch.setattr(india_upi, "delete_auth_session", lambda email: deleted_auth.append(email) or True)
+    india_upi.LINKS_FILE.write_text(json.dumps([
+        {"id": "remove", "account_email": "user@example.com", "upi_link": "upi://remove"},
+        {"id": "keep", "account_email": "other@example.com", "upi_link": "upi://keep"},
+    ]), encoding="utf-8")
+    india_upi.ACCOUNT_STATUS_FILE.write_text(json.dumps({
+        "user@example.com": {"status": "failed"},
+        "other@example.com": {"status": "success"},
+    }), encoding="utf-8")
+
+    result = _endpoint(app, "/api/india-upi/accounts/{email}", "DELETE")("user@example.com")
+
+    assert result["ok"] is True
+    assert result["upi"] == {"links_deleted": 1, "status_deleted": True}
+    assert deleted_accounts == ["user@example.com"]
+    assert deleted_auth == ["user@example.com"]
+    assert [item["id"] for item in json.loads(india_upi.LINKS_FILE.read_text(encoding="utf-8"))] == ["keep"]
+    assert set(json.loads(india_upi.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))) == {"other@example.com"}
+
+
 def test_main_api_mounts_india_upi_router():
     from autotoken.interfaces.api import app
 
     paths = {getattr(route, "path", "") for route in app.routes}
 
     assert "/api/india-upi/accounts" in paths
+    assert "/api/india-upi/accounts/{email}" in paths
     assert "/api/india-upi/batch/start" in paths
     assert "/api/india-upi/jobs/{job_id}" in paths
     assert "/api/india-upi/links" in paths
