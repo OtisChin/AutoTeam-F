@@ -48,7 +48,7 @@ class UsPaypalStartRequest(BaseModel):
     kookeey_user: str = Field("", alias="kookeeyUser")
     kookeey_pass: str = Field("", alias="kookeeyPass")
     region: str = "US"
-    promo_mode: str = Field("skip", alias="promoMode")
+    promo_mode: str = Field("promo", alias="promoMode")
     model_config = {"populate_by_name": True}
 
     @field_validator("promo_mode", mode="before")

@@ -62,7 +62,7 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
         log("fake paypal success")
         return {
             "ok": True,
-            "amount": "2000",
+            "amount": "0",
             "fields": {
                 "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-TEST",
                 "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-TEST",
@@ -127,6 +127,14 @@ def test_batch_job_passes_apply_promo_mode(monkeypatch):
     us_paypal._run_batch_job(job_id, req)
 
     assert captured["apply_promo"] is True
+
+
+def test_start_requests_default_to_apply_promo():
+    single = us_paypal.UsPaypalStartRequest.model_validate({"accountEmail": "user@example.com"})
+    batch = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": ["user@example.com"]})
+
+    assert single.promo_mode == "promo"
+    assert batch.promo_mode == "promo"
 
 
 def test_start_requires_selected_account():

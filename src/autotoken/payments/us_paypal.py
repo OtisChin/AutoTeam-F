@@ -171,6 +171,16 @@ def amount_info(payload: dict[str, Any]) -> str:
     return "0"
 
 
+def is_zero_amount(value: Any) -> bool:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return False
+    try:
+        return float(text) == 0.0
+    except Exception:
+        return text in {"0", "0.0", "0.00"}
+
+
 def _ctx() -> dict[str, str]:
     return {
         "stripe_js_id": str(uuid.uuid4()),
@@ -622,8 +632,8 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         log(f"金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
         if not has_paypal:
             raise RuntimeError(f"未出现 PayPal，pmt={pmt}")
-        if cfg.apply_promo and amount not in ("0", "0.0", "0.00"):
-            raise RuntimeError(f"套 promo 后金额不是 0: {amount}")
+        if not is_zero_amount(amount):
+            raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
 
         log(f"[4/6] 更新 US tax_region {billing['state']}")
         stripe_update_tax_region(stripe, cs_id, pk, billing)
@@ -631,8 +641,8 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         amount = amount_info(init_payload)
         hosted = str(init_payload.get("stripe_hosted_url") or "")
         log(f"tax_region 后金额={amount}")
-        if cfg.apply_promo and amount not in ("0", "0.0", "0.00"):
-            raise RuntimeError(f"套 promo 后金额不是 0: {amount}")
+        if not is_zero_amount(amount):
+            raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
 
         log("[5/6] inline confirm PayPal")
         confirm_payload = _confirm_paypal_inline(

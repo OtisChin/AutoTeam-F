@@ -58,7 +58,7 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: {
-        "total_summary": {"due": 2000},
+        "total_summary": {"due": 0},
         "payment_method_types": ["card", "paypal"],
         "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
     })
@@ -88,10 +88,10 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     assert captured["billing"]["country"] == "US"
     assert result["fields"]["paypal_link"] == "https://www.paypal.com/agreements/approve?ba_token=BA-TEST"
     assert result["fields"]["ba_token"] == "BA-TEST"
-    assert result["fields"]["amount"] == "2000"
+    assert result["fields"]["amount"] == "0"
 
 
-def test_generate_paypal_trial_stops_when_promo_keeps_non_zero_amount(monkeypatch):
+def test_generate_paypal_trial_stops_when_amount_is_not_zero(monkeypatch):
     class FakeChatgptSession:
         def post(self, url, **kwargs):
             return _JsonResponse({
@@ -106,8 +106,8 @@ def test_generate_paypal_trial_stops_when_promo_keeps_non_zero_amount(monkeypatc
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: {"total_summary": {"due": 2000}, "payment_method_types": ["card", "paypal"]})
     monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: pytest.fail("should not confirm PayPal"))
 
-    with pytest.raises(RuntimeError, match="套 promo 后金额不是 0"):
-        us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True))
+    with pytest.raises(RuntimeError, match="PayPal 金额必须为 0: 2000"):
+        us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=False))
 
 
 def test_confirm_paypal_inline_returns_ba_url_from_error_body():
@@ -170,5 +170,13 @@ def test_generate_paypal_trial_rechecks_promo_amount_after_tax_region(monkeypatc
     monkeypatch.setattr(us_paypal, "stripe_update_tax_region", lambda *args, **kwargs: None)
     monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: pytest.fail("should not confirm PayPal"))
 
-    with pytest.raises(RuntimeError, match="套 promo 后金额不是 0: 2000"):
+    with pytest.raises(RuntimeError, match="PayPal 金额必须为 0: 2000"):
         us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True))
+
+
+def test_is_zero_amount_accepts_zero_formats_only():
+    assert us_paypal.is_zero_amount(0) is True
+    assert us_paypal.is_zero_amount("0.00") is True
+    assert us_paypal.is_zero_amount(" 0.0 ") is True
+    assert us_paypal.is_zero_amount(2000) is False
+    assert us_paypal.is_zero_amount("") is False
