@@ -71,6 +71,7 @@ from autotoken.api_routes.gopay_auto_signup_config import (
 )
 from autotoken.api_routes.ideal_link import create_ideal_link_router
 from autotoken.api_routes.india_upi import create_india_upi_router
+from autotoken.api_routes.us_paypal import create_us_paypal_router
 from autotoken.api_routes.interactive_login import (
     AdminCodeParams as _AdminCodeParams,
 )
@@ -908,6 +909,7 @@ app.include_router(create_trade_router())
 app.include_router(create_whatsapp_otp_router())
 app.include_router(create_brazil_pix_router())
 app.include_router(create_india_upi_router())
+app.include_router(create_us_paypal_router())
 app.include_router(create_ideal_link_router())
 
 
