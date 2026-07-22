@@ -205,8 +205,29 @@ def test_build_upi_dynamic_proxy_rewrites_711_region_for_promo():
 
     assert "region-VN" in proxy
     assert "region-IN" not in proxy
+    assert "-session-" in proxy
+    assert "-sessTime-180-sessAuto-1" in proxy
     assert proxy.startswith("socks5h://")
     assert sid and sid != "static"
+
+
+def test_build_upi_dynamic_proxy_injects_session_for_short_711_on_every_attempt():
+    cfg = india_upi.UpiJobConfig(
+        access_token="token",
+        direct_proxies=["global.rotgb.711proxy.com:10000:USER105777-zone-custom-region-IN:d74d61"],
+        region="IN",
+    )
+
+    first_proxy, first_sid = india_upi.build_upi_dynamic_proxy(cfg, 0, "IN")
+    second_proxy, second_sid = india_upi.build_upi_dynamic_proxy(cfg, 0, "IN")
+    first_value = first_sid.rsplit("sid=", 1)[-1]
+    second_value = second_sid.rsplit("sid=", 1)[-1]
+
+    assert first_sid != second_sid
+    assert first_proxy != second_proxy
+    assert f"-session-{first_value}-" in first_proxy
+    assert f"-session-{second_value}-" in second_proxy
+    assert "region-IN" in first_proxy
 
 
 def test_build_upi_dynamic_proxy_refreshes_711_session_for_promo():

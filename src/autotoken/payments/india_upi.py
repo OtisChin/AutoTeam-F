@@ -88,8 +88,29 @@ def upi_proxy_with_fresh_sid(proxy_url: str, region: str = "IN") -> tuple[str, s
         count=1,
         flags=re.I,
     )
-    if region_count or sid_count or session_count:
+    if sid_count or session_count:
         return refreshed, fresh
+
+    # 711proxy also accepts a shorter, region-only username:
+    #   USER...-zone-custom-region-IN:password@global.rotgb.711proxy.com:10000
+    # In that shape the region rewrite above can change IN/VN, but there is no
+    # session key to rotate.  Returning a fresh sid label would be misleading:
+    # retries would keep using the exact same proxy credentials.  Inject the
+    # provider's session suffix so every attempt/stage can get a distinct
+    # provider session even when the shorter 711 format is pasted.
+    if "711proxy" in refreshed.lower() and "-session-" not in refreshed.lower():
+        refreshed_with_session, injected_count = re.subn(
+            r"([_-]region[-_][A-Z]{2})(?=[:@/?#&-])",
+            rf"\g<1>-session-{fresh}-sessTime-180-sessAuto-1",
+            refreshed,
+            count=1,
+            flags=re.I,
+        )
+        if injected_count:
+            return refreshed_with_session, fresh
+
+    if region_count:
+        return refreshed, "static"
 
     proxy, sid = pix_proxy_with_fresh_sid(proxy_url, target_region)
     if sid != "static":
