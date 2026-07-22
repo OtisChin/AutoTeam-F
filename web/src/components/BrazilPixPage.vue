@@ -237,18 +237,32 @@
             <span class="mt-1 block text-xs text-gray-500">ArxLabs 的 host:port:user:pass 会自动按 socks5h 使用。</span>
           </label>
 
-          <label class="block">
-            <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
-            <input
-              v-model.number="form.concurrency"
-              type="number"
-              min="1"
-              max="10"
-              class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
-              :disabled="busy"
-            />
-            <span class="mt-1 block text-xs text-gray-500">默认 1，最高 10；并发越高越依赖代理质量。</span>
-          </label>
+          <div class="grid gap-4 md:grid-cols-2">
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
+              <input
+                v-model.number="form.concurrency"
+                type="number"
+                min="1"
+                max="10"
+                class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
+                :disabled="busy"
+              />
+              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 10。</span>
+            </label>
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
+              <input
+                v-model.number="form.maxAttempts"
+                type="number"
+                min="1"
+                max="20"
+                class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
+                :disabled="busy"
+              />
+              <span class="mt-1 block text-xs text-gray-500">单账号最多尝试次数，含首次；默认 5。</span>
+            </label>
+          </div>
 
           <details class="rounded-xl border border-gray-800 bg-gray-900/40 p-4">
             <summary class="cursor-pointer text-sm font-semibold text-gray-200">高级设置</summary>
@@ -542,6 +556,7 @@ const ResultDetails = defineComponent({
 const form = ref({
   proxies: '',
   concurrency: 1,
+  maxAttempts: 5,
   localProxy: '',
   kookeeyUser: '',
   kookeeyPass: '',
@@ -857,12 +872,14 @@ function loadExtractFormState() {
   try {
     const raw = JSON.parse(localStorage.getItem(PIX_FORM_STORAGE_KEY) || '{}')
     form.value.concurrency = Math.max(1, Math.min(10, Number(raw.concurrency || form.value.concurrency || 1)))
+    form.value.maxAttempts = Math.max(1, Math.min(20, Number(raw.maxAttempts || form.value.maxAttempts || 5)))
     form.value.localProxy = String(raw.localProxy || '')
     form.value.kookeeyUser = String(raw.kookeeyUser || '')
     form.value.kookeeyPass = String(raw.kookeeyPass || '')
     form.value.kookeeyEndpoint = String(raw.kookeeyEndpoint || form.value.kookeeyEndpoint || 'gate.kookeey.info:1000')
   } catch {
     form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
+    form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   }
 }
 
@@ -870,6 +887,7 @@ function saveExtractFormState() {
   localStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
   localStorage.setItem(PIX_FORM_STORAGE_KEY, JSON.stringify({
     concurrency: Math.max(1, Math.min(10, Number(form.value.concurrency || 1))),
+    maxAttempts: Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5))),
     localProxy: form.value.localProxy || '',
     kookeeyUser: form.value.kookeeyUser || '',
     kookeeyPass: form.value.kookeeyPass || '',
@@ -1530,6 +1548,7 @@ function validateStart(emails = selectedEmails.value) {
     return true
   }
   form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
+  form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   if (!form.value.proxies.trim() && (!form.value.kookeeyUser || !form.value.kookeeyPass)) {
     setStatus('请填写 BR 代理列表，或在高级设置填写 Kookeey 用户名/密码。', true)
     return false

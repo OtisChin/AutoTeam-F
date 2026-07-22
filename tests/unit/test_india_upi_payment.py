@@ -57,6 +57,53 @@ def test_extract_upi_result_reads_hosted_instruction_and_qr_fields():
     assert india_upi.is_success(fields) is True
 
 
+def test_extract_upi_result_uses_intent_status_not_unrelated_checkout_status():
+    payload = {
+        "status": "open",
+        "tax_meta": {"status": "complete"},
+        "setup_intent": {
+            "id": "seti_test",
+            "status": "requires_action",
+            "client_secret": "seti_test_secret_123",
+            "next_action": {
+                "type": "upi_handle_redirect_or_display_qr_code",
+                "upi_handle_redirect_or_display_qr_code": {
+                    "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/actionable",
+                },
+            },
+        },
+        "submission_attempt": {"state": "processing"},
+    }
+
+    fields = india_upi.extract_upi_result(payload, "cs_test")
+
+    assert fields["payment_intent"] == "seti_test"
+    assert fields["intent_state"] == "requires_action"
+    assert fields["upi_link"] == "https://payments.stripe.com/upi/instructions/actionable"
+    assert india_upi.is_success(fields) is True
+
+
+def test_extract_upi_result_rejects_non_actionable_payment_intent_link():
+    payload = {
+        "payment_intent": {
+            "id": "pi_requires_pm",
+            "status": "requires_payment_method",
+            "next_action": None,
+        },
+        "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/stale_token",
+        "submission_attempt": {"state": "failed"},
+    }
+
+    fields = india_upi.extract_upi_result(payload, "cs_test")
+
+    assert fields["hosted_instructions_url"] == ""
+    assert fields["upi_link"] == ""
+    assert fields["payment_intent"] == "pi_requires_pm"
+    assert fields["intent_state"] == "requires_payment_method"
+    assert fields["submission_state"] == "failed"
+    assert india_upi.is_success(fields) is False
+
+
 def test_generate_upi_trial_approves_requires_approval_before_polling(monkeypatch):
     calls = []
     captured = {}
@@ -92,6 +139,8 @@ def test_generate_upi_trial_approves_requires_approval_before_polling(monkeypatc
     monkeypatch.setattr(india_upi, "chatgpt_approve", fake_approve)
     monkeypatch.setattr(india_upi, "page_get", lambda *args, **kwargs: {
         "payment_intent": {
+            "id": "pi_after_approve",
+            "status": "requires_action",
             "next_action": {
                 "type": "upi_handle_redirect_or_display_qr_code",
                 "upi_handle_redirect_or_display_qr_code": {
@@ -109,6 +158,277 @@ def test_generate_upi_trial_approves_requires_approval_before_polling(monkeypatc
     assert result["fields"]["upi_link"] == "https://payments.stripe.com/upi/instructions/after_approve"
     assert result["fields"]["amount"] == "199900"
     assert result["billing"]["country"] == "IN"
+
+
+def test_build_upi_dynamic_proxy_rewrites_direct_proxy_region_for_promo():
+    cfg = india_upi.UpiJobConfig(
+        access_token="token",
+        direct_proxies=["http://user:pass-IN-oldsid@gate.kookeey.info:1000"],
+        region="IN",
+    )
+
+    proxy, sid = india_upi.build_upi_dynamic_proxy(cfg, 1, "VN")
+
+    assert "-VN-" in proxy
+    assert "-IN-" not in proxy
+    assert sid and sid != "static"
+
+
+def test_build_upi_dynamic_proxy_rewrites_711_region_for_promo():
+    cfg = india_upi.UpiJobConfig(
+        access_token="token",
+        direct_proxies=["global.rotgb.711proxy.com:10000:USER105777-zone-custom-region-IN:d74d61"],
+        region="IN",
+    )
+
+    proxy, sid = india_upi.build_upi_dynamic_proxy(cfg, 1, "VN")
+
+    assert "region-VN" in proxy
+    assert "region-IN" not in proxy
+    assert proxy.startswith("socks5h://")
+    assert sid and sid != "static"
+
+
+def test_build_upi_dynamic_proxy_rewrites_arxlabs_region_for_promo():
+    cfg = india_upi.UpiJobConfig(
+        access_token="token",
+        direct_proxies=["us.arxlabs.io:3010:hyrj1177789-region-IN-sid-3uhM836v-t-5:smhwqe9f"],
+        region="IN",
+    )
+
+    proxy, sid = india_upi.build_upi_dynamic_proxy(cfg, 1, "VN")
+
+    assert "region-VN" in proxy
+    assert "region-IN" not in proxy
+    assert "sid-3uhM836v-t-5" not in proxy
+    assert proxy.startswith("socks5h://")
+    assert sid and sid != "static"
+
+
+def test_generate_upi_trial_uses_vn_proxy_for_promo_update(monkeypatch):
+    dynamic_proxies = []
+    update_payloads = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            if url.endswith("/payments/checkout"):
+                return _JsonResponse({
+                    "checkout_session_id": "cs_test",
+                    "processor_entity": "openai_llc",
+                    "public_key": "pk_test",
+                })
+            if url.endswith("/payments/checkout/update"):
+                update_payloads.append(kwargs.get("json") or {})
+                return _JsonResponse({"success": True})
+            raise AssertionError(url)
+
+    def fake_proxy_context(local, dynamic, log):
+        dynamic_proxies.append(dynamic)
+        return _ProxyContext(dynamic)
+
+    def fake_stripe_init(*args, **kwargs):
+        return {
+            "total_summary": {"due": 0},
+            "payment_method_types": ["card", "upi"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+        }
+
+    monkeypatch.setattr(india_upi, "pix_proxy_context", fake_proxy_context)
+    monkeypatch.setattr(india_upi, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(india_upi, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(india_upi, "stripe_init", fake_stripe_init)
+    monkeypatch.setattr(india_upi.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(india_upi, "_create_upi_payment_method", lambda *args, **kwargs: "pm_test")
+    monkeypatch.setattr(india_upi, "_confirm_upi", lambda *args, **kwargs: {
+        "payment_intent": {
+            "id": "pi_test",
+            "status": "requires_action",
+            "next_action": {
+                "type": "upi_handle_redirect_or_display_qr_code",
+                "upi_handle_redirect_or_display_qr_code": {
+                    "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/vn-promo",
+                },
+            },
+        }
+    })
+
+    india_upi.generate_upi_trial(
+        india_upi.UpiJobConfig(
+            access_token="token",
+            kookeey_user="user",
+            kookeey_pass="pass",
+            kookeey_endpoint="gate.kookeey.info:1000",
+            region="IN",
+            apply_promo=True,
+        )
+    )
+
+    assert "-IN-" in dynamic_proxies[0]
+    assert "-VN-" in dynamic_proxies[1]
+    assert "-IN-" in dynamic_proxies[2]
+    assert update_payloads[0]["billing_details"] == {"country": "VN", "currency": "VND"}
+
+
+def test_generate_upi_trial_warms_stripe_before_applying_promo(monkeypatch):
+    calls = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            if url.endswith("/payments/checkout"):
+                calls.append("checkout")
+                return _JsonResponse({
+                    "checkout_session_id": "cs_test",
+                    "processor_entity": "openai_llc",
+                    "public_key": "pk_test",
+                })
+            if url.endswith("/payments/checkout/update"):
+                calls.append("promo_update")
+                return _JsonResponse({"success": True})
+            raise AssertionError(url)
+
+    def fake_stripe_init(*args, **kwargs):
+        calls.append("stripe_init")
+        amount = 199900 if calls.count("stripe_init") == 1 else 0
+        return {
+            "total_summary": {"due": amount},
+            "payment_method_types": ["card", "upi"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+        }
+
+    monkeypatch.setattr(india_upi, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(india_upi, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(india_upi, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(india_upi, "stripe_init", fake_stripe_init)
+    monkeypatch.setattr(india_upi, "_create_upi_payment_method", lambda *args, **kwargs: "pm_test")
+    monkeypatch.setattr(india_upi, "_confirm_upi", lambda *args, **kwargs: {
+        "payment_intent": {
+            "id": "pi_test",
+            "status": "requires_action",
+            "next_action": {
+                "type": "upi_handle_redirect_or_display_qr_code",
+                "upi_handle_redirect_or_display_qr_code": {
+                    "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/promo",
+                },
+            },
+        }
+    })
+
+    result = india_upi.generate_upi_trial(
+        india_upi.UpiJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
+    )
+
+    assert calls[:4] == ["checkout", "stripe_init", "promo_update", "stripe_init"]
+    assert result["amount"] == "0"
+    assert result["fields"]["upi_link"] == "https://payments.stripe.com/upi/instructions/promo"
+
+
+def test_generate_upi_trial_retries_post_promo_init_until_amount_zero(monkeypatch):
+    calls = []
+    sleep_calls = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            if url.endswith("/payments/checkout"):
+                calls.append("checkout")
+                return _JsonResponse({
+                    "checkout_session_id": "cs_test",
+                    "processor_entity": "openai_llc",
+                    "public_key": "pk_test",
+                })
+            if url.endswith("/payments/checkout/update"):
+                calls.append("promo_update")
+                return _JsonResponse({"success": True})
+            raise AssertionError(url)
+
+    def fake_stripe_init(*args, **kwargs):
+        calls.append("stripe_init")
+        init_count = calls.count("stripe_init")
+        amount = 199900 if init_count < 3 else 0
+        return {
+            "total_summary": {"due": amount},
+            "payment_method_types": ["card", "upi"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+        }
+
+    monkeypatch.setattr(india_upi, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(india_upi, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(india_upi, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(india_upi, "stripe_init", fake_stripe_init)
+    monkeypatch.setattr(india_upi.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(india_upi, "_create_upi_payment_method", lambda *args, **kwargs: "pm_test")
+    monkeypatch.setattr(india_upi, "_confirm_upi", lambda *args, **kwargs: {
+        "payment_intent": {
+            "id": "pi_test",
+            "status": "requires_action",
+            "next_action": {
+                "type": "upi_handle_redirect_or_display_qr_code",
+                "upi_handle_redirect_or_display_qr_code": {
+                    "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/promo-delayed",
+                },
+            },
+        }
+    })
+
+    result = india_upi.generate_upi_trial(
+        india_upi.UpiJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
+    )
+
+    assert calls.count("stripe_init") == 3
+    assert 0.8 in sleep_calls
+    assert result["amount"] == "0"
+    assert result["fields"]["upi_link"] == "https://payments.stripe.com/upi/instructions/promo-delayed"
+
+
+def test_generate_upi_trial_logs_upi_intent_state_when_polling_times_out(monkeypatch):
+    logs = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            if url.endswith("/payments/checkout"):
+                return _JsonResponse({
+                    "checkout_session_id": "cs_test",
+                    "processor_entity": "openai_llc",
+                    "public_key": "pk_test",
+                })
+            if url.endswith("/payments/checkout/update"):
+                return _JsonResponse({"success": True})
+            if url.endswith("/payments/checkout/approve"):
+                return _JsonResponse({"ok": True})
+            raise AssertionError(url)
+
+    monkeypatch.setattr(india_upi, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(india_upi, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(india_upi, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(india_upi, "stripe_init", lambda *args, **kwargs: {
+        "total_summary": {"due": 0},
+        "payment_method_types": ["card", "upi"],
+        "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+    })
+    monkeypatch.setattr(india_upi.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(india_upi, "_create_upi_payment_method", lambda *args, **kwargs: "pm_test")
+    monkeypatch.setattr(india_upi, "_confirm_upi", lambda *args, **kwargs: {
+        "payment_intent": {"id": "pi_confirm", "status": "processing"},
+        "submission_attempt": {"state": "requires_approval"},
+    })
+    monkeypatch.setattr(india_upi, "page_get", lambda *args, **kwargs: {
+        "payment_intent": {"id": "pi_poll", "status": "requires_payment_method"},
+        "submission_attempt": {"state": "processing"},
+    })
+
+    try:
+        india_upi.generate_upi_trial(
+            india_upi.UpiJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True),
+            log=logs.append,
+        )
+    except RuntimeError:
+        pass
+
+    joined = "\n".join(logs)
+    assert "intent=pi_confirm" in joined
+    assert "intent_state=processing" in joined
+    assert "intent=pi_poll" in joined
+    assert "intent_state=requires_payment_method" in joined
+    assert "next_action=" in joined
 
 
 def test_generate_upi_trial_stops_when_promo_keeps_non_zero_amount(monkeypatch):
@@ -171,7 +491,10 @@ def test_generate_upi_trial_uses_local_proxy_chain_when_configured(monkeypatch):
     monkeypatch.setattr(india_upi, "_create_upi_payment_method", lambda *args, **kwargs: "pm_test")
     monkeypatch.setattr(india_upi, "_confirm_upi", lambda *args, **kwargs: {
         "payment_intent": {
+            "id": "pi_direct",
+            "status": "requires_action",
             "next_action": {
+                "type": "upi_handle_redirect_or_display_qr_code",
                 "upi_handle_redirect_or_display_qr_code": {
                     "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/direct",
                 },

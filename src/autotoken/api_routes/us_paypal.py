@@ -48,6 +48,7 @@ class UsPaypalStartRequest(BaseModel):
     kookeey_user: str = Field("", alias="kookeeyUser")
     kookeey_pass: str = Field("", alias="kookeeyPass")
     region: str = "US"
+    promo_region: str = Field("JP", alias="promoRegion")
     promo_mode: str = Field("promo", alias="promoMode")
     model_config = {"populate_by_name": True}
 
@@ -421,6 +422,7 @@ def _run_batch_account(
                 kookeey_pass=str(req.kookeey_pass or ""),
                 kookeey_endpoint=str(req.kookeey_endpoint or "gate.kookeey.info:1000").strip(),
                 region=(req.region or "US").strip().upper() or "US",
+                promo_region=(req.promo_region or "JP").strip().upper() or "JP",
                 direct_proxies=attempt_proxies,
                 apply_promo=req.promo_mode == "promo",
             )

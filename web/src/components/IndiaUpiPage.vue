@@ -28,11 +28,18 @@
             <span class="mt-1 block text-xs text-gray-500">711/ArxLabs 的 host:port:user:pass 会自动按 socks5h 使用。</span>
           </label>
 
-          <label class="block">
-            <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
-            <input v-model.number="form.concurrency" type="number" min="1" max="10" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-            <span class="mt-1 block text-xs text-gray-500">默认 1，最高 10；并发越高越依赖代理质量。</span>
-          </label>
+          <div class="grid gap-4 md:grid-cols-2">
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
+              <input v-model.number="form.concurrency" type="number" min="1" max="10" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 10。</span>
+            </label>
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
+              <input v-model.number="form.maxAttempts" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">单账号最多尝试次数，含首次；默认 5。</span>
+            </label>
+          </div>
 
           <details class="rounded-xl border border-gray-800 bg-gray-900/40 p-4">
             <summary class="cursor-pointer text-sm font-semibold text-gray-200">高级设置</summary>
@@ -250,7 +257,7 @@ const JOB_STORAGE_KEY = 'autotoken_india_upi_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
 
-const form = ref({ proxies: '', concurrency: 1, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '' })
+const form = ref({ proxies: '', concurrency: 1, maxAttempts: 5, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '' })
 const accounts = ref([])
 const links = ref([])
 const selectedAccounts = ref(new Set())
@@ -351,6 +358,7 @@ function validateStart(emails = selectedEmails.value) {
     return false
   }
   form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
+  form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   if (!form.value.proxies.trim() && (!form.value.kookeeyUser || !form.value.kookeeyPass)) {
     setStatus('请填写 IN 代理列表，或在高级设置填写 Kookeey 用户名/密码。', true)
     return false
@@ -372,6 +380,7 @@ async function startWithEmails(emails, actionText = '提取') {
     const payload = {
       proxies: form.value.proxies,
       concurrency: form.value.concurrency,
+      maxAttempts: form.value.maxAttempts,
       localProxy: form.value.localProxy,
       kookeeyEndpoint: form.value.kookeeyEndpoint,
       kookeeyUser: form.value.kookeeyUser,

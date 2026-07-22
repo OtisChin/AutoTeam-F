@@ -50,6 +50,7 @@ class UpiJobConfig:
     kookeey_pass: str = ""
     kookeey_endpoint: str = "gate.kookeey.info:1000"
     region: str = "IN"
+    promo_region: str = "VN"
     direct_proxies: list[str] = field(default_factory=list)
     apply_promo: bool = False
 
@@ -70,23 +71,54 @@ def normalize_upi_proxy_url(value: str) -> str:
 
 
 def upi_proxy_with_fresh_sid(proxy_url: str, region: str = "IN") -> tuple[str, str]:
-    proxy, sid = pix_proxy_with_fresh_sid(proxy_url, region)
+    target_region = str(region or "IN").strip().upper() or "IN"
+    fresh = uuid.uuid4().hex[:8]
+    refreshed, region_count = re.subn(
+        r"([_-]region[-_])[A-Z]{2}([:@/?#&-])",
+        lambda m: f"{m.group(1)}{target_region}{m.group(2)}",
+        proxy_url,
+        count=1,
+        flags=re.I,
+    )
+    refreshed, sid_count = re.subn(r"(sid-)[^-:@/?#]+(-t-)", rf"\g<1>{fresh}\g<2>", refreshed, count=1)
+    if region_count or sid_count:
+        return refreshed, fresh
+
+    proxy, sid = pix_proxy_with_fresh_sid(proxy_url, target_region)
     if sid != "static":
         return proxy, sid
-    fresh = uuid.uuid4().hex[:8]
     refreshed, count = re.subn(r"(-session-)[A-Za-z0-9]+", rf"\g<1>{fresh}", proxy, count=1, flags=re.I)
+    if count:
+        return refreshed, fresh
+    refreshed, count = re.subn(
+        r"([_-]region[-_])[A-Z]{2}([:@/?#&-])",
+        lambda m: f"{m.group(1)}{target_region}{m.group(2)}",
+        proxy,
+        count=1,
+        flags=re.I,
+    )
+    if count:
+        return refreshed, fresh
+    refreshed, count = re.subn(
+        r"(:[^:@/?#]*-)[A-Z]{2}-[A-Za-z0-9]{4,32}(@)",
+        lambda m: f"{m.group(1)}{target_region}-{fresh}{m.group(2)}",
+        proxy,
+        count=1,
+        flags=re.I,
+    )
     if count:
         return refreshed, fresh
     return proxy, sid
 
 
-def build_upi_dynamic_proxy(cfg: UpiJobConfig, stage_index: int) -> tuple[str, str]:
+def build_upi_dynamic_proxy(cfg: UpiJobConfig, stage_index: int, region: str | None = None) -> tuple[str, str]:
+    effective_region = str(region or cfg.region or "IN").strip().upper() or "IN"
     direct = [normalize_upi_proxy_url(item) for item in (cfg.direct_proxies or []) if str(item or "").strip()]
     if direct:
         idx = stage_index % len(direct)
-        proxy, sid = upi_proxy_with_fresh_sid(direct[idx], cfg.region)
+        proxy, sid = upi_proxy_with_fresh_sid(direct[idx], effective_region)
         return proxy, f"direct-{idx + 1} sid={sid}" if sid and sid != "static" else f"direct-{idx + 1} static"
-    return build_kookeey_proxy(cfg.kookeey_user, cfg.kookeey_pass, cfg.kookeey_endpoint, cfg.region)
+    return build_kookeey_proxy(cfg.kookeey_user, cfg.kookeey_pass, cfg.kookeey_endpoint, effective_region)
 
 
 def new_http_session(proxy_url: str = "") -> requests.Session:
@@ -238,6 +270,22 @@ def find_submission_attempt(payload: dict[str, Any] | None) -> dict[str, Any]:
     return val if isinstance(val, dict) else {}
 
 
+ACTIONABLE_UPI_INTENT_STATES = {"requires_action", "requires_source_action"}
+NON_ACTIONABLE_UPI_INTENT_STATES = {
+    "canceled",
+    "processing",
+    "requires_capture",
+    "requires_confirmation",
+    "requires_payment_method",
+    "succeeded",
+}
+
+
+def _is_actionable_upi_state(state: str) -> bool:
+    normalized = str(state or "").strip().lower()
+    return not normalized or normalized in ACTIONABLE_UPI_INTENT_STATES
+
+
 def extract_upi_result(payload: Any, cs_id: str = "") -> dict[str, str]:
     text = json.dumps(payload, ensure_ascii=False) if not isinstance(payload, str) else payload
     out = {
@@ -250,38 +298,63 @@ def extract_upi_result(payload: Any, cs_id: str = "") -> dict[str, str]:
         "submission_state": "",
         "next_action_type": "",
         "payment_intent": "",
+        "intent_state": "",
+        "client_secret": "",
     }
-    matched = re.search(r"https://payments\.stripe\.com/upi/instructions/[A-Za-z0-9_\-]+", text)
-    if matched:
-        out["upi_link"] = matched.group(0)
-        out["hosted_instructions_url"] = matched.group(0)
-    matched = re.search(r"upi://[^\s\"']+", text)
-    if matched and not out["upi_link"]:
-        out["upi_link"] = matched.group(0)
-    matched = re.search(r"pi_[A-Za-z0-9]+", text)
-    if matched and "hcaptcha" not in matched.group(0):
-        out["payment_intent"] = matched.group(0)
 
     if isinstance(payload, dict):
         sub = find_submission_attempt(payload)
         out["submission_state"] = str(sub.get("state") or "")
+        out["intent_state"] = str(payload.get("intent_state") or "")
+        out["client_secret"] = str(payload.get("client_secret") or "")
+
+        def capture_intent_metadata(obj: dict[str, Any]) -> bool:
+            obj_id = str(obj.get("id") or "")
+            client_secret = str(obj.get("client_secret") or "")
+            is_intent = obj_id.startswith(("pi_", "seti_")) or client_secret.startswith(("pi_", "seti_"))
+            if not is_intent:
+                return False
+            if obj_id.startswith(("pi_", "seti_")):
+                out["payment_intent"] = obj_id
+            elif client_secret.startswith(("pi_", "seti_")):
+                out["payment_intent"] = client_secret.split("_secret_", 1)[0]
+            if client_secret and not out["client_secret"]:
+                out["client_secret"] = client_secret
+            state = str(obj.get("status") or obj.get("intent_state") or "")
+            if state:
+                out["intent_state"] = state
+            return True
+
+        def capture_upi_next_action(obj: dict[str, Any], na: dict[str, Any]) -> None:
+            action_type = str(na.get("type") or "")
+            if action_type:
+                out["next_action_type"] = action_type
+            if action_type and action_type != "upi_handle_redirect_or_display_qr_code":
+                return
+            state = str(obj.get("status") or obj.get("intent_state") or out["intent_state"] or "")
+            if not _is_actionable_upi_state(state):
+                return
+            box = na.get("upi_handle_redirect_or_display_qr_code") or {}
+            if not isinstance(box, dict):
+                return
+            hosted = str(box.get("hosted_instructions_url") or "")
+            if hosted and "intent_path" not in hosted:
+                out["upi_link"] = out["hosted_instructions_url"] = hosted
+            mobile = str(box.get("mobile_auth_url") or "")
+            if mobile.startswith("upi://") and not out["upi_link"]:
+                out["upi_link"] = mobile
+            qr = box.get("qr_code") if isinstance(box.get("qr_code"), dict) else {}
+            if isinstance(qr, dict):
+                out["qr_image_url_png"] = str(qr.get("image_url_png") or out["qr_image_url_png"])
+                out["qr_image_url_svg"] = str(qr.get("image_url_svg") or out["qr_image_url_svg"])
+                out["qr_expires_at"] = str(qr.get("expires_at") or out["qr_expires_at"])
 
         def walk(obj: Any) -> None:
             if isinstance(obj, dict):
+                is_intent = capture_intent_metadata(obj)
                 na = obj.get("next_action")
-                if isinstance(na, dict):
-                    if na.get("type"):
-                        out["next_action_type"] = str(na.get("type") or "")
-                    box = na.get("upi_handle_redirect_or_display_qr_code") or {}
-                    if isinstance(box, dict):
-                        hosted = str(box.get("hosted_instructions_url") or "")
-                        if hosted and "intent_path" not in hosted:
-                            out["upi_link"] = out["hosted_instructions_url"] = hosted
-                        qr = box.get("qr_code") if isinstance(box.get("qr_code"), dict) else {}
-                        if isinstance(qr, dict):
-                            out["qr_image_url_png"] = str(qr.get("image_url_png") or out["qr_image_url_png"])
-                            out["qr_image_url_svg"] = str(qr.get("image_url_svg") or out["qr_image_url_svg"])
-                            out["qr_expires_at"] = str(qr.get("expires_at") or out["qr_expires_at"])
+                if is_intent and isinstance(na, dict):
+                    capture_upi_next_action(obj, na)
                 for value in obj.values():
                     walk(value)
             elif isinstance(obj, list):
@@ -289,12 +362,48 @@ def extract_upi_result(payload: Any, cs_id: str = "") -> dict[str, str]:
                     walk(item)
 
         walk(payload)
+
+        # A hosted-instructions page exposes the current intent state at the top
+        # level.  Do not treat links copied from unrelated fields as success when
+        # Stripe says the intent is no longer actionable.
+        if not _is_actionable_upi_state(out["intent_state"]):
+            out["upi_link"] = ""
+            out["hosted_instructions_url"] = ""
+    else:
+        matched = re.search(r"https://payments\.stripe\.com/upi/instructions/[A-Za-z0-9_\-]+", text)
+        if matched:
+            out["upi_link"] = matched.group(0)
+            out["hosted_instructions_url"] = matched.group(0)
+        matched = re.search(r"upi://[^\s\"']+", text)
+        if matched and not out["upi_link"]:
+            out["upi_link"] = matched.group(0)
+
+    matched = re.search(r"(?:pi|seti)_[A-Za-z0-9]+", text)
+    if matched and "hcaptcha" not in matched.group(0) and not out["payment_intent"]:
+        out["payment_intent"] = matched.group(0)
     return out
+
+
+def upi_fields_summary(fields: dict[str, Any]) -> str:
+    return (
+        f"intent={fields.get('payment_intent') or '-'} "
+        f"intent_state={fields.get('intent_state') or '-'} "
+        f"next_action={fields.get('next_action_type') or '-'} "
+        f"link={'yes' if fields.get('upi_link') or fields.get('hosted_instructions_url') else 'no'}"
+    )
 
 
 def is_success(fields: dict[str, Any]) -> bool:
     link = str(fields.get("upi_link") or fields.get("hosted_instructions_url") or "")
-    return link.startswith("https://payments.stripe.com/upi/instructions/") or link.startswith("upi://")
+    if not (link.startswith("https://payments.stripe.com/upi/instructions/") or link.startswith("upi://")):
+        return False
+    if str(fields.get("submission_state") or "").strip().lower() == "failed":
+        return False
+    state = str(fields.get("intent_state") or "").strip().lower()
+    if state in NON_ACTIONABLE_UPI_INTENT_STATES:
+        return False
+    action_type = str(fields.get("next_action_type") or "").strip()
+    return not action_type or action_type == "upi_handle_redirect_or_display_qr_code"
 
 
 def chatgpt_approve(access_token: str, cs_id: str, processor: str, proxy_url: str, device_id: str, log: LogFn) -> None:
@@ -444,7 +553,7 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
     log(f"账单: {billing['name']} / {billing['city']}-{billing['state']} / {billing['postal_code']}")
 
     dyn1, sid1 = build_upi_dynamic_proxy(cfg, 0)
-    log(f"[1/6] IN 创建 checkout（{'套 promo' if cfg.apply_promo else '跳过 promo'}） sid={sid1}")
+    log(f"[1/6] IN 创建 checkout（先不带 promo） sid={sid1}")
     with pix_proxy_context(cfg.local_proxy, dyn1, log) as chain1:
         p1 = chain1.url
         cg = build_chatgpt_session(token, p1, device_id)
@@ -472,9 +581,21 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
         pk = extract_pk(data) or DEFAULT_STRIPE_PK
         processor = str(data.get("processor_entity") or "openai_llc")
 
-    dyn2, sid2 = build_upi_dynamic_proxy(cfg, 1)
+        if cfg.apply_promo:
+            time.sleep(0.8)
+            stripe0 = build_stripe_session(p1)
+            ctx0 = _ctx()
+            init0 = stripe_init(stripe0, cs_id, pk, ctx0)
+            amt0 = amount_info(init0)
+            pmt0, ordered0, has_upi0 = pmt_info(init0)
+            log(f"创建后金额={amt0} 支付方式={pmt0} ordered={ordered0} has_upi={has_upi0}")
+            if not has_upi0:
+                raise RuntimeError(f"创建后未出现 UPI，pmt={pmt0}")
+
+    promo_region = str(cfg.promo_region or "VN").strip().upper() or "VN"
+    dyn2, sid2 = build_upi_dynamic_proxy(cfg, 1, promo_region)
     if cfg.apply_promo:
-        log(f"[2/6] IN update 套试用 promo sid={sid2}")
+        log(f"[2/6] {promo_region} update 套试用 promo sid={sid2}")
         with pix_proxy_context(cfg.local_proxy, dyn2, log) as chain2:
             p2 = chain2.url
             cg2 = build_chatgpt_session(token, p2, device_id)
@@ -486,7 +607,7 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
                     "plan_name": "chatgptplusplan",
                     "price_interval": "month",
                     "seat_quantity": 1,
-                    "billing_details": {"country": "IN", "currency": "INR"},
+                    "billing_details": {"country": promo_region, "currency": "VND" if promo_region == "VN" else "INR"},
                     "promo_campaign": {
                         "promo_campaign_id": "plus-1-month-free",
                         "is_coupon_from_query_param": False,
@@ -510,21 +631,37 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
         p3 = chain3.url
         stripe = build_stripe_session(p3)
         ctx = _ctx()
-        init_payload = stripe_init(stripe, cs_id, pk, ctx)
-        amount = amount_info(init_payload)
-        pmt, ordered, has_upi = pmt_info(init_payload)
-        log(f"金额={amount} 支付方式={pmt} ordered={ordered} has_upi={has_upi}")
-        if not has_upi:
-            raise RuntimeError(f"未出现 UPI，pmt={pmt}")
+        init_payload: dict[str, Any] = {}
+        amount = ""
+        pmt: list[Any] = []
+        ordered: list[Any] = []
+        has_upi = False
+        max_init_attempts = 4 if cfg.apply_promo else 1
+        for init_attempt in range(1, max_init_attempts + 1):
+            if cfg.apply_promo:
+                time.sleep(0.8 if init_attempt == 1 else 1.0)
+            init_payload = stripe_init(stripe, cs_id, pk, ctx)
+            amount = amount_info(init_payload)
+            pmt, ordered, has_upi = pmt_info(init_payload)
+            prefix = "套 promo 后" if cfg.apply_promo else ""
+            log(f"{prefix}金额={amount} 支付方式={pmt} ordered={ordered} has_upi={has_upi} init_attempt={init_attempt}")
+            if not has_upi:
+                raise RuntimeError(f"{'套 promo 后' if cfg.apply_promo else ''}未出现 UPI，pmt={pmt}")
+            if not cfg.apply_promo or amount in ("0", "0.0"):
+                break
+            if init_attempt < max_init_attempts:
+                log(f"套 promo 后金额仍非 0，等待后重试 Stripe init: {amount}")
         if cfg.apply_promo and amount not in ("0", "0.0"):
             raise RuntimeError(f"套 promo 后金额不是 0: {amount}")
 
         hosted = str(init_payload.get("stripe_hosted_url") or "")
         log("[4/6] 创建 UPI payment_method")
+        time.sleep(0.6)
         pm_id = _create_upi_payment_method(stripe, cs_id=cs_id, stripe_pk=pk, ctx=ctx, billing=billing)
         log(f"pm_id={pm_id}")
 
         log("[5/6] confirm UPI")
+        time.sleep(0.7)
         return_url = to_openai_pay_url(hosted) or hosted or f"https://pay.openai.com/c/pay/{cs_id}"
         confirm_payload = _confirm_upi(
             stripe,
@@ -537,7 +674,7 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
         )
         fields = extract_upi_result(confirm_payload, cs_id)
         sub = find_submission_attempt(confirm_payload)
-        log(f"confirm submission={sub.get('state')}")
+        log(f"confirm submission={sub.get('state')} {upi_fields_summary(fields)}")
         if is_success(fields):
             fields["amount"] = amount
             fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
@@ -552,7 +689,10 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
             fields = extract_upi_result(page_data, cs_id)
             sub = find_submission_attempt(page_data)
             err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
-            log(f"poll {i}/15 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
+            log(
+                f"poll {i}/15 sub={sub.get('state')} err={err.get('code') if err else '-'} "
+                f"success={is_success(fields)} {upi_fields_summary(fields)}"
+            )
             if is_success(fields):
                 fields["amount"] = amount
                 fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
@@ -560,6 +700,10 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
                 return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
             if sub.get("state") == "failed":
                 last_err = err or {}
-                raise RuntimeError(f"approve 后失败: {last_err.get('code')}")
+                pe = last_err.get("payment_error") if isinstance(last_err.get("payment_error"), dict) else {}
+                raise RuntimeError(
+                    f"approve 后失败: {last_err.get('code')} "
+                    f"payment_error={pe.get('code')}/{pe.get('decline_code')}"
+                )
             time.sleep(1.0)
         raise RuntimeError("轮询超时，未拿到 UPI 链接")

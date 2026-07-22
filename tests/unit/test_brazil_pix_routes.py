@@ -488,6 +488,48 @@ def test_batch_job_retries_failed_account_up_to_five_attempts(monkeypatch, tmp_p
     assert not job["result"]["errors"]
 
 
+def test_batch_job_uses_requested_max_attempts(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    _write_session(auth_dir, "retry-limit@example.com", "retry-token-" + "x" * 80)
+    brazil_pix.JOBS.clear()
+    job_id = "pix-max-attempts-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "account_statuses": {},
+    }
+    calls = 0
+    monkeypatch.setattr(brazil_pix.time, "sleep", lambda _seconds: None)
+
+    def fake_generate_pix_trial(cfg, log):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError(f"temporary failure {calls}")
+
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate(
+        {
+            "accountEmails": ["retry-limit@example.com"],
+            "proxies": "socks5h://proxy.example:1080",
+            "maxAttempts": 2,
+        }
+    )
+    brazil_pix._run_batch_job(job_id, req)
+
+    job = brazil_pix.JOBS[job_id]
+    assert calls == 2
+    assert job["result"]["errors"][0]["attempts"] == 2
+
+
 def test_batch_job_marks_already_paid_account_plus_pix(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     email = "paid@example.com"

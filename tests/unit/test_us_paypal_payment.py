@@ -91,6 +91,52 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     assert result["fields"]["amount"] == "0"
 
 
+def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkeypatch):
+    calls = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            calls.append(("chatgpt_post", url, kwargs.get("json")))
+            if url.endswith("/checkout/update"):
+                return _JsonResponse({"success": True, "checkout_session": {}})
+            return _JsonResponse({
+                "checkout_session_id": "cs_test",
+                "processor_entity": "openai_llc",
+                "public_key": "pk_test",
+            })
+
+    init_payloads = iter([
+        {
+            "total_summary": {"due": 2120},
+            "payment_method_types": ["card", "paypal"],
+            "ordered_payment_method_types": ["card", "paypal", "apple_pay", "google_pay"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+        },
+        {
+            "total_summary": {"due": 0},
+            "payment_method_types": ["card", "paypal"],
+            "ordered_payment_method_types": ["card", "paypal", "apple_pay", "google_pay"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+        },
+    ])
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {"_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO"})
+
+    result = us_paypal.generate_paypal_trial(
+        us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
+    )
+
+    update_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout/update"))
+    assert update_payload["billing_details"] == {"country": "JP", "currency": "JPY"}
+    assert result["amount"] == "0"
+    assert result["fields"]["pre_promo_amount"] == "2120"
+    assert result["fields"]["post_promo_payment_method_types"] == ["card", "paypal"]
+    assert result["fields"]["ba_token"] == "BA-LATEPROMO"
+
 def test_generate_paypal_trial_stops_when_amount_is_not_zero(monkeypatch):
     class FakeChatgptSession:
         def post(self, url, **kwargs):
@@ -182,6 +228,13 @@ def test_is_zero_amount_accepts_zero_formats_only():
     assert us_paypal.is_zero_amount("") is False
 
 
+def test_promo_currency_for_region_supports_zero_trial_regions():
+    assert us_paypal.promo_currency_for_region("JP") == "JPY"
+    assert us_paypal.promo_currency_for_region("br") == "BRL"
+    assert us_paypal.promo_currency_for_region("VN") == "VND"
+    assert us_paypal.promo_currency_for_region("US") == "USD"
+
+
 def test_build_paypal_dynamic_proxy_aligns_711_region_to_us():
     raw = "global.rotgb.711proxy.com:10000:USER-zone-custom-region-IN-session-abc123-sessTime-120:pass"
 
@@ -193,3 +246,11 @@ def test_build_paypal_dynamic_proxy_aligns_711_region_to_us():
     assert "custom-region-US-session-" in proxy
     assert "custom-region-IN-session-" not in proxy
     assert "sid=abc123" not in sid_label
+
+    promo_proxy, promo_sid_label = us_paypal.build_paypal_dynamic_proxy(
+        us_paypal.PaypalJobConfig(access_token="token", region="US", direct_proxies=[raw]),
+        0,
+        "JP",
+    )
+    assert "custom-region-JP-session-" in promo_proxy
+    assert "region=JP" in promo_sid_label

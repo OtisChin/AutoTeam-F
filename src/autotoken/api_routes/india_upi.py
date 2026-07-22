@@ -23,6 +23,7 @@ LINKS_FILE = PROJECT_ROOT / "data" / "india_upi_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "india_upi_account_status.json"
 MAX_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
+MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 UPI_STATUS_PENDING = "pending"
 UPI_STATUS_RUNNING = "running"
 UPI_STATUS_SUCCESS = "success"
@@ -48,16 +49,26 @@ class IndiaUpiStartRequest(BaseModel):
     kookeey_user: str = Field("", alias="kookeeyUser")
     kookeey_pass: str = Field("", alias="kookeeyPass")
     region: str = "IN"
-    promo_mode: str = Field("skip", alias="promoMode")
+    promo_mode: str = Field("promo", alias="promoMode")
+    max_attempts: int = Field(MAX_ACCOUNT_ATTEMPTS, alias="maxAttempts")
     model_config = {"populate_by_name": True}
 
     @field_validator("promo_mode", mode="before")
     @classmethod
     def _clean_promo_mode(cls, value: Any) -> str:
-        text = str(value or "skip").strip().lower().replace("-", "_")
+        text = str(value or "promo").strip().lower().replace("-", "_")
         if text in {"promo", "apply", "apply_promo", "with_promo"}:
             return "promo"
         return "skip"
+
+    @field_validator("max_attempts", mode="before")
+    @classmethod
+    def _clean_max_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or MAX_ACCOUNT_ATTEMPTS)
+        except Exception:
+            attempts = MAX_ACCOUNT_ATTEMPTS
+        return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
 
 
 class IndiaUpiBatchStartRequest(IndiaUpiStartRequest):
@@ -231,6 +242,14 @@ def _batch_concurrency(req: IndiaUpiBatchStartRequest, total: int) -> int:
     except Exception:
         requested = 1
     return max(1, min(MAX_BATCH_CONCURRENCY, total, requested))
+
+
+def _account_attempt_limit(req: IndiaUpiBatchStartRequest) -> int:
+    try:
+        attempts = int(req.max_attempts or MAX_ACCOUNT_ATTEMPTS)
+    except Exception:
+        attempts = MAX_ACCOUNT_ATTEMPTS
+    return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
 
 
 def _select_batch_accounts(req: IndiaUpiBatchStartRequest) -> list[dict[str, Any]]:
@@ -409,12 +428,13 @@ def _run_batch_account(
             raise RuntimeError("账号缺少有效 accessToken")
         last_error = ""
         result: dict[str, Any] | None = None
-        for attempt in range(1, MAX_ACCOUNT_ATTEMPTS + 1):
+        max_attempts = _account_attempt_limit(req)
+        for attempt in range(1, max_attempts + 1):
             attempts = attempt
             if _is_job_cancel_requested(job_id) and attempt > 1:
                 raise RuntimeError(f"任务已取消，停止重试；最后错误: {last_error}")
             attempt_proxies = _rotate_proxies_for_account(proxies, attempt)
-            _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{MAX_ACCOUNT_ATTEMPTS} 次尝试：{email}")
+            _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次尝试：{email}")
             cfg = UpiJobConfig(
                 access_token=token,
                 local_proxy=str(req.local_proxy or "").strip(),
@@ -465,8 +485,8 @@ def _run_batch_account(
                         },
                         "status": status,
                     }
-                _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{MAX_ACCOUNT_ATTEMPTS} 次失败：{email} {last_error}")
-                if attempt >= MAX_ACCOUNT_ATTEMPTS:
+                _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
+                if attempt >= max_attempts:
                     raise
                 time.sleep(min(2.0, 0.5 * attempt))
         if result is None:

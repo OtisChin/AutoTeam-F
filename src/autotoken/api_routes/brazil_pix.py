@@ -27,6 +27,7 @@ PIX_CDK_API_BASE = "https://pix.iceaix.com"
 TEMP_PIX_CDK_API_BASE = "https://pix.olimap.top/api/v1"
 MAX_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
+MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 JOBS: dict[str, dict[str, Any]] = {}
 PAYMENT_JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
@@ -53,6 +54,16 @@ class BrazilPixStartRequest(BaseModel):
     kookeey_pass: str = Field("", alias="kookeeyPass")
     kookeey_endpoint: str = Field("gate.kookeey.info:1000", alias="kookeeyEndpoint")
     region: str = "BR"
+    max_attempts: int = Field(MAX_ACCOUNT_ATTEMPTS, alias="maxAttempts")
+
+    @field_validator("max_attempts", mode="before")
+    @classmethod
+    def _clean_max_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or MAX_ACCOUNT_ATTEMPTS)
+        except Exception:
+            attempts = MAX_ACCOUNT_ATTEMPTS
+        return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
 
 
 class BrazilPixBatchStartRequest(BrazilPixStartRequest):
@@ -744,6 +755,14 @@ def _batch_concurrency(req: BrazilPixBatchStartRequest, total: int) -> int:
     return max(1, min(MAX_BATCH_CONCURRENCY, total, requested))
 
 
+def _account_attempt_limit(req: BrazilPixBatchStartRequest) -> int:
+    try:
+        attempts = int(req.max_attempts or MAX_ACCOUNT_ATTEMPTS)
+    except Exception:
+        attempts = MAX_ACCOUNT_ATTEMPTS
+    return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+
 def _temp_batch_concurrency(req: BrazilPixTempBatchStartRequest, total: int) -> int:
     try:
         requested = int(req.concurrency or 5)
@@ -814,12 +833,13 @@ def _run_batch_account(
             raise RuntimeError("账号缺少有效 accessToken")
         last_error = ""
         result: dict[str, Any] | None = None
-        for attempt in range(1, MAX_ACCOUNT_ATTEMPTS + 1):
+        max_attempts = _account_attempt_limit(req)
+        for attempt in range(1, max_attempts + 1):
             attempts = attempt
             if _is_job_cancel_requested(job_id) and attempt > 1:
                 raise RuntimeError(f"任务已取消，停止重试；最后错误: {last_error}")
             attempt_proxies = _rotate_proxies_for_account(proxies, attempt)
-            _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{MAX_ACCOUNT_ATTEMPTS} 次尝试：{email}")
+            _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次尝试：{email}")
             cfg = PixJobConfig(
                 access_token=token,
                 local_proxy=str(req.local_proxy or "").strip(),
@@ -901,8 +921,8 @@ def _run_batch_account(
                         "status": status,
                         "account_deleted": True,
                     }
-                _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{MAX_ACCOUNT_ATTEMPTS} 次失败：{email} {last_error}")
-                if attempt >= MAX_ACCOUNT_ATTEMPTS:
+                _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
+                if attempt >= max_attempts:
                     raise
                 time.sleep(min(2.0, 0.5 * attempt))
         if result is None:

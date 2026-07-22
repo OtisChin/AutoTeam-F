@@ -165,6 +165,31 @@ def test_batch_job_generates_upi_link_and_records_status(monkeypatch, tmp_path):
     assert statuses[email]["status"] == "success"
 
 
+def test_batch_job_defaults_to_apply_promo_mode(monkeypatch):
+    email = "default-promo@example.com"
+    captured = {}
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda _email: "token")
+
+    def fake_generate_upi_trial(cfg, log):
+        captured["apply_promo"] = cfg.apply_promo
+        return {"ok": True, "amount": "0", "fields": {"upi_link": "upi://ok", "cs_id": "cs_test"}, "billing": {}}
+
+    monkeypatch.setattr(india_upi, "generate_upi_trial", fake_generate_upi_trial)
+    job_id = "upi-default-promo-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({"accountEmails": [email], "proxies": "p"})
+    india_upi._run_batch_job(job_id, req)
+
+    assert captured["apply_promo"] is True
+
+
 def test_batch_job_passes_apply_promo_mode(monkeypatch):
     email = "promo@example.com"
     captured = {}
@@ -188,6 +213,35 @@ def test_batch_job_passes_apply_promo_mode(monkeypatch):
     india_upi._run_batch_job(job_id, req)
 
     assert captured["apply_promo"] is True
+
+
+def test_batch_job_uses_requested_max_attempts(monkeypatch):
+    email = "retry-limit@example.com"
+    calls = 0
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda _email: "token")
+    monkeypatch.setattr(india_upi.time, "sleep", lambda _seconds: None)
+
+    def fake_generate_upi_trial(cfg, log):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError(f"temporary failure {calls}")
+
+    monkeypatch.setattr(india_upi, "generate_upi_trial", fake_generate_upi_trial)
+    job_id = "upi-max-attempts-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({"accountEmails": [email], "proxies": "p", "maxAttempts": 2})
+    india_upi._run_batch_job(job_id, req)
+
+    job = india_upi.JOBS[job_id]
+    assert calls == 2
+    assert job["result"]["errors"][0]["attempts"] == 2
 
 
 def test_start_requires_selected_account():

@@ -53,6 +53,7 @@ class PaypalJobConfig:
     kookeey_pass: str = ""
     kookeey_endpoint: str = "gate.kookeey.info:1000"
     region: str = "US"
+    promo_region: str = "JP"
     direct_proxies: list[str] = field(default_factory=list)
     apply_promo: bool = False
 
@@ -86,17 +87,19 @@ def align_paypal_proxy_region(proxy_url: str, region: str = "US") -> str:
     return re.sub(r"(-custom-region-)[A-Z]{2}(-session-)", rf"\g<1>{target}\g<2>", proxy_url, count=1, flags=re.I)
 
 
-def build_paypal_dynamic_proxy(cfg: PaypalJobConfig, stage_index: int) -> tuple[str, str]:
+def build_paypal_dynamic_proxy(cfg: PaypalJobConfig, stage_index: int, region: str | None = None) -> tuple[str, str]:
+    target_region = str(region or cfg.region or "US").strip().upper() or "US"
     direct = [
-        align_paypal_proxy_region(normalize_paypal_proxy_url(item), cfg.region)
+        align_paypal_proxy_region(normalize_paypal_proxy_url(item), target_region)
         for item in (cfg.direct_proxies or [])
         if str(item or "").strip()
     ]
     if direct:
         idx = stage_index % len(direct)
-        proxy, sid = paypal_proxy_with_fresh_sid(direct[idx], cfg.region)
-        return proxy, f"direct-{idx + 1} sid={sid}" if sid and sid != "static" else f"direct-{idx + 1} static"
-    return build_kookeey_proxy(cfg.kookeey_user, cfg.kookeey_pass, cfg.kookeey_endpoint, cfg.region)
+        proxy, sid = paypal_proxy_with_fresh_sid(direct[idx], target_region)
+        suffix = f" sid={sid}" if sid and sid != "static" else " static"
+        return proxy, f"direct-{idx + 1} region={target_region}{suffix}"
+    return build_kookeey_proxy(cfg.kookeey_user, cfg.kookeey_pass, cfg.kookeey_endpoint, target_region)
 
 
 def new_http_session(proxy_url: str = "") -> requests.Session:
@@ -188,6 +191,10 @@ def is_zero_amount(value: Any) -> bool:
         return float(text) == 0.0
     except Exception:
         return text in {"0", "0.0", "0.00"}
+
+
+def promo_currency_for_region(region: str) -> str:
+    return {"JP": "JPY", "BR": "BRL", "VN": "VND"}.get(str(region or "").strip().upper(), "USD")
 
 
 def _ctx() -> dict[str, str]:
@@ -496,6 +503,43 @@ def chatgpt_approve(access_token: str, cs_id: str, processor: str, proxy_url: st
     raise RuntimeError(f"approve failed: {last_err}")
 
 
+def chatgpt_update_trial_promo(
+    access_token: str,
+    *,
+    cs_id: str,
+    processor: str,
+    proxy_url: str,
+    device_id: str,
+    country: str = "JP",
+    currency: str = "JPY",
+) -> dict[str, Any]:
+    cg = build_chatgpt_session(access_token, proxy_url, device_id)
+    resp = cg.post(
+        "https://chatgpt.com/backend-api/payments/checkout/update",
+        json={
+            "checkout_session_id": cs_id,
+            "processor_entity": processor,
+            "plan_name": "chatgptplusplan",
+            "price_interval": "month",
+            "seat_quantity": 1,
+            "billing_details": {"country": country, "currency": currency},
+            "promo_campaign": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": False},
+        },
+        headers={
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
+            "x-openai-target-path": "/backend-api/payments/checkout/update",
+            "x-openai-target-route": "/backend-api/payments/checkout/update",
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"update failed: HTTP {resp.status_code} {short(resp.text)}")
+    try:
+        return resp.json() or {}
+    except Exception:
+        return {}
+
+
 def _confirm_paypal_inline(
     stripe: requests.Session,
     *,
@@ -578,8 +622,11 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
     billing = us_billing()
     log(f"账单: {billing['name']} / {billing['city']}-{billing['state']} / {billing['postal_code']}")
 
-    dyn1, sid1 = build_paypal_dynamic_proxy(cfg, 0)
-    log(f"[1/6] US 创建 checkout（{'套 promo' if cfg.apply_promo else '跳过 promo'}） sid={sid1}")
+    checkout_region = (cfg.region or "US").strip().upper() or "US"
+    promo_region = (cfg.promo_region or "JP").strip().upper() or "JP"
+
+    dyn1, sid1 = build_paypal_dynamic_proxy(cfg, 0, checkout_region)
+    log(f"[1/6] {checkout_region} 创建 checkout（先不带 promo） sid={sid1}")
     with pix_proxy_context(cfg.local_proxy, dyn1, log) as chain1:
         p1 = chain1.url
         cg = build_chatgpt_session(token, p1, device_id)
@@ -604,54 +651,60 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         pk = extract_pk(data) or DEFAULT_STRIPE_PK
         processor = str(data.get("processor_entity") or "openai_llc")
 
-    dyn2, sid2 = build_paypal_dynamic_proxy(cfg, 1)
-    if cfg.apply_promo:
-        log(f"[2/6] US update 套试用 promo sid={sid2}")
-        with pix_proxy_context(cfg.local_proxy, dyn2, log) as chain2:
-            cg2 = build_chatgpt_session(token, chain2.url, device_id)
-            update = cg2.post(
-                "https://chatgpt.com/backend-api/payments/checkout/update",
-                json={
-                    "checkout_session_id": cs_id,
-                    "processor_entity": processor,
-                    "plan_name": "chatgptplusplan",
-                    "price_interval": "month",
-                    "seat_quantity": 1,
-                    "billing_details": {"country": "US", "currency": "USD"},
-                    "promo_campaign": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": False},
-                },
-                headers={"x-openai-target-path": "/backend-api/payments/checkout/update", "x-openai-target-route": "/backend-api/payments/checkout/update"},
-                timeout=TIMEOUT,
-            )
-            log(f"update HTTP {update.status_code} {short(update.text, 120)}")
-            if update.status_code >= 400:
-                raise RuntimeError(f"update failed: {short(update.text)}")
-    else:
-        log(f"[2/6] 跳过 promo update sid={sid2}")
-
-    dyn3, sid3 = build_paypal_dynamic_proxy(cfg, 2)
-    log(f"[3/6] Stripe init sid={sid3}")
-    with pix_proxy_context(cfg.local_proxy, dyn3, log) as chain3:
-        p3 = chain3.url
-        stripe = build_stripe_session(p3)
+    dyn2, sid2 = build_paypal_dynamic_proxy(cfg, 1, checkout_region)
+    log(f"[2/6] {checkout_region} Stripe init 预热 PayPal 支付方式 sid={sid2}")
+    with pix_proxy_context(cfg.local_proxy, dyn2, log) as chain2:
+        stripe_proxy = chain2.url
+        stripe = build_stripe_session(stripe_proxy)
         ctx = _ctx()
         init_payload = stripe_init(stripe, cs_id, pk, ctx)
         amount = amount_info(init_payload)
         pmt, ordered, has_paypal = pmt_info(init_payload)
-        log(f"金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
+        pre_promo_amount = amount
+        pre_promo_pmt = pmt
+        pre_promo_ordered = ordered
+        log(f"预热金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
         if not has_paypal:
             raise RuntimeError(f"未出现 PayPal，pmt={pmt}")
-        if not is_zero_amount(amount):
-            raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
 
-        log(f"[4/6] 更新 US tax_region {billing['state']}")
-        stripe_update_tax_region(stripe, cs_id, pk, billing)
-        init_payload = stripe_init(stripe, cs_id, pk, ctx)
-        amount = amount_info(init_payload)
-        hosted = str(init_payload.get("stripe_hosted_url") or "")
-        log(f"tax_region 后金额={amount}")
+        if cfg.apply_promo:
+            dyn3, sid3 = build_paypal_dynamic_proxy(cfg, 2, promo_region)
+            log(f"[3/6] {promo_region} 后注入试用 promo sid={sid3}")
+            with pix_proxy_context(cfg.local_proxy, dyn3, log) as chain3:
+                update_payload = chatgpt_update_trial_promo(
+                    token,
+                    cs_id=cs_id,
+                    processor=processor,
+                    proxy_url=chain3.url,
+                    device_id=device_id,
+                    country=promo_region,
+                    currency=promo_currency_for_region(promo_region),
+                )
+                log(f"promo update success={bool(update_payload.get('success', True))} keys={sorted(update_payload.keys())[:6]}")
+
+            log(f"[4/6] {checkout_region} Stripe re-init 验证 0 元 + PayPal")
+            init_payload = stripe_init(stripe, cs_id, pk, ctx)
+            amount = amount_info(init_payload)
+            pmt, ordered, has_paypal = pmt_info(init_payload)
+            log(f"后注入金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
+            if not has_paypal:
+                raise RuntimeError(f"后注入 promo 后未出现 PayPal，pmt={pmt}")
+        else:
+            log("[3/6] 跳过 promo update")
+            if not is_zero_amount(amount):
+                raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
+            log(f"[4/6] 更新 US tax_region {billing['state']}")
+            stripe_update_tax_region(stripe, cs_id, pk, billing)
+            init_payload = stripe_init(stripe, cs_id, pk, ctx)
+            amount = amount_info(init_payload)
+            pmt, ordered, has_paypal = pmt_info(init_payload)
+            log(f"tax_region 后金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
+            if not has_paypal:
+                raise RuntimeError(f"未出现 PayPal，pmt={pmt}")
+
         if not is_zero_amount(amount):
             raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
+        hosted = str(init_payload.get("stripe_hosted_url") or "")
 
         log("[5/6] inline confirm PayPal")
         confirm_payload = _confirm_paypal_inline(
@@ -674,12 +727,17 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
                 token_match = re.search(r"BA-[A-Za-z0-9_-]+", provider)
                 fields["ba_token"] = token_match.group(0) if token_match else fields.get("ba_token", "")
             fields["amount"] = amount
+            fields["pre_promo_amount"] = pre_promo_amount
+            fields["pre_promo_payment_method_types"] = pre_promo_pmt
+            fields["pre_promo_ordered_payment_method_types"] = pre_promo_ordered
+            fields["post_promo_payment_method_types"] = pmt
+            fields["post_promo_ordered_payment_method_types"] = ordered
             fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
             fields["billing"] = billing
             return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
         log("[6/6] approve + poll PayPal")
-        chatgpt_approve(token, cs_id, processor, p3, device_id, log)
+        chatgpt_approve(token, cs_id, processor, stripe_proxy, device_id, log)
         last_err: dict[str, Any] = {}
         for i in range(1, 20):
             page_data = page_get(stripe, cs_id, pk, ctx)
@@ -695,6 +753,11 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
                     token_match = re.search(r"BA-[A-Za-z0-9_-]+", provider)
                     fields["ba_token"] = token_match.group(0) if token_match else fields.get("ba_token", "")
                 fields["amount"] = amount
+                fields["pre_promo_amount"] = pre_promo_amount
+                fields["pre_promo_payment_method_types"] = pre_promo_pmt
+                fields["pre_promo_ordered_payment_method_types"] = pre_promo_ordered
+                fields["post_promo_payment_method_types"] = pmt
+                fields["post_promo_ordered_payment_method_types"] = ordered
                 fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
                 fields["billing"] = billing
                 return {"ok": True, "amount": amount, "fields": fields, "billing": billing}

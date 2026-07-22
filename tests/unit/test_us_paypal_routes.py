@@ -97,6 +97,7 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
     assert job["result"]["successes"][0]["link"]["paypal_link"].startswith("https://www.paypal.com/agreements/approve")
     assert captured["cfg"].access_token == "token-user@example.com"
     assert captured["cfg"].region == "US"
+    assert captured["cfg"].promo_region == "JP"
     assert captured["cfg"].apply_promo is False
     saved = json.loads(us_paypal.LINKS_FILE.read_text(encoding="utf-8"))[0]
     assert saved["ba_token"] == "BA-TEST"
@@ -129,12 +130,39 @@ def test_batch_job_passes_apply_promo_mode(monkeypatch):
     assert captured["apply_promo"] is True
 
 
+def test_batch_job_passes_custom_promo_region(monkeypatch):
+    email = "promo-region@example.com"
+    captured = {}
+    monkeypatch.setattr(us_paypal, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda _email: "token")
+
+    def fake_generate_paypal_trial(cfg, log):
+        captured["promo_region"] = cfg.promo_region
+        return {"ok": True, "amount": "0", "fields": {"paypal_link": "https://pm-redirects.stripe.com/authorize/test", "cs_id": "cs_test"}, "billing": {}}
+
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", fake_generate_paypal_trial)
+    job_id = "paypal-promo-region-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": [email], "proxies": "p", "promoRegion": "vn"})
+    us_paypal._run_batch_job(job_id, req)
+
+    assert captured["promo_region"] == "VN"
+
+
 def test_start_requests_default_to_apply_promo():
     single = us_paypal.UsPaypalStartRequest.model_validate({"accountEmail": "user@example.com"})
     batch = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": ["user@example.com"]})
 
     assert single.promo_mode == "promo"
     assert batch.promo_mode == "promo"
+    assert single.promo_region == "JP"
+    assert batch.promo_region == "JP"
 
 
 def test_start_requires_selected_account():
