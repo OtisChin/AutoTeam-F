@@ -58,17 +58,15 @@ def test_post_replace_requires_email():
     assert exc_info.value.detail == "email 不能为空"
 
 
-def test_post_fill_personal_rejects_when_team_is_full(monkeypatch):
-    monkeypatch.setattr("autotoken.manager.TEAM_SUB_ACCOUNT_HARD_CAP", 2)
-    monkeypatch.setattr("autotoken.accounts.STATUS_ACTIVE", "active")
-    monkeypatch.setattr("autotoken.accounts.STATUS_EXHAUSTED", "exhausted")
-    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [{"status": "active"}, {"status": "exhausted"}])
+def test_post_fill_personal_is_disabled_before_starting_task():
+    started = []
 
     with pytest.raises(HTTPException) as exc_info:
-        _routes([])["post_fill"](TaskParams(target=5, leave_workspace=True))
+        _routes(started)["post_fill"](TaskParams(target=5, leave_workspace=True))
 
-    assert exc_info.value.status_code == 409
-    assert "Team 子号已满 2/2" in exc_info.value.detail
+    assert exc_info.value.status_code == 410
+    assert "Team invite / leave_workspace 注册链路已禁用" in exc_info.value.detail
+    assert started == []
 
 
 def test_post_cleanup_starts_team_task(monkeypatch):

@@ -165,6 +165,28 @@ def test_batch_job_generates_upi_link_and_records_status(monkeypatch, tmp_path):
     assert statuses[email]["status"] == "success"
 
 
+def test_link_record_includes_five_minute_upi_expiry(monkeypatch):
+    monkeypatch.setattr(india_upi.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(india_upi.time, "strftime", lambda fmt, *_args: "2026-07-22 14:35:00" if _args else "2026-07-22 14:30:00")
+
+    record = india_upi._link_record_from_result(
+        "job-1",
+        "user@example.com",
+        {
+            "amount": "0",
+            "fields": {
+                "upi_link": "https://payments.stripe.com/upi/instructions/token",
+                "cs_id": "cs_test",
+            },
+        },
+    )
+
+    assert record["upi_ttl_seconds"] == 300
+    assert record["created_at_ts"] == 1000.0
+    assert record["upi_expires_at_ts"] == 1300.0
+    assert record["upi_expires_at"] == "2026-07-22 14:35:00"
+
+
 def test_batch_job_defaults_to_apply_promo_mode(monkeypatch):
     email = "default-promo@example.com"
     captured = {}
@@ -242,6 +264,37 @@ def test_batch_job_uses_requested_max_attempts(monkeypatch):
     job = india_upi.JOBS[job_id]
     assert calls == 2
     assert job["result"]["errors"][0]["attempts"] == 2
+
+
+def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch):
+    email = "promo@example.com"
+    deleted_accounts = []
+    deleted_auth = []
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda _email: "token")
+    monkeypatch.setattr(india_upi.account_store, "delete_account", lambda value: deleted_accounts.append(value) or True)
+    monkeypatch.setattr(india_upi, "delete_auth_session", lambda value: deleted_auth.append(value) or True)
+
+    def fake_generate_upi_trial(cfg, log):
+        raise RuntimeError("套 promo 后金额不是 0: 9990")
+
+    monkeypatch.setattr(india_upi, "generate_upi_trial", fake_generate_upi_trial)
+    job_id = "upi-nonzero-promo-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({"accountEmails": [email], "proxies": "p"})
+    india_upi._run_batch_job(job_id, req)
+
+    job = india_upi.JOBS[job_id]
+    assert deleted_accounts == [email]
+    assert deleted_auth == [email]
+    assert job["result"]["errors"][0]["account_deleted"] is True
+    assert "套 promo 后金额非 0，已从账号池删除" in job["result"]["errors"][0]["error"]
 
 
 def test_start_requires_selected_account():

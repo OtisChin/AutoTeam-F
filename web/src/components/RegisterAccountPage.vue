@@ -755,6 +755,34 @@
               下一个可用邮箱：
               <span class="font-mono text-gray-300">{{ outlookPoolStatus?.next_available_email || '无' }}</span>
             </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2 border-b border-gray-800 px-5 py-3">
+            <span class="text-xs text-gray-500">筛选：</span>
+            <button
+              v-for="option in outlookPoolStatusFilterOptions"
+              :key="option.value"
+              type="button"
+              :aria-pressed="outlookPoolStatusFilter === option.value"
+              :disabled="outlookPoolDeleting"
+              class="rounded-full border px-3 py-1.5 text-xs transition disabled:opacity-50"
+              :class="outlookPoolStatusFilter === option.value
+                ? 'border-blue-500/40 bg-blue-600/20 text-blue-300'
+                : 'border-gray-700 bg-gray-950 text-gray-400 hover:bg-gray-800 hover:text-gray-200'"
+              @click="outlookPoolStatusFilter = option.value"
+            >
+              <span>{{ option.label }}</span>
+              <span class="ml-1 font-mono text-[11px] opacity-75">{{ option.count }}</span>
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-3">
+            <div class="min-w-0 text-xs text-gray-500">
+              当前显示：
+              <span class="font-mono text-gray-300">{{ outlookPoolVisibleEmails.length }}</span>
+              <span class="text-gray-600"> / </span>
+              <span class="font-mono text-gray-400">{{ outlookPoolStatus?.total || 0 }}</span>
+            </div>
             <div class="flex shrink-0 items-center gap-3">
               <label class="inline-flex items-center gap-2 text-xs text-gray-400">
                 <input
@@ -781,9 +809,9 @@
             {{ outlookPoolError }}
           </div>
 
-          <div v-if="outlookPoolStatus?.accounts?.length" class="divide-y divide-gray-800">
+          <div v-if="outlookPoolVisibleAccounts.length" class="divide-y divide-gray-800">
             <div
-              v-for="account in outlookPoolStatus.accounts"
+              v-for="account in outlookPoolVisibleAccounts"
               :key="account.email"
               class="flex items-center justify-between gap-3 px-5 py-2.5 text-xs"
             >
@@ -801,6 +829,9 @@
                 {{ outlookPoolAccountStatusLabel(account.status) }}
               </span>
             </div>
+          </div>
+          <div v-else-if="outlookPoolStatus?.accounts?.length && !outlookPoolLoading" class="px-5 py-8 text-center text-sm text-gray-500">
+            当前筛选暂无记录
           </div>
           <div v-else-if="!outlookPoolLoading" class="px-5 py-8 text-center text-sm text-gray-500">
             邮箱池暂无记录
@@ -1097,6 +1128,7 @@ const outlookPoolDeleting = ref(false)
 const outlookPoolError = ref('')
 const outlookPoolStatus = ref(null)
 const outlookPoolSelectedEmails = ref([])
+const outlookPoolStatusFilter = ref('all')
 const mailComPoolStatus = ref(null)
 const mailComPoolLoading = ref(false)
 const mailComPoolError = ref('')
@@ -1372,7 +1404,19 @@ const oauthPhoneSmsMaxPriceLabel = computed(() => {
 const outlookImportResultClass = computed(() => outlookImportResultOk.value
   ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
   : 'bg-red-500/10 text-red-300 border-red-500/20')
-const outlookPoolVisibleEmails = computed(() => (outlookPoolStatus.value?.accounts || []).map(account => account.email))
+const outlookPoolStatusFilterOptions = computed(() => [
+  { value: 'all', label: '全部', count: Number(outlookPoolStatus.value?.total || 0) },
+  { value: 'available', label: '可用', count: Number(outlookPoolStatus.value?.available || 0) },
+  { value: 'registered', label: '已注册', count: Number(outlookPoolStatus.value?.registered || 0) },
+  { value: 'unavailable', label: '暂不可用', count: Number(outlookPoolStatus.value?.unavailable || 0) },
+])
+const outlookPoolVisibleAccounts = computed(() => {
+  const accounts = outlookPoolStatus.value?.accounts || []
+  const filter = outlookPoolStatusFilter.value
+  if (filter === 'all') return accounts
+  return accounts.filter(account => account.status === filter)
+})
+const outlookPoolVisibleEmails = computed(() => outlookPoolVisibleAccounts.value.map(account => account.email))
 const outlookPoolSelectedSet = computed(() => new Set(outlookPoolSelectedEmails.value))
 const outlookPoolSelectedCount = computed(() => outlookPoolSelectedEmails.value.length)
 const outlookPoolAllVisibleSelected = computed(() => {
@@ -1739,14 +1783,18 @@ async function loadOutlookPoolStatus() {
   outlookPoolError.value = ''
   try {
     outlookPoolStatus.value = await api.getOutlookAccountsStatus()
-    const visible = new Set(outlookPoolVisibleEmails.value)
-    outlookPoolSelectedEmails.value = outlookPoolSelectedEmails.value.filter(email => visible.has(email))
+    pruneOutlookPoolSelectionToVisible()
   } catch (e) {
     outlookPoolStatus.value = null
     outlookPoolError.value = `读取 Outlook 邮箱池失败: ${e.message}`
   } finally {
     outlookPoolLoading.value = false
   }
+}
+
+function pruneOutlookPoolSelectionToVisible() {
+  const visible = new Set(outlookPoolVisibleEmails.value)
+  outlookPoolSelectedEmails.value = outlookPoolSelectedEmails.value.filter(email => visible.has(email))
 }
 
 function toggleOutlookPoolEmail(email, checked) {
@@ -2296,6 +2344,13 @@ watch(
   isOutlookProvider,
   enabled => {
     if (enabled) loadOutlookPoolStatus()
+  }
+)
+
+watch(
+  outlookPoolStatusFilter,
+  () => {
+    pruneOutlookPoolSelectionToVisible()
   }
 )
 

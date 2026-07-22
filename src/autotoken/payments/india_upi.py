@@ -81,7 +81,14 @@ def upi_proxy_with_fresh_sid(proxy_url: str, region: str = "IN") -> tuple[str, s
         flags=re.I,
     )
     refreshed, sid_count = re.subn(r"(sid-)[^-:@/?#]+(-t-)", rf"\g<1>{fresh}\g<2>", refreshed, count=1)
-    if region_count or sid_count:
+    refreshed, session_count = re.subn(
+        r"(-session-)[^-:@/?#]+",
+        rf"\g<1>{fresh}",
+        refreshed,
+        count=1,
+        flags=re.I,
+    )
+    if region_count or sid_count or session_count:
         return refreshed, fresh
 
     proxy, sid = pix_proxy_with_fresh_sid(proxy_url, target_region)
@@ -423,8 +430,15 @@ def chatgpt_approve(access_token: str, cs_id: str, processor: str, proxy_url: st
             )
             log(f"approve attempt {attempt}: HTTP {resp.status_code} {short(resp.text, 120)}")
             if resp.status_code < 400:
-                return
-            last_err = short(resp.text)
+                try:
+                    result = (resp.json() or {}).get("result")
+                except Exception:
+                    result = ""
+                if not result or result == "approved":
+                    return
+                last_err = f"unexpected result: {result!r}"
+            else:
+                last_err = short(resp.text)
         except Exception as exc:
             last_err = short(exc)
             log(f"approve attempt {attempt} error: {last_err}")

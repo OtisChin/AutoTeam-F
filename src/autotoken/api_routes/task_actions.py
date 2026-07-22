@@ -71,28 +71,15 @@ def create_task_actions_router(*, start_task: Callable[..., dict[str, Any]]) -> 
 
     @router.post("/api/tasks/fill", status_code=202)
     def post_fill(params: TaskParams | None = None):
-        """补满 Team 成员（后台执行）。leave_workspace=True 时切换为生产免费号模式。"""
-        from autotoken.interfaces.manager import TEAM_SUB_ACCOUNT_HARD_CAP, cmd_fill
+        """补满 Team 成员（后台执行）。"""
+        from autotoken.interfaces.manager import TEAM_INVITE_REGISTER_DISABLED_MESSAGE, cmd_fill
 
         params = params or TaskParams()
         if params.leave_workspace:
-            from autotoken.storage.accounts import STATUS_ACTIVE, STATUS_EXHAUSTED, load_accounts
+            raise HTTPException(status_code=410, detail=TEAM_INVITE_REGISTER_DISABLED_MESSAGE)
 
-            in_team_local = sum(
-                1 for account in load_accounts() if account.get("status") in (STATUS_ACTIVE, STATUS_EXHAUSTED)
-            )
-            if in_team_local >= TEAM_SUB_ACCOUNT_HARD_CAP:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Team 子号已满 {in_team_local}/{TEAM_SUB_ACCOUNT_HARD_CAP},"
-                        "fill-personal 拒绝执行。请先等子号自然 exhausted 或手动腾位置后再试"
-                    ),
-                )
-
-        command = "fill-personal" if params.leave_workspace else "fill"
         return start_task(
-            command,
+            "fill",
             cmd_fill,
             {"target": params.target, "leave_workspace": params.leave_workspace},
             params.target,

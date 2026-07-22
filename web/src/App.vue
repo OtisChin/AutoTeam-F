@@ -321,7 +321,7 @@ function taskCommandLabel(command) {
     rotate: '账号轮换',
     replace: '替换账号',
     fill: '补满账号',
-    'fill-personal': '生产免费号',
+    'fill-personal': '免费号生产（已禁用）',
     cleanup: '清理账号',
     'auto-fill': '自动补位',
     'auto-replace': '自动替换',

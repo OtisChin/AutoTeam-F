@@ -2,9 +2,9 @@
 
 # AutoToken-F
 
-**面向 ChatGPT Team 的账号轮转与认证同步工具 · Fix + Free 增强版**
+**面向 ChatGPT Team 的账号轮转与认证同步工具 · Fix 增强版**
 
-基于 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken) 的 fork，修掉若干阻塞性 bug，新增 **批量生产免费号（Personal）** 能力，改善操作体验。
+基于 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken) 的 fork，修掉若干阻塞性 bug，并改善 Team 账号轮转、认证同步与 Web 面板体验。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33?style=for-the-badge&logo=playwright&logoColor=white)](https://playwright.dev)
@@ -23,7 +23,7 @@
 - 💚 感谢 [cnitlrt/AutoToken](https://github.com/cnitlrt/AutoToken) 的前置工作 —— 没有原作者搭好的轮转/同步骨架，就没有这个 fork。
 - 💙 感谢 [LinuxDo](https://linux.do/) 社区的支持 —— **"学 AI，上 L 站"**。
 
-`AutoToken-F` 的 **F = Fix + Free**。
+`AutoToken-F` 的 **F = Fix**。
 
 ---
 
@@ -34,7 +34,7 @@
 | | 功能 | 描述 |
 |---|---|---|
 | 📧 | **自动注册** | 临时邮箱（`cloudflare_temp_email` 或 `cloud-mail` 双后端可切换）+ Playwright 自动注册 |
-| 🆓 | **生产免费号** 🆕 | 批量注册 → 主号踢出 → Personal OAuth，一条龙 |
+| 🆓 | **独立注册** | 批量直接注册并按配置保存注册后认证；Team invite / leave_workspace 生产链路已禁用 |
 | 🔐 | **Codex OAuth** | 自动登录 Codex，Team / Personal 双模式 |
 | 🔑 | **手动 OAuth 导入** | localhost 自动回调，失败可手动粘贴 |
 | 🔄 | **智能轮转** | 额度不足自动移出，旧号恢复后优先复用 |
@@ -128,7 +128,7 @@ Linux + Docker 访问宿主机服务，详见 [Docker 部署文档](docs/docker.
 | `pull-cpa` | 从 CPA 反向同步认证文件到本地 |
 | `admin-login` | 管理员登录 |
 
-> **生产免费号**通过 Web 面板的"生成免费号"按钮触发，对应 API：`POST /api/tasks/fill { target: N, leave_workspace: true }`
+> Team invite / leave_workspace 免费号生产链路已禁用；`POST /api/tasks/fill { target: N, leave_workspace: true }` 会直接返回 410。
 
 ## Web 管理面板
 
@@ -153,7 +153,7 @@ Linux + Docker 访问宿主机服务，详见 [Docker 部署文档](docs/docker.
 |------|------|
 | 📊 仪表盘 | 账号统计 + 状态表格 + 登录/移出/删除/**批量删除** 🆕 |
 | 👥 Team 成员 | 全部 Team 成员（含外部成员） |
-| 🔁 账号池操作 | 轮转 / 检查 / 补满 / 添加 / **生成免费号** 🆕 / 清理 |
+| 🔁 账号池操作 | 轮转 / 检查 / 补满 / 添加 / 清理 |
 | 🔄 同步中心 | 同步账号、同步 CPA、拉取 CPA |
 | 🔐 OAuth 登录 | 生成认证链接；localhost 自动回调 + 手动粘贴兜底 |
 | 📜 任务历史 | 后台任务执行状态 + **实时停止** 🆕 |
@@ -197,18 +197,18 @@ curl -s -X POST -H "Authorization: Bearer $KEY" http://localhost:8787/api/admin/
 ## 适用场景
 
 - 需要维持固定数量的 Team 可用席位
-- 需要**批量生产免费号**并把 Codex 认证推到 CLIProxyAPI
+- 需要维护固定数量的 Team 可用席位并同步 Codex 认证到 CLIProxyAPI
 - 需要在 Web 面板里完成日常轮转、对账、OAuth 导入
 - 在原仓库踩到本文档「修复了什么」小节中的坑
 
 ## 已知限制
 
-- **母号被吊销会牵连 personal 号** — 经实测,母号 Team workspace 被 OpenAI 吊销时,从该母号衍生(经 Team 邀请 → leave_workspace → personal OAuth)出来的 free plan personal 号会**一起失效**(`/wham/usage` 返回 401/403)。OpenAI 的风控关联到 IP / device fingerprint / 邀请链路,不仅仅是 workspace 隶属关系。母号失效后,personal 号需要全部重新生产
+- **Team invite / leave_workspace 生产链路已移除** — 不再经 Team 邀请 → 加入 workspace → leave_workspace → personal OAuth 生成账号；相关 API 会 fail-fast，Web 面板也不再展示“生成免费号”入口
 - **IP 风险** — VPS 的 IP 容易被 OpenAI/Cloudflare 标记，建议使用住宅代理
 - **并发限制** — 同一时间只允许一个 Playwright 操作
 - **验证码** — OpenAI 验证码有效期短，网络延迟可能导致过期
 - **软停止 ≠ 硬停止** — 点"停止任务"后，当前账号注册（~2 分钟）会跑完再退出，不中途打断浏览器
-- **Team 席位上限** — 免费号生产时，baseline + 本批新号 ≤ 4，超过会自动缩批
+- **Team 席位上限** — Team 轮转与补满仍受 workspace 席位上限约束
 
 更多详见 [常见问题](docs/troubleshooting.md)
 

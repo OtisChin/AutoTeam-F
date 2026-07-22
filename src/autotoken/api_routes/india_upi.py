@@ -24,6 +24,7 @@ ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "india_upi_account_status.json"
 MAX_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
+UPI_LINK_TTL_SECONDS = 5 * 60
 UPI_STATUS_PENDING = "pending"
 UPI_STATUS_RUNNING = "running"
 UPI_STATUS_SUCCESS = "success"
@@ -292,10 +293,16 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
     fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
     billing = fields.get("billing") if isinstance(fields.get("billing"), dict) else result.get("billing") or {}
     hosted = str(fields.get("hosted_instructions_url") or fields.get("upi_link") or "")
+    created_at_ts = time.time()
+    expires_at_ts = created_at_ts + UPI_LINK_TTL_SECONDS
     return {
         "id": uuid.uuid4().hex[:16],
         "job_id": job_id,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at_ts": created_at_ts,
+        "upi_ttl_seconds": UPI_LINK_TTL_SECONDS,
+        "upi_expires_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires_at_ts)),
+        "upi_expires_at_ts": expires_at_ts,
         "account_email": account_email,
         "amount": str(fields.get("amount") or result.get("amount") or ""),
         "cs_id": str(fields.get("cs_id") or ""),
@@ -473,7 +480,9 @@ def _run_batch_account(
                         "status": status,
                     }
                 if pix_routes._is_non_zero_after_promo_error(last_error):
+                    cleanup = _delete_invalid_account(email)
                     status = _set_account_status(email, UPI_STATUS_FAILED, error=last_error, job_id=job_id)
+                    _append_log(job_id, f"[{index}/{total}] 账号套 promo 后金额非 0，已从账号池删除：{email} cleanup={cleanup}")
                     return {
                         "ok": False,
                         "email": email,
@@ -481,9 +490,12 @@ def _run_batch_account(
                             "email": email,
                             "elapsed_s": round(time.monotonic() - started, 1),
                             "attempts": attempt,
-                            "error": f"套 promo 后金额非 0：{last_error}",
+                            "error": f"套 promo 后金额非 0，已从账号池删除：{last_error}",
+                            "cleanup": cleanup,
+                            "account_deleted": True,
                         },
                         "status": status,
+                        "account_deleted": True,
                     }
                 _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
                 if attempt >= max_attempts:

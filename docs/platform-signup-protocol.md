@@ -286,7 +286,7 @@ Content-Type: application/json
 ### 项目内参考代码
 27. `src/autotoken/auth/codex_auth.py` — PKCE、oauth/token 交换、`app_EMoamEEZ73f0CkXaXp7hrann` client_id 样本
 28. `src/autotoken/interfaces/manager.py:_register_direct_once` — ChatGPT 直接注册 Playwright 流程
-29. `src/autotoken/auth/invite.py:register_with_invite` — 邀请注册 Playwright 流程 + phone/duplicate 分支识别
+29. `src/autotoken/auth/invite.py` — Team 邀请注册入口已禁用，仅保留 phone/duplicate 分支识别等辅助函数
 30. `src/autotoken/mail/cloud_mail.py` — OTP 和 invite link 提取器
 
 ---

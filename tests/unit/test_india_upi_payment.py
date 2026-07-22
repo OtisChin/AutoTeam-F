@@ -160,6 +160,26 @@ def test_generate_upi_trial_approves_requires_approval_before_polling(monkeypatc
     assert result["billing"]["country"] == "IN"
 
 
+def test_chatgpt_approve_rejects_blocked_result(monkeypatch):
+    calls = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            calls.append(url)
+            if url.endswith("/backend-api/sentinel/ping"):
+                return _JsonResponse({})
+            return _JsonResponse({"result": "blocked"})
+
+    monkeypatch.setattr(india_upi, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(india_upi.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="blocked"):
+        india_upi.chatgpt_approve("token", "cs_test", "openai_llc", "proxy", "device", lambda _message: None)
+
+    assert not any(url.endswith("/backend-api/sentinel/ping") for url in calls)
+    assert sum(url.endswith("/backend-api/payments/checkout/approve") for url in calls) == 3
+
+
 def test_build_upi_dynamic_proxy_rewrites_direct_proxy_region_for_promo():
     cfg = india_upi.UpiJobConfig(
         access_token="token",
@@ -185,6 +205,26 @@ def test_build_upi_dynamic_proxy_rewrites_711_region_for_promo():
 
     assert "region-VN" in proxy
     assert "region-IN" not in proxy
+    assert proxy.startswith("socks5h://")
+    assert sid and sid != "static"
+
+
+def test_build_upi_dynamic_proxy_refreshes_711_session_for_promo():
+    cfg = india_upi.UpiJobConfig(
+        access_token="token",
+        direct_proxies=[
+            "global.rotgb.711proxy.com:10000:"
+            "USER105777-zone-custom-region-IN-session-90442815-sessTime-180-sessAuto-1:d74d61"
+        ],
+        region="IN",
+    )
+
+    proxy, sid = india_upi.build_upi_dynamic_proxy(cfg, 1, "VN")
+
+    assert "region-VN" in proxy
+    assert "region-IN" not in proxy
+    assert "session-90442815" not in proxy
+    assert "session-" in proxy
     assert proxy.startswith("socks5h://")
     assert sid and sid != "static"
 

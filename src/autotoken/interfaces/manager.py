@@ -59,8 +59,8 @@ from autotoken.integrations.chatgpt_api import ChatGPTTeamAPI
 from autotoken.integrations.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa
 from autotoken.mail import TemporaryEmailClient
 from autotoken.services import account_presentation as account_presentation_service
-from autotoken.services import fill_personal, registration, rotation, team_cleanup
 from autotoken.services import reconcile as reconcile_service
+from autotoken.services import registration, rotation, team_cleanup
 from autotoken.settings.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
 from autotoken.settings.config import get_playwright_launch_options
 from autotoken.storage.account_ops import delete_managed_account, fetch_team_state
@@ -97,6 +97,13 @@ POST_REGISTER_OAUTH_ENABLED = os.environ.get("POST_REGISTER_OAUTH_ENABLED", "fal
     "yes",
     "on",
 }
+TEAM_INVITE_REGISTER_DISABLED_MESSAGE = (
+    "Team invite / leave_workspace 注册链路已禁用；请改用独立直接注册，不再通过 Team 邀请或加入后退出 workspace 生产账号。"
+)
+
+
+def _raise_team_invite_register_disabled():
+    raise RuntimeError(TEAM_INVITE_REGISTER_DISABLED_MESSAGE)
 
 
 def sync_to_cpa():
@@ -1505,11 +1512,13 @@ def _run_post_register_oauth(
     """
     注册（加入 Team）成功后统一的收尾流程：
     - leave_workspace=False: 直接跑 Team 模式 Codex OAuth，状态置为 ACTIVE
-    - leave_workspace=True: 主号 API 踢出子账号 → 走 personal 模式 OAuth → 保存 free plan 认证，状态置为 PERSONAL
+    - leave_workspace=True: 已禁用，不再通过加入 Team 后退出 workspace 生产 personal 账号
 
     返回 email 表示账号已入账号池；None 表示流程失败。
     out_outcome: 可选 dict，函数内会写入 `{status, email, reason, ...}` 供上游统计/汇总。
     """
+    if leave_workspace:
+        _raise_team_invite_register_disabled()
 
     def _record_outcome(status, **extra):
         registration.replace_outcome(out_outcome, email=email, status=status, **extra)
@@ -1525,73 +1534,6 @@ def _run_post_register_oauth(
             url=getattr(exc, "url", ""),
         )
         _record_outcome("phone_blocked", reason="Codex OAuth 需要手机号验证", stage=stage)
-        return None
-
-    if leave_workspace:
-        # 退出 Team 必须用主号权限，临时起一个 ChatGPTTeamAPI 实例完成 DELETE
-        logger.info("[注册] leave_workspace=True，先将 %s 从 Team 中移出...", email)
-        temp_api = ChatGPTTeamAPI()
-        remove_status = "failed"  # 防御：start() 抛异常时 finally 走完仍有确定值，避免 NameError
-        try:
-            temp_api.start()
-            remove_status = remove_from_team(temp_api, email, return_status=True)
-        except Exception as exc:
-            logger.error("[注册] 启动主号 API 或移出 Team 时出错: %s", exc)
-        finally:
-            temp_api.stop()
-
-        if remove_status not in ("removed", "already_absent"):
-            logger.error("[注册] 无法将 %s 移出 Team（status=%s），放弃 personal OAuth", email, remove_status)
-            # 没能踢出 → 账号还在 Team 里，保留为 standby 由下次轮转接手
-            update_account(email, status=STATUS_STANDBY)
-            record_failure(email, "kick_failed", f"remove_from_team status={remove_status}")
-            _record_outcome("kick_failed", reason=registration.kick_failed_reason(remove_status))
-            return None
-
-        # kick 成功后必须等 OpenAI 后端同步:DELETE /users 返回 2xx 不代表 auth.openai.com
-        # 立刻把 default workspace 从 Team 切回 Personal。如果此时立刻开 OAuth,auth 会
-        # 继续把 Team 当 default 颁发 team plan 的 token,拿到的 bundle 会被 plan_type 校
-        # 验拒收(codex_auth.py login_codex_via_browser 末尾)→ 整个账号 oauth_failed,白跑
-        # 2 分钟。等 8s 足够让 workspace default 切换生效,同时也不会让用户觉得慢
-        if remove_status == "removed":
-            logger.info("[注册] kick 成功,等 8s 让 OpenAI workspace default 同步后再 OAuth...")
-            time.sleep(8)
-
-        try:
-            bundle = login_codex_via_browser(
-                email,
-                password,
-                mail_client=mail_client,
-                use_personal=True,
-                proxy_url=proxy_url,
-                phone_sms_provider=oauth_phone_sms_provider,
-                phone_sms_country=oauth_phone_sms_country,
-                phone_sms_oasis_cdks=oauth_oasis_sms_cdks,
-            )
-        except CodexOAuthPhoneRequired as exc:
-            return _handle_oauth_phone_required(exc, "post_leave_workspace")
-        if bundle:
-            auth_file = save_auth_file(bundle)
-            # personal 分支:已主动退出 Team,bundle 是个人 free/plus plan,算 codex 席位
-            update_account(email, **registration.personal_success_update_fields(auth_file=auth_file, last_active_at=time.time()))
-            logger.info("[注册] 免费号就绪: %s (plan=%s)", email, bundle.get("plan_type"))
-            _record_outcome("success", plan=bundle.get("plan_type"))
-            return email
-
-        # personal OAuth 失败 — 不留僵尸 PERSONAL 记录：直接从 accounts.json 删除，失败明细写 register_failures.json
-        # 用户能在失败日志里看到发生了什么（哪个 email / 是什么阶段 / 什么时候），账号列表保持干净
-        logger.error(
-            "[注册] %s 已退出 Team 但 personal Codex OAuth 未返回认证 bundle，从账号池删除",
-            email,
-        )
-        delete_account(email)
-        record_failure(
-            email,
-            "oauth_failed",
-            f"已退出 Team 但 {registration.PERSONAL_OAUTH_FAILED_REASON}",
-            stage="post_leave_workspace",
-        )
-        _record_outcome("oauth_failed", reason=registration.PERSONAL_OAUTH_FAILED_REASON)
         return None
 
     # 原有 Team 流程
@@ -2364,98 +2306,18 @@ def _run_post_register_relogin_oauth(
 
 
 def _complete_registration(email, password, invite_link, mail_client, *, leave_workspace=False, out_outcome=None):
-    """完成注册 + Codex 登录（从已有邀请链接继续）。out_outcome 透传给 _run_post_register_oauth。"""
-    from playwright.sync_api import sync_playwright
-
-    from autotoken.auth.invite import register_with_invite
-
-    logger.info("[注册] 开始注册 %s...", email)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**get_playwright_launch_options())
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
-        page = context.new_page()
-        result, password = register_with_invite(page, invite_link, email, mail_client, password=password)
-        browser.close()
-
-    if not result:
-        logger.error("[注册] 注册 %s 失败", email)
-        if out_outcome is not None:
-            out_outcome.update(registration.register_failed_outcome(email))
-        return None
-
-    return _run_post_register_oauth(
-        email, password, mail_client, leave_workspace=leave_workspace, out_outcome=out_outcome
-    )
+    """旧 Team 邀请注册入口，已禁用。"""
+    _raise_team_invite_register_disabled()
 
 
 def _check_pending_invites(chatgpt_api, mail_client, *, leave_workspace=False, out_outcome=None):
     """
-    检查 pending invites 中是否有已收到邮件的邀请，有则继续完成注册。
-    leave_workspace: 注册成功后是否自动退出 Team 走 personal OAuth。
-    out_outcome:     透传给 _complete_registration / _run_post_register_oauth，
-                     让上游（_cmd_fill_personal）能拿到 kick_failed / oauth_failed 的分类。
-    返回成功完成的邮箱列表。
+    旧 pending Team invite 注册入口，已禁用。
+
+    返回空列表，避免任何账号生产流程继续处理 Team 邀请邮件。
     """
-    account_id = get_chatgpt_account_id()
-    result = chatgpt_api._api_fetch("GET", f"/backend-api/accounts/{account_id}/invites")
-    if result["status"] != 200:
-        return []
-
-    inv_data = json.loads(result["body"])
-    invites = inv_data if isinstance(inv_data, list) else inv_data.get("invites", inv_data.get("account_invites", []))
-
-    if not invites:
-        return []
-
-    logger.info("[Pending] 发现 %d 个待处理邀请", len(invites))
-    completed = []
-
-    for inv in invites:
-        inv_email = inv.get("email_address", "")
-        logger.info("[Pending] 检查 %s 是否已收到邮件...", inv_email)
-
-        # 从临时邮箱服务搜索该邮箱的邀请邮件
-        emails = mail_client.search_emails_by_recipient(inv_email, size=5)
-        invite_link = None
-        for em in emails:
-            sender = em.get("sendEmail", "").lower()
-            if "openai" in sender:
-                invite_link = mail_client.extract_invite_link(em)
-                if invite_link:
-                    break
-
-        if not invite_link:
-            logger.info("[Pending] %s 未收到邮件，跳过", inv_email)
-            continue
-
-        logger.info("[Pending] %s 已收到邀请邮件，继续注册流程...", inv_email)
-
-        # 确保本地有账号记录
-        acc = find_account(load_accounts(), inv_email)
-        if acc:
-            password = acc.get("password") or random_password()
-        else:
-            password = random_password()
-            add_account(inv_email, password)
-
-        # 关闭 ChatGPT 浏览器再注册
-        chatgpt_api.stop()
-
-        email = _complete_registration(
-            inv_email,
-            password,
-            invite_link,
-            mail_client,
-            leave_workspace=leave_workspace,
-            out_outcome=out_outcome,
-        )
-        if email:
-            completed.append(email)
-
-    return completed
+    logger.info("[Pending] Team invite 注册链路已禁用，跳过 pending invites 检查")
+    return []
 
 
 def _is_email_in_team(email):
@@ -3339,7 +3201,7 @@ def create_account_direct(
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
     流程：创建邮箱 → 注册 ChatGPT → （可选）保存 auth_session → 复用注册会话尝试 Codex OAuth。
     复用会话 OAuth 失败时保留 auth_session；遇到 add-phone 则按不可用账号处理。
-    leave_workspace: 加入 workspace 后是否立即退出，转为 personal 模式跑 OAuth。
+    leave_workspace: 旧 personal 生产参数，已禁用。
     out_outcome:     可选 dict，函数会把最终结局（success/phone_blocked/duplicate_exhausted/register_failed/...）
                      + 统计信息（register_attempts / duplicate_swaps / last_email / reason）写入，供上游汇总。
 
@@ -3348,6 +3210,9 @@ def create_account_direct(
     - is_duplicate=True: 换个临时邮箱继续尝试，独立计数不消耗 register_attempts
     - 其他异常:          归入现有 retry 计数
     """
+    if leave_workspace:
+        _raise_team_invite_register_disabled()
+
     from autotoken.auth.invite import RegisterBlocked
 
     def _create_registration_mailbox(current_prefix=None):
@@ -3904,21 +3769,11 @@ def create_new_account(
     """
     创建新账号。优先用直接注册模式（域名自动加入 workspace）。
     chatgpt_api 可为 None（直接注册不需要）。
-    leave_workspace: 注册成功后是否退出 Team 走 personal OAuth。
+    leave_workspace: 旧 personal 生产参数，已禁用。
     out_outcome:     透传给 create_account_direct 的可选统计容器。
     """
-    # 先检查 pending invites
-    if chatgpt_api and chatgpt_api.browser:
-        logger.info("[创建] 先检查 pending invites...")
-        completed = _check_pending_invites(
-            chatgpt_api,
-            mail_client,
-            leave_workspace=leave_workspace,
-            out_outcome=out_outcome,
-        )
-        if completed:
-            logger.info("[创建] 从 pending invites 完成了 %d 个账号", len(completed))
-            return completed[0]
+    if leave_workspace:
+        _raise_team_invite_register_disabled()
 
     # 直接注册模式（不需要邀请）
     logger.info("[创建] 使用直接注册模式...")
@@ -5125,10 +4980,10 @@ def cmd_fill(target=5, leave_workspace=False):
     """
     补位流程。
     leave_workspace=False: 补满 Team 席位到 target（原行为），优先复用 standby 旧号
-    leave_workspace=True:  按 target 作为"要生产的免费号数量"，每个账号注册后立刻退出 Team、走 personal OAuth
+    leave_workspace=True:  已禁用（不再通过 Team invite / 加入后退出 workspace 生产账号）
     """
     if leave_workspace:
-        return _cmd_fill_personal(target)
+        _raise_team_invite_register_disabled()
 
     chatgpt = ChatGPTTeamAPI()
     chatgpt.start()
@@ -5209,450 +5064,14 @@ def cmd_fill(target=5, leave_workspace=False):
             chatgpt.stop()
 
 
-def _summarize_outcomes(outcomes):
-    """把 outcome dict 列表按 status 聚合，返回 {status: count} 的 OrderedDict。"""
-    return fill_personal.summarize_outcomes(outcomes)
-
-
-def _fetch_team_non_master_emails(chatgpt_api):
-    """
-    一次性快照 Team 当前的非主号成员邮箱集合。返回 (ok, emails_set)。
-    ok=False 表示鉴权失败或网络问题,调用方可自行决定是重试还是放弃。
-
-    失败时主动 log 具体 status + body 前 200 字,方便用户直接看到根因
-    (401="session 失效"、0="playwright JS 抛错网络挂了"等)。
-    """
-    master_email = _normalized_email(get_admin_email())
-    account_id = get_chatgpt_account_id()
-    if not account_id:
-        logger.error("[免费号] account_id 为空,无法确认席位")
-        return False, set()
-    try:
-        result = chatgpt_api._api_fetch("GET", f"/backend-api/accounts/{account_id}/users")
-    except Exception as exc:
-        # Playwright 页面崩溃/context 被关掉等底层错误——不是 JS fetch 异常,JS 的 try/catch 接不住
-        logger.error("[免费号] 拉取 Team 成员列表抛异常(playwright 层): %s", exc)
-        return False, set()
-    status = result.get("status")
-    if status != 200:
-        body_excerpt = (result.get("body") or "")[:200].replace("\n", " ")
-        logger.error(
-            "[免费号] 拉取 Team 成员列表失败 status=%s body=%s "
-            "(可用 POST /api/admin/fix-account-id 自动修正 account_id,或重新导入 session_token)",
-            status,
-            body_excerpt,
-        )
-        return False, set()
-    try:
-        data = json.loads(result["body"])
-    except Exception as exc:
-        logger.error("[免费号] 成员列表 JSON 解析失败: %s body=%s", exc, (result.get("body") or "")[:200])
-        return False, set()
-    members = data.get("items", data.get("users", data.get("members", [])))
-    emails = {_normalized_email(m.get("email", "")) for m in members if m.get("email")}
-    emails.discard(master_email)
-    emails.discard("")
-    return True, emails
-
-
-def _wait_team_new_members_cleared(chatgpt_api, baseline_emails, max_wait=180, poll_interval=6):
-    """
-    等待"不在 baseline 里的新成员"全部被踢出。baseline 是进入 fill-personal 前就已经存在的
-    非主号成员(比如 Team fill 创建的真实 Team 子号,用户明确要求保留它们)。
-
-    返回 True: 新增成员已清空(可能还有 baseline 成员在,但那不归本任务管)。
-    返回 False: 超时仍有新增成员;或连续 401/403 鉴权失败。
-
-    风控背景:OpenAI 对批量邀请/踢人敏感,每批免费号(注册→主号踢出)完成后等后台真正
-    同步完成再开始下一批,避免短时间内大量操作触发风控。
-    """
-    from autotoken.core import cancel_signal
-
-    baseline_emails = {e for e in baseline_emails if e}
-    master_email = _normalized_email(get_admin_email())
-    deadline = time.time() + max_wait
-    last_count = None
-    # 401 累计计数:管理员 session_token 实际无 admin 权限时,401 会一直不变,
-    # 与其傻等 180s 再超时,不如连续 3 次 401 就判定 session 失效,早停并给出可诊断信息
-    unauthorized_hits = 0
-    forbidden_hits = 0
-    while time.time() < deadline:
-        # 即使在等待清空,也允许用户点"停止任务"让流程尽早退出,不要硬等 180s
-        if cancel_signal.is_cancelled():
-            logger.warning("[免费号] 等待新成员清空期间收到取消请求,提前退出")
-            return False
-        account_id = get_chatgpt_account_id()
-        if not account_id:
-            logger.error("[免费号] account_id 为空，无法确认席位")
-            return False
-        path = f"/backend-api/accounts/{account_id}/users"
-        result = chatgpt_api._api_fetch("GET", path)
-        status = result["status"]
-        if status != 200:
-            body_excerpt = (result.get("body") or "")[:220].replace("\n", " ")
-            logger.warning(
-                "[免费号] 成员列表拉取失败: %d，body=%s，继续等待",
-                status,
-                body_excerpt,
-            )
-            # OpenAI 对 Team admin 接口:401=session 未认证,403=认证了但非 admin
-            # 两种都不是"再等等就好"的状态,快速 fail-fast 比傻等 180s 更有信息量
-            if status == 401:
-                unauthorized_hits += 1
-                if unauthorized_hits >= 3:
-                    logger.error(
-                        "[免费号] 连续 %d 次 401 鉴权失败，session_token 已失效或权限不足，"
-                        "请在「设置」页重新导入管理员 session_token",
-                        unauthorized_hits,
-                    )
-                    return False
-            elif status == 403:
-                forbidden_hits += 1
-                if forbidden_hits >= 3:
-                    logger.error(
-                        "[免费号] 连续 %d 次 403，当前账号非 workspace admin，"
-                        "生成免费号需要管理员在 Team 工作区里踢人的能力",
-                        forbidden_hits,
-                    )
-                    return False
-            time.sleep(poll_interval)
-            continue
-
-        try:
-            data = json.loads(result["body"])
-            members = data.get("items", data.get("users", data.get("members", [])))
-        except Exception as exc:
-            logger.warning("[免费号] 成员列表解析失败: %s", exc)
-            time.sleep(poll_interval)
-            continue
-
-        emails_in_team = {_normalized_email(m.get("email", "")) for m in members if m.get("email")}
-        emails_in_team.discard(master_email)
-        emails_in_team.discard("")
-        # 只关心"新增"(不在 baseline 里的),baseline 的成员是用户希望保留的 Team 席位
-        new_members = fill_personal.new_member_emails(emails_in_team, baseline_emails)
-
-        if not new_members:
-            baseline_still = emails_in_team & baseline_emails
-            logger.info(
-                "[免费号] 新增成员已清空(baseline 保留 %d 个: %s)",
-                len(baseline_still),
-                sorted(baseline_still)[:6] or ["-"],
-            )
-            return True
-
-        if last_count != len(new_members):
-            logger.info(
-                "[免费号] Team 仍有 %d 个未被踢出的新号: %s,等待清空...",
-                len(new_members),
-                sorted(new_members)[:6],
-            )
-            last_count = len(new_members)
-        time.sleep(poll_interval)
-
-    logger.error("[免费号] 等待新增成员清空超时(%ss),新号未被踢干净", max_wait)
-    return False
-
-
 def _cmd_fill_personal(count):
     """
-    生产 count 个免费号:注册 → 主号踢出 → personal OAuth → 状态置 PERSONAL。
+    旧免费号生产入口，已禁用。
 
-    风控策略(用户明确要求):
-    1. 一个主号同时最多 4 个子号在 Team 里 → 每批限制 this_round = min(4, remaining)
-    2. 不强制清空 Team 现有席位:进入时把非主号成员邮箱快照为 baseline(可能是 Team fill
-       创建的真实 Team 子号,用户希望保留)。每批结束后只等"本批注册的新号"被踢干净,
-       不管 baseline 成员是否还在。
-    3. 每个账号之间随机 sleep 8-20s,每批之间 30-60s,避免节奏单一被识别
-    4. chatgpt_api 在整个 fill 流程里懒加载一次,避免反复 start/stop 产生可疑痕迹
+    历史流程是注册 → 主号踢出 → personal OAuth → 状态置 PERSONAL；该 Team invite /
+    leave_workspace 链路已移除，保留函数仅用于兼容旧引用并 fail-fast。
     """
-    import random
-
-    count = max(0, int(count or 0))
-    if count <= 0:
-        logger.info("[免费号] 数量为 0，跳过")
-        return
-
-    BATCH_SIZE = 4
-    WAIT_TEAM_EMPTY_TIMEOUT = 180
-
-    mail_client = TemporaryEmailClient()
-    mail_client.login()
-
-    # 懒加载 chatgpt_api：只在需要查席位时启动
-    chatgpt = [None]
-
-    def _ensure_chatgpt():
-        if not chatgpt[0] or not chatgpt[0].browser:
-            chatgpt[0] = ChatGPTTeamAPI()
-            chatgpt[0].start()
-        return chatgpt[0]
-
-    def _stop_chatgpt():
-        if chatgpt[0] and chatgpt[0].browser:
-            try:
-                chatgpt[0].stop()
-            except Exception as exc:
-                logger.debug("[免费号] 关闭 chatgpt_api 异常: %s", exc)
-        chatgpt[0] = None
-
-    logger.info("[免费号] 目标 %d 个免费号，每批 %d 个", count, BATCH_SIZE)
-
-    # 启动时快照:记录进入时已经在 Team 里的非主号成员,他们不归本任务管
-    # (可能是 Team fill 创建的真实 Team 子号,用户希望保留)
-    try:
-        api_snap = _ensure_chatgpt()
-        ok, baseline_emails = _fetch_team_non_master_emails(api_snap)
-        if not ok:
-            logger.error(
-                "[免费号] 启动时无法拉取 Team 成员列表,鉴权失败或 session_token 无效。"
-                "请先用 /api/admin/fix-account-id 或重新导入 session_token。"
-            )
-            _stop_chatgpt()
-            return
-        logger.info(
-            "[免费号] baseline 非主号成员 %d 个: %s (这些席位不会被清空)",
-            len(baseline_emails),
-            sorted(baseline_emails)[:6] or ["-"],
-        )
-    finally:
-        _stop_chatgpt()
-
-    # 队列化拒绝(Solution C):Team 子号已满 TEAM_SUB_ACCOUNT_HARD_CAP 时直接拒绝,
-    # 不强制踢健康账号腾席位。这样最小化风控暴露面 —— 只在自然 exhausted 或手动腾位置
-    # 后才生产免费号。
-    capacity = fill_personal.capacity_plan(
-        requested_count=count,
-        baseline_emails=baseline_emails,
-        cap=TEAM_SUB_ACCOUNT_HARD_CAP,
-    )
-    if capacity.rejected:
-        logger.warning(
-            "[免费号] Team 子号已满 %d/%d,fill-personal 拒绝执行。"
-            "请先等子号自然 exhausted 释放席位,或手动 kick/ replace 腾位置后再试。",
-            capacity.baseline_count,
-            capacity.cap,
-        )
-        return
-    # 把本轮目标压到 (cap - baseline) 以内,防止任何批次超员
-    if capacity.clamped:
-        logger.warning(
-            "[免费号] 目标 %d 超过当前可用席位 %d (Team 已占 %d/%d),自动压到 %d 个",
-            capacity.requested_count,
-            capacity.available_slots,
-            capacity.baseline_count,
-            capacity.cap,
-            capacity.target_count,
-        )
-        count = capacity.target_count
-
-    produced = 0
-    remaining = count
-    batch_idx = 0
-    # 整轮生产的所有 outcome（每个子号一个 dict），批次末 + 结束时做分类统计
-    outcomes = []
-
-    from autotoken.core import cancel_signal
-
-    try:
-        while remaining > 0:
-            if cancel_signal.is_cancelled():
-                logger.warning("[免费号] 收到取消请求,停止后续批次")
-                break
-            batch_idx += 1
-            # Team 席位总上限 TEAM_SUB_ACCOUNT_HARD_CAP(4):baseline 已占了一部分,
-            # 本批最多再加 (cap - baseline) 个,严格不超员。若 baseline 已占满,
-            # 入口处已经拒绝并 return,这里不会走到。
-            this_round = fill_personal.batch_size(
-                max_batch_size=BATCH_SIZE,
-                remaining=remaining,
-                baseline_emails=baseline_emails,
-                cap=TEAM_SUB_ACCOUNT_HARD_CAP,
-            )
-            if this_round <= 0:
-                logger.warning(
-                    "[免费号] 第 %d 批可用席位已耗尽(baseline %d/%d),停止生产",
-                    batch_idx,
-                    len(baseline_emails),
-                    TEAM_SUB_ACCOUNT_HARD_CAP,
-                )
-                break
-            logger.info(
-                "[免费号] === 第 %d 批开始(本批 %d 个,剩余 %d,baseline %d 个) ===",
-                batch_idx,
-                this_round,
-                remaining,
-                len(baseline_emails),
-            )
-
-            # 第一批进入时 Team 就是 baseline 状态,不需要等;从第二批开始等"上一批新号"被踢干净
-            if batch_idx > 1:
-                try:
-                    api = _ensure_chatgpt()
-                    ok = _wait_team_new_members_cleared(api, baseline_emails, max_wait=WAIT_TEAM_EMPTY_TIMEOUT)
-                    if not ok:
-                        logger.error(
-                            "[免费号] 第 %d 批开始前上一批新号未踢干净,停止生产避免触发风控",
-                            batch_idx,
-                        )
-                        break
-                finally:
-                    # 释放浏览器，让每个子号注册时拿到干净的 playwright 环境
-                    _stop_chatgpt()
-
-            batch_produced = 0
-            batch_outcomes = []
-            for i in range(this_round):
-                if cancel_signal.is_cancelled():
-                    logger.warning("[免费号] 收到取消请求,跳出本批剩余账号")
-                    break
-                seq = produced + batch_produced + 1
-                logger.info("[免费号] 第 %d 批 第 %d/%d 个（累计 %d/%d）", batch_idx, i + 1, this_round, seq, count)
-                # 单个账号内部的任何异常都不能终止整批（否则外层 finally 后的 sync_to_cpa 会丢失已产出的账号）
-                outcome = {}
-                try:
-                    email = create_new_account(None, mail_client, leave_workspace=True, out_outcome=outcome)
-                except Exception as exc:
-                    logger.error(
-                        "[免费号] 第 %d 批 第 %d 个 create_new_account 异常，跳过: %s",
-                        batch_idx,
-                        i + 1,
-                        exc,
-                    )
-                    email = None
-                    outcome = {"status": "exception", "reason": f"未捕获异常: {exc}"}
-                    record_failure("", "exception", f"_cmd_fill_personal 里 create_new_account 抛异常: {exc}")
-
-                # 例如从 _check_pending_invites 路径成功回来，outcome 没被 create_account_direct 填
-                outcome = fill_personal.outcome_with_default_status(outcome, email=email)
-
-                batch_outcomes.append(outcome)
-                outcomes.append(outcome)
-
-                if email:
-                    batch_produced += 1
-                    logger.info(
-                        "[免费号] 第 %d 批 第 %d 个完成: %s (status=%s)",
-                        batch_idx,
-                        i + 1,
-                        email,
-                        outcome.get("status"),
-                    )
-                else:
-                    logger.warning(
-                        "[免费号] 第 %d 批 第 %d 个生产失败：status=%s, reason=%s, last_email=%s",
-                        batch_idx,
-                        i + 1,
-                        outcome.get("status"),
-                        outcome.get("reason"),
-                        outcome.get("last_email") or outcome.get("email"),
-                    )
-
-                # 账号间随机抖动
-                if i < this_round - 1:
-                    gap = random.uniform(8, 20)
-                    logger.info("[免费号] 账号间间隔 %.1fs", gap)
-                    time.sleep(gap)
-
-            produced += batch_produced
-            remaining = count - produced
-            batch_stats = fill_personal.summarize_outcomes(batch_outcomes)
-            logger.info(
-                "[免费号] === 第 %d 批完成：本批成功 %d / %d，累计 %d/%d，剩余 %d ===",
-                batch_idx,
-                batch_produced,
-                this_round,
-                produced,
-                count,
-                remaining,
-            )
-            logger.info("[免费号] 第 %d 批分类统计: %s", batch_idx, batch_stats)
-
-            # 批次结束后:等本批注册的新号都被踢出(回到 baseline),否则停下
-            if remaining > 0:
-                try:
-                    api = _ensure_chatgpt()
-                    ok = _wait_team_new_members_cleared(api, baseline_emails, max_wait=WAIT_TEAM_EMPTY_TIMEOUT)
-                    if not ok:
-                        logger.error("[免费号] 第 %d 批结束后新号未踢干净,停止继续生产", batch_idx)
-                        break
-                finally:
-                    _stop_chatgpt()
-
-                cool_down = random.uniform(30, 60)
-                logger.info("[免费号] 批次间冷却 %.1fs", cool_down)
-                time.sleep(cool_down)
-
-        # === 末批兜底清理 ===
-        # 即使每个子号内部的 remove_from_team 报告成功,OpenAI 的 /users API
-        # 对新加入成员存在同步延迟,首次 GET 可能没列出该成员 → 代码误判 already_absent
-        # 直接跳过 DELETE。结果:账号本地 status=PERSONAL 认证也拿到了,但 Team 席位里
-        # 还挂着 Member(截图里用户看到的正是这种情况)。
-        # 不信任内部 kick 报告,以 Team 真实成员列表为权威,强清所有不在 baseline 的新号。
-        # 即使某些账号已被踢成功,DELETE 一个不存在的 user_id 只会返回 4xx,副作用可控。
-        try:
-            api_final = _ensure_chatgpt()
-            ok_final, current_non_master = _fetch_team_non_master_emails(api_final)
-            if not ok_final:
-                logger.warning("[免费号] 末批兜底:无法拉取 Team 成员列表,跳过强制清理")
-            else:
-                stragglers = sorted(fill_personal.new_member_emails(current_non_master, baseline_emails))
-                if not stragglers:
-                    logger.info(
-                        "[免费号] 末批兜底:Team 已回到 baseline(%d 个非主号成员),无需清理",
-                        len(baseline_emails),
-                    )
-                else:
-                    logger.warning(
-                        "[免费号] 末批兜底:Team 仍残留 %d 个新号未被踢出,强制清理: %s",
-                        len(stragglers),
-                        stragglers[:10],
-                    )
-                    cleaned = 0
-                    for stray_email in stragglers:
-                        try:
-                            st = remove_from_team(api_final, stray_email, return_status=True, lookup_retries=1)
-                            logger.info("[免费号] 末批兜底 kick %s → %s", stray_email, st)
-                            if st == "removed":
-                                cleaned += 1
-                        except Exception as exc:
-                            logger.error("[免费号] 末批兜底 kick %s 抛异常: %s", stray_email, exc)
-                    logger.info(
-                        "[免费号] 末批兜底清理完成:实际移除 %d / %d 个,剩余由用户手动处理",
-                        cleaned,
-                        len(stragglers),
-                    )
-        except Exception as exc:
-            logger.error("[免费号] 末批兜底清理出错(不影响已生产账号): %s", exc)
-        finally:
-            _stop_chatgpt()
-    finally:
-        _stop_chatgpt()
-        # 无论主循环以何种方式退出（完成 / 被阻断 / 异常），都汇总一次 + 把已生产的账号同步进 CPA
-        total_stats = fill_personal.summarize_outcomes(outcomes)
-        logger.info(
-            "[免费号汇总] 目标 %d，尝试 %d，成功 %d，失败 %d（共 %d 批）",
-            count,
-            len(outcomes),
-            produced,
-            len(outcomes) - produced,
-            batch_idx,
-        )
-        logger.info("[免费号汇总] 各类分布: %s", total_stats)
-        # 把每个失败账号的 last_email + status + reason 再打一条，方便直接定位
-        for o in outcomes:
-            if o.get("status") != "success":
-                logger.info(
-                    "[免费号汇总] FAIL email=%s status=%s reason=%s",
-                    o.get("last_email") or o.get("email") or "",
-                    o.get("status"),
-                    o.get("reason"),
-                )
-        _log_auto_cpa_sync_disabled("免费号")
-        try:
-            cmd_status()
-        except Exception as exc:
-            logger.error("[免费号] cmd_status 异常: %s", exc)
+    _raise_team_invite_register_disabled()
 
 
 def cmd_cleanup(max_seats=None):

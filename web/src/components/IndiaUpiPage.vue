@@ -179,10 +179,15 @@
               本次完成：成功 <span class="font-semibold text-emerald-300">{{ currentResult.successes?.length || 0 }}</span>，失败 <span class="font-semibold text-rose-300">{{ currentResult.errors?.length || 0 }}</span>，跳过 <span class="font-semibold text-gray-300">{{ currentResult.skipped?.length || 0 }}</span>
             </div>
             <div v-for="item in currentResult.successes || []" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
-              <div class="font-mono text-emerald-200">{{ item.email }}</div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-emerald-200">{{ item.email }}</span>
+                <span class="rounded-full border px-2 py-0.5 font-semibold" :class="upiExpiryClass(item.link)">
+                  {{ upiExpiryText(item.link) }}
+                </span>
+              </div>
               <div class="mt-2 flex flex-wrap gap-2">
-                <a :href="item.link?.hosted_instructions_url || item.link?.upi_link || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!(item.link?.hosted_instructions_url || item.link?.upi_link) ? 'pointer-events-none opacity-50' : ''">打开</a>
-                <button @click="copy(item.link?.upi_link || item.link?.hosted_instructions_url)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100">复制链</button>
+                <a :href="upiLinkUrl(item.link) || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!upiLinkActionable(item.link) ? 'pointer-events-none opacity-50' : ''">打开</a>
+                <button @click="copy(upiLinkUrl(item.link))" :disabled="!upiLinkActionable(item.link)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50">复制链</button>
               </div>
             </div>
             <div v-for="item in currentResult.errors || []" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
@@ -219,13 +224,14 @@
               <th class="px-3 py-2">账号</th>
               <th class="px-3 py-2">金额</th>
               <th class="px-3 py-2">CS ID</th>
+              <th class="px-3 py-2">剩余时间</th>
               <th class="px-3 py-2">操作</th>
               <th class="px-3 py-2">UPI 链接</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-900">
             <tr v-if="!links.length">
-              <td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
+              <td colspan="8" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
             </tr>
             <tr v-for="link in links" :key="link.id" class="hover:bg-gray-900/50">
               <td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td>
@@ -233,13 +239,18 @@
               <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || link.accountEmail || '-' }}</td>
               <td class="px-3 py-2 text-xs text-gray-400">{{ link.amount || '-' }}</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-400">{{ link.cs_id || '-' }}</td>
+              <td class="whitespace-nowrap px-3 py-2 text-xs">
+                <span class="rounded-full border px-2 py-1 font-semibold" :class="upiExpiryClass(link)">
+                  {{ upiExpiryText(link) }}
+                </span>
+              </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap gap-2">
-                  <a :href="link.hosted_instructions_url || link.upi_link || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-200" :class="!(link.hosted_instructions_url || link.upi_link) ? 'pointer-events-none opacity-50' : ''">打开</a>
-                  <button @click="copy(link.upi_link || link.hosted_instructions_url)" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200">复制链</button>
+                  <a :href="upiLinkUrl(link) || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-200" :class="!upiLinkActionable(link) ? 'pointer-events-none opacity-50' : ''">打开</a>
+                  <button @click="copy(upiLinkUrl(link))" :disabled="!upiLinkActionable(link)" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200 disabled:cursor-not-allowed disabled:opacity-50">复制链</button>
                 </div>
               </td>
-              <td class="max-w-[360px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ link.hosted_instructions_url || link.upi_link || '-' }}</td>
+              <td class="max-w-[360px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ upiLinkUrl(link) || '-' }}</td>
             </tr>
           </tbody>
         </table>
@@ -256,10 +267,12 @@ const FORM_STORAGE_KEY = 'autotoken_india_upi_form'
 const JOB_STORAGE_KEY = 'autotoken_india_upi_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
+const UPI_LINK_TTL_MS = 5 * 60 * 1000
 
 const form = ref({ proxies: '', concurrency: 1, maxAttempts: 5, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '' })
 const accounts = ref([])
 const links = ref([])
+const nowMs = ref(Date.now())
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const busy = ref(false)
@@ -275,6 +288,7 @@ const retryFailedEmailSet = ref(new Set())
 const deletingUpiAccounts = ref(new Set())
 const logRef = ref(null)
 let componentUnmounted = false
+let expiryTimer = null
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
 const retryFailedEmails = computed(() => Array.from(retryFailedEmailSet.value).filter(email => accounts.value.some(account => account.email === email && accountSelectable(account))))
@@ -323,6 +337,45 @@ function selectAllFiltered() { selectedAccounts.value = new Set(filteredAccounts
 function clearSelectedAccounts() { selectedAccounts.value = new Set() }
 function toggleLink(id) { const next = new Set(selectedLinkIds.value); next.has(id) ? next.delete(id) : next.add(id); selectedLinkIds.value = next }
 function rememberFailedEmails(result) { retryFailedEmailSet.value = new Set((result?.errors || []).map(item => String(item.email || '').trim()).filter(Boolean)) }
+function upiLinkUrl(link) { return String(link?.hosted_instructions_url || link?.upi_link || '').trim() }
+function timestampMs(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return 0
+  const numeric = Number(raw)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric > 1e12 ? numeric : numeric * 1000
+  const parsed = Date.parse(raw.includes('T') ? raw : raw.replace(' ', 'T'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+function upiExpiresAtMs(link) {
+  const explicit = timestampMs(link?.upi_expires_at_ts ?? link?.upiExpiresAtTs)
+  if (explicit) return explicit
+  const created = timestampMs(link?.created_at_ts ?? link?.createdAtTs ?? link?.created_at ?? link?.createdAt)
+  return created ? created + UPI_LINK_TTL_MS : 0
+}
+function upiRemainingMs(link) {
+  const expiresAt = upiExpiresAtMs(link)
+  return expiresAt ? expiresAt - nowMs.value : 0
+}
+function upiLinkExpired(link) {
+  const expiresAt = upiExpiresAtMs(link)
+  return Boolean(expiresAt && expiresAt <= nowMs.value)
+}
+function upiLinkActionable(link) { return Boolean(upiLinkUrl(link)) && !upiLinkExpired(link) }
+function upiExpiryText(link) {
+  if (!upiLinkUrl(link)) return '-'
+  const expiresAt = upiExpiresAtMs(link)
+  if (!expiresAt || expiresAt <= nowMs.value) return '链接失效'
+  const seconds = Math.max(0, Math.ceil((expiresAt - nowMs.value) / 1000))
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return minutes ? `剩余 ${minutes}:${String(rest).padStart(2, '0')}` : `剩余 ${rest}s`
+}
+function upiExpiryClass(link) {
+  if (!upiLinkUrl(link)) return 'border-gray-700 bg-gray-900 text-gray-400'
+  if (upiLinkExpired(link)) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+  if (upiRemainingMs(link) <= 60 * 1000) return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+}
 
 async function refreshAccounts() {
   try {
@@ -568,6 +621,8 @@ async function copy(value) {
 
 onMounted(async () => {
   componentUnmounted = false
+  nowMs.value = Date.now()
+  expiryTimer = window.setInterval(() => { nowMs.value = Date.now() }, 1000)
   try {
     const savedForm = JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) || '{}')
     for (const key of Object.keys(form.value)) {
@@ -599,5 +654,9 @@ onMounted(async () => {
 
 watch(form, () => localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value)), { deep: true })
 
-onBeforeUnmount(() => { componentUnmounted = true })
+onBeforeUnmount(() => {
+  componentUnmounted = true
+  if (expiryTimer) window.clearInterval(expiryTimer)
+  expiryTimer = null
+})
 </script>

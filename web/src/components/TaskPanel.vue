@@ -89,7 +89,6 @@ const actions = [
   { key: 'rotate', group: 'pool', label: '智能轮转', method: 'startRotate', needParam: true, paramName: 'target', style: 'bg-blue-600 text-white border-blue-500' },
   { key: 'check', group: 'pool', label: '检查额度', method: 'startCheck', needParam: false, style: 'bg-emerald-600 text-white border-emerald-500' },
   { key: 'fill', group: 'pool', label: '补满成员', method: 'startFill', needParam: true, paramName: 'target', style: 'bg-violet-600 text-white border-violet-500' },
-  { key: 'fill-personal', group: 'pool', label: '生成免费号', method: 'startFillPersonal', needParam: true, paramName: 'count', style: 'bg-fuchsia-600 text-white border-fuchsia-500' },
   { key: 'add', group: 'pool', label: '添加账号', method: 'startAdd', needParam: false, style: 'bg-amber-600 text-white border-amber-500' },
   { key: 'cleanup', group: 'pool', label: '清理成员', method: 'startCleanup', needParam: false, style: 'bg-rose-600 text-white border-rose-500' },
   { key: 'sync', group: 'sync', label: '同步 CPA', method: 'postSync', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-cyan-600 text-white border-cyan-500' },
@@ -220,11 +219,6 @@ async function execute(action) {
       paramLabel.value = '目标成员数'
       paramMax.value = 20
       paramValue.value = 5
-    } else if (action.paramName === 'count') {
-      // 免费号：目标规模可能到 200+，放开上限到 500
-      paramLabel.value = '生成数量'
-      paramMax.value = 500
-      paramValue.value = 4
     } else {
       paramLabel.value = '最大席位'
       paramMax.value = 20
