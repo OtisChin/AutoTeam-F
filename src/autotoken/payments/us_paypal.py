@@ -81,8 +81,17 @@ def paypal_proxy_with_fresh_sid(proxy_url: str, region: str = "US") -> tuple[str
     return proxy, sid
 
 
+def align_paypal_proxy_region(proxy_url: str, region: str = "US") -> str:
+    target = str(region or "US").strip().upper() or "US"
+    return re.sub(r"(-custom-region-)[A-Z]{2}(-session-)", rf"\g<1>{target}\g<2>", proxy_url, count=1, flags=re.I)
+
+
 def build_paypal_dynamic_proxy(cfg: PaypalJobConfig, stage_index: int) -> tuple[str, str]:
-    direct = [normalize_paypal_proxy_url(item) for item in (cfg.direct_proxies or []) if str(item or "").strip()]
+    direct = [
+        align_paypal_proxy_region(normalize_paypal_proxy_url(item), cfg.region)
+        for item in (cfg.direct_proxies or [])
+        if str(item or "").strip()
+    ]
     if direct:
         idx = stage_index % len(direct)
         proxy, sid = paypal_proxy_with_fresh_sid(direct[idx], cfg.region)

@@ -180,3 +180,16 @@ def test_is_zero_amount_accepts_zero_formats_only():
     assert us_paypal.is_zero_amount(" 0.0 ") is True
     assert us_paypal.is_zero_amount(2000) is False
     assert us_paypal.is_zero_amount("") is False
+
+
+def test_build_paypal_dynamic_proxy_aligns_711_region_to_us():
+    raw = "global.rotgb.711proxy.com:10000:USER-zone-custom-region-IN-session-abc123-sessTime-120:pass"
+
+    proxy, sid_label = us_paypal.build_paypal_dynamic_proxy(
+        us_paypal.PaypalJobConfig(access_token="token", region="US", direct_proxies=[raw]),
+        0,
+    )
+
+    assert "custom-region-US-session-" in proxy
+    assert "custom-region-IN-session-" not in proxy
+    assert "sid=abc123" not in sid_label
