@@ -44,6 +44,52 @@ US_ADDRESSES = [
     ("Robert", "Thomas", "101 N Last Chance Gulch", "Helena", "MT", "59601"),
 ]
 
+PAYPAL_COUNTRY_CURRENCIES = {
+    "US": "USD",
+    "GB": "GBP",
+    "CA": "CAD",
+    "AU": "AUD",
+    "JP": "JPY",
+    "BR": "BRL",
+    "VN": "VND",
+    "DE": "EUR",
+    "FR": "EUR",
+    "IT": "EUR",
+    "ES": "EUR",
+    "NL": "EUR",
+    "IE": "EUR",
+    "PT": "EUR",
+    "AT": "EUR",
+    "BE": "EUR",
+    "FI": "EUR",
+    "SG": "SGD",
+    "HK": "HKD",
+    "TW": "TWD",
+    "KR": "KRW",
+    "MX": "MXN",
+    "NZ": "NZD",
+}
+
+PAYPAL_COUNTRY_BILLING_PRESETS = {
+    "GB": ("Olivia Brown", "221B Baker Street", "London", "", "NW1 6XE"),
+    "CA": ("Noah Wilson", "100 Queen Street W", "Toronto", "ON", "M5H 2N2"),
+    "AU": ("Charlotte Taylor", "1 Macquarie Street", "Sydney", "NSW", "2000"),
+    "JP": ("Yuki Tanaka", "1-1 Chiyoda", "Tokyo", "", "100-0001"),
+    "BR": ("Lucas Silva", "Rua da Consolacao 787", "Sao Paulo", "SP", "01301-000"),
+    "VN": ("Minh Nguyen", "1 Dong Khoi", "Ho Chi Minh City", "", "700000"),
+    "DE": ("Lukas Weber", "Unter den Linden 1", "Berlin", "", "10117"),
+    "FR": ("Emma Martin", "10 Rue de Rivoli", "Paris", "", "75004"),
+    "IT": ("Marco Rossi", "Via del Corso 1", "Rome", "", "00186"),
+    "ES": ("Lucia Garcia", "Calle de Alcala 1", "Madrid", "", "28014"),
+    "NL": ("Daan de Vries", "Damrak 1", "Amsterdam", "", "1012 LG"),
+    "SG": ("Wei Tan", "1 Raffles Place", "Singapore", "", "048616"),
+    "HK": ("Ho Chan", "1 Connaught Road Central", "Hong Kong", "", "000000"),
+    "TW": ("Chen Lin", "No. 1 Xinyi Road", "Taipei", "", "100"),
+    "KR": ("Min Kim", "1 Sejong-daero", "Seoul", "", "04524"),
+    "MX": ("Sofia Hernandez", "Avenida Reforma 1", "Ciudad de Mexico", "", "06000"),
+    "NZ": ("Amelia Smith", "1 Queen Street", "Auckland", "", "1010"),
+}
+
 
 @dataclass
 class PaypalJobConfig:
@@ -72,19 +118,69 @@ def normalize_paypal_proxy_url(value: str) -> str:
 
 
 def paypal_proxy_with_fresh_sid(proxy_url: str, region: str = "US") -> tuple[str, str]:
-    proxy, sid = pix_proxy_with_fresh_sid(proxy_url, region)
-    if sid != "static":
-        return proxy, sid
     fresh = uuid.uuid4().hex[:8]
-    refreshed, count = re.subn(r"(-session-)[A-Za-z0-9]+", rf"\g<1>{fresh}", proxy, count=1, flags=re.I)
-    if count:
+    target_region = str(region or "US").strip().upper() or "US"
+    proxy = str(proxy_url or "").strip()
+    if not proxy:
+        return "", ""
+
+    refreshed, region_count = re.subn(
+        r"([_-]region[-_])[A-Z]{2}([:@/?#&-])",
+        lambda m: f"{m.group(1)}{target_region}{m.group(2)}",
+        proxy,
+        count=1,
+        flags=re.I,
+    )
+    refreshed, sid_count = re.subn(r"(sid-)[^-:@/?#]+(-t-)", rf"\g<1>{fresh}\g<2>", refreshed, count=1, flags=re.I)
+    refreshed, session_count = re.subn(
+        r"(-session-)[^-:@/?#]+",
+        rf"\g<1>{fresh}",
+        refreshed,
+        count=1,
+        flags=re.I,
+    )
+    if sid_count or session_count:
         return refreshed, fresh
-    return proxy, sid
+
+    if "711proxy" in refreshed.lower() and "-session-" not in refreshed.lower():
+        refreshed_with_session, injected_count = re.subn(
+            r"([_-]region[-_][A-Z]{2})(?=[:@/?#&-])",
+            rf"\g<1>-session-{fresh}-sessTime-180-sessAuto-1",
+            refreshed,
+            count=1,
+            flags=re.I,
+        )
+        if injected_count:
+            return refreshed_with_session, fresh
+
+    refreshed_kookeey, kookeey_count = re.subn(
+        r"(:[^:@/?#]*-)[A-Z]{2}-[A-Za-z0-9]{4,32}(@)",
+        lambda m: f"{m.group(1)}{target_region}-{fresh}{m.group(2)}",
+        refreshed,
+        count=1,
+        flags=re.I,
+    )
+    if kookeey_count:
+        return refreshed_kookeey, fresh
+
+    if region_count:
+        return refreshed, "static"
+
+    proxy_fallback, sid = pix_proxy_with_fresh_sid(proxy, target_region)
+    if sid != "static":
+        return proxy_fallback, sid
+    return proxy_fallback, sid
 
 
 def align_paypal_proxy_region(proxy_url: str, region: str = "US") -> str:
     target = str(region or "US").strip().upper() or "US"
-    return re.sub(r"(-custom-region-)[A-Z]{2}(-session-)", rf"\g<1>{target}\g<2>", proxy_url, count=1, flags=re.I)
+    return re.sub(
+        r"([_-]region[-_])[A-Z]{2}([:@/?#&-])",
+        lambda m: f"{m.group(1)}{target}{m.group(2)}",
+        proxy_url,
+        count=1,
+        flags=re.I,
+    )
 
 
 def build_paypal_dynamic_proxy(cfg: PaypalJobConfig, stage_index: int, region: str | None = None) -> tuple[str, str]:
@@ -152,18 +248,43 @@ def build_stripe_session(proxy_url: str = "") -> requests.Session:
     return session
 
 
-def us_billing(account_email: str = "") -> dict[str, str]:
+def normalize_paypal_country(value: str, default: str = "US") -> str:
+    country = str(value or default or "US").strip().upper()
+    return country if re.fullmatch(r"[A-Z]{2}", country) else default
+
+
+def paypal_currency_for_country(country: str) -> str:
+    return PAYPAL_COUNTRY_CURRENCIES.get(normalize_paypal_country(country), "USD")
+
+
+def paypal_billing(account_email: str = "", country: str = "US") -> dict[str, str]:
+    country_code = normalize_paypal_country(country)
+    if country_code != "US" and country_code in PAYPAL_COUNTRY_BILLING_PRESETS:
+        name, line1, city, state, postal = PAYPAL_COUNTRY_BILLING_PRESETS[country_code]
+        return {
+            "name": name,
+            "email": account_email or f"paypal.{country_code.lower()}.{random.randint(1000, 9999)}@example.com",
+            "country": country_code,
+            "line1": line1,
+            "city": city,
+            "state": state,
+            "postal_code": postal,
+        }
     first, last, line1, city, state, postal = random.choice(US_ADDRESSES)
     suffix = random.randint(1000, 9999)
     return {
         "name": f"{first} {last}",
         "email": account_email or f"{first.lower()}.{last.lower()}{suffix}@example.com",
-        "country": "US",
+        "country": country_code,
         "line1": line1,
         "city": city,
         "state": state,
         "postal_code": postal,
     }
+
+
+def us_billing(account_email: str = "") -> dict[str, str]:
+    return paypal_billing(account_email, "US")
 
 
 def pmt_info(payload: dict[str, Any]) -> tuple[list[Any], list[Any], bool]:
@@ -590,11 +711,11 @@ def _confirm_paypal_inline(
         {
             "payment_method_data[billing_details][name]": billing["name"],
             "payment_method_data[billing_details][email]": billing["email"],
-            "payment_method_data[billing_details][address][country]": "US",
-            "payment_method_data[billing_details][address][line1]": billing["line1"],
-            "payment_method_data[billing_details][address][city]": billing["city"],
-            "payment_method_data[billing_details][address][postal_code]": billing["postal_code"],
-            "payment_method_data[billing_details][address][state]": billing["state"],
+            "payment_method_data[billing_details][address][country]": billing.get("country") or "US",
+            "payment_method_data[billing_details][address][line1]": billing.get("line1") or "",
+            "payment_method_data[billing_details][address][city]": billing.get("city") or "",
+            "payment_method_data[billing_details][address][postal_code]": billing.get("postal_code") or "",
+            "payment_method_data[billing_details][address][state]": billing.get("state") or "",
         }
     )
     resp = stripe.post(f"https://api.stripe.com/v1/payment_pages/{cs_id}/confirm", data=body, timeout=TIMEOUT)
@@ -661,11 +782,12 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         raise RuntimeError("缺少代理配置：direct_proxies 或 Kookeey 用户名/密码")
 
     device_id = str(uuid.uuid4())
-    billing = us_billing()
-    log(f"账单: {billing['name']} / {billing['city']}-{billing['state']} / {billing['postal_code']}")
-
-    checkout_region = (cfg.region or "US").strip().upper() or "US"
-    promo_region = (cfg.promo_region or "JP").strip().upper() or "JP"
+    checkout_region = normalize_paypal_country(cfg.region, "US")
+    promo_region = normalize_paypal_country(cfg.promo_region, "JP")
+    checkout_currency = paypal_currency_for_country(checkout_region)
+    billing = paypal_billing(country=checkout_region)
+    state_text = f"-{billing.get('state')}" if billing.get("state") else ""
+    log(f"账单: {billing['name']} / {billing['city']}{state_text} / {billing['postal_code']} / {billing['country']}")
 
     dyn1, sid1 = build_paypal_dynamic_proxy(cfg, 0, checkout_region)
     log(f"[1/6] {checkout_region} 创建 checkout（先不带 promo） sid={sid1}")
@@ -677,7 +799,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             json={
                 "entry_point": "all_plans_pricing_modal",
                 "plan_name": "chatgptplusplan",
-                "billing_details": {"country": "US", "currency": "USD"},
+                "billing_details": {"country": checkout_region, "currency": checkout_currency},
                 "checkout_ui_mode": "custom",
             },
             headers={"x-openai-target-path": "/backend-api/payments/checkout", "x-openai-target-route": "/backend-api/payments/checkout"},
@@ -735,7 +857,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             log("[3/6] 跳过 promo update")
             if not is_zero_amount(amount):
                 raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
-            log(f"[4/6] 更新 US tax_region {billing['state']}")
+            log(f"[4/6] 更新 {checkout_region} tax_region {billing.get('state') or '-'}")
             stripe_update_tax_region(stripe, cs_id, pk, billing)
             init_payload = stripe_init(stripe, cs_id, pk, ctx)
             amount = amount_info(init_payload)

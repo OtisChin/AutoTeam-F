@@ -4,7 +4,7 @@
       <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">独立 PayPal 任务</p>
-          <h2 class="mt-1 text-2xl font-bold text-white">美国PayPal 提链</h2>
+          <h2 class="mt-1 text-2xl font-bold text-white">PayPal 提链</h2>
           <p class="mt-2 text-sm text-gray-400">在账号池中勾选一个或多个账号执行提链，结果会进入下方链接管理表。</p>
         </div>
         <span class="inline-flex w-fit items-center gap-2 rounded-xl border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-300">
@@ -18,43 +18,45 @@
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
         <div class="border-b border-gray-800 pb-4">
           <p class="text-xs font-semibold text-gray-500">任务输入</p>
-          <h3 class="mt-1 text-xl font-bold text-white">US 代理</h3>
+          <h3 class="mt-1 text-xl font-bold text-white">PayPal 代理</h3>
         </div>
 
         <div class="mt-5 space-y-5">
-          <label class="block">
-            <span class="mb-2 block text-sm font-semibold text-gray-300">US 代理列表</span>
-            <textarea v-model.trim="form.proxies" rows="8" spellcheck="false" placeholder="每行一个代理；支持 host:port:user:pass 或 socks5h://user:pass@host:port" class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" :disabled="busy"></textarea>
-            <span class="mt-1 block text-xs text-gray-500">711/ArxLabs 的 host:port:user:pass 会自动按 socks5h 使用。</span>
-          </label>
+          <div class="grid gap-4 md:grid-cols-2">
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">目标 PayPal 国家</span>
+              <select v-model="form.region" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy">
+                <option v-for="country in paypalCountryOptions" :key="country.value" :value="country.value">{{ country.label }}</option>
+              </select>
+              <span class="mt-1 block text-xs text-gray-500">checkout、Stripe init、Express BA 阶段使用该国家代理。</span>
+            </label>
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">优惠区</span>
+              <select v-model="form.promoRegion" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy">
+                <option v-for="country in promoRegionOptions" :key="country.value" :value="country.value">{{ country.label }}</option>
+              </select>
+              <span class="mt-1 block text-xs text-gray-500">promo 后注入阶段使用优惠区代理，默认 JP。</span>
+            </label>
+          </div>
 
           <label class="block">
-            <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
-            <input v-model.number="form.concurrency" type="number" min="1" max="10" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-            <span class="mt-1 block text-xs text-gray-500">默认 1，最高 10；并发越高越依赖代理质量。</span>
+            <span class="mb-2 block text-sm font-semibold text-gray-300">代理</span>
+            <textarea v-model.trim="form.proxies" rows="3" spellcheck="false" placeholder="global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-xxxx-sessTime-180-sessAuto-1:pass" class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" :disabled="busy"></textarea>
+            <span class="mt-1 block text-xs text-gray-500">填一条代理即可；后端会按目标国家/优惠区自动切换 region 和 sid。兼容 711、ArxLabs 等 host:port:user:pass 或 URL 格式。</span>
           </label>
 
-          <details class="rounded-xl border border-gray-800 bg-gray-900/40 p-4">
-            <summary class="cursor-pointer text-sm font-semibold text-gray-200">高级设置</summary>
-            <div class="mt-4 grid gap-4 md:grid-cols-2">
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">本地代理链</span>
-                <input v-model.trim="form.localProxy" placeholder="留空；仅需链式 HTTP 代理时填写" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              </label>
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">Kookeey 入口</span>
-                <input v-model.trim="form.kookeeyEndpoint" placeholder="gate.kookeey.info:1000" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              </label>
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">Kookeey 用户名</span>
-                <input v-model.trim="form.kookeeyUser" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              </label>
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">Kookeey 密码</span>
-                <input v-model="form.kookeeyPass" type="password" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              </label>
-            </div>
-          </details>
+          <div class="grid gap-4 md:grid-cols-2">
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
+              <input v-model.number="form.concurrency" type="number" min="1" max="10" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 10；并发越高越依赖代理质量。</span>
+            </label>
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
+              <input v-model.number="form.maxAttempts" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">单账号最多尝试次数，含首次；默认 5。</span>
+            </label>
+          </div>
 
           <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
             <button @click="start" :disabled="busy" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50">
@@ -249,8 +251,39 @@ const FORM_STORAGE_KEY = 'autotoken_us_paypal_form'
 const JOB_STORAGE_KEY = 'autotoken_us_paypal_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
+const paypalCountryOptions = [
+  { value: 'US', label: 'US · 美国' },
+  { value: 'GB', label: 'GB · 英国' },
+  { value: 'CA', label: 'CA · 加拿大' },
+  { value: 'AU', label: 'AU · 澳大利亚' },
+  { value: 'JP', label: 'JP · 日本' },
+  { value: 'BR', label: 'BR · 巴西' },
+  { value: 'VN', label: 'VN · 越南' },
+  { value: 'DE', label: 'DE · 德国' },
+  { value: 'FR', label: 'FR · 法国' },
+  { value: 'IT', label: 'IT · 意大利' },
+  { value: 'ES', label: 'ES · 西班牙' },
+  { value: 'NL', label: 'NL · 荷兰' },
+  { value: 'SG', label: 'SG · 新加坡' },
+  { value: 'HK', label: 'HK · 香港' },
+  { value: 'TW', label: 'TW · 台湾' },
+  { value: 'KR', label: 'KR · 韩国' },
+  { value: 'MX', label: 'MX · 墨西哥' },
+  { value: 'NZ', label: 'NZ · 新西兰' },
+]
+const promoRegionOptions = [
+  { value: 'JP', label: 'JP · 日本' },
+  { value: 'BR', label: 'BR · 巴西' },
+  { value: 'VN', label: 'VN · 越南' },
+]
 
-const form = ref({ proxies: '', concurrency: 1, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '' })
+const form = ref({
+  proxies: '',
+  concurrency: 1,
+  maxAttempts: 5,
+  region: 'US',
+  promoRegion: 'JP',
+})
 const accounts = ref([])
 const links = ref([])
 const selectedAccounts = ref(new Set())
@@ -351,8 +384,11 @@ function validateStart(emails = selectedEmails.value) {
     return false
   }
   form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
-  if (!form.value.proxies.trim() && (!form.value.kookeeyUser || !form.value.kookeeyPass)) {
-    setStatus('请填写 US 代理列表，或在高级设置填写 Kookeey 用户名/密码。', true)
+  form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
+  form.value.region = String(form.value.region || 'US').trim().toUpperCase()
+  form.value.promoRegion = String(form.value.promoRegion || 'JP').trim().toUpperCase()
+  if (!form.value.proxies.trim()) {
+    setStatus('请填写代理。', true)
     return false
   }
   return true
@@ -366,16 +402,15 @@ async function startWithEmails(emails, actionText = '提取') {
   logs.value = []
   currentResult.value = null
   currentJob.value = null
-  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PayPal，并发 ${form.value.concurrency}。`)
+  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PayPal，目标国家 ${form.value.region}，优惠区 ${form.value.promoRegion}，并发 ${form.value.concurrency}，重试 ${form.value.maxAttempts}。`)
   try {
     saveProxy({ silent: true })
     const payload = {
       proxies: form.value.proxies,
       concurrency: form.value.concurrency,
-      localProxy: form.value.localProxy,
-      kookeeyEndpoint: form.value.kookeeyEndpoint,
-      kookeeyUser: form.value.kookeeyUser,
-      kookeeyPass: form.value.kookeeyPass,
+      maxAttempts: form.value.maxAttempts,
+      region: form.value.region,
+      promoRegion: form.value.promoRegion,
     }
     const data = await api.startUsPaypalBatch({ ...payload, accountEmails })
     if (!data.job_id) throw new Error('后端没有返回任务 ID')
@@ -465,7 +500,7 @@ async function cancelJob() {
 
 function saveProxy(options = {}) {
   localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value))
-  if (!options.silent && !busy.value) setStatus('代理列表已保存。')
+  if (!options.silent && !busy.value) setStatus('代理已保存。')
 }
 
 async function deletePaypalAccount(email) {
@@ -537,7 +572,7 @@ function exportLinks() {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `us-paypal-links-${Date.now()}.json`
+  anchor.download = `paypal-links-${Date.now()}.json`
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()

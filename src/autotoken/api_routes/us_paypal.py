@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from autotoken.api_routes import brazil_pix as pix_routes
 from autotoken.core.paths import PROJECT_ROOT
@@ -23,6 +24,7 @@ LINKS_FILE = PROJECT_ROOT / "data" / "us_paypal_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "us_paypal_account_status.json"
 MAX_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
+MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 PAYPAL_STATUS_PENDING = "pending"
 PAYPAL_STATUS_RUNNING = "running"
 PAYPAL_STATUS_SUCCESS = "success"
@@ -50,7 +52,26 @@ class UsPaypalStartRequest(BaseModel):
     region: str = "US"
     promo_region: str = Field("JP", alias="promoRegion")
     promo_mode: str = Field("promo", alias="promoMode")
+    max_attempts: int = Field(MAX_ACCOUNT_ATTEMPTS, alias="maxAttempts")
     model_config = {"populate_by_name": True}
+
+    @field_validator("region", "promo_region", mode="before")
+    @classmethod
+    def _clean_region(cls, value: Any, info: ValidationInfo) -> str:
+        fallback = "JP" if info.field_name == "promo_region" else "US"
+        text = str(value or fallback).strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", text):
+            return fallback
+        return text
+
+    @field_validator("max_attempts", mode="before")
+    @classmethod
+    def _clean_max_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or MAX_ACCOUNT_ATTEMPTS)
+        except Exception:
+            attempts = MAX_ACCOUNT_ATTEMPTS
+        return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
 
     @field_validator("promo_mode", mode="before")
     @classmethod
@@ -234,6 +255,14 @@ def _batch_concurrency(req: UsPaypalBatchStartRequest, total: int) -> int:
     return max(1, min(MAX_BATCH_CONCURRENCY, total, requested))
 
 
+def _account_attempt_limit(req: UsPaypalBatchStartRequest) -> int:
+    try:
+        attempts = int(req.max_attempts or MAX_ACCOUNT_ATTEMPTS)
+    except Exception:
+        attempts = MAX_ACCOUNT_ATTEMPTS
+    return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+
 def _select_batch_accounts(req: UsPaypalBatchStartRequest) -> list[dict[str, Any]]:
     available = _iter_auth_accounts()
     by_email = {str(item.get("email") or "").strip().lower(): item for item in available}
@@ -409,12 +438,13 @@ def _run_batch_account(
             raise RuntimeError("账号缺少有效 accessToken")
         last_error = ""
         result: dict[str, Any] | None = None
-        for attempt in range(1, MAX_ACCOUNT_ATTEMPTS + 1):
+        max_attempts = _account_attempt_limit(req)
+        for attempt in range(1, max_attempts + 1):
             attempts = attempt
             if _is_job_cancel_requested(job_id) and attempt > 1:
                 raise RuntimeError(f"任务已取消，停止重试；最后错误: {last_error}")
             attempt_proxies = _rotate_proxies_for_account(proxies, attempt)
-            _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{MAX_ACCOUNT_ATTEMPTS} 次尝试：{email}")
+            _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次尝试：{email}")
             cfg = PaypalJobConfig(
                 access_token=token,
                 local_proxy=str(req.local_proxy or "").strip(),
@@ -466,8 +496,8 @@ def _run_batch_account(
                         },
                         "status": status,
                     }
-                _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{MAX_ACCOUNT_ATTEMPTS} 次失败：{email} {last_error}")
-                if attempt >= MAX_ACCOUNT_ATTEMPTS:
+                _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
+                if attempt >= max_attempts:
                     raise
                 time.sleep(min(2.0, 0.5 * attempt))
         if result is None:
@@ -499,7 +529,7 @@ def _run_batch_job(job_id: str, req: UsPaypalBatchStartRequest) -> None:
             raise RuntimeError("没有可用账号，请先选择账号池账号或刷新账号池")
         proxies = _parse_proxies(req.proxies)
         if not proxies and (not req.kookeey_user or not req.kookeey_pass):
-            raise RuntimeError("请填写 US 代理列表，或填写 Kookeey 用户名/密码")
+            raise RuntimeError("请填写代理")
         concurrency = _batch_concurrency(req, len(accounts))
         successes: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
@@ -520,7 +550,10 @@ def _run_batch_job(job_id: str, req: UsPaypalBatchStartRequest) -> None:
             JOBS[job_id]["cancel_requested"] = cancel_requested
             JOBS[job_id]["skipped"] = []
             JOBS[job_id]["account_statuses"] = account_statuses
-        log(f"PayPal 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，promo={req.promo_mode}")
+        log(
+            f"PayPal 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，"
+            f"目标国家={req.region}，优惠区={req.promo_region}，重试={_account_attempt_limit(req)}，promo={req.promo_mode}"
+        )
         completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = [

@@ -155,6 +155,48 @@ def test_batch_job_passes_custom_promo_region(monkeypatch):
     assert captured["promo_region"] == "VN"
 
 
+def test_batch_job_passes_target_region_and_configurable_attempts(monkeypatch):
+    email = "region-attempts@example.com"
+    captured = {"regions": [], "attempts": 0}
+    monkeypatch.setattr(us_paypal, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda _email: "token")
+
+    def fake_generate_paypal_trial(cfg, log):
+        captured["attempts"] += 1
+        captured["regions"].append((cfg.region, cfg.promo_region))
+        if captured["attempts"] < 3:
+            raise RuntimeError("temporary failure")
+        return {"ok": True, "amount": "0", "fields": {"paypal_link": "https://pm-redirects.stripe.com/authorize/test", "cs_id": "cs_test"}, "billing": {}}
+
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", fake_generate_paypal_trial)
+    monkeypatch.setattr(us_paypal.time, "sleep", lambda _seconds: None)
+    job_id = "paypal-region-attempts-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "p",
+        "region": "gb",
+        "promoRegion": "vn",
+        "maxAttempts": 3,
+    })
+    us_paypal._run_batch_job(job_id, req)
+
+    assert captured["attempts"] == 3
+    assert captured["regions"] == [("GB", "VN"), ("GB", "VN"), ("GB", "VN")]
+
+
+def test_start_request_caps_configurable_attempts():
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": ["user@example.com"], "maxAttempts": 99})
+
+    assert req.max_attempts == 20
+
+
 def test_start_requests_default_to_apply_promo():
     single = us_paypal.UsPaypalStartRequest.model_validate({"accountEmail": "user@example.com"})
     batch = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": ["user@example.com"]})
