@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit, urlunsplit, unquote
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -1296,7 +1296,12 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
             detail=f"checkout create failed: {body_text}",
         )
 
-    data = response.json() or {}
+    try:
+        data = response.json() or {}
+    except Exception:
+        raise HTTPException(status_code=502, detail=short_text(response.text)) from None
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail=f"checkout response was not a JSON object: {short_text(data)}")
     cs_id = data.get("checkout_session_id") or data.get("session_id") or data.get("id")
     if not cs_id or not str(cs_id).startswith("cs_"):
         raise HTTPException(status_code=502, detail=f"checkout response missing cs_id: {data}")
@@ -2215,6 +2220,8 @@ def retryable_transient_error(detail: Any) -> bool:
         item in text
         for item in (
             "<html",
+            "html response instead of api json",
+            "html_instead_of_json",
             "internal server error",
             "tls connect error",
             "curl:",
@@ -2226,6 +2233,11 @@ def retryable_transient_error(detail: Any) -> bool:
             "gateway timeout",
         )
     )
+
+
+def is_html_response_error(detail: Any) -> bool:
+    text = str(detail or "").lower()
+    return "<html" in text or "html response instead of api json" in text or "html_instead_of_json" in text
 
 
 def stripe_payment_page_redirect_url(
@@ -3329,11 +3341,21 @@ def generate_long_link_once(
             add_step(steps, f"创建 ChatGPT checkout 第 {checkout_attempt}/{checkout_attempts} 次失败", "fail", last_checkout_error)
             if checkout_attempt >= checkout_attempts or not retryable_transient_error(last_checkout_error):
                 raise
+            if link_type == "ideal" and is_html_response_error(last_checkout_error) and checkout_expected_region != "NL":
+                checkout_expected_region = "NL"
+                req.checkout_proxy_region = "NL"
+                req.proxy = proxy_with_fresh_sid(proxy_for_region(req.proxy, "NL"))
+                add_step(steps, "iDEAL checkout 前段切换", "warn", "ChatGPT checkout 返回 HTML，下一次改用 NL 前段重建 checkout")
         except Exception as exc:
             last_checkout_error = str(exc)
             add_step(steps, f"创建 ChatGPT checkout 第 {checkout_attempt}/{checkout_attempts} 次异常", "fail", last_checkout_error)
             if checkout_attempt >= checkout_attempts or not retryable_transient_error(last_checkout_error):
                 raise
+            if link_type == "ideal" and is_html_response_error(last_checkout_error) and checkout_expected_region != "NL":
+                checkout_expected_region = "NL"
+                req.checkout_proxy_region = "NL"
+                req.proxy = proxy_with_fresh_sid(proxy_for_region(req.proxy, "NL"))
+                add_step(steps, "iDEAL checkout 前段切换", "warn", "ChatGPT checkout 返回 HTML，下一次改用 NL 前段重建 checkout")
     if not checkout:
         raise HTTPException(status_code=502, detail=f"checkout create failed after retries: {last_checkout_error}")
     add_step(

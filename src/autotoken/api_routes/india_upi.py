@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
@@ -21,7 +22,9 @@ from autotoken.storage.auth_session_store import delete_auth_session
 
 LINKS_FILE = PROJECT_ROOT / "data" / "india_upi_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "india_upi_account_status.json"
+TEMP_UPI_API_BASE = "https://ahwuoc.site"
 MAX_BATCH_CONCURRENCY = 10
+MAX_TEMP_BATCH_CONCURRENCY = 20
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 UPI_LINK_TTL_SECONDS = 5 * 60
@@ -31,6 +34,53 @@ UPI_STATUS_SUCCESS = "success"
 UPI_STATUS_FAILED = "failed"
 UPI_STATUS_PAID = "paid"
 UPI_STATUS_TEXT = {"pending": "未提链", "running": "提链中", "success": "已提链", "failed": "提链失败", "paid": "已支付"}
+UPI_FAILURE_META: dict[str, dict[str, str]] = {
+    "upi_already_paid": {
+        "stage": "account_state",
+        "label": "账号已是 Plus",
+        "retry_hint": "无需继续提链，账号已标记为 Plus/UPI 已绑定。",
+    },
+    "upi_account_invalid": {
+        "stage": "auth",
+        "label": "账号凭证不可用",
+        "retry_hint": "与 401 一样从账号池删除，换下一个账号。",
+    },
+    "upi_promo_nonzero_account_ineligible": {
+        "stage": "promo_amount",
+        "label": "账号无 0 元试用资格",
+        "retry_hint": "套 promo 后金额仍非 0，直接删除账号，不要重试同账号。",
+    },
+    "upi_approve_blocked": {
+        "stage": "chatgpt_approve",
+        "label": "ChatGPT approve 被拦截",
+        "retry_hint": "不要在同一 checkout 无限 approve；重建 checkout 并换稳定 IN 出口或 fresh sid。",
+    },
+    "upi_setup_generic_decline": {
+        "stage": "stripe_setup_intent",
+        "label": "Stripe/UPI mandate 被拒",
+        "retry_hint": "approve 已过但 SetupIntent 被 provider 拒；停止当前 checkout，换代理/重建，不删除账号。",
+    },
+    "upi_checkout_not_active": {
+        "stage": "stripe_checkout",
+        "label": "Checkout session 非 active",
+        "retry_hint": "当前 checkout 已不可用，重建 checkout。",
+    },
+    "upi_egress_changed": {
+        "stage": "proxy",
+        "label": "代理出口漂移",
+        "retry_hint": "同一 checkout/provider/approve 出口不一致；换稳定 session 或更换代理池。",
+    },
+    "upi_network_error": {
+        "stage": "network",
+        "label": "网络/代理异常",
+        "retry_hint": "可重试；优先刷新代理 sid 或换出口。",
+    },
+    "upi_unknown_failure": {
+        "stage": "unknown",
+        "label": "未分类失败",
+        "retry_hint": "查看任务日志中的阶段和 Stripe intent 摘要后再判断。",
+    },
+}
 ACCOUNT_UI_FIELDS = (
     "email", "status", "account_type", "seat_type", "ttl_seconds", "expires_at", "last_active_at", "updated_at", "note",
 )
@@ -94,6 +144,32 @@ class IndiaUpiBatchStartRequest(IndiaUpiStartRequest):
         return emails
 
 
+class IndiaUpiTempBatchStartRequest(BaseModel):
+    account_emails: list[str] = Field(default_factory=list, alias="accountEmails")
+    cdk: str = ""
+    cdks: list[str] = Field(default_factory=list)
+    max_accounts: int | None = Field(None, alias="maxAccounts")
+    concurrency: int = 5
+    model_config = {"populate_by_name": True}
+
+    @field_validator("account_emails", mode="before")
+    @classmethod
+    def _clean_account_emails(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("accountEmails must be a list")
+        seen: set[str] = set()
+        emails: list[str] = []
+        for item in value:
+            email = str(item or "").strip()
+            key = email.lower()
+            if email and key not in seen:
+                seen.add(key)
+                emails.append(email)
+        return emails
+
+
 class IndiaUpiDeleteLinksRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
 
@@ -138,7 +214,58 @@ def _save_account_statuses(statuses: dict[str, dict[str, Any]]) -> None:
         _write_json(ACCOUNT_STATUS_FILE, statuses)
 
 
-def _set_account_status(email: str, status: str, *, error: str = "", job_id: str = "") -> dict[str, Any]:
+def classify_upi_failure(error: Any) -> dict[str, str]:
+    text = str(error or "")
+    lower = text.lower()
+    category = "upi_unknown_failure"
+    if pix_routes._is_already_paid_error(text):
+        category = "upi_already_paid"
+    elif pix_routes._is_token_invalidated_error(text) or pix_routes._is_no_organization_error(text):
+        category = "upi_account_invalid"
+    elif pix_routes._is_non_zero_after_promo_error(text):
+        category = "upi_promo_nonzero_account_ineligible"
+    elif (
+        "approve failed" in lower
+        and ("blocked" in lower or "request is not allowed" in lower)
+    ) or '"result":"blocked"' in lower or "'result': 'blocked'" in lower:
+        category = "upi_approve_blocked"
+    elif (
+        "setup_attempt_failed" in lower
+        and "generic_decline" in lower
+    ) or (
+        "checkout_approval_payment_failure_with_payment_error" in lower
+        and "setup_intent" in lower
+    ):
+        category = "upi_setup_generic_decline"
+    elif "checkout_not_active" in lower or "not_active_session" in lower or "active session" in lower:
+        category = "upi_checkout_not_active"
+    elif (
+        "egress_changed" in lower
+        or "main_exit_changed" in lower
+        or "exit changed" in lower
+        or "出口漂移" in text
+        or "出口变化" in text
+    ):
+        category = "upi_egress_changed"
+    elif any(marker in lower for marker in ("timeout", "timed out", "unexpectedeof", "eof", "proxy", "connect", "connection", "socks")):
+        category = "upi_network_error"
+    meta = UPI_FAILURE_META[category]
+    return {
+        "failure_category": category,
+        "failure_stage": meta["stage"],
+        "failure_label": meta["label"],
+        "retry_hint": meta["retry_hint"],
+    }
+
+
+def _set_account_status(
+    email: str,
+    status: str,
+    *,
+    error: str = "",
+    job_id: str = "",
+    failure: dict[str, str] | None = None,
+) -> dict[str, Any]:
     key = str(email or "").strip().lower()
     if not key:
         return {}
@@ -151,6 +278,8 @@ def _set_account_status(email: str, status: str, *, error: str = "", job_id: str
         "job_id": str(job_id or ""),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if failure:
+        item.update({key: value for key, value in failure.items() if value})
     with ACCOUNT_STATUS_LOCK:
         statuses = _load_account_statuses()
         statuses[key] = item
@@ -215,6 +344,10 @@ def _iter_auth_accounts_with_upi_status() -> list[dict[str, Any]]:
             "upi_status": status,
             "upi_status_text": str(item.get("status_text") or UPI_STATUS_TEXT[status]),
             "upi_error": str(item.get("error") or ""),
+            "upi_failure_category": str(item.get("failure_category") or ""),
+            "upi_failure_stage": str(item.get("failure_stage") or ""),
+            "upi_failure_label": str(item.get("failure_label") or ""),
+            "upi_retry_hint": str(item.get("retry_hint") or ""),
             "upi_status_updated_at": item.get("updated_at"),
             "upi_selectable": status != UPI_STATUS_PAID,
         })
@@ -294,7 +427,16 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
     billing = fields.get("billing") if isinstance(fields.get("billing"), dict) else result.get("billing") or {}
     hosted = str(fields.get("hosted_instructions_url") or fields.get("upi_link") or "")
     created_at_ts = time.time()
-    expires_at_ts = created_at_ts + UPI_LINK_TTL_SECONDS
+    explicit_expires_at_ts = _timestamp_seconds(fields.get("upi_expires_at_ts") or fields.get("upi_expires_at") or result.get("upi_expires_at_ts") or result.get("upi_expires_at"))
+    expires_at_ts = explicit_expires_at_ts or (created_at_ts + UPI_LINK_TTL_SECONDS)
+    payment_uri = str(fields.get("upi_payment_uri") or fields.get("upiPaymentUri") or "")
+    qr_image_svg = str(fields.get("qr_image_url_svg") or "")
+    qr_image_png = str(fields.get("qr_image_url_png") or "")
+    if payment_uri.startswith("http") and not (qr_image_svg or qr_image_png):
+        if ".svg" in payment_uri.lower():
+            qr_image_svg = payment_uri
+        else:
+            qr_image_png = payment_uri
     return {
         "id": uuid.uuid4().hex[:16],
         "job_id": job_id,
@@ -308,8 +450,9 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
         "cs_id": str(fields.get("cs_id") or ""),
         "upi_link": str(fields.get("upi_link") or hosted),
         "hosted_instructions_url": hosted,
-        "qr_image_url_png": str(fields.get("qr_image_url_png") or ""),
-        "qr_image_url_svg": str(fields.get("qr_image_url_svg") or ""),
+        "upi_payment_uri": payment_uri,
+        "qr_image_url_png": qr_image_png,
+        "qr_image_url_svg": qr_image_svg,
         "qr_expires_at": str(fields.get("qr_expires_at") or ""),
         "chatgpt_checkout_url": str(fields.get("chatgpt_checkout_url") or ""),
         "billing": billing,
@@ -341,6 +484,165 @@ def _append_log(job_id: str, message: str) -> None:
             return
         job["logs"].append(line)
         job["logs"] = job["logs"][-500:]
+
+
+def _timestamp_seconds(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        numeric = float(value)
+        if numeric <= 0:
+            return 0.0
+        return numeric / 1000 if numeric > 1e12 else numeric
+    except Exception:
+        pass
+    try:
+        parsed = time.mktime(time.strptime(str(value).replace("T", " ").split(".")[0].rstrip("Z"), "%Y-%m-%d %H:%M:%S"))
+        return float(parsed) if parsed > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _temp_external_json(resp: requests.Response) -> dict[str, Any]:
+    try:
+        data = resp.json()
+    except ValueError:
+        raise RuntimeError(f"临时 UPI 服务返回非 JSON: HTTP {resp.status_code} {resp.text[:300]}") from None
+    if not isinstance(data, dict):
+        raise RuntimeError(f"临时 UPI 服务响应格式错误: {str(data)[:300]}")
+    if not resp.ok:
+        message = data.get("detail") or data.get("message") or data.get("error") or f"HTTP {resp.status_code}"
+        raise RuntimeError(f"临时 UPI 服务拒绝请求: {message}")
+    return data
+
+
+def _temp_field(data: dict[str, Any], *names: str) -> str:
+    sources: list[dict[str, Any]] = []
+    for source in (data.get("result"), data.get("job"), data):
+        if isinstance(source, dict) and source not in sources:
+            sources.append(source)
+    for source in sources:
+        for name in names:
+            value = source.get(name)
+            if str(value or "").strip():
+                return str(value).strip()
+    return ""
+
+
+def _temp_status(data: dict[str, Any]) -> str:
+    return _temp_field(data, "status", "state").strip().lower()
+
+
+def _temp_cdks(req: IndiaUpiTempBatchStartRequest) -> list[str]:
+    seen: set[str] = set()
+    values: list[str] = []
+    raw_items = list(req.cdks or [])
+    raw_items.extend(str(req.cdk or "").replace(",", "\n").splitlines())
+    for item in raw_items:
+        cdk = str(item or "").strip()
+        key = cdk.lower()
+        if cdk and key not in seen:
+            seen.add(key)
+            values.append(cdk)
+    return values
+
+
+def _requested_temp_concurrency(req: IndiaUpiTempBatchStartRequest) -> int:
+    try:
+        requested = int(req.concurrency or 5)
+    except Exception:
+        requested = 5
+    return max(1, min(MAX_TEMP_BATCH_CONCURRENCY, requested))
+
+
+def _temp_batch_concurrency(req: IndiaUpiTempBatchStartRequest, total: int) -> int:
+    return max(1, min(total, _requested_temp_concurrency(req)))
+
+
+def _temp_cdk_assignments(cdks: list[str], total_accounts: int) -> list[str]:
+    if total_accounts <= 0 or not cdks:
+        return []
+    return [cdks[index % len(cdks)] for index in range(total_accounts)]
+
+
+def _create_temp_external_job(access_token: str, cdk: str) -> tuple[str, str, dict[str, Any]]:
+    try:
+        resp = requests.post(
+            f"{TEMP_UPI_API_BASE}/api/run",
+            json={"accessToken": access_token, "cdk": cdk},
+            headers={"Content-Type": "application/json"},
+            timeout=70,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"临时 UPI 服务请求失败: {exc}") from exc
+    data = _temp_external_json(resp)
+    remote_job_id = _temp_field(data, "jobId", "job_id", "id")
+    job_token = _temp_field(data, "jobToken", "job_token", "token")
+    if not remote_job_id:
+        raise RuntimeError(f"临时 UPI 服务未返回 jobId: {str(data)[:300]}")
+    if not job_token:
+        raise RuntimeError(f"临时 UPI 服务未返回 jobToken: {str(data)[:300]}")
+    return remote_job_id, job_token, data
+
+
+def _poll_temp_external_job(remote_job_id: str, job_token: str, *, cancel_check=None) -> dict[str, Any]:
+    terminal_success = {"success", "succeeded", "completed", "done"}
+    terminal_failed = {"failed", "error", "stopped", "cancelled", "canceled"}
+    last_data: dict[str, Any] = {}
+    for _ in range(90):
+        if callable(cancel_check) and cancel_check():
+            raise RuntimeError("任务已取消")
+        try:
+            resp = requests.get(
+                f"{TEMP_UPI_API_BASE}/api/jobs/{remote_job_id}",
+                headers={"X-Job-Token": job_token},
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"临时 UPI 服务查询失败: {exc}") from exc
+        data = _temp_external_json(resp)
+        last_data = data
+        status = _temp_status(data)
+        if status in terminal_success:
+            return data
+        if status in terminal_failed:
+            message = _temp_field(data, "detail", "message", "error") or status
+            raise RuntimeError(f"临时 UPI 提链失败: {message}")
+        time.sleep(2.0)
+    raise RuntimeError(f"临时 UPI 提链轮询超时: {str(last_data)[:300]}")
+
+
+def _stop_temp_external_job(remote_job_id: str, job_token: str) -> None:
+    if not remote_job_id or not job_token:
+        return
+    try:
+        requests.post(
+            f"{TEMP_UPI_API_BASE}/api/jobs/{remote_job_id}/stop",
+            headers={"X-Job-Token": job_token},
+            timeout=20,
+        )
+    except Exception:
+        pass
+
+
+def _temp_success_result(account_email: str, remote_job_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    upi_url = _temp_field(data, "upiUrl", "upi_url", "hosted_instructions_url", "hostedInstructionsUrl", "link", "url")
+    payment_uri = _temp_field(data, "upiPaymentUri", "upi_payment_uri", "paymentUri", "payment_uri", "qr", "qrUrl")
+    expires_at = _timestamp_seconds(_temp_field(data, "upiExpiresAt", "upi_expires_at", "expiresAt", "expires_at"))
+    fields = {
+        "amount": _temp_field(data, "amount", "expected_amount") or "0",
+        "cs_id": _temp_field(data, "cs_id", "checkout_session_id", "checkoutSessionId"),
+        "upi_link": upi_url or payment_uri,
+        "hosted_instructions_url": upi_url,
+        "upi_payment_uri": payment_uri,
+        "upi_expires_at_ts": expires_at,
+        "qr_image_url_svg": payment_uri if payment_uri.startswith("http") and ".svg" in payment_uri.lower() else "",
+        "qr_image_url_png": payment_uri if payment_uri.startswith("http") and ".svg" not in payment_uri.lower() else "",
+        "chatgpt_checkout_url": _temp_field(data, "chatgpt_checkout_url", "chatgptCheckoutUrl"),
+    }
+    if not fields["hosted_instructions_url"] and not fields["upi_payment_uri"]:
+        raise RuntimeError(f"临时 UPI 提链成功但未返回 UPI 链接或付款二维码: remote_job={remote_job_id}")
+    return {"ok": True, "account_email": account_email, "amount": fields["amount"], "fields": fields, "remote_job_id": remote_job_id}
 
 
 def _is_job_cancel_requested(job_id: str) -> bool:
@@ -459,14 +761,15 @@ def _run_batch_account(
                 break
             except Exception as exc:
                 last_error = str(exc)
+                failure = classify_upi_failure(last_error)
                 if pix_routes._is_already_paid_error(last_error):
                     _mark_account_plus_upi(email, last_error)
-                    status = _set_account_status(email, UPI_STATUS_SUCCESS, error=last_error, job_id=job_id)
+                    status = _set_account_status(email, UPI_STATUS_SUCCESS, error=last_error, job_id=job_id, failure=failure)
                     _append_log(job_id, f"[{index}/{total}] 账号已是 Plus：{email}，已更新账号类型=Plus 绑定渠道=UPI")
-                    return {"skipped": True, "email": email, "reason": "账号已是 Plus，已标记绑定渠道 UPI", "status": status}
+                    return {"skipped": True, "email": email, "reason": "账号已是 Plus，已标记绑定渠道 UPI", "status": status, **failure}
                 if pix_routes._is_token_invalidated_error(last_error) or pix_routes._is_no_organization_error(last_error):
                     cleanup = _delete_invalid_account(email)
-                    status = _set_account_status(email, UPI_STATUS_FAILED, error=last_error, job_id=job_id)
+                    status = _set_account_status(email, UPI_STATUS_FAILED, error=last_error, job_id=job_id, failure=failure)
                     return {
                         "ok": False,
                         "email": email,
@@ -476,12 +779,13 @@ def _run_batch_account(
                             "attempts": attempt,
                             "error": f"账号不可用，已从账号池删除：{last_error}",
                             "cleanup": cleanup,
+                            **failure,
                         },
                         "status": status,
                     }
                 if pix_routes._is_non_zero_after_promo_error(last_error):
                     cleanup = _delete_invalid_account(email)
-                    status = _set_account_status(email, UPI_STATUS_FAILED, error=last_error, job_id=job_id)
+                    status = _set_account_status(email, UPI_STATUS_FAILED, error=last_error, job_id=job_id, failure=failure)
                     _append_log(job_id, f"[{index}/{total}] 账号套 promo 后金额非 0，已从账号池删除：{email} cleanup={cleanup}")
                     return {
                         "ok": False,
@@ -493,11 +797,12 @@ def _run_batch_account(
                             "error": f"套 promo 后金额非 0，已从账号池删除：{last_error}",
                             "cleanup": cleanup,
                             "account_deleted": True,
+                            **failure,
                         },
                         "status": status,
                         "account_deleted": True,
                     }
-                _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
+                _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} [{failure['failure_category']}] {last_error}")
                 if attempt >= max_attempts:
                     raise
                 time.sleep(min(2.0, 0.5 * attempt))
@@ -512,12 +817,149 @@ def _run_batch_account(
         return {"ok": True, "email": email, "success": compact, "status": status}
     except Exception as exc:
         error = str(exc)
-        item = {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "attempts": attempts or 1, "error": error}
-        status = _set_account_status(email, UPI_STATUS_FAILED, error=error, job_id=job_id)
-        _append_log(job_id, f"[{index}/{total}] 最终失败：{email} attempts={attempts or 1} {exc}")
+        failure = classify_upi_failure(error)
+        item = {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "attempts": attempts or 1, "error": error, **failure}
+        status = _set_account_status(email, UPI_STATUS_FAILED, error=error, job_id=job_id, failure=failure)
+        _append_log(job_id, f"[{index}/{total}] 最终失败：{email} attempts={attempts or 1} [{failure['failure_category']}] {exc}")
         return {"ok": False, "email": email, "error": item, "status": status}
     finally:
         _set_job_running_delta(job_id, -1)
+
+
+def _run_temp_batch_account(
+    job_id: str,
+    account: dict[str, Any],
+    cdk: str,
+    index: int,
+    total: int,
+) -> dict[str, Any]:
+    email = str(account.get("email") or "").strip()
+    started = time.monotonic()
+    if _is_job_cancel_requested(job_id):
+        _append_log(job_id, f"[{index}/{total}] 跳过账号：{email}（任务已取消）")
+        return {"skipped": True, "email": email, "status": _set_account_status(email, UPI_STATUS_PENDING, job_id=job_id)}
+    _set_job_running_delta(job_id, 1)
+    _append_log(job_id, f"[{index}/{total}] 临时 UPI 提链开始账号：{email}")
+    try:
+        _set_account_status(email, UPI_STATUS_RUNNING, job_id=job_id)
+        token = _load_token_for_email(email)
+        if not token:
+            raise RuntimeError("账号缺少有效 accessToken")
+        clean_cdk = str(cdk or "").strip()
+        if not clean_cdk:
+            raise RuntimeError("临时 UPI 提链缺少 CDK")
+        remote_job_id, job_token, created = _create_temp_external_job(token, clean_cdk)
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            if job is not None:
+                external_jobs = job.setdefault("external_jobs", {})
+                external_jobs[email] = {"job_id": remote_job_id, "job_token": job_token}
+        _append_log(job_id, f"[{index}/{total}] 已提交 Public UPI Generate 任务：{remote_job_id}")
+        if _temp_status(created) in {"success", "succeeded", "completed", "done"}:
+            data = created
+        else:
+            data = _poll_temp_external_job(remote_job_id, job_token, cancel_check=lambda: _is_job_cancel_requested(job_id))
+        result = _temp_success_result(email, remote_job_id, data)
+        record = _link_record_from_result(job_id, email, result)
+        _append_link(record)
+        status = _set_account_status(email, UPI_STATUS_SUCCESS, job_id=job_id)
+        compact = {
+            "email": email,
+            "elapsed_s": round(time.monotonic() - started, 1),
+            "attempts": 1,
+            "link": record,
+            "remote_job_id": remote_job_id,
+        }
+        _append_log(job_id, f"[{index}/{total}] 临时 UPI 提链成功：{email} remote_job={remote_job_id}")
+        return {"ok": True, "email": email, "success": compact, "status": status}
+    except Exception as exc:
+        error = str(exc)
+        item = {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "attempts": 1, "error": error}
+        status = _set_account_status(email, UPI_STATUS_FAILED, error=error, job_id=job_id)
+        _append_log(job_id, f"[{index}/{total}] 临时 UPI 提链失败：{email} {error}")
+        return {"ok": False, "email": email, "error": item, "status": status}
+    finally:
+        _set_job_running_delta(job_id, -1)
+
+
+def _run_temp_batch_job(job_id: str, req: IndiaUpiTempBatchStartRequest) -> None:
+    def log(message: str) -> None:
+        _append_log(job_id, message)
+
+    try:
+        selector = IndiaUpiBatchStartRequest(accountEmails=req.account_emails, maxAccounts=req.max_accounts, concurrency=req.concurrency)
+        accounts = _select_batch_accounts(selector)
+        if not accounts:
+            raise RuntimeError("没有可用账号，请先选择账号池账号或刷新账号池")
+        cdks = _temp_cdks(req)
+        if not cdks:
+            raise RuntimeError("请填写临时 UPI 提链 CDK")
+        concurrency = _temp_batch_concurrency(req, len(accounts))
+        successes: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        account_statuses: dict[str, dict[str, Any]] = {}
+        for account in accounts:
+            email = str(account.get("email") or "").strip()
+            account_statuses[email] = _set_account_status(email, UPI_STATUS_PENDING, job_id=job_id)
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            cancel_requested = bool(JOBS[job_id].get("cancel_requested"))
+            JOBS[job_id]["status"] = "cancelling" if cancel_requested else "running"
+            JOBS[job_id]["total"] = len(accounts)
+            JOBS[job_id]["completed"] = 0
+            JOBS[job_id]["concurrency"] = concurrency
+            JOBS[job_id]["running_count"] = 0
+            JOBS[job_id]["cancel_requested"] = cancel_requested
+            JOBS[job_id]["skipped"] = []
+            JOBS[job_id]["account_statuses"] = account_statuses
+            JOBS[job_id]["temp"] = True
+            JOBS[job_id]["external_jobs"] = {}
+        log(f"临时 UPI 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}")
+        completed = 0
+        cdk_assignments = _temp_cdk_assignments(cdks, len(accounts))
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [
+                executor.submit(_run_temp_batch_account, job_id, account, cdk_assignments[index - 1], index, len(accounts))
+                for index, account in enumerate(accounts, start=1)
+            ]
+            for future in as_completed(futures):
+                item = future.result()
+                email = str(item.get("email") or "")
+                if item.get("skipped"):
+                    skipped.append({"email": email, "reason": item.get("reason") or "任务已取消"})
+                elif item.get("ok"):
+                    successes.append(item["success"])
+                else:
+                    errors.append(item["error"])
+                if email:
+                    account_statuses[email] = item.get("status") or {}
+                completed += 1
+                with JOBS_LOCK:
+                    if job_id not in JOBS:
+                        return
+                    JOBS[job_id]["completed"] = completed
+                    JOBS[job_id]["account_statuses"] = account_statuses
+                    JOBS[job_id]["skipped"] = skipped
+                    JOBS[job_id]["result"] = {"batch": True, "successes": successes, "errors": errors, "skipped": skipped}
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            cancelled = bool(JOBS[job_id].get("cancel_requested"))
+            has_non_error_outcome = bool(successes or skipped)
+            JOBS[job_id]["status"] = "cancelled" if cancelled else ("success" if has_non_error_outcome else "error")
+            JOBS[job_id]["error"] = "任务已取消" if cancelled else ("" if has_non_error_outcome else "全部账号失败")
+            JOBS[job_id]["finished_at"] = time.time()
+        log(f"临时 UPI 提链任务完成：成功 {len(successes)}，失败 {len(errors)}，跳过 {len(skipped)}")
+    except Exception as exc:
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = str(exc)
+            JOBS[job_id]["finished_at"] = time.time()
+        _append_log(job_id, f"失败: {exc}")
 
 
 def _run_batch_job(job_id: str, req: IndiaUpiBatchStartRequest) -> None:
@@ -596,7 +1038,7 @@ def _run_batch_job(job_id: str, req: IndiaUpiBatchStartRequest) -> None:
         _append_log(job_id, f"失败: {exc}")
 
 
-def _new_job(account_emails: list[str], concurrency: int) -> str:
+def _new_job(account_emails: list[str], concurrency: int, *, temp: bool = False) -> str:
     job_id = uuid.uuid4().hex[:12]
     created = time.time()
     with JOBS_LOCK:
@@ -606,8 +1048,9 @@ def _new_job(account_emails: list[str], concurrency: int) -> str:
             "error": None, "created_at": created, "finished_at": None,
             "account_email": account_emails[0] if len(account_emails) == 1 else "",
             "total": len(account_emails), "completed": 0,
-            "concurrency": max(1, min(MAX_BATCH_CONCURRENCY, int(concurrency or 1))),
+            "concurrency": max(1, min(MAX_TEMP_BATCH_CONCURRENCY if temp else MAX_BATCH_CONCURRENCY, int(concurrency or 1))),
             "cancel_requested": False, "running_count": 0, "skipped": [], "account_statuses": {},
+            "temp": bool(temp), "external_jobs": {},
         }
     return job_id
 
@@ -670,6 +1113,19 @@ def create_india_upi_router() -> APIRouter:
         threading.Thread(target=_run_batch_job, args=(job_id, req), daemon=True).start()
         return {"job_id": job_id}
 
+    @router.post("/api/india-upi/temp/batch/start")
+    def start_india_upi_temp_batch(req: IndiaUpiTempBatchStartRequest) -> dict[str, str]:
+        emails = list(req.account_emails)
+        if req.max_accounts and req.max_accounts > 0:
+            emails = emails[: int(req.max_accounts)]
+        if not emails:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请选择要提链的账号"})
+        if not _temp_cdks(req):
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写临时 UPI 提链 CDK"})
+        job_id = _new_job(emails, _requested_temp_concurrency(req), temp=True)
+        threading.Thread(target=_run_temp_batch_job, args=(job_id, req), daemon=True).start()
+        return {"job_id": job_id}
+
     @router.get("/api/india-upi/jobs/{job_id}")
     def get_india_upi_job(job_id: str) -> dict[str, Any]:
         return _job_snapshot(job_id)
@@ -677,6 +1133,7 @@ def create_india_upi_router() -> APIRouter:
     @router.post("/api/india-upi/jobs/{job_id}/cancel")
     def cancel_india_upi_job(job_id: str) -> dict[str, Any]:
         should_log = False
+        external_jobs: dict[str, dict[str, Any]] = {}
         with JOBS_LOCK:
             job = JOBS.get(job_id)
             if not job:
@@ -686,7 +1143,11 @@ def create_india_upi_router() -> APIRouter:
             job["cancel_requested"] = True
             if job.get("status") in {"queued", "running"}:
                 job["status"] = "cancelling"
+            external_jobs = dict(job.get("external_jobs") or {}) if job.get("temp") else {}
             should_log = True
+        for external in external_jobs.values():
+            if isinstance(external, dict):
+                _stop_temp_external_job(str(external.get("job_id") or ""), str(external.get("job_token") or ""))
         if should_log:
             _append_log(job_id, "收到取消请求：正在停止未开始的账号，已运行账号会跑到当前步骤结束")
         return {"ok": True, "job_id": job_id, "status": "cancelling", "cancel_requested": True}

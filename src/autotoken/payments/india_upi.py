@@ -286,6 +286,58 @@ def page_get(stripe: requests.Session, cs_id: str, stripe_pk: str, ctx: dict[str
     return resp.json() or {}
 
 
+def sync_upi_tax_region(
+    chatgpt: requests.Session,
+    stripe: requests.Session,
+    *,
+    cs_id: str,
+    stripe_pk: str,
+    processor: str,
+    checkout_email: str,
+    billing: dict[str, str],
+) -> None:
+    chatgpt.post(
+        "https://chatgpt.com/backend-api/payments/checkout/taxes",
+        json={
+            "checkout_session_id": cs_id,
+            "checkout_email": checkout_email,
+            "billing_country": "IN",
+            "billing_name": billing["name"],
+            "currency": "INR",
+            "tax_id": None,
+            "processor_entity": processor,
+            "billing_address": {
+                "line1": billing["line1"],
+                "city": billing["city"],
+                "state": billing["state"],
+                "country": "IN",
+                "postal_code": billing["postal_code"],
+            },
+        },
+        headers={
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
+            "x-openai-target-path": "/backend-api/payments/checkout/taxes",
+            "x-openai-target-route": "/backend-api/payments/checkout/taxes",
+        },
+        timeout=TIMEOUT,
+    )
+    resp = stripe.post(
+        f"https://api.stripe.com/v1/payment_pages/{cs_id}",
+        data={
+            "eid": "NA",
+            "tax_region[country]": "IN",
+            "tax_region[postal_code]": billing["postal_code"],
+            "tax_region[line1]": billing["line1"],
+            "tax_region[city]": billing["city"],
+            "tax_region[state]": billing["state"],
+            "key": stripe_pk,
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"stripe tax_region failed: HTTP {resp.status_code} {short(resp.text)}")
+
+
 def find_submission_attempt(payload: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -326,7 +378,12 @@ def extract_upi_result(payload: Any, cs_id: str = "") -> dict[str, str]:
         "submission_state": "",
         "next_action_type": "",
         "payment_intent": "",
+        "intent_type": "",
         "intent_state": "",
+        "intent_usage": "",
+        "intent_error_code": "",
+        "intent_decline_code": "",
+        "upi_vpa_present": "",
         "client_secret": "",
     }
 
@@ -346,11 +403,27 @@ def extract_upi_result(payload: Any, cs_id: str = "") -> dict[str, str]:
                 out["payment_intent"] = obj_id
             elif client_secret.startswith(("pi_", "seti_")):
                 out["payment_intent"] = client_secret.split("_secret_", 1)[0]
+            intent_id = out["payment_intent"]
+            if intent_id.startswith("seti_"):
+                out["intent_type"] = "setup_intent"
+            elif intent_id.startswith("pi_"):
+                out["intent_type"] = "payment_intent"
             if client_secret and not out["client_secret"]:
                 out["client_secret"] = client_secret
             state = str(obj.get("status") or obj.get("intent_state") or "")
             if state:
                 out["intent_state"] = state
+            usage = str(obj.get("usage") or "")
+            if usage:
+                out["intent_usage"] = usage
+            last_error = obj.get("last_setup_error") or obj.get("last_payment_error") or {}
+            if isinstance(last_error, dict) and last_error:
+                out["intent_error_code"] = str(last_error.get("code") or "")
+                out["intent_decline_code"] = str(last_error.get("decline_code") or "")
+                pm = last_error.get("payment_method") if isinstance(last_error.get("payment_method"), dict) else {}
+                upi = pm.get("upi") if isinstance(pm.get("upi"), dict) else {}
+                if isinstance(upi, dict):
+                    out["upi_vpa_present"] = "yes" if str(upi.get("vpa") or "").strip() else "no"
             return True
 
         def capture_upi_next_action(obj: dict[str, Any], na: dict[str, Any]) -> None:
@@ -413,10 +486,20 @@ def extract_upi_result(payload: Any, cs_id: str = "") -> dict[str, str]:
 
 
 def upi_fields_summary(fields: dict[str, Any]) -> str:
+    error_bits = []
+    if fields.get("intent_error_code"):
+        error_bits.append(str(fields.get("intent_error_code")))
+    if fields.get("intent_decline_code"):
+        error_bits.append(str(fields.get("intent_decline_code")))
+    error_text = "/".join(error_bits) if error_bits else "-"
     return (
         f"intent={fields.get('payment_intent') or '-'} "
+        f"intent_type={fields.get('intent_type') or '-'} "
         f"intent_state={fields.get('intent_state') or '-'} "
+        f"intent_usage={fields.get('intent_usage') or '-'} "
         f"next_action={fields.get('next_action_type') or '-'} "
+        f"intent_error={error_text} "
+        f"upi_vpa={fields.get('upi_vpa_present') or '-'} "
         f"link={'yes' if fields.get('upi_link') or fields.get('hosted_instructions_url') else 'no'}"
     )
 
@@ -435,10 +518,28 @@ def is_success(fields: dict[str, Any]) -> bool:
 
 
 def chatgpt_approve(access_token: str, cs_id: str, processor: str, proxy_url: str, device_id: str, log: LogFn) -> None:
-    cg = build_chatgpt_session(access_token, proxy_url, device_id)
     last_err = ""
     for attempt in range(1, 4):
+        approve_proxy = proxy_url
+        if attempt > 1 and proxy_url:
+            approve_proxy, sid = upi_proxy_with_fresh_sid(proxy_url, "IN")
+            if sid and sid != "static":
+                log(f"approve attempt {attempt}: refresh proxy sid={sid}")
+        cg = build_chatgpt_session(access_token, approve_proxy, device_id)
         try:
+            try:
+                cg.post(
+                    "https://chatgpt.com/backend-api/sentinel/ping",
+                    json={},
+                    headers={
+                        "Referer": "https://chatgpt.com/",
+                        "x-openai-target-path": "/backend-api/sentinel/ping",
+                        "x-openai-target-route": "/backend-api/sentinel/ping",
+                    },
+                    timeout=TIMEOUT,
+                )
+            except Exception:
+                pass
             resp = cg.post(
                 "https://chatgpt.com/backend-api/payments/checkout/approve",
                 json={"checkout_session_id": cs_id, "processor_entity": processor},
@@ -689,13 +790,28 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
         if cfg.apply_promo and amount not in ("0", "0.0"):
             raise RuntimeError(f"套 promo 后金额不是 0: {amount}")
 
+        log("[4/7] 同步 IN taxes / Stripe tax_region")
+        cg3 = build_chatgpt_session(token, p3, device_id)
+        checkout_email = str(billing.get("email") or "")
+        sync_upi_tax_region(cg3, stripe, cs_id=cs_id, stripe_pk=pk, processor=processor, checkout_email=checkout_email, billing=billing)
+        time.sleep(0.5)
+        init_payload = stripe_init(stripe, cs_id, pk, ctx)
+        amount = amount_info(init_payload)
+        pmt, ordered, has_upi = pmt_info(init_payload)
+        prefix = "tax sync 后" if cfg.apply_promo else "tax sync 后"
+        log(f"{prefix}金额={amount} 支付方式={pmt} ordered={ordered} has_upi={has_upi}")
+        if not has_upi:
+            raise RuntimeError(f"tax sync 后未出现 UPI，pmt={pmt}")
+        if cfg.apply_promo and amount not in ("0", "0.0"):
+            raise RuntimeError(f"tax sync 后金额不是 0: {amount}")
+
         hosted = str(init_payload.get("stripe_hosted_url") or "")
-        log("[4/6] 创建 UPI payment_method")
+        log("[5/7] 创建 UPI payment_method")
         time.sleep(0.6)
         pm_id = _create_upi_payment_method(stripe, cs_id=cs_id, stripe_pk=pk, ctx=ctx, billing=billing)
         log(f"pm_id={pm_id}")
 
-        log("[5/6] confirm UPI")
+        log("[6/7] confirm UPI")
         time.sleep(0.7)
         return_url = to_openai_pay_url(hosted) or hosted or f"https://pay.openai.com/c/pay/{cs_id}"
         confirm_payload = _confirm_upi(
@@ -716,7 +832,7 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
             fields["billing"] = billing
             return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
-        log("[6/6] approve + poll UPI")
+        log("[7/7] approve + poll UPI")
         chatgpt_approve(token, cs_id, processor, p3, device_id, log)
         last_err: dict[str, Any] = {}
         for i in range(1, 16):
@@ -738,7 +854,8 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
                 pe = last_err.get("payment_error") if isinstance(last_err.get("payment_error"), dict) else {}
                 raise RuntimeError(
                     f"approve 后失败: {last_err.get('code')} "
-                    f"payment_error={pe.get('code')}/{pe.get('decline_code')}"
+                    f"payment_error={pe.get('code')}/{pe.get('decline_code')} "
+                    f"{upi_fields_summary(fields)}"
                 )
             time.sleep(1.0)
         raise RuntimeError("轮询超时，未拿到 UPI 链接")

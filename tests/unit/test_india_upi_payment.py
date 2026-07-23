@@ -26,6 +26,13 @@ class _ProxyContext:
         return False
 
 
+@pytest.fixture(autouse=True)
+def _noop_tax_sync(monkeypatch, request):
+    if request.node.name == "test_sync_upi_tax_region_posts_chatgpt_and_stripe_payloads":
+        return
+    monkeypatch.setattr(india_upi, "sync_upi_tax_region", lambda *args, **kwargs: None)
+
+
 def test_extract_upi_result_reads_hosted_instruction_and_qr_fields():
     payload = {
         "payment_intent": {
@@ -104,6 +111,44 @@ def test_extract_upi_result_rejects_non_actionable_payment_intent_link():
     assert india_upi.is_success(fields) is False
 
 
+def test_sync_upi_tax_region_posts_chatgpt_and_stripe_payloads():
+    calls = []
+
+    class FakeSession:
+        def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return _JsonResponse({"ok": True})
+
+    billing = {
+        "name": "Raj Kumar",
+        "email": "raj@example.com",
+        "line1": "123 MG Road",
+        "city": "Mumbai",
+        "state": "MH",
+        "postal_code": "400001",
+    }
+
+    india_upi.sync_upi_tax_region(
+        FakeSession(),
+        FakeSession(),
+        cs_id="cs_test",
+        stripe_pk="pk_test",
+        processor="openai_llc",
+        checkout_email="buyer@example.com",
+        billing=billing,
+    )
+
+    assert calls[0][0] == "https://chatgpt.com/backend-api/payments/checkout/taxes"
+    assert calls[0][1]["json"]["checkout_session_id"] == "cs_test"
+    assert calls[0][1]["json"]["checkout_email"] == "buyer@example.com"
+    assert calls[0][1]["json"]["billing_address"]["country"] == "IN"
+    assert calls[0][1]["headers"]["x-openai-target-path"] == "/backend-api/payments/checkout/taxes"
+    assert calls[1][0] == "https://api.stripe.com/v1/payment_pages/cs_test"
+    assert calls[1][1]["data"]["tax_region[country]"] == "IN"
+    assert calls[1][1]["data"]["tax_region[postal_code]"] == "400001"
+    assert calls[1][1]["data"]["key"] == "pk_test"
+
+
 def test_generate_upi_trial_approves_requires_approval_before_polling(monkeypatch):
     calls = []
     captured = {}
@@ -176,8 +221,40 @@ def test_chatgpt_approve_rejects_blocked_result(monkeypatch):
     with pytest.raises(RuntimeError, match="blocked"):
         india_upi.chatgpt_approve("token", "cs_test", "openai_llc", "proxy", "device", lambda _message: None)
 
-    assert not any(url.endswith("/backend-api/sentinel/ping") for url in calls)
+    assert sum(url.endswith("/backend-api/sentinel/ping") for url in calls) == 3
     assert sum(url.endswith("/backend-api/payments/checkout/approve") for url in calls) == 3
+
+
+def test_chatgpt_approve_refreshes_proxy_sid_between_blocked_retries(monkeypatch):
+    proxies = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            return _JsonResponse({"result": "blocked"})
+
+    def fake_build_chatgpt_session(_token, proxy_url="", _device_id=""):
+        proxies.append(proxy_url)
+        return FakeChatgptSession()
+
+    monkeypatch.setattr(india_upi, "build_chatgpt_session", fake_build_chatgpt_session)
+    monkeypatch.setattr(india_upi.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="blocked"):
+        india_upi.chatgpt_approve(
+            "token",
+            "cs_test",
+            "openai_llc",
+            "socks5h://user:pass@gate.example:10000?session=old",
+            "device",
+            lambda _message: None,
+        )
+
+    assert len(proxies) == 3
+    assert proxies[0].endswith("session=old")
+    assert proxies[1] != proxies[0]
+    assert proxies[2] != proxies[0]
+    assert "session=old" not in proxies[1]
+    assert "session=old" not in proxies[2]
 
 
 def test_build_upi_dynamic_proxy_rewrites_direct_proxy_region_for_promo():
@@ -434,7 +511,7 @@ def test_generate_upi_trial_retries_post_promo_init_until_amount_zero(monkeypatc
         india_upi.UpiJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
     )
 
-    assert calls.count("stripe_init") == 3
+    assert calls.count("stripe_init") == 4
     assert 0.8 in sleep_calls
     assert result["amount"] == "0"
     assert result["fields"]["upi_link"] == "https://payments.stripe.com/upi/instructions/promo-delayed"
@@ -490,6 +567,68 @@ def test_generate_upi_trial_logs_upi_intent_state_when_polling_times_out(monkeyp
     assert "intent=pi_poll" in joined
     assert "intent_state=requires_payment_method" in joined
     assert "next_action=" in joined
+
+
+def test_generate_upi_trial_reports_setup_intent_decline_details(monkeypatch):
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            if url.endswith("/payments/checkout"):
+                return _JsonResponse({
+                    "checkout_session_id": "cs_test",
+                    "processor_entity": "openai_llc",
+                    "public_key": "pk_test",
+                })
+            if url.endswith("/payments/checkout/update"):
+                return _JsonResponse({"success": True})
+            raise AssertionError(url)
+
+    monkeypatch.setattr(india_upi, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(india_upi, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(india_upi, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(india_upi, "stripe_init", lambda *args, **kwargs: {
+        "total_summary": {"due": 0},
+        "payment_method_types": ["card", "upi"],
+        "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+    })
+    monkeypatch.setattr(india_upi.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(india_upi, "_create_upi_payment_method", lambda *args, **kwargs: "pm_test")
+    monkeypatch.setattr(india_upi, "_confirm_upi", lambda *args, **kwargs: {
+        "submission_attempt": {"state": "requires_approval"},
+    })
+    monkeypatch.setattr(india_upi, "chatgpt_approve", lambda *args, **kwargs: None)
+    monkeypatch.setattr(india_upi, "page_get", lambda *args, **kwargs: {
+        "setup_intent": {
+            "id": "seti_test",
+            "status": "requires_payment_method",
+            "usage": "off_session",
+            "last_setup_error": {
+                "code": "setup_attempt_failed",
+                "decline_code": "generic_decline",
+                "payment_method": {"type": "upi", "upi": {"vpa": None}},
+            },
+        },
+        "submission_attempt": {
+            "state": "failed",
+            "error": {
+                "code": "checkout_approval_payment_failure_with_payment_error",
+                "payment_error": {"code": "setup_attempt_failed", "decline_code": "generic_decline"},
+            },
+        },
+    })
+
+    with pytest.raises(RuntimeError) as excinfo:
+        india_upi.generate_upi_trial(
+            india_upi.UpiJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True),
+            log=lambda _message: None,
+        )
+
+    message = str(excinfo.value)
+    assert "payment_error=setup_attempt_failed/generic_decline" in message
+    assert "intent_type=setup_intent" in message
+    assert "intent_state=requires_payment_method" in message
+    assert "intent_usage=off_session" in message
+    assert "intent_error=setup_attempt_failed/generic_decline" in message
+    assert "upi_vpa=no" in message
 
 
 def test_generate_upi_trial_stops_when_promo_keeps_non_zero_amount(monkeypatch):
@@ -569,5 +708,5 @@ def test_generate_upi_trial_uses_local_proxy_chain_when_configured(monkeypatch):
 
     assert proxy_context_calls[0] == ("http://127.0.0.1:7897", "socks5h://dyn")
     assert proxy_context_calls[1] == ("http://127.0.0.1:7897", "socks5h://dyn")
-    assert chatgpt_proxies == ["http://chain-1"]
+    assert chatgpt_proxies == ["http://chain-1", "http://chain-2"]
     assert stripe_proxies == ["http://chain-2"]

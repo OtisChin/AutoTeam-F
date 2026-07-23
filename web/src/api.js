@@ -144,6 +144,7 @@ export const api = {
   deleteIndiaUpiAccounts: (emails) => request('POST', '/india-upi/accounts/delete', { emails }),
   startIndiaUpi: (payload) => request('POST', '/india-upi/start', payload),
   startIndiaUpiBatch: (payload) => request('POST', '/india-upi/batch/start', payload),
+  startIndiaUpiTempBatch: (payload) => request('POST', '/india-upi/temp/batch/start', payload),
   getIndiaUpiJob: (jobId) => request('GET', `/india-upi/jobs/${encodeURIComponent(jobId)}`),
   cancelIndiaUpiJob: (jobId) => request('POST', `/india-upi/jobs/${encodeURIComponent(jobId)}/cancel`),
   getIndiaUpiLinks: () => request('GET', '/india-upi/links'),

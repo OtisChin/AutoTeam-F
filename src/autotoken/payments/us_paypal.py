@@ -610,6 +610,48 @@ def _confirm_paypal_inline(
     return payload
 
 
+def create_express_billing_agreement(
+    stripe: requests.Session,
+    *,
+    stripe_pk: str,
+    sdk_version: str = "v5",
+) -> dict[str, str]:
+    """Create a PayPal Billing Agreement token through Stripe Express Checkout.
+
+    Stripe's PayPal Payment Element path creates a Checkout-owned SetupIntent for
+    zero-amount trials. In current OpenAI/Stripe sessions that SetupIntent can be
+    provider-declined before a PayPal redirect is emitted. Express Checkout has a
+    separate Billing Agreement creation endpoint that returns a BA token directly.
+    """
+
+    resp = stripe.post(
+        "https://api.stripe.com/v1/elements/express_billing_agreement",
+        data={
+            "key": stripe_pk,
+            "paypal_sdk_version": sdk_version,
+            "_stripe_version": PAYPAL_STRIPE_VERSION,
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"express BA failed: HTTP {resp.status_code} {short(resp.text)}")
+    try:
+        payload = resp.json() or {}
+    except Exception as exc:
+        raise RuntimeError(f"express BA invalid response: {short(resp.text)}") from exc
+    token = str(payload.get("paypal_billing_agreement_token") or "").strip()
+    if not token.startswith("BA-"):
+        raise RuntimeError(f"express BA missing token: {short(payload)}")
+    return {
+        "paypal_link": paypal_ba_approve_url_from_token(token),
+        "provider_redirect_url": paypal_ba_approve_url_from_token(token),
+        "stripe_redirect_url": "",
+        "ba_token": token,
+        "link_source": "stripe_express_billing_agreement",
+        "paypal_sdk_version": sdk_version,
+    }
+
+
 def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dict[str, Any]:
     log = log or (lambda _m: None)
     token = str(cfg.access_token or "").strip()
@@ -705,6 +747,23 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         if not is_zero_amount(amount):
             raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
         hosted = str(init_payload.get("stripe_hosted_url") or "")
+
+        log("[5/6] Express Checkout Billing Agreement 提链")
+        try:
+            fields = create_express_billing_agreement(stripe, stripe_pk=pk, sdk_version="v5")
+            fields["amount"] = amount
+            fields["pre_promo_amount"] = pre_promo_amount
+            fields["pre_promo_payment_method_types"] = pre_promo_pmt
+            fields["pre_promo_ordered_payment_method_types"] = pre_promo_ordered
+            fields["post_promo_payment_method_types"] = pmt
+            fields["post_promo_ordered_payment_method_types"] = ordered
+            fields["cs_id"] = cs_id
+            fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
+            fields["billing"] = billing
+            log(f"Express BA 提链成功 source={fields.get('link_source')} ba_token={bool(fields.get('ba_token'))}")
+            return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
+        except Exception as exc:
+            log(f"Express BA 提链失败，回退 inline confirm: {short(exc)}")
 
         log("[5/6] inline confirm PayPal")
         confirm_payload = _confirm_paypal_inline(
