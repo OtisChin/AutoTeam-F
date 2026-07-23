@@ -828,7 +828,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         pre_promo_pmt = pmt
         pre_promo_ordered = ordered
         log(f"预热金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")
-        if not has_paypal:
+        if not has_paypal and not cfg.apply_promo:
             raise RuntimeError(f"未出现 PayPal，pmt={pmt}")
 
         if cfg.apply_promo:

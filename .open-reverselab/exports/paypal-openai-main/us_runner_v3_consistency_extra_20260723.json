@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "stage": "us_runner_v3_consistency_extra",
+  "checks": {
+    "griffin_language_profile": false,
+    "conditional_kyc_field_events": true,
+    "card_retry_preserves_country": true,
+    "identity_retry_preserves_country": false
+  }
+}

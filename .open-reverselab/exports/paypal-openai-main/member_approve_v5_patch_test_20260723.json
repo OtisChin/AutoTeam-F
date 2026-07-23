@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "stage": "member_approve_v5_patch",
+  "checks": {
+    "mutation_exported": true,
+    "operation_name": true,
+    "variables_token": true,
+    "variables_fi": true,
+    "no_signup_mutation": true,
+    "status_success": true,
+    "completed": true,
+    "return_followed": true,
+    "buyer_set": true,
+    "instrument_set": true
+  },
+  "result": {
+    "status": "success",
+    "final_redirect_url": "https://merchant.example/return?done=1",
+    "buyer_user_id": "BUYER-MEMBER-1",
+    "funding_instrument_present": true,
+    "completed_payment_info_present": true
+  }
+}

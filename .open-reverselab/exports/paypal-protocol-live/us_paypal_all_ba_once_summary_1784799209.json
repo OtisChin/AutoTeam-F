@@ -1,0 +1,100 @@
+{
+  "attempts": [
+    {
+      "index": 1,
+      "token": "BA-***REDACTED***",
+      "token_masked": "BA-***310A",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "db3fdebac515",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "started_at": "2026-07-23 17:33:29",
+      "finished_at": "2026-07-23 17:34:27",
+      "elapsed_s": 58.1
+    },
+    {
+      "index": 2,
+      "token": "BA-***REDACTED***",
+      "token_masked": "BA-***382W",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "7c094de88aa0",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "started_at": "2026-07-23 17:34:33",
+      "finished_at": "2026-07-23 17:35:32",
+      "elapsed_s": 59.1
+    },
+    {
+      "index": 3,
+      "token": "BA-***REDACTED***",
+      "token_masked": "BA-***054U",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "49dc62dc5d97",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "started_at": "2026-07-23 17:35:38",
+      "finished_at": "2026-07-23 17:36:39",
+      "elapsed_s": 60.9
+    },
+    {
+      "index": 4,
+      "token": "BA-***REDACTED***",
+      "token_masked": "BA-***314X",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "a67c4b7e7e75",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "started_at": "2026-07-23 17:36:45",
+      "finished_at": "2026-07-23 17:37:50",
+      "elapsed_s": 64.8
+    },
+    {
+      "index": 5,
+      "token": "BA-***REDACTED***",
+      "token_masked": "BA-***990N",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "a91e733c58cc",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "started_at": "2026-07-23 17:37:56",
+      "finished_at": "2026-07-23 17:38:54",
+      "elapsed_s": 58.2
+    },
+    {
+      "index": 6,
+      "token": "BA-***REDACTED***",
+      "token_masked": "BA-***591V",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "b49864b6b91b",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "started_at": "2026-07-23 17:39:00",
+      "finished_at": "2026-07-23 17:39:46",
+      "elapsed_s": 46.5
+    },
+    {
+      "index": 7,
+      "token": "BA-***REDACTED***",
+      "token_masked": "BA-***420J",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "79a452f6e022",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "started_at": "2026-07-23 17:39:52",
+      "finished_at": "2026-07-23 17:40:53",
+      "elapsed_s": 60.3
+    },
+    {
+      "index": 8,
+      "token": "BA-***REDACTED***",
+      "token_masked": "BA-***7206",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "4a9d9845817a",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "started_at": "2026-07-23 17:40:59",
+      "finished_at": "2026-07-23 17:41:57",
+      "elapsed_s": 58.2
+    }
+  ]
+}

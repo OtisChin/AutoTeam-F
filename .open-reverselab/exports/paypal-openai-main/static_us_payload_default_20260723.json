@@ -1,0 +1,36 @@
+2026-07-23 20:47:25.570 | INFO     | paypal.session:__init__:586 - HTTP client: httpx (http2=True)
+2026-07-23 20:47:25.570 | INFO     | paypal.session:__init__:587 - HTTP outbound proxy: 代理关闭
+{
+  "profile_country": "BR",
+  "profile_locale": "pt_BR",
+  "profile_lang": "pt-BR",
+  "content_country": "US",
+  "content_lang": "pt",
+  "signup_url": "https://www.paypal.com/checkoutweb/signup?ul=1&modxo_redirect_reason=guest_user&locale.x=pt_BR&country.x=BR&ba_token=BA-TEST&token=&rcache=1&cookieBannerVariant=hidden",
+  "signup_keys": [
+    "billingAddress",
+    "card",
+    "contentIdentifier",
+    "country",
+    "crsData",
+    "dateOfBirth",
+    "email",
+    "firstName",
+    "identityDocument",
+    "lastName",
+    "legalAgreements",
+    "marketingOptOut",
+    "password",
+    "phone",
+    "shippingAddress",
+    "supportedThreeDsExperiences",
+    "token"
+  ],
+  "phone_payload": {
+    "countryCode": "1",
+    "number": "8352891555",
+    "type": "MOBILE"
+  },
+  "has_card": true,
+  "has_identityDocument": true
+}

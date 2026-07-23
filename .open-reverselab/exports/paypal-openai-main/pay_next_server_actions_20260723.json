@@ -1,0 +1,191 @@
+[
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ouxavgqrxfqh.js",
+    "id": "70ebf22886b9ebe5d886cf2ab36ea14e69507d2c2f",
+    "name": "attemptPasskeyEnrollment",
+    "pos": 29611,
+    "snippet": "g\"}),(0,t.jsx)(\"img\",{src:i.src,alt:\"\",\"aria-hidden\":\"true\",\"data-testid\":\"passkeyImg\",className:\"absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transform\"})]})]})}],896742)},737028,e=>{\"use strict\";var t=e.i(95187);let r=(0,t.createServerReference)(\"70ebf22886b9ebe5d886cf2ab36ea14e69507d2c2f\",t.callServer,void 0,t.findSourceMapURL,\"attemptPasskeyEnrollment\");e.s([\"attemptPasskeyEnrollment\",0,r])},139887,e=>{\"use strict\";e.s([\"extractQueryParam\",0,(e,t)=>{let r=e.split(\"?\")[1];return r?new URLSearchParams(r).get(t)??\"\":\"\"}])},735691,e=>{\"use strict\";var t=e.i(95187);let r=(0,t.createServerReference)(\"40fa925529fecaca7957ea3fb609dff5063e3c34c3\",t.callServer,void 0,t.findSourceMapURL,\"goBackToMerchantAction\");e.s([\"goBackToMerchantAction\",0,r])},583448,134121,820593,e=>{\"use strict\";var t=e.i(438232),r=e.i(143216),n=e.i(719074),i=e.i(782462);let a={INITIAL:\"initial\",LOADING:\"loading\",ERROR:\"error\",SUCCESS:\"success\"},o={[a.ERROR]:i.ButtonVariant.Seco"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "id": "40e8deef772794ef707eab1afdec4d486a904df4be",
+    "name": "authorizePushLogin",
+    "pos": 94783,
+    "snippet": "f:g,type:\"hidden\",name:\"errorName\",defaultValue:\"\"}),(0,t.jsx)(\"input\",{ref:f,type:\"hidden\",name:\"errorMessage\",defaultValue:\"\"})]})]})}],987592)},131581,e=>{\"use strict\";var t=e.i(438232),n=e.i(968391),o=e.i(15010),r=e.i(95187);let a=(0,r.createServerReference)(\"40e8deef772794ef707eab1afdec4d486a904df4be\",r.callServer,void 0,r.findSourceMapURL,\"authorizePushLogin\"),i=(0,r.createServerReference)(\"407b717a4effe27aa25863af603391aa12393a9887\",r.callServer,void 0,r.findSourceMapURL,\"pollPushLogin\");var s=e.i(809726),l=e.i(65403),c=e.i(736265),u=e.i(16830),d=e.i(802613);function m(e){let{action:n,ctxId:r}=e,a=(0,o.useRef)(null),i=(0,o.useRef)(!1);return(0,o.useEffect)(()=>{!i.current&&r&&a.current&&(i.current=!0,\"function\"==typeof a.current.requestSubmit?a.current.requestSubmit():a.current.dispatchEvent(new Event(\"submit\",{cancelable:!0,bubbles:!0})))},[r]),(0,t.jsxs)(\"form\",{ref:a,action:n,className:\"hidden\",\"data-testid\":\"push-login-init-form\",children:[(0,"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0d2pwt5y4rrzw.js",
+    "id": "60187d0e8cbc4131987e2c84c8e430dce698c2ace3",
+    "name": "createUserAction",
+    "pos": 25304,
+    "snippet": ",helperText:a,helperTextType:a?f.HelperTextType.ERROR:void 0,id:\"login_email\",label:i,name:\"login_email\",type:\"email\",className:\"mb-6\",inputRef:l,\"aria-describedby\":\"login_email-helper-text\",onChange:c,value:r})}var S=e.i(95187);let A=(0,S.createServerReference)(\"60187d0e8cbc4131987e2c84c8e430dce698c2ace3\",S.callServer,void 0,S.findSourceMapURL,\"createUserAction\");var h=e.i(65403),I=e.i(566935);function x(e){let{buttonText:s,isRedirect:n,isSubmitting:r}=e,{pending:_}=(0,o.useFormStatus)();return(0,t.jsx)(a.Button,{\"data-atomic-wait-intent\":m.ATOMIC_CI_NAMES.CONTINUE_TO_PAYMENT,\"data-atomic-wait-task\":m.ATOMIC_TASKS.LOGIN_CREATE_ACCOUNT,\"data-atomic-wait-domain\":m.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":m.ATOMIC_VIEWS.GUEST_CHECKOUT_REQUEST,\"data-testid\":\"continueButton\",children:_||n||r?(0,t.jsx)(i.Spinner,{size:i.SpinnerSize.Medium,contrast:!0,description:\"creating account...\"}):s})}let E=(0,h.default)({Component:function(e){let{ctxId:a,onboardingDa"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ss3mbkdajg_j.js",
+    "id": "7f56d3845ccf731cbeeabb326354d06e3db89f68eb",
+    "name": "dropAccessTokenCookie",
+    "pos": 35412,
+    "snippet": "heckmark\"});case l.INITIAL:default:return(0,t.jsx)(\"span\",{\"aria-label\":i[\"button.continue\"],children:s?i[\"button.continue\"]:n?i[\"text.addPasskey\"]:i[\"button.continue\"]})}}(o,s,c,d)})}])},146516,e=>{\"use strict\";var t=e.i(95187);let r=(0,t.createServerReference)(\"7f56d3845ccf731cbeeabb326354d06e3db89f68eb\",t.callServer,void 0,t.findSourceMapURL,\"dropAccessTokenCookie\");e.s([\"dropAccessTokenCookie\",0,r])},241007,e=>{\"use strict\";var t=e.i(438232),r=e.i(15010),a=e.i(719074),i=e.i(896742);let l=e=>{let{title:r,description:a}=e;return(0,t.jsxs)(\"li\",{className:\"w-[301px]\",children:[(0,t.jsx)(\"div\",{className:\"text-caption mb-1 leading-[18px]\",children:r}),(0,t.jsx)(\"p\",{className:\"text-caption leading-[18px]\",children:a})]})},n=e=>{let{onClose:r,content:n}=e,s=[{title:n.textWhatIsPasskey,description:n.textPassPhraseDigitalKey},{title:n.textSkipThePassword,description:n.textPasskeysAuthenticationMethod},{title:n.textLogInAcrossDevices,description:n.textQuickSecu"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ouxavgqrxfqh.js",
+    "id": "40c23dcb1353befb53117e8615215138ecd9f3cfd9",
+    "name": "dropAuthOptionCookie",
+    "pos": 31993,
+    "snippet": "k w-4 bg-contain bg-no-repeat\",\"aria-hidden\":\"true\",children:(0,t.jsx)(n.Icon,{size:\"sm\",name:\"checkmark\",\"aria-hidden\":\"true\",className:\"h-[18px] w-[18px]\"})}),(0,t.jsx)(\"span\",{children:e})]},e))})})}],134121);var s=e.i(95187);let l=(0,s.createServerReference)(\"40c23dcb1353befb53117e8615215138ecd9f3cfd9\",s.callServer,void 0,s.findSourceMapURL,\"dropAuthOptionCookie\");e.s([\"dropAuthOptionCookie\",0,l],820593)},117629,e=>{\"use strict\";var t=e.i(95187);let r=(0,t.createServerReference)(\"402f6fa761f2f92fc4036c054e9e08a15cc8438eeb\",t.callServer,void 0,t.findSourceMapURL,\"setUncookiedExperienceAction\");e.s([\"setUncookiedExperienceAction\",0,r])}]);  //# sourceMappingURL=364kk06vyiw12.js.map"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ak_hnphdq9in.js",
+    "id": "40119ea45de7135869f32892c6e0436cc9722b7775",
+    "name": "fetchDeviceFingerprintDataAction",
+    "pos": 7346,
+    "snippet": ":r,\"data-testid\":\"fnasync-script\",fetchPriority:\"low\"}),(0,t.jsx)(\"noscript\",{children:(0,t.jsx)(\"img\",{alt:\"no-script\",fetchPriority:\"low\",src:s})})]}):null}])},424168,e=>{\"use strict\";var t=e.i(438232),n=e.i(3303),i=e.i(95187);let r=(0,i.createServerReference)(\"40119ea45de7135869f32892c6e0436cc9722b7775\",i.callServer,void 0,i.findSourceMapURL,\"fetchDeviceFingerprintDataAction\");var s=e.i(736265),a=e.i(15010),o=e.i(809726),l=e.i(62312);let _=async(e,t,n,i)=>{try{let{deviceFingerprintEmailToPrefill:a,dfpEm:_}=await r(e)??{};if(!a)return void o.obs.emit(\"identity_dfp_email_not_returned_from_server\",\"error\",{analytics:{...t,[l.FptiKey.EventName]:\"identity_dfp_email_not_returned_from_server\"}});if(n){var s=!!_;let e=document.getElementById(\"publicCredentialSubmitForm\");if(e&&e instanceof HTMLFormElement&&!e.querySelector('input[name=\"dfpEm\"]')&&s){let t=document.createElement(\"input\");t.type=\"hidden\",t.name=\"dfpEm\",t.value=String(s),e.appendChild(t)}((e,t,n,i)=>{let r=do"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "id": "406f06eb3cbeee9452a08144ac50f17f747e5312af",
+    "name": "getOnboardingLink",
+    "pos": 61865,
+    "snippet": "H_PASSKEY,ciViewName:u.ATOMIC_VIEWS.PASSKEY_REQUEST});e.s([\"default\",0,y])},597333,e=>{\"use strict\";var t=e.i(438232),n=e.i(207670),o=e.i(736265),r=e.i(140263),a=e.i(503222),i=e.i(361179),s=e.i(809726),l=e.i(691488),c=e.i(95187);let u=(0,c.createServerReference)(\"406f06eb3cbeee9452a08144ac50f17f747e5312af\",c.callServer,void 0,c.findSourceMapURL,\"getOnboardingLink\");e.s([\"CreateAccountLink\",0,e=>{let{ctxId:c,children:d,className:m,onboardingLink:p,isCookied:_,states:h,onboardingOneTimeSignupEnabled:y}=e,{dismissAll:g}=(0,r.useAlert)();if(!p)return null;if(_){let e=(0,l.getCommonTags)(h),n=async e=>{let{ctxId:t,onboardingOneTimeSignupEnabled:n,onboardingLink:o}=e,r=await u({ctxId:t,onboardingOneTimeSignupEnabled:n,link:o});window.location.assign(r)},o=h.isGuestEligible?\"pay_with_card\":\"create_account\";return(0,t.jsx)(\"a\",{\"data-testid\":\"onboarding-link\",className:\"text-link-lg text-link visited:text-link active:text-link-active focus-visible:ring-structur"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ouxavgqrxfqh.js",
+    "id": "40fa925529fecaca7957ea3fb609dff5063e3c34c3",
+    "name": "goBackToMerchantAction",
+    "pos": 29968,
+    "snippet": "sskeyEnrollment\");e.s([\"attemptPasskeyEnrollment\",0,r])},139887,e=>{\"use strict\";e.s([\"extractQueryParam\",0,(e,t)=>{let r=e.split(\"?\")[1];return r?new URLSearchParams(r).get(t)??\"\":\"\"}])},735691,e=>{\"use strict\";var t=e.i(95187);let r=(0,t.createServerReference)(\"40fa925529fecaca7957ea3fb609dff5063e3c34c3\",t.callServer,void 0,t.findSourceMapURL,\"goBackToMerchantAction\");e.s([\"goBackToMerchantAction\",0,r])},583448,134121,820593,e=>{\"use strict\";var t=e.i(438232),r=e.i(143216),n=e.i(719074),i=e.i(782462);let a={INITIAL:\"initial\",LOADING:\"loading\",ERROR:\"error\",SUCCESS:\"success\"},o={[a.ERROR]:i.ButtonVariant.Secondary,[a.SUCCESS]:i.ButtonVariant.Success};e.s([\"BUTTON_STATES\",0,a,\"default\",0,function(e){let{content:s,state:l,shouldShowHowPasskeysWork:c=!0,showContinueButtonVariant:d,showNextButtonVariant:u=!1}=e,_=o[l]||void 0,p=l===a.LOADING||l===a.SUCCESS,m=u?s.next:d?s.buttonContinue:c?s.textAddPasskey:s.buttonContinue;return(0,t.jsxs)(i.Button,{type:\"submit\""
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/3pla3yvx6jgp1.js",
+    "id": "402d5f9fe0efe473ad913e5bffe8903c2c65e7625c",
+    "name": "initiateRecovery",
+    "pos": 12182,
+    "snippet": "wRedirectionForm\",children:[(0,o.jsx)(\"input\",{type:\"hidden\",name:\"ctxId\",value:l}),(0,o.jsx)(\"input\",{type:\"hidden\",name:\"formName\",value:t.View.TAW}),d]})}])},127827,e=>{\"use strict\";var o=e.i(16830),n=e.i(809726),t=e.i(95187);let r=(0,t.createServerReference)(\"402d5f9fe0efe473ad913e5bffe8903c2c65e7625c\",t.callServer,void 0,t.findSourceMapURL,\"initiateRecovery\");var a=e.i(327194),i=e.i(968391);let s=/[0-9]/,l=/[a-zA-Z]/,c=/[!@#$%^&*(),.?\":{}|<>]/,d=/[A-Z]/,m=/[a-z]/,u=[\"qwer\",\"asdf\",\"zxcv\",\"rewq\",\"fdsa\",\"vcxz\",\"qwerty\",\"asdfgh\",\"zxcvbn\",\"ytrewq\",\"hgfdsa\",\"nbvcxz\",\"1234\",\"2345\",\"3456\",\"4567\",\"5678\",\"6789\",\"4321\",\"5432\",\"6543\",\"7654\",\"8765\",\"9876\",\"abcd\",\"dcba\",\"wxyz\",\"zyxw\",\"yuio\",\"hjkl\",\"vbnm\"],p=function(e,t,r){let a=arguments.length>3&&void 0!==arguments[3]?arguments[3]:{},i=arguments.length>4?arguments[4]:void 0,s=arguments.length>5&&void 0!==arguments[5]?arguments[5]:{};n.obs.emit(e,t,{analytics:{event_name:e,state_name:\"password_change_validatio"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ouxavgqrxfqh.js",
+    "id": "40e3be26b960cc7f44494b29aeb5065f575bd3e9e1",
+    "name": "metaPasskeyCancelledAction",
+    "pos": 15287,
+    "snippet": "Timeout(t,1e3*e)),\"encodeURIComponentSafely\",0,e=>{try{return encodeURIComponent(JSON.stringify(e))}catch(e){return null}}])},264186,299634,e=>{\"use strict\";var t=e.i(15010),r=e.i(140263),n=e.i(809726),i=e.i(868458),a=e.i(95187);let o=(0,a.createServerReference)(\"40e3be26b960cc7f44494b29aeb5065f575bd3e9e1\",a.callServer,void 0,a.findSourceMapURL,\"metaPasskeyCancelledAction\");e.s([\"metaPasskeyCancelledAction\",0,o],299634);var s=e.i(249226),l=e.i(736265),c=e.i(818897),d=e.i(968391);async function u(e){try{return await (0,s.submitPasskeyAction)(e)}catch(r){if((0,d.isRedirectError)(r))return;let{name:e,message:t}=r instanceof Error?r:{};n.obs.emit(\"meta_passkey_submit_error\",\"error\",{logs:{name:e,message:t}});return}}e.s([\"useMetaPasskey\",0,function(e){let{isMetaIAB:a,metaCredentialType:s,metaPasskeyCredentials:d,partyIdHash:_,pkResponseRef:p,skipPasskeyGetCall:m=!1}=e,f=(0,t.useRef)(null),y=(0,t.useRef)(null),[h,g]=(0,t.useState)(!1),[v,b]=(0,t.useState)(!1),[A,E]=("
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0d2pwt5y4rrzw.js",
+    "id": "40e09eb5d96b7cd7b56887178cbf6120f50bd72da6",
+    "name": "passkeyCancelledAction",
+    "pos": 6801,
+    "snippet": "ntentSizeFull\",0,h,\"SheetDescription\",0,T,\"SheetFooter\",0,x,\"SheetHeader\",0,I,\"SheetOverlay\",0,f,\"SheetPortal\",0,g,\"SheetTitle\",0,E,\"SheetTrigger\",0,y],667633)},566935,e=>{\"use strict\";var t=e.i(15010),a=e.i(630972),i=e.i(95187);let s=(0,i.createServerReference)(\"40e09eb5d96b7cd7b56887178cbf6120f50bd72da6\",i.callServer,void 0,i.findSourceMapURL,\"passkeyCancelledAction\");var n=e.i(249226),o=e.i(140263),r=e.i(736265),_=e.i(16830),l=e.i(809726),d=e.i(327194),c=e.i(968391),m=e.i(858268);let u={allowAutofill:!0},y=e=>new Promise(t=>setTimeout(t,1e3*e)),p=async e=>{try{return await (0,n.submitPasskeyAction)(e)}catch{return}};e.s([\"usePasskey\",0,function(e){let{passkeyChallengeContextId:i,rpId:g,config:b=u,commonTags:f,isForceLogin:v,isRBLLogin:k,isIWCSameAsULExperiment:S=!1,isMetaIAB:A,isSCACountry:h,passkeyErrorMessage:I,isInIframe:x=!1}=e,E=(0,t.useRef)(null),T=(0,t.useRef)(null),[C,N]=(0,t.useState)(!1),[O,w]=(0,t.useState)(!1),[M,P]=(0,t.useState)(!1),{alert:R"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "id": "407b717a4effe27aa25863af603391aa12393a9887",
+    "name": "pollPushLogin",
+    "pos": 94919,
+    "snippet": "],987592)},131581,e=>{\"use strict\";var t=e.i(438232),n=e.i(968391),o=e.i(15010),r=e.i(95187);let a=(0,r.createServerReference)(\"40e8deef772794ef707eab1afdec4d486a904df4be\",r.callServer,void 0,r.findSourceMapURL,\"authorizePushLogin\"),i=(0,r.createServerReference)(\"407b717a4effe27aa25863af603391aa12393a9887\",r.callServer,void 0,r.findSourceMapURL,\"pollPushLogin\");var s=e.i(809726),l=e.i(65403),c=e.i(736265),u=e.i(16830),d=e.i(802613);function m(e){let{action:n,ctxId:r}=e,a=(0,o.useRef)(null),i=(0,o.useRef)(!1);return(0,o.useEffect)(()=>{!i.current&&r&&a.current&&(i.current=!0,\"function\"==typeof a.current.requestSubmit?a.current.requestSubmit():a.current.dispatchEvent(new Event(\"submit\",{cancelable:!0,bubbles:!0})))},[r]),(0,t.jsxs)(\"form\",{ref:a,action:n,className:\"hidden\",\"data-testid\":\"push-login-init-form\",children:[(0,t.jsx)(d.FraudnetFormElement,{formRef:a}),(0,t.jsx)(\"input\",{type:\"hidden\",name:\"ctxId\",defaultValue:r})]})}function p(e){let{actio"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "id": "40f861380f6e1df5d1e28c523ea522f32e59e977f9",
+    "name": "resendOtpCode",
+    "pos": 89604,
+    "snippet": "sk:d.ATOMIC_TASKS.LOGIN_WITH_OTP,ciViewName:d.ATOMIC_VIEWS.OTP_INPUT});e.s([\"CodeInputForm\",0,w,\"default\",0,P],82632)},202723,e=>{\"use strict\";var t=e.i(438232),n=e.i(488171),o=e.i(782462),r=e.i(143216),a=e.i(62331),i=e.i(95187);let s=(0,i.createServerReference)(\"40f861380f6e1df5d1e28c523ea522f32e59e977f9\",i.callServer,void 0,i.findSourceMapURL,\"resendOtpCode\");var l=e.i(809726),c=e.i(327194),u=e.i(16830);function d(e){let{content:a,showUlExp:i}=e,{pending:s}=(0,n.useFormStatus)();return(0,t.jsx)(o.Button,{type:\"submit\",variant:o.ButtonVariant.Tertiary,\"data-atomic-wait-intent\":u.ATOMIC_CI_NAMES.SEND_NEW_OTP_CODE,\"data-atomic-wait-task\":u.ATOMIC_TASKS.SELECT_RESEND_OTP_CODE,\"data-atomic-wait-domain\":u.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":u.ATOMIC_VIEWS.OTP_INPUT,className:i?\"h-full font-normal\":\"h-full\",children:s?(0,t.jsx)(r.Spinner,{size:r.SpinnerSize.Medium,description:\"Resend otp code...\"}):a.sendNewCode})}e.s([\"ResendCodeForm\",0,function(e"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "id": "40c978dccc37859117ddd7920936b9be52e9249164",
+    "name": "restartPushLogin",
+    "pos": 101121,
+    "snippet": "ntervalSeconds:g,pollResponse:v,isCancelledRef:N}):null]})},current:c.View.PushLogin,task:u.ATOMIC_TASKS.LOGIN_WITH_PUSH,ciViewName:u.ATOMIC_VIEWS.PUSH_LOGIN});e.s([\"default\",0,y],131581)},38037,e=>{\"use strict\";var t=e.i(95187);let n=(0,t.createServerReference)(\"40c978dccc37859117ddd7920936b9be52e9249164\",t.callServer,void 0,t.findSourceMapURL,\"restartPushLogin\");e.s([\"restartPushLogin\",0,n])},657620,e=>{\"use strict\";var t=e.i(438232),n=e.i(15010),o=e.i(782462),r=e.i(968391),a=e.i(809726),i=e.i(38037),s=e.i(736265);e.s([\"PushLoginDenied\",0,function(e){var l,c;let{states:u,commonTags:d,content:m}=e,p=u.subView??[],_=!!(null==(l=u.views)?void 0:l.includes(s.View.PushLoginStatus))&&p.includes(s.SubView.PushLoginDenied),h=[(c=u.deviceInfo??{}).isMobile,c.isMobilePhone].some(e=>!0===e);if((0,n.useEffect)(()=>{_&&a.obs.emit(\"app_login_denied_page_rendered\",\"info\",{analytics:{...d,state_name:\"push_login_result\",transition_name:\"push_login_retry\",result_statu"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/3pla3yvx6jgp1.js",
+    "id": "40807c11163d47f330129247f42b3ac4b5ba21a187",
+    "name": "selectedOptionSubmit",
+    "pos": 6631,
+    "snippet": "\"DropdownContent\",0,C,\"DropdownGroup\",0,d,\"DropdownItem\",0,N,\"DropdownLabel\",0,y,\"DropdownTrigger\",0,p,\"DropdownValue\",0,u],504916)},712102,e=>{\"use strict\";var o=e.i(438232),n=e.i(770703),t=e.i(782462),r=e.i(15010),a=e.i(95187);let i=(0,a.createServerReference)(\"40807c11163d47f330129247f42b3ac4b5ba21a187\",a.callServer,void 0,a.findSourceMapURL,\"selectedOptionSubmit\");var s=e.i(736265),l=e.i(140263),c=e.i(16830),d=e.i(809726);let m=(0,n.default)(()=>e.A(418006).then(e=>({default:e.TAWSheet})),{loadableGenerated:{modules:[305956]},ssr:!1});e.s([\"default\",0,function(e){let{currentView:n,loginOptions:a,ctxId:u,content:p,buttonVariant:h,commonTags:y,showUlExp:_=!1,className:g,buttonStyle:C,passwordRecoveryUrl:N,isGuestEligible:P,buttonTextOverride:f}=e,[R,b]=(0,r.useState)(!1),w=(0,r.useCallback)(()=>{let e=a.map(e=>\"create-account\"===e?P?\"pay_with_card\":\"create_account\":e);d.obs.emit(\"identity_login_taw_button_clicked\",\"info\",{analytics:{...y,event_name:\"iden"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "id": "40ffdcf051d6fc9041b9b32a357135c0826eafb32c",
+    "name": "sendOtpCode",
+    "pos": 63871,
+    "snippet": "value:c}),(0,t.jsx)(\"input\",{type:\"hidden\",name:\"formName\",value:o.View.CreateAccountAction}),(0,t.jsx)(i.CreateAccountTertiaryButton,{children:d})]})}],597333)},68676,e=>{\"use strict\";var t=e.i(438232),n=e.i(15010),o=e.i(95187);let r=(0,o.createServerReference)(\"40ffdcf051d6fc9041b9b32a357135c0826eafb32c\",o.callServer,void 0,o.findSourceMapURL,\"sendOtpCode\");var a=e.i(488171),i=e.i(782462),s=e.i(143216),l=e.i(16830);function c(e){let{label:n}=e,{pending:o}=(0,a.useFormStatus)();return(0,t.jsx)(i.Button,{type:\"submit\",\"data-atomic-wait-intent\":l.ATOMIC_CI_NAMES.REQUEST_OTP,\"data-atomic-wait-task\":l.ATOMIC_TASKS.LOGIN_WITH_OTP,\"data-atomic-wait-domain\":l.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":l.ATOMIC_VIEWS.OTP_REQUEST,children:o?(0,t.jsx)(s.Spinner,{size:s.SpinnerSize.Medium,contrast:!0,description:\"Sending code...\"}):n})}var u=e.i(504916),d=e.i(809726);function m(e){let{smsOtpChallenges:o,content:r,commonTags:a}=e,[i,s]=(0,n.useState)(o[0].cha"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/3pla3yvx6jgp1.js",
+    "id": "402fd7c46b98831b15c806f50bd38d95ff00ae2eb5",
+    "name": "setPasskeyOptinCapping",
+    "pos": 18493,
+    "snippet": "ngth}),!0)],127827)},249643,e=>{\"use strict\";var o=e.i(438232),n=e.i(15010),t=e.i(583448),r=e.i(735691),a=e.i(139887),i=e.i(736265),s=e.i(896742),l=e.i(134121),c=e.i(241007),d=e.i(809726),m=e.i(146516),u=e.i(820593),p=e.i(95187);let h=(0,p.createServerReference)(\"402fd7c46b98831b15c806f50bd38d95ff00ae2eb5\",p.callServer,void 0,p.findSourceMapURL,\"setPasskeyOptinCapping\");var y=e.i(630972),_=e.i(737028),g=e.i(719074),C=e.i(968391),N=e.i(16830),P=e.i(327194);e.s([\"default\",0,function(e){let{content:p,showUlExp:f,shouldShowHowPasskeysWork:R,hasPasskeyWorkInfo:b,passkeyDetails:w,ctxId:v,enrollPoint:x,showContinueButtonVariant:F,shouldAutoTriggerPasskeyEnrollment:k,isSCACountry:S,commonTags:E}=e,T=JSON.parse(w),[I,A]=(0,n.useState)(t.BUTTON_STATES.INITIAL),[M,j]=(0,n.useState)(!1),[O,L]=(0,n.useState)(!1),B=(0,n.useRef)(null),D=(0,n.useRef)(!1);(0,n.useEffect)(()=>{(0,P.markUIReady)(N.ATOMIC_VIEWS.PASSKEY_REQUEST,\"Ok\",{task:N.ATOMIC_TASKS.LOGIN_WITH_PASSKEY,domain"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ouxavgqrxfqh.js",
+    "id": "402f6fa761f2f92fc4036c054e9e08a15cc8438eeb",
+    "name": "setUncookiedExperienceAction",
+    "pos": 32218,
+    "snippet": "87);let l=(0,s.createServerReference)(\"40c23dcb1353befb53117e8615215138ecd9f3cfd9\",s.callServer,void 0,s.findSourceMapURL,\"dropAuthOptionCookie\");e.s([\"dropAuthOptionCookie\",0,l],820593)},117629,e=>{\"use strict\";var t=e.i(95187);let r=(0,t.createServerReference)(\"402f6fa761f2f92fc4036c054e9e08a15cc8438eeb\",t.callServer,void 0,t.findSourceMapURL,\"setUncookiedExperienceAction\");e.s([\"setUncookiedExperienceAction\",0,r])}]);  //# sourceMappingURL=364kk06vyiw12.js.map"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/3g_65xicymm3g.js",
+    "id": "408cdbfcfb063642520b8dde73b124955e07000967",
+    "name": "showCreateAccountAction",
+    "pos": 17163,
+    "snippet": "CV4AkfDGGwOy0H47CRfJUrIjP\",LEGACY_UL_ACCESS_TOKEN_LIVE:\"DPz73K5mY4nlBaZpzRkjI3ZzAY3QMmrP\",LEGACY_UL_ACCESS_TOKEN_SANDBOX:\"jIHSLr4M5Yy4U-3CrkGq73ovwuW\",META_COOKIE:\"meta_headsup_token\"}])},503222,e=>{\"use strict\";var o=e.i(95187);let n=(0,o.createServerReference)(\"408cdbfcfb063642520b8dde73b124955e07000967\",o.callServer,void 0,o.findSourceMapURL,\"showCreateAccountAction\");e.s([\"showCreateAccountAction\",0,n])},844811,e=>{\"use strict\";e.s([\"checkDidAutoFill\",0,function(){try{if(\"u\"<typeof document)return!1;let e=document.querySelector(\"#password\");if(!e)return!1;let o=document.querySelectorAll(\":autoFill\");return Array.from(o).includes(e)}catch(e){return!1}},\"useIsInIframe\",0,function(){try{return window.self!==window.top}catch{return!0}}])},770686,e=>{\"use strict\";var o=e.i(15010),n=e.i(630972),t=e.i(809726);e.s([\"usePasskeyDeviceEligibility\",0,function(){let[e,a]=(0,o.useState)(!1),[r,i]=(0,o.useState)(!1),[s,c]=(0,o.useState)(!1),[m,u]=(0,o.useState)(!1);retu"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/21uf3xizx29eh.js",
+    "id": "4001a3575889507884218055bf56a3b356651ac344",
+    "name": "ssoLogin",
+    "pos": 6613,
+    "snippet": "lls,task:m.ATOMIC_TASKS.LOGIN_WITH_WEBLLS,ciViewName:m.ATOMIC_VIEWS.WEBLLS});e.s([\"default\",0,T],273220)},543597,e=>{\"use strict\";var t=e.i(438232),a=e.i(15010),i=e.i(809726),n=e.i(802613),r=e.i(736265),s=e.i(65403),o=e.i(95187);let _=(0,o.createServerReference)(\"4001a3575889507884218055bf56a3b356651ac344\",o.callServer,void 0,o.findSourceMapURL,\"ssoLogin\");var l=e.i(16830),u=e.i(327194),c=e.i(968391);let m=(0,s.default)({Component:function(e){let{ctxId:r,commonTags:s}=e,o=(0,a.useRef)(null),m=async e=>{try{await _(e)}catch(t){if((0,c.isRedirectError)(t))return;i.obs.emit(\"identity_sso_failure\",\"error\",{analytics:{...s,event_name:\"identity_sso_failure\",state_name:\"begin_sso\",transition_name:\"process_sso_failure\",int_error_desc:\"network_error\",login_method:\"sso\"}});let e=new URL(window.location.href);e.searchParams.delete(\"code\"),e.searchParams.append(\"promptLogin\",\"true\"),window.location.assign(e.toString())}};return(0,a.useEffect)(()=>{i.obs.em"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "id": "608e3042897e5cd8b5844d534f8aaf26f30ae0392b",
+    "name": "submitOtp",
+    "pos": 81310,
+    "snippet": "ontinueButtonVariant:R})})]}),(0,t.jsx)(c.default,{isOpen:O,onClose:()=>{j(!O)},content:p,showUlExp:C,commonTags:E})]})]})}],249643)},82632,e=>{\"use strict\";var t=e.i(438232),n=e.i(15010),o=e.i(100302),r=e.i(802613),a=e.i(95187);let i=(0,a.createServerReference)(\"608e3042897e5cd8b5844d534f8aaf26f30ae0392b\",a.callServer,void 0,a.findSourceMapURL,\"submitOtp\");var s=e.i(81010),l=e.i(65403),c=e.i(736265),u=e.i(809726),d=e.i(16830),m=e.i(327194),p=e.i(62312),_=e.i(770686),h=e.i(968391),y=e.i(249643),g=e.i(630972),f=e.i(566935),v=e.i(844811),b=e.i(590531),C=e.i(782462);let x={error:\"\",error_description:\"\"};async function N(e,t,n,o){(u.obs.emit(`identity_login_otp_${t}_occurred`,\"info\",{analytics:{...o,event_name:`identity_login_otp_${t}_occurred`,state_name:\"begin_verify_otp\",transition_name:`process_otp_login_${t}`,login_method:\"otp\",redirect_reason:t}}),u.obs.emit(`identity_login_otp_start_${t}_redirection`,\"info\",{analytics:{...o,event_name:`identi"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ouxavgqrxfqh.js",
+    "id": "401f6f060d9fe8ad04037944a820516912a44030fa",
+    "name": "submitPasskeyAction",
+    "pos": 26915,
+    "snippet": "{try{return JSON.parse(e)}catch(e){return null}},\"parsePublicKeyCredential\",0,y,\"str2buff\",0,r,\"triggerDiscoverablePasskey\",0,m,\"triggerPasskey\",0,_,\"triggerPasskeyAutofill\",0,p],630972)},249226,e=>{\"use strict\";var t=e.i(95187);let r=(0,t.createServerReference)(\"401f6f060d9fe8ad04037944a820516912a44030fa\",t.callServer,void 0,t.findSourceMapURL,\"submitPasskeyAction\");e.s([\"submitPasskeyAction\",0,r])},62312,e=>{\"use strict\";var t,r=((t={}).DfpEm=\"dfp_em\",t.IntErrorDesc=\"int_error_desc\",t.EventName=\"event_name\",t.StateName=\"state_name\",t.TransitionName=\"transition_name\",t.LoginMethod=\"login_method\",t.IsPomaAccount=\"is_poma_account\",t.PubCredType=\"pub_cred_type\",t.RequestId=\"request_id\",t.ConfidenceScore=\"confidence_score\",t.PartyId=\"party_id\",t.DfpVisitorId=\"dfp_visitor_id\",t.Status=\"status\",t.ExperimentationExperience=\"experimentation_experience\",t.ExperimentationTreatment=\"experimentation_treatment\",t.DeviceFingerprintError=\"identity_dfp_error\",t.LoginRes"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/1yufc5qrkuq-q.js",
+    "id": "40165c14eefda4478936aafc14bf807dcee58f14fb",
+    "name": "submitPassword",
+    "pos": 233,
+    "snippet": "(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push([\"object\"==typeof document?document.currentScript:void 0,736649,e=>{\"use strict\";var t=e.i(438232),n=e.i(15010),r=e.i(802613),i=e.i(196966),o=e.i(146516),s=e.i(95187);let a=(0,s.createServerReference)(\"40165c14eefda4478936aafc14bf807dcee58f14fb\",s.callServer,void 0,s.findSourceMapURL,\"submitPassword\");var l=e.i(488171),_=e.i(472934);e.i(399558);var d=e.i(96247),m=e.i(560910),c=e.i(809726),p=e.i(62312),y=e.i(736265);function u(e){let{passwordHelperError:r,isAutoFillSupported:i,content:o,isSubmitting:s=!1,isRedirect:a=!1,commonTags:u,showPhone:g=!1,setIsAutofilled:f,isForceLogin:w,isRBLLogin:k,setPasswordHelperError:b,isFormSubmitedOnce:E,shouldMarkCredentialInputReadOnly:h=!1}=e,[P,v]=(0,n.useState)(\"password\"),{pending:A}=(0,l.useFormStatus)(),C={disabled:A||s||a};h&&(C.readOnly=A,C.disabled=s||a);let S=(0,n.useRef)(!1);g?u[p.FptiKey.PubCredType]=y.PublicCredentialType.Phone:u[p.FptiKey.Pu"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0d2pwt5y4rrzw.js",
+    "id": "403375d290e5845b191b7f22e6b940617e87334e8b",
+    "name": "submitPublicCredential",
+    "pos": 21447,
+    "snippet": "ll==(a=E.current)||a.reset(),R(m)};return{formRef:E,submitButtonRef:T,isAutoFillSupported:C,isSubmitting:O,isPasskeyAuthenticated:M,handlePasskey:K,handleDiscoverablePasskey:W}}],566935)},530486,e=>{\"use strict\";var t=e.i(95187);let a=(0,t.createServerReference)(\"403375d290e5845b191b7f22e6b940617e87334e8b\",t.callServer,void 0,t.findSourceMapURL,\"submitPublicCredential\");e.s([\"submitPublicCredential\",0,a])},392068,e=>{\"use strict\";var t=e.i(438232),a=e.i(782462),i=e.i(143216),s=e.i(618566),n=e.i(15010),o=e.i(488171),r=e.i(667633),_=e.i(530486),l=e.i(809726),d=e.i(770703),c=e.i(736265),m=e.i(16830),u=e.i(327194);function y(e){let{email:a,onOpenChange:i,open:s,ctxId:o,onboardingData:d,content:y,commonTags:b,isGuestEligible:f,shouldHideGuestCheckoutLink:v}=e,[k,S]=(0,n.useState)(!1);return(0,n.useEffect)(()=>{s&&(l.obs.emit(\"identity_guest_xo_login_option_shown\",\"info\",{analytics:{...b,event_name:\"identity_guest_xo_login_option_shown\",state_name:\"begin_guest_xo_"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/20sl76bnr6o-y.js",
+    "id": "404b8a30848a04512b3dfe9f29bf967d439515c980",
+    "name": "submitSetPassword",
+    "pos": 19681,
+    "snippet": "ALS_ONLY\",label:\"Use 2 of the following: letters, numbers, or symbols (like !@#$%^)\"}];var i=r.i(65403),d=r.i(736265),l=r.i(16830),u=r.i(140263),c=r.i(140986),m=r.i(968391);r.i(399558);var E=r.i(96247),p=r.i(802613),_=r.i(95187);let f=(0,_.createServerReference)(\"404b8a30848a04512b3dfe9f29bf967d439515c980\",_.callServer,void 0,_.findSourceMapURL,\"submitSetPassword\");var w=r.i(782462),O=r.i(143216),S=r.i(488171);function R(r){let{content:t}=r,{pending:s}=(0,S.useFormStatus)();return t?(0,e.jsx)(w.Button,{type:\"submit\",className:\"w-full rounded-full bg-black py-6 text-white hover:bg-black/90\",\"data-atomic-wait-intent\":l.ATOMIC_CI_NAMES.SET_PASSWORD_INTERSTITIAL,\"data-atomic-wait-task\":l.ATOMIC_TASKS.SET_PASSWORD,\"data-atomic-wait-domain\":l.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":l.ATOMIC_VIEWS.POST_LOGIN_INTERSTITIAL,children:s?(0,e.jsx)(O.Spinner,{size:O.SpinnerSize.Medium,contrast:!0,description:\"Saving password...\"}):t[\"addPassword.buttonLabel\"]}):nul"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "id": "40c90a3bc42abc7dbc8474933e9684a849e75c40ee",
+    "name": "submitTryMetaPasskeyLoginFallback",
+    "pos": 91734,
+    "snippet": ":\"resendOtp\"}),(0,t.jsx)(d,{content:o,showUlExp:!!r.showUlExp})]})}],202723)},987592,e=>{\"use strict\";var t=e.i(438232),n=e.i(15010),o=e.i(143216),r=e.i(809726),a=e.i(630972),i=e.i(858268),s=e.i(868458),l=e.i(16830),c=e.i(95187);let u=(0,c.createServerReference)(\"40c90a3bc42abc7dbc8474933e9684a849e75c40ee\",c.callServer,void 0,c.findSourceMapURL,\"submitTryMetaPasskeyLoginFallback\");e.s([\"TryMetaPasskeyLoginFallbackSpinner\",0,function(){let{ctxId:e=\"\",credentialIds:c=\"\",partyIdHash:d=\"\",commonTags:m}=arguments.length>0&&void 0!==arguments[0]?arguments[0]:{},p=(0,n.useRef)(null),_=(0,n.useRef)(null),h=(0,n.useRef)(null),y=(0,n.useRef)(null),g=(0,n.useRef)(null),f=(0,n.useRef)(null),v=(0,n.useMemo)(()=>(0,a.parseJsonSafe)(c)??void 0,[c]);return(0,n.useEffect)(()=>{(async()=>{var e,t;let n=(0,s.isMetaWebAuthnSupported)(),o=!!n&&await (0,s.isMetaUVPAA)();r.obs.emit(\"identity_credential_attempt_without_auth_option_uvpaa_check\",\"info\",{analytics:{...m,event_name:\"identity_cred"
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/21uf3xizx29eh.js",
+    "id": "40adb709d6ca711f433040f87e1b1f4d22ea4afdf4",
+    "name": "webllsLogin",
+    "pos": 1509,
+    "snippet": "/^[^\\s()<>@,;:]+@[\\w\\.\\-]+\\.[a-zA-Z]{2,}$/),\"parseJsonSafe\",0,e=>{try{return JSON.parse(e)}catch(e){return null}},\"sleep\",0,t])},273220,e=>{\"use strict\";var t,a,i=e.i(438232),n=e.i(15010),r=e.i(809726),s=e.i(802613),o=e.i(95187);let _=(0,o.createServerReference)(\"40adb709d6ca711f433040f87e1b1f4d22ea4afdf4\",o.callServer,void 0,o.findSourceMapURL,\"webllsLogin\");var l=e.i(736265),u=e.i(65403),c=e.i(618566),m=e.i(16830),d=e.i(327194),p=e.i(968391),A=e.i(902279),E=e.i(818897),f=e.i(868458),v=((t={}).UVPAA=\"uvpaa\",t.META_UVPAA=\"meta_uvpaa\",t);(a={}).Available=\"AVAILABLE\",a.Unavailable=\"UNAVAILABLE\",a.Error=\"ERROR\",a.ApiUnsupported=\"API_UNSUPPORTED\",a.Timeout=\"TIMEOUT\";let S=\"p_uvpaa\",w=\"p_timeout\",h=async function(){let e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:\"uvpaa\";try{let t=Date.now();r.obs.emit(\"UVPAA_check_start\",\"info\",{analytics:{event_name:\"UVPAA_check_start\",state_name:\"Login_IWC_UDT\",transition_name:\"uvpaa_check_started\",uvpaa"
+  }
+]

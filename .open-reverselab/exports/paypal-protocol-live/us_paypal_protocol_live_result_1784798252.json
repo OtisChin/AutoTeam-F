@@ -1,0 +1,532 @@
+{
+  "ok": false,
+  "status": "failed",
+  "runner": "pay153",
+  "ba_token": "BA-<redacted>",
+  "paypal_url": "https://www.paypal.com/agreements/approve?ba_token=<redacted>",
+  "country": "US",
+  "remote_job_id": "c4b4c1ea91d1",
+  "result": {
+    "job": {
+      "id": "c4b4c1ea91d1",
+      "created_at": 1784798183.197411,
+      "updated_at": 1784798247.1617892,
+      "started_at": 1784798183.1980917,
+      "finished_at": 1784798247.1503599,
+      "duration": 63.95226812362671,
+      "status": "failed",
+      "stage": "执行失败",
+      "ba_token": "BA-6Y6…310A",
+      "phone": "*******1555",
+      "country": "US",
+      "buyer_mode": "identity_elevation",
+      "debug": false,
+      "max_card_attempts": 5,
+      "manual_funding": false,
+      "agreement_only": false,
+      "generated": {
+        "user": {
+          "first_name": "John",
+          "last_name": "Lopez",
+          "email": "s3***o@gmail.com",
+          "phone": "*******1555",
+          "phone_country_code": "+1",
+          "phone_local": "******1555",
+          "password": "<redacted>",
+          "dob": "<redacted>",
+          "cpf": "<redacted>"
+        },
+        "card": {
+          "number": "•••• •••• •••• 1970",
+          "expiry": "09/2028",
+          "cvv": "<redacted>",
+          "card_type": "CREDIT"
+        },
+        "address": {
+          "street": "Addie St",
+          "house_number": "400",
+          "district": "",
+          "city": "Lexington",
+          "state": "KY",
+          "postal_code": "40508-1323",
+          "country": "US"
+        }
+      },
+      "runtime_schema": {
+        "country": "US",
+        "language": "en",
+        "currency": "USD",
+        "address_fields": [
+          {
+            "paypal_name": "line1",
+            "required": true,
+            "max_length": null,
+            "min_length": null,
+            "pattern": null
+          },
+          {
+            "paypal_name": "line2",
+            "required": false,
+            "max_length": null,
+            "min_length": null,
+            "pattern": null
+          },
+          {
+            "paypal_name": "city",
+            "required": true,
+            "max_length": null,
+            "min_length": null,
+            "pattern": null
+          },
+          {
+            "paypal_name": "state",
+            "required": true,
+            "max_length": 2,
+            "min_length": null,
+            "pattern": "AA|AE|AK|AL|AP|AR|AS|AZ|CA|CO|CT|DC|DE|FL|FM|GA|GU|HI|IA|ID|IL|IN|KS|KY|LA|MA|MD|ME|MH|MI|MN|MO|MP|MS|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|PR|PW|RI|SC|SD|TN|TX|UM|UT|VA|VI|VT|WA|WI|WV|WY"
+          },
+          {
+            "paypal_name": "postcode",
+            "required": true,
+            "max_length": 10,
+            "min_length": null,
+            "pattern": "\\d{5}([ \\-]?\\d{4})?"
+          }
+        ],
+        "phone_mask": "(000) 000-0000",
+        "phone_pattern": "^(1)?([2-9]\\d{9}|3\\d{6})$",
+        "source": "paypal_runtime_metadata",
+        "kyc": {
+          "fields": [
+            {
+              "name": "date_of_birth",
+              "required": false,
+              "source": "signup_page"
+            },
+            {
+              "name": "nationality",
+              "required": false,
+              "source": "signup_page"
+            },
+            {
+              "name": "identity_document_type",
+              "required": false,
+              "source": "signup_page"
+            },
+            {
+              "name": "identity_document_number",
+              "required": false,
+              "source": "signup_page"
+            },
+            {
+              "name": "occupation",
+              "required": false,
+              "source": "signup_page"
+            }
+          ],
+          "source": "signup_page_observation"
+        },
+        "phone_validation_error": "",
+        "resolved_address": {
+          "line1": "400 Addie St",
+          "line2": "",
+          "city": "Lexington",
+          "state": "KY",
+          "postalCode": "40508-1323"
+        },
+        "address_validation_errors": []
+      },
+      "cancellable": false,
+      "cancel_requested": false,
+      "awaiting_otp": false,
+      "awaiting_captcha": false,
+      "browser_active": false,
+      "browser_state": null,
+      "awaiting_prompt": "",
+      "challenge_url": "",
+      "result": null,
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place.",
+      "traceback": "",
+      "logs": [
+        {
+          "time": 1784798183.198173,
+          "level": "INFO",
+          "message": "Checking proxy 1/1 before task start"
+        },
+        {
+          "time": 1784798186.814333,
+          "level": "INFO",
+          "message": "Proxy check passed (HTTP 302)"
+        },
+        {
+          "time": 1784798187.026459,
+          "level": "INFO",
+          "message": "Protocol payment job started"
+        },
+        {
+          "time": 1784798187.026971,
+          "level": "INFO",
+          "message": "Preparing PayPal agreement profile"
+        },
+        {
+          "time": 1784798187.027243,
+          "level": "INFO",
+          "message": "Buyer mode: identity_elevation"
+        },
+        {
+          "time": 1784798187.02768,
+          "level": "INFO",
+          "message": "HTTP transport engine: curl_cffi"
+        },
+        {
+          "time": 1784798187.027945,
+          "level": "INFO",
+          "message": "=== PayPal Billing Agreement Flow ==="
+        },
+        {
+          "time": 1784798187.028195,
+          "level": "INFO",
+          "message": "BA Token: BA-6Y6...310A"
+        },
+        {
+          "time": 1784798187.028413,
+          "level": "INFO",
+          "message": "Email: s3***o@gmail.com"
+        },
+        {
+          "time": 1784798187.028623,
+          "level": "INFO",
+          "message": "Phone: *******1555"
+        },
+        {
+          "time": 1784798187.02897,
+          "level": "INFO",
+          "message": "--- Phase 0: Initial page load ---"
+        },
+        {
+          "time": 1784798187.951862,
+          "level": "INFO",
+          "message": "Got 403 - DataDome challenge detected"
+        },
+        {
+          "time": 1784798187.952181,
+          "level": "WARNING",
+          "message": "DataDome challenge detected; starting a temporary Chromium with the task proxy/session"
+        },
+        {
+          "time": 1784798187.952786,
+          "level": "INFO",
+          "message": "Temporary Chromium started; waiting for automatic DataDome completion"
+        },
+        {
+          "time": 1784798192.216723,
+          "level": "INFO",
+          "message": "DataDome completed automatically; no manual action was needed"
+        },
+        {
+          "time": 1784798192.217462,
+          "level": "INFO",
+          "message": "Temporary Chromium verification cookies synchronized; retrying the agreement page"
+        },
+        {
+          "time": 1784798193.660293,
+          "level": "INFO",
+          "message": "Page loaded: 200, 147855 bytes"
+        },
+        {
+          "time": 1784798193.660658,
+          "level": "INFO",
+          "message": "Context ID: ed175f01-be75-4704-9f05-0953a2f39d9e"
+        },
+        {
+          "time": 1784798193.660941,
+          "level": "INFO",
+          "message": "SSRT: 1784798194911"
+        },
+        {
+          "time": 1784798193.665366,
+          "level": "INFO",
+          "message": "Guest onboarding route prepared"
+        },
+        {
+          "time": 1784798193.665696,
+          "level": "INFO",
+          "message": "--- Phase 1: Risk control signals ---"
+        },
+        {
+          "time": 1784798193.665966,
+          "level": "INFO",
+          "message": "Sending device fingerprint p1 app_id=IWC_NEXT_CHECKOUT..."
+        },
+        {
+          "time": 1784798194.698812,
+          "level": "INFO",
+          "message": "Sending device fingerprint p2 app_id=IWC_NEXT_CHECKOUT..."
+        },
+        {
+          "time": 1784798195.207745,
+          "level": "INFO",
+          "message": "Sending device fingerprint w app_id=IWC_NEXT_CHECKOUT..."
+        },
+        {
+          "time": 1784798195.543769,
+          "level": "INFO",
+          "message": "Sending Tealeaf session data..."
+        },
+        {
+          "time": 1784798197.388153,
+          "level": "INFO",
+          "message": "Risk control signals sent"
+        },
+        {
+          "time": 1784798197.388445,
+          "level": "INFO",
+          "message": "--- Phase 2: Create account flow ---"
+        },
+        {
+          "time": 1784798197.388655,
+          "level": "INFO",
+          "message": "Following server-provided guest onboarding route..."
+        },
+        {
+          "time": 1784798198.328724,
+          "level": "INFO",
+          "message": "Following redirect: https://www.paypal.com/checkoutweb/signup?ssrt=1784798194911&ul=1&modxo_redirect_reason=guest_user&b..."
+        },
+        {
+          "time": 1784798199.193235,
+          "level": "INFO",
+          "message": "EC Token: EC-9H4...471Y"
+        },
+        {
+          "time": 1784798199.193413,
+          "level": "INFO",
+          "message": "Loading checkout signup app: https://www.paypal.com/checkoutweb/signup?ssrt=1784798194911&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=EC-***REDACTED***&rcache=1&cookieBannerVariant=hidden"
+        },
+        {
+          "time": 1784798199.930641,
+          "level": "INFO",
+          "message": "Checkout signup app loaded: 200 bytes=132272"
+        },
+        {
+          "time": 1784798199.945592,
+          "level": "INFO",
+          "message": "Content hash: d24460aee36e4b7d4579aea096ec5056"
+        },
+        {
+          "time": 1784798199.955942,
+          "level": "INFO",
+          "message": "Content identifier: US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms"
+        },
+        {
+          "time": 1784798199.956486,
+          "level": "INFO",
+          "message": "Sending Tealeaf session data..."
+        },
+        {
+          "time": 1784798201.213837,
+          "level": "INFO",
+          "message": "Sending device fingerprint p1 app_id=CHECKOUTUINODEWEB_ONBOARDING_LITE..."
+        },
+        {
+          "time": 1784798201.582206,
+          "level": "INFO",
+          "message": "Sending device fingerprint p2 app_id=CHECKOUTUINODEWEB_ONBOARDING_LITE..."
+        },
+        {
+          "time": 1784798201.952285,
+          "level": "INFO",
+          "message": "Sending device fingerprint w app_id=CHECKOUTUINODEWEB_ONBOARDING_LITE..."
+        },
+        {
+          "time": 1784798202.348672,
+          "level": "INFO",
+          "message": "Sending checkout session GraphQL queries..."
+        },
+        {
+          "time": 1784798202.950688,
+          "level": "INFO",
+          "message": "GraphQL DeferredFeature HTTP 200 bytes=2125 paypal_debug_id=f306217ac5b7f"
+        },
+        {
+          "time": 1784798203.598808,
+          "level": "INFO",
+          "message": "GraphQL CheckoutSessionDataQuery HTTP 200 bytes=1363 paypal_debug_id=f757624c37504"
+        },
+        {
+          "time": 1784798204.160151,
+          "level": "INFO",
+          "message": "GraphQL GriffinMetadataQuery HTTP 200 bytes=33028 paypal_debug_id=f7576241fdab1"
+        },
+        {
+          "time": 1784798204.731005,
+          "level": "INFO",
+          "message": "GraphQL SupportedFundingSourcesQuery HTTP 200 bytes=637 paypal_debug_id=f411232ddfcd5"
+        },
+        {
+          "time": 1784798205.266831,
+          "level": "INFO",
+          "message": "GraphQL AddressAutocompleteFromPostalCodeQuery HTTP 200 bytes=507 paypal_debug_id=f411232514028"
+        },
+        {
+          "time": 1784798205.267008,
+          "level": "INFO",
+          "message": "Address normalized by PayPal: 100 E Armstrong St, None, Chicago IL"
+        },
+        {
+          "time": 1784798205.883905,
+          "level": "INFO",
+          "message": "GraphQL CheckoutSessionDataQuery HTTP 200 bytes=1363 paypal_debug_id=f4511847bd4a0"
+        },
+        {
+          "time": 1784798205.88429,
+          "level": "INFO",
+          "message": "Identity-elevation EC/signup context validated"
+        },
+        {
+          "time": 1784798206.412658,
+          "level": "INFO",
+          "message": "GraphQL GriffinMetadataQuery HTTP 200 bytes=33028 paypal_debug_id=f451184396e49"
+        },
+        {
+          "time": 1784798232.667959,
+          "level": "INFO",
+          "message": "GraphQL AddressAutocompleteFromPostalCodeQuery HTTP 200 bytes=508 paypal_debug_id=f560483b1b900"
+        },
+        {
+          "time": 1784798232.66921,
+          "level": "INFO",
+          "message": "Address normalized by PayPal: 400 Addie St, None, Lexington KY"
+        },
+        {
+          "time": 1784798232.669753,
+          "level": "INFO",
+          "message": "US residential address refreshed and normalized on attempt 1"
+        },
+        {
+          "time": 1784798232.670123,
+          "level": "INFO",
+          "message": "Runtime country schema resolved: country=US address_fields=5 kyc_fields=5 address_errors=0"
+        },
+        {
+          "time": 1784798232.670618,
+          "level": "INFO",
+          "message": "--- Phase 3: Signup form + 2FA ---"
+        },
+        {
+          "time": 1784798232.671377,
+          "level": "INFO",
+          "message": "Sending Tealeaf session data..."
+        },
+        {
+          "time": 1784798233.023369,
+          "level": "INFO",
+          "message": "Step 1: Initiating 2FA phone confirmation for *******1555..."
+        },
+        {
+          "time": 1784798234.253724,
+          "level": "INFO",
+          "message": "GraphQL InitiateRiskBasedTwoFactorPhoneConfirmationMutation HTTP 200 bytes=586 paypal_debug_id=f8252413b9d74"
+        },
+        {
+          "time": 1784798234.254813,
+          "level": "INFO",
+          "message": "2FA initiation result (sanitized): {\n  \"data\": {\n    \"initiateRiskBasedTwoFactorPhoneConfirmation\": {\n      \"authId\": \"8572278388714005205\",\n      \"challengeId\": \"18035588776804491173\",\n      \"state\": \"PENDING\",\n      \"__typename\": \"RiskBasedPhoneConfirmationResponse\"\n    }\n  },\n  \"extensions\": {\n    \"tracing\": {\n      \"version\": 1,\n      \"startTime\": \"2026-07-23T09:17:16.192Z\",\n      \"endTime\": \"2026-07-23T09:17:16.477Z\",\n      \"duration\": 285000000,\n      \"execution\": {\n        \"resolvers\": [\n          {\n            \"path\": ["
+        },
+        {
+          "time": 1784798234.255137,
+          "level": "INFO",
+          "message": "2FA state: PENDING, authId=<redacted>, challengeId=<redacted>"
+        },
+        {
+          "time": 1784798234.255381,
+          "level": "INFO",
+          "message": "SMS verification code sent to phone: *******1555"
+        },
+        {
+          "time": 1784798234.255581,
+          "level": "INFO",
+          "message": "请输入6位短信验证码；如需换号，输入新手机号（如 +12025550123 或 phone:+12025550123）；输入 q 退出。"
+        },
+        {
+          "time": 1784798237.4443707,
+          "level": "INFO",
+          "message": "已从网页提交验证码/手机号。"
+        },
+        {
+          "time": 1784798237.444761,
+          "level": "INFO",
+          "message": "Step 2: Confirming OTP: <redacted>"
+        },
+        {
+          "time": 1784798238.624012,
+          "level": "INFO",
+          "message": "GraphQL ConfirmRiskBasedTwoFactorPhoneConfirmationMutation HTTP 200 bytes=550 paypal_debug_id=f552029cefb6e"
+        },
+        {
+          "time": 1784798238.624415,
+          "level": "INFO",
+          "message": "OTP confirmation result (sanitized): {\n  \"data\": {\n    \"confirmRiskBasedTwoFactorPhoneConfirmation\": {\n      \"authId\": null,\n      \"challengeId\": null,\n      \"state\": \"CONFIRMED\",\n      \"__typename\": \"RiskBasedPhoneConfirmationResponse\"\n    }\n  },\n  \"extensions\": {\n    \"tracing\": {\n      \"version\": 1,\n      \"startTime\": \"2026-07-23T09:17:20.674Z\",\n      \"endTime\": \"2026-07-23T09:17:20.785Z\",\n      \"duration\": 111000000,\n      \"execution\": {\n        \"resolvers\": [\n          {\n            \"path\": [\n              \"confirmRiskBasedTwoF"
+        },
+        {
+          "time": 1784798238.624684,
+          "level": "SUCCESS",
+          "message": "OTP confirmed successfully!"
+        },
+        {
+          "time": 1784798238.624968,
+          "level": "INFO",
+          "message": "Step 3: Creating account, signup attempt 1/5"
+        },
+        {
+          "time": 1784798239.180402,
+          "level": "INFO",
+          "message": "GraphQL InstallmentOptionsQuery HTTP 200 bytes=421 paypal_debug_id=f552029532e6b"
+        },
+        {
+          "time": 1784798247.140563,
+          "level": "INFO",
+          "message": "GraphQL SignUpNewMemberMutation HTTP 200 bytes=574 paypal_debug_id=f332552b932db"
+        },
+        {
+          "time": 1784798247.141778,
+          "level": "ERROR",
+          "message": "GraphQL SignUpNewMemberMutation returned errors: status=200 paypal_debug_id=f332552b932db errors=[\n  {\n    \"data\": {},\n    \"message\": \"OAS_ERROR\",\n    \"_name\": \"OAS_ERROR\",\n    \"checkpoints\": [\n      \"createMemberAccount\"\n    ],\n    \"meta\": {},\n    \"contingency\": true,\n    \"path\": [\n      \"onboardAccount\"\n    ],\n    \"extensions\": {\n      \"class\": \"ERROR\"\n    },\n    \"statusCode\": 200\n  }\n]"
+        },
+        {
+          "time": 1784798247.143394,
+          "level": "INFO",
+          "message": "Signup result (sanitized): {\n  \"errors\": [\n    {\n      \"data\": {},\n      \"message\": \"OAS_ERROR\",\n      \"_name\": \"OAS_ERROR\",\n      \"checkpoints\": [\n        \"createMemberAccount\"\n      ],\n      \"meta\": {},\n      \"contingency\": true,\n      \"path\": [\n        \"onboardAccount\"\n      ],\n      \"extensions\": {\n        \"class\": \"ERROR\"\n      },\n      \"statusCode\": 200\n    }\n  ],\n  \"data\": {\n    \"onboardAccount\": null\n  },\n  \"extensions\": {\n    \"tracing\": {\n      \"version\": 1,\n      \"startTime\": \"2026-07-23T09:17:28.965Z\",\n      \"endTime\": \"2026-07-23T09:17:29.403Z\",\n      \"duration\": 438000000,\n      \"execution\": {\n        \"resolvers\": [\n          {\n            \"path\": [\n              \"signUpNewMember\"\n            ],\n            \"parentType\": \"Query\",\n            \"fieldName\": \"signUpNewMember\",\n            \"returnType\": \"Object\",\n            \"startOffset\": 0,\n            \"duration\": 436377003\n   …<truncated>"
+        },
+        {
+          "time": 1784798247.143723,
+          "level": "ERROR",
+          "message": "Signup error detail: {\n  \"message\": \"OAS_ERROR\",\n  \"name\": \"OAS_ERROR\",\n  \"statusCode\": 200,\n  \"checkpoints\": [\n    \"createMemberAccount\"\n  ],\n  \"contingency\": true,\n  \"path\": [\n    \"onboardAccount\"\n  ],\n  \"data\": {},\n  \"errorData\": null,\n  \"meta\": {},\n  \"extensions\": {\n    \"class\": \"ERROR\"\n  }\n}"
+        },
+        {
+          "time": 1784798247.144046,
+          "level": "ERROR",
+          "message": "Signup failed because onboardAccount is empty. Sanitized response: {\n  \"errors\": [\n    {\n      \"data\": {},\n      \"message\": \"OAS_ERROR\",\n      \"_name\": \"OAS_ERROR\",\n      \"checkpoints\": [\n        \"createMemberAccount\"\n      ],\n      \"meta\": {},\n      \"contingency\": true,\n      \"path\": [\n        \"onboardAccount\"\n      ],\n      \"extensions\": {\n        \"class\": \"ERROR\"\n      },\n      \"statusCode\": 200\n    }\n  ],\n  \"data\": {\n    \"onboardAccount\": null\n  },\n  \"extensions\": {\n    \"tracing\": {\n      \"version\": 1,\n      \"startTime\": \"2026-07-23T09:17:28.965Z\",\n      \"endTime\": \"2026-07-23T09:17:29.403Z\",\n      \"duration\": 438000000,\n      \"execution\": {\n        \"resolvers\": [\n          {\n            \"path\": [\n              \"signUpNewMember\"\n            ],\n            \"parentType\": \"Query\",\n            \"fieldName\": \"signUpNewMember\",\n            \"returnType\": \"Object\",\n            \"startOffset\": …<truncated>"
+        },
+        {
+          "time": 1784798247.144444,
+          "level": "WARNING",
+          "message": "OAS diagnostic: engine=curl_cffi ec=True ctx=True ssrt=True content_id=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms cookies=KHcl0EuY7AKSMgfvHl7J5E7hPtK,LANG,d_id,datadome,ddgl,enforce_policy,l7_az,nsid,rssk,sc_f,ts,ts_c,tsrce,x-pp-s debug_id=f332552b932db"
+        },
+        {
+          "time": 1784798247.144681,
+          "level": "ERROR",
+          "message": "Flow failed: US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place."
+        },
+        {
+          "time": 1784798247.149972,
+          "level": "ERROR",
+          "message": "Protocol payment job failed: US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place."
+        }
+      ],
+      "log_count": 75
+    },
+    "otp_submitted": true
+  },
+  "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place."
+}

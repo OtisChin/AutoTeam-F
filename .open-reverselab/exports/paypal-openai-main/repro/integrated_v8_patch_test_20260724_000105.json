@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "checks": {
+    "no_fi_enabled_us_auto": true,
+    "create_query_has_no_card": true,
+    "create_saved_euat": true,
+    "create_no_instrument": true,
+    "approve_primary_fi_null": true,
+    "approve_state_success": true,
+    "return_followed": true
+  },
+  "phase4": {
+    "status": "success",
+    "state": "APPROVED",
+    "stripe_redirect": {
+      "host": "merchant.example",
+      "checkout_session_id": "",
+      "redirect_status": "succeeded",
+      "redirect_pm_type": null,
+      "payment_intent": null,
+      "has_payment_intent_client_secret": false
+    },
+    "buyer_user_id": "BUYER-NOFI-1",
+    "completed_payment_info_present": false,
+    "completed_payment_info": {}
+  }
+}

@@ -1,0 +1,154 @@
+[
+  {
+    "argsType": "AddBank",
+    "block": "authorizations?: InputMaybe<BankAccountAuthorizationsInput>;\n  bank: BankAccountInput;\n  beneficiary?: InputMaybe<BankAccountBeneficiaryInput>;\n  countryCode: CountryCodes;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "AddBankAfterStepup",
+    "block": "authContextId: Scalars['String'];\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "AddBankCandidate",
+    "block": "bank: BankAccountInput;\n  beneficiary?: InputMaybe<BankAccountBeneficiaryInput>;\n  billingAddress?: InputMaybe<AddressInput>;\n  countryCode: CountryCodes;"
+  },
+  {
+    "argsType": "AddBillingAddress",
+    "block": "addressLine1?: InputMaybe<Scalars['String']>;\n  addressLine2?: InputMaybe<Scalars['String']>;\n  addressLine3?: InputMaybe<Scalars['String']>;\n  adminArea1?: InputMaybe<Scalars['String']>;\n  adminArea2?: InputMaybe<Scalars['String']>;\n  adminArea3?: InputMaybe<Scalars['String']>;\n  adminArea4?: InputMaybe<Scalars['String']>;\n  city?: InputMaybe<Scalars['String']>;\n  countryCode: CountryCodes;\n  instrumentId?: InputMaybe<Scalars['String']>;\n  line1?: InputMaybe<Scalars['String']>;\n  line2?: InputMaybe<Scalars['String']>;\n  postalCode: Scalars['String'];\n  state?: InputMaybe<Scalars['String']>;"
+  },
+  {
+    "argsType": "AddCard",
+    "block": "address?: InputMaybe<AddCardBillingAddressInput>;\n  card: AddCardInput;\n  cardType?: InputMaybe<FundingOptionType>;\n  isPartialBillingAddress?: InputMaybe<Scalars['Boolean']>;\n  paypalRequestId?: InputMaybe<Scalars['String']>;\n  token: Scalars['String'];\n  user: AddCardUserInput;"
+  },
+  {
+    "argsType": "AddCardWithoutToken",
+    "block": "address: AddCardBillingAddressInput;\n  card: AddCardInput;\n  cardType?: InputMaybe<FundingOptionType>;\n  isPartialBillingAddress?: InputMaybe<Scalars['Boolean']>;\n  user: AddCardUserInput;"
+  },
+  {
+    "argsType": "AddPotentialCard",
+    "block": "address?: InputMaybe<AddCardBillingAddressInput>;\n  card: PotentialCardInput;\n  cardType?: InputMaybe<FundingOptionType>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "ApproveApplePayPayment",
+    "block": "billingContact: ApplePayPaymentContact;\n  clientID: Scalars['String'];\n  merchantID?: InputMaybe<Array<InputMaybe<Scalars['String']>>>;\n  orderID: Scalars['String'];\n  productFlow?: InputMaybe<Scalars['String']>;\n  shippingContact?: InputMaybe<ApplePayPaymentContact>;\n  token: ApplePayPaymentToken;"
+  },
+  {
+    "argsType": "ApproveGooglePayPayment",
+    "block": "clientID: Scalars['String'];\n  email?: InputMaybe<Scalars['String']>;\n  orderID: Scalars['String'];\n  paymentMethodData: GooglePayPaymentMethodData;\n  productFlow?: InputMaybe<Scalars['String']>;\n  shippingAddress?: InputMaybe<GooglePayPaymentContact>;"
+  },
+  {
+    "argsType": "ApproveGuestPaymentWithApplePayToken",
+    "block": "applePayPaymentInput: ApplePayPaymentInput;\n  feeReferenceId?: InputMaybe<Scalars['String']>;\n  installmentTerm?: InputMaybe<Scalars['Int']>;\n  isSntSupported?: InputMaybe<Scalars['Boolean']>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "ApproveGuestPaymentWithCreditCard",
+    "block": "billingAddress?: InputMaybe<AddressInput>;\n  card?: InputMaybe<CardInput>;\n  currencyConversionType?: InputMaybe<CheckoutCurrencyConversionType>;\n  email?: InputMaybe<Scalars['String']>;\n  feeReferenceId?: InputMaybe<Scalars['String']>;\n  firstName?: InputMaybe<Scalars['String']>;\n  identityDocument?: InputMaybe<IdentityDocumentInput>;\n  installmentTerm?: InputMaybe<Scalars['Int']>;\n  integrityToken?: InputMaybe<Scalars['String']>;\n  lastName?: InputMaybe<Scalars['String']>;\n  paymentToken?: InputMaybe<Scalars['String']>;\n  phoneNumber?: InputMaybe<Scalars['String']>;\n  shippingAddress?: InputMaybe<AddressInput>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "ApproveGuestSignUpPayment",
+    "block": "token: Scalars['String'];"
+  },
+  {
+    "argsType": "ApproveMemberPayment",
+    "block": "balancePreference?: InputMaybe<BalancePreference>;\n  card3DSResolve3DSCode?: InputMaybe<Scalars['String']>;\n  cardCvvValue?: InputMaybe<Scalars['String']>;\n  cryptocurrencyQuoteId?: InputMaybe<Scalars['String']>;\n  fullWalletOptIn?: InputMaybe<Scalars['Boolean']>;\n  fundingMethodType?: InputMaybe<FundingInstrumentMethodType>;\n  legalAgreements?: InputMaybe<LegalAgreementsInput>;\n  paycodeEncrypted?: InputMaybe<Scalars['String']>;\n  preAuthorizationRequired?: InputMaybe<Scalars['Boolean']>;\n  preferredFundingOptionId?: InputMaybe<Scalars['String']>;\n  preferredShippingAddressId?: InputMaybe<Scalars['String']>;\n  primaryFundingOptionId?: InputMaybe<Scalars['String']>;\n  rewards?: InputMaybe<RewardsInput>;\n  secondaryFundingOptionIds?: InputMaybe<Array<Scalars['String']>>;\n  selectedAddressId?: InputMaybe<Scalars['String']>;\n  selectedInstallmentOption?: InputMaybe<InstallmentsInput>;\n  setStickyFiRequired?: InputMaybe<Scalars['Boolean']>;\n  shareAddressWithDonatee?: InputMaybe<Scalars['Boolean']>;\n  strongCustomerAuthenticationCompleted?: InputMaybe<Scalars['Boolean']>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "ApproveMemberPaymentWithSplitFundingOptions",
+    "block": "fullWalletOptIn?: InputMaybe<Scalars['Boolean']>;\n  preferredShippingAddressId?: InputMaybe<Scalars['String']>;\n  selectedAddressId?: InputMaybe<Scalars['String']>;\n  splitFundingOptions: Array<InputMaybe<SplitFundingOptionsInput>>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "ApprovePayment",
+    "block": "preferredFundingOptionId?: InputMaybe<Scalars['String']>;\n  preferredShippingAddressId?: InputMaybe<Scalars['String']>;\n  selectedAddressId?: InputMaybe<Scalars['String']>;\n  selectedPlanId: Scalars['String'];\n  strongCustomerAuthenticationCompleted?: InputMaybe<Scalars['Boolean']>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "ApproveSuggestedDonation",
+    "block": "token: Scalars['String'];"
+  },
+  {
+    "argsType": "AttemptSetStickyFi",
+    "block": "instrumentId?: InputMaybe<Scalars['String']>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "CheckoutGuestWithMemberBenefits",
+    "block": "bank?: InputMaybe<BankAccountInput>;\n  billingAddress?: InputMaybe<AddressInput>;\n  card?: InputMaybe<CardInput>;\n  country: CountryCodes;\n  currencyConversionType?: InputMaybe<CheckoutCurrencyConversionType>;\n  email: Scalars['String'];\n  firstName: Scalars['String'];\n  lastName: Scalars['String'];\n  phone: PhoneInput;\n  shippingAddress?: InputMaybe<AddressInput>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "CompletePayment",
+    "block": "buyerAccessToken: Scalars['String'];\n  clientID: Scalars['String'];\n  partnerAttributionId?: InputMaybe<Scalars['String']>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "ConfirmCreditCardCvv",
+    "block": "input?: InputMaybe<ConfirmCreditCardCvvInput>;\n  planId?: InputMaybe<Scalars['String']>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "CreateCapeMayflyPayload",
+    "block": "cartAmount?: InputMaybe<Scalars['String']>;\n  cartCurrency?: InputMaybe<Scalars['String']>;\n  creditFundingInstrumentId: Scalars['String'];\n  creditIncentiveDetails?: InputMaybe<CreditIncentiveDetailsInput>;\n  isCreditSecondButton?: InputMaybe<Scalars['Boolean']>;\n  isCrossCurrencyTransaction?: InputMaybe<Scalars['Boolean']>;\n  isPPCInstallments?: InputMaybe<Scalars['Boolean']>;\n  isPPCReuse?: InputMaybe<Scalars['Boolean']>;\n  pageContext: Scalars['String'];\n  returnUriBase: Scalars['String'];\n  token: Scalars['String'];\n  userSelectedAddressId: Scalars['String'];\n  userSelectedPreferredShippingAddressId: Scalars['String'];"
+  },
+  {
+    "argsType": "CreateMemberAccount",
+    "block": "billingAddress?: InputMaybe<AddressInput>;\n  contentIdentifier?: InputMaybe<Scalars['String']>;\n  country: CountryCodes;\n  countryOfResidence?: InputMaybe<CountryCodes>;\n  crsData?: InputMaybe<CommonReportingStandardsInput>;\n  dateOfBirth?: InputMaybe<DateOfBirth>;\n  email?: InputMaybe<Scalars['String']>;\n  firstName: Scalars['String'];\n  gender?: InputMaybe<Gender>;\n  identityDocument?: InputMaybe<IdentityDocumentInput>;\n  lastName: Scalars['String'];\n  legalAgreements?: InputMaybe<LegalAgreementsInput>;\n  marketingOptOut?: InputMaybe<Scalars['Boolean']>;\n  middleName?: InputMaybe<Scalars['String']>;\n  nationality?: InputMaybe<CountryCodes>;\n  occupation?: InputMaybe<Occupation>;\n  password?: InputMaybe<Scalars['String']>;\n  phone?: InputMaybe<PhoneInput>;\n  placeOfBirth?: InputMaybe<CountryCodes>;\n  residentialAddress?: InputMaybe<AddressInput>;\n  secondaryIdentityDocument?: InputMaybe<IdentityDocumentInput>;\n  shippingAddress?: InputMaybe<AddressInput>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "CreateOnboardingPaymentPlan",
+    "block": "currencyConversionType?: InputMaybe<CheckoutCurrencyConversionType>;\n  cvv?: InputMaybe<Scalars['String']>;\n  encryptedCardLoginAccountNumber?: InputMaybe<Scalars['String']>;\n  fundingInstrumentId: Scalars['String'];\n  shareAddressWithDonatee?: InputMaybe<Scalars['Boolean']>;\n  shippingAddress?: InputMaybe<AddressInput>;\n  token: Scalars['String'];\n  userType: OnboardingExperienceType;"
+  },
+  {
+    "argsType": "CreateUpgradedLowScopeAccessToken",
+    "block": "buyerAccessToken: Scalars['String'];\n  merchantLSAT: Scalars['String'];\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "OnboardGuest",
+    "block": "bank?: InputMaybe<BankAccountInput>;\n  billingAddress?: InputMaybe<AddressInput>;\n  card?: InputMaybe<CardInput>;\n  country?: InputMaybe<CountryCodes>;\n  currencyConversionType?: InputMaybe<CheckoutCurrencyConversionType>;\n  dateOfBirth?: InputMaybe<DateOfBirth>;\n  email?: InputMaybe<Scalars['String']>;\n  firstName: Scalars['String'];\n  lastName: Scalars['String'];\n  phone?: InputMaybe<PhoneInput>;\n  shareAddressWithDonatee?: InputMaybe<Scalars['Boolean']>;\n  shippingAddress?: InputMaybe<AddressInput>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "OneClickPayment",
+    "block": "selectedInstrumentId: Scalars['String'];\n  selectedInstrumentType: Scalars['String'];\n  selectedPlanId?: InputMaybe<Scalars['String']>;\n  token: Scalars['String'];\n  useExistingPlanning?: InputMaybe<Scalars['Boolean']>;"
+  },
+  {
+    "argsType": "PreAuthorizePayment",
+    "block": "token: Scalars['String'];"
+  },
+  {
+    "argsType": "ReplaceCard",
+    "block": "address: AddCardBillingAddressInput;\n  card: AddCardInput;\n  fundingOptionId: Scalars['String'];\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "SaveSharedCardConsent",
+    "block": "sharedConsent: Scalars['Boolean'];"
+  },
+  {
+    "argsType": "SignUpNewMember",
+    "block": "bank?: InputMaybe<BankAccountInput>;\n  billingAddress?: InputMaybe<AddressInput>;\n  card?: InputMaybe<CardInput>;\n  collectedConsents?: InputMaybe<Array<InputMaybe<CollectedConsent>>>;\n  contentIdentifier?: InputMaybe<Scalars['String']>;\n  country?: InputMaybe<CountryCodes>;\n  countryOfResidence?: InputMaybe<CountryCodes>;\n  countrySpecificFirstName?: InputMaybe<Scalars['String']>;\n  countrySpecificLastName?: InputMaybe<Scalars['String']>;\n  crsData?: InputMaybe<CommonReportingStandardsInput>;\n  currencyConversionType?: InputMaybe<CheckoutCurrencyConversionType>;\n  dateOfBirth?: InputMaybe<DateOfBirth>;\n  email?: InputMaybe<Scalars['String']>;\n  firstName: Scalars['String'];\n  gender?: InputMaybe<Gender>;\n  identityDocument?: InputMaybe<IdentityDocumentInput>;\n  isSignupIncentiveOptIn?: InputMaybe<Scalars['Boolean']>;\n  isSignupIncentiveOptInStretch?: InputMaybe<Scalars['Boolean']>;\n  lastName: Scalars['String'];\n  legalAgreements?: InputMaybe<LegalAgreementsInput>;\n  marketingOptOut?: InputMaybe<Scalars['Boolean']>;\n  middleName?: InputMaybe<Scalars['String']>;\n  nationality?: InputMaybe<CountryCodes>;\n  occupation?: InputMaybe<Occupation>;\n  password?: InputMaybe<Scalars['String']>;\n  phone?: InputMaybe<PhoneInput>;\n  placeOfBirth?: InputMaybe<CountryCodes>;\n  residentialAddress?: InputMaybe<AddressInput>;\n  secondaryIdentityDocument?: InputMaybe<IdentityDocumentInput>;\n  selectedInstallmentOption?: InputMaybe<InstallmentsInput>;\n  shareAddressWithDonatee?: InputMaybe<Scalars['Boolean']>;\n  shippingAddress?: InputMaybe<AddressInput>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "ThreeDsConfirmationWithUpdateFundingOption",
+    "block": "confirmationId: Scalars['String'];\n  confirmationMethod: ThreedsConfirmationMethod;\n  confirmationStatus?: InputMaybe<Scalars['String']>;\n  cvv: Scalars['String'];\n  fiId: Scalars['String'];\n  referenceId: Scalars['String'];\n  token: Scalars['String'];\n  transactionId: Scalars['String'];"
+  },
+  {
+    "argsType": "ThreedsCreateConfirmation",
+    "block": "bypassConfirmationProcess?: InputMaybe<Scalars['Boolean']>;\n  confirmationMethod: ThreedsConfirmationMethod;\n  cvv?: InputMaybe<Scalars['String']>;\n  fiId?: InputMaybe<Scalars['String']>;\n  referenceId?: InputMaybe<Scalars['String']>;\n  senderContext: ThreedsSenderContextInput;"
+  },
+  {
+    "argsType": "UpdateCard",
+    "block": "address?: InputMaybe<AddCardBillingAddressInput>;\n  card: AddCardInput;\n  cardType?: InputMaybe<FundingOptionType>;\n  fundingOptionId: Scalars['String'];\n  token: Scalars['String'];\n  user: AddCardUserInput;"
+  },
+  {
+    "argsType": "UpdateCardWithoutToken",
+    "block": "address: AddCardBillingAddressInput;\n  card: AddCardInput;\n  cardType?: InputMaybe<FundingOptionType>;\n  fundingOptionId: Scalars['String'];\n  user: AddCardUserInput;"
+  },
+  {
+    "argsType": "UpdateCheckoutSessionFundingOptions",
+    "block": "fundingOptionId: Scalars['String'];\n  threeDSResolved?: InputMaybe<Scalars['Boolean']>;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "UpdateGuestShippingAddressCallback",
+    "block": "address: GuestAddressInput;\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "UpdateGuestShippingMethodCallback",
+    "block": "shippingMethodId: Scalars['String'];\n  token: Scalars['String'];"
+  },
+  {
+    "argsType": "UpgradeGuestToMember",
+    "block": "billingAddress?: InputMaybe<AddressInput>;\n  contentIdentifier?: InputMaybe<Scalars['String']>;\n  country?: InputMaybe<CountryCodes>;\n  countryOfResidence?: InputMaybe<CountryCodes>;\n  dateOfBirth?: InputMaybe<DateOfBirth>;\n  email?: InputMaybe<Scalars['String']>;\n  firstName: Scalars['String'];\n  gender?: InputMaybe<Gender>;\n  identityDocument?: InputMaybe<IdentityDocumentInput>;\n  lastName: Scalars['String'];\n  legalAgreements?: InputMaybe<LegalAgreementsInput>;\n  marketingOptOut?: InputMaybe<Scalars['Boolean']>;\n  middleName?: InputMaybe<Scalars['String']>;\n  nationality?: InputMaybe<CountryCodes>;\n  occupation?: InputMaybe<Occupation>;\n  password?: InputMaybe<Scalars['String']>;\n  phone?: InputMaybe<PhoneInput>;\n  placeOfBirth?: InputMaybe<CountryCodes>;\n  residentialAddress?: InputMaybe<AddressInput>;\n  secondaryIdentityDocument?: InputMaybe<IdentityDocumentInput>;\n  token: Scalars['String'];"
+  }
+]

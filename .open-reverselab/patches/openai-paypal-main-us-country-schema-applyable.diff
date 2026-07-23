@@ -1,0 +1,158 @@
+diff -ruN --exclude=.venv --exclude=__pycache__ --exclude=var --exclude=cache paypal/country_profile.py paypal/country_profile.py
+--- paypal/country_profile.py	1970-01-01 08:00:00
++++ paypal/country_profile.py	2026-07-23 20:54:23
+@@ -0,0 +1,24 @@
++from __future__ import annotations
++from dataclasses import dataclass
++
++@dataclass(frozen=True)
++class CountryProfile:
++    country: str
++    locale: str
++    language: str
++    phone_country_code: str
++    kyc_fields: tuple[str, ...] = ()
++    collect_card_product_class: bool = False
++    card_dob_required: bool = False
++
++    @property
++    def content_language(self) -> str:
++        return self.language.split('-', 1)[0].lower()
++
++COUNTRY_PROFILES: dict[str, CountryProfile] = {
++    "US": CountryProfile("US", "en_US", "en-US", "1", (), False, False),
++    "BR": CountryProfile("BR", "pt_BR", "pt-BR", "55", ("DateOfBirth", "IdentityDocumentType", "IdentityDocumentNumber"), True, True),
++}
++
++def get_country_profile(country: str | None) -> CountryProfile:
++    return COUNTRY_PROFILES.get((country or "BR").upper(), COUNTRY_PROFILES["BR"])
+diff -ruN --exclude=.venv --exclude=__pycache__ --exclude=var --exclude=cache paypal/flow.py paypal/flow.py
+--- paypal/flow.py	2026-07-16 15:07:25
++++ paypal/flow.py	2026-07-23 21:44:43
+@@ -46,6 +46,7 @@
+ )
+ from paypal.mtr import MTR_RUNTIME_PYTHON_GENERATED, extract_dfp_script_url, extract_mtr_config, ensure_mtr_config, send_mtr_signals
+ from paypal.proxy import build_proxy_config, ProxyConfig, _load_dotenv_value as _load_proxy_dotenv_value
++from paypal.country_profile import get_country_profile
+ from paypal.fingerprint import (
+     ensure_runtime_profile,
+     build_fn_sync_data,
+@@ -317,14 +318,22 @@
+         return str((self.state.browser_profile or {}).get("user_agent") or USER_AGENT)
+ 
+     def _profile_country(self) -> str:
+-        return str((self.state.browser_profile or {}).get("country") or self.address.country or "BR")
++        return get_country_profile(self.address.country).country
+ 
+     def _profile_locale(self) -> str:
+-        return str((self.state.browser_profile or {}).get("locale") or "pt_BR")
++        profile = get_country_profile(self.address.country)
++        browser_profile = self.state.browser_profile or {}
++        if str(browser_profile.get("country") or "").upper() == profile.country:
++            return str(browser_profile.get("locale") or profile.locale)
++        return profile.locale
+ 
+     def _profile_lang(self) -> str:
++        profile = get_country_profile(self.address.country)
++        browser_profile = self.state.browser_profile or {}
+         locale = self._profile_locale()
+-        return str((self.state.browser_profile or {}).get("language") or locale.replace("_", "-") or "pt-BR")
++        if str(browser_profile.get("country") or "").upper() == profile.country:
++            return str(browser_profile.get("language") or locale.replace("_", "-") or profile.language)
++        return profile.language
+ 
+     def _content_country(self) -> str:
+         # SignUpNewMember sends `country` from the billing/account country.
+@@ -5619,9 +5628,11 @@
+         house_number = self.address.house_number.strip()
+         if house_number and f", {house_number}" in self.address.street:
+             return self.address.street
+-        return f"{self.address.street}, {self.address.house_number}"
++        parts = [self.address.street, self.address.house_number]
++        return ", ".join(str(part).strip() for part in parts if str(part or "").strip())
+ 
+     def _build_signup_variables(self, token: str) -> dict[str, object]:
++        country_profile = get_country_profile(self.address.country)
+         card_type = self._card_issuer_type()
+         if self._content_metadata_is_unresolved() and self.state.content_manifest_url:
+             self._fetch_signup_content_manifest_metadata(
+@@ -5634,14 +5645,17 @@
+         billing_autocomplete_type = (
+             "ANS" if self._billing_address_autocomplete_succeeded else "MANUAL"
+         )
+-        return {
+-            "card": {
+-                "cardNumber": self.card.number,
+-                "expirationDate": self._card_expiration_date(),
+-                "securityCode": self.card.cvv,
+-                "type": card_type,
+-                "productClass": self.card.card_type,
+-            },
++        card_payload: dict[str, object] = {
++            "cardNumber": self.card.number,
++            "expirationDate": self._card_expiration_date(),
++            "securityCode": self.card.cvv,
++            "type": card_type,
++        }
++        if country_profile.collect_card_product_class:
++            card_payload["productClass"] = self.card.card_type
++
++        variables: dict[str, object] = {
++            "card": card_payload,
+             "country": self.address.country,
+             "email": self.user.email,
+             "firstName": self.user.first_name,
+@@ -5683,14 +5697,18 @@
+             "contentIdentifier": content_identifier,
+             "marketingOptOut": True,
+             "password": self.user.password,
+-            "dateOfBirth": self._dob_payload(),
+-            "identityDocument": {
+-                "type": "CPF",
+-                "value": self.user.cpf,
+-            },
+             "crsData": None,
+             "legalAgreements": {},
+         }
++        if country_profile.card_dob_required or "DateOfBirth" in country_profile.kyc_fields:
++            variables["dateOfBirth"] = self._dob_payload()
++        if (
++            "IdentityDocumentType" in country_profile.kyc_fields
++            and "IdentityDocumentNumber" in country_profile.kyc_fields
++            and self.address.country.upper() == "BR"
++        ):
++            variables["identityDocument"] = {"type": "CPF", "value": self.user.cpf}
++        return variables
+ 
+     def _send_address_autocomplete(self, token: str) -> None:
+         self._billing_address_autocomplete_succeeded = False
+diff -ruN --exclude=.venv --exclude=__pycache__ --exclude=var --exclude=cache paypal/session.py paypal/session.py
+--- paypal/session.py	2026-07-16 14:14:08
++++ paypal/session.py	2026-07-23 20:54:23
+@@ -19,6 +19,7 @@
+ from loguru import logger
+ from typing import Any, Optional, cast
+ from paypal.models import SessionState
++from paypal.country_profile import get_country_profile
+ from paypal.traffic_recorder import get_global_traffic_recorder
+ from config import USER_AGENT, BROWSER_PROFILE
+ 
+@@ -1223,6 +1224,7 @@
+             else f"https://www.paypal.com/pay?token={self.state.ba_token}&ul=1"
+         )
+         profile = getattr(self.state, "browser_profile", None) or BROWSER_PROFILE
++        country_profile = get_country_profile(str(profile.get("country") or "BR"))
+         app_name = "checkoutuinodeweb" if operation_name == "authorize" else "checkoutuinodeweb_weasley"
+         # Browser/Roxy checkoutweb sends the active checkout token (EC/BA) as
+         # both PayPal-Client-Context and PayPal-Client-Metadata-Id.  Keep the
+@@ -1235,8 +1237,8 @@
+             "X-Requested-With": "fetch",
+             "PayPal-Client-Context": context_token,
+             "PayPal-Client-Metadata-Id": metadata_id,
+-            "X-Country": str(profile.get("country") or "BR"),
+-            "X-Locale": str(profile.get("locale") or "pt_BR"),
++            "X-Country": str(profile.get("country") or country_profile.country),
++            "X-Locale": str(profile.get("locale") or country_profile.locale),
+             "Origin": "https://www.paypal.com",
+             "Referer": referer,
+             "Sec-Fetch-Site": "same-origin",

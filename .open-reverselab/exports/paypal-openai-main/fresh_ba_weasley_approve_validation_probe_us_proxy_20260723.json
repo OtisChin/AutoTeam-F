@@ -1,0 +1,72 @@
+2026-07-23 22:03:37.688 | INFO     | paypal.session:__init__:587 - HTTP client: httpx (http2=True)
+2026-07-23 22:03:37.688 | INFO     | paypal.session:__init__:588 - HTTP outbound proxy: socks5h://***:***@global.rp.linkup.onl:10000
+2026-07-23 22:03:37.689 | INFO     | paypal.flow:_phase0_initial_load:2266 - --- Phase 0: Initial page load ---
+2026-07-23 22:03:37.689 | DEBUG    | paypal.session:get:1087 - GET https://www.paypal.com/agreements/approve?ba_token=BA-5SK36951DM296273L
+2026-07-23 22:03:41.253 | DEBUG    | paypal.session:get:1138 -   -> 302 (186 bytes)
+2026-07-23 22:03:41.253 | INFO     | paypal.flow:_phase0_initial_load:2359 - Redirected to: https://www.paypal.com/checkoutweb/genericError?code=REVGQVVMVA%3D%3D&ba_token=BA-5SK36951DM296273L&ssrt=1784815420574&token=EC-5WC90023EE717515J&YWRzZGRjb29raWU%3D=hUxlBkKmDqs~nDk1tK4ERhDZpkbREt8gByMIsAZWWDEe~smxhODrzjlC6btW6Dc_IR1ISBVR28gYnkJw_6UT0y3EONSG1jsi4cYNRTJsHRH6u1dEoD3EsjHWu9ipBxgg
+2026-07-23 22:03:41.253 | DEBUG    | paypal.session:get:1087 - GET https://www.paypal.com/checkoutweb/genericError?code=REVGQVVMVA%3D%3D&ba_token=BA-5SK36951DM296273L&ssrt=1784815420574&token=EC-5WC90023EE717515J&YWRzZGRjb29raWU%3D=hUxlBkKmDqs~nDk1tK4ERhDZpkbREt8gByMIsAZWWDEe~smxhODrzjlC6btW6Dc_IR1ISBVR28gYnkJw_6UT0y3EONSG1jsi4cYNRTJsHRH6u1dEoD3EsjHWu9ipBxgg
+2026-07-23 22:03:41.818 | DEBUG    | paypal.session:get:1138 -   -> 403 (7929 bytes)
+2026-07-23 22:03:41.828 | INFO     | paypal.flow:_phase0_initial_load:2383 - Page loaded: 403, 7929 bytes
+2026-07-23 22:03:41.836 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5112 - ModXO action fetch_device_fingerprint_action_id: 40119ea45de7135869f32892c6e0436cc9722b7775 (static)
+2026-07-23 22:03:41.836 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5112 - ModXO action show_create_account_action_id: 408cdbfcfb063642520b8dde73b124955e07000967 (static)
+2026-07-23 22:03:41.836 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5112 - ModXO action submit_public_credential_action_id: 403375d290e5845b191b7f22e6b940617e87334e8b (static)
+2026-07-23 22:03:41.836 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5112 - ModXO action create_user_action_id: 60187d0e8cbc4131987e2c84c8e430dce698c2ace3 (static)
+2026-07-23 22:03:41.836 | INFO     | paypal.flow:_phase0_initial_load:2406 - EC Token already present on approval page: EC-5WC...515J
+2026-07-23 22:03:41.836 | INFO     | paypal.flow:_phase2_create_account:6502 - --- Phase 2: Create account flow ---
+2026-07-23 22:03:41.837 | INFO     | paypal.flow:_phase2_create_account:6506 - EC checkout token is already available; skipping ModXO create-account action: EC-5WC...515J
+2026-07-23 22:03:41.837 | DEBUG    | paypal.session:get:1087 - GET https://www.paypal.com/checkoutweb/signup?ssrt=1784815420574&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=BA-5SK36951DM296273L&token=EC-5WC90023EE717515J&rcache=1&cookieBannerVariant=hidden
+2026-07-23 22:03:42.346 | DEBUG    | paypal.session:get:1138 -   -> 403 (8003 bytes)
+2026-07-23 22:03:42.364 | DEBUG    | paypal.flow:_apply_signup_content_metadata:2828 - Loaded signup document did not contain content metadata; preserving contentIdentifier=<missing>
+2026-07-23 22:03:42.366 | INFO     | paypal.flow:_apply_configured_or_cached_signup_content_metadata:2962 - Content metadata restored from cache /tmp/paypal_signup_content_manifest_last.json identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+2026-07-23 22:03:42.366 | DEBUG    | paypal.session:get:1087 - GET https://www.paypalobjects.com/checkoutweb/release/weasley/content-manifest.11f545996f2c4231476c31cc5d858b86.json
+2026-07-23 22:03:44.278 | DEBUG    | paypal.session:get:1138 -   -> 200 (34502 bytes)
+2026-07-23 22:03:44.281 | INFO     | paypal.flow:_apply_signup_content_manifest:2750 - Content metadata found in content manifest: key=US_en hash=d24460aee36e4b7d4579aea096ec5056 identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+2026-07-23 22:03:44.281 | DEBUG    | paypal.session:post:1142 - POST https://www.paypal.com/graphql?ApproveOnboardPaymentMutation
+2026-07-23 22:03:44.949 | DEBUG    | paypal.session:post:1201 -   -> 401 (616 bytes)
+2026-07-23 22:03:44.950 | INFO     | paypal.session:graphql:1274 - GraphQL ApproveOnboardPaymentMutation HTTP 401 bytes=616 paypal_debug_id=f2615689f5744
+2026-07-23 22:03:44.952 | WARNING  | paypal.session:graphql:1334 - GraphQL ApproveOnboardPaymentMutation returned errors: status=401 paypal_debug_id=f2615689f5744 errors=[
+  {
+    "message": "This resolver requires an auth state of either: LOGGEDIN, IDENTIFIED.  The current auth state is: ANONYMOUS.",
+    "path": [
+      "approveGuestSignUpPayment"
+    ],
+    "extensions": {
+      "class": "ERROR"
+    },
+    "statusCode": 401
+  }
+]
+2026-07-23 22:03:44.953 | DEBUG    | paypal.session:graphql:1346 - GraphQL ApproveOnboardPaymentMutation sanitized variables: {
+  "token": "EC-5WC...515J",
+  "instrumentId": null,
+  "isBillingAgreement": false,
+  "supportedThreeDsExperiences": [
+    "IFRAME"
+  ]
+}
+{
+  "ok_query_shape_valid": true,
+  "http_graphql_errors": [
+    {
+      "message": "This resolver requires an auth state of either: LOGGEDIN, IDENTIFIED.  The current auth state is: ANONYMOUS.",
+      "path": [
+        "approveGuestSignUpPayment"
+      ],
+      "extensions": {
+        "class": "ERROR"
+      },
+      "statusCode": 401
+    }
+  ],
+  "data_keys": [
+    "approveGuestSignUpPayment"
+  ],
+  "approveGuestSignUpPayment_present": false,
+  "phase": {
+    "ec": true,
+    "ctx": false,
+    "signup_url": true
+  },
+  "ba_sha12": "b6c9793d48dd",
+  "ec_sha12": "f1d9b8e42a6b"
+}

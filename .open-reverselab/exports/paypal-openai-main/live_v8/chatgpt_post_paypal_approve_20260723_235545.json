@@ -1,0 +1,14 @@
+{
+  "stage": "chatgpt_post_paypal_approve",
+  "auth_file": "anikatsaturyan31814@outlook_com.json",
+  "cs_<redacted>": true,
+  "processor": "openai_llc",
+  "approve": "error",
+  "polls": [],
+  "approve_error": "approve failed: unexpected result: 'exception'",
+  "logs": [
+    "approve attempt 1: HTTP 200 {\"result\":\"exception\"}",
+    "approve attempt 2: HTTP 200 {\"result\":\"exception\"}",
+    "approve attempt 3: HTTP 200 {\"result\":\"exception\"}"
+  ]
+}

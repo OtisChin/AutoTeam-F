@@ -6,6 +6,9 @@ requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.135.3",
     "curl-cffi>=0.14.0",
+    "httpx[http2,socks]>=0.28.1",
+    "loguru>=0.7.3",
+    "pako>=0.3.1",
     "playwright>=1.40.0",
     "qrcode[pil]>=7.4.2",
     "requests[socks]>=2.28.0",

@@ -1,0 +1,322 @@
+{
+  "date": "2026-07-23",
+  "outdir": "/private/tmp/paypal_assets/pay_next_20260723",
+  "assets": [
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/1sye9fjn8f86z.js",
+      "status": 200,
+      "size": 23354,
+      "sha256_12": "91973d170856",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/1sye9fjn8f86z.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3qvjvned9s-tt.js",
+      "status": 200,
+      "size": 27837,
+      "sha256_12": "f87ba9c9d114",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3qvjvned9s-tt.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3yyjloywu75jv.js",
+      "status": 200,
+      "size": 51337,
+      "sha256_12": "0e08a78e9373",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3yyjloywu75jv.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/09avcsc168_4a.js",
+      "status": 200,
+      "size": 110561,
+      "sha256_12": "03f607d6fb34",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/09avcsc168_4a.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3bvsb59d44el-.js",
+      "status": 200,
+      "size": 252090,
+      "sha256_12": "2c49fe45a459",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3bvsb59d44el-.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/turbopack-0r6_gv2kmbmj5.js",
+      "status": 200,
+      "size": 10912,
+      "sha256_12": "9e424635f506",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/turbopack-0r6_gv2kmbmj5.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/2w3giozqnkyws.js",
+      "status": 200,
+      "size": 18113,
+      "sha256_12": "50ddc55d89e2",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2w3giozqnkyws.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/2lb9ysqs8u0da.js",
+      "status": 200,
+      "size": 83104,
+      "sha256_12": "1e4b173e4be5",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2lb9ysqs8u0da.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3wrc9gux9o75w.js",
+      "status": 200,
+      "size": 55983,
+      "sha256_12": "18a436dadb72",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3wrc9gux9o75w.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3ct6idqhc9962.js",
+      "status": 200,
+      "size": 52362,
+      "sha256_12": "c050a438ef64",
+      "hits": [
+        "baToken"
+      ],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3ct6idqhc9962.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3ut8k257dec4e.js",
+      "status": 200,
+      "size": 47756,
+      "sha256_12": "d065868388b4",
+      "hits": [
+        "ba_token"
+      ],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3ut8k257dec4e.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/0xri5ywgb9rbc.js",
+      "status": 200,
+      "size": 699,
+      "sha256_12": "a48ddb7664f8",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0xri5ywgb9rbc.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3t4dze_qp7sny.js",
+      "status": 200,
+      "size": 1222,
+      "sha256_12": "9f53bda8826b",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3t4dze_qp7sny.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/20sl76bnr6o-y.js",
+      "status": 200,
+      "size": 28027,
+      "sha256_12": "f5ae48def363",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/20sl76bnr6o-y.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/09i1tou13_zcw.js",
+      "status": 200,
+      "size": 23168,
+      "sha256_12": "f7a5b35813ec",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/09i1tou13_zcw.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/1-7hjjamoz08n.js",
+      "status": 200,
+      "size": 30903,
+      "sha256_12": "9ec3d8a749a8",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/1-7hjjamoz08n.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/2ss3mbkdajg_j.js",
+      "status": 200,
+      "size": 78696,
+      "sha256_12": "c89ab3643b07",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2ss3mbkdajg_j.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3u0r8bhfrhfhs.js",
+      "status": 200,
+      "size": 26714,
+      "sha256_12": "67f65fdd8506",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3u0r8bhfrhfhs.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/2ouxavgqrxfqh.js",
+      "status": 200,
+      "size": 32445,
+      "sha256_12": "9efb19507977",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2ouxavgqrxfqh.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/2ak_hnphdq9in.js",
+      "status": 200,
+      "size": 28099,
+      "sha256_12": "883ac3f13169",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2ak_hnphdq9in.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/0rziu72k9mn31.js",
+      "status": 200,
+      "size": 41683,
+      "sha256_12": "6e26b0fcce80",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0rziu72k9mn31.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/0_j3wujsqm87-.js",
+      "status": 200,
+      "size": 26072,
+      "sha256_12": "c125f671d925",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0_j3wujsqm87-.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/2ddx3li2xlpzj.js",
+      "status": 200,
+      "size": 31026,
+      "sha256_12": "6b81ebcdd178",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2ddx3li2xlpzj.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/1yufc5qrkuq-q.js",
+      "status": 200,
+      "size": 52366,
+      "sha256_12": "aa1194e97799",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/1yufc5qrkuq-q.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/1y_hj17tpp0ap.js",
+      "status": 200,
+      "size": 37827,
+      "sha256_12": "ffed17cd8d6f",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/1y_hj17tpp0ap.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/1mbwrwjx7jvdb.js",
+      "status": 200,
+      "size": 26693,
+      "sha256_12": "0f84ccc93a90",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/1mbwrwjx7jvdb.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/0x-ab9ko6kx2z.js",
+      "status": 200,
+      "size": 105900,
+      "sha256_12": "cc2aebfd81f3",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/06sbof808iwdk.js",
+      "status": 200,
+      "size": 1461,
+      "sha256_12": "7dea7b4b1c73",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/06sbof808iwdk.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/21uf3xizx29eh.js",
+      "status": 200,
+      "size": 7969,
+      "sha256_12": "83eefdda7684",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/21uf3xizx29eh.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3zfez37zcmrtp.js",
+      "status": 200,
+      "size": 1909,
+      "sha256_12": "1e61f405e98f",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3zfez37zcmrtp.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/1ly75e08qevhv.js",
+      "status": 200,
+      "size": 26815,
+      "sha256_12": "fb944cf9f278",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/1ly75e08qevhv.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3g_65xicymm3g.js",
+      "status": 200,
+      "size": 46807,
+      "sha256_12": "96223fd26b5c",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3g_65xicymm3g.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/23yiji09fg08_.js",
+      "status": 200,
+      "size": 32480,
+      "sha256_12": "09018cb6a664",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/23yiji09fg08_.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/0qr--16dbb0i6.js",
+      "status": 200,
+      "size": 21524,
+      "sha256_12": "556682ffe16f",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0qr--16dbb0i6.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/0d2pwt5y4rrzw.js",
+      "status": 200,
+      "size": 28905,
+      "sha256_12": "5d68c2d14577",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0d2pwt5y4rrzw.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3slzk4m26u8la.js",
+      "status": 200,
+      "size": 26072,
+      "sha256_12": "c87eb1539120",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3slzk4m26u8la.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/3pla3yvx6jgp1.js",
+      "status": 200,
+      "size": 58574,
+      "sha256_12": "1222c9bbdec2",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3pla3yvx6jgp1.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/0cz1d0mv5g_q7.js",
+      "status": 200,
+      "size": 112594,
+      "sha256_12": "0973c1d64c88",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0cz1d0mv5g_q7.js"
+    },
+    {
+      "url_path": "www.paypal.com/pay/_next/static/chunks/2n6hqhhmi3j7u.js",
+      "status": 200,
+      "size": 27484,
+      "sha256_12": "449780dea166",
+      "hits": [],
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2n6hqhhmi3j7u.js"
+    }
+  ]
+}

@@ -1,0 +1,322 @@
+[
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/web.py",
+    "size": 51263,
+    "sha256": "7f368d3676021d86",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 2,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 3,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 3
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/config.py",
+    "size": 4930,
+    "sha256": "c9ac53c03e6a7611",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 4
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/README.md",
+    "size": 5590,
+    "sha256": "46a4f90a7f5c11a7",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 3,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 6
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/.gitignore",
+    "size": 534,
+    "sha256": "9b568f93ee0f4d5f",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 1,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 0
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/.env",
+    "size": 710,
+    "sha256": "7294d38da3a68f14",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 1
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/.env.example",
+    "size": 4413,
+    "sha256": "caa9cfe9718cd339",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 6
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/main.py",
+    "size": 9697,
+    "sha256": "5ebf82d0ce3872ea",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 1,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 9
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/web_static/index.html",
+    "size": 9687,
+    "sha256": "9d332c302d81c758",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 1,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 0
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json",
+    "size": 24587,
+    "sha256": "ff3ae8a0bb902825",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 16
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py",
+    "size": 12278,
+    "sha256": "a1e57c28448c9fc3",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 1,
+      "graphql_signup": 2,
+      "approve_onboard": 0,
+      "sms_api": 0
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/models.py",
+    "size": 30449,
+    "sha256": "c20b920359c4d623",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 1,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 1
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py",
+    "size": 184339,
+    "sha256": "a1580709de1e283c",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 2,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 0
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py",
+    "size": 54294,
+    "sha256": "22639cbdff7deab8",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 2
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py",
+    "size": 89906,
+    "sha256": "7631656186911366",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 39
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/session.py",
+    "size": 49685,
+    "sha256": "7717cbb48400564c",
+    "hits": {
+      "paypal_rest_client_id": 3,
+      "paypal_rest_secret": 3,
+      "ba": 0,
+      "ec": 0,
+      "euat": 1,
+      "access_token": 3,
+      "graphql_signup": 1,
+      "approve_onboard": 0,
+      "sms_api": 1
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/flow.py",
+    "size": 331984,
+    "sha256": "d9aac00ddd1934fc",
+    "hits": {
+      "paypal_rest_client_id": 5,
+      "paypal_rest_secret": 2,
+      "ba": 0,
+      "ec": 0,
+      "euat": 1,
+      "access_token": 23,
+      "graphql_signup": 8,
+      "approve_onboard": 0,
+      "sms_api": 53
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/smsbower.py",
+    "size": 21504,
+    "sha256": "b2bd1bd797c8e30f",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 10
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/traffic_recorder.py",
+    "size": 19554,
+    "sha256": "44f1762b5ed8140c",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 1,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 0
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/analytics.py",
+    "size": 28891,
+    "sha256": "d82fe1069355b41c",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 3
+    }
+  },
+  {
+    "path": "/Users/mac/Downloads/openai-paypal-main/paypal/roxy_fingerprint.py",
+    "size": 91787,
+    "sha256": "4464492fa6d15bf2",
+    "hits": {
+      "paypal_rest_client_id": 0,
+      "paypal_rest_secret": 0,
+      "ba": 0,
+      "ec": 0,
+      "euat": 0,
+      "access_token": 0,
+      "graphql_signup": 0,
+      "approve_onboard": 0,
+      "sms_api": 36
+    }
+  }
+]

@@ -1,0 +1,234 @@
+[
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ss3mbkdajg_j.js",
+    "size": 78696,
+    "sha256": "c89ab3643b071927",
+    "hits": [
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 22376,
+        "snippet": "D:\"Use_Email_Instead\",REQUEST_OTP:\"Request_OTP\",FORGOT_PASSWORD:\"Forgot_Password\",USE_PASSWORD_INSTEAD:\"Use_Password_Instead\",USE_OTP_INSTEAD:\"Use_OTP_Instead\",PAY_WITH_CARD:\"Pay_With_Card\",CONTINUE_TO_PAYMENT:\"Continue_To_Payment\",USE_PASSKEY_INSTEAD:\"Use_Passkey_Instead\",ADD_PASSWORD_INSTEAD:\"Add_Password_Instead\",SET_PASSWORD_INTERSTITIAL:\"Set_Password_Interstitial\"},\"ATOMIC_DOMAIN\",0,\"identity_IWC\",\"ATOMIC"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 22391,
+        "snippet": "stead\",REQUEST_OTP:\"Request_OTP\",FORGOT_PASSWORD:\"Forgot_Password\",USE_PASSWORD_INSTEAD:\"Use_Password_Instead\",USE_OTP_INSTEAD:\"Use_OTP_Instead\",PAY_WITH_CARD:\"Pay_With_Card\",CONTINUE_TO_PAYMENT:\"Continue_To_Payment\",USE_PASSKEY_INSTEAD:\"Use_Passkey_Instead\",ADD_PASSWORD_INSTEAD:\"Add_Password_Instead\",SET_PASSWORD_INTERSTITIAL:\"Set_Password_Interstitial\"},\"ATOMIC_DOMAIN\",0,\"identity_IWC\",\"ATOMIC_EVENTS\",0,{WEB"
+      },
+      {
+        "pattern": "Continue_To_Payment",
+        "pos": 22406,
+        "snippet": "OTP:\"Request_OTP\",FORGOT_PASSWORD:\"Forgot_Password\",USE_PASSWORD_INSTEAD:\"Use_Password_Instead\",USE_OTP_INSTEAD:\"Use_OTP_Instead\",PAY_WITH_CARD:\"Pay_With_Card\",CONTINUE_TO_PAYMENT:\"Continue_To_Payment\",USE_PASSKEY_INSTEAD:\"Use_Passkey_Instead\",ADD_PASSWORD_INSTEAD:\"Add_Password_Instead\",SET_PASSWORD_INTERSTITIAL:\"Set_Password_Interstitial\"},\"ATOMIC_DOMAIN\",0,\"identity_IWC\",\"ATOMIC_EVENTS\",0,{WEBLLS_LOGIN_START:\"webl"
+      },
+      {
+        "pattern": "Continue_To_Payment",
+        "pos": 22427,
+        "snippet": "GOT_PASSWORD:\"Forgot_Password\",USE_PASSWORD_INSTEAD:\"Use_Password_Instead\",USE_OTP_INSTEAD:\"Use_OTP_Instead\",PAY_WITH_CARD:\"Pay_With_Card\",CONTINUE_TO_PAYMENT:\"Continue_To_Payment\",USE_PASSKEY_INSTEAD:\"Use_Passkey_Instead\",ADD_PASSWORD_INSTEAD:\"Add_Password_Instead\",SET_PASSWORD_INTERSTITIAL:\"Set_Password_Interstitial\"},\"ATOMIC_DOMAIN\",0,\"identity_IWC\",\"ATOMIC_EVENTS\",0,{WEBLLS_LOGIN_START:\"weblls_login_start\",REDIR"
+      },
+      {
+        "pattern": "agreement",
+        "pos": 24846,
+        "snippet": "ROL\",T1:\"T1\",THROTTLE:\"THROTTLE\"},\"FPTI_VALUES\",0,{RISK_ENTRY:\"/Web/checkoutnow/2?via=iwc-next\",CHECKOUT:\"checkout\",EXPRESS_CHECKOUT:\"Express Checkout\",BILLING_AGREEMENT:\"Billing Agreement\",UNKNOWN:\"unknown\",PAYPAL:\"paypal\",MERCHANT_PASSED_EMAIL:\"MPE\",IWC:\"IWC\",CPL_LATENCY_METRICS:\"CPL_LATENCY_METRICS\",MOXDO_IWC_NEXT:\"mod_xo_iwc_next\"},\"IWC_TO_ATOMIC_VIEWS_MAP\",0,a,\"MAX_EMAIL_CHARS_LENGTH\",0,{LG_SCREEN:35,"
+      },
+      {
+        "pattern": "agreement",
+        "pos": 24865,
+        "snippet": "LE:\"THROTTLE\"},\"FPTI_VALUES\",0,{RISK_ENTRY:\"/Web/checkoutnow/2?via=iwc-next\",CHECKOUT:\"checkout\",EXPRESS_CHECKOUT:\"Express Checkout\",BILLING_AGREEMENT:\"Billing Agreement\",UNKNOWN:\"unknown\",PAYPAL:\"paypal\",MERCHANT_PASSED_EMAIL:\"MPE\",IWC:\"IWC\",CPL_LATENCY_METRICS:\"CPL_LATENCY_METRICS\",MOXDO_IWC_NEXT:\"mod_xo_iwc_next\"},\"IWC_TO_ATOMIC_VIEWS_MAP\",0,a,\"MAX_EMAIL_CHARS_LENGTH\",0,{LG_SCREEN:35,SM_SCREEN:25},\"MAX_"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0d2pwt5y4rrzw.js",
+    "size": 28905,
+    "sha256": "5d68c2d14577c61c",
+    "hits": [
+      {
+        "pattern": "Continue_To_Payment",
+        "pos": 25628,
+        "snippet": "on x(e){let{buttonText:s,isRedirect:n,isSubmitting:r}=e,{pending:_}=(0,o.useFormStatus)();return(0,t.jsx)(a.Button,{\"data-atomic-wait-intent\":m.ATOMIC_CI_NAMES.CONTINUE_TO_PAYMENT,\"data-atomic-wait-task\":m.ATOMIC_TASKS.LOGIN_CREATE_ACCOUNT,\"data-atomic-wait-domain\":m.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":m.ATOMIC_VIEWS.GUEST_CHECKOUT_REQUEST,\"data-testid\":\"continueButton\",children:_||n||r?(0,t.jsx)(i.Spinner,{si"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2ddx3li2xlpzj.js",
+    "size": 31026,
+    "sha256": "6b81ebcdd178f0e3",
+    "hits": [
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 14804,
+        "snippet": "entity_signup_option_clicked\",\"info\",{analytics:{..._??{},event_name:\"identity_signup_option_clicked\",transition_name:\"signup_option_clicked\",option_clicked:d?\"pay_with_card\":\"create_account\"}})},\"data-atomic-wait-intent\":l.ATOMIC_CI_NAMES.PAY_WITH_CARD,\"data-atomic-wait-task\":l.ATOMIC_TASKS.LOGIN_CREATE_ACCOUNT,\"data-atomic-wait-domain\":l.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":l.ATOMIC_VIEWS.EMAIL,children"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 14884,
+        "snippet": "ignup_option_clicked\",transition_name:\"signup_option_clicked\",option_clicked:d?\"pay_with_card\":\"create_account\"}})},\"data-atomic-wait-intent\":l.ATOMIC_CI_NAMES.PAY_WITH_CARD,\"data-atomic-wait-task\":l.ATOMIC_TASKS.LOGIN_CREATE_ACCOUNT,\"data-atomic-wait-domain\":l.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":l.ATOMIC_VIEWS.EMAIL,children:c?(0,t.jsx)(i.Spinner,{size:i.SpinnerSize.Medium,description:\"redirecting...\"})"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 22893,
+        "snippet": ",children:(0,t.jsx)(\"div\",{ref:w,className:l.default.accordionPanelInner,inert:!c,\"aria-hidden\":!c,children:s})})]})}let s={UPI:\"upi-icon\",WECHAT:\"wechat-icon\",PAY_WITH_CARD:\"card-icon\"},d={PAY_WITH_CARD:\"card-logo\",VENMO:\"venmo-logo\",UPI:\"upi-logo\",WECHAT:\"wechat-logo\"},_=[\"VENMO\"];function c(e){let{option:n,obs:i,pageMetaData:o,txnIntentId:r}=e,{iconClassName:_,iconContainerClassName:c,label:m,logoUrl:u,redi"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/09avcsc168_4a.js",
+    "size": 110561,
+    "sha256": "03f607d6fb344a81",
+    "hits": [
+      {
+        "pattern": "server-action",
+        "pos": 98967,
+        "snippet": "t:n[a]});function l(e){let t=parseInt(e.slice(0,2),16),r=t>>1&63,n=Array(6);for(let e=0;e<6;e++){let t=r>>5-e&1;n[e]=1===t}return{type:1==(t>>7&1)?\"use-cache\":\"server-action\",usedArgs:n,hasRestArgs:1==(1&t)}}function u(e,t){let r=Array(e.length),n=0;for(let a=0;a<e.length;a++)(a<6&&t.usedArgs[a]||a>=6&&t.hasRestArgs)&&(r[a]=e[a],n=a+1);return r.length=n,r}},339146,(e,t,r)=>{\"use strict\";Object.defineProperty(r"
+      },
+      {
+        "pattern": "server-action",
+        "pos": 100784,
+        "snippet": "ect.defineProperty(new i.UnrecognizedActionError(`Server Action \"${y}\" was not found on the server.  Read more: https://nextjs.org/docs/messages/failed-to-find-server-action`),\"__NEXT_ERROR_CODE\",{value:\"E715\",enumerable:!1,configurable:!0});let I=C.headers.get(\"x-action-redirect\"),[M,F]=(null==I?void 0:I.split(\";\"))||[];switch(F){case\"push\":c=\"push\";break;case\"replace\":c=\"replace\";break;default:c=void 0}let D"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/3qvjvned9s-tt.js",
+    "size": 27837,
+    "sha256": "f87ba9c9d114bbcb",
+    "hits": [
+      {
+        "pattern": "server-action",
+        "pos": 24947,
+        "snippet": "on(){return p}};for(var l in u)Object.defineProperty(t,l,{enumerable:!0,get:u[l]});let o=\"refresh\",s=\"navigate\",i=\"restore\",c=\"server-patch\",f=\"hmr-refresh\",d=\"server-action\";var v=((r={}).AUTO=\"auto\",r.FULL=\"full\",r),p=((a={})[a.Default=0]=\"Default\",a[a.NoScroll=1]=\"NoScroll\",a);(\"function\"==typeof t.default||\"object\"==typeof t.default&&null!==t.default)&&void 0===t.default.__esModule&&(Object.defineProperty("
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/3slzk4m26u8la.js",
+    "size": 26072,
+    "sha256": "c87eb1539120ae54",
+    "hits": [
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 23789,
+        "snippet": "{pending:l}=(0,t.useFormStatus)(),d={type:\"submit\",disabled:l,variant:s.ButtonVariant.Secondary};return r||(d={...d,\"data-atomic-wait-intent\":a.ATOMIC_CI_NAMES.PAY_WITH_CARD,\"data-atomic-wait-task\":a.ATOMIC_TASKS.LOGIN_CREATE_ACCOUNT,\"data-atomic-wait-domain\":a.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":o?a.IWC_TO_ATOMIC_VIEWS_MAP[o]:\"\"}),(0,i.jsx)(s.Button,{...d,children:l?(0,i.jsx)(_.Spinner,{size:_.SpinnerSi"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 24513,
+        "snippet": "ible:ring-offset-structure-focus cursor-pointer rounded-sm font-medium underline outline-none focus-visible:ring-2\",\"data-atomic-wait-intent\":a.ATOMIC_CI_NAMES.PAY_WITH_CARD,\"data-atomic-wait-task\":a.ATOMIC_TASKS.LOGIN_CREATE_ACCOUNT,\"data-atomic-wait-domain\":a.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":a.ATOMIC_VIEWS.GUEST_CHECKOUT_REQUEST,children:s})}])},691488,e=>{\"use strict\";var i=e.i(822029),t=e.i(16830)"
+      },
+      {
+        "pattern": "agreement",
+        "pos": 25095,
+        "snippet": "_base:t.FPTI_VALUES.CHECKOUT,referrer_tenant:t.FPTI_VALUES.PAYPAL,intent:(null==e?void 0:e.intent)??t.FPTI_VALUES.CHECKOUT,ctx_login_flow:t.FPTI_VALUES.BILLING_AGREEMENT,product:t.FPTI_VALUES.IWC,client_mtdt_id:(null==e||null==(s=e.fnMetaData)?void 0:s.fnSyncConfig.fnSessionId)??t.FPTI_VALUES.UNKNOWN,pub_cred_type:(null==e?void 0:e.publicCredentialType)??t.FPTI_VALUES.UNKNOWN,is_pwd_autofill:\"N\",is_email_a"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0_j3wujsqm87-.js",
+    "size": 26072,
+    "sha256": "c125f671d9250c0c",
+    "hits": [
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 23789,
+        "snippet": "{pending:l}=(0,t.useFormStatus)(),d={type:\"submit\",disabled:l,variant:s.ButtonVariant.Secondary};return r||(d={...d,\"data-atomic-wait-intent\":a.ATOMIC_CI_NAMES.PAY_WITH_CARD,\"data-atomic-wait-task\":a.ATOMIC_TASKS.LOGIN_CREATE_ACCOUNT,\"data-atomic-wait-domain\":a.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":o?a.IWC_TO_ATOMIC_VIEWS_MAP[o]:\"\"}),(0,i.jsx)(s.Button,{...d,children:l?(0,i.jsx)(_.Spinner,{size:_.SpinnerSi"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 24513,
+        "snippet": "ible:ring-offset-structure-focus cursor-pointer rounded-sm font-medium underline outline-none focus-visible:ring-2\",\"data-atomic-wait-intent\":a.ATOMIC_CI_NAMES.PAY_WITH_CARD,\"data-atomic-wait-task\":a.ATOMIC_TASKS.LOGIN_CREATE_ACCOUNT,\"data-atomic-wait-domain\":a.ATOMIC_DOMAIN,\"data-atomic-wait-viewname\":a.ATOMIC_VIEWS.GUEST_CHECKOUT_REQUEST,children:s})}])},691488,e=>{\"use strict\";var i=e.i(822029),t=e.i(16830)"
+      },
+      {
+        "pattern": "agreement",
+        "pos": 25095,
+        "snippet": "_base:t.FPTI_VALUES.CHECKOUT,referrer_tenant:t.FPTI_VALUES.PAYPAL,intent:(null==e?void 0:e.intent)??t.FPTI_VALUES.CHECKOUT,ctx_login_flow:t.FPTI_VALUES.BILLING_AGREEMENT,product:t.FPTI_VALUES.IWC,client_mtdt_id:(null==e||null==(s=e.fnMetaData)?void 0:s.fnSyncConfig.fnSessionId)??t.FPTI_VALUES.UNKNOWN,pub_cred_type:(null==e?void 0:e.publicCredentialType)??t.FPTI_VALUES.UNKNOWN,is_pwd_autofill:\"N\",is_email_a"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/1yufc5qrkuq-q.js",
+    "size": 52366,
+    "sha256": "aa1194e97799ad56",
+    "hits": [
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 50824,
+        "snippet": "entity_signup_option_clicked\",\"info\",{analytics:{...u??{},event_name:\"identity_signup_option_clicked\",transition_name:\"signup_option_clicked\",option_clicked:y?\"pay_with_card\":\"create_account\"}});try{g(),await (0,o.showCreateAccountAction)(e)}catch(e){if((0,s.isRedirectError)(e))return;(0,a.markProblem)({status:\"Error\",context:\"Unable to complete action\",domain:l.ATOMIC_DOMAIN,reason:\"Server\"}),i.obs.emit(\"iden"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 51817,
+        "snippet": ");e.s([\"CookiedCreateAccountForm\",0,function(e){let{children:i,onboardingLink:o,states:s}=e;if(!o)return null;let a=(0,r.getCommonTags)(s),l=s.isGuestEligible?\"pay_with_card\":\"create_account\";return(0,t.jsx)(\"form\",{\"data-testid\":\"xo-onboarding-form\",action:()=>{n.obs.emit(\"identity_signup_option_clicked\",\"info\",{analytics:{...a,event_name:\"identity_signup_option_clicked\",transition_name:\"signup_option_clicked"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/3pla3yvx6jgp1.js",
+    "size": 58574,
+    "sha256": "1222c9bbdec201aa",
+    "hits": [
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 7239,
+        "snippet": "tyle:C,passwordRecoveryUrl:N,isGuestEligible:P,buttonTextOverride:f}=e,[R,b]=(0,r.useState)(!1),w=(0,r.useCallback)(()=>{let e=a.map(e=>\"create-account\"===e?P?\"pay_with_card\":\"create_account\":e);d.obs.emit(\"identity_login_taw_button_clicked\",\"info\",{analytics:{...y,event_name:\"identity_login_taw_button_clicked\",state_name:\"begin_try_another_way\",transition_name:\"process_taw_button_click\",current_view:n,taw_opt"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+    "size": 105900,
+    "sha256": "cc2aebfd81f3b65b",
+    "hits": [
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 7339,
+        "snippet": "tyle:f,passwordRecoveryUrl:v,isGuestEligible:b,buttonTextOverride:C}=e,[x,N]=(0,r.useState)(!1),w=(0,r.useCallback)(()=>{let e=a.map(e=>\"create-account\"===e?b?\"pay_with_card\":\"create_account\":e);u.obs.emit(\"identity_login_taw_button_clicked\",\"info\",{analytics:{...h,event_name:\"identity_login_taw_button_clicked\",state_name:\"begin_try_another_way\",transition_name:\"process_taw_button_click\",current_view:n,taw_opt"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 62404,
+        "snippet": "boardingOneTimeSignupEnabled:n,onboardingLink:o}=e,r=await u({ctxId:t,onboardingOneTimeSignupEnabled:n,link:o});window.location.assign(r)},o=h.isGuestEligible?\"pay_with_card\":\"create_account\";return(0,t.jsx)(\"a\",{\"data-testid\":\"onboarding-link\",className:\"text-link-lg text-link visited:text-link active:text-link-active focus-visible:ring-structure-focus focus-visible:ring-offset-structure-focus mt-4 inline-blo"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 63221,
+        "snippet": "rom:window.location.href,to:p}}),n({ctxId:c,onboardingOneTimeSignupEnabled:y,onboardingLink:p})},children:d})}let f=(0,l.getCommonTags)(h),v=h.isGuestEligible?\"pay_with_card\":\"create_account\";return(0,t.jsxs)(\"form\",{className:(0,n.clsx)(\"mt-4\",m),action:async e=>{s.obs.emit(\"identity_signup_option_clicked\",\"info\",{analytics:{...f,event_name:\"identity_signup_option_clicked\",transition_name:\"signup_option_click"
+      }
+    ]
+  },
+  {
+    "file": "/private/tmp/paypal_assets/pay_next_20260723/2lb9ysqs8u0da.js",
+    "size": 83104,
+    "sha256": "1e4b173e4be59bff",
+    "hits": [
+      {
+        "pattern": "Approve_Billing_Agreement",
+        "pos": 64386,
+        "snippet": "In_3\",\"Choose_Pay_In_Full\",\"Choose_Pay_Monthly\",\"View_Pay_Monthly_Terms\",\"View_Currency_Conversion_Rate_Guarantee\",\"Add_New_Card_From_Recoverable_Contingency\",\"Approve_Billing_Agreement\",\"Expand_PayPal_Credit_Standalone_Module\",\"click_select_agree_and_continue\",\"Select_Delivery_Method\",\"Opt_Out_LLS\",\"Logout\",\"Pay_With_PayPal\",\"Open_Profile\",\"Add_Or_Choose_Shipping_Address\",\"Update_Card\",\"missing\",\"Save_New_Bank\",\"Save_New"
+      },
+      {
+        "pattern": "Pay_With_Card",
+        "pos": 70472,
+        "snippet": "_public_credential_link\",\"Forgot_Password\",\"Request_OTP\",\"submit_alreadyExistsModal\",\"submit_autofill_passkey\",\"Submit_Autofill_Passkey\",\"Continue_To_Payment\",\"Pay_With_Card\",\"Submit_Email\",\"submit_email\",\"Submit_Phone\",\"submit_otp\",\"submit_otp_code\",\"Submit_OTP\",\"submit_otpError\",\"submit_otpInput\",\"submit_passkey\",\"submit_password\",\"Submit_Passkey\",\"Submit_Password\",\"submit_phone\",\"submit_sso\",\"submit_tokeniz"
+      },
+      {
+        "pattern": "Continue_To_Payment",
+        "pos": 70450,
+        "snippet": "nd_code\",\"click_switch_public_credential_link\",\"Forgot_Password\",\"Request_OTP\",\"submit_alreadyExistsModal\",\"submit_autofill_passkey\",\"Submit_Autofill_Passkey\",\"Continue_To_Payment\",\"Pay_With_Card\",\"Submit_Email\",\"submit_email\",\"Submit_Phone\",\"submit_otp\",\"submit_otp_code\",\"Submit_OTP\",\"submit_otpError\",\"submit_otpInput\",\"submit_passkey\",\"submit_password\",\"Submit_Passkey\",\"Submit_Password\",\"submit_phone\",\"submit_sso\""
+      },
+      {
+        "pattern": "agreement",
+        "pos": 64402,
+        "snippet": "y_In_Full\",\"Choose_Pay_Monthly\",\"View_Pay_Monthly_Terms\",\"View_Currency_Conversion_Rate_Guarantee\",\"Add_New_Card_From_Recoverable_Contingency\",\"Approve_Billing_Agreement\",\"Expand_PayPal_Credit_Standalone_Module\",\"click_select_agree_and_continue\",\"Select_Delivery_Method\",\"Opt_Out_LLS\",\"Logout\",\"Pay_With_PayPal\",\"Open_Profile\",\"Add_Or_Choose_Shipping_Address\",\"Update_Card\",\"missing\",\"Save_New_Bank\",\"Save_New"
+      },
+      {
+        "pattern": "agreement",
+        "pos": 66477,
+        "snippet": "ck_back\",\"click_back_confirm_identity_info\",\"click_back_credit_score_disclosure\",\"click_back_e_sign_consent\",\"click_back_edit_billing_address\",\"click_back_loan_agreement\",\"click_back_payment_authorization\",\"click_back_privacy_notice\",\"click_back_state_disclosure\",\"click_close\",\"click_credit_score_disclosure\",\"click_display_e_sign_consent\",\"click_display_loan_agreement\",\"click_display_payment_authorization\""
+      },
+      {
+        "pattern": "agreement",
+        "pos": 66678,
+        "snippet": "ion\",\"click_back_privacy_notice\",\"click_back_state_disclosure\",\"click_close\",\"click_credit_score_disclosure\",\"click_display_e_sign_consent\",\"click_display_loan_agreement\",\"click_display_payment_authorization\",\"click_display_state_disclosures\",\"click_download_e_sign_consent\",\"click_download_loan_agreement\",\"click_download_payment_authorization\",\"click_download_state_disclosures\",\"click_e_sign_consent\",\"clic"
+      }
+    ]
+  }
+]

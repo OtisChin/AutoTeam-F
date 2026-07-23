@@ -1,0 +1,137 @@
+{
+  "ok": true,
+  "stages": [
+    "phase0",
+    "phase2"
+  ],
+  "errors": [],
+  "ec_present": true,
+  "member_approve_shape_valid": true,
+  "auth_state_required": true,
+  "invalid_resource": false,
+  "checkout_query": {
+    "data": {
+      "checkoutSession": {
+        "allowedCardIssuers": [
+          "MASTER_CARD",
+          "DISCOVER",
+          "VISA",
+          "AMEX",
+          "DINERS"
+        ],
+        "cart": {
+          "soldoutUrl": "",
+          "showSoldoutPage": false,
+          "amounts": null,
+          "billingAddress": {
+            "city": null,
+            "country": null,
+            "line1": null,
+            "line2": null,
+            "postalCode": null,
+            "state": null,
+            "formattedFullAddress": null,
+            "__typename": "CartAddress"
+          },
+          "cancelUrl": {
+            "href": "https://stripe.com/?status=cancel&token=EC-<redacted>",
+            "__typename": "GenericURL"
+          },
+          "description": "OpenAI OpCo, LLC",
+          "email": null,
+          "intent": "SALE",
+          "noteToBuyer": null,
+          "payer": null,
+          "formattedPhoneNumber": null,
+          "phoneNumber": null,
+          "shippingAddress": {
+            "city": null,
+            "country": null,
+            "firstName": null,
+            "isStoreAddress": false,
+            "lastName": null,
+            "line1": null,
+            "line2": null,
+            "postalCode": null,
+            "state": null,
+            "formattedFullAddress": null,
+            "__typename": "CartShippingAddress"
+          },
+          "shippingMethods": null,
+          "__typename": "Cart"
+        },
+        "checkoutSessionType": "BILLING_WITHOUT_PURCHASE",
+        "merchant": {
+          "country": "US",
+          "merchantId": "CF9F8FKTUYUAY",
+          "name": "OpenAI OpCo, LLC",
+          "__typename": "Merchant"
+        },
+        "__typename": "CheckoutSession"
+      }
+    },
+    "extensions": {
+      "tracing": {
+        "version": 1,
+        "startTime": "2026-07-23T14:49:08.594Z",
+        "endTime": "2026-07-23T14:49:08.678Z",
+        "duration": 84000000,
+        "execution": {
+          "resolvers": [
+            {
+              "path": [
+                "checkoutSession"
+              ],
+              "parentType": "Query",
+              "fieldName": "checkoutSession",
+              "returnType": "Object",
+              "startOffset": 0,
+              "duration": 83765059
+            }
+          ]
+        }
+      },
+      "correlationId": "f298784d23288"
+    }
+  },
+  "member_approve_result": {
+    "errors": [
+      {
+        "message": "This resolver requires an auth state of either: LOGGEDIN, REMEMBERED, IDENTIFIED.  The current auth state is: ANONYMOUS.",
+        "path": [
+          "approveMemberPayment"
+        ],
+        "extensions": {
+          "class": "ERROR"
+        },
+        "statusCode": 401
+      }
+    ],
+    "data": {
+      "approveMemberPayment": null
+    },
+    "extensions": {
+      "tracing": {
+        "version": 1,
+        "startTime": "2026-07-23T14:49:09.571Z",
+        "endTime": "2026-07-23T14:49:09.638Z",
+        "duration": 67000000,
+        "execution": {
+          "resolvers": [
+            {
+              "path": [
+                "approveMemberPayment"
+              ],
+              "parentType": "Query",
+              "fieldName": "approveMemberPayment",
+              "returnType": "Object",
+              "startOffset": 0,
+              "duration": 64657219
+            }
+          ]
+        }
+      },
+      "correlationId": "f912613c33185"
+    }
+  }
+}

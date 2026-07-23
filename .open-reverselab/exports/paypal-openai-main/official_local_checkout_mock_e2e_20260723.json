@@ -1,0 +1,6 @@
+{
+  "ok": true,
+  "approval_clicked": true,
+  "client_exit": 0,
+  "output": "{\n  \"stage\": \"oauth\",\n  \"env\": \"sandbox\",\n  \"client_id\": \"***\",\n  \"base\": \"http://127.0.0.1:18765\"\n}\n{\n  \"ok\": true,\n  \"stage\": \"created\",\n  \"order_id\": \"MOCK-ORDER-12345\",\n  \"order_status\": \"PAYER_ACTION_REQUIRED\",\n  \"approval_url\": \"http://127.0.0.1:18766/return?token=MOCK-ORDER-12345&PayerID=MOCKPAYER\"\n}\n{\n  \"stage\": \"waiting_for_buyer_return\",\n  \"return_url\": \"http://127.0.0.1:18766/return\",\n  \"timeout_seconds\": 5\n}\n{\n  \"ok\": true,\n  \"stage\": \"created_approved_captured\",\n  \"order_id\": \"MOCK-ORDER-12345\",\n  \"capture_status\": \"COMPLETED\",\n  \"response\": {\n    \"id\": \"MOCK-ORDER-12345\",\n    \"status\": \"COMPLETED\",\n    \"purchase_units\": [\n      {\n        \"payments\": {\n          \"captures\": [\n            {\n              \"id\": \"MOCK-CAPTURE-1\",\n              \"status\": \"COMPLETED\"\n            }\n          ]\n        }\n      }\n    ]\n  }\n}\n"
+}

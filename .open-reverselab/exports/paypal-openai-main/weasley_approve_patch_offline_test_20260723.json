@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "checks": {
+    "approve_mutation_has_attemptSetStickyFi": true,
+    "approve_mutation_has_approveGuestSignUpPayment": true,
+    "extract_billing_without_purchase": true,
+    "extract_purchase_shape": true,
+    "phase4_status_success": true,
+    "phase4_return_url_has_ba_token": true,
+    "phase4_completed_payment_info": true,
+    "phase4_graphql_called": true
+  },
+  "result": {
+    "status": "success",
+    "return_url": "https://merchant.example/return?status=success&token=EC-LOCALDRYRUN0000000&ba_token=BA-LOCALDRYRUN0000000",
+    "final_redirect_url": "https://merchant.example/return?status=success",
+    "buyer_user_id": "BUYER123",
+    "funding_instrument_present": true,
+    "completed_payment_info_present": true,
+    "completed_payment_info": {
+      "transactionState": "COMPLETED",
+      "transactionId": "TXN-LOCAL"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "stage": "live_create_member_no_fi_v8",
+  "ba_present": true,
+  "proxy": "http://***:***@global.rp.linkup.onl:10000",
+  "exception": "Server disconnected without sending a response."
+}

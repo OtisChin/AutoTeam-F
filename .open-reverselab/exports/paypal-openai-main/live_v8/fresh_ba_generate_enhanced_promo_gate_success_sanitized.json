@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "auth_file": "<email>_com.json",
+  "region": "US",
+  "promo_region": "JP",
+  "fields_summary": {
+    "ba_token_present": true,
+    "paypal_link_present": true,
+    "link_source": "stripe_express_billing_agreement",
+    "cs_id_present": true,
+    "pre_promo_payment_method_types": [
+      "card",
+      "paypal"
+    ],
+    "post_promo_payment_method_types": [
+      "card",
+      "paypal"
+    ],
+    "pre_promo_amount": "2000",
+    "post_promo_amount": null
+  }
+}

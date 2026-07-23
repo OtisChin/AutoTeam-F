@@ -1,0 +1,179 @@
+{
+  "stage": "live_create_member_no_fi_v8",
+  "ba_present": true,
+  "proxy": "代理关闭",
+  "phase0_2": {
+    "ec_present": true,
+    "signup_url_present": true
+  },
+  "createMemberAccount": {
+    "result": {
+      "errors": [
+        {
+          "data": {},
+          "message": "OAS_ERROR",
+          "_name": "OAS_ERROR",
+          "checkpoints": [
+            "createMemberAccount"
+          ],
+          "meta": {},
+          "contingency": true,
+          "path": [
+            "onboardAccount"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        }
+      ],
+      "data": {
+        "onboardAccount": null
+      },
+      "extensions": {
+        "tracing": {
+          "version": 1,
+          "startTime": "2026-07-23T15:44:16.771Z",
+          "endTime": "2026-07-23T15:44:17.175Z",
+          "duration": 404000000,
+          "execution": {
+            "resolvers": [
+              {
+                "path": [
+                  "createMemberAccount"
+                ],
+                "parentType": "Query",
+                "fieldName": "createMemberAccount",
+                "returnType": "Object",
+                "startOffset": 0,
+                "duration": 403644536
+              }
+            ]
+          }
+        },
+        "correlationId": "f65741...9abe"
+      }
+    },
+    "consume": {
+      "ok": false,
+      "errors": [
+        {
+          "data": {},
+          "message": "OAS_ERROR",
+          "_name": "OAS_ERROR",
+          "checkpoints": [
+            "createMemberAccount"
+          ],
+          "meta": {},
+          "contingency": true,
+          "path": [
+            "onboardAccount"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        }
+      ]
+    }
+  },
+  "approve_variants": [
+    {
+      "name": "approveGuestSignUpPayment_skipSticky",
+      "result": {
+        "errors": [
+          {
+            "message": "Variable \"$supportedThreeDsExperiences\" got invalid value \"THREE_DS_2\" at \"supportedThreeDsExperiences[0]\"; Expected type ThreeDSPaymentExperience.",
+            "locations": [
+              {
+                "line": 2,
+                "column": 111
+              }
+            ],
+            "extensions": {
+              "code": "INTERNAL_SERVER_ERROR"
+            },
+            "statusCode": 400
+          }
+        ],
+        "extensions": {
+          "tracing": {
+            "version": 1,
+            "startTime": "2026-07-23T15:44:18.179Z",
+            "endTime": "2026-07-23T15:44:18.179Z",
+            "duration": 0,
+            "execution": {
+              "resolvers": []
+            }
+          },
+          "correlationId": "f57121...d6e5"
+        }
+      },
+      "errors": [
+        {
+          "message": "Variable \"$supportedThreeDsExperiences\" got invalid value \"THREE_DS_2\" at \"supportedThreeDsExperiences[0]\"; Expected type ThreeDSPaymentExperience.",
+          "locations": [
+            {
+              "line": 2,
+              "column": 111
+            }
+          ],
+          "extensions": {
+            "code": "INTERNAL_SERVER_ERROR"
+          },
+          "statusCode": 400
+        }
+      ]
+    },
+    {
+      "name": "approveMemberPayment_noPrimaryFI",
+      "result": {
+        "errors": [
+          {
+            "message": "Variable \"$supportedThreeDsExperiences\" got invalid value \"THREE_DS_2\" at \"supportedThreeDsExperiences[0]\"; Expected type ThreeDSPaymentExperience.",
+            "locations": [
+              {
+                "line": 2,
+                "column": 156
+              }
+            ],
+            "extensions": {
+              "code": "INTERNAL_SERVER_ERROR"
+            },
+            "statusCode": 400
+          }
+        ],
+        "extensions": {
+          "tracing": {
+            "version": 1,
+            "startTime": "2026-07-23T15:44:18.567Z",
+            "endTime": "2026-07-23T15:44:18.567Z",
+            "duration": 0,
+            "execution": {
+              "resolvers": []
+            }
+          },
+          "correlationId": "f57121...5a6f"
+        }
+      },
+      "errors": [
+        {
+          "message": "Variable \"$supportedThreeDsExperiences\" got invalid value \"THREE_DS_2\" at \"supportedThreeDsExperiences[0]\"; Expected type ThreeDSPaymentExperience.",
+          "locations": [
+            {
+              "line": 2,
+              "column": 156
+            }
+          ],
+          "extensions": {
+            "code": "INTERNAL_SERVER_ERROR"
+          },
+          "statusCode": 400
+        }
+      ]
+    }
+  ],
+  "terminal": {
+    "success": false
+  }
+}

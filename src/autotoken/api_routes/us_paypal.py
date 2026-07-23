@@ -17,6 +17,13 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from autotoken.api_routes import brazil_pix as pix_routes
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.us_paypal import PaypalJobConfig, generate_paypal_trial
+from autotoken.services.paypal_protocol_local import (
+    PaypalProtocolRunConfig,
+    extract_ba_token as extract_protocol_ba_token,
+    first_proxy as first_protocol_proxy,
+    run_paypal_protocol_payment,
+    sanitize_log_text as sanitize_protocol_log_text,
+)
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
 
@@ -103,6 +110,57 @@ class UsPaypalBatchStartRequest(UsPaypalStartRequest):
                 emails.append(email)
         return emails
 
+
+
+class UsPaypalProtocolStartRequest(BaseModel):
+    ba_token: str = Field("", alias="baToken")
+    paypal_link: str = Field("", alias="paypalLink")
+    phone: str = ""
+    sms_record_url: str = Field("", alias="smsRecordUrl")
+    proxy_url: str = Field("", alias="proxyUrl")
+    proxies: str = ""
+    country: str = "US"
+    account_email: str = Field("", alias="accountEmail")
+    timeout_seconds: int = Field(900, alias="timeoutSeconds")
+    sms_record_wait_seconds: int = Field(300, alias="smsRecordWaitSeconds")
+    sms_record_poll_seconds: float = Field(3.0, alias="smsRecordPollSeconds")
+    debug: bool = False
+    model_config = {"populate_by_name": True}
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def _clean_protocol_country(cls, value: Any) -> str:
+        text = str(value or "US").strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", text):
+            return "US"
+        return text
+
+    @field_validator("timeout_seconds", mode="before")
+    @classmethod
+    def _clean_timeout_seconds(cls, value: Any) -> int:
+        try:
+            seconds = int(value or 900)
+        except Exception:
+            seconds = 900
+        return max(60, min(3600, seconds))
+
+    @field_validator("sms_record_wait_seconds", mode="before")
+    @classmethod
+    def _clean_sms_record_wait_seconds(cls, value: Any) -> int:
+        try:
+            seconds = int(value or 300)
+        except Exception:
+            seconds = 300
+        return max(60, min(900, seconds))
+
+    @field_validator("sms_record_poll_seconds", mode="before")
+    @classmethod
+    def _clean_sms_record_poll_seconds(cls, value: Any) -> float:
+        try:
+            seconds = float(value or 3.0)
+        except Exception:
+            seconds = 3.0
+        return max(1.0, min(30.0, seconds))
 
 class UsPaypalDeleteLinksRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
@@ -622,6 +680,97 @@ def _job_snapshot(job_id: str) -> dict[str, Any]:
         return {"id": job["id"], "status": job["status"], "logs": list(job["logs"]), "result": job["result"], "error": job["error"], "created_at": job["created_at"], "finished_at": job["finished_at"], "account_email": job.get("account_email") or "", "total": job.get("total") or 0, "completed": job.get("completed") or 0, "concurrency": job.get("concurrency") or 1, "running_count": job.get("running_count") or 0, "cancel_requested": bool(job.get("cancel_requested")), "skipped": job.get("skipped") or [], "account_statuses": job.get("account_statuses") or {}}
 
 
+def _new_protocol_job(account_email: str = "") -> str:
+    job_id = "ppay-" + uuid.uuid4().hex[:10]
+    created = time.time()
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "id": job_id,
+            "kind": "paypal_protocol_payment",
+            "status": "queued",
+            "logs": ["协议支付任务已创建"],
+            "result": None,
+            "error": None,
+            "created_at": created,
+            "finished_at": None,
+            "account_email": str(account_email or "").strip(),
+            "total": 1,
+            "completed": 0,
+            "concurrency": 1,
+            "cancel_requested": False,
+            "running_count": 0,
+            "skipped": [],
+            "account_statuses": {},
+        }
+    return job_id
+
+
+def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) -> None:
+    def log(message: str) -> None:
+        _append_log(job_id, sanitize_protocol_log_text(message))
+
+    try:
+        ba_token = extract_protocol_ba_token(req.ba_token or req.paypal_link)
+        if not ba_token:
+            raise RuntimeError("缺少有效 PayPal BA token/link")
+        proxy_url = first_protocol_proxy(req.proxy_url or req.proxies)
+        phone = str(req.phone or "").strip()
+        if not phone:
+            raise RuntimeError("请填写 PayPal 注册手机号")
+        sms_record_url = str(req.sms_record_url or "").strip()
+        if not sms_record_url:
+            raise RuntimeError("请填写 SMS record URL")
+        account_email = str(req.account_email or "").strip()
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            JOBS[job_id]["status"] = "running"
+            JOBS[job_id]["running_count"] = 1
+        log(f"PayPal 协议支付开始：country={req.country} ba_token={ba_token}")
+        cfg = PaypalProtocolRunConfig(
+            ba_token=ba_token,
+            phone=phone,
+            sms_record_url=sms_record_url,
+            proxy_url=proxy_url,
+            country=req.country,
+            timeout_seconds=req.timeout_seconds,
+            sms_record_wait_seconds=req.sms_record_wait_seconds,
+            sms_record_poll_seconds=req.sms_record_poll_seconds,
+            debug=req.debug,
+        )
+        result = run_paypal_protocol_payment(
+            cfg,
+            log=log,
+            cancel_check=lambda: _is_job_cancel_requested(job_id),
+        )
+        terminal = str(result.get("status") or "").lower()
+        ok = terminal == "success"
+        if ok and account_email:
+            _mark_account_plus_paypal(account_email, "PayPal protocol approval success")
+            _set_account_status(account_email, PAYPAL_STATUS_PAID, job_id=job_id)
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            JOBS[job_id]["status"] = "success" if ok else ("cancelled" if terminal == "cancelled" else "error")
+            JOBS[job_id]["result"] = result
+            JOBS[job_id]["error"] = "" if ok else str(result.get("message") or "协议支付失败")
+            JOBS[job_id]["completed"] = 1
+            JOBS[job_id]["running_count"] = 0
+            JOBS[job_id]["finished_at"] = time.time()
+        log("PayPal 协议支付完成" if ok else f"PayPal 协议支付未成功：{result.get('message') or terminal}")
+    except Exception as exc:
+        error = sanitize_protocol_log_text(str(exc))
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = error
+            JOBS[job_id]["completed"] = 1
+            JOBS[job_id]["running_count"] = 0
+            JOBS[job_id]["finished_at"] = time.time()
+        _append_log(job_id, f"协议支付失败: {error}")
+
+
 def create_us_paypal_router() -> APIRouter:
     router = APIRouter()
 
@@ -671,6 +820,38 @@ def create_us_paypal_router() -> APIRouter:
         job_id = _new_job(emails, req.concurrency)
         threading.Thread(target=_run_batch_job, args=(job_id, req), daemon=True).start()
         return {"job_id": job_id}
+
+    @router.post("/api/us-paypal/protocol/start")
+    def start_us_paypal_protocol(req: UsPaypalProtocolStartRequest) -> dict[str, str]:
+        if not extract_protocol_ba_token(req.ba_token or req.paypal_link):
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写有效 BA 链接或 BA token"})
+        if not str(req.phone or "").strip():
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写手机号"})
+        if not str(req.sms_record_url or "").strip():
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写 SMS record URL"})
+        if req.country != "US":
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "当前协议支付仅开放 US"})
+        job_id = _new_protocol_job(req.account_email)
+        threading.Thread(target=_run_protocol_payment_job, args=(job_id, req), daemon=True).start()
+        return {"job_id": job_id}
+
+    @router.get("/api/us-paypal/protocol/jobs/{job_id}")
+    def get_us_paypal_protocol_job(job_id: str) -> dict[str, Any]:
+        return _job_snapshot(job_id)
+
+    @router.post("/api/us-paypal/protocol/jobs/{job_id}/cancel")
+    def cancel_us_paypal_protocol_job(job_id: str) -> dict[str, Any]:
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="job not found")
+            if job.get("status") in TERMINAL_STATUSES:
+                return {"ok": True, "job_id": job_id, "status": job.get("status"), "cancel_requested": bool(job.get("cancel_requested"))}
+            job["cancel_requested"] = True
+            if job.get("status") in {"queued", "running"}:
+                job["status"] = "cancelling"
+        _append_log(job_id, "收到取消请求：协议引擎将终止子进程")
+        return {"ok": True, "job_id": job_id, "status": "cancelling", "cancel_requested": True}
 
     @router.get("/api/us-paypal/jobs/{job_id}")
     def get_us_paypal_job(job_id: str) -> dict[str, Any]:

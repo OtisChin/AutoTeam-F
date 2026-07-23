@@ -1,0 +1,17 @@
+{
+  "stage": "stripe_checkout_state_after_paypal_approved",
+  "cs_<redacted>": true,
+  "pk_default": true,
+  "get_pre_init": {
+    "ok": false,
+    "error": "payment_pages get failed: HTTP 400 { \"error\": { \"code\": \"checkout_not_active_session\", \"message\": \"This Checkout Session is no longer active.\", \"type\": \"invalid_request_error\" } }"
+  },
+  "init": {
+    "ok": false,
+    "error": "stripe init failed: HTTP 400 { \"error\": { \"code\": \"checkout_not_active_session\", \"message\": \"This Checkout Session is no longer active.\", \"type\": \"invalid_request_error\" } }"
+  },
+  "get_post_init": {
+    "ok": false,
+    "error": "payment_pages get failed: HTTP 400 { \"error\": { \"code\": \"checkout_not_active_session\", \"message\": \"This Checkout Session is no longer active.\", \"type\": \"invalid_request_error\" } }"
+  }
+}

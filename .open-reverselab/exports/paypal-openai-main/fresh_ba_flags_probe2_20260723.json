@@ -1,0 +1,188 @@
+{
+  "ok": true,
+  "ec_present": true,
+  "results": {
+    "paypal": {
+      "errors": [
+        {
+          "message": "INVALID_ARGUMENT",
+          "checkpoints": [
+            "createCheckoutSession"
+          ],
+          "meta": {},
+          "errorData": {
+            "step_up_context": {}
+          },
+          "contingency": true,
+          "path": [
+            "checkoutSession",
+            "existingBillingAgreementDetails"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        }
+      ],
+      "data": {
+        "checkoutSession": {
+          "checkoutSessionType": "BILLING_WITHOUT_PURCHASE",
+          "userAction": "CONTINUE",
+          "allowedCardIssuers": [
+            "MASTER_CARD",
+            "DISCOVER",
+            "VISA",
+            "AMEX",
+            "DINERS"
+          ],
+          "cardProductClasses": [],
+          "cart": {
+            "billingType": "MERCHANT_INITIATED_BILLING",
+            "intent": "SALE",
+            "amounts": null
+          },
+          "merchant": {
+            "country": "US",
+            "merchantId": "CF9F8FKTUYUAY",
+            "name": "OpenAI OpCo, LLC",
+            "preferences": {
+              "autoReturnToMerchant": false,
+              "enablePaymentDataTransfer": false
+            }
+          },
+          "existingBillingAgreementDetails": null,
+          "flags": {
+            "isBillingAgreement": true,
+            "allowBillingAgreementWithoutBackupFundingSource": true,
+            "allowChangePaymentMethod": true,
+            "isGuestEligible": false,
+            "isShippingAddressRequired": false,
+            "hideShipping": true,
+            "isDebitRequired": false,
+            "blockNonDomesticCards": false,
+            "blockNonDomesticPayer": false,
+            "isSntSupported": false,
+            "payLaterOnly": false,
+            "isWPS": false,
+            "isWpsSubscription": false,
+            "isWpsAutobilling": false
+          }
+        }
+      },
+      "extensions": {
+        "tracing": {
+          "version": 1,
+          "startTime": "2026-07-23T15:21:09.225Z",
+          "endTime": "2026-07-23T15:21:09.429Z",
+          "duration": 204000000,
+          "execution": {
+            "resolvers": [
+              {
+                "path": [
+                  "checkoutSession"
+                ],
+                "parentType": "Query",
+                "fieldName": "checkoutSession",
+                "returnType": "Object",
+                "startOffset": 0,
+                "duration": 203023029
+              }
+            ]
+          }
+        },
+        "correlationId": "f35215842106c"
+      }
+    },
+    "None": {
+      "errors": [
+        {
+          "message": "INVALID_ARGUMENT",
+          "checkpoints": [
+            "createCheckoutSession"
+          ],
+          "meta": {},
+          "errorData": {
+            "step_up_context": {}
+          },
+          "contingency": true,
+          "path": [
+            "checkoutSession",
+            "existingBillingAgreementDetails"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        }
+      ],
+      "data": {
+        "checkoutSession": {
+          "checkoutSessionType": "BILLING_WITHOUT_PURCHASE",
+          "userAction": "CONTINUE",
+          "allowedCardIssuers": [
+            "MASTER_CARD",
+            "DISCOVER",
+            "VISA",
+            "AMEX",
+            "DINERS"
+          ],
+          "cardProductClasses": [],
+          "cart": {
+            "billingType": "MERCHANT_INITIATED_BILLING",
+            "intent": "SALE",
+            "amounts": null
+          },
+          "merchant": {
+            "country": "US",
+            "merchantId": "CF9F8FKTUYUAY",
+            "name": "OpenAI OpCo, LLC",
+            "preferences": {
+              "autoReturnToMerchant": false,
+              "enablePaymentDataTransfer": false
+            }
+          },
+          "existingBillingAgreementDetails": null,
+          "flags": {
+            "isBillingAgreement": true,
+            "allowBillingAgreementWithoutBackupFundingSource": true,
+            "allowChangePaymentMethod": true,
+            "isGuestEligible": false,
+            "isShippingAddressRequired": false,
+            "hideShipping": true,
+            "isDebitRequired": false,
+            "blockNonDomesticCards": false,
+            "blockNonDomesticPayer": false,
+            "isSntSupported": false,
+            "payLaterOnly": false,
+            "isWPS": false,
+            "isWpsSubscription": false,
+            "isWpsAutobilling": false
+          }
+        }
+      },
+      "extensions": {
+        "tracing": {
+          "version": 1,
+          "startTime": "2026-07-23T15:21:10.364Z",
+          "endTime": "2026-07-23T15:21:10.527Z",
+          "duration": 163000000,
+          "execution": {
+            "resolvers": [
+              {
+                "path": [
+                  "checkoutSession"
+                ],
+                "parentType": "Query",
+                "fieldName": "checkoutSession",
+                "returnType": "Object",
+                "startOffset": 0,
+                "duration": 162053727
+              }
+            ]
+          }
+        },
+        "correlationId": "f636024b593c1"
+      }
+    }
+  }
+}

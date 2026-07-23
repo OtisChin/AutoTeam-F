@@ -1,0 +1,17 @@
+{
+  "date": "2026-07-23",
+  "files": [
+    {
+      "path": "/private/tmp/paypal_assets/weasley_latest/main.72d757f6c90e0b683d47.js",
+      "size": 901043,
+      "sha256_12": "0deb51d3db62",
+      "hits": []
+    },
+    {
+      "path": "/private/tmp/paypal_assets/weasley_latest/vendor.78f11f90e1a61ccec04e.js",
+      "size": 820475,
+      "sha256_12": "1dab39968a1a",
+      "hits": []
+    }
+  ]
+}

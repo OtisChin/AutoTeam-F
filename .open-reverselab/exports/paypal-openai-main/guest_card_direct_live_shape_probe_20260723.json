@@ -1,0 +1,56 @@
+{
+  "ok": true,
+  "stage": "guest_card_live_shape_probe",
+  "ec_present": true,
+  "resolver_reached": true,
+  "graphql_validation_failed": false,
+  "auth_state_error": false,
+  "payment_attempted": false,
+  "error_names": [
+    "GUEST_PAYMENT_INTEGRITY_VALIDATION_FAILED"
+  ],
+  "checkpoints": [],
+  "raw_response_sanitized": {
+    "errors": [
+      {
+        "message": "GUEST_PAYMENT_INTEGRITY_VALIDATION_FAILED",
+        "checkpoints": [],
+        "meta": {},
+        "contingency": true,
+        "path": [
+          "approveGuestPaymentWithCreditCard"
+        ],
+        "extensions": {
+          "class": "ERROR"
+        },
+        "statusCode": 200
+      }
+    ],
+    "data": {
+      "approveGuestPaymentWithCreditCard": null
+    },
+    "extensions": {
+      "tracing": {
+        "version": 1,
+        "startTime": "2026-07-23T15:09:18.128Z",
+        "endTime": "2026-07-23T15:09:18.225Z",
+        "duration": 97000000,
+        "execution": {
+          "resolvers": [
+            {
+              "path": [
+                "approveGuestPaymentWithCreditCard"
+              ],
+              "parentType": "Query",
+              "fieldName": "approveGuestPaymentWithCreditCard",
+              "returnType": "Object",
+              "startOffset": 0,
+              "duration": 94924098
+            }
+          ]
+        }
+      },
+      "correlationId": "f4305391b0a9b"
+    }
+  }
+}

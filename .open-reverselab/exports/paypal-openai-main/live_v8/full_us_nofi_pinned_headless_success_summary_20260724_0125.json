@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "fresh_ba_source_log": "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/live_v8/fresh_ba_generate_us_proxy_for_pinned_headless_20260724_0124.log",
+  "full_run_log": "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/live_v8/full_us_nofi_pinned_headless_warmup_fresh_usba_20260724_0125.log",
+  "phase0_ec_present": true,
+  "otp_initiated": true,
+  "otp_confirmed": true,
+  "address_autocomplete": true,
+  "signup_context_risk_full": true,
+  "create_member_success": true,
+  "approve_member_success": true,
+  "follow_return_success": true,
+  "terminal_status_success": true
+}

@@ -1,0 +1,979 @@
+# AutoTeam-F paypal browser chain inventory (read-only, redacted)
+## payment_checkout_browser signals
+1:"""Shared browser helpers for ChatGPT checkout pages."""
+16:    "#captcha-standalone",
+17:    ".captcha-overlay",
+18:    ".captcha-container",
+24:    "c.paypal.com",
+25:    "c6.paypal.com",
+26:    "ct.ddc.paypal.com",
+27:    "ddbm2.paypal.com",
+28:    "geo.ddc.paypal.com",
+31:    "/agreements/approve",
+45:    "paypal-client-context",
+46:    "paypal-client-metadata-id",
+56:    "x-paypal-internal-euat",
+63:    return text[:limit]
+67:    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+70:def _paypal_capture_url_kind(url: str) -> str:
+74:        return ""
+78:        return "risk"
+79:    if host.endswith("paypal.com") and any(hint in path for hint in PAYPAL_SEQUENCE_PATH_HINTS):
+80:        return "sequence"
+81:    return ""
+84:def _paypal_capture_path(api: Any) -> Path:
+87:        return Path(configured)
+88:    existing = str(getattr(api, "_paypal_risk_capture_path", "") or "")
+90:        return Path(existing)
+91:    return Path("data") / f"paypal_risk_capture_{int(time.time())}.jsonl"
+96:        return {}
+102:        if not include_sensitive and name in {"cookie", "set-cookie", "x-paypal-internal-euat"}:
+105:    return subset
+108:def _paypal_capture_variable_shape(value: Any, *, depth: int = 0) -> Any:
+110:        return type(value).__name__
+112:        return {
+113:            str(key): _paypal_capture_variable_shape(item, depth=depth + 1)
+117:        return {
+120:            "itemShape": _paypal_capture_variable_shape(value[0], depth=depth + 1) if value else None,
+123:        return "null"
+124:    return type(value).__name__
+130:    "cardNumber",
+156:def _paypal_capture_safe_variables(value: Any, *, key: str = "", depth: int = 0) -> Any:
+158:        return type(value).__name__
+160:        return "<redacted>"
+162:        return {
+163:            str(child_key): _paypal_capture_safe_variables(child_value, key=str(child_key), depth=depth + 1)
+167:        return [_paypal_capture_safe_variables(item, key=key, depth=depth + 1) for item in value[:5]]
+169:        return value
+171:        return _safe_text(value, limit=120)
+172:    return type(value).__name__
+175:def _paypal_capture_graphql_item(item: dict[str, Any]) -> dict[str, Any]:
+177:    return {
+180:        "variableShape": _paypal_capture_variable_shape(variables) if isinstance(variables, dict) else {},
+181:        "safeVariables": _paypal_capture_safe_variables(variables) if isinstance(variables, dict) else {},
+186:def _paypal_capture_body(url: str, body: Any) -> Any:
+187:    kind = _paypal_capture_url_kind(url)
+190:        return ""
+191:    if kind == "risk":
+192:        return text[:PAYPAL_RISK_CAPTURE_MAX_BODY_CHARS]
+196:        return {"length": len(text)}
+198:        return [_paypal_capture_graphql_item(item) for item in payload if isinstance(item, dict)]
+200:        return _paypal_capture_graphql_item(payload)
+201:    return {"jsonType": type(payload).__name__}
+204:def install_paypal_risk_network_capture(
+210:        return ""
+213:        return ""
+214:    attached_pages = getattr(api, "_paypal_risk_capture_pages", None)
+217:        setattr(api, "_paypal_risk_capture_pages", attached_pages)
+220:        return str(getattr(api, "_paypal_risk_capture_path", "") or "")
+222:    capture_path = _paypal_capture_path(api)
+223:    capture_path.parent.mkdir(parents=True, exist_ok=True)
+224:    setattr(api, "_paypal_risk_capture_path", str(capture_path))
+229:            with capture_path.open("a", encoding="utf-8") as fh:
+232:            logging.getLogger(__name__).debug("PayPal risk capture write failed", exc_info=True)
+236:        kind = _paypal_capture_url_kind(url)
+238:            return
+239:        include_sensitive = kind == "risk"
+256:                "body": _paypal_capture_body(url, post_data),
+266:        kind = _paypal_capture_url_kind(url)
+268:            return
+269:        include_sensitive = kind == "risk"
+289:        logging.getLogger(__name__).debug("PayPal risk capture attach failed", exc_info=True)
+290:        return ""
+295:                "stage": "paypal_risk_capture_enabled",
+297:                "message": f"PayPal 风控网络抓取已开启: {capture_path}",
+298:                "capture_path": str(capture_path),
+301:    return str(capture_path)
+308:            return []
+316:        return frames
+318:        return []
+326:    log_prefix: str = "[payment_checkout_browser]",
+366:        return False
+369:            return False
+378:        return True
+380:        return False
+385:        return bool(locator.is_checked(timeout=500))
+396:                    return bool(checked)
+398:            return checked_attr in {"true", "checked"}
+402:        return str(locator.get_attribute("aria-checked", timeout=300) or "").strip().lower() == "true"
+404:        return False
+407:def paypal_option_selected(
+417:        return True
+419:      const radio = document.querySelector('#payment-method-accordion-item-title-paypal')
+420:        || document.querySelector('input[type="radio"][id*="paypal" i]')
+421:        || document.querySelector('input[type="radio"][name*="payment" i][value*="paypal" i]');
+422:      if (radio) return Boolean(radio.checked);
+423:      const roleRadio = document.querySelector('[role="radio"][aria-label*="paypal" i]');
+424:      if (!roleRadio) return false;
+425:      return String(roleRadio.getAttribute('aria-checked') || '').toLowerCase() === 'true';
+428:        return bool(api.page.evaluate(script))
+430:        return False
+433:def click_paypal_checkout_control(
+443:        return True
+458:                  return Boolean(el.checked) || String(wrapper?.getAttribute?.('aria-checked') || '').toLowerCase() === 'true';
+465:                return True
+469:      const radio = document.querySelector('#payment-method-accordion-item-title-paypal')
+470:        || document.querySelector('input[type="radio"][id*="paypal" i]')
+471:        || document.querySelector('input[type="radio"][name*="payment" i][value*="paypal" i]');
+472:      const button = document.querySelector('[data-testid="paypal-accordion-item-button"]')
+476:      return Boolean(radio?.checked)
+481:            return True
+485:      const paypalText = /(^|\\s)paypal(\\s|$)/i;
+487:        if (!el || !el.isConnected) return false;
+489:        if (style.visibility === 'hidden' || style.display === 'none' || style.pointerEvents === 'none') return false;
+491:        return rect.width > 0 && rect.height > 0;
+496:        return Boolean(radio?.checked)
+500:        if (!el || !visible(el)) return false;
+510:        return true;
+516:        if (!paypalText.test(text) && !paypalText.test(alt)) continue;
+523:          if (!visible(el)) return false;
+524:          if (el.matches('label,button,[role="radio"],[role="button"]')) return true;
+525:          if (el.querySelector('input[type="radio"],[role="radio"],button')) return true;
+527:          return rect.width >= 160 && rect.height >= 28;
+537:        return checked(target) || checked(target.parentElement) || true;
+539:      return false;
+544:                return True
+547:    return False
+550:def select_paypal_option(
+553:    paypal_host: Callable[[str], bool],
+561:    if paypal_host(getattr(api.page, "url", "")):
+562:        return True
+565:            on_progress(progress_event("paypal_option_selected", url=getattr(api.page, "url", "")))
+566:        return True
+570:        if paypal_host(getattr(api.page, "url", "")) or option_selected(api):
+572:                on_progress(progress_event("paypal_option_selected", url=getattr(api.page, "url", "")))
+573:            return True
+576:    return False
+579:def wait_paypal_checkout_interactive(
+582:    paypal_selectors: list[str],
+594:        if visible_locator(paypal_selectors, 800):
+595:            return True
+597:            return True
+601:            "paypal" in body_lower
+602:            or "payment method" in body_lower
+603:            or "payment details" in body_lower
+608:            return True
+615:            "[paypal_bind_executor] checkout page not interactive: url=%s body=%s",
+619:    return False
+622:def inspect_paypal_page(
+625:    paypal_host: Callable[[str], bool],
+626:    ensure_captcha_bypass: Callable[[Any], bool],
+632:    card_rejected_text_hint: Callable[[str], bool],
+635:    login_text_hint: Callable[[str], bool],
+637:    approve_text_hint: Callable[[str], bool],
+640:    approve_selectors: list[str],
+644:    card_selectors: list[str],
+648:    is_paypal_page = paypal_host(current_url)
+649:    if is_paypal_page:
+650:        ensure_captcha_bypass(api)
+651:    phone_rejected_prompt = has_phone_rejected_prompt(api) if is_paypal_page else False
+654:    card_rejected_prompt = is_paypal_page and card_rejected_text_hint(body_text)
+658:    approve_locator = visible_locator(approve_selectors, 400)
+662:    card_locator = visible_locator(card_selectors, 400)
+663:    otp_inputs_ready = has_otp_inputs(api) if is_paypal_page else False
+664:    registration_text_hint = is_paypal_page and signup_registration_text_hint(body_text)
+666:    login_phase = ""
+668:        login_phase = "login_combined"
+670:        login_phase = "email"
+672:        login_phase = "password"
+674:    needs_login = is_paypal_page and (bool(email_locator or password_locator) or login_text_hint(body_text))
+675:    has_passkey_prompt = is_paypal_page and (bool(prompt_locator) or passkey_text_hint(body_text))
+676:    approve_ready = is_paypal_page and (bool(approve_locator) or approve_text_hint(body_text))
+677:    registration_inputs_ready = bool(card_locator or phone_locator or registration_text_hint)
+681:    needs_otp = is_paypal_page and (otp_inputs_ready or otp_text_hint)
+682:    registration_ready = is_paypal_page and not otp_inputs_ready and registration_inputs_ready
+683:    if card_rejected_prompt:
+685:    return {
+688:        "needs_login": needs_login,
+689:        "login_phase": login_phase,
+691:        "approve_ready": approve_ready,
+695:        "card_rejected": card_rejected_prompt,
+703:def dismiss_paypal_prompts(
+713:            on_progress(progress_event("paypal_prompt_dismissed", url=getattr(api.page, "url", "")))
+714:        return True
+715:    return False
+718:def paypal_signup_registration_form_visible(
+728:        return True
+731:        return visible_fields >= 2
+733:        return False
+736:def click_paypal_create_account(
+746:            on_progress(progress_event("paypal_create_account", url=getattr(api.page, "url", "")))
+747:        return True
+748:    return False
+751:def maybe_enter_paypal_signup_from_login(
+765:        state.get("needs_login")
+771:        and not state.get("approve_ready")
+773:        return None
+776:        return True, "", True
+783:        return True, "", True
+784:    return True, "", False
+787:def handle_paypal_signup_needs_login_redirect(
+791:    signup_login_redirect_count: int,
+801:    if not state.get("needs_login"):
+802:        return None
+804:    if signup_login_redirect_count < max_redirects and goto_create_account_entry(
+813:        return {
+815:            "signup_login_redirect_count": signup_login_redirect_count + 1,
+822:    return {
+824:        "screenshot_label": "paypal-signup-login-page",
+829:def maybe_dismiss_paypal_passkey_prompt(
+838:        return False
+840:        return False
+842:    return True
+845:def maybe_click_paypal_signup_create_account_ready(
+858:        return None
+860:        return None
+862:    return True, "", True
+865:def seed_paypal_signup_authorize_state(
+874:    card_retry_count: int,
+883:    state["card_retry_count"] = card_retry_count
+885:    return state
+888:def sync_paypal_signup_authorize_state(
+895:    card_retry_count: int,
+915:    return {
+921:        "card_retry_count": int(state.get("card_retry_count") or card_retry_count),
+926:def paypal_signup_authorize_state_values(
+929:    return (
+935:        int(signup_state["card_retry_count"]),
+949:def merge_paypal_inspected_state(
+963:    return state
+966:def paypal_signup_email_step_state(
+981:        and not state.get("needs_login")
+983:        and not state.get("approve_ready")
+993:        return result
+1003:    return result
+1006:def recover_paypal_signup_email_step(
+1031:        return None
+1038:                "[paypal_signup] page stuck after email submit (%.0fs), JS recover attempt %d...",
+1045:                    "paypal_signup_email_reload",
+1051:            logger.info("[paypal_signup] JS recover result: %s", recover_result)
+1056:        return True, "", True
+1068:                "[paypal_signup] SPA deadlocked after JS attempts, reload cycle %d/%d (%.0fs total)...",
+1076:                    "paypal_signup_email_reload",
+1085:        return True, "", True
+1087:    return None
+1090:def continue_paypal_signup_email_step(
+1108:                    "paypal_wait_signup_form",
+1114:        return True, "", True
+1117:        return True, "", True
+1127:    return ok, error, True
+1130:def recover_paypal_signup_unhandled_email_stuck(
+1152:            "[paypal_authorize] signup_flow returned handled=False, state: "
+1153:            "email_locator=%s needs_login=%s registration_ready=%s "
+1154:            "registration_text_hint=%s needs_otp=%s approve_ready=%s "
+1157:            bool(state.get("needs_login")),
+1161:            bool(state.get("approve_ready")),
+1170:        and not state.get("needs_login")
+1175:        and not state.get("approve_ready")
+1177:        return None
+1182:        return {
+1184:            "screenshot_label": "paypal-signup-email-timeout",
+1195:        return None
+1202:                "[paypal_authorize] page stuck (%.0fs, %.0fs total), JS recover %d...",
+1210:                    "paypal_signup_email_reload",
+1216:            logger.info("[paypal_authorize] JS recover result: %s", recover_result)
+1223:        return {
+1239:                "[paypal_authorize] SPA deadlocked, reload cycle %d/%d (%.0fs total)...",
+1247:                    "paypal_signup_email_reload",
+1256:        return {
+1262:    return None
+1265:def maybe_mark_paypal_signup_registration_ready(
+1280:        return True
+1281:    return False
+1284:def stop_before_paypal_signup_otp(
+1296:                "paypal_wait_signup_otp",
+1303:    return True, "", False
+1306:def handle_paypal_signup_submitted_phase(
+1311:    card_retry_count: int,
+1316:    retry_card_rejected: Callable[..., tuple[bool, str, bool]],
+1330:        return False, f"PayPal 注册表单校验失败: {validation_error}", True
+1332:    if state.get("card_rejected"):
+1333:        return retry_card_rejected(
+1337:            card_retry_count=card_retry_count,
+1348:        return stop_before_otp(
+1363:        return otp_wait_result
+1366:        return stop_before_otp(
+1373:    return submit_otp(
+1383:def maybe_wait_for_paypal_signup_otp(
+1413:                return True, "", True
+1414:            return False, "PayPal OTP 提交后页面仍停留在验证码输入，可能验证码失效或未被页面接受", False
+1415:        return None
+1419:        return False, "等待 PayPal 验证码超时", False
+1421:        state.get("approve_ready")
+1428:                "[paypal_signup] approve_ready after OTP, attempting PAYPAL_CREATE_SUBMIT click, url=%s",
+1433:                on_progress(progress_event("paypal_agree_create_clicked", url=current_url))
+1435:                logger.info("[paypal_signup] Agree & Create Account clicked, waiting for navigation")
+1441:            return True, "", True
+1443:            logger.info("[paypal_signup] PAYPAL_CREATE_SUBMIT not found, falling back to authorize flow")
+1444:        return True, "", False
+1449:                "paypal_wait_signup_otp",
+1456:    return True, "", True
+1459:def submit_paypal_signup_otp(
+1485:        return False, f"等待 PayPal OTP 超时: {exc}", False
+1487:        return False, "未找到 PayPal 验证码输入框", False
+1489:        on_progress(progress_event("paypal_submit_otp", url=current_url))
+1494:            return False, "未找到 PayPal 验证码提交按钮", False
+1498:    return True, "", True
+1501:def paypal_signup_email_step_advanced(
+1505:    sync_payment_page: Callable[..., Any],
+1509:    sync_payment_page(api, prefer_paypal=True)
+1512:        return True
+1514:        return True
+1516:    return bool(state.get("registration_ready") or state.get("registration_text_hint") or state.get("needs_otp"))
+1519:def wait_paypal_signup_email_step_advanced(
+1531:            return True
+1536:    return step_advanced(api, before_url)
+1539:def js_click_paypal_signup_email_submit(
+1548:        if (!node) return false;
+1551:        return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+1559:        /continue to payment/i,
+1570:          return { clicked: true, text: textOf(node).slice(0, 120) };
+1575:        'input#email, input[name="email"], input[name="login_email"], input[type="email"], input[autocomplete="username"]'
+1593:        return { clicked: true, text: (textOf(fallbackButton).slice(0, 120) || 'form-button-click') };
+1595:      return { clicked: false, text: '' };
+1603:                    logger.info("[paypal_signup] JS email submit clicked: %s", result.get("text"))
+1604:                return True
+1606:                return True
+1609:    return False
+1612:def js_recover_paypal_email_spinner(api: Any, email: str) -> dict[str, Any]:
+1628:              if (node.id && /captcha/i.test(node.id)) return;
+1629:              if (node.className && /captcha/i.test(String(node.className))) return;
+1671:          if (!node) return false;
+1674:          return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+1680:          /^next$/i, /^continue$/i, /continue to payment/i,
+1713:      return result;
+1719:            return value
+1720:        return {"recovered": False, "detail": f"unexpected_return:{value}"}
+1722:        return {"recovered": False, "detail": f"evaluate_error:{exc}"}
+1725:def inspect_paypal_email_gate(api: Any) -> dict[str, Any]:
+1729:        if (!node) return false;
+1732:        return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+1759:      return { controls, forms, inputs, title: document.title || '' };
+1764:        return value if isinstance(value, dict) else {}
+1766:        return {"error": str(exc)}
+1769:def submit_paypal_signup_email_step(
+1789:        return False, "PayPal 注册邮箱为空"
+1792:        return False, "未找到 PayPal 注册邮箱输入框"
+1794:        return False, "填写 PayPal 注册邮箱失败"
+1796:        on_progress(progress_event("paypal_signup_email", url=getattr(api.page, "url", "")))
+1802:            return True, ""
+1805:                "[paypal_signup] email submit clicked but page did not advance (SPA may be stuck), "
+1810:        return True, ""
+1818:        return True, ""
+1825:        return True, ""
+1829:            return True, ""
+1833:                "[paypal_signup] email submit clicked but page did not advance (SPA may be stuck), "
+1838:        return True, ""
+1841:            "[paypal_signup] email submit did not advance: before=%s current=%s gate=%s body=%s",
+1847:    return False, "PayPal 注册邮箱提交后未跳转到注册表单"
+1850:def click_paypal_phone_rejected_ok_in_frame(frame: Any) -> bool:
+1854:        if (!el) return false;
+1857:        return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+1863:      if (!roots.length && !rejected(textOf(document.body))) return false;
+1871:          return true;
+1874:      return false;
+1878:        return bool(frame.evaluate(script))
+1880:        return False
+1883:def dismiss_paypal_phone_rejected_prompt(
+1897:                return True
+1902:                return True
+1907:                return True
+1909:            return False
+1910:    return not has_prompt(api)
+1913:def has_paypal_phone_rejected_prompt(
+1922:        return True
+1927:    return text_hint(text)
+1930:def click_paypal_signup_otp_resend(
+1942:        if (!node) return false;
+1945:        return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+1960:          return true;
+1963:      return false;
+1970:                    on_progress(progress_event("paypal_otp_resend_clicked", url=getattr(api.page, "url", "")))
+1972:                return True
+1991:            on_progress(progress_event("paypal_otp_resend_clicked", url=getattr(api.page, "url", "")))
+1993:        return True
+1994:    return False
+1997:def submit_paypal_login_step(
+2011:    phase = str(state.get("login_phase") or "")
+2015:    if phase in {"email", "login_combined"} and email_locator:
+2017:            return False, "自动 PayPal 模式缺少 paypal_email"
+2023:            return False, "填写 PayPal 邮箱失败"
+2025:            on_progress(progress_event("paypal_login_email", url=getattr(api.page, "url", "")))
+2027:    if phase in {"password", "login_combined"} and password_locator:
+2029:            return False, "自动 PayPal 模式缺少 paypal_password"
+2031:            return False, "填写 PayPal 密码失败"
+2033:            on_progress(progress_event("paypal_login_password", url=getattr(api.page, "url", "")))
+2042:                return False, "未找到 PayPal 登录提交按钮"
+2044:            return False, "未找到 PayPal 登录提交按钮"
+2047:    return True, ""
+2050:def click_paypal_approve(
+2053:    approve_selectors: list[str],
+2058:    if not click_first(approve_selectors, 2500):
+2059:        return False
+2061:        on_progress(progress_event("paypal_approve_clicked", url=getattr(api.page, "url", "")))
+2062:    return True
+2065:def handle_paypal_left_host(
+2069:    paypal_host: Callable[[str], bool],
+2074:    if not current_url or paypal_host(current_url):
+2075:        return None
+2079:        on_progress(progress_event("paypal_wait_result", url=current_url))
+2080:    return {
+2081:        "action": "return_none",
+2086:def paypal_left_host_values(left_host_result: dict[str, Any]) -> str:
+2087:    return str(left_host_result.get("otp_phone_lock_key") or "")
+2090:def prepare_paypal_authorize_flow_context(
+2092:    paypal_mode: str,
+2097:    paypal_country: str,
+2098:    paypal_lang: str,
+2099:    normalize_paypal_country: Callable[[str], str],
+2100:    normalize_paypal_lang: Callable[..., str],
+2105:    normalized_country = normalize_paypal_country(paypal_country)
+2106:    normalized_lang = normalize_paypal_lang(paypal_lang, normalized_country)
+2110:    if paypal_mode == "create_account" and active_signup_profile:
+2115:    return {
+2117:        "paypal_country": normalized_country,
+2118:        "paypal_lang": normalized_lang,
+2128:        "card_retry_count": 0,
+2133:        "signup_login_redirect_count": 0,
+2139:def handle_paypal_authorize_cancelled(
+2147:        return None
+2150:    return {
+2153:        "screenshot_label": "paypal-cancelled",
+2159:def paypal_authorize_cancelled_result_fields(
+2162:    return (
+2165:        str(cancelled_result.get("screenshot_label") or "paypal-cancelled"),
+2171:def handle_paypal_phone_rejected_rotation(
+2174:    paypal_mode: str,
+2189:        paypal_mode != "create_account"
+2191:        or classified.get("failure_stage") != "paypal_phone_rejected"
+2194:        return None
+2200:                "paypal_phone_rejected_waiting_dismiss",
+2210:        return {"action": "continue"}
+2219:                "paypal_phone_rejected_rotate",
+2230:    return {
+2238:        "card_retry_count": 0,
+2242:def paypal_authorize_datadome_failed_result_fields(
+2245:    default_stage: str = "paypal_datadome_blocked",
+2248:    return (
+2255:def paypal_phone_rejected_rotation_values(
+2264:    card_retry_count: int,
+2266:    return (
+2273:        int(rotation_result.get("card_retry_count", card_retry_count)),
+2277:def paypal_authorize_classified_return_values(
+2283:    return (
+2290:def paypal_authorize_classification_refresh_count(
+2295:    return int(classification_result.get("ddc_blocked_refresh_count", ddc_blocked_refresh_count))
+2298:def handle_paypal_authorize_failed_classification(
+2302:    paypal_mode: str,
+2317:        return None
+2320:    if classified.get("failure_stage") == "paypal_datadome_blocked":
+2326:                    "[paypal_authorize] classify detected datadome_blocked, refreshing (%d/%d)...",
+2333:                            "paypal_ddc_blocked_retry",
+2342:                return {
+2349:    if paypal_mode == "create_account" and classified.get("failure_stage") == "paypal_phone_rejected" and on_progress:
+2352:                "paypal_phone_rejected_final",
+2360:    return {
+2361:        "action": "return_classified",
+2365:        "screenshot_label": "paypal-authorize-failed",
+2369:def handle_paypal_authorize_review_classification(
+2386:        or classified.get("failure_stage") != "paypal_human_verification"
+2388:        return None
+2396:                "[paypal_authorize] human_verification is actually a blocked page, refreshing (%d/%d)...",
+2403:                        "paypal_ddc_blocked_retry",
+2412:            return {
+2419:    return {
+2420:        "action": "return_classified",
+2424:        "screenshot_label": "paypal-authorize-review",
+2428:def handle_paypal_authorize_ddc_blocked_page(
+2443:        return None
+2449:        return {
+2453:            "failure_stage": "paypal_datadome_blocked",
+2458:        "[paypal_authorize] blocked page detected in main loop, refreshing (%d/%d)...",
+2465:                "paypal_ddc_blocked_retry",
+2474:    return {
+2481:def paypal_authorize_ddc_blocked_page_values(
+2487:    return (
+2493:def handle_paypal_authorize_ddc_challenge(
+2509:        return None
+2516:        return None
+2520:        return {
+2528:    return {
+2532:        "failure_stage": "paypal_datadome_blocked",
+2537:def paypal_authorize_ddc_challenge_values(
+
+## payment state signals
+19:    re.compile(r"payment.*not.*approved", re.IGNORECASE),
+21:    re.compile(r"not.*approved", re.IGNORECASE),
+37:    re.compile(r"payment\s+(?:was\s+)?not\s+approved", re.IGNORECASE),
+39:    re.compile(r"not\s+approved", re.IGNORECASE),
+42:PAYPAL_SUCCESS_HINTS = (
+43:    "payment successful",
+50:    "you've successfully subscribed",
+55:PAYPAL_ACCOUNT_LIMITED_HINTS = (
+56:    "your account is limited",
+57:    "account is limited",
+58:    "account limited",
+67:PAYPAL_PHONE_REJECTED_HINTS = (
+80:PAYPAL_CARD_REJECTED_HINTS = (
+81:    "this card has already been added to another paypal account",
+82:    "card has already been added to another paypal account",
+83:    "remove the card from the other account",
+85:    "use a different card",
+86:    "try a different card",
+87:    "card is already linked",
+88:    "card already linked",
+90:PAYPAL_CARD_LINKED_HINTS = (
+91:    "this card has already been added to another paypal account",
+92:    "card has already been added to another paypal account",
+93:    "remove the card from the other account",
+95:    "card is already linked",
+96:    "card already linked",
+98:PAYPAL_CARD_CANDIDATE_REJECTED_HINTS = (
+99:    "create_card_account_candidate_validation_error",
+100:    "create card account candidate validation error",
+103:PAYPAL_FUNDING_REJECTED_HINTS = (
+105:    "card_generic_error",
+107:    "funding source was declined",
+111:PAYPAL_DATADOME_BLOCKED_HINTS = (
+113:    "captcha_failed",
+122:PAYPAL_HUMAN_VERIFICATION_HINTS = (
+133:PAYPAL_FAILURE_HINTS = (
+134:    "card was declined",
+137:    "your card was declined",
+138:    "payment was not approved",
+150:PAYPAL_PENDING_HINTS = (
+151:    "payment pending",
+157:PAYPAL_CANCEL_HINTS = (
+165:PAYPAL_REVIEW_HINTS = (
+174:PAYPAL_SUCCESS_URL_RE = re.compile(r"(?:success|complete|completed|thank|subscribed)", re.I)
+175:PAYPAL_FAILURE_URL_RE = re.compile(r"(?:failed|failure|declined|error)", re.I)
+176:PAYPAL_CANCEL_URL_RE = re.compile(r"(?:cancel|cancelled|canceled)", re.I)
+177:PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS = 180
+178:PAYPAL_AUTO_AUTHORIZE_MAX_TIMEOUT_SECONDS = 300
+179:PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS = 120
+180:PAYPAL_AUTO_RESULT_MAX_TIMEOUT_SECONDS = 180
+202:    "captcha-delivery.com",
+203:    "geo.captcha-delivery.com",
+216:def paypal_authorize_timeout_seconds(timeout_seconds: int | None) -> int:
+219:        minimum=PAYPAL_AUTO_AUTHORIZE_MIN_TIMEOUT_SECONDS,
+220:        maximum=PAYPAL_AUTO_AUTHORIZE_MAX_TIMEOUT_SECONDS,
+224:def paypal_result_timeout_seconds(timeout_seconds: int | None) -> int:
+227:        minimum=PAYPAL_AUTO_RESULT_MIN_TIMEOUT_SECONDS,
+228:        maximum=PAYPAL_AUTO_RESULT_MAX_TIMEOUT_SECONDS,
+247:def paypal_signup_otp_text_hint(text: str, *, loose: bool = False) -> bool:
+279:def paypal_signup_otp_entry_text_hint(text: str) -> bool:
+297:def paypal_signup_registration_text_hint(text: str) -> bool:
+301:        ("card number" in lowered and "billing address" in lowered)
+303:        or ("pay with debit or credit card" in lowered and "create password" in lowered)
+310:def paypal_signup_registration_form_text_visible(text: str) -> bool:
+314:        "card number",
+334:def paypal_login_text_hint(text: str) -> bool:
+340:            "login",
+350:def paypal_passkey_text_hint(text: str) -> bool:
+365:def paypal_approve_text_hint(text: str) -> bool:
+385:def paypal_phone_rejected_text_hint(text: str, *, hints: tuple[str, ...] | list[str]) -> bool:
+389:def paypal_card_rejected_text_hint(text: str, *, hints: tuple[str, ...] | list[str]) -> bool:
+414:def is_checkout_payment_not_approved_error(text: str) -> bool:
+430:def is_checkout_rate_limited_error(text: str) -> bool:
+437:def is_checkout_payment_not_approved_result(result: dict | None) -> bool:
+440:    if result.get("status") == "success":
+442:    stage = str(result.get("failure_stage") or "")
+443:    if stage not in {"checkout_not_approved", "browser_checkout", "submit_checkout"}:
+445:    return is_checkout_payment_not_approved_error(str(result.get("message") or ""))
+448:def classify_paypal_checkout_state(url: str, body_text: str):
+457:    stripe_return_success = (
+461:            redirect_status in {"succeeded", "success", "complete", "completed"}
+463:            in {"succeeded", "success", "complete", "completed"}
+466:    chatgpt_success = parsed_url.netloc in {"chatgpt.com", "chat.openai.com"} and "/payments/success" in parsed_url.path
+468:    if generic_error_code == "ukvtvfjjq1rfrf9vu0vs" or any(hint in haystack for hint in PAYPAL_ACCOUNT_LIMITED_HINTS):
+471:            "failure_stage": "paypal_account_limited",
+475:    if any(hint in haystack for hint in PAYPAL_PHONE_REJECTED_HINTS):
+478:            "failure_stage": "paypal_phone_rejected",
+482:    if any(hint in haystack for hint in PAYPAL_CARD_LINKED_HINTS):
+485:            "failure_stage": "paypal_card_linked",
+489:    if any(hint in haystack for hint in PAYPAL_CARD_CANDIDATE_REJECTED_HINTS):
+492:            "failure_stage": "paypal_card_candidate_rejected",
+496:    if any(hint in haystack for hint in PAYPAL_DATADOME_BLOCKED_HINTS):
+499:            "failure_stage": "paypal_datadome_blocked",
+503:    if any(hint in haystack for hint in PAYPAL_HUMAN_VERIFICATION_HINTS):
+506:            "failure_stage": "paypal_human_verification",
+510:    if any(hint in haystack for hint in PAYPAL_FUNDING_REJECTED_HINTS):
+513:            "failure_stage": "paypal_funding_rejected",
+517:    if PAYPAL_CANCEL_URL_RE.search(parsed_url.path) or any(hint in haystack for hint in PAYPAL_CANCEL_HINTS):
+520:            "failure_stage": "post_submit",
+525:        stripe_return_success
+526:        or chatgpt_success
+527:        or redirect_status in {"succeeded", "success", "complete", "completed"}
+530:        or PAYPAL_SUCCESS_URL_RE.search(parsed_url.path)
+531:        or any(hint in haystack for hint in PAYPAL_SUCCESS_HINTS)
+534:            "status": "success",
+535:            "failure_stage": "",
+539:    if PAYPAL_FAILURE_URL_RE.search(parsed_url.path) or any(hint in haystack for hint in PAYPAL_FAILURE_HINTS):
+542:            "failure_stage": "post_submit",
+546:    if any(hint in haystack for hint in PAYPAL_PENDING_HINTS):
+549:            "failure_stage": "post_submit",
+553:    if any(hint in haystack for hint in PAYPAL_REVIEW_HINTS):
+556:            "failure_stage": "post_submit",
+595:            "status": "success",
+596:            "failure_stage": "",
+603:        or values["payment_status"] in {"processing", "pending"}
+604:        or values["status"] in {"processing", "pending", "open"}
+609:            "failure_stage": "post_submit",
+622:            "failure_stage": "post_submit",
+629:def paypal_risk_challenge_text_hint(text: str) -> bool:
+632:        hint in lowered for hint in PAYPAL_DATADOME_BLOCKED_HINTS + PAYPAL_HUMAN_VERIFICATION_HINTS
+643:def is_paypal_host(url: str) -> bool:
+648:def is_paypal_ssl_protocol_error_page(url: str, body_text: str = "") -> bool:
+650:    if not is_paypal_host(url) and "paypal.com" not in text:
+673:def paypal_autofill_allowed(url: str) -> bool:
+675:    if not host or is_paypal_host(url):
+680:def is_paypal_pay_entry_url(url: str) -> bool:
+685:    return is_paypal_host(url) and parsed.path.rstrip("/").lower() == "/pay"
+688:def paypal_protocol_transient_transport_error(message: str) -> bool:
+694:            "recv failure",
+704:def paypal_protocol_needs_browser_fallback(result: dict) -> bool:
+705:    if result.get("status") == "success":
+707:    stage = str(result.get("failure_stage") or "")
+708:    has_fallback_target = bool(result.get("paypal_approve_url") or result.get("ba_token"))
+709:    if stage in {"paypal_human_verification", "paypal_protocol_authorize"}:
+711:    if stage == "paypal_protocol" and has_fallback_target:
+712:        return paypal_protocol_transient_transport_error(str(result.get("message") or ""))
+716:def infer_paypal_stage(url: str, body_text: str):
+722:        return "paypal_authorize", "已进入 PayPal 页面，等待人工完成登录/授权"
+725:            return "paypal_option_ready", "已打开支付页，可人工切换到 PayPal 继续"
+729:    return "paypal_wait_manual", "等待人工完成 PayPal 支付流程"
+743:        r"payment\s+(?:was\s+)?not\s+approved",
+
+## form fields signals
+1:"""Shared browser form field helpers used by payment flows."""
+106:def card_value_matches(
+110:    field: str,
+111:    normalize_card_expiry,
+115:    if field in {"card_number", "card_cvv"}:
+117:    if field == "card_expiry":
+118:        return normalize_card_expiry(expected) == normalize_card_expiry(actual)
+151:def paypal_card_brand_allowed(value: str) -> bool:
+162:def generate_paypal_card_number(
+174:def normalize_or_generate_paypal_card_number(
+177:    generate_card_number: Callable[[], str] = generate_paypal_card_number,
+180:    if paypal_card_brand_allowed(digits) and luhn_valid(digits):
+182:    return generate_card_number()
+185:def generate_paypal_card_expiry(
+194:def generate_paypal_card_cvv(
+195:    card_number: str = "",
+199:    length = 4 if re.sub(r"\D+", "", str(card_number or "")).startswith(("34", "37")) else 3
+204:def normalize_paypal_card_expiry(value: str) -> str:
+213:def normalize_paypal_credentials(email: str = "", password: str = "") -> dict[str, str]:
+216:        "password": str(password or ""),
+220:def generate_random_paypal_email(*, uuid_hex: str | None = None) -> str:
+225:def generate_random_paypal_password(
+245:def split_paypal_name(name: str) -> tuple[str, str]:
+254:def normalize_paypal_phone(phone: str) -> str:
+268:def paypal_phone_value_valid(phone: str, *, country: str = "", normalize_country, normalize_phone) -> bool:
+287:def split_paypal_address_lines(address1: str) -> tuple[str, str]:
+299:def flatten_paypal_generator_fields(value: Any, prefix: str = "") -> dict[str, str]:
+300:    fields: dict[str, str] = {}
+304:            fields.update(flatten_paypal_generator_fields(item, next_key))
+305:        return fields
+308:            fields.update(flatten_paypal_generator_fields(item, f"{prefix}_{index}"))
+309:        return fields
+311:        fields[prefix] = str(value or "").strip()
+312:    return fields
+315:def paypal_generator_field(address: dict, *names: str) -> str:
+318:        for key, value in flatten_paypal_generator_fields(address).items()
+335:def public_paypal_billing_info(billing: dict | None) -> dict[str, str]:
+336:    source = dict(billing or {})
+349:def merge_paypal_checkout_billing_payload(
+355:    normalize_or_generate_card_number: Callable[[str], str],
+356:    generate_card_expiry: Callable[[], str],
+357:    generate_card_cvv: Callable[[str], str],
+361:    generated = public_paypal_billing_info(generated_raw)
+373:    card_fields = {
+374:        "card_number": first_payload_value(generated_raw, "card_number", "cardNumber"),
+375:        "card_expiry": first_payload_value(
+377:            "card_expiry",
+378:            "cardExpiry",
+382:        "card_cvv": first_payload_value(generated_raw, "card_cvv", "cardCvv", "cvv", "cvc"),
+384:    for key, value in card_fields.items():
+387:    merged["card_number"] = normalize_or_generate_card_number(merged.get("card_number") or "")
+388:    merged["card_expiry"] = str(merged.get("card_expiry") or "").strip() or generate_card_expiry()
+389:    merged["card_cvv"] = re.sub(r"\D+", "", str(merged.get("card_cvv") or "")) or generate_card_cvv(
+390:        merged["card_number"]
+395:def normalize_paypal_phone_account(raw: Any, *, fallback_otp_channel: str = "sms") -> dict[str, str]:
+402:        or raw.get("billing_phone")
+403:        or raw.get("billingPhone")
+417:def sync_paypal_signup_phone_submission_state(
+436:def paypal_signup_profiles_for_phone_pool(
+449:        account = normalize_paypal_phone_account(raw, fallback_otp_channel=fallback_otp_channel)
+493:def build_paypal_checkout_billing_payload(normalized: dict | None) -> dict[str, str]:
+506:    for key in ("card_number", "card_expiry", "card_cvv"):
+513:def paypal_billing_payload_complete(payload: dict[str, str]) -> bool:
+518:def build_paypal_signup_profile(
+520:    paypal_email: str = "",
+521:    paypal_password: str = "",
+522:    billing_payload: dict[str, str] | None = None,
+523:    paypal_country: str = "",
+526:    paypal_card_number: str = "",
+527:    paypal_card_expiry: str = "",
+528:    paypal_card_cvv: str = "",
+529:    country_billing_profiles: dict[str, dict] | None = None,
+532:    generate_password: Callable[[], str],
+533:    normalize_or_generate_card_number: Callable[[str], str],
+534:    generate_card_expiry: Callable[[], str],
+535:    generate_card_cvv: Callable[[str], str],
+537:    billing = dict(billing_payload or {})
+538:    country_billing_profiles = dict(country_billing_profiles or {})
+539:    original_country = normalize_country(str(billing.get("country") or "")) if billing.get("country") else ""
+540:    forced_country = normalize_country(paypal_country) if paypal_country else ""
+542:        defaults = country_billing_profiles.get(forced_country, {})
+543:        billing["country"] = forced_country
+547:                    billing[key] = str(defaults.get(key) or "")
+549:            if not str(billing.get(key) or "").strip() and defaults.get(key):
+550:                billing[key] = str(defaults.get(key) or "")
+551:    first_name = str(billing.get("first_name") or billing.get("firstName") or "").strip()
+552:    last_name = str(billing.get("last_name") or billing.get("lastName") or "").strip()
+554:        split_first_name, split_last_name = split_paypal_name(str(billing.get("name") or ""))
+557:    email = str(paypal_email or "").strip() or generate_email()
+558:    password = str(paypal_password or "").strip() or generate_password()
+559:    card_number = normalize_or_generate_card_number(
+560:        str(paypal_card_number or "").strip() or first_payload_value(billing, "card_number", "cardNumber")
+562:    card_expiry = (
+563:        str(paypal_card_expiry or "").strip()
+565:            billing,
+566:            "card_expiry",
+567:            "cardExpiry",
+571:        or generate_card_expiry()
+573:    card_cvv = str(paypal_card_cvv or "").strip() or first_payload_value(billing, "card_cvv", "cardCvv", "cvv", "cvc")
+574:    if not re.sub(r"\D+", "", card_cvv):
+575:        card_cvv = generate_card_cvv(card_number)
+578:        "password": password,
+579:        "generated_email": not bool(str(paypal_email or "").strip()),
+580:        "generated_password": not bool(str(paypal_password or "").strip()),
+581:        "phone": normalize_paypal_phone(str(billing.get("phone") or "")),
+584:        "country": str(billing.get("country") or "US").strip() or "US",
+585:        "state": str(billing.get("state") or "").strip(),
+586:        "city": str(billing.get("city") or "").strip(),
+587:        "zip": str(billing.get("zip") or "").strip(),
+588:        "address1": str(billing.get("address1") or "").strip(),
+589:        "address2": str(billing.get("address2") or "").strip(),
+590:        "birth_date": str(billing.get("birth_date") or billing.get("birthDate") or "").strip(),
+591:        "native_first_name": str(billing.get("native_first_name") or billing.get("nativeFirstName") or "").strip(),
+592:        "native_last_name": str(billing.get("native_last_name") or billing.get("nativeLastName") or "").strip(),
+595:        "card_number": card_number,
+596:        "card_expiry": normalize_paypal_card_expiry(card_expiry),
+597:        "card_cvv": re.sub(r"\D+", "", card_cvv),
+601:def field_value_matches(
+605:    field: str = "",
+609:    normalize_card_expiry,
+613:    if field in {"card_number", "card_expiry", "card_cvv"}:
+614:        return card_value_matches(
+617:            field=field,
+618:            normalize_card_expiry=normalize_card_expiry,
+620:    if field == "phone":
+624:    if field == "state":
+855:    field: str = "",
+863:        return matches(value, actual, field=field)
+873:def fast_autofill_fields(
+874:    frames: list[Any], fields: dict[str, str], *, fast_selectors: dict[str, list[str]]
+876:    fast_fields = {
+878:        for key, value in (fields or {}).items()
+881:    if not fast_fields:
+883:    script = """({ fields, selectors }) => {
+910:      for (const [key, value] of Object.entries(fields || {})) {
+928:        missing = {key: value for key, value in fast_fields.items() if key not in filled}
+932:            result = frame.evaluate(script, {"fields": missing, "selectors": fast_selectors})
+941:def read_checkout_field_value(*, key: str, selectors: dict[str, list[str]], visible_locator, read_value) -> str:
+962:def autofill_checkout_fields(
+979:    fields = normalize_payload(payload)
+980:    if not fields or not autofill_allowed(current_url):
+981:        return {"filled": [], "skipped": list(fields.keys())}
+997:    ordered_fields = [(key, fields[key]) for key in ordered_keys if key in fields]
+998:    ordered_fields.extend((key, value) for key, value in fields.items() if key not in ordered_keys)
+1000:    fast_attempted = set(fast_autofill(dict(ordered_fields)))
+1004:        if checkout_value_matches(key, str(fields.get(key) or ""), read_checkout_value(key))
+1006:    for key, value in ordered_fields:
+1010:        field_selectors = selectors.get(key) or []
+1011:        if not field_selectors:
+1014:        locator = visible_locator(field_selectors, timeout_ms=1200)
+1031:def checkout_billing_required_fields(billing_payload: dict[str, Any]) -> dict[str, str]:
+1033:        "country": str(billing_payload.get("country") or "US").strip() or "US",
+1034:        "address1": str(billing_payload.get("address1") or "").strip(),
+1035:        "city": str(billing_payload.get("city") or "").strip(),
+1036:        "state": str(billing_payload.get("state") or "").strip(),
+1037:        "postal_code": str(billing_payload.get("zip") or billing_payload.get("postal_code") or "").strip(),
+1041:def fill_checkout_billing_form(
+1042:    billing_payload: dict[str, Any],
+1051:    log_prefix: str = "[payment_form_fields]",
+1056:        progress("fill_billing_info")
+1057:    required = checkout_billing_required_fields(billing_payload)
+1064:        autofill_checkout(billing_payload)
+1076:                "%s PayPal checkout billing readback mismatch attempt=%s missing=%s values=%s expected=%s",
+1089:def fill_signup_required_fields(
+1090:    field_specs: list[tuple[str, list[str], str, str]],
+1095:    optional_skip_fields: set[str] | None = None,
+1096:    field_locators: dict[str, Any] | None = None,
+1098:    log_prefix: str = "[payment_form_fields]",
+1101:    optional_skip_fields = optional_skip_fields or set()
+1102:    field_locators = field_locators if field_locators is not None else {}
+1103:    for key, selectors, value, label in field_specs:
+1105:            if key in optional_skip_fields:
+1107:            return False, f"{label} 为空", field_locators
+1110:            if key in optional_skip_fields:
+1112:                    logger.info("%s field '%s' not visible, skipping (likely already submitted)", log_prefix, key)
+1114:            return False, f"未找到 {label} 输入框", field_locators
+1115:        if not set_verified_value(locator, value, field=key):
+1117:            return False, f"{label} 填写后校验失败: 期望={value!r}, 实际={actual!r}", field_locators
+1118:        field_locators[label] = locator
+1119:    return True, "", field_locators
+1122:def fill_signup_address_fields(
+1132:    field_value_matches,
+1134:    field_locators: dict[str, Any] | None = None,
+1138:    field_locators = field_locators if field_locators is not None else {}
+1142:            return False, f"{label} 为空", field_locators
+1145:            return False, f"未找到 {label} 输入框", field_locators
+1149:            verified = field_value_matches(value, read_value(locator), field=key)
+1151:            did_set = set_verified_value(locator, value, field=key)
+1155:            return False, f"{label} 填写后校验失败: 期望={value!r}, 实际={actual!r}", field_locators
+1156:        field_locators[key] = locator
+1161:    dismiss_autocomplete(field_locators.get("address1"))
+1163:        locator = field_locators.get(key)
+1165:        if field_value_matches(expected, actual, field=key):
+1172:            return False, f"{label} 自动补全后被改写，且重写失败", field_locators
+1177:        if not field_value_matches(expected, actual, field=key):
+1178:            return False, f"{label} 自动补全后校验失败: 期望={expected!r}, 实际={actual!r}", field_locators
+1179:    return True, "", field_locators
+1193:    log_prefix: str = "[payment_form_fields]",
+1209:        return False, f"PayPal 生年月日填写后校验失败: 期望={birth_date!r}, 实际={actual_birth!r}"
+1217:    optional_skip_fields: set[str] | None = None,
+1219:    jp_required_fields: tuple[str, ...] = ("birth_date", "native_first_name", "native_last_name"),
+1221:    log_prefix: str = "[payment_form_fields]",
+1223:    optional_skip_fields = optional_skip_fields or set()
+1227:        if str(item) and str(item) not in optional_skip_fields
+1231:            "%s PayPal signup DOM validation could not confirm fields: %s",
+1236:        jp_missing = [field for field in jp_required_fields if field in still_missing]
+1238:            return False, f"PayPal 日区注册字段填写后校验失败: {', '.join(jp_missing)}", still_missing
+1253:        "card_number": re.sub(r"\D+", "", str(signup_profile.get("card_number") or "")),
+1254:        "card_expiry": str(signup_profile.get("card_expiry") or "").strip(),
+1255:        "card_cvv": re.sub(r"\D+", "", str(signup_profile.get("card_cvv") or "")),
+1256:        "password": str(signup_profile.get("password") or "").strip(),
+1321:    field_value_matches,
+1324:    for field, selectors, expected, label in check_specs:
+1325:        if field == "phone" and not phone_value_valid(expected, country=country):
+1331:        if not field_value_matches(expected, actual, field=field):
+1336:def verify_paypal_signup_required_values(
+1340:    card_number_selectors: list[str],
+1341:    card_expiry_selectors: list[str],
+1342:    card_cvv_selectors: list[str],
+1343:    password_selectors: list[str],
+1353:    field_value_matches,
+1356:        ("phone", phone_selectors, str(signup_profile.get("phone") or ""), "PayPal 注册手机号"),
+1357:        ("card_number", card_number_selectors, str(signup_profile.get("card_number") or ""), "PayPal 卡号"),
+1358:        ("card_expiry", card_expiry_selectors, str(signup_profile.get("card_expiry") or ""), "PayPal 卡有效期"),
+1359:        ("card_cvv", card_cvv_selectors, str(signup_profile.get("card_cvv") or ""), "PayPal 卡 CVV"),
+1360:        ("password", password_selectors, str(signup_profile.get("password") or ""), "PayPal 注册密码"),
+1361:        ("first_name", first_name_selectors, str(signup_profile.get("first_name") or ""), "PayPal 名"),
+1362:        ("last_name", last_name_selectors, str(signup_profile.get("last_name") or ""), "PayPal 姓"),
+1363:        ("address1", address1_selectors, str(signup_profile.get("address1") or ""), "PayPal 账单地址"),
+1364:        ("city", city_selectors, str(signup_profile.get("city") or ""), "PayPal 城市"),
+1365:        ("zip", postal_selectors, str(signup_profile.get("zip") or ""), "PayPal 邮编"),
+1366:        ("state", state_selectors, str(signup_profile.get("state") or ""), "PayPal 州/都道府县"),
+1374:        field_value_matches=field_value_matches,
+1410:def replace_signup_field_values(
+1411:    field_specs: list[tuple[str, list[str], str, str]],
+1419:    for key, selectors, value, label in field_specs:
+1425:        if not set_verified_value(locator, value, field=key):
+1433:def replace_paypal_signup_phone(
+1447:        return False, f"PayPal 注册手机号无效: {phone!r}"
+1448:    ok, error = replace_signup_field_values(
+1449:        [("phone", phone_selectors, phone, "PayPal 注册手机号")],
+1461:                "paypal_replace_signup_phone",
+1469:def replace_paypal_signup_card(
+1473:    card_number_selectors: list[str],
+1474:    card_expiry_selectors: list[str],
+1475:    card_cvv_selectors: list[str],
+1476:    generate_card_number,
+1477:    generate_card_expiry,
+1478:    generate_card_cvv,
+1486:    card_number = generate_card_number()
+1487:    card_expiry = generate_card_expiry()
+1488:    card_cvv = generate_card_cvv(card_number)
+1489:    signup_profile["card_number"] = card_number
+1490:    signup_profile["card_expiry"] = card_expiry
+1491:    signup_profile["card_cvv"] = card_cvv
+1495:                "paypal_card_rejected_retry",
+1499:    fields = [
+1500:        ("card_number", card_number_selectors, card_number, "PayPal 卡号"),
+1501:        ("card_expiry", card_expiry_selectors, card_expiry, "PayPal 卡有效期"),
+1502:        ("card_cvv", card_cvv_selectors, card_cvv, "PayPal 卡 CVV"),
+1504:    ok, error = replace_signup_field_values(
+1505:        fields,
+1516:def retry_paypal_signup_after_card_rejected(
+1521:    card_retry_count: int,
+1523:    replace_signup_card,
+1534:    if card_retry_count >= 5:
+1535:        return False, "PayPal 连续拒绝卡片，已停止换卡重试", False
+1536:    ok, error = replace_signup_card(api, signup_profile=signup_profile, on_progress=on_progress)
+1542:                "paypal_submit_signup",
+1556:        return False, "未找到 PayPal 注册提交按钮", False
+1559:    state["card_retry_count"] = card_retry_count + 1
+1564:def retry_paypal_signup_after_phone_rejected(
+1592:                "paypal_submit_signup",
+1603:        return False, "未找到 PayPal 注册提交按钮", False
+1613:def submit_paypal_signup_registration_form(
+1645:                logger.info("[paypal_signup] signup page is still loading, waiting before fill retry")
+1652:                logger.info("[paypal_signup] fill form failed (%s), will retry (%d/3)", error, fill_retry_count + 1)
+1660:                "paypal_submit_signup",
+1671:        return False, "未找到 PayPal 注册提交按钮", False
+1680:def paypal_signup_visible_validation_error(text: str) -> str:
+1693:def paypal_signup_otp_text_hint(text: str, *, loose: bool = False) -> bool:
+1694:    return payment_checkout_state.paypal_signup_otp_text_hint(text, loose=loose)
+1697:def paypal_signup_otp_entry_text_hint(text: str) -> bool:
+1698:    return payment_checkout_state.paypal_signup_otp_entry_text_hint(text)
+1701:def paypal_signup_registration_text_hint(text: str) -> bool:
+1702:    return payment_checkout_state.paypal_signup_registration_text_hint(text)
+1705:def paypal_signup_registration_form_text_visible(text: str) -> bool:
+1706:    return payment_checkout_state.paypal_signup_registration_form_text_visible(text)
+1709:def paypal_login_text_hint(text: str) -> bool:
+1710:    return payment_checkout_state.paypal_login_text_hint(text)
+1713:def paypal_passkey_text_hint(text: str) -> bool:
+1714:    return payment_checkout_state.paypal_passkey_text_hint(text)
+1717:def paypal_approve_text_hint(text: str) -> bool:
+1718:    return payment_checkout_state.paypal_approve_text_hint(text)
+1725:def paypal_phone_rejected_text_hint(text: str, *, hints: tuple[str, ...] | list[str]) -> bool:
+1726:    return payment_checkout_state.paypal_phone_rejected_text_hint(text, hints=hints)
+1729:def paypal_card_rejected_text_hint(text: str, *, hints: tuple[str, ...] | list[str]) -> bool:
+1730:    return payment_checkout_state.paypal_card_rejected_text_hint(text, hints=hints)
+1780:    log_prefix: str = "[payment_form_fields]",
+1881:def score_billing_frame(frame: Any) -> int:
+1915:def find_billing_form_frames(
+1920:    log_prefix: str = "[payment_form_fields]",
+1930:            score = score_billing_frame(frame)
+1961:def scroll_to_billing_section(
+1967:    log_prefix: str = "[payment_form_fields]",
+1987:              const hit = nodes.find((node) => /账单地址|billing address/i.test((node.innerText || node.textContent || '').trim()));
+1998:def fill_billing_page_field(
+2012:    log_prefix: str = "[payment_form_fields]",
+2042:        progress("billing_fill_field", field=label)
+2070:def select_billing_page_field(
+2085:    log_prefix: str = "[payment_form_fields]",
+2101:        progress("billing_select_field", field=label)
+2131:def billing_stability_checks(billing: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+2133:        ("name", "账单姓名", str(billing.get("name") or ""), "gopay-billing-name-final-failed"),
+2134:        ("address1", "账单地址1", str(billing.get("address1") or ""), "gopay-billing-address1-final-failed"),
+2135:        ("city", "账单城市", str(billing.get("city") or ""), "gopay-billing-city-final-failed"),
+2136:        ("state", "账单州/省", str(billing.get("state") or ""), "gopay-billing-state-final-failed"),
+2137:        ("zip", "账单邮编", str(billing.get("zip") or ""), "gopay-billing-zip-final-failed"),
+2141:def _verify_billing_field_stable(
+2142:    field_locators: dict[str, Any],
+2152:    log_prefix: str = "[payment_form_fields]",
+2158:    locator = field_locators.get(key)
+2167:            progress("billing_field_verified", field=label)
+2175:    dismiss_address_autocomplete(field_locators.get("address1"))
+2186:def verify_billing_fields_stable(
+2187:    field_locators: dict[str, Any],
+2188:    billing: dict[str, Any],
+2195:    log_prefix: str = "[payment_form_fields]",
+2202:    dismiss_address_autocomplete(field_locators.get("address1"))
+2204:    for key, label, expected, screenshot_stage in billing_stability_checks(billing):
+2207:        ok, error = _verify_billing_field_stable(
+2208:            field_locators,

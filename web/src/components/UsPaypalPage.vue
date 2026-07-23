@@ -4,16 +4,28 @@
       <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">独立 PayPal 任务</p>
-          <h2 class="mt-1 text-2xl font-bold text-white">PayPal 提链</h2>
-          <p class="mt-2 text-sm text-gray-400">在账号池中勾选一个或多个账号执行提链，结果会进入下方链接管理表。</p>
+          <h2 class="mt-1 text-2xl font-bold text-white">PayPal 任务</h2>
+          <p class="mt-2 text-sm text-gray-400">先提取 BA 链接，再在独立协议支付页使用本地引擎完成 PayPal approval。</p>
         </div>
         <span class="inline-flex w-fit items-center gap-2 rounded-xl border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-300">
           <span class="h-2.5 w-2.5 rounded-full" :class="busy ? 'bg-blue-400' : 'bg-emerald-400'"></span>
-          {{ busy ? progressText : '本地服务在线' }}
+          {{ anyBusy ? activeStatusText : '本地服务在线' }}
         </span>
       </div>
     </section>
 
+    <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-2">
+      <div class="flex flex-wrap gap-2">
+        <button type="button" @click="activeTab = 'links'" class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="activeTab === 'links' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'">
+          PayPal 提链
+        </button>
+        <button type="button" @click="activeTab = 'protocol'" class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="activeTab === 'protocol' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'">
+          协议支付
+        </button>
+      </div>
+    </section>
+
+    <template v-if="activeTab === 'links'">
     <div class="grid grid-cols-1 gap-5 2xl:grid-cols-[minmax(360px,0.85fr)_minmax(460px,1.1fr)_minmax(420px,0.9fr)]">
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
         <div class="border-b border-gray-800 pb-4">
@@ -240,6 +252,118 @@
         </table>
       </div>
     </section>
+    </template>
+
+    <section v-else class="rounded-2xl border border-indigo-500/20 bg-gray-950/70 p-5 md:p-6">
+      <div class="flex flex-col gap-4 border-b border-indigo-500/20 pb-5 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300/70">PayPal Protocol Payment</p>
+          <h2 class="mt-1 text-2xl font-bold text-white">本地协议支付页</h2>
+          <p class="mt-2 text-sm text-gray-400">使用 AutoTeam-F 内置的 PayPal 协议引擎执行 BA approval；不调用任何第三方远程兼容网站。</p>
+        </div>
+        <span class="rounded-full border px-3 py-1 text-xs font-semibold" :class="protocolBadgeClass">{{ protocolBadgeText }}</span>
+      </div>
+
+      <div class="mt-6 grid gap-5 xl:grid-cols-[minmax(360px,0.9fr)_minmax(460px,1.1fr)]">
+        <div class="space-y-5">
+          <div class="rounded-2xl border border-gray-800 bg-gray-950 p-5">
+            <h3 class="text-lg font-bold text-white">协议支付输入</h3>
+            <div class="mt-5 space-y-4">
+              <label class="block">
+                <span class="mb-1.5 block text-sm font-semibold text-gray-300">BA 链接 / BA token</span>
+                <textarea v-model.trim="protocolForm.paypalLink" rows="3" spellcheck="false" placeholder="https://www.paypal.com/agreements/approve?ba_token=BA-..." class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
+              </label>
+
+              <div class="grid gap-4 md:grid-cols-2">
+                <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">国家</span>
+                  <select v-model="protocolForm.country" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy">
+                    <option value="US">US · 美国</option>
+                  </select>
+                  <span class="mt-1 block text-xs text-gray-500">当前仅开放已验证的 US no-FI 链路。</span>
+                </label>
+                <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">手机号</span>
+                  <input v-model.trim="protocolForm.phone" placeholder="+1835..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                </label>
+              </div>
+
+              <label class="block">
+                <span class="mb-1.5 block text-sm font-semibold text-gray-300">SMS record URL</span>
+                <input v-model.trim="protocolForm.smsRecordUrl" placeholder="https://sms.example/api/record?token=..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                <span class="mt-1 block text-xs text-gray-500">后端会轮询该 URL，并只使用本次请求后的新 OTP。</span>
+              </label>
+
+              <label class="block">
+                <span class="mb-1.5 block text-sm font-semibold text-gray-300">US 代理（可选）</span>
+                <textarea v-model.trim="protocolForm.proxies" rows="3" spellcheck="false" placeholder="proxy.example.com:10000:USER-zone-custom-region-US-session-xxxx-sessTime-120-sessAuto-1:pass" class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
+                <span class="mt-1 block text-xs text-gray-500">默认不走代理，复现已验证成功的 no-proxy 组合；填写时后端取第一条并在本地子进程中执行。</span>
+              </label>
+
+              <label class="block">
+                <span class="mb-1.5 block text-sm font-semibold text-gray-300">关联账号邮箱（可选）</span>
+                <input v-model.trim="protocolForm.accountEmail" placeholder="支付成功后标记为 Plus/paid" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+              </label>
+
+              <div class="grid gap-4 md:grid-cols-2">
+                <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">OTP 等待秒数</span>
+                  <input v-model.number="protocolForm.smsRecordWaitSeconds" type="number" min="60" max="900" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                  <span class="mt-1 block text-xs text-gray-500">默认 300；PayPal 短信慢时可调到 600。</span>
+                </label>
+                <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">OTP 轮询间隔</span>
+                  <input v-model.number="protocolForm.smsRecordPollSeconds" type="number" min="1" max="30" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                  <span class="mt-1 block text-xs text-gray-500">默认 3 秒。</span>
+                </label>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
+                <button @click="startProtocolPayment" :disabled="protocolBusy" class="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50">
+                  {{ protocolBusy ? '支付中...' : '开始协议支付' }}
+                </button>
+                <button v-if="protocolBusy" @click="cancelProtocolJob" :disabled="protocolCanceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
+                  {{ protocolCanceling ? '取消中...' : '取消支付' }}
+                </button>
+                <button @click="saveProtocolForm" :disabled="protocolBusy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存输入</button>
+              </div>
+              <div class="text-sm" :class="protocolStatusError ? 'text-rose-300' : 'text-gray-400'">{{ protocolStatusText }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-5">
+          <section class="rounded-2xl border border-gray-800 bg-gray-950 p-5">
+            <div class="flex items-center justify-between border-b border-gray-800 pb-4">
+              <div>
+                <p class="text-xs font-semibold text-gray-500">实时状态</p>
+                <h3 class="mt-1 text-xl font-bold text-white">协议支付日志</h3>
+              </div>
+              <span class="rounded-full border px-3 py-1 text-xs font-semibold" :class="protocolBadgeClass">{{ protocolBadgeText }}</span>
+            </div>
+            <div ref="protocolLogRef" class="mt-4 h-96 overflow-y-auto rounded-xl border border-gray-800 bg-gray-950 p-3 font-mono text-xs text-gray-400">
+              <div v-if="!protocolLogs.length" class="flex h-full items-center justify-center font-sans text-sm text-gray-500">暂无协议支付日志</div>
+              <div v-for="(line, index) in protocolLogs" :key="index" class="border-b border-gray-900 py-1 last:border-b-0">{{ line }}</div>
+            </div>
+          </section>
+
+          <section class="rounded-2xl border border-gray-800 bg-gray-950 p-5">
+            <div class="flex items-center justify-between border-b border-gray-800 pb-4">
+              <div>
+                <p class="text-xs font-semibold text-gray-500">当前结果</p>
+                <h3 class="mt-1 text-xl font-bold text-white">协议支付结果</h3>
+              </div>
+              <span class="rounded-full border px-3 py-1 text-xs font-semibold" :class="protocolResult ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-gray-700 bg-gray-900 text-gray-400'">{{ protocolResult ? '有结果' : '等待支付' }}</span>
+            </div>
+            <pre v-if="protocolResult" class="mt-4 max-h-72 overflow-auto rounded-xl border border-gray-800 bg-gray-950 p-4 text-xs text-gray-300">{{ JSON.stringify(protocolResult, null, 2) }}</pre>
+            <div v-else class="flex min-h-36 flex-col items-center justify-center text-center text-gray-500">
+              <strong class="text-gray-300">尚未提交协议支付</strong>
+              <span class="mt-1 text-sm">填入 BA、手机号、SMS URL 和代理后开始。</span>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -249,6 +373,8 @@ import { api } from '../api.js'
 
 const FORM_STORAGE_KEY = 'autotoken_us_paypal_form'
 const JOB_STORAGE_KEY = 'autotoken_us_paypal_job'
+const PROTOCOL_FORM_STORAGE_KEY = 'autotoken_us_paypal_protocol_form'
+const PROTOCOL_JOB_STORAGE_KEY = 'autotoken_us_paypal_protocol_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
 const paypalCountryOptions = [
@@ -300,6 +426,16 @@ const accountStatusFilter = ref('all')
 const retryFailedEmailSet = ref(new Set())
 const deletingPaypalAccounts = ref(new Set())
 const logRef = ref(null)
+const activeTab = ref('links')
+const protocolForm = ref({ paypalLink: '', phone: '', smsRecordUrl: '', proxies: '', country: 'US', accountEmail: '', smsRecordWaitSeconds: 300, smsRecordPollSeconds: 3 })
+const protocolBusy = ref(false)
+const protocolCanceling = ref(false)
+const protocolJob = ref(null)
+const protocolLogs = ref([])
+const protocolResult = ref(null)
+const protocolStatusText = ref('等待提交协议支付。')
+const protocolStatusError = ref(false)
+const protocolLogRef = ref(null)
 let componentUnmounted = false
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
@@ -333,6 +469,27 @@ const badgeClass = computed(() => {
   if (status === 'error' || status === 'failed') return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
   return 'border-gray-700 bg-gray-900 text-gray-400'
 })
+const protocolBadgeText = computed(() => {
+  const status = String(protocolJob.value?.status || '')
+  if (status === 'queued') return '排队中'
+  if (status === 'running') return '协议支付中'
+  if (status === 'cancelling') return '取消中'
+  if (status === 'success') return '支付成功'
+  if (status === 'cancelled') return '已取消'
+  if (status === 'error' || status === 'failed') return '支付失败'
+  return '待开始'
+})
+const protocolBadgeClass = computed(() => {
+  const status = String(protocolJob.value?.status || '')
+  if (status === 'running' || status === 'queued') return 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300'
+  if (status === 'cancelling') return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+  if (status === 'success') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+  if (status === 'cancelled') return 'border-gray-700 bg-gray-900 text-gray-300'
+  if (status === 'error' || status === 'failed') return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+  return 'border-gray-700 bg-gray-900 text-gray-400'
+})
+const anyBusy = computed(() => busy.value || protocolBusy.value)
+const activeStatusText = computed(() => activeTab.value === 'protocol' && protocolBusy.value ? protocolBadgeText.value : progressText.value)
 
 function setStatus(message, error = false) { statusText.value = message; statusError.value = error }
 function cleanText(value) { return String(value || '未知错误').replace(/\s+/g, ' ').trim() }
@@ -592,6 +749,100 @@ async function copy(value) {
   }
 }
 
+function setProtocolStatus(message, error = false) { protocolStatusText.value = message; protocolStatusError.value = error }
+function saveProtocolForm(options = {}) {
+  localStorage.setItem(PROTOCOL_FORM_STORAGE_KEY, JSON.stringify(protocolForm.value))
+  if (!options.silent && !protocolBusy.value) setProtocolStatus('协议支付输入已保存。')
+}
+function validateProtocolPayment() {
+  protocolForm.value.country = String(protocolForm.value.country || 'US').trim().toUpperCase()
+  if (!String(protocolForm.value.paypalLink || '').trim()) { setProtocolStatus('请填写 BA 链接或 BA token。', true); return false }
+  if (protocolForm.value.country !== 'US') { setProtocolStatus('当前协议支付仅开放 US。', true); return false }
+  if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写手机号。', true); return false }
+  if (!String(protocolForm.value.smsRecordUrl || '').trim()) { setProtocolStatus('请填写 SMS record URL。', true); return false }
+  protocolForm.value.smsRecordWaitSeconds = Math.max(60, Math.min(900, Number(protocolForm.value.smsRecordWaitSeconds || 300)))
+  protocolForm.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(protocolForm.value.smsRecordPollSeconds || 3)))
+  return true
+}
+
+async function startProtocolPayment() {
+  if (!validateProtocolPayment()) return
+  protocolBusy.value = true
+  protocolCanceling.value = false
+  protocolLogs.value = []
+  protocolResult.value = null
+  protocolJob.value = null
+  activeTab.value = 'protocol'
+  setProtocolStatus('协议支付任务已提交，正在启动本地 PayPal 引擎。')
+  try {
+    saveProtocolForm({ silent: true })
+    const payload = {
+      paypalLink: protocolForm.value.paypalLink,
+      phone: protocolForm.value.phone,
+      smsRecordUrl: protocolForm.value.smsRecordUrl,
+      proxies: protocolForm.value.proxies,
+      country: protocolForm.value.country,
+      accountEmail: protocolForm.value.accountEmail,
+      smsRecordWaitSeconds: protocolForm.value.smsRecordWaitSeconds,
+      smsRecordPollSeconds: protocolForm.value.smsRecordPollSeconds,
+    }
+    const data = await api.startUsPaypalProtocol(payload)
+    if (!data.job_id) throw new Error('后端没有返回协议支付任务 ID')
+    protocolJob.value = { id: data.job_id, status: 'queued', total: 1, completed: 0 }
+    localStorage.setItem(PROTOCOL_JOB_STORAGE_KEY, JSON.stringify({ jobId: data.job_id, startedAt: Date.now() }))
+    await pollProtocolJob(data.job_id)
+  } catch (error) {
+    setProtocolStatus(cleanError(error), true)
+  } finally {
+    protocolBusy.value = false
+    protocolCanceling.value = false
+  }
+}
+
+async function pollProtocolJob(jobId) {
+  for (;;) {
+    if (componentUnmounted) return
+    const job = await api.getUsPaypalProtocolJob(jobId)
+    if (componentUnmounted) return
+    protocolJob.value = job
+    protocolLogs.value = Array.isArray(job.logs) ? job.logs : []
+    protocolResult.value = job.result || null
+    await nextTick()
+    if (protocolLogRef.value) protocolLogRef.value.scrollTop = protocolLogRef.value.scrollHeight
+    if (job.status === 'success') {
+      setProtocolStatus('协议支付成功。')
+      localStorage.removeItem(PROTOCOL_JOB_STORAGE_KEY)
+      await refreshAccounts()
+      return
+    }
+    if (job.status === 'cancelled') {
+      setProtocolStatus('协议支付任务已取消。')
+      localStorage.removeItem(PROTOCOL_JOB_STORAGE_KEY)
+      return
+    }
+    if (job.status === 'error' || job.status === 'failed') {
+      localStorage.removeItem(PROTOCOL_JOB_STORAGE_KEY)
+      throw new Error(job.error || '协议支付失败')
+    }
+    setProtocolStatus(`协议支付执行中，已记录 ${protocolLogs.value.length} 条日志。`)
+    localStorage.setItem(PROTOCOL_JOB_STORAGE_KEY, JSON.stringify({ jobId, startedAt: Date.now() }))
+    await new Promise(resolve => window.setTimeout(resolve, 1000))
+  }
+}
+
+async function cancelProtocolJob() {
+  const jobId = protocolJob.value?.id
+  if (!jobId || protocolCanceling.value) return
+  protocolCanceling.value = true
+  try {
+    await api.cancelUsPaypalProtocolJob(jobId)
+    setProtocolStatus('已发送取消请求，正在终止协议子进程。')
+  } catch (error) {
+    setProtocolStatus(`取消失败：${cleanError(error)}`, true)
+    protocolCanceling.value = false
+  }
+}
+
 onMounted(async () => {
   componentUnmounted = false
   try {
@@ -600,10 +851,17 @@ onMounted(async () => {
       if (savedForm[key] !== undefined) form.value[key] = savedForm[key]
     }
   } catch { /* ignore malformed local state */ }
+  try {
+    const savedProtocolForm = JSON.parse(localStorage.getItem(PROTOCOL_FORM_STORAGE_KEY) || '{}')
+    for (const key of Object.keys(protocolForm.value)) {
+      if (savedProtocolForm[key] !== undefined) protocolForm.value[key] = savedProtocolForm[key]
+    }
+  } catch { /* ignore malformed protocol state */ }
   await reloadAll()
   try {
     const saved = JSON.parse(localStorage.getItem(JOB_STORAGE_KEY) || '{}')
     if (saved.jobId) {
+      activeTab.value = 'links'
       busy.value = true
       canceling.value = false
       currentJob.value = { id: saved.jobId, status: 'queued', total: Number(saved.accountCount || 0), completed: 0, concurrency: Number(saved.concurrency || 1), running_count: 0 }
@@ -621,9 +879,31 @@ onMounted(async () => {
       canceling.value = false
     }
   }
+  try {
+    const savedProtocol = JSON.parse(localStorage.getItem(PROTOCOL_JOB_STORAGE_KEY) || '{}')
+    if (savedProtocol.jobId) {
+      activeTab.value = 'protocol'
+      protocolBusy.value = true
+      protocolCanceling.value = false
+      protocolJob.value = { id: savedProtocol.jobId, status: 'queued', total: 1, completed: 0 }
+      setProtocolStatus('已恢复协议支付任务，正在重新同步后端进度。')
+      await pollProtocolJob(savedProtocol.jobId)
+    }
+  } catch (error) {
+    localStorage.removeItem(PROTOCOL_JOB_STORAGE_KEY)
+    protocolJob.value = null
+    protocolBusy.value = false
+    setProtocolStatus(`恢复协议支付失败：${cleanError(error)}`, true)
+  } finally {
+    if (!componentUnmounted) {
+      protocolBusy.value = false
+      protocolCanceling.value = false
+    }
+  }
 })
 
 watch(form, () => localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value)), { deep: true })
+watch(protocolForm, () => localStorage.setItem(PROTOCOL_FORM_STORAGE_KEY, JSON.stringify(protocolForm.value)), { deep: true })
 
 onBeforeUnmount(() => { componentUnmounted = true })
 </script>

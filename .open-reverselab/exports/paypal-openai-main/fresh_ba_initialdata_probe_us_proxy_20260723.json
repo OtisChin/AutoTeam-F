@@ -1,0 +1,142 @@
+2026-07-23 21:59:30.477 | INFO     | paypal.session:__init__:586 - HTTP client: httpx (http2=True)
+2026-07-23 21:59:30.477 | INFO     | paypal.session:__init__:587 - HTTP outbound proxy: socks5h://***:***@global.rp.linkup.onl:10000
+2026-07-23 21:59:30.477 | INFO     | paypal.flow:_phase0_initial_load:2256 - --- Phase 0: Initial page load ---
+2026-07-23 21:59:30.477 | DEBUG    | paypal.session:get:1086 - GET https://www.paypal.com/agreements/approve?ba_token=BA-5SK36951DM296273L
+2026-07-23 21:59:33.531 | DEBUG    | paypal.session:get:1137 -   -> 200 (143639 bytes)
+2026-07-23 21:59:33.534 | INFO     | paypal.flow:_capture_datadome_clientid:443 - DataDome client id captured for request header replay len=128
+2026-07-23 21:59:33.549 | INFO     | paypal.flow:_capture_mtr_metadata:1649 - MTR dfpconfig captured: channel=iwc-mxo cmid=BA-5SK...273L api_key_present=True
+2026-07-23 21:59:33.551 | INFO     | paypal.flow:_phase0_initial_load:2373 - Page loaded: 200, 143598 bytes
+2026-07-23 21:59:33.593 | INFO     | paypal.flow:_apply_modxo_inline_metadata:5044 - ModXO country action id: 604aee93ac65e654fa4a8234584263c9111a04f637
+2026-07-23 21:59:33.593 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action fetch_device_fingerprint_action_id: 40119ea45de7135869f32892c6e0436cc9722b7775 (static)
+2026-07-23 21:59:33.593 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action show_create_account_action_id: 408cdbfcfb063642520b8dde73b124955e07000967 (static)
+2026-07-23 21:59:33.593 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action submit_public_credential_action_id: 403375d290e5845b191b7f22e6b940617e87334e8b (static)
+2026-07-23 21:59:33.593 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action create_user_action_id: 60187d0e8cbc4131987e2c84c8e430dce698c2ace3 (static)
+2026-07-23 21:59:33.593 | INFO     | paypal.flow:_phase0_initial_load:2381 - Context ID: 215903b1-5851-41e9-afa5-cd2ed9280a14
+2026-07-23 21:59:33.594 | INFO     | paypal.flow:_phase0_initial_load:2390 - SSRT: 1784815172348
+2026-07-23 21:59:33.595 | INFO     | paypal.flow:_phase0_initial_load:2396 - EC Token already present on approval page: EC-5WC...515J
+2026-07-23 21:59:33.595 | INFO     | paypal.flow:_phase2_create_account:6433 - --- Phase 2: Create account flow ---
+2026-07-23 21:59:33.595 | INFO     | paypal.flow:_phase2_create_account:6437 - EC checkout token is already available; skipping ModXO create-account action: EC-5WC...515J
+2026-07-23 21:59:33.595 | DEBUG    | paypal.session:get:1086 - GET https://www.paypal.com/checkoutweb/signup?ssrt=1784815172348&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=BA-5SK36951DM296273L&token=EC-5WC90023EE717515J&rcache=1&cookieBannerVariant=hidden
+2026-07-23 21:59:34.320 | DEBUG    | paypal.session:get:1137 -   -> 403 (8047 bytes)
+2026-07-23 21:59:34.339 | DEBUG    | paypal.flow:_apply_signup_content_metadata:2818 - Loaded signup document did not contain content metadata; preserving contentIdentifier=<missing>
+2026-07-23 21:59:34.341 | INFO     | paypal.flow:_apply_configured_or_cached_signup_content_metadata:2952 - Content metadata restored from cache /tmp/paypal_signup_content_manifest_last.json identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+2026-07-23 21:59:34.341 | DEBUG    | paypal.session:get:1086 - GET https://www.paypalobjects.com/checkoutweb/release/weasley/content-manifest.11f545996f2c4231476c31cc5d858b86.json
+2026-07-23 21:59:36.486 | DEBUG    | paypal.session:get:1137 -   -> 200 (34502 bytes)
+2026-07-23 21:59:36.491 | INFO     | paypal.flow:_apply_signup_content_manifest:2740 - Content metadata found in content manifest: key=US_en hash=d24460aee36e4b7d4579aea096ec5056 identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+2026-07-23 21:59:36.491 | DEBUG    | paypal.session:post:1141 - POST https://www.paypal.com/graphql?InitialDataQuery
+2026-07-23 21:59:37.237 | DEBUG    | paypal.session:post:1200 -   -> 400 (647 bytes)
+2026-07-23 21:59:37.237 | INFO     | paypal.session:graphql:1272 - GraphQL InitialDataQuery HTTP 400 bytes=647 paypal_debug_id=f861922ea7ae1
+2026-07-23 21:59:37.239 | WARNING  | paypal.session:graphql:1332 - GraphQL InitialDataQuery returned errors: status=400 paypal_debug_id=f861922ea7ae1 errors=[
+  {
+    "message": "Variable \"$channel\" is never used in operation \"InitialDataQuery\".",
+    "locations": [
+      {
+        "line": 2,
+        "column": 24
+      }
+    ],
+    "extensions": {
+      "code": "GRAPHQL_VALIDATION_FAILED"
+    },
+    "statusCode": 400
+  },
+  {
+    "message": "Variable \"$countryCodeAsString\" is never used in operation \"InitialDataQuery\".",
+    "locations": [
+      {
+        "line": 2,
+        "column": 72
+      }
+    ],
+    "extensions": {
+      "code": "GRAPHQL_VALIDATION_FAILED"
+    },
+    "statusCode": 400
+  },
+  {
+    "message": "Variable \"$isBaslAsString\" is never used in operation \"InitialDataQuery\".",
+    "locations": [
+      {
+        "line": 2,
+        "column": 103
+      }
+    ],
+    "extensions": {
+      "code": "GRAPHQL_VALIDATION_FAILED"
+    },
+    "statusCode": 400
+  }
+]
+2026-07-23 21:59:37.240 | DEBUG    | paypal.session:graphql:1344 - GraphQL InitialDataQuery sanitized variables: {
+  "channel": "WEB",
+  "countryCode": "US",
+  "countryCodeAsString": "US",
+  "isBaslAsString": "false",
+  "languageCode": "en",
+  "token": "EC-5WC...515J",
+  "fundingSource": null
+}
+{
+  "ok": false,
+  "graphql_errors": [
+    {
+      "message": "Variable \"$channel\" is never used in operation \"InitialDataQuery\".",
+      "locations": [
+        {
+          "line": 2,
+          "column": 24
+        }
+      ],
+      "extensions": {
+        "code": "GRAPHQL_VALIDATION_FAILED"
+      },
+      "statusCode": 400
+    },
+    {
+      "message": "Variable \"$countryCodeAsString\" is never used in operation \"InitialDataQuery\".",
+      "locations": [
+        {
+          "line": 2,
+          "column": 72
+        }
+      ],
+      "extensions": {
+        "code": "GRAPHQL_VALIDATION_FAILED"
+      },
+      "statusCode": 400
+    },
+    {
+      "message": "Variable \"$isBaslAsString\" is never used in operation \"InitialDataQuery\".",
+      "locations": [
+        {
+          "line": 2,
+          "column": 103
+        }
+      ],
+      "extensions": {
+        "code": "GRAPHQL_VALIDATION_FAILED"
+      },
+      "statusCode": 400
+    }
+  ],
+  "phase": {
+    "ec": true,
+    "ctx": true,
+    "signup_status": 0,
+    "signup_url": true
+  },
+  "checkout": {
+    "checkoutSessionType": null,
+    "userAction": null,
+    "allowedCardIssuers": null,
+    "cardProductClasses": null,
+    "flags": null,
+    "merchant": null,
+    "cart": null
+  },
+  "localeMetadata": null,
+  "unifiedLoginContext": null,
+  "userAgreement": null,
+  "ba_sha12": "b6c9793d48dd",
+  "ec_sha12": "f1d9b8e42a6b"
+}

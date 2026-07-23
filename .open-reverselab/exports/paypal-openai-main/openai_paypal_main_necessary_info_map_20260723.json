@@ -1,0 +1,26 @@
+{
+  "case": "openai_paypal_main_necessary_info_map",
+  "date": "2026-07-23",
+  "project": "/Users/mac/Downloads/openai-paypal-main",
+  "necessary_info_found": {
+    "ba_to_ec_and_checkout_session": "paypal/flow.py::_phase0_initial_load + paypal/graphql.py::CHECKOUT_SESSION_DATA_QUERY",
+    "signup_context_and_risk": "paypal/flow.py signup context/DataDome/MTR/headless/Roxy methods; paypal/mtr.py; paypal/local_headless.py; paypal/roxy_fingerprint.py",
+    "otp": "paypal/graphql.py::INITIATE_2FA_PHONE_MUTATION and CONFIRM_2FA_PHONE_MUTATION; paypal/flow.py::_confirm_phone_*",
+    "signup": "paypal/graphql.py::SIGNUP_NEW_MEMBER_MUTATION; paypal/flow.py::_build_signup_variables/_send_signup_attempt/_consume_signup_result",
+    "legacy_phase4": "paypal/graphql.py::AUTHORIZE_BILLING_MUTATION; paypal/flow.py::_phase4_authorize",
+    "current_phase4_from_sourcemap": "/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts",
+    "funding_instrument_extraction_from_sourcemap": "/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js",
+    "fresh_ba_generation_in_autoteam_readonly": "/Users/mac/code/my/AutoTeam-F/src/autotoken/payments/us_paypal.py::generate_paypal_trial/create_express_billing_agreement"
+  },
+  "gaps_to_local_success_without_wrapper": {
+    "code_gaps": "US profile + preserve fundingInstrument.id + prefer Weasley approve + existing-buyer optional path",
+    "state_gaps": "real PayPal-accepted FI for signup path OR legitimate buyer auth state + wallet funding option id for member path",
+    "not_found": "no reusable successful live payment state/cookie in openai-paypal-main var/cache"
+  },
+  "evidence_files": [
+    "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/source_map_weasley_approve_phase4_summary_20260723.json",
+    "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/member_approve_probe_us_proxy_20260723.json",
+    "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/fresh_ba_v3_live_run_2_20260723.log",
+    "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/local_runtime_success_signals_20260723.json"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "time": "2026-07-23T22:16:00+08:00",
+  "chunk19": "/tmp/paypal_assets/weasley_latest/chunks/19.9f03722f70ef2e6b75a4.js",
+  "chunk19_sha256": "a24428fcceb26ad470df32eafb38eb4936464b12be129d5371ff2145f65e5ab7",
+  "formatter": "/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts",
+  "generated_graphql": "/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx",
+  "chunk_counts": {
+    "initiateRiskBasedTwoFactorPhoneConfirmation": 5,
+    "confirmRiskBasedTwoFactorPhoneConfirmation": 3,
+    "updateNonAddressField_phone": 2,
+    "verificationId": 0,
+    "authId": 11,
+    "challengeId": 11,
+    "isConfirmed": 2
+  },
+  "formatter_twoFactorPhoneVerificationId_present": true,
+  "graphql_accountQuality_has_twoFactorPhoneVerificationId": true,
+  "phone_meta_updates": [
+    {
+      "contains_authId": true,
+      "contains_challengeId": true,
+      "contains_isConfirmed": true,
+      "contains_verificationId": false,
+      "snippet_head": "e({mutation:ne,variables:{locale:{country:i,lang:r},phoneCountry:o,phoneNumber:t,token:Object(K.o)()}}).then((e=>{var t,i,a;const c=null!==(t=null===e||void 0===e||null===(i=e.data)||void 0===i||null===(a=i.initiateRiskBasedTwoFactorPhoneConfirmation)||void 0===a?void 0:a.state)&&void 0!==t?t:te.h.Unknown;var s,l,d,m,u,p;return c===te.h.Pending?(n.updateNonAddressField({field:\"phone\",payload:{meta:{authId:null!==(s=null===e||void 0===e||null===(l=e.data)||void 0===l||null===(d=l.initiateRiskBasedTwoFactorPhoneConfirmation)||void 0===d?void 0:d.authId)&&void 0!==s?s:\"\",challengeId:null!==(m=null===e||void 0===e||null===(u=e.data)||void 0===u||null===(p=u.initiateRiskBasedTwoFactorPhoneConfirmation)||void 0===p?void 0:p.challengeId)&&void 0!==m?m:\"\",isConfirmed:!1}}}),oe.a.info(\"initiate_phone_confirmation_success\"),oe.a.metric(\"initiate_phone_confirmation_success\")):c===te.h.NumberNotSupp"
+    },
+    {
+      "contains_authId": true,
+      "contains_challengeId": true,
+      "contains_isConfirmed": true,
+      "contains_verificationId": false,
+      "snippet_head": "l!==(o=null===(i=c.phone.meta)||void 0===i?void 0:i.challengeId)&&void 0!==o?o:\"\",pin:r,token:Object(K.o)()}}).then((e=>{var n,t,o;const i=null!==(n=null===e||void 0===e||null===(t=e.data)||void 0===t||null===(o=t.confirmRiskBasedTwoFactorPhoneConfirmation)||void 0===o?void 0:o.state)&&void 0!==n?n:te.h.Unknown;var a,r;return i===te.h.Confirmed?(s.updateNonAddressField({field:\"phone\",payload:{meta:{authId:null===(a=c.phone.meta)||void 0===a?void 0:a.authId,challengeId:null===(r=c.phone.meta)||void 0===r?void 0:r.challengeId,isConfirmed:!0}}}),oe.a.info(\"confirm_phone_confirmation_success\"),oe.a.metric(\"confirm_phone_confirmation_success\")):i===te.h.ValidationFailed?(oe.a.warn(\"confirm_phone_confirmation_invalid_otp\"),oe.a.metric(\"confirm_phone_confirmation_invalid_otp\")):i===te.h.Unknown?(oe.a.error(\"confirm_phone_confirmation_graceful_error\"),oe.a.metric(\"confirm_phone_confirmation_grac"
+    }
+  ],
+  "conclusion": "Current lazy phone confirmation chunk persists authId/challengeId/isConfirmed only; no verificationId is ever set, so billingAddress.accountQuality.twoFactorPhoneVerificationId is not expected in current signup payload."
+}

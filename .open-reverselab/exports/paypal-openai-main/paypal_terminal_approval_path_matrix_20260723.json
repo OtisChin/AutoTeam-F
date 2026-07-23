@@ -1,0 +1,55 @@
+{
+  "case": "paypal_openai_main_terminal_approval_paths",
+  "date": "2026-07-23",
+  "paths": [
+    {
+      "path": "signup_new_member_then_approveGuestSignUpPayment",
+      "source": "weasley SignUpNewMemberMutation + ApproveOnboardPaymentMutation",
+      "auth_requirement": "ANONYMOUS for signup; LOGGEDIN/IDENTIFIED after successful signup",
+      "local_status": "protocol fields aligned in v4/v5 draft; live blocked at PayPal FI validation for synthetic cards/banks",
+      "blocker": "requires PayPal-accepted real funding instrument during signUpNewMember",
+      "evidence": [
+        "fresh_ba_v3_live_run_2_20260723.log",
+        "member_approve_probe_us_proxy_20260723.json",
+        "acceptance_v5_run_20260723.jsonl"
+      ]
+    },
+    {
+      "path": "existing_buyer_approveMemberPayment",
+      "source": "PayPal schema Mutation.approveMemberPayment",
+      "auth_requirement": "LOGGEDIN, REMEMBERED, or IDENTIFIED PayPal buyer auth state plus primaryFundingOptionId",
+      "local_status": "mutation shape live-validated; v5 mock success implemented; current project cookies are ANONYMOUS only",
+      "blocker": "requires real PayPal buyer login/remembered/EUAT state and wallet funding option id",
+      "evidence": [
+        "member_approve_probe_us_proxy_20260723.json",
+        "member_approve_v5_patch_test_20260723.json"
+      ]
+    },
+    {
+      "path": "official_paypal_orders_subscriptions_vault",
+      "source": "PayPal REST/JS SDK official API",
+      "auth_requirement": "merchant REST app credentials and buyer approval",
+      "local_status": "local mock create/approve/capture completed; live/sandbox OAuth not possible without credentials",
+      "blocker": "requires PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET",
+      "evidence": [
+        "official_local_checkout_mock_e2e_20260723.json",
+        "acceptance_v5_run_20260723.jsonl"
+      ]
+    },
+    {
+      "path": "old_user_supplied_ba_tokens",
+      "source": "paypal.com/agreements/approve?ba_token=...",
+      "auth_requirement": "valid fresh BA/EC with merchant/cart",
+      "local_status": "8/8 stale; CheckoutSessionDataQuery INVALID_RESOURCE_ID",
+      "blocker": "expired/invalid resources",
+      "evidence": [
+        "ba_status_recheck_us_proxy_20260723.jsonl"
+      ]
+    }
+  ],
+  "current_viable_next_live_tests": [
+    "Use v5 existing_buyer mode with user-provided PayPal buyer logged-in cookie/EUAT and primaryFundingOptionId; non-random FI.",
+    "Use official PayPal sandbox/live REST credentials and buyer account; run local Orders/Subscriptions/Vault flow.",
+    "Use v4 signup path only with a legitimate PayPal-accepted US funding instrument, not generated/random card data."
+  ]
+}

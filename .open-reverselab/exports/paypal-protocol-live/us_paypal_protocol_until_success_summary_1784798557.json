@@ -1,0 +1,28 @@
+{
+  "attempts": [
+    {
+      "attempt": 2,
+      "token_masked": "BA-***382W",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "ec10275de6e6",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place."
+    },
+    {
+      "attempt": 3,
+      "token_masked": "BA-***054U",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "01b8aa99cdc7",
+      "error": "US PayPal createMemberAccount was rejected by onboarding risk control (OAS_ERROR). The verified OTP session is now terminal; start a new clean job rather than rotating profile data in place."
+    },
+    {
+      "attempt": 4,
+      "token_masked": "BA-***314X",
+      "ok": true,
+      "status": "success",
+      "remote_job_id": "67704e2e6ffc",
+      "error": ""
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "stage": "onboard_guest_v7_patch",
+  "checks": {
+    "mutation_exported": true,
+    "variables_us": true,
+    "has_card": true,
+    "status_success": true,
+    "buyer_set": true,
+    "access_token_present": true,
+    "instrument_set": true
+  },
+  "variables_keys": [
+    "bank",
+    "billingAddress",
+    "card",
+    "country",
+    "currencyConversionType",
+    "dateOfBirth",
+    "email",
+    "firstName",
+    "lastName",
+    "phone",
+    "shareAddressWithDonatee",
+    "shippingAddress",
+    "supportedThreeDsExperiences",
+    "token"
+  ],
+  "result": {
+    "status": "success",
+    "buyer_user_id": "BUYER-GUEST-ONBOARD-1",
+    "access_token_present": true,
+    "funding_instrument_present": true
+  }
+}

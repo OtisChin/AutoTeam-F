@@ -1,0 +1,200 @@
+{
+  "stage": "live_create_member_no_fi_v8",
+  "ba_present": true,
+  "proxy": "代理关闭",
+  "phase0_2": {
+    "ec_present": true,
+    "signup_url_present": true
+  },
+  "createMemberAccount": {
+    "result": {
+      "data": {
+        "onboardAccount": {
+          "buyer": {
+            "auth": {
+              "accessToken": "<redacted>",
+              "__typename": "Auth"
+            },
+            "userId": "35A6284W96PJN",
+            "__typename": "User"
+          },
+          "__typename": "CheckoutSession"
+        }
+      },
+      "extensions": {
+        "tracing": {
+          "version": 1,
+          "startTime": "2026-07-23T15:49:59.276Z",
+          "endTime": "2026-07-23T15:50:00.273Z",
+          "duration": 996000000,
+          "execution": {
+            "resolvers": [
+              {
+                "path": [
+                  "createMemberAccount"
+                ],
+                "parentType": "Query",
+                "fieldName": "createMemberAccount",
+                "returnType": "Object",
+                "startOffset": 0,
+                "duration": 996223496
+              }
+            ]
+          }
+        },
+        "correlationId": "f13770...49a4"
+      }
+    },
+    "consume": {
+      "ok": true,
+      "user_id_present": true,
+      "euat_present": true
+    }
+  },
+  "approve_variants": [
+    {
+      "name": "approveGuestSignUpPayment_skipSticky",
+      "result": {
+        "errors": [
+          {
+            "message": "BUYER_NOT_SET",
+            "checkpoints": [
+              "approvePayment"
+            ],
+            "meta": {},
+            "errorData": {},
+            "contingency": true,
+            "path": [
+              "approveGuestSignUpPayment"
+            ],
+            "extensions": {
+              "class": "ERROR"
+            },
+            "statusCode": 200
+          }
+        ],
+        "data": {
+          "approveGuestSignUpPayment": null
+        },
+        "extensions": {
+          "tracing": {
+            "version": 1,
+            "startTime": "2026-07-23T15:50:01.761Z",
+            "endTime": "2026-07-23T15:50:02.385Z",
+            "duration": 624000000,
+            "execution": {
+              "resolvers": [
+                {
+                  "path": [
+                    "approveGuestSignUpPayment"
+                  ],
+                  "parentType": "Query",
+                  "fieldName": "approveGuestSignUpPayment",
+                  "returnType": "Object",
+                  "startOffset": 0,
+                  "duration": 623117318
+                }
+              ]
+            }
+          },
+          "correlationId": "f17189...9ba7"
+        }
+      },
+      "errors": [
+        {
+          "message": "BUYER_NOT_SET",
+          "checkpoints": [
+            "approvePayment"
+          ],
+          "meta": {},
+          "errorData": {},
+          "contingency": true,
+          "path": [
+            "approveGuestSignUpPayment"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        }
+      ]
+    },
+    {
+      "name": "approveMemberPayment_noPrimaryFI",
+      "result": {
+        "data": {
+          "approveMemberPayment": {
+            "state": "APPROVED",
+            "buyer": {
+              "userId": "35A6284W96PJN",
+              "email": {
+                "stringValue": "jennifer.thomas1340@icloud.com",
+                "__typename": "Email"
+              },
+              "name": {
+                "fullName": "Jennifer Thomas",
+                "__typename": "PersonName"
+              },
+              "__typename": "User"
+            },
+            "cart": {
+              "paymentId": null,
+              "intent": "SALE",
+              "returnUrl": {
+                "href": "https://stripe.com/?status=success&token=<redacted>&PayerID=35A6284W96PJN&ba_token=<redacted>",
+                "pathname": "/",
+                "__typename": "GenericURL"
+              },
+              "cancelUrl": {
+                "href": "https://stripe.com/?status=cancel&token=<redacted>",
+                "pathname": "/",
+                "__typename": "GenericURL"
+              },
+              "amounts": null,
+              "__typename": "Cart"
+            },
+            "completedPaymentInfo": null,
+            "fundingOptions": null,
+            "paymentContingencies": {
+              "threeDomainSecure": null,
+              "__typename": "PaymentContingencies",
+              "threeDSContingencyData": null
+            },
+            "__typename": "CheckoutSession"
+          }
+        },
+        "extensions": {
+          "tracing": {
+            "version": 1,
+            "startTime": "2026-07-23T15:50:02.880Z",
+            "endTime": "2026-07-23T15:50:03.796Z",
+            "duration": 916000000,
+            "execution": {
+              "resolvers": [
+                {
+                  "path": [
+                    "approveMemberPayment"
+                  ],
+                  "parentType": "Query",
+                  "fieldName": "approveMemberPayment",
+                  "returnType": "Object",
+                  "startOffset": 0,
+                  "duration": 914226753
+                }
+              ]
+            }
+          },
+          "correlationId": "f62230...2943"
+        }
+      },
+      "errors": []
+    }
+  ],
+  "terminal": {
+    "success": true,
+    "variant": "approveMemberPayment_noPrimaryFI",
+    "state": "APPROVED",
+    "transactionState": "",
+    "returnUrl_present": true
+  }
+}

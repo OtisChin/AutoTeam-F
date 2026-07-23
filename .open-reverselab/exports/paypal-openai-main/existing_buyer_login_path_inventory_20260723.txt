@@ -1,0 +1,318 @@
+# existing buyer / login approve path inventory
+## project grep
+/Users/mac/Downloads/openai-paypal-main/main.py:68:        help="Max SignUpNewMember retries with fresh generated Visa/MasterCard when addCard fails",
+/Users/mac/Downloads/openai-paypal-main/web.py:201:        r"(?i)([\"']?\b(?:ba_token|ec_token|billingAgreementId|billingAgreementToken|billing_agreement_token|token|accessToken|password|securityCode|cvv|pin|otp|ssrt|ctxId|ctx_id|cmid|clientMetadataId|client_metadata_id|correlationId|correlation_id|requestId|request_id|sealedResult|sealed_result|visitorToken|visitor_token)\b[\"']?\s*[:=]\s*)([\"']?)([^&,\"'\s}{]+)([\"']?)",
+/Users/mac/Downloads/openai-paypal-main/web.py:250:    if compact_key in {"password", "securitycode", "cvv", "pin", "otp", "authorization", "cookie", "accesstoken", "euat"}:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:69:    euat_token: str = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:87:    login_phone_country_code: str = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:133:        euat_key = "AV894Kt2TSumQQrJwe-8mzmyREO"
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:134:        if euat_key in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:135:            self.euat_token = cookies[euat_key]
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:244:# Browser Weasley calls this early on signup.  The otpLoginContext payload is
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:249:  otpLoginContext(token: $token, integrationType: $integrationType) {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:256:    res: "weasley:deferredFeature:memberAsDefault"
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:310:SIGNUP_NEW_MEMBER_MUTATION = """
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:311:mutation SignUpNewMemberMutation($bank: BankAccountInput, $billingAddress: AddressInput, $card: CardInput, $contentIdentifier: String, $country: CountryCodes, $countrySpecificFirstName: String, $countrySpecificLastName: String, $crsData: CommonReportingStandardsInput, $currencyConversionType: CheckoutCurrencyConversionType, $dateOfBirth: DateOfBirth, $email: String!, $firstName: String!, $gender: Gender, $identityDocument: IdentityDocumentInput, $lastName: String!, $middleName: String, $marketingOptOut: Boolean, $nationality: CountryCodes, $occupation: Occupation, $password: String, $phone: PhoneInput!, $placeOfBirth: CountryCodes, $secondaryIdentityDocument: IdentityDocumentInput, $selectedInstallmentOption: InstallmentsInput, $shareAddressWithDonatee: Boolean, $shippingAddress: AddressInput, $supportedThreeDsExperiences: [ThreeDSPaymentExperience], $token: String!, $residentialAddress: AddressInput, $isSignupIncentiveOptIn: Boolean, $isSignupIncentiveOptInStretch: Boolean, $legalAgreements: LegalAgreementsInput, $collectedConsents: [CollectedConsent]) {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:312:  onboardAccount: signUpNewMember(
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:364:      accessToken
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1227:    """Build SignUpNewMember fn_sync_data using the EC token."""
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1228:    return build_fn_sync_data(ec_token, source="IWC_LOGIN_APP", include_d=True, session=session)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1342:    if field_id in {"firstName", "login_email", "email"}:
+/Users/mac/Downloads/openai-paypal-main/paypal/smsbower.py:305:    def remember_success(
+/Users/mac/Downloads/openai-paypal-main/paypal/smsbower.py:438:                self.store.remember_success(
+/Users/mac/Downloads/openai-paypal-main/paypal/smsbower.py:468:            self.store.remember_success(
+/Users/mac/Downloads/openai-paypal-main/paypal/traffic_recorder.py:127:    "accesstoken",
+/Users/mac/Downloads/openai-paypal-main/paypal/traffic_recorder.py:128:    "euat",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:26:EUAT_COOKIE_NAME = "AV894Kt2TSumQQrJwe-8mzmyREO"
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:353:        "accessToken",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:376:        "euat",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:405:    if "accesstoken" in compact_key or "euat" in compact_key:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:754:                EUAT_COOKIE_NAME,
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:758:        if token and token != self.state.euat_token:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:759:            self.state.euat_token = token
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:760:            logger.info("EUAT cookie captured from response Set-Cookie header len={}", len(token))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1246:        if self.state.euat_token:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1247:            headers["X-PayPal-Internal-EUAT"] = self.state.euat_token
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1265:            # GraphQL JSON body for SignUpNewMemberMutation.
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:160:    "accesstoken",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:161:    "euat",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:179:    sensitive_query_keys = {"token", "ba_token", "ssrt", "access_token", "euat", "ctxid", "ctx_id"}
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1799:    "signupnewmember",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:81:    SIGNUP_NEW_MEMBER_MUTATION,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:330:        # SignUpNewMember sends `country` from the billing/account country.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:627:        if not any(marker in lower for marker in ("checkoutweb/signup", "weasley", "signupnewmember", "compliance.signupterms")):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1803:            "Strict browser-risk preflight blocked SignUpNewMemberMutation because "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1894:                        "tokenizedLogin": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2022:                # still remember that the country action was accepted.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2206:        BUYER_NOT_SET after a partial SignUpNewMember response means the current
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2208:        agreement. Reusing the same SignUpNewMember request usually produces
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2367:        # Parse the login/signup page
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2586:        The browser capture shows SignUpNewMember uses the per-locale entry
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3189:        """Always try one live content-manifest request before SignUpNewMember.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3260:        """Find an accessToken recursively in GraphQL data/errorData."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3263:                if key == "accessToken" and isinstance(item, str) and item:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3275:    def _sync_euat_token_from_cookie(self) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3276:        """Refresh SessionState from the cookie jar and return the EUAT token if present."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3282:            logger.debug("EUAT cookie sync failed: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3283:        return str(getattr(self.state, "euat_token", "") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3286:        """Find an access token in the full signup response or EUAT cookie state."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3289:            logger.info("Access token found in SignUpNewMember response; continuing.")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3291:        cookie_token = self._sync_euat_token_from_cookie()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3293:            logger.info("EUAT token found in cookie jar after SignUpNewMember; continuing.")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3295:        logger.info("No access token/EUAT found after SignUpNewMember response.")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:4592:        action = self._extract_form_action(challenge_html) or "/graphql?SignUpNewMemberMutation"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:4765:        `/graphql?SignUpNewMemberMutation`; the browser appends the captcha
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:4769:        action = self._extract_form_action(challenge_html) or "/graphql?SignUpNewMemberMutation"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:4855:                "SignUpNewMemberMutation",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:4949:        phone_code = self._html_input_value(text, "login_phone_country_code")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:4951:            self.state.login_phone_country_code = phone_code
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5344:            source="IWC_LOGIN_APP",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5757:        # pollute the job as an ERROR or block SignUpNewMember.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5836:                "weasley_api_request_sign_up_new_member_mutation",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5858:        """Build a GraphQL-shaped success when SignUp set EUAT but returned UI HTML.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5862:        placed the EUAT cookie before sending that HTML.  When we have that token
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5872:                        "auth": {"accessToken": self.state.euat_token},
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5884:            "SignUpNewMemberMutation",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5885:            SIGNUP_NEW_MEMBER_MUTATION,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5906:                    "SignUpNewMember returned PayPal authchallenge HTML "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5920:                if self.state.euat_token:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5922:                        "Authchallenge response already yielded EUAT cookie; "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5926:                        "authchallenge_html_with_euat_cookie"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5936:                        "retrying SignUpNewMemberMutation."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6110:                self.state.euat_token = auth.get("accessToken", "")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6111:            if not self.state.euat_token:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6112:                self.state.euat_token = self._signup_access_token_candidate(signup_result)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6113:            if not self.state.euat_token:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6115:                    "SignUpNewMember returned onboardAccount but no accessToken "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6116:                    "was found in auth payload, response body, or EUAT cookie."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6194:    def _is_create_member_account_retryable_signup_error(errors: list[dict[str, Any]]) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6199:            if "createMemberAccount" in checkpoints and (
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6228:            "{}. Retrying SignUpNewMember in-place with fresh account/card info "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6243:        self.state.euat_token = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6260:        """Retry SignUpNewMember with a fresh generated Visa/MasterCard on card errors."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6261:        self.state.euat_token = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6269:                "Step 3: Creating account (SignUpNewMember), card attempt {}/{}: {}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6288:                    self.state.euat_token = last_access_token
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6313:                    self.state.euat_token = access_token
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6334:                self.state.euat_token = access_token
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6341:                logger.info("Got access token from signup error response or EUAT cookie")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6344:            if self._is_create_member_account_retryable_signup_error(errors):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6347:                        "Signup failed: createMemberAccount/OAS_ERROR after "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6351:                    "createMemberAccount/OAS_ERROR returned without access token",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6640:                ["login_email"],
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6658:                    ("_1_login_email", (None, self.user.email)),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6659:                    ("_1_login_password", (None, "")),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6661:                        "_1_login_phone_country_code",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6662:                        (None, self.state.login_phone_country_code or self.user.phone_country_code or "+55"),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6671:                    ("_1_login_email", (None, self.user.email)),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7004:                "main:billing:hagrid:billingwithoutpurchase:member:billing",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7023:        3. SignUpNewMemberMutation → creates account with all user data + card + address
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7063:        # Refresh it right before SignUpNewMember so a stale checkoutweb bundle
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7064:        # hash does not turn into an opaque OAS/createMemberAccount rejection.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7079:        # Step 3: Sign up new member with all user data. If PayPal rejects the
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7081:        # Visa/MasterCard and submit SignUpNewMember again.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7084:        if not self.state.euat_token:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7090:        self._ensure_euat_cookie()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7103:            "main:billing:hagrid:billingwithoutpurchase:member:review",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7109:    def _ensure_euat_cookie(self) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7110:        """Write EUAT into both PayPal cookie scopes used by Hermes/Hagrid."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7111:        if not self.state.euat_token:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7118:                    self.state.euat_token,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7123:                logger.debug(f"Failed to set EUAT cookie for {domain}: {e}")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7244:        """Load billingLite/Hermes pages to bind EUAT cookies to buyer context."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7245:        self._ensure_euat_cookie()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7285:                "Hermes/Hagrid review context loaded: status={} bytes={} user_id_present={} euat_present={}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7289:                bool(self.state.euat_token),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7318:        # authorize mutation. This binds EUAT/cookies to a buyer context; without
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7511:                "main:billing:hagrid:billingwithoutpurchase:member:submitButtonFullEvent",
+
+## sourcemap operation files
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_errorHandlers.js
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js
+/private/tmp/paypal_assets/weasley_latest/extracted/src_initialDataQuery.graphql
+/private/tmp/paypal_assets/weasley_latest/extracted/src_lib_features_resolvers.ts
+
+## graphql mutation args around approveMemberPayment
+6335-  totalConsumerFee?: Maybe<ConsumerInstallmentFee>;
+6336-  /** Option total cost amount */
+6337-  totalCost: Amount;
+6338-};
+6339-
+6340-/**
+6341- * Allows selecting an installment option for use when paying
+6342- *
+6343: * Used in the `approveMemberPayment` mutation.
+6344- *
+6345- * Example input (with discount):
+6346- * ```
+6347- * "installmentOption: {
+6348- *   term: 1,
+6349- *   paymentValue: '237.50',
+6350- *   paymentCurrency: 'BRL',
+6351- *   discountValue: '12.50',
+--
+7377-   * Returns a CheckoutSession type.
+7378-   *
+7379-   * Average SLA response time - 13000ms
+7380-   *
+7381-   * Required auth states: ANONYMOUS
+7382-   */
+7383-  approveGuestPaymentWithCreditCard?: Maybe<CheckoutSession>;
+7384-  /**
+7385:   * The approveGuestSignUpPayment mutation will approve a payment transaction for a signup/guest flow
+7386-   *
+7387-   * Returns a CheckoutSession type.
+7388-   *
+7389-   * Average SLA response time - 500ms
+7390-   *
+7391-   * Required auth states: LOGGEDIN, IDENTIFIED
+7392-   */
+7393:  approveGuestSignUpPayment?: Maybe<CheckoutSession>;
+7394-  /**
+7395:   * The approveMemberPayment mutation will approve a payment for PayPal members.
+7396-   *
+7397-   * This interface uses funding option IDs, rather than plan IDs.
+7398-   *
+7399-   * Requires `token`, the EC, PAY or BA token used for this payment.
+7400-   *
+7401-   * Requires `primaryFundingOptionId`, which is the primary funding option ID used to fund the payment.
+7402-   * Optionally accepts `secondaryFundingOptionIds`, which is an Array of funding option IDs.
+7403-   * Optionally accepts `rewards`, which is an Object, containing the rewards ID, amount, and currency code.
+7404-   *
+7405:   * approveMemberPayment will attempt to find the associated plan given those funding option IDs
+7406:   * approveMemberPayment will complete a payment for a WPS Payment.
+7407-   *
+7408-   * If passed `selectedAddressId`, it will select that address for the payment.
+7409-   * If passed `preferredFundingOptionId`, it will select that funding option as preferred for future payments.
+7410-   * If passed `preferredShippingAddressId`, it will select that address as preferred for future payments.
+7411-   * If passed `preAuthorizationRequired`, it will collect Credit Card status from the issuer to check if its valid (Expired Card, Insufficient funds, etc).
+7412-   * If passed `cardCvvValue`, it will resolve cvv value for the currently selected card (primaryFundingOptionId).
+7413-   * If passed `card3DSResolve3DSCode`, it will resolve 3DS for the currently selected card (primaryFundingOptionId).
+7414-   * If passed `legalAgreements`, it will record user legal consent (User Agreement) data on Notice & Consent API.
+--
+7418-   * Please query for state field to get status of checkoutSession when using this Mutation.
+7419-   * If successful, state will change to APPROVED.
+7420-   * If not successful, check the PaymentContingencies field to see issues that need to be resolved first.
+7421-   *
+7422-   * Average SLA response time - 2500ms
+7423-   *
+7424-   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED
+7425-   */
+7426:  approveMemberPayment?: Maybe<CheckoutSession>;
+7427-  /**
+7428-   * This handles the patch and approval process when a user attempts to process a split payment transaction
+7429-   * through the Split Tender interface.
+7430-   *
+7431-   * Returns a CheckoutSession type
+7432-   *
+7433-   * Required auth states: LOGGEDIN
+7434-   */
+7435:  approveMemberPaymentWithSplitFundingOptions?: Maybe<CheckoutSession>;
+7436-  /**
+7437-   * The approvePayment mutation will approve a payment transaction.
+7438-   * If passed an planId, it will select that plan for the transaction.
+7439-   * If passed an addressId, it will select that address for the transaction.
+7440-   * First, plans will be selected, then addresses will be selected, then the
+7441-   * payment will be approved.
+7442-   * Requires a token param (EC, PAY, or BA token) as a String
+7443-   * Requires a planId as a String
+--
+7456-  approvePayment?: Maybe<CheckoutSession>;
+7457-  /**
+7458-   * Approve suggested donation
+7459-   *
+7460-   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED
+7461-   */
+7462-  approveSuggestedDonation?: Maybe<Scalars['Boolean']>;
+7463-  /**
+7464:   * The attemptSetStickyFi mutation will set the sticky/primary funding instrument for
+7465-   *   1. Billing Agreements on the Signup flow
+7466-   *   2. EC Subscriptions on both Guest and Signup flows
+7467-   *
+7468-   * Returns a CheckoutSession type.
+7469-   *
+7470-   * Required auth states: LOGGEDIN, IDENTIFIED
+7471-   */
+7472:  attemptSetStickyFi?: Maybe<CheckoutSession>;
+7473-  /**
+7474-   * checkoutGuestWithMemberBenefits mutation will take parameters similar to
+7475-   * isMemberBenefitsEligible query and trys to checkout a guest user as a
+7476-   * member (by generating member security context on xobuyer)
+7477-   *
+7478-   * Requires a token param (EC, PAY, or BA token) as a String
+7479-   * Requires a firstName ("John") as a String
+7480-   * Requires a lastName ("Smith") as a String
+--
+8162-
+8163-/** Mutation root type.  See https://graphql.org/learn/execution/#root-fields-resolvers */
+8164-export type MutationApproveGuestSignUpPaymentArgs = {
+8165-  token: Scalars['String'];
+8166-};
+8167-
+8168-
+8169-/** Mutation root type.  See https://graphql.org/learn/execution/#root-fields-resolvers */
+8170:export type MutationApproveMemberPaymentArgs = {
+8171-  balancePreference?: InputMaybe<BalancePreference>;
+8172-  card3DSResolve3DSCode?: InputMaybe<Scalars['String']>;
+8173-  cardCvvValue?: InputMaybe<Scalars['String']>;
+8174-  cryptocurrencyQuoteId?: InputMaybe<Scalars['String']>;
+8175-  fullWalletOptIn?: InputMaybe<Scalars['Boolean']>;
+8176-  fundingMethodType?: InputMaybe<FundingInstrumentMethodType>;
+8177-  legalAgreements?: InputMaybe<LegalAgreementsInput>;
+8178-  paycodeEncrypted?: InputMaybe<Scalars['String']>;
+--
+9913-  isSelected?: Maybe<Scalars['Boolean']>;
+9914-  /**
+9915-   * Plan's ID (Ex: '716015457e394cebb555f9804fb22227')
+9916-   * @deprecated Renamed to use `id` instead to better match good graphQL schema practices.
+9917-   */
+9918-  planId?: Maybe<Scalars['String']>;
+9919-  /**
+9920-   * Plan's pre authorization data. The type and amount that needs to be used for pre-authorization
+9921:   * during the `approveMemberPayment` mutation.
+9922-   */
+9923-  preAuthorizationData?: Maybe<PreAuthorizationData>;
+9924-  /**
+9925-   * Plan's primary funding option.
+9926-   * @deprecated Mappings improved to separate the instrument and the details about the fundingSource - see fundingSources instead
+9927-   */
+9928-  primaryFundingOption?: Maybe<FundingOption>;
+9929-  /**
+--
+11488-  toAmount?: Maybe<Scalars['Float']>;
+11489-  /** Decimal precision for conversion from amount to rewards */
+11490-  toRewards?: Maybe<Scalars['Float']>;
+11491-};
+11492-
+11493-/**
+11494- * Rewards input when paying with rewards.
+11495- *
+11496: * Used in the `approveMemberPayment` mutation.
+11497- *
+11498- * Example input:
+11499- * ```
+11500- * "rewards": {
+11501- *   "id": "GI-XXXXXXXXXXXXX",
+11502- *   "amount": "20",
+11503- *   "currency": "USD"
+11504- * }
+--
+13941-export type ApproveOnboardPaymentMutationMutationVariables = Exact<{
+13942-  token: Scalars['String'];
+13943-  instrumentId?: InputMaybe<Scalars['String']>;
+13944-  isBillingAgreement: Scalars['Boolean'];
+13945-  supportedThreeDsExperiences?: InputMaybe<Array<InputMaybe<ThreeDsPaymentExperience>> | InputMaybe<ThreeDsPaymentExperience>>;
+13946-}>;
+13947-
+13948-
+13949:export type ApproveOnboardPaymentMutationMutation = { __typename?: 'Mutation', attemptSetStickyFi?: { __typename?: 'CheckoutSession', buyer?: { __typename?: 'User', userId?: string | null } | null } | null, approveGuestSignUpPayment?: { __typename?: 'CheckoutSession', buyer?: { __typename?: 'User', userId?: string | null, email?: { __typename?: 'Email', stringValue?: string | null } | null, name?: { __typename?: 'PersonName', fullName?: string | null } | null } | null, fundingOptions?: Array<{ __typename?: 'FundingOption', fundingInstrument: { __typename?: 'FundingInstrument', id?: string | null, lastDigits?: string | null, name?: string | null, nameDescription?: string | null, type?: FundingOptionType | null } } | null> | null, merchant: { __typename?: 'Merchant', name?: string | null, preferences?: { __typename?: 'MerchantPreferences', autoReturnToMerchant?: boolean | null, enablePaymentDataTransfer?: boolean | null, returnUrl?: string | null } | null }, shippingAddresses?: Array<{ __typename?: 'CheckoutShippingAddress', fullAddress?: string | null, name?: { __typename?: 'PersonName', fullName?: string | null } | null } | null> | null, paymentContingencies?: { __typename?: 'PaymentContingencies', threeDomainSecure?: { __typename?: 'ThreeDomainSecureContingency', status?: ApiCallStatus | null, method?: HttpMethod | null, parameter?: string | null, experience?: ThreeDsPaymentExperience | null, redirectUrl?: { __typename?: 'GenericURL', href?: string | null } | null, requestParams?: Array<{ __typename?: 'ThreeDSRequestParams', key?: string | null, value?: string | null } | null> | null } | null, threeDSContingencyData?: { __typename?: 'ThreeDomainSecureResolutionContingency', name?: string | null, causeName: string, resolution?: { __typename?: 'ThreeDSResolution', type?: string | null, resolutionName: string, paymentCard?: { __typename?: 'ThreeDSPaymentCardData', expireYear?: string | null, expireMonth?: string | null, currencyCode?: string | null, cardProductClass?: FundingInstrumentSubType | null, id?: string | null, encryptedNumber: string, type: CardIssuerType, number: string, bankIdentificationNumber?: string | null, billingAddress?: { __typename?: 'CheckoutBillingAddress', line1?: string | null, line2?: string | null, city?: string | null, state?: string | null, country?: string | null, postalCode?: string | null } | null } | null, contingencyContext?: { __typename?: 'ThreeDSContingencyContextData', authenticationProvider?: string | null, cardBrandProcessed?: CardIssuerType | null, reason?: ThreedsContingencyReasonType | null, referenceId: string, source?: ThreedsContingencySourceType | null, deviceDataCollectionUrl?: { __typename?: 'GenericURL', href?: string | null } | null, jwtSpecification?: { __typename?: 'ThreeDSJwtSpecification', jwtDuration: string, jwtIssuer: string, jwtOrgUnitId: string, type?: string | null } | null } | null } | null } | null } | null, cart?: { __typename?: 'Cart', paymentId?: string | null, intent?: CartIntent | null, returnUrl?: { __typename?: 'GenericURL', href?: string | null, pathname?: string | null } | null, cancelUrl?: { __typename?: 'GenericURL', href?: string | null, pathname?: string | null } | null, items?: Array<{ __typename?: 'CartItem', quantity?: number | null, name?: string | null, sku?: string | null, unitPrice?: { __typename?: 'Amount', currencyValue?: string | null, currencyFormat?: string | null } | null, itemOptionSelections?: Array<{ __typename?: 'ItemOptionSelection', name: string, description: string } | null> | null } | null> | null, amounts?: { __typename?: 'CartAmounts', subtotal?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, tax?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, shipping?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, insurance?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, handlingFee?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, total?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyFormatSymbolISOCurrency?: string | null, currencyValue?: string | null } | null, discount?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null } | null } | null, completedPaymentInfo?: { __typename?: 'CompletedPaymentInfo', transactionId?: string | null, transactionState?: TransactionState | null, receiptId?: string | null, softDescriptor?: string | null, postbackData?: any | null } | null } | null };
+13950-
+13951-export type ClearRealTimeBalanceContingencyMutationVariables = Exact<{
+13952-  bankId: Scalars['String'];
+13953-  token: Scalars['String'];
+13954-}>;
+13955-
+13956-
+13957-export type ClearRealTimeBalanceContingencyMutation = { __typename?: 'Mutation', clearRealTimeBalanceContingency?: { __typename?: 'CheckoutSession', disallowedInstruments?: Array<{ __typename?: 'DisallowedInstrument', id?: string | null, reason: string } | null> | null, fundingOptions?: Array<{ __typename?: 'FundingOption', allPlans?: Array<{ __typename?: 'Plan', fundingSources?: Array<{ __typename?: 'FundingSource', fundingInstrument?: { __typename?: 'FundingInstrument', id?: string | null } | null, amount?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyValue?: string | null } | null } | null> | null, fundingContingencies: Array<{ __typename?: 'ConfirmCreditCardCvvContingency' } | { __typename?: 'OpenBankingContingency', encryptedId: string, contingencyReasons?: Array<string | null> | null, contingencyType?: OpenBankingContingencyType | null } | { __typename?: 'PaycodeContingency' } | { __typename?: 'SepaMandateAcceptenceNeededContingency' } | { __typename?: 'ThreeDomainSecureResolutionContingency' } | null> } | null> | null, fundingInstrument: { __typename?: 'FundingInstrument', id?: string | null, lastDigits?: string | null, name?: string | null, nameDescription?: string | null, type?: FundingOptionType | null } } | null> | null } | null };

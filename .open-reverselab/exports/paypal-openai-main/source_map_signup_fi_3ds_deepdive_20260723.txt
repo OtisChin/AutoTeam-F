@@ -1,0 +1,1003 @@
+# PayPal Weasley Signup/FI/3DS deep-dive
+## files
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_errorHandlers.js
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_getMutationName.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_onboardAction.js
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts
+
+## serializeFormData excerpts
+   184	// TODO: Improve typing on this function
+   185	const serializeFormData = (data: FormState): GenericObjectType => {
+   186	  const { ui: uiState, form: formState } = appStore.getState();
+   187	  const {
+   188	    api: { installmentData },
+   189	  } = appStore.getState();
+   190	  const { value: onboardOption } = data.onboardOption;
+   191	  const isPayLater = uiState.fiType === 'bnpl';
+   192	  const isSignup = onboardOption === 'signup';
+   193	  const isPOMAEligible = features.isActive('isPOMAEligible');
+   194	  const isPasswordlessForcedSignup = features.isActive(
+   195	    'passwordlessForcedSignup',
+   196	  );
+   197	  const isStreamlinePasswordlessForcedSignup =
+   198	    features.isActive('isStreamlineForcedExperience') &&
+   199	    isPasswordlessForcedSignup;
+   200	
+   201	  const isPasswordlessOptionalSignup = features.isActive(
+   202	    'passwordlessOptionalSignup',
+   203	  );
+   204	  const isStreamlinePasswordlessOptionalSignup =
+   205	    features.isActive('isStreamlineOptionalExperience') &&
+   206	    isPasswordlessOptionalSignup;
+   207	
+   208	  const isPOMAFlow =
+   209	    (isPOMAEligible || isPasswordlessForcedSignup) &&
+   210	    isSignup &&
+   211	    !isPayLater &&
+   212	    !isStreamlinePasswordlessForcedSignup &&
+   213	    !isStreamlinePasswordlessOptionalSignup;
+   214	
+   215	  const dialingCode = getDialingCode(data);
+   216	
+   217	  const {
+   218	    email: { value: email },
+   219	    firstName: { value: firstName },
+   220	    lastName: { value: lastName },
+   221	    phone: { value: number },
+   222	    phoneType: { value: phoneType },
+   223	  } = data;
+   224	
+   225	  const installment = installmentData.find(
+   226	    ({ term }) => term === Number(data?.installmentTerm?.value),
+   227	  ) as Installments;
+   228	
+   229	  const {
+   230	    shareAddressWithDonatee: { value: shareAddressWithDonatee },
+   231	  } = formState;
+   232	
+   233	  return {
+   234	    ...getBankPayload(data),
+   235	    ...getCardPayload(data),
+   236	    country: getLocale().country,
+   237	    ...(uiState.cardFieldsToDisplay.dob && {
+   238	      dateOfBirth: stringToDateObject(data.dateOfBirth?.value || ''),
+   239	    }),
+   240	    email: email.trim(),
+   241	    firstName: firstName.trim(),
+   242	    lastName: lastName.trim(),
+   243	    phone: {
+   244	      countryCode: `${dialingCode}`,
+   245	      number,
+   246	      type: phoneType,
+   247	    },
+   248	    ...(installment && formatInstallmentOption(installment)),
+   249	    ...(features.isActive('isDonation') && {
+   250	      shareAddressWithDonatee:
+   251	        shareAddressWithDonatee && features.isActive('isDonation'),
+   252	    }),
+   253	    ...(getStretchRewardData() && {
+   254	      isSignupIncentiveOptInStretch: true,
+   255	    }),
+   256	    supportedThreeDsExperiences: [features.get('threeDsV1Experience')],
+   257	    token: getToken(),
+   258	    ...serializeAddressFields(data),
+   259	    ...(!isPOMAFlow && isSignup && getSignupData(data)),
+   260	    ...(isPOMAFlow && getPomaFlowData()),
+   261	    ...getCrsPayload(data),
+   262	    ...(isSignup && getLegalAgreementsData()),
+   263	    ...getIsSignupIncentiveOptIn(data),
+   264	    collectedConsents: getCollectedConsents(data),
+   265	    ...(features.isActive('shouldDisplayJpKanaAndKanjiNames') &&
+   266	      data?.nationality?.value === CountryCodes.Jp && {
+   267	        countrySpecificFirstName: data.countrySpecificFirstName?.value,
+   268	        countrySpecificLastName: data.countrySpecificLastName?.value,
+   269	      }),
+   270	    ...(isSignup &&
+   271	      features.isActive('shouldDisplayAustraliaMiddleName') && {
+   272	        middleName: data.middleName?.value?.trim(),
+   273	      }),
+   274	  };
+
+## signUp API excerpts
+   160	  return response;
+   161	};
+   162	
+   163	/**
+   164	 * @function approvePayment
+   165	 * @description This function works as a helper function to approve a
+   166	 * given checkout session and redirect back to the merchant if successful
+   167	 * @return null
+   168	 */
+   169	type PaymentPromises =
+   170	  | [ReturnType<typeof approveOnboardPaymentMutationCall>]
+   171	  | [
+   172	      ReturnType<typeof approveOnboardPaymentMutationCall>,
+   173	      ReturnType<typeof isGuestUpgradeableToMemberQuery>,
+   174	      Promise<void | ApolloQueryResult<GetPasskeyEnrollmentContextQuery>>,
+   175	    ];
+   176	
+   177	// Need to get the type for xprops onAuthorize
+   178	export const approvePayment = (): Promise<unknown> => {
+   179	  const token = getToken();
+   180	  const { api: apiState } = appStore.getState();
+   181	  const { ui: uiActions } = appStore.getActions();
+   182	  const { user: userActions } = appStore.getActions();
+   183	  const intent = apiState.cartDetails.intent;
+   184	  const isWpsGuestUpgradeEligible = features.isActive(
+   185	    'isWpsGuestUpgradeEligible',
+   186	  );
+   187	  const isPOMAEligible = features.isActive('isPOMAEligible');
+   188	  const promises = [
+   189	    approveOnboardPaymentMutationCall(token),
+   190	  ] as PaymentPromises;
+   191	  const isPasswordlessUpgrade = features.isActive('isPasswordlessUpgrade');
+   192	  const fptiFlowName = getFptiFlowName({
+   193	    clientFeatures: features.config,
+   194	  });
+   195	  const { value: onboardOption } = appStore.getState().form.onboardOption;
+   196	  const { country, locale } = getLocale();
+   197	
+   198	  logUserInteractionTime(fptiFlowName, EVENTS.USER_INTERACTION);
+   199	  startLogPerformanceTime(EVENTS.PROCESS_APPROVE);
+   200	
+   201	  setProgressiveSpinnerType();
+   202	
+   203	  if (isWpsGuestUpgradeEligible && !isPOMAEligible) {
+   204	    logger.info('batch_guestUpgradeableToMember_query');
+   205	    promises[1] = isGuestUpgradeableToMemberQuery(token);
+   206	  }
+   207	
+   208	  const isGuest = onboardOption === 'guest';
+   209	  const isWps = features.isActive('isWps');
+   210	  const isPayNow = isUserActionCommit();
+   211	
+   212	  // Passkey enrollment related flags
+   213	  const userState = appStore.getState().user;
+   214	  // We are controlling Passkey Enrollment page display based on the feature flag in staging/dev
+   215	  // environment using feature flag forcePasskeyEnrollment. We can set
+   216	  // xo__forcePasskeyEnrollment=true in the url to enforce passkey in staging/dev environments only
+   217	  let isPasskeyAvailable = userState.passkey.isAvailable;
+   218	  if (!isProd && features.isActive('forcePasskeyEnrollment')) {
+   219	    isPasskeyAvailable = true;
+   220	  }
+   221	
+   222	  const setPasskeyIWCContext = userActions.setPasskeyIWCContext;
+   223	  const setPasskeyReturnToMerchantUrl =
+   224	    userActions.setPasskeyReturnToMerchantUrl;
+   225	  const setIsPasskeyPasswordlessFlow = userActions.setIsPasskeyPasswordlessFlow;
+   226	  const setShowPasskeyEnrollmentPage = uiActions.setShowPasskeyEnrollmentPage;
+   227	  let isUserPasskeyExperimentEligible = false;
+   228	  let isPasskeyContextAvailable = false;
+   229	  let passkeyEnrollmentQueryPromise;
+   230	
+   231	  logger.info('passkey_eligibility_check_flags', {
+   232	    buyerCountry: country,
+   233	    isGuest,
+   234	    isPasskeyAvailable,
+   235	    isPayNow,
+   236	    isWps,
+   237	    locale,
+   238	    onboardOption,
+   239	  });
+   240	
+   241	  if (isPasskeyAvailable && !isWps && !isGuest && isPayNow) {
+   242	    LazyPasskeyEnrollmentPage.preload();
+   243	    // This just marks the eligibility to call the elmo
+   244	    // The elmo response itself is logged in the getPasskeyEnrollmentContext call
+   245	    logger.info(`passkey_experiment_api_call_eligible_${country}`);
+   246	
+   247	    passkeyEnrollmentQueryPromise = getPasskeyEnrollmentContext({
+   248	      query: GET_PASSKEY_ENROLLMENT_CONTEXT_QUERY,
+   249	    }).then(
+   250	      response => {
+   251	        if (response.errors) {
+   252	          const { message, name, stack } = response.errors[0];
+   253	          logger.warn('PASSKEY_ENROLLMENT_CONTEXT_ERROR', {
+   254	            message,
+   255	            name,
+   256	            stack,
+   257	          });
+   258	          // We want to resolve the promise after logging error
+   259	          // as the user has already on path to complete transaction
+   260	          // and we dont want to block it based on passkey context API failure
+   261	          return Promise.resolve(response);
+   262	        }
+   263	
+   264	        const context = response.data?.passkeyEnrollmentContext?.context;
+   265	        const treatments = response.data?.elmoExperiment?.treatments ?? [];
+   266	        const passkeyExperiment = treatments.filter(
+   267	          experiment =>
+   268	            experiment?.experimentName ===
+   269	            'FEATURE_CHECKOUT_ONBOARDING_PRESENT_PASSKEY',
+   270	        )[0];
+   271	
+   272	        // we need to force elmo experiment response to true on staging/dev environment given that
+   273	        // feature flag is set to true. If the isUserPasskeyExperimentEligible variable is not set
+   274	        // to true, then passkey enrollment page wont show up.
+   275	        if (!isProd && features.isActive('forcePasskeyEnrollment')) {
+   276	          isUserPasskeyExperimentEligible = true;
+   277	        } else {
+   278	          isUserPasskeyExperimentEligible =
+   279	            passkeyExperiment?.treatmentName?.startsWith('Trmt_') || false;
+   280	        }
+   281	
+   282	        if (context) {
+   283	          isPasskeyContextAvailable = true;
+   284	          setPasskeyIWCContext(context);
+   285	        }
+   286	        logger.info(
+   287	          `passkey_experiment_eligibility_${
+   288	            isUserPasskeyExperimentEligible ? 'eligible' : 'not_eligible '
+   289	          }`,
+   290	          {
+   291	            buyerCountry: country,
+   292	            context,
+   293	            isUserPasskeyExperimentEligible,
+   294	            locale,
+   295	          },
+   296	        );
+   297	        return Promise.resolve(response);
+   298	      },
+   299	      ({ message, name, stack }) => {
+   300	        logger.error('PASSKEY_ENROLLMENT_CONTEXT_CALL_FAILED', {
+   301	          message,
+   302	          name,
+   303	          stack,
+   304	        });
+   305	
+   306	        return Promise.resolve();
+   307	      },
+   308	    );
+   309	  } else {
+   310	    passkeyEnrollmentQueryPromise = Promise.resolve();
+   311	  }
+   312	
+   313	  promises[2] = passkeyEnrollmentQueryPromise;
+   314	
+   315	  // TODO: A lot of conditionals on xprops, should we check once
+   316	  // instead of many times and log / skip?
+   317	  return Promise.all(promises)
+   318	    .then(
+   319	      ([
+   320	        approveOnboardPaymentMutationResponse,
+   321	        guestUpgradeableToMemberResponse,
+   322	        // This value is not used as we have a .then in the above block to
+   323	        // handle getPasskeyEnrollmentContext promise resolve and reject
+   324	        // We just want to wait for this promise to return as well so that
+   325	        // there is no race condition between passkey context creation and
+   326	        // approveOnboardPayment call
+   327	        // NOTE: any error thrown by this promise is handled by catch block
+   328	        // associated with promise creation above. Error thrown will not trigger
+   329	        // catch block in this chain (And this is what we want, because failure of
+   330	        // getPasskeyEnrollmentContext should not result in redirection to generic
+   331	        // error or failure of transaction or failure of return to merchant)
+   332	        _passkeyEnrollmentContextResponse,
+   333	      ]) => {
+   334	        // Lot of calls to possibly null values, since this is a TS conversion
+   335	        // only adding logging for now and avoid altering prod code
+   336	        if (!isFunction(window.xprops?.onAuthorize)) {
+   337	          logger.warn('xprops.onAuthorize is not a function', {
+   338	            methods: Object.keys(window.xprops || {}),
+   339	          });
+   340	        }
+   341	        if (!isFunction(window.xprops?.getConnectURL)) {
+   342	          logger.warn('xprops.getConnectURL is not a function', {
+   343	            methods: Object.keys(window.xprops || {}),
+   344	          });
+   345	        }
+   346	
+   347	        const { buyer, cart, completedPaymentInfo, paymentContingencies } =
+   348	          approveOnboardPaymentMutationResponse?.data
+   349	            ?.approveGuestSignUpPayment || {};
+   350	        if (paymentContingencies?.threeDSContingencyData) {
+   351	          const { api: apiActions, ui: uiActions } = appStore.getActions();
+   352	
+   353	          apiActions.setThreeDS2ContingencyData({
+   354	            ...paymentContingencies.threeDSContingencyData,
+   355	          });
+   356	          uiActions.toggleIsFormSubmitting(false);
+   357	          uiActions.toggleIsThreeDS2Shown(true);
+   358	          return;
+   359	        }
+   360	
+
+## response handlers excerpts
+
+## 3DS files search
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_errorHandlers.js-235-      logger.info('threeds_2_add_card_contingency_error_thrown');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_errorHandlers.js-236-      return threeDSHandler({
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_errorHandlers.js:237:        is3DSecureRequired: true,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_errorHandlers.js-238-        threeDS2ContingencyData: { ...errorData },
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_errorHandlers.js-239-      });
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-18-    $shareAddressWithDonatee: Boolean
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-19-    $shippingAddress: AddressInput
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts:20:    $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-21-    $token: String!
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-22-    $userType: OnboardingExperienceType!
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-35-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-36-      flags {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts:37:        is3DSecureRequired
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-38-      }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-39-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-40-      ...fundingOptions
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-41-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts:42:      paymentContingencies {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-43-        ...threeDomainSecure
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_createOnboardingPaymentPlan.gql.ts-44-        ...threeDSContingencyData
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts-9-  mutation PreAuthorizePaymentMutation(
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts-10-    $token: String!
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts:11:    $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts-12-  ) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts-13-    preAuthorizePayment(token: $token) {
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts-17-        normalizedProcessorResponse
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts-18-      }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts:19:      paymentContingencies {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts-20-        ...threeDomainSecure
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_preAuthorizePayment.gql.ts-21-        ...threeDSContingencyData
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts-16-    $instrumentId: String
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts-17-    $isBillingAgreement: Boolean!
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts:18:    $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts-19-  ) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts-20-    attemptSetStickyFi(token: $token, instrumentId: $instrumentId)
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts-59-        }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts-60-      }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts:61:      paymentContingencies {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts-62-        ...threeDomainSecure
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts-63-        ...threeDSContingencyData
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-37-    $shareAddressWithDonatee: Boolean
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-38-    $shippingAddress: AddressInput
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts:39:    $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-40-    $token: String!
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-41-    $residentialAddress: AddressInput
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-82-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-83-      flags {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts:84:        is3DSecureRequired
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-85-      }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-86-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-87-      ...fundingOptions
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-88-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts:89:      paymentContingencies {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-90-        ...threeDomainSecure
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_signUpNewMember.gql.ts-91-        ...threeDSContingencyData
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-22-    $shareAddressWithDonatee: Boolean
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-23-    $shippingAddress: AddressInput
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts:24:    $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-25-    $token: String!
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-26-  ) {
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-48-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-49-      flags {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts:50:        is3DSecureRequired
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-51-      }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-52-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-53-      ...fundingOptions
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-54-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts:55:      paymentContingencies {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-56-        threeDomainSecure(experiences: $supportedThreeDsExperiences) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts-57-          status
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_lib_features_resolvers.ts-1046-  // TODO: After global utils are typed correct this type
+/private/tmp/paypal_assets/weasley_latest/extracted/src_lib_features_resolvers.ts-1047-  threeDsV1Experience: (): ThreeDsV1Data['experience'] =>
+/private/tmp/paypal_assets/weasley_latest/extracted/src_lib_features_resolvers.ts:1048:    getFactors('FEATURE_3DS_V1_EXPERIENCE')?.experience,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_lib_features_resolvers.ts-1049-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_lib_features_resolvers.ts-1050-  venmoOverlay: (): string => {
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-11- * @function responseContingencyHandlerFactory
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-12- * @returns {Function} Handler that checks for funding contingencies (e.g. Open Banking)
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:13: *   and payment contingencies (3DS), returning the appropriate result or redirecting.
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-14- */
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-15-const responseContingencyHandlerFactory = () => {
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-66-    }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-67-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:68:    const { flags, paymentContingencies } = data;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-69-    const {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-70-      threeDomainSecure: threeDS1ContingencyData,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-71-      threeDSContingencyData: threeDS2ContingencyData,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:72:    } = paymentContingencies || {};
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-73-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:74:    if (flags?.is3DSecureRequired) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:75:      // if 3DS 1.0 and 2.0 is not success then there was a failure
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-76-      // and we need to throw to trigger error handling
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-77-      if (
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-82-          status: threeDS1ContingencyData.status,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-83-        });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:84:        throw new Error('WEASLEY_3DS_1_ERROR');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-85-      } else if (
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-86-        threeDS2ContingencyData &&
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-90-          causeName: threeDS2ContingencyData.causeName,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-91-        });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:92:        throw new Error('WEASLEY_3DS_2_ERROR');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-93-      } else if (!threeDS1ContingencyData && !threeDS2ContingencyData) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-94-        // Edge case handling
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:95:        // is3DSSecureRequired is set to true but contingency data is missing
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-96-        logger.error('3ds_contingency_data_missing');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:97:        throw new Error('WEASLEY_3DS_ERROR');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-98-      }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-99-    }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-100-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-101-    return {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:102:      is3DSecureRequired: Boolean(flags?.is3DSecureRequired),
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-103-      threeDS1ContingencyData,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-104-      threeDS2ContingencyData,
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-318-    shippingOptionsSource: '',
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-319-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts:320:    // Data pertaining to 3DS (1.0)
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-321-    threeDS1ContingencyData: {},
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-322-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts:323:    // Data pertaining to 3DS 2.0
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-324-    threeDS2ContingencyData: {},
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-325-
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-407-  }),
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-408-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts:409:  setThreeDS1ContingencyData: action((state, payload) => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-410-    state.threeDS1ContingencyData = payload;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-411-  }),
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-412-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts:413:  setThreeDS2ContingencyData: action((state, payload) => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-414-    state.threeDS2ContingencyData = payload;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_api_api.ts-415-  }),
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-62-import { xpropsOnAuthorizeWithOpenerFallback } from '../util/xpropsOnAuthorizeWithOpenerFallback';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-63-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:64:export const preAuthorizePaymentPlan = (): ReturnType<
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-65-  typeof approvePayment
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-66-> => {
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-78-    })
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-79-    .then(response => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:80:      const { paymentContingencies } =
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-81-        response?.data?.preAuthorizePayment || {};
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-82-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:83:      if (paymentContingencies?.threeDSContingencyData) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-84-        const { api: apiActions, ui: uiActions } = appStore.getActions();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-85-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:86:        apiActions.setThreeDS2ContingencyData({
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:87:          ...paymentContingencies.threeDSContingencyData,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-88-        });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-89-        uiActions.toggleIsFormSubmitting(false);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:90:        uiActions.toggleIsThreeDS2Shown(true);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-91-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-92-        return;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-345-        }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-346-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:347:        const { buyer, cart, completedPaymentInfo, paymentContingencies } =
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-348-          approveOnboardPaymentMutationResponse?.data
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-349-            ?.approveGuestSignUpPayment || {};
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:350:        if (paymentContingencies?.threeDSContingencyData) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-351-          const { api: apiActions, ui: uiActions } = appStore.getActions();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-352-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:353:          apiActions.setThreeDS2ContingencyData({
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:354:            ...paymentContingencies.threeDSContingencyData,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-355-          });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-356-          uiActions.toggleIsFormSubmitting(false);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:357:          uiActions.toggleIsThreeDS2Shown(true);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-358-          return;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-359-        }
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts-105-  isShippingShown: false,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts-106-  isSubmitting: false,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts:107:  isThreeDS2Shown: false,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts-108-  isUpgradeErrorShown: false,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts-109-  isUpgradeInterstitialOpen: false,
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts-273-    state.isSepaInterstitialOpen = Boolean(payload);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts-274-  }),
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts:275:  toggleIsThreeDS2Shown: action((state, payload) => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts:276:    state.isThreeDS2Shown = Boolean(payload);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts-277-  }),
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_ui_ui.ts-278-  toggleIsUpgradeErrorShown: action((state, payload) => {
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-787- */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-788-export enum ApplepayMerchantCapabilities {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:789:  /** supports3DS */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:790:  Supports3Ds = 'supports3DS',
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-791-  /** supportsCredit */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-792-  SupportsCredit = 'supportsCredit',
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2609-  payees?: Maybe<Array<Maybe<Payee>>>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2610-  /** A Checkout session's payment contingencies */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:2611:  paymentContingencies?: Maybe<PaymentContingencies>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2612-  /** Provides the user's current SCA status and exemption reason, if any */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2613-  secureCustomerAuthenticationContext?: Maybe<SecureCustomerAuthenticationContext>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2817-  hideShipping?: Maybe<Scalars['Boolean']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2818-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:2819:   * A contingency for if the 3D Secure (3DS) flow is required.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2820-   * If required, it must be resolved before approving the payment.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2821-   * Average SLA response time - 1750ms
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2823-   * Required auth states: LOGGEDIN, REMEMBERED or IDENTIFIED
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2824-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:2825:  is3DSecureRequired?: Maybe<Scalars['Boolean']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2826-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-2827-   * Flag indicating whether PayPal Balance is disallowed as FI or not.
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-5835- */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-5836-export enum GooglePayAuthMethods {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:5837:  /** Cryptogram 3DS */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:5838:  Cryptogram_3Ds = 'CRYPTOGRAM_3DS',
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-5839-  /** Pan Only */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-5840-  PanOnly = 'PAN_ONLY'
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7411-   * If passed `preAuthorizationRequired`, it will collect Credit Card status from the issuer to check if its valid (Expired Card, Insufficient funds, etc).
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7412-   * If passed `cardCvvValue`, it will resolve cvv value for the currently selected card (primaryFundingOptionId).
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7413:   * If passed `card3DSResolve3DSCode`, it will resolve 3DS for the currently selected card (primaryFundingOptionId).
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7414-   * If passed `legalAgreements`, it will record user legal consent (User Agreement) data on Notice & Consent API.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7415-   *
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7520-   * Marks strongCustomerAuthenticationRequired payment contingency as completed, and removes the contingency from the Checkout Session.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7521-   * Note that a different contingency may be returned after clearing the strongCustomerAuthenticationRequired contingency,
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7522:   * so clients should still query for paymentContingencies that are supported.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7523-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7524-  completeStrongCustomerAuthentication?: Maybe<CheckoutSession>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7680-  resolveNeedPhoneContingency?: Maybe<CheckoutSession>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7681-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7682:   * Clear 3DS (2.0) contingency. This mutation can be consumed by any other client apps without
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7683-   * including any other checkout related business logic
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7684-   */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7724-  signUpNewMember?: Maybe<CheckoutSession>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7725-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7726:   * 3DS Authenticate endpoint through inbound Switch (switchpaymentsapiserv) used to handle 3DS at transaction time
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7727-   * URL: /v1/payment-networks/card-three-d-secure-authentications/${threeDsServerTransactionId}/authenticate
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7728-   * Purpose: This API is the last call in 3ds 2.0 resolution process
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7729:   * This API is called soon after cardinal calls (after OTP is entered by user) a return url on paypal app.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7730-   * After this call returns success application continue authorize checkout session. Upon failure errors needs to handle
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7731-   * at client side(for ex: Incase of xoonboardingnodeweb, error is show on billing page).
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7732-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7733:  threeDSAuthenticate?: Maybe<ThreeDsAuthenticateResponse>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7734-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7735:   * 3DS 2.0 FI service handle contingency during addCard:
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7736-   *   - Updates a confirmation resource for a given card confirmation respource
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7737:   *   - Updates a post-planning Checkout Session with the funding option ID that went through 3DS 2.0 authentication successfully
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7738-   * URL:
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7739-   *   - filifecycleserv: /v1/wallet/card-accounts/{card_account_id}/confirmations/{confirmation_id}/update
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7741-   * card-account.update-confirmation
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7742-   * Purpose:
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7743:   *   The FI API call is the last call in 3ds 2.0 resolution process, it is called soon after cardinal calls (after OTP is entered by user) a return url on paypal app
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7744-   *   After this call returns success we continue to call the PAPS API to update the funding options with checkout session, so that this FI will be avaiable for user to proceed checkout.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7745-   *   Upon failure we redirect user to checkout review page, or we show relevant error messaging on UI
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7746-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7747:  threeDSConfirmationWithUpdateFundingOption?: Maybe<CheckoutSession>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7748-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7749:   * 3DS lookup endpoint through inbound switch (switchpaymentsapiserv) used to handle 3DS at transaction time
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7750-   * URL: /v1/payment-networks/card-three-d-secure-authentications
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7751-   * Purpose: when Symphony throws 3ds 2.0 contingency upon planning call, we need to call this API to start the 3ds 2.0
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7752-   * resolution process. This is the first call to make, after Device Data Collection(DDC) is triggered in UI.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7753:   * In response of this API we get the urls needed for cardinal iframe to enter OTP.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7754-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7755:  threeDSLookUp?: Maybe<ThreeDsLookUpResponse>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7756-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7757:   * 3DS 2.0 FI service to handle contingency during addCard: Creates a confirmation resource for a given card
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7758-   * URL: /v1/wallet/card-accounts/{card_account_id}/confirmations
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7759-   * card-account.create-confirmation
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7760-   * Purpose: when fi throws 3ds 2.0 contingency upon addCard call, we need to call this API to start the 3ds 2.0
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7761-   * resolution process. This is the first call to make, after Device Data Collection(DDC) is triggered in UI.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7762:   * In response of this API we get the urls needed for cardinal iframe to enter OTP (response key step_up_url)
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7763-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7764-  threedsCreateConfirmation?: Maybe<ThreedsCreateConfirmationResponse>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7765-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7766:   * 3DS 2.0 FI service handle contingency during addCard: Updates a confirmation resource for a given card confirmation respource
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7767-   * URL: /v1/wallet/card-accounts/{card_account_id}/confirmations/{confirmation_id}/update
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7768-   * card-account.update-confirmation
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7769-   * Purpose: This API is the last call in 3ds 2.0 resolution process
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7770:   * This API is called soon after cardinal calls (after OTP is entered by user) a return url on paypal app
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7771-   * After this call returns success we continue to call create checkout session. Upon failure we redirect to hermes from xoon, or
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7772-   * we show relevant error messaging on hermes
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7773:   * @deprecated use threeDSConfirmationWithUpdateFundingOption instead
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7774-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7775-  threedsUpdateConfirmation?: Maybe<ThreedsUpdateConfirmationResponse>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7811-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7812-   * Update a post-planning Checkout Session with a funding option ID that was externally updated (eg. through an FI api or some other mutation that does not affect CheckoutSession)
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:7813:   * @deprecated use threeDSConfirmationWithUpdateFundingOption instead
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7814-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-7815-  updateCheckoutSessionFundingOptions?: Maybe<CheckoutSession>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-8170-export type MutationApproveMemberPaymentArgs = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-8171-  balancePreference?: InputMaybe<BalancePreference>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:8172:  card3DSResolve3DSCode?: InputMaybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-8173-  cardCvvValue?: InputMaybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-8174-  cryptocurrencyQuoteId?: InputMaybe<Scalars['String']>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-9718-  strongCustomerAuthenticationRequired?: Maybe<StrongCustomerAuthenticationRequiredContingency>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-9719-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:9720:   * A Checkout session's payment contingency for 3DS (2.0)
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-9721-   *
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-9722-   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-10816-   * in business logic of this API based on above two cases.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-10817-   *
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:10818:   * referenceId - Unique ID generated by this API. This is populated only when 3DS is required and request is not in transactional context.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:10819:   *               Only applicable for 3DS
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-10820-   * cardBin - first 9 digits of credit card - it returned as part of contingency data from FI.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-10821-   *   This parameter is optional for Switch api's.
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-10823-   * jwtOrgUnitId - JWT org unit ID returned from contingency data.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-10824-   * redirectUrl - url returned by ACS(Access Control Server) part of initial 3ds call
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:10825:   *   which needs to send it to cardinal before loading challenge page.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:10826:   * returnUrl - call back route on frontend app to which cardinal can return after OTP is submitted by user.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:10827:   * transactionId = The ID of the transaction that is associated with this 3D Secure authentication. Only applicable for 3DS
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-10828-   * paymentAuthenticationRequest - The encoded payment request generated by Centinel.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-10829-   * authenticationProvider - Payment Authentication provider
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-11389-/** Allowed statuses for resolveThreeDsContingency status */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-11390-export enum ResolveThreeDsContingencyStatus {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:11391:  /** 3DS resolution flow failed due to error or decline */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-11392-  Failure = 'FAILURE',
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:11393:  /** 3DS resolution flow was successful */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-11394-  Success = 'SUCCESS'
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-11395-}
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12563-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12564-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12565:/** Encapsulates all properties related to a ThreeDSLookUp. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12566-export type ThreeDsAuthenticateResponse = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12567:  __typename?: 'ThreeDSAuthenticateResponse';
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12568-  /** Unique transaction identifier assigned by the Access Control Server (ACS) to identify a single transaction. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12569-  accessControlServerTransactionId?: Maybe<Scalars['String']>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12577-   *   U: Unable to complete; no protection. A: Successful; merchant is protected.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12578-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12579:  authenticationThreeDSStatus?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12580-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12581-   * Indicates the type of authentication that was used to challenge the card holder.
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12620-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12621-  enrollmentStatus?: Maybe<EnrollmentStatusType>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12622:  /** Indicates liability of 3DS transaction is shifted to issuer. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12623-  liabilityShift?: Maybe<Scalars['Boolean']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12624-  /** Pares Status */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12635-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12636-  signatureVerificationStatus?: Maybe<SignatureVerificationStatus>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12637:  /** This flag is an indicator whether to throw 3DS contingency or not. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12638:  skipThreeDSEnforcement?: Maybe<Scalars['Boolean']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12639-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12640-   * This is the raw value received from the external source.
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12650-  threeDSSignatureStatus?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12651-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12652:   * Overall 3DS status of the transaction.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12653-   * Possible Enums values are
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12654:   *   "UNKNOWN": "The 3DS transaction status is unknown."
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12655:   *   "SUCCESS": "The 3DS transaction is approved or accepted."
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12656:   *   "DECLINE": "The 3DS transaction is declined by external entity or per internal business rules."
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12657:   *   "SYSTEM_ERROR": "The 3DS transaction is error due to external or internal system issues."
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12658:   *   "CHALLENGE_REQUIRED": "Indicates 3DS challenge required."
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12659-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12660-  threeDSStatus?: Maybe<Scalars['String']>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12693-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12694-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12695:/** Encapsulates all properties related to a ThreeDSContingencyContextData type */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12696-export type ThreeDsContingencyContextData = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12697:  __typename?: 'ThreeDSContingencyContextData';
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12698-  /** Payment Authentication provider (Ex: 'CARDINAL', 'PAYPAL', 'UNKNOWN') */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12699-  authenticationProvider?: Maybe<Scalars['String']>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12706-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12707-   * Cardinal commerce url to launch for device data collection from the client
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12708:   * (Ex: 'https://centinelapistag.cardinalcommerce.com/V1/Cruise/Collect')
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12709-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12710-  deviceDataCollectionUrl?: Maybe<GenericUrl>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12714-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12715-  jwtSpecification?: Maybe<ThreeDsJwtSpecification>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12716:  /** Reason for 3DS (2.0) contingency (Ex: 'PAYPAL_POLICY') */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12717-  reason?: Maybe<ThreedsContingencyReasonType>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12718-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12719:   * Unique ID for 3DS (2.0) transaction, each transaction will have a unique referenceId
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12720-   * generated by paymentsetupapiserv (Ex: '20200336306496587')
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12721-   */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12726-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12727-/**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12728: * Encapsulates all properties related to a ThreeDSJwtSpecification which
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12729- * include the issuer and validity algorithem & etc
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12730- */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12731-export type ThreeDsJwtSpecification = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12732:  __typename?: 'ThreeDSJwtSpecification';
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12733-  /** JWT validity duration (Ex: 'PT1H') */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12734-  jwtDuration: Scalars['String'];
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12741-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12742-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12743:/** Encapsulates all properties related to a ThreeDSLookUpResponse. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12744-export type ThreeDsLookUpResponse = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12745:  __typename?: 'ThreeDSLookUpResponse';
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12746-  /** Unique transaction identifier assigned by the Access Control Server (ACS) to identify a single transaction. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12747-  accessControlServerTransactionId?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12748-  /** Indicates the exemptions applied for the given transaction. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12749-  acquirerScaExemptionIndicators?: Maybe<Array<Maybe<Scalars['String']>>>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12750:  /** Clients embed access control server (ACS) URL in payload while redirecting to complete 3DS challenge with issuer. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12751-  acsURL?: Maybe<GenericUrl>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12752-  /** Provides additional information as to why the transaction status result has the specific value. */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12755-  authenticationProvider?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12756-  /** The outcome of the issuer's authentication. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12757:  authenticationThreeDSStatus?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12758-  /** The card financial instrument (FI) brand. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12759-  cardBrandProcessed?: Maybe<CardIssuerType>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12773-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12774-  enrollmentStatus?: Maybe<EnrollmentStatusType>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12775:  /** Indicates liability of 3DS transaction is shifted to issuer. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12776-  liabilityShift?: Maybe<Scalars['Boolean']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12777-  /** Pares Status */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12797-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12798-  threeDSEcommerceIndicator?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12799:  /** Overall 3DS status of the transaction */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12800-  threeDSStatus?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12801-  /** Universal cardholder presence indicator (e.g. whether UCAF is supported, whether it is populated, etc.). */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12822-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12823-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12824:/** Represents the data required for completing 3DS verification */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12825-export type ThreeDsParamsInput = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12826-  /** The type of the response param */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12830-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12831-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12832:/** Encapsulates all properties related to a ThreeDSPaymentCardData type */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12833-export type ThreeDsPaymentCardData = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12834:  __typename?: 'ThreeDSPaymentCardData';
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12835-  /** Name of the account owner */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12836-  accountOwnerName?: Maybe<PersonName>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12859-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12860-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12861:/** List of supported experiences for 3DS verification */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12862-export enum ThreeDsPaymentExperience {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12863-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12864:   * Hopfree 3DS experience
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12865:   * - The 3DS Pin is entered in an input field on the Paypal's Checkout Page
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12866-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12867-  Hopfree = 'HOPFREE',
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12868-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12869:   * 3DS within IFrame
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12870:   * - The 3DS Bank page is loaded in an iframe within Paypal's Checkout page
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12871-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12872-  Iframe = 'IFRAME',
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12873-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12874-   * Full-page redirect experience
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12875:   * - The User is redirected to 3DS Bank Page from Paypal's Checkout Page
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12876-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12877-  Redirect = 'REDIRECT'
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12878-}
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12879-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12880:/** Encapsulates everything related to request params provided by bank for completing 3DS verification */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12881-export type ThreeDsRequestParams = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12882:  __typename?: 'ThreeDSRequestParams';
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12883-  /** The type of the request param */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12884-  key?: Maybe<Scalars['String']>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12887-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12888-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12889:/** Encapsulates all properties related to a ThreeDSResolution type */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12890-export type ThreeDsResolution = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12891:  __typename?: 'ThreeDSResolution';
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12892-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12893:   * Details information in regards to current 3DS contingency which encapusates JWT & cardinal
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12894-   * related information
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12895-   */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12897-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12898-   * Details information in regards to current selected funding instrument for resolving
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12899:   * 3DS (2.0) contingency
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12900-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12901-  paymentCard?: Maybe<ThreeDsPaymentCardData>;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12914-  /** The encrypted id of the user's credit card */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12915-  encryptedId: Scalars['String'];
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12916:  /** The experience for the 3DS verfication (iframe/redirect/hopfree) */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12917-  experience?: Maybe<ThreeDsPaymentExperience>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12918-  /** The method that is used to redirect the card holder to third-party site for 3D secure confirmation (Ex: 'GET') */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12922-  /** The third-party URL to which to redirect the card holder to complete the 3D Secure authentication (Ex: 'https//www.example.com') */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12923-  redirectUrl?: Maybe<GenericUrl>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12924:  /** The parameters required to be passed to the bank page for completing 3DS verification */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12925-  requestParams?: Maybe<Array<Maybe<ThreeDsRequestParams>>>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12926-  /** The 3D Secure API call status */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12935-  /** Resolution contingency name (Ex: 'PAYER_ACTION_REQUIRED') */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12936-  name?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12937:  /** Actual 3DS (2.0) contingency resolution for the current selected funding instrument */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12938-  resolution?: Maybe<ThreeDsResolution>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12939-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12940-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12941:/** 3DS new switch inbound service: browser details for 3ds FI create-confirmation call */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12942-export type ThreedsBrowserDetailsInput = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12943-  /** Indicates browser color used during the transaction - UNKNOWN,1_BIT,4_BITS,8_BITS,15_BITS,16_BITS,24_BITS,32_BITS,48_BITS - getting it as Int and form internally */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12960-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12961-/**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12962: * An enumeration of confirmation methods in 3DS 2.0 stack.
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12963- * ONLINE_SECURE_AUTHENTICATION, ONE_RANDOM_CHARGE_CONFIRMATION, TWO_RANDOM_CHARGE_CONFIRMATION
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12964- */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12974-/** Types for threeDS contingency reason. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12975-export enum ThreedsContingencyReasonType {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12976:  /** DataOnly3DS */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:12977:  DataOnly_3Ds = 'DATA_ONLY_3DS',
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12978-  /** Merchant Requested */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-12979-  MerchantRequested = 'MERCHANT_REQUESTED',
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13003-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13004-/**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13005: * 3DS new switch inbound service: Creates a confirmation resource for a given card
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13006- * URL: /v1/wallet/card-accounts/{card_account_id}/confirmations
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13007- * card-account.create-confirmation
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13019-  /** The encoded payment request generated by Centinel. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13020-  payload?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13021:  /** Indicates whether online authentication is required or not. Only applicable for 3DS */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13022-  redirectUrl?: Maybe<GenericUrl>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13023:  /** Unique ID generated by this API. This is populated only when 3DS is required and request is not in transactional context. Only applicable for 3DS */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13024-  referenceId?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13025:  /** Over all 3DS Status - SUCCESS, FAILED */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13026-  status?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13027-  /** The fully qualified URL to redirect the Consumer to complete the Consumer Authentication transaction using the Cardinal Cruise API integration. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13028-  stepUpUrl?: Maybe<GenericUrl>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13029:  /** The ID of the transaction that is associated with this 3D Secure authentication. Only applicable for 3DS */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13030-  transactionId?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13031:  /** 3DS version 1.0/2.0. Only applicable for 3DS */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13032-  version?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13033-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13034-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13035:/** An enumeration of Product entry point in 3DS 2.0 stack. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13036-export enum ThreedsEntryPoint {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13037-  /** Alternate Payment - The transaction is initiated from Alternative Payment AliPay. */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13077-}
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13078-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13079:/** An enumeration of Product integration artifact in 3DS 2.0 stack. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13080-export enum ThreedsIntegrationArtifacts {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13081-  /** BT VZERO */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13093-}
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13094-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13095:/** An enumeration of paymentMode in 3DS 2.0 stack. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13096-export enum ThreedsPaymentDevice {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13097-  /** pass when the device is a Computer */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13105-}
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13106-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13107:/** An enumeration of Product Code in 3DS 2.0 stack. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13108-export enum ThreedsProductCode {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13109-  /** BA */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13121-}
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13122-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13123:/** An enumeration of Product feature in 3DS 2.0 stack. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13124-export enum ThreedsProductFeature {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13125-  /** Direct Credit Card (DCC / UCC) */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13133-}
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13134-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13135:/** An enumeration of Product flow in 3DS 2.0 stack. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13136-export enum ThreedsProductFlow {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13137-  /** BA Create - A buyer signing up for a billing agreement */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13161-}
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13162-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13163:/** 3DS new switch inbound service: sender context for 3ds FI create-confirmation call */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13164-export type ThreedsSenderContextInput = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13165-  /** Indicates Header Information of the browser used during the transaction */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13167-  /** Indicates channel of the device - SDK,BROWSER,3RI */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13168-  deviceChannel: Scalars['String'];
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13169:  /** Channel where 3DS is performed - MOBILE, COMPUTER, TABLET, UNKNOWN */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13170-  paymentMode: ThreedsPaymentDevice;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13171-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13172-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13173-/**
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13174: * 3DS new switch inbound service: Updates a confirmation resource for a given card confirmation respource
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13175- * URL: /v1/wallet/card-accounts/{card_account_id}/confirmations/{confirmation_id}/update
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13176- * card-account.update-confirmation
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13180-  /** FI confirmation method - ONLINE_SECURE_AUTHENTICATION ONE_RANDOM_CHARGE_CONFIRMATION TWO_RANDOM_CHARGE_CONFIRMATION */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13181-  confirmationMethod?: Maybe<ThreedsConfirmationMethod>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13182:  /** Over all 3DS Status */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13183-  status?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13184:  /** 3DS version 1.0/2.0. Only applicable for 3DS */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13185-  version?: Maybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13186-};
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13187-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13188:/** An enumeration of Product experience flow in 3DS 2.0 stack. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13189-export enum ThreedsUserExperienceFlow {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13190-  /** Full Page - The buyer interacts with PayPal by opening PayPal.com directly on browser */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13200-}
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13201-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13202:/** An enumeration of Product api in 3DS 2.0 stack. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13203-export enum Threedsapi {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13204-  /** Billing V1 */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13819-/** Three DS LookUp payload */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13820-export type ThreedsLookUpPayload = {
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13821:  /** Indicates how long the cardholder has maintained an account with the 3DS Requestor (typically the merchant) in days. This information helps assess the cardholder’s relationship history and is used for risk evaluation during authentication. This is pertinent information for a client. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13822-  accountAgeIndicator?: InputMaybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13823-  /** Specifies how the partner-specific merchant account is managed. The value can be one of the following LINKED_HYBRID, STANDALONE_HYBRID or PARTNER_MANAGED. */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13839-  /** email address */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13840-  email?: InputMaybe<Scalars['String']>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13841:  /** encrypted card number that needs to be passed to ACE which is returned in 3DS contingency from post of checkoutsession */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13842-  encryptedCardNumber: Scalars['String'];
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13843-  /** expiration month */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13861-  /** The tags representing the processing preferences. */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13862-  tags?: InputMaybe<Array<InputMaybe<TagType>>>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13863:  /** Reason for 3DS contingency */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13864-  threeDSContingencyReason?: InputMaybe<ThreedsContingencyReasonType>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13865:  /** Source for 3DS contingency */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13866-  threeDSContingencySource?: InputMaybe<ThreedsContingencySourceType>;
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13867:  /** reference ID for the 3DS of the Card */
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13868-  threeDSReferenceId: Scalars['String'];
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13869-  /** Unbranded Payment Indicator */
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13935-export type FundingOptionsFragment = { __typename?: 'CheckoutSession', fundingOptions?: Array<{ __typename?: 'FundingOption', allPlans?: Array<{ __typename?: 'Plan', fundingSources?: Array<{ __typename?: 'FundingSource', fundingInstrument?: { __typename?: 'FundingInstrument', id?: string | null } | null, amount?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyValue?: string | null } | null } | null> | null, fundingContingencies: Array<{ __typename?: 'ConfirmCreditCardCvvContingency' } | { __typename?: 'OpenBankingContingency', encryptedId: string, contingencyReasons?: Array<string | null> | null, contingencyType?: OpenBankingContingencyType | null } | { __typename?: 'PaycodeContingency' } | { __typename?: 'SepaMandateAcceptenceNeededContingency' } | { __typename?: 'ThreeDomainSecureResolutionContingency' } | null> } | null> | null, fundingInstrument: { __typename?: 'FundingInstrument', id?: string | null, lastDigits?: string | null, name?: string | null, nameDescription?: string | null, type?: FundingOptionType | null } } | null> | null };
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13936-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13937:export type ThreeDsContingencyDataFragment = { __typename?: 'PaymentContingencies', threeDSContingencyData?: { __typename?: 'ThreeDomainSecureResolutionContingency', name?: string | null, causeName: string, resolution?: { __typename?: 'ThreeDSResolution', type?: string | null, resolutionName: string, paymentCard?: { __typename?: 'ThreeDSPaymentCardData', expireYear?: string | null, expireMonth?: string | null, currencyCode?: string | null, cardProductClass?: FundingInstrumentSubType | null, id?: string | null, encryptedNumber: string, type: CardIssuerType, number: string, bankIdentificationNumber?: string | null, billingAddress?: { __typename?: 'CheckoutBillingAddress', line1?: string | null, line2?: string | null, city?: string | null, state?: string | null, country?: string | null, postalCode?: string | null } | null } | null, contingencyContext?: { __typename?: 'ThreeDSContingencyContextData', authenticationProvider?: string | null, cardBrandProcessed?: CardIssuerType | null, reason?: ThreedsContingencyReasonType | null, referenceId: string, source?: ThreedsContingencySourceType | null, deviceDataCollectionUrl?: { __typename?: 'GenericURL', href?: string | null } | null, jwtSpecification?: { __typename?: 'ThreeDSJwtSpecification', jwtDuration: string, jwtIssuer: string, jwtOrgUnitId: string, type?: string | null } | null } | null } | null } | null };
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13938-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13939:export type ThreeDomainSecureFragment = { __typename?: 'PaymentContingencies', threeDomainSecure?: { __typename?: 'ThreeDomainSecureContingency', status?: ApiCallStatus | null, method?: HttpMethod | null, parameter?: string | null, experience?: ThreeDsPaymentExperience | null, redirectUrl?: { __typename?: 'GenericURL', href?: string | null } | null, requestParams?: Array<{ __typename?: 'ThreeDSRequestParams', key?: string | null, value?: string | null } | null> | null } | null };
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13940-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13941-export type ApproveOnboardPaymentMutationMutationVariables = Exact<{
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13947-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13948-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13949:export type ApproveOnboardPaymentMutationMutation = { __typename?: 'Mutation', attemptSetStickyFi?: { __typename?: 'CheckoutSession', buyer?: { __typename?: 'User', userId?: string | null } | null } | null, approveGuestSignUpPayment?: { __typename?: 'CheckoutSession', buyer?: { __typename?: 'User', userId?: string | null, email?: { __typename?: 'Email', stringValue?: string | null } | null, name?: { __typename?: 'PersonName', fullName?: string | null } | null } | null, fundingOptions?: Array<{ __typename?: 'FundingOption', fundingInstrument: { __typename?: 'FundingInstrument', id?: string | null, lastDigits?: string | null, name?: string | null, nameDescription?: string | null, type?: FundingOptionType | null } } | null> | null, merchant: { __typename?: 'Merchant', name?: string | null, preferences?: { __typename?: 'MerchantPreferences', autoReturnToMerchant?: boolean | null, enablePaymentDataTransfer?: boolean | null, returnUrl?: string | null } | null }, shippingAddresses?: Array<{ __typename?: 'CheckoutShippingAddress', fullAddress?: string | null, name?: { __typename?: 'PersonName', fullName?: string | null } | null } | null> | null, paymentContingencies?: { __typename?: 'PaymentContingencies', threeDomainSecure?: { __typename?: 'ThreeDomainSecureContingency', status?: ApiCallStatus | null, method?: HttpMethod | null, parameter?: string | null, experience?: ThreeDsPaymentExperience | null, redirectUrl?: { __typename?: 'GenericURL', href?: string | null } | null, requestParams?: Array<{ __typename?: 'ThreeDSRequestParams', key?: string | null, value?: string | null } | null> | null } | null, threeDSContingencyData?: { __typename?: 'ThreeDomainSecureResolutionContingency', name?: string | null, causeName: string, resolution?: { __typename?: 'ThreeDSResolution', type?: string | null, resolutionName: string, paymentCard?: { __typename?: 'ThreeDSPaymentCardData', expireYear?: string | null, expireMonth?: string | null, currencyCode?: string | null, cardProductClass?: FundingInstrumentSubType | null, id?: string | null, encryptedNumber: string, type: CardIssuerType, number: string, bankIdentificationNumber?: string | null, billingAddress?: { __typename?: 'CheckoutBillingAddress', line1?: string | null, line2?: string | null, city?: string | null, state?: string | null, country?: string | null, postalCode?: string | null } | null } | null, contingencyContext?: { __typename?: 'ThreeDSContingencyContextData', authenticationProvider?: string | null, cardBrandProcessed?: CardIssuerType | null, reason?: ThreedsContingencyReasonType | null, referenceId: string, source?: ThreedsContingencySourceType | null, deviceDataCollectionUrl?: { __typename?: 'GenericURL', href?: string | null } | null, jwtSpecification?: { __typename?: 'ThreeDSJwtSpecification', jwtDuration: string, jwtIssuer: string, jwtOrgUnitId: string, type?: string | null } | null } | null } | null } | null } | null, cart?: { __typename?: 'Cart', paymentId?: string | null, intent?: CartIntent | null, returnUrl?: { __typename?: 'GenericURL', href?: string | null, pathname?: string | null } | null, cancelUrl?: { __typename?: 'GenericURL', href?: string | null, pathname?: string | null } | null, items?: Array<{ __typename?: 'CartItem', quantity?: number | null, name?: string | null, sku?: string | null, unitPrice?: { __typename?: 'Amount', currencyValue?: string | null, currencyFormat?: string | null } | null, itemOptionSelections?: Array<{ __typename?: 'ItemOptionSelection', name: string, description: string } | null> | null } | null> | null, amounts?: { __typename?: 'CartAmounts', subtotal?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, tax?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, shipping?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, insurance?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, handlingFee?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null, total?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyFormatSymbolISOCurrency?: string | null, currencyValue?: string | null } | null, discount?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyFormat?: string | null, currencyValue?: string | null } | null } | null } | null, completedPaymentInfo?: { __typename?: 'CompletedPaymentInfo', transactionId?: string | null, transactionState?: TransactionState | null, receiptId?: string | null, softDescriptor?: string | null, postbackData?: any | null } | null } | null };
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13950-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13951-export type ClearRealTimeBalanceContingencyMutationVariables = Exact<{
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13997-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-13998-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:13999:export type CreateOnboardingPaymentPlanMutationMutation = { __typename?: 'Mutation', createOnboardingPaymentPlan?: { __typename?: 'CheckoutSession', flags?: { __typename?: 'CheckoutSessionFlags', is3DSecureRequired?: boolean | null } | null, paymentContingencies?: { __typename?: 'PaymentContingencies', threeDomainSecure?: { __typename?: 'ThreeDomainSecureContingency', status?: ApiCallStatus | null, method?: HttpMethod | null, parameter?: string | null, experience?: ThreeDsPaymentExperience | null, redirectUrl?: { __typename?: 'GenericURL', href?: string | null } | null, requestParams?: Array<{ __typename?: 'ThreeDSRequestParams', key?: string | null, value?: string | null } | null> | null } | null, threeDSContingencyData?: { __typename?: 'ThreeDomainSecureResolutionContingency', name?: string | null, causeName: string, resolution?: { __typename?: 'ThreeDSResolution', type?: string | null, resolutionName: string, paymentCard?: { __typename?: 'ThreeDSPaymentCardData', expireYear?: string | null, expireMonth?: string | null, currencyCode?: string | null, cardProductClass?: FundingInstrumentSubType | null, id?: string | null, encryptedNumber: string, type: CardIssuerType, number: string, bankIdentificationNumber?: string | null, billingAddress?: { __typename?: 'CheckoutBillingAddress', line1?: string | null, line2?: string | null, city?: string | null, state?: string | null, country?: string | null, postalCode?: string | null } | null } | null, contingencyContext?: { __typename?: 'ThreeDSContingencyContextData', authenticationProvider?: string | null, cardBrandProcessed?: CardIssuerType | null, reason?: ThreedsContingencyReasonType | null, referenceId: string, source?: ThreedsContingencySourceType | null, deviceDataCollectionUrl?: { __typename?: 'GenericURL', href?: string | null } | null, jwtSpecification?: { __typename?: 'ThreeDSJwtSpecification', jwtDuration: string, jwtIssuer: string, jwtOrgUnitId: string, type?: string | null } | null } | null } | null } | null } | null, buyer?: { __typename?: 'User', userId?: string | null, auth?: { __typename?: 'Auth', accessToken?: string | null } | null } | null, fundingOptions?: Array<{ __typename?: 'FundingOption', allPlans?: Array<{ __typename?: 'Plan', fundingSources?: Array<{ __typename?: 'FundingSource', fundingInstrument?: { __typename?: 'FundingInstrument', id?: string | null } | null, amount?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyValue?: string | null } | null } | null> | null, fundingContingencies: Array<{ __typename?: 'ConfirmCreditCardCvvContingency' } | { __typename?: 'OpenBankingContingency', encryptedId: string, contingencyReasons?: Array<string | null> | null, contingencyType?: OpenBankingContingencyType | null } | { __typename?: 'PaycodeContingency' } | { __typename?: 'SepaMandateAcceptenceNeededContingency' } | { __typename?: 'ThreeDomainSecureResolutionContingency' } | null> } | null> | null, fundingInstrument: { __typename?: 'FundingInstrument', id?: string | null, lastDigits?: string | null, name?: string | null, nameDescription?: string | null, type?: FundingOptionType | null } } | null> | null } | null };
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14000-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14001-export type OnboardGuestMutationMutationVariables = Exact<{
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14017-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14018-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:14019:export type OnboardGuestMutationMutation = { __typename?: 'Mutation', onboardAccount?: { __typename?: 'CheckoutSession', buyer?: { __typename?: 'User', userId?: string | null, auth?: { __typename?: 'Auth', accessToken?: string | null } | null } | null, flags?: { __typename?: 'CheckoutSessionFlags', is3DSecureRequired?: boolean | null } | null, paymentContingencies?: { __typename?: 'PaymentContingencies', threeDomainSecure?: { __typename?: 'ThreeDomainSecureContingency', status?: ApiCallStatus | null, method?: HttpMethod | null, parameter?: string | null, experience?: ThreeDsPaymentExperience | null, redirectUrl?: { __typename?: 'GenericURL', href?: string | null } | null, requestParams?: Array<{ __typename?: 'ThreeDSRequestParams', key?: string | null, value?: string | null } | null> | null } | null, threeDSContingencyData?: { __typename?: 'ThreeDomainSecureResolutionContingency', name?: string | null, causeName: string, resolution?: { __typename?: 'ThreeDSResolution', type?: string | null, resolutionName: string, paymentCard?: { __typename?: 'ThreeDSPaymentCardData', expireYear?: string | null, expireMonth?: string | null, currencyCode?: string | null, cardProductClass?: FundingInstrumentSubType | null, id?: string | null, encryptedNumber: string, type: CardIssuerType, number: string, bankIdentificationNumber?: string | null, billingAddress?: { __typename?: 'CheckoutBillingAddress', line1?: string | null, line2?: string | null, city?: string | null, state?: string | null, country?: string | null, postalCode?: string | null } | null } | null, contingencyContext?: { __typename?: 'ThreeDSContingencyContextData', authenticationProvider?: string | null, cardBrandProcessed?: CardIssuerType | null, reason?: ThreedsContingencyReasonType | null, referenceId: string, source?: ThreedsContingencySourceType | null, deviceDataCollectionUrl?: { __typename?: 'GenericURL', href?: string | null } | null, jwtSpecification?: { __typename?: 'ThreeDSJwtSpecification', jwtDuration: string, jwtIssuer: string, jwtOrgUnitId: string, type?: string | null } | null } | null } | null } | null } | null, fundingOptions?: Array<{ __typename?: 'FundingOption', allPlans?: Array<{ __typename?: 'Plan', fundingSources?: Array<{ __typename?: 'FundingSource', fundingInstrument?: { __typename?: 'FundingInstrument', id?: string | null } | null, amount?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyValue?: string | null } | null } | null> | null, fundingContingencies: Array<{ __typename?: 'ConfirmCreditCardCvvContingency' } | { __typename?: 'OpenBankingContingency', encryptedId: string, contingencyReasons?: Array<string | null> | null, contingencyType?: OpenBankingContingencyType | null } | { __typename?: 'PaycodeContingency' } | { __typename?: 'SepaMandateAcceptenceNeededContingency' } | { __typename?: 'ThreeDomainSecureResolutionContingency' } | null> } | null> | null, fundingInstrument: { __typename?: 'FundingInstrument', id?: string | null, lastDigits?: string | null, name?: string | null, nameDescription?: string | null, type?: FundingOptionType | null } } | null> | null } | null };
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14020-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14021-export type PreAuthorizePaymentMutationMutationVariables = Exact<{
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14025-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14026-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:14027:export type PreAuthorizePaymentMutationMutation = { __typename?: 'Mutation', preAuthorizePayment?: { __typename?: 'CheckoutSession', declinedInstruments?: Array<{ __typename?: 'DeclinedInstrument', id?: string | null, name?: string | null, normalizedProcessorResponse?: string | null } | null> | null, paymentContingencies?: { __typename?: 'PaymentContingencies', threeDomainSecure?: { __typename?: 'ThreeDomainSecureContingency', status?: ApiCallStatus | null, method?: HttpMethod | null, parameter?: string | null, experience?: ThreeDsPaymentExperience | null, redirectUrl?: { __typename?: 'GenericURL', href?: string | null } | null, requestParams?: Array<{ __typename?: 'ThreeDSRequestParams', key?: string | null, value?: string | null } | null> | null } | null, threeDSContingencyData?: { __typename?: 'ThreeDomainSecureResolutionContingency', name?: string | null, causeName: string, resolution?: { __typename?: 'ThreeDSResolution', type?: string | null, resolutionName: string, paymentCard?: { __typename?: 'ThreeDSPaymentCardData', expireYear?: string | null, expireMonth?: string | null, currencyCode?: string | null, cardProductClass?: FundingInstrumentSubType | null, id?: string | null, encryptedNumber: string, type: CardIssuerType, number: string, bankIdentificationNumber?: string | null, billingAddress?: { __typename?: 'CheckoutBillingAddress', line1?: string | null, line2?: string | null, city?: string | null, state?: string | null, country?: string | null, postalCode?: string | null } | null } | null, contingencyContext?: { __typename?: 'ThreeDSContingencyContextData', authenticationProvider?: string | null, cardBrandProcessed?: CardIssuerType | null, reason?: ThreedsContingencyReasonType | null, referenceId: string, source?: ThreedsContingencySourceType | null, deviceDataCollectionUrl?: { __typename?: 'GenericURL', href?: string | null } | null, jwtSpecification?: { __typename?: 'ThreeDSJwtSpecification', jwtDuration: string, jwtIssuer: string, jwtOrgUnitId: string, type?: string | null } | null } | null } | null } | null } | null } | null };
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14028-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14029-export type SignUpNewMemberMutationMutationVariables = Exact<{
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14064-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14065-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx:14066:export type SignUpNewMemberMutationMutation = { __typename?: 'Mutation', onboardAccount?: { __typename?: 'CheckoutSession', flags?: { __typename?: 'CheckoutSessionFlags', is3DSecureRequired?: boolean | null } | null, paymentContingencies?: { __typename?: 'PaymentContingencies', threeDomainSecure?: { __typename?: 'ThreeDomainSecureContingency', status?: ApiCallStatus | null, method?: HttpMethod | null, parameter?: string | null, experience?: ThreeDsPaymentExperience | null, redirectUrl?: { __typename?: 'GenericURL', href?: string | null } | null, requestParams?: Array<{ __typename?: 'ThreeDSRequestParams', key?: string | null, value?: string | null } | null> | null } | null, threeDSContingencyData?: { __typename?: 'ThreeDomainSecureResolutionContingency', name?: string | null, causeName: string, resolution?: { __typename?: 'ThreeDSResolution', type?: string | null, resolutionName: string, paymentCard?: { __typename?: 'ThreeDSPaymentCardData', expireYear?: string | null, expireMonth?: string | null, currencyCode?: string | null, cardProductClass?: FundingInstrumentSubType | null, id?: string | null, encryptedNumber: string, type: CardIssuerType, number: string, bankIdentificationNumber?: string | null, billingAddress?: { __typename?: 'CheckoutBillingAddress', line1?: string | null, line2?: string | null, city?: string | null, state?: string | null, country?: string | null, postalCode?: string | null } | null } | null, contingencyContext?: { __typename?: 'ThreeDSContingencyContextData', authenticationProvider?: string | null, cardBrandProcessed?: CardIssuerType | null, reason?: ThreedsContingencyReasonType | null, referenceId: string, source?: ThreedsContingencySourceType | null, deviceDataCollectionUrl?: { __typename?: 'GenericURL', href?: string | null } | null, jwtSpecification?: { __typename?: 'ThreeDSJwtSpecification', jwtDuration: string, jwtIssuer: string, jwtOrgUnitId: string, type?: string | null } | null } | null } | null } | null } | null, buyer?: { __typename?: 'User', userId?: string | null, auth?: { __typename?: 'Auth', accessToken?: string | null } | null } | null, fundingOptions?: Array<{ __typename?: 'FundingOption', allPlans?: Array<{ __typename?: 'Plan', fundingSources?: Array<{ __typename?: 'FundingSource', fundingInstrument?: { __typename?: 'FundingInstrument', id?: string | null } | null, amount?: { __typename?: 'Amount', currencyCode?: SupportedCountryCurrencies | null, currencyValue?: string | null } | null } | null> | null, fundingContingencies: Array<{ __typename?: 'ConfirmCreditCardCvvContingency' } | { __typename?: 'OpenBankingContingency', encryptedId: string, contingencyReasons?: Array<string | null> | null, contingencyType?: OpenBankingContingencyType | null } | { __typename?: 'PaycodeContingency' } | { __typename?: 'SepaMandateAcceptenceNeededContingency' } | { __typename?: 'ThreeDomainSecureResolutionContingency' } | null> } | null> | null, fundingInstrument: { __typename?: 'FundingInstrument', id?: string | null, lastDigits?: string | null, name?: string | null, nameDescription?: string | null, type?: FundingOptionType | null } } | null> | null } | null };
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14067-
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx-14068-export type GetPasskeyEnrollmentContextQueryVariables = Exact<{

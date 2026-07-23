@@ -1,0 +1,51 @@
+{
+  "var/headless_cookie_cache.json": {
+    "exists": true,
+    "size": 56779,
+    "sha256": "549de38b80002f35ad5a346b53d92c88c82f4057e95a6c59aa29e3f5c7d7b9bb",
+    "top_keys": [
+      "entries",
+      "updated_at",
+      "version"
+    ]
+  },
+  "var/roxy_ios_fingerprint_current.json": {
+    "exists": true,
+    "size": 4115,
+    "sha256": "8284c1452196a21fd7196bb0125ca946c384619af66cf2eaeb945c6e4c9fbbb5",
+    "top_keys": [
+      "browser_profile",
+      "screen",
+      "viewport",
+      "device_fingerprint"
+    ]
+  },
+  "cache/paypal_signup_content_manifest_last.json": {
+    "exists": true,
+    "size": 306,
+    "sha256": "af7c1c2a502d7fd6b5a2ab0be90bbd5d6a2ba29076ab99c4d996da6f41ec32c4",
+    "top_keys": [
+      "manifest_url",
+      "manifest_key",
+      "content_hash",
+      "content_identifier"
+    ]
+  },
+  "cache/proxy_geo_cache.json": {
+    "exists": true,
+    "size": 323,
+    "sha256": "8bc0c2debe3282082097fe045cc387e960715f4e97888bc7baa8d70328997312",
+    "top_keys": [
+      "exit:6ec032cca08fa6be4a5654a3cc3ce9414fb5eec601e30990d8b2de0b03c66354"
+    ]
+  },
+  "cache/smsbower_numbers.json": {
+    "exists": true,
+    "size": 322,
+    "sha256": "34ee857bcfa9c87b79e8561f0660113cb80365ae824ee4af59395072c0b2fa7a",
+    "top_keys": [
+      "activations",
+      "provider_failures"
+    ]
+  }
+}

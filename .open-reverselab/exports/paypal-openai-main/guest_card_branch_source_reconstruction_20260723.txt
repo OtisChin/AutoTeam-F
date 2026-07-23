@@ -1,0 +1,679 @@
+# Guest card branch reconstruction
+## files containing guest/card approve/onboard
+/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_errorHandlers.js
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_getMutationName.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_onboardGuest.gql.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_onboardAction.js
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formOperations.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_phoneConfirmationUtils.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_initialDataQuery.graphql
+/private/tmp/paypal_assets/weasley_latest/extracted/src_lib_features_resolvers.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_lib_utils_miscUtils.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_store_models_form_form.ts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_types.ts
+
+## generated schema approveGuestPaymentWithCreditCard
+7328-  /**
+7329-   * The approveGuestPaymentWithApplePayToken mutation will approve an Apple Pay tokenized guest payment transaction.
+7330-   *
+7331-   * Requires an applePayPaymentInput param as an ApplePayPaymentInput
+7332-   * Requires a token param (EC, PAY, or BA token) as a String
+7333-   *
+7334-   * Returns a CheckoutSession type.
+7335-   *
+7336-   * Required auth states: ANONYMOUS
+7337-   */
+7338-  approveGuestPaymentWithApplePayToken?: Maybe<CheckoutSession>;
+7339-  /**
+7340:   * The approveGuestPaymentWithCreditCard mutation will approve a guest payment transaction with credit card.
+7341-   *
+7342-   * If passed an phone number, it will use that phone number for the transaction. Otherwise it will
+7343-   * use the one in mayfly checkout session.
+7344-   *
+7345-   * If passed an first name, it will use that name for the transaction. Otherwise it will
+7346-   * use the one in mayfly checkout session.
+7347-   *
+7348-   * If passed an last name, it will use that name for the transaction. Otherwise it will
+7349-   * use the one in mayfly checkout session.
+7350-   *
+7351-   * If passed an email, it will use that email for the transaction. Otherwise it will
+7352-   * use the one in mayfly checkout session.
+--
+7371-   * Optionally accepts an installmentTerm
+7372-   * Optionally accepts an identityDocument
+7373-   * Optionally accepts a paymentToken as a String
+7374-   * Optionally accepts a feeReferenceId as a String
+7375-   * Optionally accepts an integrityToken (HS256-signed JWT) used to validate request integrity
+7376-   *
+7377-   * Returns a CheckoutSession type.
+7378-   *
+7379-   * Average SLA response time - 13000ms
+7380-   *
+7381-   * Required auth states: ANONYMOUS
+7382-   */
+7383:  approveGuestPaymentWithCreditCard?: Maybe<CheckoutSession>;
+7384-  /**
+7385-   * The approveGuestSignUpPayment mutation will approve a payment transaction for a signup/guest flow
+7386-   *
+7387-   * Returns a CheckoutSession type.
+7388-   *
+7389-   * Average SLA response time - 500ms
+7390-   *
+7391-   * Required auth states: LOGGEDIN, IDENTIFIED
+7392-   */
+7393-  approveGuestSignUpPayment?: Maybe<CheckoutSession>;
+7394-  /**
+7395-   * The approveMemberPayment mutation will approve a payment for PayPal members.
+--
+8133-
+8134-/** Mutation root type.  See https://graphql.org/learn/execution/#root-fields-resolvers */
+8135-export type MutationApproveGuestPaymentWithApplePayTokenArgs = {
+8136-  applePayPaymentInput: ApplePayPaymentInput;
+8137-  feeReferenceId?: InputMaybe<Scalars['String']>;
+8138-  installmentTerm?: InputMaybe<Scalars['Int']>;
+8139-  isSntSupported?: InputMaybe<Scalars['Boolean']>;
+8140-  token: Scalars['String'];
+8141-};
+8142-
+8143-
+8144-/** Mutation root type.  See https://graphql.org/learn/execution/#root-fields-resolvers */
+8145:export type MutationApproveGuestPaymentWithCreditCardArgs = {
+8146-  billingAddress?: InputMaybe<AddressInput>;
+8147-  card?: InputMaybe<CardInput>;
+8148-  currencyConversionType?: InputMaybe<CheckoutCurrencyConversionType>;
+8149-  email?: InputMaybe<Scalars['String']>;
+8150-  feeReferenceId?: InputMaybe<Scalars['String']>;
+8151-  firstName?: InputMaybe<Scalars['String']>;
+8152-  identityDocument?: InputMaybe<IdentityDocumentInput>;
+8153-  installmentTerm?: InputMaybe<Scalars['Int']>;
+8154-  integrityToken?: InputMaybe<Scalars['String']>;
+8155-  lastName?: InputMaybe<Scalars['String']>;
+8156-  paymentToken?: InputMaybe<Scalars['String']>;
+8157-  phoneNumber?: InputMaybe<Scalars['String']>;
+
+## onboard guest mutation doc
+     1	// External Libraries
+     2	import gql from 'graphql-tag';
+     3	
+     4	//Internal Modules
+     5	import {
+     6	  FUNDING_OPTIONS_FRAGMENT,
+     7	  THREE_DS_2_CONTINGENCY_FRAGMENT,
+     8	} from '../fragments';
+     9	
+    10	export const ONBOARD_GUEST_MUTATION = gql`
+    11	  mutation OnboardGuestMutation(
+    12	    $bank: BankAccountInput
+    13	    $billingAddress: AddressInput
+    14	    $card: CardInput
+    15	    $country: CountryCodes
+    16	    $currencyConversionType: CheckoutCurrencyConversionType
+    17	    $dateOfBirth: DateOfBirth
+    18	    $email: String
+    19	    $firstName: String!
+    20	    $lastName: String!
+    21	    $phone: PhoneInput
+    22	    $shareAddressWithDonatee: Boolean
+    23	    $shippingAddress: AddressInput
+    24	    $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
+    25	    $token: String!
+    26	  ) {
+    27	    onboardAccount: onboardGuest(
+    28	      bank: $bank
+    29	      billingAddress: $billingAddress
+    30	      card: $card
+    31	      country: $country
+    32	      currencyConversionType: $currencyConversionType
+    33	      dateOfBirth: $dateOfBirth
+    34	      email: $email
+    35	      firstName: $firstName
+    36	      lastName: $lastName
+    37	      phone: $phone
+    38	      shareAddressWithDonatee: $shareAddressWithDonatee
+    39	      shippingAddress: $shippingAddress
+    40	      token: $token
+    41	    ) {
+    42	      buyer {
+    43	        auth {
+    44	          accessToken
+    45	        }
+    46	        userId
+    47	      }
+    48	
+    49	      flags {
+    50	        is3DSecureRequired
+    51	      }
+    52	
+    53	      ...fundingOptions
+    54	
+    55	      paymentContingencies {
+    56	        threeDomainSecure(experiences: $supportedThreeDsExperiences) {
+    57	          status
+    58	          redirectUrl {
+    59	            href
+    60	          }
+    61	          method
+    62	          parameter
+    63	          experience
+    64	          requestParams {
+    65	            key
+    66	            value
+    67	          }
+    68	        }
+    69	        ...threeDSContingencyData
+    70	      }
+    71	    }
+    72	  }
+    73	  ${FUNDING_OPTIONS_FRAGMENT}
+    74	  ${THREE_DS_2_CONTINGENCY_FRAGMENT}
+    75	`;
+
+## getMutationName and onboardAction
+     1	enum MutationName {
+     2	  onboardGuestMutation = 'onboardGuest',
+     3	  signUpNewMemberMutation = 'signUpNewMember',
+     4	  createMemberAccountMutation = 'createMemberAccount',
+     5	}
+     6	
+     7	export const getMutationName = (
+     8	  isSignup: boolean,
+     9	  isPayLater: boolean,
+    10	): MutationName => {
+    11	  /**
+    12	   * DTOPPOR-1480 - When using BNPL the user is required to create an account.
+    13	   * The createMemberAccount mutation is used as it does not required a payment
+    14	   * method. The payment method is added after the user is redirected to the
+    15	   * member experience.
+    16	   */
+    17	  if (isPayLater) {
+    18	    return MutationName.createMemberAccountMutation;
+    19	  }
+    20	
+    21	  return isSignup
+    22	    ? MutationName.signUpNewMemberMutation
+    23	    : MutationName.onboardGuestMutation;
+    24	};
+     1	// Internal modules
+     2	import { appStore } from '@/store';
+     3	import {
+     4	  CI,
+     5	  features,
+     6	  getLocale,
+     7	  parseGqlError,
+     8	  redirectToMember,
+     9	} from '@/lib';
+    10	import { apolloMutation } from '@/lib/apollo';
+    11	import { logger } from '@/lib/logger';
+    12	import {
+    13	  logGuestToMemberTransitionToFpti,
+    14	  logOnboardSuccessToFpti,
+    15	} from '../fpti';
+    16	import { threeDSHandler } from '../threeDSHandler';
+    17	import { serializeFormData } from '../utils';
+    18	import { onboardErrorHandler } from './errorHandlers';
+    19	
+    20	import {
+    21	  CREATE_MEMBER_ACCOUNT_MUTATION,
+    22	  ONBOARD_GUEST_MUTATION,
+    23	  SIGN_UP_NEW_MEMBER_MUTATION,
+    24	} from './mutations';
+    25	import {
+    26	  onAfterOnboardAccountCreationHandler,
+    27	  onAfterOnboardAccountSuccessHandler,
+    28	} from './responseHandlers';
+    29	import { MULTI_PRODUCT_SUPPORTED } from '@/lib/constants';
+    30	import { clearAccessToken } from '../../../lib/globals';
+    31	import { getMutationName } from './getMutationName';
+    32	import { logAtomicsTransactionSuccessfulAndLeaveCheckout } from '../../../lib/utils/redirects/redirects';
+    33	
+    34	/**
+    35	 * @function getFraudNetSyncData - Get the FraudNet data from the form
+    36	 * @returns {string | null}
+    37	 */
+    38	export const getFraudNetSyncData = () => {
+    39	  try {
+    40	    // Flush fnSync data before form submission
+    41	    if (window.PAYPAL?.syncData?.flushData) {
+    42	      window.PAYPAL.syncData.flushData();
+    43	    }
+    44	    const fnSyncDataInput = document.querySelector(
+    45	      'input[name="fn_sync_data"]',
+    46	    );
+    47	
+    48	    return fnSyncDataInput && fnSyncDataInput.value
+    49	      ? fnSyncDataInput.value
+    50	      : null;
+    51	  } catch (error) {
+    52	    const message = error instanceof Error ? error.message : String(error);
+    53	    logger.warn('get_fraudnet_sync_data_error', {
+    54	      message,
+    55	    });
+    56	    return null;
+    57	  }
+    58	};
+    59	
+    60	const onboardMutations = {
+    61	  createMemberAccount: CREATE_MEMBER_ACCOUNT_MUTATION,
+    62	  onboardGuest: ONBOARD_GUEST_MUTATION,
+    63	  signUpNewMember: SIGN_UP_NEW_MEMBER_MUTATION,
+    64	};
+    65	
+    66	/**
+    67	 * @function onboardAction
+    68	 * @param {object} data
+    69	 * @returns {promise}
+    70	 */
+    71	const onboardAction = data => {
+    72	  const {
+    73	    form: formState,
+    74	    ui: { fiType },
+    75	  } = appStore.getState();
+    76	  const { value: onboardOption } = formState.onboardOption;
+    77	  const country = getLocale().country;
+    78	  const isPOMAEligible = features.isActive('isPOMAEligible');
+    79	  const isPasswordlessForcedSignup = features.isActive(
+    80	    'passwordlessForcedSignup',
+    81	  );
+    82	  const isPOMAFlow = isPOMAEligible || isPasswordlessForcedSignup;
+    83	  const isSignup = onboardOption === 'signup';
+    84	  const accountType = isPOMAFlow && isSignup ? 'poma' : onboardOption;
+    85	  const isPayLater = fiType === 'bnpl';
+    86	  const isMultiProductSupported = MULTI_PRODUCT_SUPPORTED.includes(country);
+    87	
+    88	  const mutationName = getMutationName(isSignup, isPayLater);
+    89	
+    90	  const fptiPerfLogStart = Date.now();
+    91	
+    92	  logger.info('onboard_account_init', {
+    93	    accountType,
+    94	    fiType,
+    95	    mutationName,
+    96	  });
+    97	
+    98	  // We can clear access token for the all transactions irrespective of
+    99	  // guest/signup flows since user is anonymous anyway whether user wants
+   100	  // to create an account/ continue as a guest user.
+   101	  clearAccessToken();
+   102	
+   103	  const mutation = onboardMutations[mutationName];
+   104	
+   105	  const variables = serializeFormData(data);
+   106	
+   107	  // Set context for signUpNewMember mutations to include fn_sync_data
+   108	  const context = {};
+   109	  if (mutationName === 'signUpNewMember') {
+   110	    const fraudNetSyncData = getFraudNetSyncData();
+   111	    if (fraudNetSyncData) {
+   112	      context.fraudNetSyncData = fraudNetSyncData;
+   113	    }
+   114	  }
+   115	
+   116	  const mutationPromise = apolloMutation({
+   117	    mutation,
+   118	    variables,
+   119	    ...(Object.keys(context).length > 0 && { context }),
+   120	  })
+   121	    .then(onAfterOnboardAccountCreationHandler)
+   122	    .then(data => {
+   123	      logOnboardSuccessToFpti(onboardOption, fptiPerfLogStart);
+   124	      return data;
+   125	    });
+   126	
+   127	  if (isPayLater) {
+   128	    const fptiOptions = {
+   129	      payment_intent: 'pay_in_four',
+   130	      reason: 'signup',
+   131	      status: 'success',
+   132	    };
+   133	
+   134	    return mutationPromise
+   135	      .then(() => {
+   136	        logGuestToMemberTransitionToFpti(fptiOptions);
+   137	        logAtomicsTransactionSuccessfulAndLeaveCheckout();
+   138	        // Remove modxo_redirect_reason from the redirect url to avoid redirects to
+   139	        // legacy app, and instead run the ModXO eligibility checks at xorouter level
+   140	        redirectToMember(
+   141	          {
+   142	            fromSignup: true,
+   143	            fundingSource: 'paylater',
+   144	            multiProductSupported: isMultiProductSupported,
+   145	          },
+   146	          'info',
+   147	          ['modxo_redirect_reason'],
+   148	        );
+   149	      })
+   150	      .catch(err => {
+   151	        const { message } = parseGqlError(err);
+   152	
+   153	        fptiOptions.status = 'failure';
+   154	        fptiOptions.int_error_code = message;
+   155	        fptiOptions.int_error_desc = 'Error during guest-to-member transition';
+   156	        logGuestToMemberTransitionToFpti(fptiOptions);
+   157	        onboardErrorHandler(err);
+   158	        appStore.getActions().ui.toggleIsFormSubmitting(false);
+   159	      });
+   160	  }
+   161	
+   162	  return mutationPromise
+   163	    .then(onAfterOnboardAccountSuccessHandler)
+   164	    .then(threeDSHandler)
+   165	    .then(() => {
+   166	      // Mark CI as success
+   167	      CI.ok();
+   168	    })
+   169	    .catch(error => {
+   170	      onboardErrorHandler(error);
+   171	      appStore.getActions().ui.toggleIsFormSubmitting(false);
+   172	    });
+   173	};
+   174	
+   175	export { onboardAction };
+
+## form api guest excerpts
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-113- * returns response data from the api downstreams.
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-114- */
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-115-const responseHandlerFactory = namespace => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-116-  return response => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-117-    const { api: apiState, form: formState } = appStore.getState();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:118:    const { value: onboardOption } = formState.onboardOption;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:119:    const isGuest = onboardOption === 'guest';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-120-    const responseData = response?.data?.[namespace];
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-121-    const { accessToken } = responseData?.buyer.auth || {};
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-122-    const { api: apiActions } = appStore.getActions();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-123-    const fundingOption = responseData.fundingOptions?.[0];
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-124-    const plan = fundingOption?.allPlans?.[0];
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-138-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-139-    // Save access token in store. Not dropping the login cookie until
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-140-    // after we check for errors because if we throw an error we'll drop
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-141-    // the cookie there
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-142-    if (accessToken) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js:143:      const type = isGuest ? 'guest' : 'signup';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-144-      setAccessToken({ type, value: accessToken });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-145-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-146-      const { cartAmount, merchantId } = apiState;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-147-      if (isFunction(window.PAYPAL?.analytics?.instance?.recordClick)) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js-148-        const data = ACCOUNT_CREATION_PAYLOAD({
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-185-const serializeFormData = (data: FormState): GenericObjectType => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-186-  const { ui: uiState, form: formState } = appStore.getState();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-187-  const {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-188-    api: { installmentData },
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-189-  } = appStore.getState();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:190:  const { value: onboardOption } = data.onboardOption;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-191-  const isPayLater = uiState.fiType === 'bnpl';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:192:  const isSignup = onboardOption === 'signup';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-193-  const isPOMAEligible = features.isActive('isPOMAEligible');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-194-  const isPasswordlessForcedSignup = features.isActive(
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-195-    'passwordlessForcedSignup',
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-196-  );
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-197-  const isStreamlinePasswordlessForcedSignup =
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-288-    card: { securityCode: cardCvv },
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-289-    currencyConversionType,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-290-  } = getCardPayload(data) as CardPayload;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-291-  const { shippingAddress } = serializeAddressFields(data);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-292-  const token = getToken();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:293:  const { onboardOption } = data;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-294-  // @ts-expect-error Type FilteredFormState
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:295:  const isGuest = onboardOption === 'guest';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-296-  const userType = isGuest ? 'GUEST' : 'SIGN_UP';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-297-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-298-  return {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-299-    ...(cupOtpEncryptedCardLoginAccountNumber && {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-300-      encryptedCardLoginAccountNumber: cupOtpEncryptedCardLoginAccountNumber,
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-383-      if (!uiState.cardFieldsToDisplay[key] && formStateField) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-384-        if (filteredFormState[formStateField]) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-385-          delete filteredFormState[formStateField];
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-386-        }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-387-      } else if (uiState.cardFieldsToDisplay[key] && formStateField) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:388:        // DOB is displayed with card fields even for guest when card type
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-389-        // is Carte Aurore, Cofinoga ou privilege, 4 etoiles
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-390-        filteredFormState[formStateField] = formState[formStateField];
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-391-      }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-392-    });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-393-  }
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-410-  // Feature that gets Elmo treatment to render Primary residential address
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-411-  const isPrimaryResidentialAddressRequested = features.isActive(
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-412-    'hasPrimaryResidentialAddress',
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-413-  );
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-414-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:415:  const onboardOption = formState.onboardOption.value;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:416:  const isSignup = onboardOption === 'signup';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-417-  const isPayLater = fiType === 'bnpl';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-418-  const isPOMAFlow =
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-419-    (isPOMAEligible || isPasswordlessForcedSignup) &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-420-    isSignup &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-421-    !isPayLater &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-422-    !isStreamlinePasswordlessForcedSignup &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-423-    !isStreamlinePasswordlessOptionalSignup;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:424:  if (isOptionalSignup && onboardOption === 'guest') {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:425:    // if optional signup and onboard option selected is guest
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:426:    filteredFormState.guestAgreeToTerms = formState.guestAgreeToTerms;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-427-  } else if (isSignup && !isPOMAFlow) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-428-    // forced sign up or onboard option is signup, but not POMA
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-429-    if (
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-430-      !isStreamlinePasswordlessForcedSignup &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-431-      !isStreamlinePasswordlessOptionalSignup
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-482-    }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-483-  }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-484-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-485-  // Pay later always creates a new account, so residentialAddress should be included
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-486-  // in the payload when hasPrimaryResidentialAddress is active — same as signup.
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:487:  // onboardOption.value is not 'signup' in BNPL sessions, so isPayLater is used
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-488-  // as an equivalent gate alongside isSignup.
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-489-  if (!isPrimaryResidentialAddressRequested || (!isSignup && !isPayLater)) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-490-    delete filteredFormState.residentialAddress;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-491-  }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-492-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-493-  /**
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-494-   * FEATURE_SIGNUP_RIGHT_OF_WITHDRAW controls the Right of Withdrawal.
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-495-   * If in TREATMENT_2 we show the checkbox.
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-496-   * It's just for signups.
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-497-   */
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:498:  if (containsRightOfWithdrawalCheckbox(onboardOption)) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-499-    filteredFormState.rightOfWithdrawal = formState.rightOfWithdrawal;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-500-  }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-501-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-502-  const hasSepaMandate = isSepaMandateCountry();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-503-  const isBankFiType = uiState.fiType === 'bank';
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-603-      isMemberBenefitsTrueGuestsInterstitialReject,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-604-      fiType,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-605-    },
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-606-  } = appStore.getState();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-607-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:608:  const onboardOptionValue = formState.onboardOption.value;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-609-  const filteredFormState = filterFormState(formState);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-610-  const { formErrors } = validateForm(filteredFormState);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-611-  const fieldsWithErrors = Object.entries(formErrors);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-612-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-613-  const isBNPL = features.get('bnplExperience') && fiType === 'bnpl';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-614-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-615-  if (
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-616-    (!fieldsWithErrors || !isMemberBenefitsTrueGuestsInterstitialOpen) &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-617-    !isMemberBenefitsTrueGuestsInterstitialReject &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts:618:    onboardOptionValue === 'guest' &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-619-    shouldShowOptionalUpsellHalfSheet &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-620-    !isUserExists &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-621-    (isPomaButtonFlow || isStreamlineOptionalExperience) &&
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-622-    !isBNPL
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts-623-  ) {
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-125-      isBillingAgreement,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-126-      token,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-127-    },
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-128-  });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-129-  if (response?.errors?.length) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:130:    logger.error('approve_guest_sign_up_payment_failure', {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-131-      errors: response.errors,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-132-    });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-133-    throw new Error(response.errors.join(','));
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-134-  }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-135-
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-140-const isGuestUpgradeableToMemberQuery = async (
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-141-  token: string,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-142-): Promise<ApolloQueryResult<GuestUpgradeableToMemberQuery>> => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-143-  const { form: formState } = appStore.getState();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-144-  const filteredFormState = filterFormState(formState);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:145:  const guestUpgradeToMemberRequiredVariables =
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-146-    // @ts-expect-error - TODO: type filterFormState
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-147-    serializeFormDataForGuestUpgradeEligible(filteredFormState);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-148-  const response = await apolloClient.query<
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-149-    GuestUpgradeableToMemberQuery,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-150-    GuestUpgradeableToMemberQueryVariables
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-151-  >({
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-152-    query: GUEST_UPGRADEABLE_TO_MEMBER_QUERY,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-153-    // @ts-expect-error
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-154-    variables: {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-155-      token,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:156:      ...guestUpgradeToMemberRequiredVariables,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-157-    },
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-158-  });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-159-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-160-  return response;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-161-};
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-190-  ] as PaymentPromises;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-191-  const isPasswordlessUpgrade = features.isActive('isPasswordlessUpgrade');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-192-  const fptiFlowName = getFptiFlowName({
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-193-    clientFeatures: features.config,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-194-  });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:195:  const { value: onboardOption } = appStore.getState().form.onboardOption;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-196-  const { country, locale } = getLocale();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-197-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-198-  logUserInteractionTime(fptiFlowName, EVENTS.USER_INTERACTION);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-199-  startLogPerformanceTime(EVENTS.PROCESS_APPROVE);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-200-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-201-  setProgressiveSpinnerType();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-202-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-203-  if (isWpsGuestUpgradeEligible && !isPOMAEligible) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:204:    logger.info('batch_guestUpgradeableToMember_query');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-205-    promises[1] = isGuestUpgradeableToMemberQuery(token);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-206-  }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-207-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:208:  const isGuest = onboardOption === 'guest';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-209-  const isWps = features.isActive('isWps');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-210-  const isPayNow = isUserActionCommit();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-211-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-212-  // Passkey enrollment related flags
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-213-  const userState = appStore.getState().user;
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-233-    isGuest,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-234-    isPasskeyAvailable,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-235-    isPayNow,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-236-    isWps,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-237-    locale,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:238:    onboardOption,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-239-  });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-240-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-241-  if (isPasskeyAvailable && !isWps && !isGuest && isPayNow) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-242-    LazyPasskeyEnrollmentPage.preload();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-243-    // This just marks the eligibility to call the elmo
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-316-  // instead of many times and log / skip?
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-317-  return Promise.all(promises)
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-318-    .then(
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-319-      ([
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-320-        approveOnboardPaymentMutationResponse,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:321:        guestUpgradeableToMemberResponse,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-322-        // This value is not used as we have a .then in the above block to
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-323-        // handle getPasskeyEnrollmentContext promise resolve and reject
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-324-        // We just want to wait for this promise to return as well so that
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-325-        // there is no race condition between passkey context creation and
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-326-        // approveOnboardPayment call
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-360-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-361-        const returnUrl = cart?.returnUrl?.href;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-362-        if (!returnUrl) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-363-          logger.warn('approve_payment_return_url_missing');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-364-        }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:365:        const { value: onboardOption } = appStore.getState().form.onboardOption;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-366-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-367-        // For the Next generation subscriptions flows, we need to redirect users to
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-368-        // billingNodeWeb app in order to activate the subscription. The billing app
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-369-        // will handle redirecting users back to the merchant.
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-370-        // @NOTE the order here is _IMPORTANT_
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-371-        if (isBillingTypeSubscriptionV1()) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-372-          logAtomicsTransactionSuccessfulAndLeaveCheckout();
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:373:          redirectToBilling(onboardOption);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-374-          logger.metric('GUEST_SIGNUP.FLOW_END');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-375-          return;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-376-        }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-377-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-378-        if (isFunction(window.xprops?.onAuthorize)) {
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-436-         * Logging out for POMA because the access token dropped during passive
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-437-         * login has an 8 hour expiration, so we want to remove all cookies
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-438-         * except refresh token, which hermes does RT to AT exchange and gets
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-439-         * a limited AccessToken
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-440-         */
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:441:        const isGuest = onboardOption === 'guest';
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-442-        const hasReturnUrl = Boolean(returnUrl);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-443-        const isPOMAEligible = features.isActive('isPOMAEligible');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-444-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-445-        const isPasswordlessOptionalSignup = features.isActive(
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-446-          'passwordlessOptionalSignup',
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-487-              isWps,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-488-            });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-489-            return redirectToMerchantOnSuccess(returnUrl);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-490-          }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-491-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:492:          // At this point, the onboardOption is signup
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-493-          return pomaLogout().then(() => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-494-            // Redirect to merchant page
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-495-            logger.info('attempting_redirect_to_merchant_after_poma_logout', {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-496-              hasReturnUrl,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-497-            });
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-510-            uiActions.toggleIsFormSubmitting(false);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-511-            uiActions.toggleIsWPSDonePageOpen(true);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-512-            return;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-513-          }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-514-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:515:          // At this point, the onboardOption is signup
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-516-          return pomaLogout().then(() => {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-517-            // Redirect to merchant page
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-518-            logger.info('redirect_to_receipt_after_poma_logout', {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-519-              hasReturnUrl,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-520-              isPasswordlessFlow,
+--
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-525-            return;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-526-          });
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-527-        }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-528-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-529-        /**
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:530:         * Checking the returned backend boolean for an eligible guest upgrade
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-531-         * for WPS flow
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-532-         */
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-533-        if (isWpsGuestUpgradeEligible) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-534-          if (
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:535:            guestUpgradeableToMemberResponse?.data?.isGuestUpgradeableToMember
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-536-          ) {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:537:            logger.info('guestUpgradeableToMember_response_present');
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-538-            uiActions.toggleIsFormSubmitting(false);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-539-
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-540-            isPasswordlessUpgrade
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-541-              ? uiActions.toggleIsPasswordlessUpgradeOpen(true)
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-542-              : uiActions.toggleIsUpgradeInterstitialOpen(true);
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-543-            return;
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-544-          }
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-545-          logger.info(
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:546:            'guestUpgradeableToMember_response_not_present_or_false',
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-547-            {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-548-              isGuestUpgradeableToMember:
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts:549:                guestUpgradeableToMemberResponse?.data
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-550-                  ?.isGuestUpgradeableToMember,
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-551-            },
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-552-          );
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-553-          logger.fpti('wps_upgrade_interstitial_not_shown_backend_error', {
+/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts-554-            state_name: 'Create_account',

@@ -381,3 +381,42 @@ def test_paypal_proxy_injects_session_for_711_region_only_proxy():
     assert "-sessTime-180-sessAuto-1" in proxy
     assert "sid=" in sid_label
 
+
+
+def test_generate_paypal_trial_allows_promo_when_initial_stripe_has_no_paypal(monkeypatch):
+    calls = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            calls.append(("chatgpt_post", url, kwargs.get("json")))
+            if url.endswith("/checkout/update"):
+                return _JsonResponse({"success": True, "checkout_session": {}})
+            return _JsonResponse({
+                "checkout_session_id": "cs_test",
+                "processor_entity": "openai_llc",
+                "public_key": "pk_test",
+            })
+
+    init_payloads = iter([
+        {"total_summary": {"due": 2120}, "payment_method_types": ["card"], "ordered_payment_method_types": ["card"]},
+        {"total_summary": {"due": 0}, "payment_method_types": ["card", "paypal"], "ordered_payment_method_types": ["card", "paypal"]},
+    ])
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
+    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: {
+        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
+        "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
+        "stripe_redirect_url": "",
+        "ba_token": "BA-LATEPAYPAL",
+        "link_source": "stripe_express_billing_agreement",
+    })
+
+    result = us_paypal.generate_paypal_trial(
+        us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
+    )
+
+    assert any(kind == "chatgpt_post" and url.endswith("/checkout/update") for kind, url, _payload in calls)
+    assert result["fields"]["ba_token"] == "BA-LATEPAYPAL"

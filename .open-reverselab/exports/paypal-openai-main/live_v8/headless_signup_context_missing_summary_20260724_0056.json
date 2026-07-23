@@ -1,0 +1,464 @@
+{
+  "status": 403,
+  "missing": [
+    "fraudnet_p1",
+    "fraudnet_p2",
+    "fraudnet_w",
+    "identity_di_log",
+    "tealeaf",
+    "datadog_rum"
+  ],
+  "required_missing": [
+    "fraudnet_p1",
+    "fraudnet_p2",
+    "fraudnet_w",
+    "identity_di_log",
+    "datadog_rum"
+  ],
+  "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden",
+  "signup_context_page": {
+    "blocked_by_datadome": true,
+    "challenge_by_html": true,
+    "challenge_by_url": false,
+    "challenge_markers": [
+      "datadome captcha",
+      "geo.ddc.paypal.com",
+      "/captcha/",
+      "datadome",
+      "captcha"
+    ],
+    "datadome_cookie_len": 128,
+    "datadome_cookie_present": true,
+    "host": "www.paypal.com",
+    "html_length": 9633,
+    "html_present": true,
+    "normal_markers": [
+      "checkoutweb/signup"
+    ],
+    "ok": false,
+    "path": "/checkoutweb/signup",
+    "reason": "signup_context_datadome_challenge",
+    "stale_challenge_status_with_normal_doc": false,
+    "status": 403,
+    "status_ok": false,
+    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden",
+    "url_ok": true
+  },
+  "signup_context_page_after_runtime": {},
+  "signup_context_bootstrap": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "blocked_by_datadome": true,
+        "datadome_present": true,
+        "reason": "signup_context_datadome_challenge",
+        "signup_context_ready": false,
+        "status": 403,
+        "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden"
+      },
+      {
+        "attempt": 2,
+        "blocked_by_datadome": true,
+        "datadome_present": true,
+        "reason": "signup_context_datadome_challenge",
+        "signup_context_ready": false,
+        "status": 403,
+        "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden"
+      },
+      {
+        "attempt": 3,
+        "blocked_by_datadome": true,
+        "datadome_present": true,
+        "reason": "signup_context_datadome_challenge",
+        "signup_context_ready": false,
+        "status": 403,
+        "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden"
+      }
+    ],
+    "final": {
+      "blocked_by_datadome": true,
+      "challenge_by_html": true,
+      "challenge_by_url": false,
+      "challenge_markers": [
+        "datadome captcha",
+        "geo.ddc.paypal.com",
+        "/captcha/",
+        "datadome",
+        "captcha"
+      ],
+      "datadome_cookie_len": 128,
+      "datadome_cookie_present": true,
+      "host": "www.paypal.com",
+      "html_length": 9633,
+      "html_present": true,
+      "normal_markers": [
+        "checkoutweb/signup"
+      ],
+      "ok": false,
+      "path": "/checkoutweb/signup",
+      "reason": "signup_context_datadome_challenge",
+      "stale_challenge_status_with_normal_doc": false,
+      "status": 403,
+      "status_ok": false,
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden",
+      "url_ok": true
+    },
+    "ok": false
+  },
+  "counts": {
+    "datadog_rum": 0,
+    "ddbm": 0,
+    "fraudnet_p1": 0,
+    "fraudnet_p2": 0,
+    "fraudnet_p3": 0,
+    "fraudnet_pa": 0,
+    "fraudnet_w": 0,
+    "identity_di_log": 0,
+    "observability": 5,
+    "tealeaf": 0
+  },
+  "response_counts": {
+    "datadog_rum": 0,
+    "ddbm": 0,
+    "fraudnet_p1": 0,
+    "fraudnet_p2": 0,
+    "fraudnet_p3": 0,
+    "fraudnet_pa": 0,
+    "fraudnet_w": 0,
+    "identity_di_log": 0,
+    "observability": 0,
+    "tealeaf": 0
+  },
+  "observed": [
+    "observability"
+  ],
+  "observed_order": [
+    "observability"
+  ],
+  "request_failures_tail": [
+    {
+      "family": "observability",
+      "method": "GET",
+      "url": "https://t.paypal.com/ts?event_name=block_page_loaded&tenant_name=paypal&component=datadome&client_event_key=f6f43daf-ca9d-66fb-643d-0027541ef2a6&event_source=web&event_time=2026-07-23T16%3A52%3A02.055Z&e=im&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    },
+    {
+      "family": "observability",
+      "method": "GET",
+      "url": "https://t.paypal.com/ts?event_name=block_page_closed&tenant_name=paypal&component=datadome&client_event_key=f6f43daf-ca9d-66fb-643d-0027541ef2a6&event_source=web&event_time=2026-07-23T16%3A52%3A06.304Z&e=fa&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    },
+    {
+      "family": "observability",
+      "method": "GET",
+      "url": "https://t.paypal.com/ts?event_name=block_page_loaded&tenant_name=paypal&component=datadome&client_event_key=ee681b6d-8e9b-7cc2-6909-6294f1a4eb9b&event_source=web&event_time=2026-07-23T16%3A52%3A06.815Z&e=im&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    },
+    {
+      "family": "observability",
+      "method": "GET",
+      "url": "https://t.paypal.com/ts?event_name=block_page_closed&tenant_name=paypal&component=datadome&client_event_key=ee681b6d-8e9b-7cc2-6909-6294f1a4eb9b&event_source=web&event_time=2026-07-23T16%3A52%3A10.815Z&e=fa&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    },
+    {
+      "family": "observability",
+      "method": "GET",
+      "url": "https://t.paypal.com/ts?event_name=block_page_loaded&tenant_name=paypal&component=datadome&client_event_key=05ced63a-b44f-30b4-9774-19e268b55cad&event_source=web&event_time=2026-07-23T16%3A52%3A11.316Z&e=im&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    }
+  ],
+  "blocked_requests_tail": [],
+  "allowed_requests_tail": [
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "document",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "script",
+      "url": "https://ct.ddc.paypal.com/c.js"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "document",
+      "url": "https://geo.ddc.paypal.com/captcha/?initialCid=AHrlqAAAAAMA3dfY-Q5DhnEAZ5etWg%3D%3D&hash=C992DCAFEE25FA95C6492C61EB3328&cid=MOr7S32Bw90VvC4SmxnOLfDQJeMdBcdPOMuFuI4A1XQwkcuhinGhJGukmXX7yuEJOhUnRBBzdP6rzQgx6YqpltH4SYKZIOGoujcEI2~_wyM0KigrNBOkAGfdjY10juhR&t=bv&referer=https%3A%2F%2Fwww.paypal.com%2Fcheckoutweb%2Fsignup%3Fssrt%3D1784825507980%26ul%3D1%26modxo_redirect_reason%3Dguest_user%26locale.x%3Den_US%26country.x%3DUS%26ba_token%3DBA-<redacted>%26token%3DEC-<redacted>%26rcache%3D1%26cookieBannerVariant%3Dhidden&s=56002&e=bf3db5f89e80dd4ea3d5d6a8137b628c2054ddf1a467e15f4272de7de2bbfd17bb067d74271381faec0d84ca8b28574a&dm=cd"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "stylesheet",
+      "url": "https://static.ddc.paypal.com/captcha/assets/tpl/6dc485c0c428c35b53577b146dc6f9179f55ef9ad41b327a2a179998839364bf/index.css"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "stylesheet",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/font-face.css"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "image",
+      "url": "https://static.ddc.paypal.com/captcha/assets/set/aee2fc3bd423a34715b12e1d1b7ef957bafebe73/logo.png?update_cache=-515559395223433683"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "font",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/PayPalOpen-Medium.woff2"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "font",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/PayPalOpen-Regular.woff2"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "family": "observability",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "fetch",
+      "url": "https://t.paypal.com/ts?event_name=block_page_loaded&tenant_name=paypal&component=datadome&client_event_key=f6f43daf-ca9d-66fb-643d-0027541ef2a6&event_source=web&event_time=2026-07-23T16%3A52%3A02.055Z&e=im&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "document",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "family": "observability",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "fetch",
+      "url": "https://t.paypal.com/ts?event_name=block_page_closed&tenant_name=paypal&component=datadome&client_event_key=f6f43daf-ca9d-66fb-643d-0027541ef2a6&event_source=web&event_time=2026-07-23T16%3A52%3A06.304Z&e=fa&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "script",
+      "url": "https://ct.ddc.paypal.com/c.js"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "document",
+      "url": "https://geo.ddc.paypal.com/captcha/?initialCid=AHrlqAAAAAMA3dfY-Q5DhnEAZ5etWg%3D%3D&hash=C992DCAFEE25FA95C6492C61EB3328&cid=sCNU4OUg~HBHDN9426O6_ukxN2EDWzYb52ww0ZS53cIxb8mohwdOemuBLmaMj0Ee_q8jEXoMTcYG5jV7v6~dpWN~GByWLOCXHYMQTRjpnOjrb39D7E02wVu~dnlcLKpY&t=bv&referer=https%3A%2F%2Fwww.paypal.com%2Fcheckoutweb%2Fsignup%3Fssrt%3D1784825507980%26ul%3D1%26modxo_redirect_reason%3Dguest_user%26locale.x%3Den_US%26country.x%3DUS%26ba_token%3DBA-<redacted>%26token%3DEC-<redacted>%26rcache%3D1%26cookieBannerVariant%3Dhidden&s=56002&e=4be9c07be1e5e5e33e4f2a4380f1d137182c989c737c3f8469e67bb8a587350426f9a30838d2c73efb0a40924f5ebcc4&dm=cd"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "stylesheet",
+      "url": "https://static.ddc.paypal.com/captcha/assets/tpl/6dc485c0c428c35b53577b146dc6f9179f55ef9ad41b327a2a179998839364bf/index.css"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "stylesheet",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/font-face.css"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "image",
+      "url": "https://static.ddc.paypal.com/captcha/assets/set/aee2fc3bd423a34715b12e1d1b7ef957bafebe73/logo.png?update_cache=7555716785305237239"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "font",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/PayPalOpen-Medium.woff2"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "font",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/PayPalOpen-Regular.woff2"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "family": "observability",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "fetch",
+      "url": "https://t.paypal.com/ts?event_name=block_page_loaded&tenant_name=paypal&component=datadome&client_event_key=ee681b6d-8e9b-7cc2-6909-6294f1a4eb9b&event_source=web&event_time=2026-07-23T16%3A52%3A06.815Z&e=im&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "document",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=<redacted>&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=<redacted>&token=<redacted>&rcache=1&cookieBannerVariant=hidden"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "family": "observability",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "fetch",
+      "url": "https://t.paypal.com/ts?event_name=block_page_closed&tenant_name=paypal&component=datadome&client_event_key=ee681b6d-8e9b-7cc2-6909-6294f1a4eb9b&event_source=web&event_time=2026-07-23T16%3A52%3A10.815Z&e=fa&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "script",
+      "url": "https://ct.ddc.paypal.com/c.js"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "document",
+      "url": "https://geo.ddc.paypal.com/captcha/?initialCid=AHrlqAAAAAMA3dfY-Q5DhnEAZ5etWg%3D%3D&hash=C992DCAFEE25FA95C6492C61EB3328&cid=co12xedGNMrVbD0POjWMtYOWT~4bnq9Vurde13XiccBSA_Hvebj1MxbfC~23kB~MhtfeskiolS9R~1AwVLWAj953B9WfEEbCgPIVt52pVYjx2vS3RFuvrKU7UKlQCuBU&t=bv&referer=https%3A%2F%2Fwww.paypal.com%2Fcheckoutweb%2Fsignup%3Fssrt%3D1784825507980%26ul%3D1%26modxo_redirect_reason%3Dguest_user%26locale.x%3Den_US%26country.x%3DUS%26ba_token%3DBA-<redacted>%26token%3DEC-<redacted>%26rcache%3D1%26cookieBannerVariant%3Dhidden&s=56002&e=bb256a4643224edcf0299581c7e4cb6489ca3ba9743e61ba50e18fe6a011fd802d5de691859c70c98612250dcb66fdb9&dm=cd"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "stylesheet",
+      "url": "https://static.ddc.paypal.com/captcha/assets/tpl/6dc485c0c428c35b53577b146dc6f9179f55ef9ad41b327a2a179998839364bf/index.css"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "stylesheet",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/font-face.css"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "image",
+      "url": "https://static.ddc.paypal.com/captcha/assets/set/aee2fc3bd423a34715b12e1d1b7ef957bafebe73/logo.png?update_cache=4641325867591758018"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "font",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/PayPalOpen-Medium.woff2"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "font",
+      "url": "https://static.ddc.paypal.com/common/fonts/PayPal%20Open/PayPalOpen-Regular.woff2"
+    },
+    {
+      "decision": {
+        "action": "allow",
+        "family": "observability",
+        "reason": "datadome_browser_open_network"
+      },
+      "event": "route",
+      "method": "GET",
+      "resource_type": "fetch",
+      "url": "https://t.paypal.com/ts?event_name=block_page_loaded&tenant_name=paypal&component=datadome&client_event_key=05ced63a-b44f-30b4-9774-19e268b55cad&event_source=web&event_time=2026-07-23T16%3A52%3A11.316Z&e=im&product=edge_bot_protection&space_key=SKSYDP&c_prefs=T%3D0%2CP%3D0%2CF%3D0%2Ctype%3Ddefault_no"
+    }
+  ],
+  "responses_tail": []
+}

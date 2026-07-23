@@ -1,0 +1,107 @@
+--- webpack:///./generated/graphql.tsx
+3175: /** CollectedConsent input represents the user agreement consent collected during signup. */
+3176: export type CollectedConsent = {
+3178: consentName?: InputMaybe<CollectedConsentName>;
+3180: consentType?: InputMaybe<CollectedConsentType>;
+3184: export enum CollectedConsentName {
+3194: export enum CollectedConsentType {
+7414: * If passed `legalAgreements`, it will record user legal consent (User Agreement) data on Notice & Consent API.
+8177: legalAgreements?: InputMaybe<LegalAgreementsInput>;
+8335: legalAgreements?: InputMaybe<LegalAgreementsInput>;
+8534: collectedConsents?: InputMaybe<Array<InputMaybe<CollectedConsent>>>;
+8550: legalAgreements?: InputMaybe<LegalAgreementsInput>;
+8804: legalAgreements?: InputMaybe<LegalAgreementsInput>;
+13980: legalAgreements?: InputMaybe<LegalAgreementsInput>;
+14061: legalAgreements?: InputMaybe<LegalAgreementsInput>;
+14062: collectedConsents?: InputMaybe<Array<InputMaybe<CollectedConsent>> | InputMaybe<CollectedConsent>>;
+14179: legalAgreements?: InputMaybe<LegalAgreementsInput>;
+--- webpack:///./src/lib/features/constants.ts
+28: export const SIGNUP_AGREE_TO_TERMS = 'signupAgreeToTerms';
+29: export const SIGNUP_AGREE_TO_PRIVACY_STATEMENTS =
+--- webpack:///./src/components/Form/util/formatters.ts
+23: getLegalAgreementsData,
+44: type CollectedConsent,
+45: CollectedConsentName,
+46: CollectedConsentType,
+53: SIGNUP_AGREE_TO_PRIVACY_STATEMENTS,
+54: SIGNUP_AGREE_TO_TERMS,
+124: * @function getCollectedConsents
+128: const getCollectedConsents = (
+130: ): CollectedConsent[] | undefined => {
+131: const collectedConsents: CollectedConsent[] = [];
+148: if (data[SIGNUP_AGREE_TO_PRIVACY_STATEMENTS]?.value) {
+149: collectedConsents.push({
+150: consentName: CollectedConsentName.PrivacyStatementAgreement,
+151: consentType: CollectedConsentType.FullConsent,
+158: collectedConsents.push({
+160: CollectedConsentName.PrivacyStatementThirdPartyDataSharingAgreement,
+161: consentType: CollectedConsentType.FullConsent,
+168: collectedConsents.push({
+170: CollectedConsentName.PrivacyStatementUniqueIdentificationInformationProcessingAgreement,
+171: consentType: CollectedConsentType.FullConsent,
+175: return collectedConsents;
+262: ...(isSignup && getLegalAgreementsData()),
+264: collectedConsents: getCollectedConsents(data),
+436: filteredFormState[SIGNUP_AGREE_TO_TERMS] = formState[SIGNUP_AGREE_TO_TERMS];
+440: filteredFormState[SIGNUP_AGREE_TO_PRIVACY_STATEMENTS] =
+441: formState[SIGNUP_AGREE_TO_PRIVACY_STATEMENTS];
+499: filteredFormState.rightOfWithdrawal = formState.rightOfWithdrawal;
+--- webpack:///./src/lib/utils/miscUtils.ts
+69: rightOfWithdrawal: () => {
+74: const rightOfWithdrawalCheckboxFeatureActive = features.isActive(
+78: if (rightOfWithdrawalCheckboxFeatureActive) {
+--- webpack:///./src/components/OnboardTerms/StreamlineOnboardTerms/streamlineTermsEmbeddedLinks.tsx
+248: rightOfWithdrawalLink: (
+250: href={buildTermsUrl({ useFunction: 'rightOfWithdrawal' })}
+255: text={getContent('compliance.rightOfWithdrawal')}
+--- webpack:///./src/components/Form/util/miscUtils.ts
+60: const legalAgreementsFunctionMap = {
+85: const getLegalAgreementsData = (): GenericObjectType => {
+87: legalAgreementsFunctionMap,
+88: ) as (keyof typeof legalAgreementsFunctionMap)[];
+89: const legalAgreements = keys
+90: .map(key => legalAgreementsFunctionMap[key]())
+98: return { legalAgreements };
+151: getLegalAgreementsData,
+--- webpack:///./src/components/Form/graphql/mutations/createMemberAccount.gql.ts
+29: $legalAgreements: LegalAgreementsInput
+52: legalAgreements: $legalAgreements
+--- webpack:///./src/components/Form/graphql/mutations/signUpNewMember.gql.ts
+44: $legalAgreements: LegalAgreementsInput
+45: $collectedConsents: [CollectedConsent]
+78: legalAgreements: $legalAgreements
+79: collectedConsents: $collectedConsents
+--- webpack:///./src/components/OnboardTerms/constants.ts
+69: rightOfWithdrawalLink: {
+70: contentKey: 'rightOfWithdrawal',
+71: useFunction: 'rightOfWithdrawal',
+--- webpack:///./src/store/models/form/form.ts
+42: SIGNUP_AGREE_TO_PRIVACY_STATEMENTS,
+43: SIGNUP_AGREE_TO_TERMS,
+514: [SIGNUP_AGREE_TO_TERMS]: getDefaultInputState({
+523: rightOfWithdrawal: getDefaultInputState({
+530: [SIGNUP_AGREE_TO_PRIVACY_STATEMENTS]: getDefaultInputState({
+--- webpack:///./src/components/OnboardTerms/OnboardTermsWithCheckbox.tsx
+16: import { SIGNUP_AGREE_TO_TERMS } from '@/lib/features/constants';
+33: type === APP_MODE.GUEST ? 'guestAgreeToTerms' : SIGNUP_AGREE_TO_TERMS;
+--- webpack:///./src/lib/features/config.ts
+5: SIGNUP_AGREE_TO_PRIVACY_STATEMENTS,
+6: SIGNUP_AGREE_TO_TERMS,
+57: DEFAULT: [MARKETING_OPT_IN, SIGNUP_AGREE_TO_TERMS],
+60: SIGNUP_AGREE_TO_TERMS,
+61: SIGNUP_AGREE_TO_PRIVACY_STATEMENTS,
+--- webpack:///./src/components/SignupFields/LegalDisclosures/RightOfWithdrawal/RightOfWithdrawal.tsx
+26: const rightOfWithdrawal = useStoreState(({ form }) => form.rightOfWithdrawal);
+27: const hasError = Boolean(rightOfWithdrawal?.displayError);
+28: const checkboxContent = getContent('rightOfWithdrawal.legalAgreement', {
+29: rightOfWithdrawalLink: (
+31: href={buildTermsUrl({ useFunction: 'rightOfWithdrawal' })}
+36: text={getContent('compliance.rightOfWithdrawal')}
+47: aria-describedby={hasError ? 'rightOfWithdrawal-error' : null}
+50: checked={rightOfWithdrawal?.value}
+52: id="rightOfWithdrawal"
+53: testID="rightOfWithdrawalCheckbox"
+55: name="rightOfWithdrawal"
+58: {...rightOfWithdrawal}
+64: data-testid="rightOfWithdrawalError"
+66: {getContent('fieldErrors.rightOfWithdrawal.valueMissing')}

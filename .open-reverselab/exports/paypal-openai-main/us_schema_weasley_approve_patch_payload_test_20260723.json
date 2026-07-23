@@ -1,0 +1,38 @@
+{
+  "ok": true,
+  "stage": "us_schema_weasley_approve_patch",
+  "checks": {
+    "country_us": true,
+    "locale_us": true,
+    "lang_us": true,
+    "url_us": true,
+    "no_identityDocument": true,
+    "no_dateOfBirth": true,
+    "no_productClass": true,
+    "line1_no_tail_comma": true,
+    "phone_us": true,
+    "approve_mutation_has_attemptSetStickyFi": true,
+    "approve_mutation_has_approveGuestSignUpPayment": true,
+    "extract_billing_without_purchase": true,
+    "extract_purchase_shape": true
+  },
+  "probe": {
+    "profile_country": "US",
+    "profile_locale": "en_US",
+    "profile_lang": "en-US",
+    "signup_url": "https://www.paypal.com/checkoutweb/signup?ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=BA-LOCALDRYRUN0000000&token=&rcache=1&cookieBannerVariant=hidden",
+    "has_identityDocument": false,
+    "has_dateOfBirth": false,
+    "has_card_productClass": false,
+    "billing_line1": "1201 N Market Street",
+    "phone": {
+      "countryCode": "1",
+      "number": "8352891555",
+      "type": "MOBILE"
+    },
+    "approve_mutation_has_attemptSetStickyFi": true,
+    "approve_mutation_has_approveGuestSignUpPayment": true,
+    "extract_billing_without_purchase": "FI-BILLING-WITHOUT-PURCHASE",
+    "extract_purchase_shape": "FI-PURCHASE"
+  }
+}

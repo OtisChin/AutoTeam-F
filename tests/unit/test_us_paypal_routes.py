@@ -244,3 +244,114 @@ def test_main_api_mounts_us_paypal_router():
     assert "/api/us-paypal/batch/start" in paths
     assert "/api/us-paypal/jobs/{job_id}" in paths
     assert "/api/us-paypal/links" in paths
+
+
+def test_protocol_start_validates_and_starts_local_runner(monkeypatch):
+    app = _app()
+    captured = {}
+
+    def fake_run(job_id, req):
+        captured["job_id"] = job_id
+        captured["req"] = req
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+    monkeypatch.setattr(us_paypal, "_run_protocol_payment_job", fake_run)
+
+    result = _endpoint(app, "/api/us-paypal/protocol/start", "POST")(
+        us_paypal.UsPaypalProtocolStartRequest.model_validate({
+            "paypalLink": "https://www.paypal.com/agreements/approve?ba_token=BA-1ROUTE123",
+            "phone": "+18350000000",
+            "smsRecordUrl": "https://sms.example/api/record?token=secret",
+            "proxies": "proxy.example:10000:user:pass",
+            "country": "US",
+        })
+    )
+
+    assert result["job_id"].startswith("ppay-")
+    assert captured["job_id"] == result["job_id"]
+    assert us_paypal.JOBS[result["job_id"]]["kind"] == "paypal_protocol_payment"
+
+
+def test_protocol_start_allows_no_proxy_to_match_verified_runner(monkeypatch):
+    app = _app()
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            captured["args"] = self.args
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+
+    result = _endpoint(app, "/api/us-paypal/protocol/start", "POST")(
+        us_paypal.UsPaypalProtocolStartRequest.model_validate({
+            "paypalLink": "https://www.paypal.com/agreements/approve?ba_token=BA-1NOPROXY123",
+            "phone": "+18350000000",
+            "smsRecordUrl": "https://sms.example/api/record?token=secret",
+            "country": "US",
+        })
+    )
+
+    assert result["job_id"].startswith("ppay-")
+    assert captured["args"][0] == result["job_id"]
+    assert captured["args"][1].proxies == ""
+
+
+def test_protocol_job_uses_local_runner_and_sanitizes_logs(monkeypatch):
+    captured = {}
+    job_id = us_paypal._new_protocol_job("buyer@example.com")
+
+    def fake_runner(cfg, log, cancel_check):
+        captured["cfg"] = cfg
+        log("opened BA-1ROUTE123 with https://sms.example/api?token=secret via socks5h://u:p@proxy")
+        assert cancel_check() is False
+        captured["sms_wait"] = cfg.sms_record_wait_seconds
+        captured["sms_poll"] = cfg.sms_record_poll_seconds
+        return {"status": "success", "protocol_result": {"status": "success"}}
+
+    monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", fake_runner)
+    monkeypatch.setattr(us_paypal, "_mark_account_plus_paypal", lambda email, message: captured.setdefault("marked", (email, message)))
+    monkeypatch.setattr(us_paypal, "_set_account_status", lambda email, status, **kwargs: captured.setdefault("status", (email, status)) or {"status": status})
+
+    req = us_paypal.UsPaypalProtocolStartRequest.model_validate({
+        "baToken": "BA-1ROUTE123",
+        "phone": "+18350000000",
+        "smsRecordUrl": "https://sms.example/api/record?token=secret",
+        "proxyUrl": "proxy.example:10000:user:pass",
+        "accountEmail": "buyer@example.com",
+        "smsRecordWaitSeconds": 600,
+        "smsRecordPollSeconds": 2,
+    })
+    us_paypal._run_protocol_payment_job(job_id, req)
+
+    job = us_paypal.JOBS[job_id]
+    assert job["status"] == "success"
+    assert captured["cfg"].country == "US"
+    assert captured["cfg"].proxy_url.startswith("socks5h://")
+    assert captured["sms_wait"] == 600
+    assert captured["sms_poll"] == 2
+    assert captured["marked"][0] == "buyer@example.com"
+    assert all("token=secret" not in line for line in job["logs"])
+    assert all("u:p@" not in line for line in job["logs"])
+
+
+def test_main_api_mounts_us_paypal_protocol_routes():
+    from autotoken.interfaces.api import app
+
+    paths = {getattr(route, "path", "") for route in app.routes}
+
+    assert "/api/us-paypal/protocol/start" in paths
+    assert "/api/us-paypal/protocol/jobs/{job_id}" in paths

@@ -1,0 +1,509 @@
+{
+  "date": "2026-07-23",
+  "hits": [
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/09avcsc168_4a.js",
+      "size": 110561,
+      "sha256_12": "03f607d6fb34",
+      "hits": [
+        "server action"
+      ],
+      "samples": [
+        {
+          "pattern": "server action",
+          "offset": 100674,
+          "snippet": "y:T});if(\"1\"===C.headers.get(u.NEXT_ACTION_NOT_FOUND_HEADER))throw Object.defineProperty(new i.UnrecognizedActionError(`Server Action \"${y}\" was not found on the server.  Read more: https://nextjs.org/docs/messages/failed-to-find-server-action`),\"__NEXT_ERROR_CODE\",{value:\"E715\",enumerable:!1,configurable:!0});l"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/09i1tou13_zcw.js",
+      "size": 23168,
+      "sha256_12": "f7a5b35813ec",
+      "hits": [
+        "ModXO"
+      ],
+      "samples": [
+        {
+          "pattern": "ModXO",
+          "offset": 22656,
+          "snippet": "e\"},children:i})]})}],36983)},552594,e=>{\"use strict\";var t=e.i(438232),r=e.i(36983),s=e.i(618566),n=e.i(782083);let i=\"modxo_toast_message_shown\";e.s([\"Toaster\",0,function(){let e=(0,s.usePathname)().split(\"/\").at(-1)??\"\";return(0,t.jsx)(r.ToasterBase,{duration:7e3,renderItem:s=>{let o=((e,t)=>{let{desc"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0_j3wujsqm87-.js",
+      "size": 26072,
+      "sha256_12": "c125f671d925",
+      "hits": [
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "country",
+          "offset": 747,
+          "snippet": "ngeContextId:n,rpId:g,config:A=y,commonTags:k,isForceLogin:S,isRBLLogin:b,isIWCSameAsULExperiment:E=!1,isMetaIAB:I,isSCACountry:f,passkeyErrorMessage:T,isInIframe:v=!1}=e,C=(0,i.useRef)(null),O=(0,i.useRef)(null),[w,h]=(0,i.useState)(!1),[N,M]=(0,i.useState)(!1),[P,U]=(0,i.useState)(!1),{alert:R}=(0,_.useA"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0d2pwt5y4rrzw.js",
+      "size": 28905,
+      "sha256_12": "5d68c2d14577",
+      "hits": [
+        "createUser",
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "createUser",
+          "offset": 25412,
+          "snippet": ";let A=(0,S.createServerReference)(\"60187d0e8cbc4131987e2c84c8e430dce698c2ace3\",S.callServer,void 0,S.findSourceMapURL,\"createUserAction\");var h=e.i(65403),I=e.i(566935);function x(e){let{buttonText:s,isRedirect:n,isSubmitting:r}=e,{pending:_}=(0,o.useFormStatus)();return(0,t.jsx)(a.Button,{\"data-atomic-wait-"
+        },
+        {
+          "pattern": "country",
+          "offset": 7357,
+          "snippet": "ngeContextId:i,rpId:g,config:b=u,commonTags:f,isForceLogin:v,isRBLLogin:k,isIWCSameAsULExperiment:S=!1,isMetaIAB:A,isSCACountry:h,passkeyErrorMessage:I,isInIframe:x=!1}=e,E=(0,t.useRef)(null),T=(0,t.useRef)(null),[C,N]=(0,t.useState)(!1),[O,w]=(0,t.useState)(!1),[M,P]=(0,t.useState)(!1),{alert:R}=(0,o.useA"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/0x-ab9ko6kx2z.js",
+      "size": 105889,
+      "sha256_12": "cc2aebfd81f3",
+      "hits": [
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "country",
+          "offset": 30807,
+          "snippet": "return JSON.parse(e)}catch(e){return null}},\"sleep\",0,t])},195341,(e,t,n)=>{t.exports=JSON.parse('[{\"phoneRegion\":\"AL\",\"countryName\":\"Albania\",\"countryPhoneCode\":355,\"phoneFormat\":\"000 000 000\"},{\"phoneRegion\":\"DZ\",\"countryName\":\"Algeria\",\"countryPhoneCode\":213,\"phoneFormat\":\"000 00 00 00\"},{\"phoneRegion\":"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/1sye9fjn8f86z.js",
+      "size": 23354,
+      "sha256_12": "91973d170856",
+      "hits": [
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "country",
+          "offset": 22417,
+          "snippet": "s[i]=!1;void 0!==t.appName&&(globalThis[a]=t.appName)},\"createTelemetryContext\",0,function(){let{worldReady:n,feature:o,country:i}=arguments.length>0&&void 0!==arguments[0]?arguments[0]:{},l={feature:o,telemetry_id:Math.random().toString(36).substring(2,10)+Date.now().toString(36),locale:(null==n?void 0:n."
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/1yufc5qrkuq-q.js",
+      "size": 52366,
+      "sha256_12": "aa1194e97799",
+      "hits": [
+        "server action",
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "server action",
+          "offset": 9352,
+          "snippet": "me:\"identity_login_passkey_enrollment_submit_password_error\",event_details:\"client caught exception from submitPassword server action after prebind completed\",error:t instanceof Error?t.message:String(t),int_error_desc:t instanceof Error?t.message:String(t)},logs:{event_info:\"identity_login_passkey_enrollment_su"
+        },
+        {
+          "pattern": "country",
+          "offset": 5022,
+          "snippet": "hasPasskeyWorkInfo:D,showContinueButtonVariant:L,shouldAutoTriggerPasskeyEnrollment:W,isIWCSameAsULExperiment:F=!1,isSCACountry:$,hasPasswordRecoveryTreatment:V,isSyncablePasskeyWithoutCookieMatch:K,credentialIds:B=\"\",isPasskeyButtonShortcutTreatment:Y,shouldAutoTriggerPasskeyLoginForm:H=!1,shouldMarkCrede"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/20sl76bnr6o-y.js",
+      "size": 28027,
+      "sha256_12": "f5ae48def363",
+      "hits": [
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "country",
+          "offset": 1166,
+          "snippet": "0]?arguments[0]:{},o=arguments.length>1?arguments[1]:void 0,a=((null==t?void 0:t.number)||\"\").length,n=null==t?void 0:t.country,i=s[String((null==t?void 0:t.type)??\"\").toUpperCase()]||s.DEFAULT,d=o.phoneNumberPatternDesc(n),{minLength:l,maxLength:u}=(null==d||null==(r=d[i])?void 0:r.INTERNATIONAL)||{},{min"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/21uf3xizx29eh.js",
+      "size": 7969,
+      "sha256_12": "83eefdda7684",
+      "hits": [
+        "ModXO"
+      ],
+      "samples": [
+        {
+          "pattern": "ModXO",
+          "offset": 4591,
+          "snippet": "\"\",I=async e=>{var t,i,n;let s,l=(null==(i=window.PAYPAL)||null==(t=i.formSubmit)?void 0:t.submitStartTime)??0,c=(0,u.isModxoToIWCTransition)(b,o,l);if(e.set(\"useReqStartTime\",c?\"true\":\"false\"),e.set(\"timeOrigin\",Math.floor(window.performance.timeOrigin).toString()),(0,d.markEvent)(m.ATOMIC_EVENTS.START_"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2ak_hnphdq9in.js",
+      "size": 28099,
+      "sha256_12": "883ac3f13169",
+      "hits": [
+        "server action",
+        "risk",
+        "fingerprint",
+        "ModXO",
+        "fetch_device_fingerprint"
+      ],
+      "samples": [
+        {
+          "pattern": "server action",
+          "offset": 3557,
+          "snippet": "_formName\")||p.body.get(\"_1_formName\")||\"\":JSON.parse(p.body).at(-1)}catch(e){console.log(\"Error getting form name from server action body\",e)}if((o=d)&&(Object.values(n.View).includes(o)||Object.values(n.SubView).includes(o))){let e=window;if(!e.PAYPAL)return t(s,p);e.PAYPAL.formSubmit={formName:d,submitStartTi"
+        },
+        {
+          "pattern": "risk",
+          "offset": 17636,
+          "snippet": "et{isCookied:i,promptLogin:r,webllsTrackingData:s,views:a,isWebLLSEligible:o,isCookiedSource:l,isPomaUser:_,isMetaIAB:c,riskClientContext:d,decryptedAuthOptionsError:p,rebrandExperimentData:u,mpeUncookiedExpEligible:m,isFraudnetId:f,isElmoEligibleForPrioritisingFraudnetId:y}=e;return(0,t.useEffect)(()=>"
+        },
+        {
+          "pattern": "fingerprint",
+          "offset": 7465,
+          "snippet": ".createServerReference)(\"40119ea45de7135869f32892c6e0436cc9722b7775\",i.callServer,void 0,i.findSourceMapURL,\"fetchDeviceFingerprintDataAction\");var s=e.i(736265),a=e.i(15010),o=e.i(809726),l=e.i(62312);let _=async(e,t,n,i)=>{try{let{deviceFingerprintEmailToPrefill:a,dfpEm:_}=await r(e)??{};if(!a)return void o."
+        },
+        {
+          "pattern": "ModXO",
+          "offset": 11930,
+          "snippet": "ansition_name:\"process_cancel_and_return_to_merchant\"},logs:{cancelRedirectUrl:_}}),y)?window.xprops.onCancel({appName:\"modxo\",orderID:d},{}):_&&window.location.replace(_)},className:`text-link visited:text-link active:text-link-active focus-visible:ring-structure-focus focus-visible:ring-offset-structur"
+        },
+        {
+          "pattern": "fetch_device_fingerprint",
+          "offset": 9155,
+          "snippet": "ingerprint_data_unknown_error_occurred\",[l.FptiKey.IntErrorDesc]:e instanceof Error?e.message:\"\"}})}finally{o.obs.emit(\"fetch_device_fingerprint_data_attempt_occurred\",\"info\",{analytics:{...t,[l.FptiKey.EventName]:\"fetch_device_fingerprint_data_attempt_occurred\"}})}};e.s([\"DeviceFingerPrint\",0,function(e){let{dfpMetaData:i"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2ddx3li2xlpzj.js",
+      "size": 31026,
+      "sha256_12": "6b81ebcdd178",
+      "hits": [
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "country",
+          "offset": 6230,
+          "snippet": "]=(0,a.useState)(L??\"\"),[V,Y]=(0,a.useState)(\"\"),[K,G]=(0,a.useState)(()=>{let e=A.default.find(e=>e.phoneRegion===j)??{countryPhoneCode:1};return`+${e.countryPhoneCode}`}),[z,q]=(0,a.useState)(!1),[Z,Q]=(0,a.useState)(!1),[X,ee]=(0,a.useState)(!1),et=(0,a.useRef)(null),{alert:ea,dismissAll:en}=(0,n.useAle"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2lb9ysqs8u0da.js",
+      "size": 83104,
+      "sha256_12": "1e4b173e4be5",
+      "hits": [
+        "approve",
+        "createUser",
+        "weasley",
+        "funding",
+        "fingerprint",
+        "ModXO",
+        "country",
+        "submit_public_credential"
+      ],
+      "samples": [
+        {
+          "pattern": "approve",
+          "offset": 64386,
+          "snippet": "onthly\",\"View_Pay_Monthly_Terms\",\"View_Currency_Conversion_Rate_Guarantee\",\"Add_New_Card_From_Recoverable_Contingency\",\"Approve_Billing_Agreement\",\"Expand_PayPal_Credit_Standalone_Module\",\"click_select_agree_and_continue\",\"Select_Delivery_Method\",\"Opt_Out_LLS\",\"Logout\",\"Pay_With_PayPal\",\"Open_Profile\",\"Add"
+        },
+        {
+          "pattern": "createUser",
+          "offset": 11125,
+          "snippet": "_emitInfo=function(e){let{action:t,eventName:n}=e;return H({action:t,eventName:n,level:\"info\"})},e.__emitWarn=F,e.__fireCreateUserAction=function(){for(var e=arguments.length,t=Array(e),n=0;n<e;n++)t[n]=arguments[n];D(C(...t))},e.__fireMarkUIReadyViolationAction=function(){for(var e=arguments.length,t=Array(e"
+        },
+        {
+          "pattern": "weasley",
+          "offset": 72753,
+          "snippet": "summary_page\",\"submit_member_matching_purchase\",\"submit_guest_transaction\",\"submit_pay_with_info\",\"validate_phone_otp\",\"weasley_onboard_redirect\",\"FIRST_PAGE_LOAD\",\"EXTERNAL_TO_PP\",\"Hint_Undo\",\"Hint_Use\"],tasks:[\"None\",\"Attempt_Instant_Vault\",\"confirm_3ds\",\"cancel_add_bank\",\"cancel_add_bank_or_card\",\"cance"
+        },
+        {
+          "pattern": "funding",
+          "offset": 66199,
+          "snippet": "irm_identity_info\",\"cancel_decline_page\",\"cancel_error_page\",\"cancel_offers_page\",\"cancel_review_terms_page\",\"click_add_funding_instrument\",\"click_add_funding_instrument_alert\",\"click_add_new_card_input\",\"click_add_phone_number_link\",\"click_back\",\"click_back_confirm_identity_info\",\"click_back_credit_score_"
+        },
+        {
+          "pattern": "fingerprint",
+          "offset": 72161,
+          "snippet": "\"click_payment_button\",\"click_payment_card_button\",\"click_payment_credit_button\",\"click_payment_paylater_button\",\"optin_fingerprint\",\"sign_up\",\"skip_fingerprint\",\"click_add_card\",\"add_billing_address_information\",\"add_contact_information\",\"add_shipping_information\",\"cancel_phone_confirmation\",\"contingency_sele"
+        },
+        {
+          "pattern": "ModXO",
+          "offset": 62878,
+          "snippet": "167);var n=e.i(185066);e.i(925865);var i=e.i(299362),o=e.i(809726),a=e.i(119656),r=e.i(320694);let _={flows:[\"missing\",\"modxo_edit_fi\",\"modxo_edit_ba_with_purchase\",\"modxo_one_time\",\"modxo_vaulted_recurring\",\"modxo_vaulted_not_recurring\",\"modxo_subscription\",\"modxo_recurring_with_purchase\",\"modxo_app_swi"
+        },
+        {
+          "pattern": "country",
+          "offset": 72367,
+          "snippet": "ation\",\"add_contact_information\",\"add_shipping_information\",\"cancel_phone_confirmation\",\"contingency_select_unsupported_country\",\"open_billing_address_module\",\"open_contact_module\",\"open_delivery_module\",\"open_pay_with_module\",\"open_ship_to_module\",\"proceed_to_password_page\",\"redirect_to_login\",\"select_new"
+        },
+        {
+          "pattern": "submit_public_credential",
+          "offset": 71629,
+          "snippet": ",\"FIRST_PAGE_LOAD_sso\",\"FIRST_PAGE_LOAD_lls\",\"redirect_to_external_wallet\",\"submit_sms\",\"pn_polling\",\"submit_whatsapp\",\"submit_public_credential\",\"submit_new_password\",\"submit_render_push\",\"submit_2fa_sms_otp_code\",\"submit_2fa_software_token_authenticator_code\",\"return_to_login\",\"login_with_found_email\",\"ivr_polling\",\"requ"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2ouxavgqrxfqh.js",
+      "size": 32445,
+      "sha256_12": "9efb19507977",
+      "hits": [
+        "fingerprint",
+        "ModXO",
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "fingerprint",
+          "offset": 27596,
+          "snippet": "t.ExperimentationExperience=\"experimentation_experience\",t.ExperimentationTreatment=\"experimentation_treatment\",t.DeviceFingerprintError=\"identity_dfp_error\",t.LoginResult=\"login_result\",t);e.s([\"FptiKey\",()=>r])},316737,e=>{e.q(\"/pay/_next/static/media/vector.1wzla5hgsi8__.svg\")},247048,e=>{e.q(\"/pay/_next/st"
+        },
+        {
+          "pattern": "ModXO",
+          "offset": 12953,
+          "snippet": "Submit)?void 0:o.submitStartTime)||0;if(l(y,e.cplMetaData,t))!function(e,t,n,i,o){if(!t.reqStartTime)return r.obs.emit(\"MODXO_TO_IWC_TRANSITION_MISSING_START_TIME\",\"info\",{logs:{}});if(l(e,t,n)){let e=Date.now()-t.reqStartTime;r.obs.emit(\"MODXO_TO_IWC_TRANSITION\",\"info\",{analytics:{state_name:a.FPTI_VALU"
+        },
+        {
+          "pattern": "country",
+          "offset": 22154,
+          "snippet": "nAvailable}function u(){return!!navigator.userAgent.match(/Android/i)}async function _(e){let{passkeyCredentials:n,isSCACountry:o}=e,s=t.createNewAbortSignal(),l={authenticatorSelection:{authenticatorAttachment:\"platform\"},userVerification:o?\"required\":\"preferred\",challenge:r(n.challenge),rpId:n.rpId,attes"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2ss3mbkdajg_j.js",
+      "size": 78696,
+      "sha256_12": "c89ab3643b07",
+      "hits": [
+        "risk",
+        "fingerprint",
+        "ModXO",
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "risk",
+          "offset": 24737,
+          "snippet": "XCLUSIVE_ANW_CHALLENGES\",0,l,\"FN_ASYNC_LOAD_VERSION\",0,{CONTROL:\"CONTROL\",T1:\"T1\",THROTTLE:\"THROTTLE\"},\"FPTI_VALUES\",0,{RISK_ENTRY:\"/Web/checkoutnow/2?via=iwc-next\",CHECKOUT:\"checkout\",EXPRESS_CHECKOUT:\"Express Checkout\",BILLING_AGREEMENT:\"Billing Agreement\",UNKNOWN:\"unknown\",PAYPAL:\"paypal\",MERCHANT_PA"
+        },
+        {
+          "pattern": "fingerprint",
+          "offset": 17358,
+          "snippet": "try=\"country.x\",n.locale=\"locale.x\",n.token=\"token\",n.sdkMeta=\"sdkMeta\",n.paypalClientCfCi=\"paypal_client_cfci\",n.DeviceFingerprintConfidenceScore=\"deviceFingerprintConfidenceScore\",n.DeviceFingerprintEmailCount=\"device_fingerprint_email_count\",n.TreatmentName=\"treatmentName\",n.ExperimentId=\"experimentId\",n.Em"
+        },
+        {
+          "pattern": "ModXO",
+          "offset": 10803,
+          "snippet": "elAlert,{...l}),(0,t.jsx)(a.TrackComponentLoaded,{emit:{eventName:\"alert_shown\",trackingPayload:{analytics:{event_name:\"modxo_review_page_alert_shown\",is_animated:l.isAnimated?\"Y\":\"N\",locale:l.locale,message:i,reason:l.reason}}}})]})}])},140986,e=>{\"use strict\";var t=e.i(438232),r=e.i(207670),a=e.i(15010"
+        },
+        {
+          "pattern": "country",
+          "offset": 17234,
+          "snippet": "esponse=\"AUTHENTICATOR_RESPONSE\",i),f=((l={}).UserNotFound=\"user_not_found\",l.InvalidEmail=\"invalid_email\",l),v=((n={}).country=\"country.x\",n.locale=\"locale.x\",n.token=\"token\",n.sdkMeta=\"sdkMeta\",n.paypalClientCfCi=\"paypal_client_cfci\",n.DeviceFingerprintConfidenceScore=\"deviceFingerprintConfidenceScore\",n"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/2w3giozqnkyws.js",
+      "size": 18113,
+      "sha256_12": "50ddc55d89e2",
+      "hits": [
+        "funding",
+        "ModXO",
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "funding",
+          "offset": 234,
+          "snippet": "3852,e=>{\"use strict\";function t(e,t){for(let[r,n]of t.entries())e.set(r,n)}let r=/^https?:\\/\\//,n=(e,t)=>{let r=t.get(\"fundingSource\")??\"\",n=t.get(\"btnSrc\")??\"\";return\"credit\"===r?\"CREDIT\":\"paylater\"===r?\"ppc\"===n?\"CREDIT\":\"PAY_LATER\":\"\"===r&&(\"CREDIT\"===e||\"PAY_LATER\"===e)?e:\"UNKNOWN\"};e.s([\"PAYMENT_LABE"
+        },
+        {
+          "pattern": "ModXO",
+          "offset": 4652,
+          "snippet": "thname:r,search:n}=new URL(e);return`${r}${n}${t}`}catch{return e}}])},119656,e=>{\"use strict\";var t=e.i(299362);let r=\"modxo::datadogRumSessionState\",n=\"v6\",i=\"default\",o=e=>\"v6\"===e||\"v7\"===e;function a(){let e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:n;return\"v7\"===e?\"_dd_s_v2\":\"_dd_s\"}a"
+        },
+        {
+          "pattern": "country",
+          "offset": 8383,
+          "snippet": "pingOptionsCallbackExist\",0,o,\"doesShippingOptionsChangeClientCallbackExist\",0,i],920241);let s={checkout_intent:\"NONE\",country:\"NONE\",encrypted_account_number:void 0,is_partner_integration:\"no\",is_sdk_bridge_integration:\"no\",is_sdk_integration:\"no\",is_web_view:\"no\",language:\"NONE\",product_feature:\"NONE\"};"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3ct6idqhc9962.js",
+      "size": 52362,
+      "sha256_12": "c050a438ef64",
+      "hits": [
+        "baToken",
+        "approve",
+        "ACTION_ID",
+        "ModXO",
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "baToken",
+          "offset": 35024,
+          "snippet": "fill:r.viewportDimensions.widthFill,viewport_width_ratio:r.viewportDimensions.widthRatio};if(t){let{approvalSessionId:e,baToken:n,cancelUrl:r,isBrainTreeIntegration:i,request:o,returnUrl:a,token:s,universalLinkUrl:c,userActionFromAppData:u}=t,l=t.getJsSDK(o.query),d=c?t.detectUniversalLink(c,t.isPPCPMobile"
+        },
+        {
+          "pattern": "approve",
+          "offset": 6539,
+          "snippet": ":\"init\"})},[f,v,w]),!1}])},602181,e=>{\"use strict\";var t=e.i(438232);let n=\"global\",r=\"name\",i=\"opener\",o=\"parent\",a={onApprove:[\"onAuthorize\"],onAuth:[],onCancel:[],onShippingAddressChange:[],onShippingChange:[],onShippingOptionsChange:[]},s=new Set([\"commit\",\"isParentResponsive\",\"onAuth\",\"onAuthorize\",\"o"
+        },
+        {
+          "pattern": "ACTION_ID",
+          "offset": 50977,
+          "snippet": "hase:\"end\",status:S.status,wait:!0}),null==(_=(0,a.getStorage)(\"SessionStorage\"))||_.setItem(o.RELOAD_REASON_ALERT_KEY,\"ACTION_ID_MISMATCH\"),e.location.reload(),S;else throw M({init:L,outcome:\"error\",phase:\"end\",status:S.status}),Error(`${S.status}: ${S.statusText}; URL: ${S.url}`);return M({init:L,outcome:\""
+        },
+        {
+          "pattern": "ModXO",
+          "offset": 2701,
+          "snippet": "rentResponsive().then(e=>{i({isParentResponsive:e}),r.obs.emit(\"parent_responsive_check\",\"info\",{analytics:{event_name:\"modxo_parent_responsive_check\",is_parent_responsive:e},metrics:{dimensions:{isParentResponsive:String(e)},metricEventName:\"modxo_parent_responsive\",metricId:\"pp.xo.ui.custom.count\",metr"
+        },
+        {
+          "pattern": "country",
+          "offset": 29593,
+          "snippet": "function(e){if(!s.has(e.name))return;let{navigationType:t}=e,n=(0,i.getCurrentViewName)(),u=(0,o.getGlobalDimensions)().country,l=r[u.trim().toUpperCase()]??\"unknown\",d=c.has(u)?u:void 0;a.obs.emit(\"modxo_core_web_vital\",\"info\",{metrics:{dimensions:{app:\"modxo\",continent:l,...d&&{country:d},...n&&{view_nam"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3g_65xicymm3g.js",
+      "size": 46800,
+      "sha256_12": "96223fd26b5c",
+      "hits": [
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "country",
+          "offset": 747,
+          "snippet": "ngeContextId:t,rpId:l,config:g=y,commonTags:C,isForceLogin:N,isRBLLogin:P,isIWCSameAsULExperiment:R=!1,isMetaIAB:S,isSCACountry:b,passkeyErrorMessage:A,isInIframe:k=!1}=e,F=(0,o.useRef)(null),E=(0,o.useRef)(null),[I,f]=(0,o.useState)(!1),[v,T]=(0,o.useState)(!1),[M,w]=(0,o.useState)(!1),{alert:O}=(0,i.useA"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3pla3yvx6jgp1.js",
+      "size": 58567,
+      "sha256_12": "1222c9bbdec2",
+      "hits": [
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "country",
+          "offset": 18926,
+          "snippet": "WorkInfo:b,passkeyDetails:w,ctxId:v,enrollPoint:x,showContinueButtonVariant:F,shouldAutoTriggerPasskeyEnrollment:k,isSCACountry:S,commonTags:E}=e,T=JSON.parse(w),[I,A]=(0,n.useState)(t.BUTTON_STATES.INITIAL),[M,j]=(0,n.useState)(!1),[O,L]=(0,n.useState)(!1),B=(0,n.useRef)(null),D=(0,n.useRef)(!1);(0,n.useE"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3slzk4m26u8la.js",
+      "size": 26072,
+      "sha256_12": "c87eb1539120",
+      "hits": [
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "country",
+          "offset": 747,
+          "snippet": "ngeContextId:n,rpId:g,config:A=y,commonTags:k,isForceLogin:S,isRBLLogin:b,isIWCSameAsULExperiment:E=!1,isMetaIAB:I,isSCACountry:f,passkeyErrorMessage:T,isInIframe:v=!1}=e,C=(0,i.useRef)(null),O=(0,i.useRef)(null),[w,h]=(0,i.useState)(!1),[N,M]=(0,i.useState)(!1),[P,U]=(0,i.useState)(!1),{alert:R}=(0,_.useA"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3t4dze_qp7sny.js",
+      "size": 1222,
+      "sha256_12": "9f53bda8826b",
+      "hits": [
+        "ModXO"
+      ],
+      "samples": [
+        {
+          "pattern": "ModXO",
+          "offset": 566,
+          "snippet": ")(()=>{let{digest:e,message:r,name:o,stack:n}=l;if(i.obs.emit(\"error_boundary\",\"error\",{analytics:{digest:e,event_name:\"modxo_error_boundary_screen\",flow:_,int_error_code:o,int_error_desc:r,is_page_unloading:(0,a.isPageUnloading)()?\"Y\":\"N\",state_name:\"begin_modxo_error_boundary\",transition_name:\"prepare_"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3ut8k257dec4e.js",
+      "size": 47756,
+      "sha256_12": "d065868388b4",
+      "hits": [
+        "ba_token",
+        "ACTION_ID",
+        "funding",
+        "fingerprint",
+        "ModXO",
+        "country"
+      ],
+      "samples": [
+        {
+          "pattern": "ba_token",
+          "offset": 12445,
+          "snippet": "FCI\",value:`${e}-${t}`}}])},236834,e=>{\"use strict\";e.s([\"PAYPAL_PARAMETERS\",0,{APP_SWITCH_ELIGIBLE:\"appSwitchEligible\",BA_TOKEN:\"ba_token\",BRANDED:\"branded\",BUTTON_SESSION_ID:\"buttonSessionID\",CLIENT_ID:\"clientID\",CLIENT_METADATA_ID:\"client-metadata-id\",COMMIT:\"commit\",CONTINGENCY_FLOW:\"contingencyFlow\",EN"
+        },
+        {
+          "pattern": "ACTION_ID",
+          "offset": 20298,
+          "snippet": "assign(r.default,r),t.exports=r.default)},3303,(e,t,r)=>{t.exports=e.r(479520)},619388,e=>{\"use strict\";let t=new Set([\"ACTION_ID_MISMATCH\",\"ADD_BANK_ERROR\",\"ADD_CARD_ERROR\",\"ADD_INSTRUMENT\",\"ADD_INSTRUMENT_BANK_ONLY\",\"ADD_INSTRUMENT_BANK_ONLY_IFRAME\",\"ADD_INSTRUMENT_DEBIT_OR_BANK\",\"ADD_INSTRUMENT_GPL_BANK_O"
+        },
+        {
+          "pattern": "funding",
+          "offset": 12701,
+          "snippet": "OMMIT:\"commit\",CONTINGENCY_FLOW:\"contingencyFlow\",ENTRYPOINT:\"entrypoint\",ENV:\"env\",FIRMLY_AUTH_CODE:\"firmly_auth_code\",FUNDING_SOURCE:\"fundingSource\",NATIVE_XO:\"native_xo\",PLATFORM:\"platform\",REDIRECT_URI:\"redirect_uri\",SESSION_ID:\"sessionID\",SIGN_OUT_USER:\"sign_out_user\",STANDALONE_FUNDING_SOURCE:\"standa"
+        },
+        {
+          "pattern": "fingerprint",
+          "offset": 31898,
+          "snippet": "nown\",e.setGlobalContextProperty(\"edgeIsBot\",r),e.setGlobalContextProperty(\"edgeBotType\",o),e.setGlobalContextProperty(\"fingerprintIsBot\",n),e.setGlobalContextProperty(\"fingerprintBotType\",a),i=\"Y\"===n||\"Y\"===r?\"Y\":\"N\"===n||\"N\"===r?\"N\":\"unknown\",l.obs.emit(\"modxo_bot_detection_result\",\"info\",{analytics:{edge_b"
+        },
+        {
+          "pattern": "ModXO",
+          "offset": 7421,
+          "snippet": "|\"1\"===e.get(\"incontext\")||(0,t.isIframe)())},\"isPopup\",0,i,\"postToMerchantForOldIncontext\",0,e=>{let{operation:t}=e,r=`modxo_old_incontext_postmessage_${t}`;try{let t=JSON.stringify(e),i=window.opener;if(i)return n.obs.emit(`${r}_success`,\"info\",{analytics:{event_name:`${r}_success`},logs:{}}),i.postMes"
+        },
+        {
+          "pattern": "country",
+          "offset": 13025,
+          "snippet": "\",STICKINESS_ID:\"stickinessID\",TOKEN:\"token\",USER_ACTION:\"useraction\",VERSION:\"version\",XCOMPONENT:\"xcomponent\",REGION:\"country.x\"}])},166292,e=>{\"use strict\";e.s([\"getUrl\",0,function(){return\"/pay/api/trpc\"}])},40992,e=>{\"use strict\";e.s([\"default\",0,function(e,t){if(!e)throw Error(\"Invariant failed\")}])}"
+        }
+      ]
+    },
+    {
+      "file": "/private/tmp/paypal_assets/pay_next_20260723/3wrc9gux9o75w.js",
+      "size": 55981,
+      "sha256_12": "18a436dadb72",
+      "hits": [
+        "server action"
+      ],
+      "samples": [
+        {
+          "pattern": "server action",
+          "offset": 24203,
+          "snippet": ",i=e.r(242715),s=e.r(563599),l=e.r(339146);class c extends Error{constructor(){super(\"Cookies can only be modified in a Server Action or Route Handler. Read more: https://nextjs.org/docs/app/api-reference/functions/cookies#options\")}static callable(){throw new c}}class u{static seal(e){return new Proxy(e,{get(e,"
+        }
+      ]
+    }
+  ]
+}

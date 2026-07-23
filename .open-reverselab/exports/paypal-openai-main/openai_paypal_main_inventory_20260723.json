@@ -1,0 +1,571 @@
+{
+  "project": "/Users/mac/Downloads/openai-paypal-main",
+  "files": {},
+  "env_keys": {
+    ".env": [
+      {
+        "key": "PAYPAL_FINGERPRINT_SOURCE",
+        "secret_like": false,
+        "value_len": 8,
+        "value": "headless"
+      },
+      {
+        "key": "PAYPAL_DATADOME_MODE",
+        "secret_like": false,
+        "value_len": 8,
+        "value": "headless"
+      },
+      {
+        "key": "PAYPAL_MTR_RUNTIME",
+        "secret_like": false,
+        "value_len": 8,
+        "value": "headless"
+      },
+      {
+        "key": "PAYPAL_RISK_SIGNALS_MODE",
+        "secret_like": false,
+        "value_len": 8,
+        "value": "headless"
+      },
+      {
+        "key": "PAYPAL_ROXY_FORCE_IOS",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      },
+      {
+        "key": "PAYPAL_ROXY_DEVICE_PROFILE",
+        "secret_like": false,
+        "value_len": 3,
+        "value": "ios"
+      },
+      {
+        "key": "PAYPAL_ROXY_HEADLESS",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_ROXY_IOS_SCREEN_WIDTH",
+        "secret_like": false,
+        "value_len": 3,
+        "value": "390"
+      },
+      {
+        "key": "PAYPAL_ROXY_IOS_SCREEN_HEIGHT",
+        "secret_like": false,
+        "value_len": 3,
+        "value": "844"
+      },
+      {
+        "key": "PAYPAL_ROXY_IOS_VIEWPORT_WIDTH",
+        "secret_like": false,
+        "value_len": 3,
+        "value": "390"
+      },
+      {
+        "key": "PAYPAL_ROXY_IOS_VIEWPORT_HEIGHT",
+        "secret_like": false,
+        "value_len": 3,
+        "value": "753"
+      },
+      {
+        "key": "SMSBOWER_ENABLED",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      },
+      {
+        "key": "SMSBOWER_API_KEY",
+        "secret_like": true,
+        "value_len": 32,
+        "value": null
+      },
+      {
+        "key": "SMSBOWER_WAIT_SECONDS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "60"
+      },
+      {
+        "key": "SMSBOWER_POLL_INTERVAL_SECONDS",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "2"
+      },
+      {
+        "key": "SMSBOWER_MAX_ATTEMPTS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "12"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_USE_PINNED_FINGERPRINT",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_PINNED_FINGERPRINT_PATH",
+        "secret_like": false,
+        "value_len": 37,
+        "value": "var/roxy_ios_fingerprint_current.json"
+      }
+    ],
+    ".env.example": [
+      {
+        "key": "PAYPAL_PROXY_ENABLED",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      },
+      {
+        "key": "PAYPAL_PROXY_URL",
+        "secret_like": false,
+        "value_len": 26,
+        "value": "http://user:pass@host:port"
+      },
+      {
+        "key": "PAYPAL_FINGERPRINT_SOURCE",
+        "secret_like": false,
+        "value_len": 8,
+        "value": "headless"
+      },
+      {
+        "key": "PAYPAL_DATADOME_MODE",
+        "secret_like": false,
+        "value_len": 8,
+        "value": "headless"
+      },
+      {
+        "key": "PAYPAL_MTR_RUNTIME",
+        "secret_like": false,
+        "value_len": 8,
+        "value": "headless"
+      },
+      {
+        "key": "PAYPAL_RISK_SIGNALS_MODE",
+        "secret_like": false,
+        "value_len": 8,
+        "value": "headless"
+      },
+      {
+        "key": "PAYPAL_HEADLESS",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_MAX_CONCURRENCY",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      },
+      {
+        "key": "PAYPAL_DATADOME_HEADLESS_WAIT_SECONDS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "12"
+      },
+      {
+        "key": "PAYPAL_MTR_HEADLESS_WAIT_SECONDS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "20"
+      },
+      {
+        "key": "PAYPAL_RISK_HEADLESS_WAIT_SECONDS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "12"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_ALLOWLIST_LEARNING",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_ALLOWLIST_CACHE_ENABLED",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_DEBUG",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_OPTIMIZED_DEBUG",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_DEBUG_RAW",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_OPTIMIZED_DEBUG_RAW",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_ROXY_API_KEY",
+        "secret_like": true,
+        "value_len": 25,
+        "value": null
+      },
+      {
+        "key": "PAYPAL_ROXY_API_HOST",
+        "secret_like": false,
+        "value_len": 9,
+        "value": "127.0.0.1"
+      },
+      {
+        "key": "PAYPAL_ROXY_API_PORT",
+        "secret_like": false,
+        "value_len": 5,
+        "value": "50000"
+      },
+      {
+        "key": "PAYPAL_ROXY_HEADLESS",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      },
+      {
+        "key": "PAYPAL_ROXY_FORCE_OPEN",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_ROXY_CLOSE_BEFORE_OPEN",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_ROXY_FINGERPRINT_FALLBACK",
+        "secret_like": false,
+        "value_len": 6,
+        "value": "random"
+      },
+      {
+        "key": "PAYPAL_DATADOME_ROXY_WAIT_SECONDS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "12"
+      },
+      {
+        "key": "PAYPAL_MTR_ROXY_WAIT_SECONDS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "20"
+      },
+      {
+        "key": "PAYPAL_RISK_ROXY_WAIT_SECONDS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "12"
+      },
+      {
+        "key": "PAYPAL_ROXY_FORCE_TEMP_WORKSPACE",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_ROXY_AUTO_CREATE_WORKSPACE",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_ROXY_DELETE_AUTO_WORKSPACE",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "SMSBOWER_ENABLED",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "SMSBOWER_API_KEY",
+        "secret_like": true,
+        "value_len": 29,
+        "value": null
+      },
+      {
+        "key": "SMSBOWER_WAIT_SECONDS",
+        "secret_like": false,
+        "value_len": 2,
+        "value": "30"
+      },
+      {
+        "key": "PAYPAL_WEB_PRODUCTION",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_WEB_COOKIE_SECURE",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_WEB_ALLOW_DEBUG_LOGS",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_WEB_MAX_ACTIVE_JOBS",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "4"
+      },
+      {
+        "key": "PAYPAL_WEB_MAX_ACTIVE_JOBS_PER_DEVICE",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "2"
+      },
+      {
+        "key": "PAYPAL_WEB_JOB_RETENTION_SECONDS",
+        "secret_like": false,
+        "value_len": 5,
+        "value": "86400"
+      },
+      {
+        "key": "PAYPAL_WEB_OTP_TIMEOUT_SECONDS",
+        "secret_like": false,
+        "value_len": 4,
+        "value": "1800"
+      },
+      {
+        "key": "PAYPAL_WEB_MAX_LOG_LINES",
+        "secret_like": false,
+        "value_len": 3,
+        "value": "300"
+      },
+      {
+        "key": "PAYPAL_TRAFFIC_RECORD",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "0"
+      },
+      {
+        "key": "PAYPAL_ROXY_RUNTIME_FALLBACK",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      },
+      {
+        "key": "PAYPAL_HEADLESS_RUNTIME_FALLBACK",
+        "secret_like": false,
+        "value_len": 1,
+        "value": "1"
+      }
+    ]
+  },
+  "runtime_artifacts": {
+    "var/roxy_ios_fingerprint_current.json": {
+      "bytes": 4115,
+      "top_keys": [
+        "browser_profile",
+        "screen",
+        "viewport",
+        "device_fingerprint"
+      ],
+      "profile": {
+        "country": "BR",
+        "locale": "pt_BR",
+        "language": "pt-BR",
+        "timezone": "America/Sao_Paulo",
+        "device_profile": "ios",
+        "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1"
+      }
+    },
+    "cache/paypal_signup_content_manifest_last.json": {
+      "bytes": 306,
+      "top_keys": [
+        "manifest_url",
+        "manifest_key",
+        "content_hash",
+        "content_identifier"
+      ],
+      "content_identifier_mask": "US:en:<hash>:compliance.signupTerms"
+    },
+    "var/headless_cookie_cache.json": {
+      "bytes": 56779,
+      "top_keys": [
+        "entries",
+        "updated_at",
+        "version"
+      ],
+      "entry_count": 15,
+      "cookie_names": [
+        "KHcl0EuY7AKSMgfvHl7J5E7hPtK",
+        "LANG",
+        "TLTDID",
+        "TLTSID",
+        "_dd_s",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "ddi",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "rssk",
+        "sc_f",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "has_euat_cookie": false
+    },
+    "var/headless_last_missing_signup_context.json": {
+      "bytes": 24587,
+      "top_keys": [
+        "allowed_requests_tail",
+        "blocked_requests_tail",
+        "counts",
+        "created_at",
+        "cwd",
+        "datadog_flushes",
+        "datadog_probes",
+        "datadog_runtime",
+        "datadome_cookie_len",
+        "datadome_cookie_present",
+        "debug_log_path",
+        "event",
+        "final_url",
+        "headless_debug_enabled",
+        "important_decisions",
+        "inject_errors",
+        "injected_scripts",
+        "intercept",
+        "missing",
+        "mtr",
+        "observed",
+        "observed_order",
+        "page_url",
+        "project_root",
+        "proxy_configured",
+        "proxy_fingerprint",
+        "request_failures_tail",
+        "requests_tail",
+        "required_missing",
+        "required_signals",
+        "response_counts",
+        "responses_tail",
+        "run_mtr",
+        "runtime",
+        "runtime_signals",
+        "signup_context_bootstrap",
+        "signup_context_page",
+        "signup_context_page_after_runtime",
+        "signup_context_seeded_document",
+        "source_file",
+        "status"
+      ],
+      "page_url_query_keys": [
+        "ba_token",
+        "cookieBannerVariant",
+        "country.x",
+        "locale.x",
+        "modxo_redirect_reason",
+        "rcache",
+        "ssrt",
+        "token",
+        "ul"
+      ],
+      "page_url_ba_token_value_is_missing": false,
+      "page_url_token_value_is_missing": false,
+      "final_url_query_keys": [
+        "ba_token",
+        "cookieBannerVariant",
+        "country.x",
+        "locale.x",
+        "modxo_redirect_reason",
+        "rcache",
+        "ssrt",
+        "token",
+        "ul"
+      ],
+      "final_url_ba_token_value_is_missing": false,
+      "final_url_token_value_is_missing": false,
+      "signup_context_ok": true,
+      "required_missing": [
+        "fraudnet_p1",
+        "fraudnet_p2",
+        "fraudnet_w"
+      ]
+    },
+    "cache/smsbower_numbers.json": {
+      "bytes": 322,
+      "top_keys": [
+        "activations",
+        "provider_failures"
+      ]
+    }
+  },
+  "token_findings": {
+    "BA": [
+      {
+        "file": "main.py",
+        "count": 1,
+        "samples": [
+          "BA-3AX…131W"
+        ]
+      }
+    ],
+    "EC": [],
+    "REST_CLIENT_ID_LIKE": [
+      {
+        "file": "paypal/flow.py",
+        "count": 1,
+        "samples": [
+          "AUTHCH…ILED"
+        ]
+      }
+    ],
+    "EUAT_COOKIE_NAME": [
+      {
+        "file": "paypal/models.py",
+        "count": 1,
+        "samples": [
+          "AV894K…yREO"
+        ]
+      },
+      {
+        "file": "paypal/session.py",
+        "count": 1,
+        "samples": [
+          "AV894K…yREO"
+        ]
+      },
+      {
+        "file": "paypal/flow.py",
+        "count": 1,
+        "samples": [
+          "AV894K…yREO"
+        ]
+      }
+    ]
+  }
+}

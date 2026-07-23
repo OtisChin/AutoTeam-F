@@ -1,0 +1,8 @@
+{
+  "type": "dict",
+  "keys": [
+    "code",
+    "msg",
+    "data"
+  ]
+}

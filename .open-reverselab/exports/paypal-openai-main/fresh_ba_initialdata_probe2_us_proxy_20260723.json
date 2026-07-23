@@ -1,0 +1,173 @@
+2026-07-23 21:59:56.232 | INFO     | paypal.session:__init__:586 - HTTP client: httpx (http2=True)
+2026-07-23 21:59:56.232 | INFO     | paypal.session:__init__:587 - HTTP outbound proxy: socks5h://***:***@global.rp.linkup.onl:10000
+2026-07-23 21:59:56.233 | INFO     | paypal.flow:_phase0_initial_load:2256 - --- Phase 0: Initial page load ---
+2026-07-23 21:59:56.233 | DEBUG    | paypal.session:get:1086 - GET https://www.paypal.com/agreements/approve?ba_token=BA-5SK36951DM296273L
+2026-07-23 21:59:58.351 | DEBUG    | paypal.session:get:1137 -   -> 302 (186 bytes)
+2026-07-23 21:59:58.351 | INFO     | paypal.flow:_phase0_initial_load:2349 - Redirected to: https://www.paypal.com/checkoutweb/genericError?code=REVGQVVMVA%3D%3D&ba_token=BA-5SK36951DM296273L&ssrt=1784815197895&token=EC-5WC90023EE717515J&YWRzZGRjb29raWU%3D=qP9hZ3jr9r7Mk2cDWdNYPrXJWy80qDasdozisfQPzHjfo3wkLw0zcZf4qG6wAOuEM~YbbDVVMe9FG4H3UHAAyTHpKdKGFL3viEJ4DAnZWDs3X3y20cAmsKos2VEzJmmz
+2026-07-23 21:59:58.351 | DEBUG    | paypal.session:get:1086 - GET https://www.paypal.com/checkoutweb/genericError?code=REVGQVVMVA%3D%3D&ba_token=BA-5SK36951DM296273L&ssrt=1784815197895&token=EC-5WC90023EE717515J&YWRzZGRjb29raWU%3D=qP9hZ3jr9r7Mk2cDWdNYPrXJWy80qDasdozisfQPzHjfo3wkLw0zcZf4qG6wAOuEM~YbbDVVMe9FG4H3UHAAyTHpKdKGFL3viEJ4DAnZWDs3X3y20cAmsKos2VEzJmmz
+2026-07-23 21:59:59.001 | DEBUG    | paypal.session:get:1137 -   -> 403 (7929 bytes)
+2026-07-23 21:59:59.012 | INFO     | paypal.flow:_phase0_initial_load:2373 - Page loaded: 403, 7929 bytes
+2026-07-23 21:59:59.019 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action fetch_device_fingerprint_action_id: 40119ea45de7135869f32892c6e0436cc9722b7775 (static)
+2026-07-23 21:59:59.019 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action show_create_account_action_id: 408cdbfcfb063642520b8dde73b124955e07000967 (static)
+2026-07-23 21:59:59.019 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action submit_public_credential_action_id: 403375d290e5845b191b7f22e6b940617e87334e8b (static)
+2026-07-23 21:59:59.019 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action create_user_action_id: 60187d0e8cbc4131987e2c84c8e430dce698c2ace3 (static)
+2026-07-23 21:59:59.019 | INFO     | paypal.flow:_phase0_initial_load:2396 - EC Token already present on approval page: EC-5WC...515J
+2026-07-23 21:59:59.019 | INFO     | paypal.flow:_phase2_create_account:6433 - --- Phase 2: Create account flow ---
+2026-07-23 21:59:59.020 | INFO     | paypal.flow:_phase2_create_account:6437 - EC checkout token is already available; skipping ModXO create-account action: EC-5WC...515J
+2026-07-23 21:59:59.020 | DEBUG    | paypal.session:get:1086 - GET https://www.paypal.com/checkoutweb/signup?ssrt=1784815197895&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=BA-5SK36951DM296273L&token=EC-5WC90023EE717515J&rcache=1&cookieBannerVariant=hidden
+2026-07-23 21:59:59.533 | DEBUG    | paypal.session:get:1137 -   -> 403 (8003 bytes)
+2026-07-23 21:59:59.552 | DEBUG    | paypal.flow:_apply_signup_content_metadata:2818 - Loaded signup document did not contain content metadata; preserving contentIdentifier=<missing>
+2026-07-23 21:59:59.553 | INFO     | paypal.flow:_apply_configured_or_cached_signup_content_metadata:2952 - Content metadata restored from cache /tmp/paypal_signup_content_manifest_last.json identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+2026-07-23 21:59:59.553 | DEBUG    | paypal.session:get:1086 - GET https://www.paypalobjects.com/checkoutweb/release/weasley/content-manifest.11f545996f2c4231476c31cc5d858b86.json
+2026-07-23 22:00:01.805 | DEBUG    | paypal.session:get:1137 -   -> 200 (34502 bytes)
+2026-07-23 22:00:01.807 | INFO     | paypal.flow:_apply_signup_content_manifest:2740 - Content metadata found in content manifest: key=US_en hash=d24460aee36e4b7d4579aea096ec5056 identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+2026-07-23 22:00:01.807 | DEBUG    | paypal.session:post:1141 - POST https://www.paypal.com/graphql?InitialDataQuery
+2026-07-23 22:00:02.678 | DEBUG    | paypal.session:post:1200 -   -> 200 (3538 bytes)
+2026-07-23 22:00:02.678 | INFO     | paypal.session:graphql:1272 - GraphQL InitialDataQuery HTTP 200 bytes=3538 paypal_debug_id=f1705933fcb5b
+{
+  "ok": true,
+  "graphql_errors": null,
+  "phase": {
+    "ec": true,
+    "ctx": false,
+    "signup_status": 0,
+    "signup_url": true
+  },
+  "checkout": {
+    "checkoutSessionType": "BILLING_WITHOUT_PURCHASE",
+    "userAction": "CONTINUE",
+    "allowedCardIssuers": [
+      "MASTER_CARD",
+      "DISCOVER",
+      "VISA",
+      "AMEX",
+      "DINERS"
+    ],
+    "cardProductClasses": [],
+    "flags": {
+      "blockNonDomesticPayer": false,
+      "blockNonDomesticShipping": false,
+      "blockNonDomesticCards": false,
+      "hasPayLaterIntent": false,
+      "hideShipping": true,
+      "isBillingAgreement": true,
+      "isChangeShippingAddressAllowed": false,
+      "isDebitRequired": false,
+      "isDonation": false,
+      "isGuestEligible": false,
+      "isInvoiceFlow": false,
+      "isOptionallyShareAddress": false,
+      "isShippingAddressRequired": false,
+      "isSntSupported": false,
+      "isSignupIncentiveEligible": false,
+      "isSignupIncentiveEligibleStretchRewards": false,
+      "isWPS": false,
+      "isWpsAutobilling": false,
+      "isWpsInstallmentPlan": false,
+      "isWpsSubscription": false,
+      "payLaterOnly": false,
+      "__typename": "CheckoutSessionFlags"
+    },
+    "merchant": {
+      "country": "US",
+      "merchantId": "<redacted>",
+      "name": "OpenAI OpCo, LLC",
+      "billPayIntegratorName": "OpenAI OpCo, LLC",
+      "cobrands": null,
+      "preferences": {
+        "autoReturnToMerchant": false,
+        "enablePaymentDataTransfer": false,
+        "__typename": "MerchantPreferences"
+      },
+      "logo": null,
+      "__typename": "Merchant",
+      "merchantId_present": true,
+      "merchantId_sha12": "ff1693bdb67c"
+    },
+    "cart": {
+      "billingType": "MERCHANT_INITIATED_BILLING",
+      "callbackIntegrationType": null,
+      "callbackVersion": null,
+      "consentCode": null,
+      "description": "OpenAI OpCo, LLC",
+      "intent": "SALE",
+      "amounts": null,
+      "payer": null,
+      "email": null,
+      "formattedPhoneNumber": null,
+      "phoneNumber": null,
+      "shippingAddress": {
+        "city": null,
+        "country": null,
+        "firstName": null,
+        "lastName": null,
+        "line1": null,
+        "line2": null,
+        "postalCode": null,
+        "state": null,
+        "formattedFullAddress": null,
+        "__typename": "CartShippingAddress"
+      },
+      "billingAddress": {
+        "city": null,
+        "country": null,
+        "line1": null,
+        "line2": null,
+        "postalCode": null,
+        "state": null,
+        "formattedFullAddress": null,
+        "__typename": "CartAddress"
+      },
+      "subscriptionDetails": null,
+      "__typename": "Cart"
+    }
+  },
+  "localeMetadata": {
+    "businessRegions": [
+      "NA"
+    ],
+    "currencyCode": "USD",
+    "currencySymbol": "$",
+    "suggestedDefaultLanguage": "en",
+    "supportedLanguages": [
+      "en",
+      "fr",
+      "es",
+      "zh"
+    ],
+    "date": {
+      "displayFormat": "mm/dd/yyyy",
+      "datePattern": "MM/dd/y",
+      "__typename": "LocaleDateMetadata"
+    },
+    "phone": {
+      "masks": {
+        "mobile": "(000) 000-0000",
+        "__typename": "LocalePhoneMasks"
+      },
+      "patterns": {
+        "default": "^(1)?([2-9]\\d{9}|3\\d{6})$",
+        "__typename": "LocalePhonePatterns"
+      },
+      "__typename": "LocalePhoneMetadata"
+    },
+    "__typename": "LocaleMetadata"
+  },
+  "unifiedLoginContext": {
+    "experienceMetadata": {
+      "onboardingData": {
+        "email": null,
+        "applePayButtonSeen": null,
+        "loginMethod": null,
+        "hasExistingAccount": null,
+        "userIntent": null,
+        "__typename": "UnifiedLoginContextOnboardingData"
+      },
+      "__typename": "UnifiedLoginContextExperienceMetadata"
+    },
+    "__typename": "UnifiedLoginContext"
+  },
+  "userAgreement": null,
+  "ba_sha12": "b6c9793d48dd",
+  "ec_sha12": "f1d9b8e42a6b"
+}

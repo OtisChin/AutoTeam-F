@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "captured_variables": {
+    "phoneNumber": "8352891555",
+    "locale": {
+      "country": "US",
+      "lang": "en"
+    },
+    "phoneCountry": "US",
+    "token": "EC-LOCALDRYRUN0000000"
+  },
+  "phone_country_code": "+1",
+  "phone_local": "8352891555"
+}

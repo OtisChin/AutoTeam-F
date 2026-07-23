@@ -1,0 +1,216 @@
+# member approve reconstruction
+## raw bundle hits approveMemberPayment
+
+## generated schema args
+  8168	
+  8169	/** Mutation root type.  See https://graphql.org/learn/execution/#root-fields-resolvers */
+  8170	export type MutationApproveMemberPaymentArgs = {
+  8171	  balancePreference?: InputMaybe<BalancePreference>;
+  8172	  card3DSResolve3DSCode?: InputMaybe<Scalars['String']>;
+  8173	  cardCvvValue?: InputMaybe<Scalars['String']>;
+  8174	  cryptocurrencyQuoteId?: InputMaybe<Scalars['String']>;
+  8175	  fullWalletOptIn?: InputMaybe<Scalars['Boolean']>;
+  8176	  fundingMethodType?: InputMaybe<FundingInstrumentMethodType>;
+  8177	  legalAgreements?: InputMaybe<LegalAgreementsInput>;
+  8178	  paycodeEncrypted?: InputMaybe<Scalars['String']>;
+  8179	  preAuthorizationRequired?: InputMaybe<Scalars['Boolean']>;
+  8180	  preferredFundingOptionId?: InputMaybe<Scalars['String']>;
+  8181	  preferredShippingAddressId?: InputMaybe<Scalars['String']>;
+  8182	  primaryFundingOptionId?: InputMaybe<Scalars['String']>;
+  8183	  rewards?: InputMaybe<RewardsInput>;
+  8184	  secondaryFundingOptionIds?: InputMaybe<Array<Scalars['String']>>;
+  8185	  selectedAddressId?: InputMaybe<Scalars['String']>;
+  8186	  selectedInstallmentOption?: InputMaybe<InstallmentsInput>;
+  8187	  setStickyFiRequired?: InputMaybe<Scalars['Boolean']>;
+  8188	  shareAddressWithDonatee?: InputMaybe<Scalars['Boolean']>;
+  8189	  strongCustomerAuthenticationCompleted?: InputMaybe<Scalars['Boolean']>;
+  8190	  token: Scalars['String'];
+  8191	};
+  8192	
+  8193	
+  8194	/** Mutation root type.  See https://graphql.org/learn/execution/#root-fields-resolvers */
+  8195	export type MutationApproveMemberPaymentWithSplitFundingOptionsArgs = {
+  8196	  fullWalletOptIn?: InputMaybe<Scalars['Boolean']>;
+  8197	  preferredShippingAddressId?: InputMaybe<Scalars['String']>;
+  8198	  selectedAddressId?: InputMaybe<Scalars['String']>;
+  8199	  splitFundingOptions: Array<InputMaybe<SplitFundingOptionsInput>>;
+  8200	  token: Scalars['String'];
+  8201	};
+  8202	
+  8203	
+  8204	/** Mutation root type.  See https://graphql.org/learn/execution/#root-fields-resolvers */
+  8205	export type MutationApprovePaymentArgs = {
+  8206	  preferredFundingOptionId?: InputMaybe<Scalars['String']>;
+  8207	  preferredShippingAddressId?: InputMaybe<Scalars['String']>;
+  8208	  selectedAddressId?: InputMaybe<Scalars['String']>;
+  8209	  selectedPlanId: Scalars['String'];
+  8210	  strongCustomerAuthenticationCompleted?: InputMaybe<Scalars['Boolean']>;
+  8211	  token: Scalars['String'];
+  8212	};
+  8213	
+  8214	
+  8215	/** Mutation root type.  See https://graphql.org/learn/execution/#root-fields-resolvers */
+  8216	export type MutationApproveSuggestedDonationArgs = {
+  8217	  token: Scalars['String'];
+  8218	};
+  7390	   *
+  7391	   * Required auth states: LOGGEDIN, IDENTIFIED
+  7392	   */
+  7393	  approveGuestSignUpPayment?: Maybe<CheckoutSession>;
+  7394	  /**
+  7395	   * The approveMemberPayment mutation will approve a payment for PayPal members.
+  7396	   *
+  7397	   * This interface uses funding option IDs, rather than plan IDs.
+  7398	   *
+  7399	   * Requires `token`, the EC, PAY or BA token used for this payment.
+  7400	   *
+  7401	   * Requires `primaryFundingOptionId`, which is the primary funding option ID used to fund the payment.
+  7402	   * Optionally accepts `secondaryFundingOptionIds`, which is an Array of funding option IDs.
+  7403	   * Optionally accepts `rewards`, which is an Object, containing the rewards ID, amount, and currency code.
+  7404	   *
+  7405	   * approveMemberPayment will attempt to find the associated plan given those funding option IDs
+  7406	   * approveMemberPayment will complete a payment for a WPS Payment.
+  7407	   *
+  7408	   * If passed `selectedAddressId`, it will select that address for the payment.
+  7409	   * If passed `preferredFundingOptionId`, it will select that funding option as preferred for future payments.
+  7410	   * If passed `preferredShippingAddressId`, it will select that address as preferred for future payments.
+  7411	   * If passed `preAuthorizationRequired`, it will collect Credit Card status from the issuer to check if its valid (Expired Card, Insufficient funds, etc).
+  7412	   * If passed `cardCvvValue`, it will resolve cvv value for the currently selected card (primaryFundingOptionId).
+  7413	   * If passed `card3DSResolve3DSCode`, it will resolve 3DS for the currently selected card (primaryFundingOptionId).
+  7414	   * If passed `legalAgreements`, it will record user legal consent (User Agreement) data on Notice & Consent API.
+  7415	   *
+  7416	   * Returns a CheckoutSession type.
+  7417	   *
+  7418	   * Please query for state field to get status of checkoutSession when using this Mutation.
+  7419	   * If successful, state will change to APPROVED.
+  7420	   * If not successful, check the PaymentContingencies field to see issues that need to be resolved first.
+  7421	   *
+  7422	   * Average SLA response time - 2500ms
+  7423	   *
+  7424	   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED
+  7425	   */
+  7426	  approveMemberPayment?: Maybe<CheckoutSession>;
+  7427	  /**
+  7428	   * This handles the patch and approval process when a user attempts to process a split payment transaction
+  7429	   * through the Split Tender interface.
+  7430	   *
+  7431	   * Returns a CheckoutSession type
+  7432	   *
+  7433	   * Required auth states: LOGGEDIN
+  7434	   */
+  7435	  approveMemberPaymentWithSplitFundingOptions?: Maybe<CheckoutSession>;
+  7436	  /**
+  7437	   * The approvePayment mutation will approve a payment transaction.
+  7438	   * If passed an planId, it will select that plan for the transaction.
+  7439	   * If passed an addressId, it will select that address for the transaction.
+  7440	   * First, plans will be selected, then addresses will be selected, then the
+  7441	   * payment will be approved.
+  7442	   * Requires a token param (EC, PAY, or BA token) as a String
+  7443	   * Requires a planId as a String
+  7444	   * Optionally accepts an addressId as a String
+  7445	   *
+  7446	   * Returns a CheckoutSession type.
+  7447	   *
+  7448	   * Please query for state field to get status of checkoutSession when using this Mutation.
+
+## preauthorize mutation doc
+// External libraries
+import gql from 'graphql-tag';
+import {
+  THREE_DOMAIN_SECURE_FRAGMENT,
+  THREE_DS_2_CONTINGENCY_FRAGMENT,
+} from '../fragments';
+
+export const PRE_AUTHORIZE_PAYMENT_MUTATION = gql`
+  mutation PreAuthorizePaymentMutation(
+    $token: String!
+    $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
+  ) {
+    preAuthorizePayment(token: $token) {
+      declinedInstruments {
+        id
+        name
+        normalizedProcessorResponse
+      }
+      paymentContingencies {
+        ...threeDomainSecure
+        ...threeDSContingencyData
+      }
+    }
+  }
+  ${THREE_DOMAIN_SECURE_FRAGMENT}
+  ${THREE_DS_2_CONTINGENCY_FRAGMENT}
+`;
+
+## approve onboard mutation doc
+// External libraries
+import gql from 'graphql-tag';
+//internal modules
+import {
+  CART_FRAGMENT,
+  COMPLETED_PAYMENT_INFO_FRAGMENT,
+} from '@/lib/graphql/fragments';
+import {
+  THREE_DOMAIN_SECURE_FRAGMENT,
+  THREE_DS_2_CONTINGENCY_FRAGMENT,
+} from '../fragments';
+
+export const APPROVE_ONBOARD_PAYMENT_MUTATION = gql`
+  mutation ApproveOnboardPaymentMutation(
+    $token: String!
+    $instrumentId: String
+    $isBillingAgreement: Boolean!
+    $supportedThreeDsExperiences: [ThreeDSPaymentExperience]
+  ) {
+    attemptSetStickyFi(token: $token, instrumentId: $instrumentId)
+      @include(if: $isBillingAgreement) {
+      buyer {
+        userId
+      }
+    }
+    approveGuestSignUpPayment(token: $token) {
+      buyer {
+        userId
+        email {
+          stringValue
+        }
+        name {
+          fullName
+        }
+      }
+      ...CartDonePage
+      ...CompletedPaymentInfo
+      fundingOptions {
+        fundingInstrument {
+          id
+          lastDigits
+          name
+          nameDescription
+          type
+        }
+      }
+      merchant {
+        name
+        preferences {
+          autoReturnToMerchant
+          enablePaymentDataTransfer
+          returnUrl
+        }
+      }
+      shippingAddresses {
+        fullAddress
+        name {
+          fullName
+        }
+      }
+      paymentContingencies {
+        ...threeDomainSecure
+        ...threeDSContingencyData
+      }
+    }
+  }
+  ${CART_FRAGMENT}
+  ${COMPLETED_PAYMENT_INFO_FRAGMENT}
+  ${THREE_DOMAIN_SECURE_FRAGMENT}
+  ${THREE_DS_2_CONTINGENCY_FRAGMENT}
+`;

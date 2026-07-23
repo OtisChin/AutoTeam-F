@@ -1,0 +1,186 @@
+2026-07-24 00:05:59.738 | INFO     | paypal.session:__init__:587 - HTTP client: httpx (http2=True)
+2026-07-24 00:05:59.738 | INFO     | paypal.session:__init__:588 - HTTP outbound proxy: 代理关闭
+2026-07-24 00:05:59.738 | INFO     | paypal.flow:_phase0_initial_load:2282 - --- Phase 0: Initial page load ---
+2026-07-24 00:05:59.738 | DEBUG    | paypal.session:get:1087 - GET https://www.paypal.com/agreements/approve?ba_token=<redacted>
+2026-07-24 00:06:01.531 | DEBUG    | paypal.session:get:1138 -   -> 302 (186 bytes)
+2026-07-24 00:06:01.531 | INFO     | paypal.flow:_phase0_initial_load:2375 - Redirected to: https://www.paypal.com/checkoutweb/genericError?code=REVGQVVMVA%3D%3D&ba_token=<redacted>&ssrt=1784822761315&token=<redacted>&YWRzZGRjb29raWU%3D=M1_jHuRzi_eU86y7XM5ROQA5l7ssIuAOM44nUtbPtg431BbiVEEs8qRCLOhSaixzjjT528KFczRLzU3u3jT4kny9jwHadTH3G3mZbR~LYc2ns_fPN1bq~iu4ME3gMHZa
+2026-07-24 00:06:01.531 | DEBUG    | paypal.session:get:1087 - GET https://www.paypal.com/checkoutweb/genericError?code=REVGQVVMVA%3D%3D&ba_token=<redacted>&ssrt=1784822761315&token=<redacted>&YWRzZGRjb29raWU%3D=M1_jHuRzi_eU86y7XM5ROQA5l7ssIuAOM44nUtbPtg431BbiVEEs8qRCLOhSaixzjjT528KFczRLzU3u3jT4kny9jwHadTH3G3mZbR~LYc2ns_fPN1bq~iu4ME3gMHZa
+2026-07-24 00:06:02.607 | DEBUG    | paypal.session:get:1138 -   -> 403 (7946 bytes)
+2026-07-24 00:06:02.610 | INFO     | paypal.flow:_phase0_initial_load:2399 - Page loaded: 403, 7946 bytes
+2026-07-24 00:06:02.613 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5128 - ModXO action fetch_device_fingerprint_action_id: 40119ea45de7135869f32892c6e0436cc9722b7775 (static)
+2026-07-24 00:06:02.613 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5128 - ModXO action show_create_account_action_id: 408cdbfcfb063642520b8dde73b124955e07000967 (static)
+2026-07-24 00:06:02.613 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5128 - ModXO action submit_public_credential_action_id: 403375d290e5845b191b7f22e6b940617e87334e8b (static)
+2026-07-24 00:06:02.613 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5128 - ModXO action create_user_action_id: 60187d0e8cbc4131987e2c84c8e430dce698c2ace3 (static)
+2026-07-24 00:06:02.613 | INFO     | paypal.flow:_phase0_initial_load:2422 - EC Token already present on approval page: EC-5WC...515J
+2026-07-24 00:06:02.613 | DEBUG    | paypal.session:post:1142 - POST https://www.paypal.com/graphql?CheckoutSessionDataQuery
+2026-07-24 00:06:03.102 | DEBUG    | paypal.session:post:1201 -   -> 200 (1225 bytes)
+2026-07-24 00:06:03.103 | INFO     | paypal.session:graphql:1274 - GraphQL CheckoutSessionDataQuery HTTP 200 bytes=1225 paypal_debug_id=f238681a15b40
+2026-07-24 00:06:03.103 | WARNING  | paypal.session:graphql:1334 - GraphQL CheckoutSessionDataQuery returned errors: status=200 paypal_debug_id=f238681a15b40 errors=[
+  {
+    "message": "ALLOWED_CARD_TYPES_COULD_NOT_BE_RETRIEVED",
+    "checkpoints": [],
+    "meta": {},
+    "contingency": true,
+    "path": [
+      "checkoutSession",
+      "allowedCardIssuers"
+    ],
+    "extensions": {
+      "class": "ERROR"
+    },
+    "statusCode": 200
+  },
+  {
+    "data": {
+      "name": "INVALID_RESOURCE_ID",
+      "message": "The requested resource ID was not found",
+      "information_link": "https://developer.paypal.com/docs/api/payments/v1/#error-INVALID_RESOURCE_ID",
+      "debug_id": "f238681a15b40",
+      "code": "INVALID_RESOURCE_ID"
+    },
+    "message": "INVALID_RESOURCE_ID",
+    "_name": "INVALID_RESOURCE_ID",
+    "checkpoints": [
+      "payService.getCart-contingency"
+    ],
+    "meta": {},
+    "contingency": true,
+    "path": [
+      "checkoutSession",
+      "cart"
+    ],
+    "extensions": {
+      "class": "ERROR"
+    },
+    "statusCode": 200
+  }
+]
+2026-07-24 00:06:03.103 | DEBUG    | paypal.session:graphql:1346 - GraphQL CheckoutSessionDataQuery sanitized variables: {
+  "token": "EC-5WC...515J"
+}
+2026-07-24 00:06:03.104 | DEBUG    | paypal.session:post:1142 - POST https://www.paypal.com/graphql?SupportedFundingSourcesQuery
+2026-07-24 00:06:03.521 | DEBUG    | paypal.session:post:1201 -   -> 200 (935 bytes)
+2026-07-24 00:06:03.521 | INFO     | paypal.session:graphql:1274 - GraphQL SupportedFundingSourcesQuery HTTP 200 bytes=935 paypal_debug_id=f23868178bba8
+2026-07-24 00:06:03.522 | WARNING  | paypal.session:graphql:1334 - GraphQL SupportedFundingSourcesQuery returned errors: status=200 paypal_debug_id=f23868178bba8 errors=[
+  {
+    "data": {
+      "name": "INVALID_RESOURCE_ID",
+      "message": "The requested resource ID was not found",
+      "information_link": "https://developer.paypal.com/docs/api/payments/v1/#error-INVALID_RESOURCE_ID",
+      "debug_id": "f23868178bba8",
+      "code": "INVALID_RESOURCE_ID"
+    },
+    "message": "INVALID_RESOURCE_ID",
+    "_name": "INVALID_RESOURCE_ID",
+    "checkpoints": [
+      "payService.getApplicationData-contingency"
+    ],
+    "meta": {},
+    "contingency": true,
+    "path": [
+      "checkoutSession",
+      "supportedFundingSources"
+    ],
+    "extensions": {
+      "class": "ERROR"
+    },
+    "statusCode": 200
+  }
+]
+2026-07-24 00:06:03.522 | DEBUG    | paypal.session:graphql:1346 - GraphQL SupportedFundingSourcesQuery sanitized variables: {
+  "token": "EC-5WC...515J",
+  "userCountry": "US"
+}
+2026-07-24 00:06:03.527 | INFO     | paypal.session:__init__:587 - HTTP client: httpx (http2=True)
+2026-07-24 00:06:03.527 | INFO     | paypal.session:__init__:588 - HTTP outbound proxy: 代理关闭
+2026-07-24 00:06:03.527 | INFO     | paypal.flow:_phase0_initial_load:2282 - --- Phase 0: Initial page load ---
+2026-07-24 00:06:03.527 | DEBUG    | paypal.session:get:1087 - GET https://www.paypal.com/agreements/approve?ba_token=<redacted>
+2026-07-24 00:06:04.348 | DEBUG    | paypal.session:get:1138 -   -> 302 (186 bytes)
+2026-07-24 00:06:04.348 | INFO     | paypal.flow:_phase0_initial_load:2375 - Redirected to: https://www.paypal.com/checkoutweb/genericError?code=REVGQVVMVA%3D%3D&ba_token=<redacted>&ssrt=1784822763942&token=<redacted>&YWRzZGRjb29raWU%3D=HrEZt~F42Xf8rZzKm5YsRU2mN8g55VR_~UQeZ~iXjIoCCtkhgR8kyUSDC5LbGZRDOfbTFI8ArV1sieMKUZt8weyXtPCnX8yaPmJCDcYk4e1ubYg_CMFHusjCjvneeEZU
+2026-07-24 00:06:04.348 | DEBUG    | paypal.session:get:1087 - GET https://www.paypal.com/checkoutweb/genericError?code=REVGQVVMVA%3D%3D&ba_token=<redacted>&ssrt=1784822763942&token=<redacted>&YWRzZGRjb29raWU%3D=HrEZt~F42Xf8rZzKm5YsRU2mN8g55VR_~UQeZ~iXjIoCCtkhgR8kyUSDC5LbGZRDOfbTFI8ArV1sieMKUZt8weyXtPCnX8yaPmJCDcYk4e1ubYg_CMFHusjCjvneeEZU
+2026-07-24 00:06:04.557 | DEBUG    | paypal.session:get:1138 -   -> 403 (7946 bytes)
+2026-07-24 00:06:04.562 | INFO     | paypal.flow:_phase0_initial_load:2399 - Page loaded: 403, 7946 bytes
+2026-07-24 00:06:04.568 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5128 - ModXO action fetch_device_fingerprint_action_id: 40119ea45de7135869f32892c6e0436cc9722b7775 (static)
+2026-07-24 00:06:04.568 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5128 - ModXO action show_create_account_action_id: 408cdbfcfb063642520b8dde73b124955e07000967 (static)
+2026-07-24 00:06:04.568 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5128 - ModXO action submit_public_credential_action_id: 403375d290e5845b191b7f22e6b940617e87334e8b (static)
+2026-07-24 00:06:04.568 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5128 - ModXO action create_user_action_id: 60187d0e8cbc4131987e2c84c8e430dce698c2ace3 (static)
+2026-07-24 00:06:04.568 | INFO     | paypal.flow:_phase0_initial_load:2422 - EC Token already present on approval page: EC-4KH...853T
+2026-07-24 00:06:04.568 | DEBUG    | paypal.session:post:1142 - POST https://www.paypal.com/graphql?CheckoutSessionDataQuery
+2026-07-24 00:06:05.533 | DEBUG    | paypal.session:post:1201 -   -> 200 (1363 bytes)
+2026-07-24 00:06:05.533 | INFO     | paypal.session:graphql:1274 - GraphQL CheckoutSessionDataQuery HTTP 200 bytes=1363 paypal_debug_id=f679687f56c2a
+2026-07-24 00:06:05.533 | DEBUG    | paypal.session:post:1142 - POST https://www.paypal.com/graphql?SupportedFundingSourcesQuery
+2026-07-24 00:06:05.947 | DEBUG    | paypal.session:post:1201 -   -> 200 (635 bytes)
+2026-07-24 00:06:05.947 | INFO     | paypal.session:graphql:1274 - GraphQL SupportedFundingSourcesQuery HTTP 200 bytes=635 paypal_debug_id=f668241badc64
+[
+  {
+    "ba": "BA-5SK...273L",
+    "proxy": "代理关闭",
+    "phase0": {
+      "ec_present": true,
+      "signup_url_present": false,
+      "ssrt_present": true
+    },
+    "checkout": {
+      "has_session": true,
+      "type": "PURCHASE",
+      "merchant": null,
+      "errors": [
+        {
+          "message": "ALLOWED_CARD_TYPES_COULD_NOT_BE_RETRIEVED",
+          "checkpoints": [],
+          "meta": {},
+          "contingency": true,
+          "path": [
+            "checkoutSession",
+            "allowedCardIssuers"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        },
+        {
+          "data": {
+            "name": "INVALID_RESOURCE_ID",
+            "message": "The requested resource ID was not found",
+            "information_link": "https://developer.paypal.com/docs/api/payments/v1/#error-INVALID_RESOURCE_ID",
+            "debug_id": "f238681a15b40",
+            "code": "INVALID_RESOURCE_ID"
+          },
+          "message": "INVALID_RESOURCE_ID",
+          "_name": "INVALID_RESOURCE_ID",
+          "checkpoints": [
+            "payService.getCart-contingency"
+          ],
+          "meta": {},
+          "contingency": true,
+          "path": [
+            "checkoutSession",
+            "cart"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        }
+      ]
+    },
+    "supported_sources_count": 0
+  },
+  {
+    "ba": "BA-1C3...9535",
+    "proxy": "代理关闭",
+    "phase0": {
+      "ec_present": true,
+      "signup_url_present": false,
+      "ssrt_present": true
+    },
+    "checkout": {
+      "has_session": true,
+      "type": "BILLING_WITHOUT_PURCHASE",
+      "merchant": "OpenAI OpCo, LLC",
+      "errors": null
+    },
+    "supported_sources_count": 4
+  }
+]

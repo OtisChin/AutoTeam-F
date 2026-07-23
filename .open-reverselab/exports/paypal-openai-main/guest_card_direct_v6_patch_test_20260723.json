@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "stage": "guest_card_direct_v6_patch",
+  "checks": {
+    "mutation_exported": true,
+    "variables_us": true,
+    "variables_phone_string": true,
+    "status_success": true,
+    "completed": true,
+    "return_followed": true,
+    "buyer_set": true,
+    "instrument_set": true
+  },
+  "variables_keys": [
+    "billingAddress",
+    "card",
+    "currencyConversionType",
+    "email",
+    "firstName",
+    "lastName",
+    "phoneNumber",
+    "supportedThreeDsExperiences",
+    "token"
+  ],
+  "result": {
+    "status": "success",
+    "return_url": "https://merchant.example/return?status=success&token=EC-GUESTCARDLOCAL&ba_token=BA-GUESTCARDLOCAL",
+    "final_redirect_url": "https://merchant.example/return?status=success&redirect_pm_type=paypal",
+    "buyer_user_id": "BUYER-GUEST-1",
+    "funding_instrument_present": true,
+    "completed_payment_info_present": true,
+    "completed_payment_info": {
+      "transactionState": "COMPLETED",
+      "transactionId": "TXN-GUESTCARD-LOCAL"
+    }
+  }
+}

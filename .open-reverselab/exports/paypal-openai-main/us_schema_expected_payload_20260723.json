@@ -1,0 +1,77 @@
+2026-07-23 20:52:24.876 | INFO     | paypal.session:__init__:586 - HTTP client: httpx (http2=True)
+2026-07-23 20:52:24.876 | INFO     | paypal.session:__init__:587 - HTTP outbound proxy: 代理关闭
+{
+  "ok": true,
+  "source_project": "/Users/mac/Downloads/openai-paypal-main",
+  "rules": {
+    "country": "US",
+    "locale": "en_US",
+    "contentIdentifierPrefix": "US:en",
+    "kycFields.US": [],
+    "cardProductClass": "omitted outside BR",
+    "dateOfBirth": "omitted unless cardFieldsToDisplay.dob"
+  },
+  "current_has_br_only_fields": {
+    "identityDocument": true,
+    "dateOfBirth": true,
+    "card.productClass": true
+  },
+  "expected_has_br_only_fields": {
+    "identityDocument": false,
+    "dateOfBirth": false,
+    "card.productClass": false
+  },
+  "expected_payload": {
+    "card": {
+      "cardNumber": "<redacted-card>",
+      "expirationDate": "12/2030",
+      "securityCode": "<redacted-cvv>",
+      "type": "VISA"
+    },
+    "country": "US",
+    "email": "<redacted-email>",
+    "firstName": "John",
+    "lastName": "Doe",
+    "phone": {
+      "countryCode": "1",
+      "number": "8352891555",
+      "type": "MOBILE"
+    },
+    "supportedThreeDsExperiences": [
+      "IFRAME"
+    ],
+    "token": "<redacted-ec>",
+    "billingAddress": {
+      "postalCode": "94105",
+      "line1": "1 Market St, ",
+      "line2": "",
+      "city": "San Francisco",
+      "state": "CA",
+      "accountQuality": {
+        "autoCompleteType": "MANUAL",
+        "isUserModified": true
+      },
+      "country": "US",
+      "familyName": "Doe",
+      "givenName": "John"
+    },
+    "shippingAddress": {
+      "postalCode": "",
+      "line1": "",
+      "city": "",
+      "state": "",
+      "accountQuality": {
+        "autoCompleteType": "MANUAL",
+        "isUserModified": false
+      },
+      "country": "US",
+      "familyName": "Doe",
+      "givenName": "John"
+    },
+    "contentIdentifier": "US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms",
+    "marketingOptOut": true,
+    "password": "<redacted-password>",
+    "crsData": null,
+    "legalAgreements": {}
+  }
+}

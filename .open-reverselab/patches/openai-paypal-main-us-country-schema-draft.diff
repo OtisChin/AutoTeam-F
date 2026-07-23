@@ -1,0 +1,132 @@
+diff --git a/paypal/country_profile.py b/paypal/country_profile.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/paypal/country_profile.py
+@@ -0,0 +1,86 @@
++from __future__ import annotations
++from dataclasses import dataclass
++
++@dataclass(frozen=True)
++class CountryProfile:
++    country: str
++    locale: str
++    language: str
++    phone_country_code: str
++    kyc_fields: tuple[str, ...] = ()
++    collect_card_product_class: bool = False
++    card_dob_required: bool = False
++    default_address_line2: bool = False
++
++    @property
++    def content_language(self) -> str:
++        return self.language.split('-', 1)[0].lower()
++
++COUNTRY_PROFILES: dict[str, CountryProfile] = {
++    # Source-map evidence: kycFields.US=[], CARD_FIELDS_TO_DISPLAY.dob=false,
++    # shouldCollectCardProductClass only true for BR.
++    "US": CountryProfile(
++        country="US",
++        locale="en_US",
++        language="en-US",
++        phone_country_code="1",
++        kyc_fields=(),
++        collect_card_product_class=False,
++        card_dob_required=False,
++    ),
++    "BR": CountryProfile(
++        country="BR",
++        locale="pt_BR",
++        language="pt-BR",
++        phone_country_code="55",
++        kyc_fields=("DateOfBirth", "IdentityDocumentType", "IdentityDocumentNumber"),
++        collect_card_product_class=True,
++        card_dob_required=True,
++        default_address_line2=True,
++    ),
++}
++
++def get_country_profile(country: str | None) -> CountryProfile:
++    return COUNTRY_PROFILES.get((country or "BR").upper(), COUNTRY_PROFILES["BR"])
+diff --git a/paypal/flow.py b/paypal/flow.py
+index 2222222..3333333 100644
+--- a/paypal/flow.py
++++ b/paypal/flow.py
+@@
++from paypal.country_profile import get_country_profile
+@@
+     def _profile_country(self) -> str:
+-        return str((self.state.browser_profile or {}).get("country") or self.address.country or "BR")
++        return get_country_profile(self.address.country).country
+@@
+     def _profile_locale(self) -> str:
+-        return str((self.state.browser_profile or {}).get("locale") or "pt_BR")
++        profile = get_country_profile(self.address.country)
++        browser_profile = self.state.browser_profile or {}
++        if str(browser_profile.get("country") or "").upper() == profile.country:
++            return str(browser_profile.get("locale") or profile.locale)
++        return profile.locale
+@@
+     def _profile_lang(self) -> str:
+-        locale = self._profile_locale()
+-        return str((self.state.browser_profile or {}).get("language") or locale.replace("_", "-") or "pt-BR")
++        profile = get_country_profile(self.address.country)
++        browser_profile = self.state.browser_profile or {}
++        locale = self._profile_locale()
++        if str(browser_profile.get("country") or "").upper() == profile.country:
++            return str(browser_profile.get("language") or locale.replace("_", "-") or profile.language)
++        return profile.language
+@@
+     def _build_signup_variables(self, token: str) -> dict[str, object]:
++        country_profile = get_country_profile(self.address.country)
+         card_type = self._card_issuer_type()
+@@
+-        return {
+-            "card": {
++        card_payload = {
+                 "cardNumber": self.card.number,
+                 "expirationDate": self._card_expiration_date(),
+                 "securityCode": self.card.cvv,
+                 "type": card_type,
+-                "productClass": self.card.card_type,
+-            },
++        }
++        if country_profile.collect_card_product_class:
++            card_payload["productClass"] = self.card.card_type
++
++        variables = {
++            "card": card_payload,
+             "country": self.address.country,
+@@
+-            "dateOfBirth": self._dob_payload(),
+-            "identityDocument": {
+-                "type": "CPF",
+-                "value": self.user.cpf,
+-            },
+             "crsData": None,
+             "legalAgreements": {},
+         }
++
++        if country_profile.card_dob_required or "DateOfBirth" in country_profile.kyc_fields:
++            variables["dateOfBirth"] = self._dob_payload()
++        if "IdentityDocumentType" in country_profile.kyc_fields and "IdentityDocumentNumber" in country_profile.kyc_fields:
++            # BR current behavior; other countries need country-specific document type mapping.
++            if self.address.country.upper() == "BR":
++                variables["identityDocument"] = {"type": "CPF", "value": self.user.cpf}
++        return variables
+diff --git a/paypal/session.py b/paypal/session.py
+index 4444444..5555555 100644
+--- a/paypal/session.py
++++ b/paypal/session.py
+@@
++from paypal.country_profile import get_country_profile
+@@
+-        profile = getattr(self.state, "browser_profile", None) or BROWSER_PROFILE
++        profile = getattr(self.state, "browser_profile", None) or BROWSER_PROFILE
++        fallback_country = str(profile.get("country") or "BR")
++        country_profile = get_country_profile(fallback_country)
+@@
+-            "X-Country": str(profile.get("country") or "BR"),
+-            "X-Locale": str(profile.get("locale") or "pt_BR"),
++            "X-Country": str(profile.get("country") or country_profile.country),
++            "X-Locale": str(profile.get("locale") or country_profile.locale),

@@ -1,0 +1,26 @@
+{
+  "date": "2026-07-23",
+  "source_map": "/tmp/paypal_assets/weasley_latest/main.map",
+  "key_files": {
+    "mutation": "/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_mutations_approveOnboardPayment.gql.ts",
+    "api": "/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts",
+    "response_handlers": "/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_responseHandlers.js",
+    "types": "/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx"
+  },
+  "findings": {
+    "post_signup_current_mutation": "ApproveOnboardPaymentMutation",
+    "billing_agreement_sticky_fi": "attemptSetStickyFi(token, instrumentId) is included when isBillingAgreement=true before approveGuestSignUpPayment(token)",
+    "final_approval_call": "approveGuestSignUpPayment(token) returns cart.returnUrl/completedPaymentInfo/buyer/fundingOptions",
+    "instrument_id_shape_for_billing_without_purchase": "fundingOptions[0].fundingInstrument.id",
+    "instrument_id_shape_for_purchase": "fundingOptions[0].allPlans[0].fundingSources[0].fundingInstrument.id",
+    "project_gap": "openai-paypal-main phase4 uses legacy billing.authorize and did not preserve fundingInstrument.id from SignUpNewMember; patch should prefer Weasley approval after signup and keep Hagrid authorize as fallback",
+    "live_validation_probe": "ApproveOnboardPaymentMutation query shape is accepted by PayPal GraphQL; without SignUpNewMember auth it returns 401 auth-state error rather than GraphQL validation failure"
+  },
+  "evidence": [
+    "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/fresh_ba_weasley_approve_validation_probe_us_proxy_20260723.json",
+    "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/weasley_approve_patch_offline_test_20260723.json",
+    "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/us_schema_weasley_approve_patch_payload_test_20260723.json",
+    "/Users/mac/code/my/AutoTeam-F/.open-reverselab/patches/openai-paypal-main-us-schema-weasley-approve-applyable.diff"
+  ],
+  "sensitive_data": "none"
+}

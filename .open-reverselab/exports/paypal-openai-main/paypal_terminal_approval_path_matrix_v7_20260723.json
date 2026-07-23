@@ -1,0 +1,73 @@
+{
+  "case": "paypal_openai_main_terminal_approval_paths_v7",
+  "date": "2026-07-23",
+  "paths": [
+    {
+      "path": "signup_new_member_then_approveGuestSignUpPayment",
+      "source": "Weasley SignUpNewMemberMutation + ApproveOnboardPaymentMutation",
+      "auth_requirement": "ANONYMOUS for signup; LOGGEDIN/IDENTIFIED after successful signup/EUAT",
+      "local_status": "v5/v7 harness success; source-map aligned; live prior runs reached FI validation and OTP",
+      "blocker": "requires PayPal-accepted real funding instrument during signUpNewMember; synthetic FI rejected",
+      "evidence": [
+        "source_map_weasley_approve_phase4_summary_20260723.json",
+        "fresh_ba_v3_live_run_2_20260723.log",
+        "acceptance_v7_run_20260723.jsonl"
+      ]
+    },
+    {
+      "path": "onboardGuest_then_approveGuestSignUpPayment",
+      "source": "Weasley ONBOARD_GUEST_MUTATION + ApproveOnboardPaymentMutation",
+      "auth_requirement": "ANONYMOUS for onboardGuest; approval after guest auth/accessToken",
+      "local_status": "v7 mock success; live shape probe with card omitted reached resolver and returned fi is missing, proving resolver availability for current BA/EC without attempting payment",
+      "blocker": "same FI acceptance layer as signup; card-present live attempt would be a real FI validation/payment attempt",
+      "evidence": [
+        "onboard_guest_v7_patch_test_20260723.json",
+        "onboard_guest_live_shape_probe_20260723.json",
+        "acceptance_v7_run_20260723.jsonl"
+      ]
+    },
+    {
+      "path": "approveGuestPaymentWithCreditCard_direct",
+      "source": "PayPal GraphQL schema Mutation.approveGuestPaymentWithCreditCard",
+      "auth_requirement": "ANONYMOUS plus request integrityToken/card or paymentToken",
+      "local_status": "v6 mock success; live shape probe with no card/paymentToken reached resolver and returned GUEST_PAYMENT_INTEGRITY_VALIDATION_FAILED, no GraphQL validation/auth error",
+      "blocker": "requires integrityToken and real accepted card/paymentToken; current Weasley BA UI does not use this as primary BILLING_WITHOUT_PURCHASE path",
+      "evidence": [
+        "guest_card_direct_v6_patch_test_20260723.json",
+        "guest_card_direct_live_shape_probe_20260723.json",
+        "guest_card_direct_v6_summary_20260723.json"
+      ]
+    },
+    {
+      "path": "existing_buyer_approveMemberPayment",
+      "source": "PayPal schema Mutation.approveMemberPayment",
+      "auth_requirement": "LOGGEDIN, REMEMBERED, or IDENTIFIED PayPal buyer auth state plus primaryFundingOptionId",
+      "local_status": "v5 mock success; live prior probe with placeholder FI returned 401 ANONYMOUS auth-state error, shape valid",
+      "blocker": "needs legitimate buyer auth/EUAT/cookies and wallet primaryFundingOptionId",
+      "evidence": [
+        "member_approve_probe_us_proxy_20260723.json",
+        "member_approve_v5_patch_test_20260723.json"
+      ]
+    },
+    {
+      "path": "official_paypal_orders_subscriptions_vault",
+      "source": "PayPal REST/JS SDK official API",
+      "auth_requirement": "merchant REST app credentials and buyer approval",
+      "local_status": "mock create/approve/capture COMPLETED; no live REST credentials in project/env",
+      "blocker": "requires PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET",
+      "evidence": [
+        "official_mock_rerun_20260723_230046.json",
+        "acceptance_v7_run_20260723.jsonl"
+      ]
+    }
+  ],
+  "fresh_ba_probe": {
+    "phase0_current_ba_valid": true,
+    "guest_card_direct_shape": [
+      "GUEST_PAYMENT_INTEGRITY_VALIDATION_FAILED"
+    ],
+    "onboard_guest_shape": [
+      "fi is missing"
+    ]
+  }
+}

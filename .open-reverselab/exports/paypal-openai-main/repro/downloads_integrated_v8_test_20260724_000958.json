@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "stage": "downloads_integrated_create_member_no_fi_v8",
+  "checks": {
+    "downloads_root": "/Users/mac/Downloads/openai-paypal-main",
+    "no_fi_enabled_us_auto": true,
+    "create_query_has_no_card": true,
+    "create_saved_euat": true,
+    "create_no_instrument": true,
+    "approve_primary_fi_null": true,
+    "approve_state_success": true,
+    "return_followed": true
+  },
+  "phase4_status": "success",
+  "phase4_state": "APPROVED"
+}

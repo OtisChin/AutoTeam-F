@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "stage": "existing_buyer_harness_mock",
+  "checks": {
+    "status_success": true,
+    "no_signup": true,
+    "fi": true
+  }
+}

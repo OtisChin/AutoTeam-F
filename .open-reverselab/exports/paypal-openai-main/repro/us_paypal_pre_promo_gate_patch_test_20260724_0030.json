@@ -1,0 +1,49 @@
+{
+  "current": {
+    "ok": true,
+    "error": "未出现 PayPal，pmt=['card']",
+    "events": [
+      "账单: Sarah Clark / Portland-OR / 97205 / US",
+      "[1/6] US 创建 checkout（先不带 promo） sid=sid-0-US",
+      "checkout HTTP 200",
+      "[2/6] US Stripe init 预热 PayPal 支付方式 sid=sid-1-US",
+      "预热金额=0 支付方式=['card'] ordered=['card', 'apple_pay', 'google_pay'] has_paypal=False"
+    ],
+    "calls": {
+      "stripe_init": 1,
+      "promo": 0
+    }
+  },
+  "patched": {
+    "ok": true,
+    "events": [
+      "账单: James Anderson / Concord-NH / 03301 / US",
+      "[1/6] US 创建 checkout（先不带 promo） sid=sid-0-US",
+      "checkout HTTP 200",
+      "[2/6] US Stripe init 预热 PayPal 支付方式 sid=sid-1-US",
+      "预热金额=0 支付方式=['card'] ordered=['card', 'apple_pay', 'google_pay'] has_paypal=False",
+      "[3/6] JP 后注入试用 promo sid=sid-2-JP",
+      "promo_called",
+      "promo update success=True keys=['success']",
+      "[4/6] US Stripe re-init 验证 0 元 + PayPal",
+      "后注入金额=0 支付方式=['card', 'paypal'] ordered=['card', 'paypal', 'apple_pay', 'google_pay'] has_paypal=True",
+      "[5/6] Express Checkout Billing Agreement 提链",
+      "Express BA 提链成功 source=stripe_express_billing_agreement ba_token=True"
+    ],
+    "calls": {
+      "stripe_init": 2,
+      "promo": 1
+    },
+    "fields": {
+      "link_source": "stripe_express_billing_agreement",
+      "ba_token": "BA-TESTLOCAL",
+      "pre_promo_payment_method_types": [
+        "card"
+      ],
+      "post_promo_payment_method_types": [
+        "card",
+        "paypal"
+      ]
+    }
+  }
+}

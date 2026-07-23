@@ -1,0 +1,413 @@
+{
+  "entry_count": 15,
+  "entries": [
+    {
+      "entry": "04d94223665451fb314d47520ae12584",
+      "cookie_count": 17,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "KHcl0EuY7AKSMgfvHl7J5E7hPtK",
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "KHcl0EuY7AKSMgfvHl7J5E7hPtK",
+        "LANG",
+        "TLTDID",
+        "TLTSID",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "ddi",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "sc_f",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "2ecdcdff034b30129c56cdc4caeff42c",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "30aff1cec1ec68e2f804aabb9a7a728c",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "56e775392ab0c325c1acbcd8389b7214",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "7a4ab988b5b3f1ce4df5d6df15b5e444",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "8cb910c1a329c9f9b96cba2cbc36349c",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "8f808fbf8663dd8d2adb71bbcc6bf355",
+      "cookie_count": 17,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "KHcl0EuY7AKSMgfvHl7J5E7hPtK",
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "KHcl0EuY7AKSMgfvHl7J5E7hPtK",
+        "LANG",
+        "TLTDID",
+        "TLTSID",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "ddi",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "sc_f",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "95a64ccdab50f6130f7ed0b412ce507c",
+      "cookie_count": 11,
+      "domains": [
+        ".paypal.com",
+        ".www.paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "b2214de6799cef18e47f66428aa002f9",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "b737b38fa8f2959dc2e3e83e0d5fd71f",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "c34becd7c012564eb70fc4f548e55763",
+      "cookie_count": 21,
+      "domains": [
+        ".paypal.com",
+        ".www.paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "KHcl0EuY7AKSMgfvHl7J5E7hPtK",
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "KHcl0EuY7AKSMgfvHl7J5E7hPtK",
+        "LANG",
+        "TLTDID",
+        "TLTSID",
+        "_dd_s",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "ddi",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "rssk",
+        "sc_f",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "d797a01ad73258d5a6a7ad51267808f1",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "eadb7329f1eadec05703e41bc4d6e468",
+      "cookie_count": 1,
+      "domains": [
+        ".paypal.com"
+      ],
+      "authish_names": [],
+      "all_names": [
+        "datadome"
+      ]
+    },
+    {
+      "entry": "fc7e33eb9c1200c7cf594d1343cd5056",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    },
+    {
+      "entry": "fcfa8268547fb7eabc480a0ae0486a74",
+      "cookie_count": 12,
+      "domains": [
+        ".paypal.com",
+        "www.paypal.com"
+      ],
+      "authish_names": [
+        "cookie_check",
+        "tsrce",
+        "x-pp-s"
+      ],
+      "all_names": [
+        "LANG",
+        "cookie_check",
+        "d_id",
+        "datadome",
+        "enforce_policy",
+        "fn_dt",
+        "l7_az",
+        "nsid",
+        "ts",
+        "ts_c",
+        "tsrce",
+        "x-pp-s"
+      ]
+    }
+  ]
+}

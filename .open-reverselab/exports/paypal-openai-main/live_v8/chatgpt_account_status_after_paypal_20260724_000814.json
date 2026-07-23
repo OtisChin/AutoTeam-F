@@ -1,0 +1,62 @@
+{
+  "stage": "chatgpt_account_status_after_paypal",
+  "auth_file": "<email>_com.json",
+  "paths": [
+    {
+      "path": "/backend-api/me",
+      "status": 403,
+      "content_type": "text/html; charset=UTF-8",
+      "body_markers": {
+        "plus": false,
+        "subscription": false,
+        "checkout": false,
+        "forbidden": false,
+        "error": true,
+        "cloudflare": false
+      },
+      "body_head": "<html>\n  <head>\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <style global>body{font-family:Arial,Helvetica,sans-serif}.contai"
+    },
+    {
+      "path": "/backend-api/accounts/check/v4-2023-04-27",
+      "status": 403,
+      "content_type": "text/html; charset=UTF-8",
+      "body_markers": {
+        "plus": false,
+        "subscription": false,
+        "checkout": false,
+        "forbidden": false,
+        "error": true,
+        "cloudflare": false
+      },
+      "body_head": "<html>\n  <head>\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <style global>body{font-family:Arial,Helvetica,sans-serif}.contai"
+    },
+    {
+      "path": "/backend-api/payments/customer_portal",
+      "status": 403,
+      "content_type": "text/html; charset=UTF-8",
+      "body_markers": {
+        "plus": false,
+        "subscription": false,
+        "checkout": false,
+        "forbidden": false,
+        "error": true,
+        "cloudflare": false
+      },
+      "body_head": "<html>\n  <head>\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <style global>body{font-family:Arial,Helvetica,sans-serif}.contai"
+    },
+    {
+      "path": "/backend-api/payments/checkout",
+      "status": 403,
+      "content_type": "text/html; charset=UTF-8",
+      "body_markers": {
+        "plus": false,
+        "subscription": false,
+        "checkout": true,
+        "forbidden": false,
+        "error": true,
+        "cloudflare": false
+      },
+      "body_head": "<html>\n  <head>\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <style global>body{font-family:Arial,Helvetica,sans-serif}.contai"
+    }
+  ]
+}

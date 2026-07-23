@@ -1,0 +1,20 @@
+[
+  {
+    "file": "aaravfeasby3442@outlook_com.json",
+    "old": {
+      "status": 403,
+      "json": false,
+      "head": "<html>\n  <head>\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <style global>body{font-family:Arial,Helvetica,sans-serif}.container{align-items:center;display:flex;flex-direction:column;gap:2rem;height:100%;justify-content:center;width:100%}@keyframes enlarge-appear{0"
+    },
+    "new_requests": {
+      "status": 200,
+      "json": true,
+      "head": "{\"tag\":\"custom_checkout_session\",\"checkout_session_id\":\"cs_<redacted>\",\"publishable_key\":\"pk_live_51HOrSwC6h1nxGoI3lTAgRjYVrz4dU3fVOabyCcKR3pbEJguCVAlqCxdxCUvoRh1XWwRacViovU3kLKvpkjh7IqkW00iXQsjo3n\",\"processor_entity\":\"openai_llc\",\"checkout_ui_mode\":\"custom\",\"automatic_tax_enabled\":true,\"scheduled_d"
+    },
+    "new_curl": {
+      "status": 200,
+      "json": true,
+      "head": "{\"tag\":\"custom_checkout_session\",\"checkout_session_id\":\"cs_<redacted>\",\"publishable_key\":\"pk_live_51HOrSwC6h1nxGoI3lTAgRjYVrz4dU3fVOabyCcKR3pbEJguCVAlqCxdxCUvoRh1XWwRacViovU3kLKvpkjh7IqkW00iXQsjo3n\",\"processor_entity\":\"openai_llc\",\"checkout_ui_mode\":\"custom\",\"automatic_tax_enabled\":true,\"scheduled_d"
+    }
+  }
+]

@@ -1,0 +1,47 @@
+2026-07-23 21:38:42.921 | INFO     | paypal.session:__init__:586 - HTTP client: httpx (http2=True)
+2026-07-23 21:38:42.921 | INFO     | paypal.session:__init__:587 - HTTP outbound proxy: socks5h://***:***@global.rp.linkup.onl:10000
+2026-07-23 21:38:42.922 | INFO     | paypal.flow:_phase0_initial_load:2256 - --- Phase 0: Initial page load ---
+2026-07-23 21:38:42.922 | DEBUG    | paypal.session:get:1086 - GET https://www.paypal.com/agreements/approve?ba_token=<redacted>
+2026-07-23 21:38:46.543 | DEBUG    | paypal.session:get:1137 -   -> 200 (144080 bytes)
+2026-07-23 21:38:46.545 | INFO     | paypal.flow:_capture_datadome_clientid:443 - DataDome client id captured for request header replay len=128
+2026-07-23 21:38:46.561 | INFO     | paypal.flow:_capture_mtr_metadata:1649 - MTR dfpconfig captured: channel=iwc-mxo cmid=BA-5SK...273L api_key_present=True
+2026-07-23 21:38:46.562 | INFO     | paypal.flow:_phase0_initial_load:2373 - Page loaded: 200, 144039 bytes
+2026-07-23 21:38:46.627 | INFO     | paypal.flow:_apply_modxo_inline_metadata:5044 - ModXO country action id: 604aee93ac65e654fa4a8234584263c9111a04f637
+2026-07-23 21:38:46.628 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action fetch_device_fingerprint_action_id: 40119ea45de7135869f32892c6e0436cc9722b7775 (static)
+2026-07-23 21:38:46.628 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action show_create_account_action_id: 408cdbfcfb063642520b8dde73b124955e07000967 (static)
+2026-07-23 21:38:46.628 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action submit_public_credential_action_id: 403375d290e5845b191b7f22e6b940617e87334e8b (static)
+2026-07-23 21:38:46.628 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action create_user_action_id: 60187d0e8cbc4131987e2c84c8e430dce698c2ace3 (static)
+2026-07-23 21:38:46.629 | INFO     | paypal.flow:_phase0_initial_load:2381 - Context ID: de2b77f2-b306-475b-b15a-1b41e2ed5de8
+2026-07-23 21:38:46.629 | INFO     | paypal.flow:_phase0_initial_load:2390 - SSRT: 1784813925149
+2026-07-23 21:38:46.630 | INFO     | paypal.flow:_phase0_initial_load:2396 - EC Token already present on approval page: EC-5WC...515J
+2026-07-23 21:38:46.630 | DEBUG    | paypal.session:post:1141 - POST https://www.paypal.com/graphql?CheckoutSessionDataQuery
+2026-07-23 21:38:47.357 | DEBUG    | paypal.session:post:1200 -   -> 200 (1363 bytes)
+2026-07-23 21:38:47.357 | INFO     | paypal.session:graphql:1272 - GraphQL CheckoutSessionDataQuery HTTP 200 bytes=1363 paypal_debug_id=f8289104880d6
+{
+  "ok": true,
+  "phase0": {
+    "ec": true,
+    "ctx": true,
+    "ssrt": true,
+    "signup_url": false
+  },
+  "query_error": "",
+  "graphql_errors": [],
+  "merchant": {
+    "name": "OpenAI OpCo, LLC",
+    "country": "US",
+    "merchantId_present": true
+  },
+  "cart": {
+    "description": "OpenAI OpCo, LLC",
+    "intent": "SALE",
+    "amount_present": false
+  },
+  "flags": {
+    "isGuestEligible": null,
+    "isBillingAgreement": null,
+    "hasPayLaterIntent": null
+  },
+  "ba_sha12": "b6c9793d48dd",
+  "ec_sha12": "f1d9b8e42a6b"
+}

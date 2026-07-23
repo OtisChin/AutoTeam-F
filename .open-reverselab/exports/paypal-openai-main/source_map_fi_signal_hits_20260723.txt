@@ -1,0 +1,135 @@
+--- webpack:///./generated/graphql.tsx
+2479: cardProductClasses: Array<Maybe<InstrumentClassification>>;
+5329: * A funding option encompasses a `fundingInstrument` that can be used to fully
+5333: * `fundingInstrument` field.
+5368: * @deprecated FundingOption is being repurposed into a container for a FundingInstrument and Plans. Look in `fundingInstrument` for this field.
+5375: fundingInstrument: FundingInstrument;
+5378: * @deprecated FundingOption is being repurposed into a container for a FundingInstrument and Plans. Look in `fundingInstrument` for this field.
+5381: /** The ID of the funding option's `fundingInstrument`. */
+5385: * @deprecated FundingOption is being repurposed into a container for a FundingInstrument and Plans. Look in `fundingInstrument` for this field.
+5396: * @deprecated FundingOption is being repurposed into a container for a FundingInstrument and Plans. Look in `fundingInstrument` for this field.
+5401: * @deprecated FundingOption is being repurposed into a container for a FundingInstrument and Plans. Look in `fundingInstrument` for this field.
+5406: * @deprecated FundingOption is being repurposed into a container for a FundingInstrument and Plans. Look in `fundingInstrument` for this field.
+5416: * @deprecated FundingOption is being repurposed into a container for a FundingInstrument and Plans. Look in `fundingInstrument` for this field.
+5421: * @deprecated FundingOption is being repurposed into a container for a FundingInstrument and Plans. Look in `fundingInstrument` for this field.
+5511: * A source used in payment. Contains `fundingInstrument`, and information on how
+5523: fundingInstrument?: Maybe<FundingInstrument>;
+8040: cardType?: InputMaybe<FundingOptionType>;
+8052: cardType?: InputMaybe<FundingOptionType>;
+8062: cardType?: InputMaybe<FundingOptionType>;
+8267: fundingInstrumentId: Scalars['String'];
+8355: fundingInstrumentId: Scalars['String'];
+8393: fundingInstrumentId: Scalars['String'];
+8645: cardType?: InputMaybe<FundingOptionType>;
+8656: cardType?: InputMaybe<FundingOptionType>;
+8664: fundingInstrumentFinancingDetail?: InputMaybe<FundingInstrumentFinancingInput>;
+11181: cardType?: InputMaybe<CardIssuerType>;
+11331: cardType?: InputMaybe<Scalars['String']>;
+11870: fundingInstrument: FundingInstrument;
+11884: fundingInstrumentType: FundingInstrumentType;
+12842: cardProductClass?: Maybe<FundingInstrumentSubType>;
+13935: export type FundingOptionsFragment = { __typename?: 'CheckoutSession', fundingOptions?: Array<{ __typename?: 'FundingOption', allPlans?: Array<{ __typename?: 'Plan', fundingSources?: Array<{ __typename?: 'FundingSource',
+--- webpack:///./src/components/Common/RadioButton/RadioButton.tsx
+40: {...(hasError && { 'aria-describedby': 'cardProductClass-error' })}
+--- webpack:///./src/components/Form/util/payloadUtils.ts
+54: cardNumber: { value: cardNumber, cardType },
+56: cardProductClass: { value: productClass } = {},
+64: ...(cardType && { type: cardType }),
+--- webpack:///./src/components/Form/util/formatters.ts
+237: ...(uiState.cardFieldsToDisplay.dob && {
+285: const { cupOtpfundingInstrumentId, cupOtpEncryptedCardLoginAccountNumber } =
+304: fundingInstrumentId: cupOtpfundingInstrumentId,
+374: // Do not update cardFieldsToDisplay for bank fiType.
+377: // fields displayed with card - uiState.cardFieldsToDisplay
+379: uiState.cardFieldsToDisplay,
+383: if (!uiState.cardFieldsToDisplay[key] && formStateField) {
+387: } else if (uiState.cardFieldsToDisplay[key] && formStateField) {
+--- webpack:///./src/components/Form/handlers.js
+94: // Do not set cardType if CardTypeSelector component is enabled
+95: // Reason: cardNumber.cardType state will be updated by CardTypeSelector
+98: payload.cardType = meta.cardType;
+--- webpack:///./src/components/ContactInformation/Phone/PhoneNumber/PhoneNumber.tsx
+37: const cardType = useStoreState(({ form }) => form.cardNumber.cardType);
+66: hasCupOneTimePasswordConfirmationMessage && cardType === 'CHINA_UNION_PAY';
+--- webpack:///./src/components/Form/util/formOperations.ts
+56: Partial<Pick<FormState, 'currencyConversionSelection' | 'cardProductClass'>>
+255: cardProductClass,
+263: cardProductClass,
+--- webpack:///./src/components/Form/graphql/fragments/fundingOptions.gql.ts
+9: fundingInstrument {
+26: fundingInstrument {
+--- webpack:///./src/components/Form/graphql/fragments/threeDS2ContingencyData.gql.ts
+27: cardProductClass
+--- webpack:///./src/components/Form/graphql/mutations/approveOnboardPayment.gql.ts
+39: fundingInstrument {
+--- webpack:///./src/components/Form/graphql/mutations/createOnboardingPaymentPlan.gql.ts
+17: $fundingInstrumentId: String!
+28: fundingInstrumentId: $fundingInstrumentId
+--- webpack:///./src/lib/graphql/queries/wpsDonePage.gql.ts
+25: fundingInstrument {
+--- webpack:///./src/lib/graphql/operations/currencyConversion/getCurrencyConversionData.ts
+14: const { cardType, value: cardNumber } = formState.cardNumber;
+16: cardBrand: cardType,
+35: const { cardType } = appStore.getState().form.cardNumber;
+45: logger.info('currency_conversion_response_empty', { cardType });
+56: logger.info('currency_conversion_not_changeable', { cardType });
+60: logger.info('currency_conversion_changeable', { cardType });
+--- webpack:///./src/components/Form/graphql/responseHandlers.js
+23: const fundingInstrumentId = obContingency.encryptedId;
+26: fundingInstrumentId,
+30: funding_instrument_id: fundingInstrumentId || '',
+37: has_funding_instrument_id: Boolean(fundingInstrumentId),
+41: if (fundingInstrumentId) {
+44: error.errorData = { fundingInstrumentId };
+51: redirectToOpenBanking(fundingInstrumentId);
+126: const fundingInstrument = apiState.isBillingWithoutPurchase
+129: if (fundingInstrument) {
+130: const instrumentId = fundingInstrument.fundingInstrument?.id || '';
+136: apiActions.setFundingSource(fundingInstrument);
+--- webpack:///./src/lib/utils/currencyConversion/index.ts
+22: const type = formState.cardNumber.cardType || '';
+--- webpack:///./src/lib/utils/redirects/redirects.ts
+597: * @param fundingInstrumentId - The funding instrument ID (bank ID) for the OB flow
+599: export const redirectToOpenBanking = (fundingInstrumentId: string): void => {
+603: fundingInstrumentId,
+607: funding_instrument_id: fundingInstrumentId,
+623: id: fundingInstrumentId,
+633: fundingInstrumentId,
+--- webpack:///./src/components/Form/graphql/errorHandlers.js
+224: actions.api.setCupOtpFundingInstrumentId(errorData.fundingInstrumentId);
+270: const fundingInstrumentId = errorData?.fundingInstrumentId;
+272: fundingInstrumentId,
+275: funding_instrument_id: fundingInstrumentId,
+--- webpack:///./src/store/models/api/api.ts
+262: cupOtpfundingInstrumentId: '',
+355: state.cupOtpfundingInstrumentId = payload;
+--- webpack:///./src/store/models/types.ts
+8: cardType?: CardIssuerType;
+--- webpack:///./src/store/models/form/form.ts
+463: cardType: '',
+466: cardProductClass: getDefaultInputState(),
+--- webpack:///./src/store/models/ui/ui.ts
+71: cardFieldsToDisplay: CARD_FIELDS_TO_DISPLAY,
+133: setCardFieldsToDisplay: action((state, payload) => {
+134: state.cardFieldsToDisplay = payload;
+--- webpack:///./src/lib/errors/utils.ts
+132: .map(cardType => getContent(`cardTypes.${cardType}`))
+135: return getContent('fieldErrors.cardTypeNotSupported', {
+--- webpack:///./src/lib/errors/handleApiError.ts
+222: card_type: cardType,
+239: card_brand: cardType,
+--- webpack:///./src/components/Form/util/logFunctions.ts
+21: // Eg: cardType is not having its own state and it is part of cardNumber
+--- webpack:///./src/lib/features/resolvers.ts
+63: const { cardProductClasses } = checkoutSession || {};
+66: const isDebitFlow = cardProductClasses?.includes('DEBIT') || false;
+70: if (!cardProductClasses || isDebitFlow) {
+--- webpack:///./src/initialDataQuery.graphql
+2: var doc = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"query","name":{"kind":"Name","value":"InitialDataQuery"},"variableDefinitions":[{"kind":"VariableDefinition","variable":{"kind":"Vari
+3: doc.loc.source = {"body":"# This file is pushed to the CDN during client deploys and used by the server\n# to fetch data from xobuyernodeserv that is needed to resolve feature flags.\n# Available params are: `countryCode
+--- webpack:///./src/components/SignupFields/KYCFields/KYCFields.tsx
+61: const cardFieldsToDisplay = useStoreState(({ ui }) => ui.cardFieldsToDisplay);
+77: fiType === 'bnpl' || (fiType !== 'bank' && !cardFieldsToDisplay.dob)
+--- webpack:///./src/components/Form/graphql/openBankingHandlers.ts
+58: fo => fo?.fundingInstrument?.id === bankId,
+97: const instrumentId = fundingSource?.fundingInstrument?.id || '';

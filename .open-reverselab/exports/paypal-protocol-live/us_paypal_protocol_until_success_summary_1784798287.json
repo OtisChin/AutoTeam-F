@@ -1,0 +1,12 @@
+{
+  "attempts": [
+    {
+      "attempt": 2,
+      "token_masked": "BA-***ttps",
+      "ok": false,
+      "status": "failed",
+      "remote_job_id": "68e630b46a31",
+      "error": "IDENTITY_ELEVATION_EC_MISSING: onboarding did not produce an EC checkout token"
+    }
+  ]
+}

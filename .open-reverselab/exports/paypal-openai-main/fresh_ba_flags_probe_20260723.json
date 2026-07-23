@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "ec_present": true,
+  "result_sanitized": {
+    "errors": [
+      {
+        "message": "Variable \"$fundingSource\" got invalid value \"PAYPAL\"; Expected type ButtonFundingSourceType. [Suggestion hidden]?",
+        "locations": [
+          {
+            "line": 1,
+            "column": 32
+          }
+        ],
+        "extensions": {
+          "code": "INTERNAL_SERVER_ERROR"
+        },
+        "statusCode": 400
+      }
+    ],
+    "extensions": {
+      "tracing": {
+        "version": 1,
+        "startTime": "2026-07-23T15:19:58.076Z",
+        "endTime": "2026-07-23T15:19:58.076Z",
+        "duration": 0,
+        "execution": {
+          "resolvers": []
+        }
+      },
+      "correlationId": "f48803213e6ce"
+    }
+  }
+}

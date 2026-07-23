@@ -1,0 +1,206 @@
+{
+  "stage": "live_create_member_no_fi_v8_follow_return",
+  "ba_present": true,
+  "proxy": "代理关闭",
+  "phase0_2": {
+    "ec_present": true,
+    "signup_url_present": true
+  },
+  "createMemberAccount": {
+    "result": {
+      "data": {
+        "onboardAccount": {
+          "buyer": {
+            "auth": {
+              "accessToken": "<redacted>",
+              "__typename": "Auth"
+            },
+            "userId": "R5YTFVQDHQT26",
+            "__typename": "User"
+          },
+          "__typename": "CheckoutSession"
+        }
+      },
+      "extensions": {
+        "tracing": {
+          "version": 1,
+          "startTime": "2026-07-23T15:58:06.075Z",
+          "endTime": "2026-07-23T15:58:07.063Z",
+          "duration": 988000000,
+          "execution": {
+            "resolvers": [
+              {
+                "path": [
+                  "createMemberAccount"
+                ],
+                "parentType": "Query",
+                "fieldName": "createMemberAccount",
+                "returnType": "Object",
+                "startOffset": 0,
+                "duration": 986956472
+              }
+            ]
+          }
+        },
+        "correlationId": "f38411...ca00"
+      }
+    },
+    "consume": {
+      "ok": true,
+      "user_id_present": true,
+      "euat_present": true
+    }
+  },
+  "approve_variants": [
+    {
+      "name": "approveGuestSignUpPayment_skipSticky",
+      "result": {
+        "errors": [
+          {
+            "message": "PAYER_INVALID_FOR_PAYMENT",
+            "checkpoints": [
+              "approvePayment"
+            ],
+            "meta": {},
+            "errorData": {},
+            "contingency": true,
+            "path": [
+              "approveGuestSignUpPayment"
+            ],
+            "extensions": {
+              "class": "ERROR"
+            },
+            "statusCode": 200
+          }
+        ],
+        "data": {
+          "approveGuestSignUpPayment": null
+        },
+        "extensions": {
+          "tracing": {
+            "version": 1,
+            "startTime": "2026-07-23T15:58:08.202Z",
+            "endTime": "2026-07-23T15:58:08.356Z",
+            "duration": 154000000,
+            "execution": {
+              "resolvers": [
+                {
+                  "path": [
+                    "approveGuestSignUpPayment"
+                  ],
+                  "parentType": "Query",
+                  "fieldName": "approveGuestSignUpPayment",
+                  "returnType": "Object",
+                  "startOffset": 0,
+                  "duration": 152847273
+                }
+              ]
+            }
+          },
+          "correlationId": "f60662...2463"
+        }
+      },
+      "errors": [
+        {
+          "message": "PAYER_INVALID_FOR_PAYMENT",
+          "checkpoints": [
+            "approvePayment"
+          ],
+          "meta": {},
+          "errorData": {},
+          "contingency": true,
+          "path": [
+            "approveGuestSignUpPayment"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        }
+      ]
+    },
+    {
+      "name": "approveMemberPayment_noPrimaryFI",
+      "result": {
+        "errors": [
+          {
+            "checkpoints": [
+              "createCheckoutSession"
+            ],
+            "meta": {},
+            "errorData": {
+              "step_up_context": {}
+            },
+            "contingency": true,
+            "path": [
+              "approveMemberPayment"
+            ],
+            "extensions": {
+              "class": "ERROR"
+            },
+            "statusCode": 200
+          }
+        ],
+        "data": {
+          "approveMemberPayment": null
+        },
+        "extensions": {
+          "tracing": {
+            "version": 1,
+            "startTime": "2026-07-23T15:58:08.772Z",
+            "endTime": "2026-07-23T15:58:09.238Z",
+            "duration": 466000000,
+            "execution": {
+              "resolvers": [
+                {
+                  "path": [
+                    "approveMemberPayment"
+                  ],
+                  "parentType": "Query",
+                  "fieldName": "approveMemberPayment",
+                  "returnType": "Object",
+                  "startOffset": 0,
+                  "duration": 464606441
+                }
+              ]
+            }
+          },
+          "correlationId": "f81651...a840"
+        }
+      },
+      "errors": [
+        {
+          "checkpoints": [
+            "createCheckoutSession"
+          ],
+          "meta": {},
+          "errorData": {
+            "step_up_context": {}
+          },
+          "contingency": true,
+          "path": [
+            "approveMemberPayment"
+          ],
+          "extensions": {
+            "class": "ERROR"
+          },
+          "statusCode": 200
+        }
+      ],
+      "return_follow": {
+        "followed": false,
+        "reason": "missing_return_url"
+      }
+    }
+  ],
+  "terminal": {
+    "success": false,
+    "variant": "approveMemberPayment_noPrimaryFI",
+    "state": null,
+    "returnUrl_present": false,
+    "return_follow": {
+      "followed": false,
+      "reason": "missing_return_url"
+    }
+  }
+}

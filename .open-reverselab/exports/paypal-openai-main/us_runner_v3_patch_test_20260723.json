@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "checks": {
+    "cli_country_arg": true,
+    "web_country_field": true,
+    "ui_country_select": true,
+    "js_country_submit": true,
+    "us_user_phone": true,
+    "us_address": true,
+    "us_profile": true,
+    "us_signup_schema": true,
+    "us_otp_locale": true
+  },
+  "otp_variables": {
+    "phoneNumber": "8352891555",
+    "locale": {
+      "country": "US",
+      "lang": "en"
+    },
+    "phoneCountry": "US",
+    "token": "EC-LOCALDRYRUN0000000"
+  },
+  "signup_phone": {
+    "countryCode": "1",
+    "number": "8352891555",
+    "type": "MOBILE"
+  },
+  "address_country": "US"
+}

@@ -1,0 +1,26 @@
+{
+  "input_phone": "+18352891555",
+  "generated_user_phone": "+18352891555",
+  "generated_phone_country_code": "+55",
+  "generated_phone_local": "18352891555",
+  "generated_address_country": "BR",
+  "profile_country": "BR",
+  "profile_locale": "pt_BR",
+  "profile_lang": "pt-BR",
+  "signup_country": "BR",
+  "signup_phone": {
+    "countryCode": "55",
+    "number": "18352891555",
+    "type": "MOBILE"
+  },
+  "has_identityDocument": true,
+  "has_dateOfBirth": true,
+  "has_card_productClass": true,
+  "otp_code_static_in_source": {
+    "locale": {
+      "country": "BR",
+      "lang": "pt"
+    },
+    "phoneCountry": "BR"
+  }
+}

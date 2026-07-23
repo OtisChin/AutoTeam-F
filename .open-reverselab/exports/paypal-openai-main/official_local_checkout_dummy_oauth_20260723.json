@@ -1,0 +1,10 @@
+{"stage": "oauth", "env": "sandbox", "client_id": "***", "base": "https://api-m.sandbox.paypal.com"}
+{
+  "ok": false,
+  "stage": "oauth",
+  "status": 401,
+  "response": {
+    "error": "invalid_client",
+    "error_description": "Client Authentication failed"
+  }
+}

@@ -1,0 +1,40 @@
+2026-07-23 20:47:25.702 | INFO     | paypal.session:__init__:586 - HTTP client: httpx (http2=True)
+2026-07-23 20:47:25.702 | INFO     | paypal.session:__init__:587 - HTTP outbound proxy: 代理关闭
+2026-07-23 20:47:25.703 | INFO     | paypal.flow:_apply_configured_or_cached_signup_content_metadata:2952 - Content metadata restored from cache /tmp/paypal_signup_content_manifest_last.json identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+{
+  "profile_country": "US",
+  "profile_locale": "en_US",
+  "profile_lang": "en-US",
+  "content_country": "US",
+  "content_lang": "en",
+  "signup_url": "https://www.paypal.com/checkoutweb/signup?ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=BA-TEST&token=&rcache=1&cookieBannerVariant=hidden",
+  "phone_payload": {
+    "countryCode": "1",
+    "number": "8352891555",
+    "type": "MOBILE"
+  },
+  "identityDocument": {
+    "type": "CPF",
+    "value": ""
+  },
+  "dateOfBirth": {
+    "day": "01",
+    "month": "01",
+    "year": "1990"
+  },
+  "billingAddress": {
+    "postalCode": "94105",
+    "line1": "1 Market St, ",
+    "line2": "",
+    "city": "San Francisco",
+    "state": "CA",
+    "accountQuality": {
+      "autoCompleteType": "MANUAL",
+      "isUserModified": true
+    },
+    "country": "US",
+    "familyName": "Doe",
+    "givenName": "John"
+  },
+  "has_card": true
+}

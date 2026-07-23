@@ -1,0 +1,150 @@
+[
+  {
+    "name": "addBank",
+    "context": "   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  addBank?: Maybe<CheckoutSession>;\n  /**\n   * The addBankAfterStepup mutation is used if the original addBank call throws a RISK_DECLINE_REDIRECT_AUTH_FLOW error from FI due to a SCA\n   * requiring stepup. Once the stepup is resolved, the client will call addBankAfterStepup and provide the authContextId they received from\n   * xobuyernodeserv in the addBank contingency. The authContextId will be used to grab the original parameters from junonodisk so that the\n   * client does not need to re-enter them. Once parameters are grabbed from junonodisk, this operation finishes the addBank steps and adds a"
+  },
+  {
+    "name": "addBankAfterStepup",
+    "context": "   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  addBankAfterStepup?: Maybe<CheckoutSession>;\n  /** Add a bank account candidate. */\n  addBankCandidate?: Maybe<BankAccount>;\n  /**\n   * The `addBillingAddress` mutation will add a billing address to the Users billing addresses.\n   *"
+  },
+  {
+    "name": "addBankCandidate",
+    "context": "   */\n  addBankAfterStepup?: Maybe<CheckoutSession>;\n  /** Add a bank account candidate. */\n  addBankCandidate?: Maybe<BankAccount>;\n  /**\n   * The `addBillingAddress` mutation will add a billing address to the Users billing addresses.\n   *\n   * If an `instrumentId` is passed in, it will associate the billing address with it.\n   *"
+  },
+  {
+    "name": "addBillingAddress",
+    "context": "   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  addBillingAddress?: Maybe<AddBillingAddressResponse>;\n  /**\n   * The addCard mutation will do the following depends on how arguments are being\n   * passed:\n   *   - Add a new card\n   *   - Perform billing address validation if address.id is missing"
+  },
+  {
+    "name": "addCard",
+    "context": "   *   - paypalRequestId is unique uuid for each add card request. If we don't get it from front end, we generate it using uuid library else we pass whatever came in request.\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  addCard?: Maybe<CheckoutSession>;\n  /**\n   * The addCardWithoutToken mutation will do the following:\n   *   - Perform billing address validation if address.id is missing\n   *   - Add a new card\n   *   Required auth states: LOGGEDIN"
+  },
+  {
+    "name": "addCardWithoutToken",
+    "context": "   *   - Add a new card\n   *   Required auth states: LOGGEDIN\n   */\n  addCardWithoutToken?: Maybe<Scalars['Boolean']>;\n  /**\n   * The addPotentialCard mutation will do the following\n   * passed:\n   *   - Add a new card to the user wallet\n   *   - Update checkoutSession fundingOptions based on the newly added card"
+  },
+  {
+    "name": "addPotentialCard",
+    "context": "   *   - Update checkoutSession fundingOptions based on the newly added card\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  addPotentialCard?: Maybe<CheckoutSession>;\n  /**\n   * The addShippingAddress mutation will add a shipping address to a\n   * Users shipping addresses, which can be used when approving the payment transaction.\n   * Requires a token param (EC, PAY, or BA token) as a String.\n   * Requires additional parameters for an address (Ex: line1, line2, etc.)."
+  },
+  {
+    "name": "approveApplePayPayment",
+    "context": "   */\n  applyOfferToUser?: Maybe<CheckoutSession>;\n  /** Approves the Apple Pay payment. */\n  approveApplePayPayment?: Maybe<Scalars['JSON']>;\n  /** Approves the Google Pay payment. */\n  approveGooglePayPayment?: Maybe<Scalars['JSON']>;\n  /**\n   * The approveGuestPaymentWithApplePayToken mutation will approve an Apple Pay tokenized guest payment transaction.\n   *"
+  },
+  {
+    "name": "approveGooglePayPayment",
+    "context": "  /** Approves the Apple Pay payment. */\n  approveApplePayPayment?: Maybe<Scalars['JSON']>;\n  /** Approves the Google Pay payment. */\n  approveGooglePayPayment?: Maybe<Scalars['JSON']>;\n  /**\n   * The approveGuestPaymentWithApplePayToken mutation will approve an Apple Pay tokenized guest payment transaction.\n   *\n   * Requires an applePayPaymentInput param as an ApplePayPaymentInput\n   * Requires a token param (EC, PAY, or BA token) as a String"
+  },
+  {
+    "name": "approveGuestPaymentWithApplePayToken",
+    "context": "   *\n   * Required auth states: ANONYMOUS\n   */\n  approveGuestPaymentWithApplePayToken?: Maybe<CheckoutSession>;\n  /**\n   * The approveGuestPaymentWithCreditCard mutation will approve a guest payment transaction with credit card.\n   *\n   * If passed an phone number, it will use that phone number for the transaction. Otherwise it will\n   * use the one in mayfly checkout session."
+  },
+  {
+    "name": "approveGuestPaymentWithCreditCard",
+    "context": "   *\n   * Required auth states: ANONYMOUS\n   */\n  approveGuestPaymentWithCreditCard?: Maybe<CheckoutSession>;\n  /**\n   * The approveGuestSignUpPayment mutation will approve a payment transaction for a signup/guest flow\n   *\n   * Returns a CheckoutSession type.\n   *"
+  },
+  {
+    "name": "approveGuestSignUpPayment",
+    "context": "   *\n   * Required auth states: LOGGEDIN, IDENTIFIED\n   */\n  approveGuestSignUpPayment?: Maybe<CheckoutSession>;\n  /**\n   * The approveMemberPayment mutation will approve a payment for PayPal members.\n   *\n   * This interface uses funding option IDs, rather than plan IDs.\n   *"
+  },
+  {
+    "name": "approveMemberPayment",
+    "context": "   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  approveMemberPayment?: Maybe<CheckoutSession>;\n  /**\n   * This handles the patch and approval process when a user attempts to process a split payment transaction\n   * through the Split Tender interface.\n   *\n   * Returns a CheckoutSession type"
+  },
+  {
+    "name": "approveMemberPaymentWithSplitFundingOptions",
+    "context": "   *\n   * Required auth states: LOGGEDIN\n   */\n  approveMemberPaymentWithSplitFundingOptions?: Maybe<CheckoutSession>;\n  /**\n   * The approvePayment mutation will approve a payment transaction.\n   * If passed an planId, it will select that plan for the transaction.\n   * If passed an addressId, it will select that address for the transaction.\n   * First, plans will be selected, then addresses will be selected, then the"
+  },
+  {
+    "name": "approvePayment",
+    "context": "   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  approvePayment?: Maybe<CheckoutSession>;\n  /**\n   * Approve suggested donation\n   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */"
+  },
+  {
+    "name": "approveSuggestedDonation",
+    "context": "   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  approveSuggestedDonation?: Maybe<Scalars['Boolean']>;\n  /**\n   * The attemptSetStickyFi mutation will set the sticky/primary funding instrument for\n   *   1. Billing Agreements on the Signup flow\n   *   2. EC Subscriptions on both Guest and Signup flows\n   *"
+  },
+  {
+    "name": "attemptSetStickyFi",
+    "context": "   *\n   * Required auth states: LOGGEDIN, IDENTIFIED\n   */\n  attemptSetStickyFi?: Maybe<CheckoutSession>;\n  /**\n   * checkoutGuestWithMemberBenefits mutation will take parameters similar to\n   * isMemberBenefitsEligible query and trys to checkout a guest user as a\n   * member (by generating member security context on xobuyer)\n   *"
+  },
+  {
+    "name": "checkoutGuestWithMemberBenefits",
+    "context": "   *\n   * Required auth states: ANONYMOUS\n   */\n  checkoutGuestWithMemberBenefits?: Maybe<CheckoutSession>;\n  /**\n   * The clearCheckoutSessionCreditFinancingOption mutation will delete the credit financing option\n   * (deprecated, use updateCheckoutSessionCreditFinancingOption instead)\n   * @deprecated use updateCheckoutSessionCreditFinancingOption instead\n   */"
+  },
+  {
+    "name": "completePayment",
+    "context": "  /** The completeOtpConfirmation mutation will complete the one-time-password flow for a card account. */\n  completeOtpConfirmation?: Maybe<CompleteOtpConfirmationResponse>;\n  /** Authorize or capture payment using v2/orders/authorize or capture endpoints given intent */\n  completePayment?: Maybe<Scalars['JSON']>;\n  /**\n   * Marks strongCustomerAuthenticationRequired payment contingency as completed, and removes the contingency from the Checkout Session.\n   * Note that a different contingency may be returned after clearing the strongCustomerAuthenticationRequired contingency,\n   * so clients should still query for paymentContingencies that are supported.\n   */"
+  },
+  {
+    "name": "confirmCreditCardCvv",
+    "context": "   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  confirmCreditCardCvv?: Maybe<CheckoutSession>;\n  /** Risk-based confirm phone confirmation */\n  confirmRiskBasedTwoFactorPhoneConfirmation?: Maybe<RiskBasedPhoneConfirmationResponse>;\n  /** Create Credit key in Mayfly before redirecting to CAPE */\n  createCapeMayflyPayload?: Maybe<Scalars['String']>;\n  /**"
+  },
+  {
+    "name": "createCapeMayflyPayload",
+    "context": "  /** Risk-based confirm phone confirmation */\n  confirmRiskBasedTwoFactorPhoneConfirmation?: Maybe<RiskBasedPhoneConfirmationResponse>;\n  /** Create Credit key in Mayfly before redirecting to CAPE */\n  createCapeMayflyPayload?: Maybe<Scalars['String']>;\n  /**\n   * createMemberAccount mutation will take a user's information and password and attempt to create an account\n   *\n   * Requires a token param (EC, PAY, or BA token) as a String\n   * Requires a firstName (\"John\") as a String"
+  },
+  {
+    "name": "createMemberAccount",
+    "context": "   *\n   * Required auth states: ANONYMOUS\n   */\n  createMemberAccount?: Maybe<CheckoutSession>;\n  /** createOnboardingPaymentPlan mutation will take a user's shipping information and currencyConversionType and attempt to create a checkout session */\n  createOnboardingPaymentPlan?: Maybe<CheckoutSession>;\n  /**\n   * Creates a new Low Scoped accessToken from the provided merchant access token (merchantLSAT)\n   * Low Scope Access Token (LSAT) is produced from a client_id without a secret"
+  },
+  {
+    "name": "createOnboardingPaymentPlan",
+    "context": "   */\n  createMemberAccount?: Maybe<CheckoutSession>;\n  /** createOnboardingPaymentPlan mutation will take a user's shipping information and currencyConversionType and attempt to create a checkout session */\n  createOnboardingPaymentPlan?: Maybe<CheckoutSession>;\n  /**\n   * Creates a new Low Scoped accessToken from the provided merchant access token (merchantLSAT)\n   * Low Scope Access Token (LSAT) is produced from a client_id without a secret\n   * And then it upgrades the lsat thus generated to an upgraded access token using the buyerAccessToken and Order ID\n   * Returns the new upgraded access token that will provide access to GET/PATCH on v2/order and POST v2/order/capture and v2/order/authorize checkout APIs"
+  },
+  {
+    "name": "createUpgradedLowScopeAccessToken",
+    "context": "   * And then it upgrades the lsat thus generated to an upgraded access token using the buyerAccessToken and Order ID\n   * Returns the new upgraded access token that will provide access to GET/PATCH on v2/order and POST v2/order/capture and v2/order/authorize checkout APIs\n   */\n  createUpgradedLowScopeAccessToken?: Maybe<Scalars['String']>;\n  /**\n   * The deleteShippingAddress mutation will delete a shipping address from a Users\n   * shipping addresses, so it cannot be used when approving a payment transaction.\n   * Requires a token param (EC, PAY, or BA token) as a String\n   * Requires an addressId param as a String Returns a CheckoutSession type."
+  },
+  {
+    "name": "onboardGuest",
+    "context": "   *\n   * Required auth states: ANONYMOUS\n   */\n  onboardGuest?: Maybe<CheckoutSession>;\n  /**\n   * The oneClickPayment mutation will plan and approve a payment in one go.\n   * Any contingencies will result in launching the full checkout flow\n   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED"
+  },
+  {
+    "name": "oneClickPayment",
+    "context": "   *\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  oneClickPayment?: Maybe<User>;\n  /**\n   * The optOutWebLLS mutation will unenroll the user from the autologin aka WebLLS feature\n   * Mutation will read the assetValue from cookies unless passed directly\n   */\n  optOutWebLLS?: Maybe<CheckoutSession>;"
+  },
+  {
+    "name": "preAuthorizePayment",
+    "context": "   *\n   * Required auth states: LOGGEDIN, IDENTIFIED\n   */\n  preAuthorizePayment?: Maybe<CheckoutSession>;\n  /** Patch cart with credit installment and update FI. */\n  processCapeReturn?: Maybe<CheckoutSession>;\n  /**\n   * The processCreditApplyPortableResponse mutation will decrypt the payload received from CAP and provide with\n   * the selectedOffer, Repayment instruments and other required credit information"
+  },
+  {
+    "name": "replaceCard",
+    "context": "   *   - fundingOptionId is required for each replace card request, it is acquired from fundingOptionId from declinedInstrument and sent from front end\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  replaceCard?: Maybe<CheckoutSession>;\n  /**\n   * The resolveNeedPhoneContingency mutation will add a phone number to a User,\n   * which is needed to complete a transaction, if a merchant requires a phone number from the customer.\n   * An additional call will be made to paymentapiplatformserv to\n   * clear the PHONE_NUMBER_REQUIRED contingency from the checkout session."
+  },
+  {
+    "name": "saveSharedCardConsent",
+    "context": "   * Save shared card Consent\n   * Check to see if Secondary user has given consent for sharing details with Primary card user\n   */\n  saveSharedCardConsent?: Maybe<Scalars['String']>;\n  /**\n   * signupNewMember mutation will take a user's billing information and password and attempt to create an account\n   *\n   * Requires a token param (EC, PAY, or BA token) as a String\n   * Requires a card as a CardInput (cardNumber, postalCode, cvv, expirationDate)"
+  },
+  {
+    "name": "threeDSConfirmationWithUpdateFundingOption",
+    "context": "   *   After this call returns success we continue to call the PAPS API to update the funding options with checkout session, so that this FI will be avaiable for user to proceed checkout.\n   *   Upon failure we redirect user to checkout review page, or we show relevant error messaging on UI\n   */\n  threeDSConfirmationWithUpdateFundingOption?: Maybe<CheckoutSession>;\n  /**\n   * 3DS lookup endpoint through inbound switch (switchpaymentsapiserv) used to handle 3DS at transaction time\n   * URL: /v1/payment-networks/card-three-d-secure-authentications\n   * Purpose: when Symphony throws 3ds 2.0 contingency upon planning call, we need to call this API to start the 3ds 2.0\n   * resolution process. This is the first call to make, after Device Data Collection(DDC) is triggered in UI."
+  },
+  {
+    "name": "threedsCreateConfirmation",
+    "context": "   * resolution process. This is the first call to make, after Device Data Collection(DDC) is triggered in UI.\n   * In response of this API we get the urls needed for cardinal iframe to enter OTP (response key step_up_url)\n   */\n  threedsCreateConfirmation?: Maybe<ThreedsCreateConfirmationResponse>;\n  /**\n   * 3DS 2.0 FI service handle contingency during addCard: Updates a confirmation resource for a given card confirmation respource\n   * URL: /v1/wallet/card-accounts/{card_account_id}/confirmations/{confirmation_id}/update\n   * card-account.update-confirmation\n   * Purpose: This API is the last call in 3ds 2.0 resolution process"
+  },
+  {
+    "name": "updateCard",
+    "context": "   *   - Update checkoutSession fundingOptions\n   * Required auth states: LOGGEDIN, REMEMBERED, or IDENTIFIED\n   */\n  updateCard?: Maybe<CheckoutSession>;\n  /**\n   * The updateCardWithoutToken mutation will do the following depending on how arguments are being\n   * passed:\n   *   - Update a new card\n   *   - Perform billing address validation if address.id is missing"
+  },
+  {
+    "name": "updateCardWithoutToken",
+    "context": "   *   - Perform billing address validation if address.id is missing\n   * Required auth states: LOGGEDIN\n   */\n  updateCardWithoutToken?: Maybe<Scalars['Boolean']>;\n  /**\n   * The updateCheckoutSessionCreditFinancingOption mutation will update(add or remove)\n   * the credit financing options for a given session\n   */\n  updateCheckoutSessionCreditFinancingOption?: Maybe<CheckoutSession>;"
+  },
+  {
+    "name": "updateCheckoutSessionFundingOptions",
+    "context": "   * Update a post-planning Checkout Session with a funding option ID that was externally updated (eg. through an FI api or some other mutation that does not affect CheckoutSession)\n   * @deprecated use threeDSConfirmationWithUpdateFundingOption instead\n   */\n  updateCheckoutSessionFundingOptions?: Maybe<CheckoutSession>;\n  /**\n   * The updateClientConfig mutation will patch in client configuration to the checkout session, to identify\n   * the selected funding source, integration type, etc.\n   *\n   * Required auth states: ANONYMOUS"
+  },
+  {
+    "name": "updateGuestShippingAddressCallback",
+    "context": "   * Guest flow Server-side Shipping Callback mutation that indicates a shipping address changed from the client.\n   * Updates the amounts and funding options of the CheckoutSession based on the merchant callback.\n   */\n  updateGuestShippingAddressCallback?: Maybe<CheckoutSession>;\n  /**\n   * Guest flow Server-side Shipping Callback mutation that indicates a shipping method selection changed from the client.\n   * Updates the amounts and funding options of the CheckoutSession based on the merchant callback.\n   * Returns updated CheckoutSession.\n   */"
+  },
+  {
+    "name": "updateGuestShippingMethodCallback",
+    "context": "   * Updates the amounts and funding options of the CheckoutSession based on the merchant callback.\n   * Returns updated CheckoutSession.\n   */\n  updateGuestShippingMethodCallback?: Maybe<CheckoutSession>;\n  /**\n   * The updateProfileShippingOptions mutation will update profile shipping methods\n   * in to cart.\n   *\n   * Requires a token param (EC, WPS, PAY, or BA token) as a String"
+  },
+  {
+    "name": "upgradeGuestToMember",
+    "context": "   *\n   * Required auth states: IDENTIFIED\n   */\n  upgradeGuestToMember?: Maybe<CheckoutSession>;\n  /**\n   * Upgrade a Low Scope Access Token (LSAT) produced from a client_id without a secret to an upgraded access token\n   * that will provide access to GET/PATCH on v2/order and POST v2/order/capture and v2/order/authorize checkout APIs\n   * @deprecated use createUpgradedLowScopeAccessToken instead\n   */"
+  }
+]

@@ -1,0 +1,30 @@
+{
+  "date": "2026-07-23",
+  "path": "guest_card_direct_approveGuestPaymentWithCreditCard",
+  "source_schema": "/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx",
+  "schema_field_present": true,
+  "schema_arg_names": [
+    "billingAddress",
+    "card",
+    "currencyConversionType",
+    "email",
+    "feeReferenceId",
+    "firstName",
+    "identityDocument",
+    "installmentTerm",
+    "integrityToken",
+    "lastName",
+    "paymentToken",
+    "phoneNumber",
+    "shippingAddress",
+    "token"
+  ],
+  "auth_state_from_schema_reconstruction": "ANONYMOUS",
+  "workdir": "/tmp/openai-paypal-main-protocol-work",
+  "patch": "/Users/mac/code/my/AutoTeam-F/.open-reverselab/patches/openai-paypal-main-guest-card-direct-v6-on-v5-draft.diff",
+  "harness": "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/repro/test_guest_card_direct_v6_patch.py",
+  "acceptance": "/Users/mac/code/my/AutoTeam-F/.open-reverselab/exports/paypal-openai-main/repro/acceptance_v6_run_20260723.jsonl",
+  "mutation_added": true,
+  "flow_methods_added": true,
+  "assessment": "resolver shape is locally harnessed; source-map evidence still indicates current BA UI main path is onboarding then ApproveOnboardPaymentMutation, so this remains a probe path rather than default success path."
+}

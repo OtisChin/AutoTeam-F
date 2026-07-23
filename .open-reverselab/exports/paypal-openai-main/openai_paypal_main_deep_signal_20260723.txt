@@ -1,0 +1,1279 @@
+# grep signal inventory (redacted values not printed)
+## filenames
+.DS_Store
+.env
+.env.example
+.gitignore
+.venv/.DS_Store
+.venv/.gitignore
+.venv/.lock
+.venv/CACHEDIR.TAG
+.venv/bin/activate
+.venv/bin/activate.bat
+.venv/bin/activate.csh
+.venv/bin/activate.fish
+.venv/bin/activate.nu
+.venv/bin/activate.ps1
+.venv/bin/activate_this.py
+.venv/bin/deactivate.bat
+.venv/bin/httpx
+.venv/bin/idna
+.venv/bin/pako
+.venv/bin/playwright
+.venv/bin/pydoc.bat
+.venv/pako/LICENSE
+.venv/pyvenv.cfg
+README.md
+__pycache__/config.cpython-313.pyc
+__pycache__/main.cpython-313.pyc
+__pycache__/web.cpython-313.pyc
+cache/paypal_signup_content_manifest_last.json
+cache/proxy_geo_cache.json
+cache/smsbower_numbers.json
+config.py
+main.py
+ngrlCaptcha.min.js
+paypal/__init__.py
+paypal/__pycache__/__init__.cpython-313.pyc
+paypal/__pycache__/analytics.cpython-313.pyc
+paypal/__pycache__/fingerprint.cpython-313.pyc
+paypal/__pycache__/flow.cpython-313.pyc
+paypal/__pycache__/graphql.cpython-313.pyc
+paypal/__pycache__/local_headless.cpython-313.pyc
+paypal/__pycache__/models.cpython-313.pyc
+paypal/__pycache__/mtr.cpython-313.pyc
+paypal/__pycache__/proxy.cpython-313.pyc
+paypal/__pycache__/roxy_fingerprint.cpython-313.pyc
+paypal/__pycache__/session.cpython-313.pyc
+paypal/__pycache__/smsbower.cpython-313.pyc
+paypal/__pycache__/tealeaf.cpython-313.pyc
+paypal/__pycache__/traffic_recorder.cpython-313.pyc
+paypal/analytics.py
+paypal/fingerprint.py
+paypal/flow.py
+paypal/graphql.py
+paypal/local_headless.py
+paypal/models.py
+paypal/mtr.py
+paypal/proxy.py
+paypal/roxy_fingerprint.py
+paypal/session.py
+paypal/smsbower.py
+paypal/tealeaf.py
+paypal/traffic_recorder.py
+requirements-headless.txt
+requirements.txt
+tools/hcaptcha_passive_node.js
+tools/paypal_manual_capture.mjs
+tools/roxy_cdp_capture.mjs
+var/headless_cookie_cache.json
+var/headless_cookie_cache.json.lock
+var/headless_last_missing_signup_context.json
+var/roxy_ios_fingerprint_current.json
+var/web.log
+var/web.pid
+web.py
+web_static/app.css
+web_static/app.js
+web_static/index.html
+## sensitive/key-like variable names
+/Users/mac/Downloads/openai-paypal-main/ngrlCaptcha.min.js:1:!function(e){var t={};function n(r){if(t[r])return t[r].exports;var a=t[r]={i:r,l:!1,exports:{}};return e[r].call(a.exports,a,a.exports,n),a.l=!0,a.exports}n.m=e,n.c=t,n.d=function(e,t,r){n.o(e,t)||Object.defineProperty(e,t,{enumerable:!0,get:r})},n.r=function(e){"undefined"!=typeof Symbol&&Symbol.toStringTag&&Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(e,"__esModule",{value:!0})},n.t=function(e,t){if(1&t&&(e=n(e)),8&t)return e;if(4&t&&"object"==typeof e&&e&&e.__esModule)return e;var r=Object.create(null);if(n.r(r),Object.defineProperty(r,"default",{enumerable:!0,value:e}),2&t&&"string"!=typeof e)for(var a in e)n.d(r,a,function(t){return e[t]}.bind(null,a));return r},n.n=function(e){var t=e&&e.__esModule?function(){return e.default}:function(){return e};return n.d(t,"a",t),t},n.o=function(e,t){return Object.prototype.hasOwnProperty.call(e,t)},n.p="",n(n.s=6)}([function(e,t,n){var r=n(1);e.exports.find=function(e,t){if(Array.isArray(e)||void 0!==e.length&&void 0!==e.item){for(var n=[],r=0;r<e.length;r+=1)n.push(e[r].getElementsByClassName(t));return n}return e.getElementsByClassName(t)},e.exports.getParents=function(e,t){for(var n=[],r=e.parentNode;null!==r;){var a=r;a.getAttribute&&a.hasAttribute("class")&&a.getAttribute("class").match(t)&&n.push(a),r=a.parentNode}return n},e.exports.getSiblings=function(e,t){function n(e){for(var n=[];e;e=e.nextSibling)1===e.nodeType&&e.className.match(t)&&n.push(e);return n}if(Array.isArray(e)){var r=[];for(var a in e)r.push(n(a));return r}return n(e)},e.exports.addClass=function(e,t){if(Array.isArray(e))for(var n=0;n<e.length;n+=1){var r=e[n];r.className&&r.className.match("(\\s|^)"+t+"(\\s|$)")||(r.className=r.className?r.className+" "+t:t)}else e.className=e.className?e.className+" "+t:t},e.exports.removeClass=function(e,t){if(Array.isArray(e))for(var n=0;n<e.length;n+=1){var r=e[n];r.className&&(r.className=r.className.replace(t,""))}else e.className&&(e.className=e.className.replace(t,""))},e.exports.hasClass=function(e,t){if(Array.isArray(e)){for(var n=0;n<e.length;n+=1)if(e[n].className.match("(\\s|^)"+t+"(\\s|$)"))return!0;return!1}return e.className.match("(\\s|^)"+t+"(\\s|$)")},e.exports.notifyEvent=function(e,t){try{var n={};Object.assign(n,t),n.state=e;var a=new CustomEvent(r.EVENT_NAME,{detail:n});window.dispatchEvent&&window.dispatchEvent(a)}catch(e){console.log("error in notification event")}}},function(e,t){e.exports={STATES:{PPCAPTCHA_SOLVED:"CLIENT_SIDE_PPCAPTCHA_SOLVED"},CLIENT_STATE:{TRIGGERED:"CAPTCHA_TRIGGERED",SUBMITTED:"CAPTCHA_SUBMITTED",SOLVED:"CAPTCHA_SOLVED",FAILED:"CAPTCHA_INVALID",ERROR:"CAPTCHA_ERROR"},ERROR_STATE:{TIME_OUT:"CAPTCHA_VALIDATION_TIMEOUT",ERROR:"CAPTCHA_VALIDATION_ERROR"},EVENT_NAME:"NGRL_CAPTCHA_EVENT"}},function(e,t){function n(e){return(n="function"==typeof Symbol&&"symbol"==typeof Symbol.iterator?function(e){return typeof e}:function(e){return e&&"function"==typeof Symbol&&e.constructor===Symbol&&e!==Symbol.prototype?"symbol":typeof e})(e)}e.exports.isRequestToPayPal=function(e){if(!(e=this.getUrl(e)))return!1;if(!e.match("https?://"))return!0;var t=/:\/\/(.[^:/]+)/.exec(e);return!(!t||!(/\.?paypal\.com$/.exec(t[1])&&!/bm\.?paypal\.com$/.exec(t[1])&&!/i\.?paypal\.com$/.exec(t[1])||/\.?paypal\.cn$/.exec(t[1])&&!/objects\.?paypal\.cn$/.exec(t[1])||/\.?venmo\.com$/.exec(t[1])||/\.?xoom\.com$/.exec(t[1])))||void 0},e.exports.triggerCustomTracking=function(e){if("undefined"!=typeof PAYPAL&&void 0!==PAYPAL.analytics&&void 0!==PAYPAL.analytics.instance&&"undefined"!=typeof fpti){var t="main:authchallenge::submit:"+window.location.pathname.replace(/\//g,":");if(fpti.pgrp=t,fpti.page=t,e.adsCaptcha&&(fpti.adsCaptcha=e.adsCaptcha),e.link)return fpti.link=e.link,void PAYPAL.analytics.instance.recordClick();PAYPAL.analytics.instance.recordImpression()}},e.exports.serialize=function(e){var t,r,a="";if("object"===n(e)&&"FORM"===e.nodeName){var i=e.elements.length;for(r=0;r<i;r++)(t=e.elements[r]).name&&!t.disabled&&"file"!==t.type&&"reset"!==t.type&&"submit"!==t.type&&"button"!==t.type&&"select-multiple"!==t.type&&("checkbox"!==t.type&&"radio"!==t.type||t.checked)&&(a&&(a+="&"),a+=t.name+"="+encodeURIComponent(t.value))}return a},e.exports.getXMLHTTPResponseText=function(e,t){try{var n="utf-8",r="text/html",a=e.getResponseHeader("Content-Type"),i=new FileReader;if(a){r=a.split(";")[0].trim();var o=/charset\s*=\s*\"?([^\s\"]*)\"?\s*$/i.exec(a);o&&(n=o[1].toLowerCase())}if("arraybuffer"===e.responseType){var s=new Blob([e.response],{type:r.toLowerCase()});i.onloadend=function(){t(null,i.result)},i.onerror=function(){t("Error while reading the response",null)},i.onabort=function(){t("Abort while reading the response",null)},i.readAsText(s,n)}else"json"===e.responseType?t(null,JSON.stringify(e.response)):"document"===e.responseType?t(null,(new XMLSerializer).serializeToString(e.response)):"blob"===e.responseType?(i.onloadend=function(){t(null,i.result)},i.onerror=function(){t("Error while reading the response",null)},i.onabort=function(){t("Abort while reading the response",null)},i.readAsText(e.response,n)):t(null,e.response)}catch(e){return t(e)}},e.exports.isString=function(e){return"string"==typeof e||e instanceof String},e.exports.getUrl=function(e){return e instanceof window.URL?e.href:e instanceof window.Request?e.url:e}},function(e,t){function n(e){return(n="function"==typeof Symbol&&"symbol"==typeof Symbol.iterator?function(e){return typeof e}:function(e){return e&&"function"==typeof Symbol&&e.constructor===Symbol&&e!==Symbol.prototype?"symbol":typeof e})(e)}function r(){this._events=this._events||{},this._maxListeners=this._maxListeners||void 0}function a(e){return"function"==typeof e}function i(e){return"object"===n(e)&&null!==e}function o(e){return void 0===e}e.exports=r,r.EventEmitter=r,r.prototype._events=void 0,r.prototype._maxListeners=void 0,r.defaultMaxListeners=10,r.prototype.setMaxListeners=function(e){if(!function(e){return"number"==typeof e}(e)||e<0||isNaN(e))throw TypeError("n must be a positive number");return this._maxListeners=e,this},r.prototype.emit=function(e){var t,n,r,s,l,c;if(this._events||(this._events={}),"error"===e&&(!this._events.error||i(this._events.error)&&!this._events.error.length)){if((t=arguments[1])instanceof Error)throw t;var u=new Error('Uncaught, unspecified "error" event. ('+t+")");throw u.context=t,u}if(o(n=this._events[e]))return!1;if(a(n))switch(arguments.length){case 1:n.call(this);break;case 2:n.call(this,arguments[1]);break;case 3:n.call(this,arguments[1],arguments[2]);break;default:s=Array.prototype.slice.call(arguments,1),n.apply(this,s)}else if(i(n))for(s=Array.prototype.slice.call(arguments,1),r=(c=n.slice()).length,l=0;l<r;l++)c[l].apply(this,s);return!0},r.prototype.addListener=function(e,t){var n;if(!a(t))throw TypeError("listener must be a function");return this._events||(this._events={}),this._events.newListener&&this.emit("newListener",e,a(t.listener)?t.listener:t),this._events[e]?i(this._events[e])?this._events[e].push(t):this._events[e]=[this._events[e],t]:this._events[e]=t,i(this._events[e])&&!this._events[e].warned&&(n=o(this._maxListeners)?r.defaultMaxListeners:this._maxListeners)&&n>0&&this._events[e].length>n&&(this._events[e].warned=!0,console.error("(node) warning: possible EventEmitter memory leak detected. %d listeners added. Use emitter.setMaxListeners() to increase limit.",this._events[e].length),"function"==typeof console.trace&&console.trace()),this},r.prototype.on=r.prototype.addListener,r.prototype.once=function(e,t){if(!a(t))throw TypeError("listener must be a function");var n=!1;function r(){this.removeListener(e,r),n||(n=!0,t.apply(this,arguments))}return r.listener=t,this.on(e,r),this},r.prototype.removeListener=function(e,t){var n,r,o,s;if(!a(t))throw TypeError("listener must be a function");if(!this._events||!this._events[e])return this;if(o=(n=this._events[e]).length,r=-1,n===t||a(n.listener)&&n.listener===t)delete this._events[e],this._events.removeListener&&this.emit("removeListener",e,t);else if(i(n)){for(s=o;s-- >0;)if(n[s]===t||n[s].listener&&n[s].listener===t){r=s;break}if(r<0)return this;1===n.length?(n.length=0,delete this._events[e]):n.splice(r,1),this._events.removeListener&&this.emit("removeListener",e,t)}return this},r.prototype.removeAllListeners=function(e){var t,n;if(!this._events)return this;if(!this._events.removeListener)return 0===arguments.length?this._events={}:this._events[e]&&delete this._events[e],this;if(0===arguments.length){for(t in this._events)"removeListener"!==t&&this.removeAllListeners(t);return this.removeAllListeners("removeListener"),this._events={},this}if(a(n=this._events[e]))this.removeListener(e,n);else if(n)for(;n.length;)this.removeListener(e,n[n.length-1]);return delete this._events[e],this},r.prototype.listeners=function(e){return this._events&&this._events[e]?a(this._events[e])?[this._events[e]]:this._events[e].slice():[]},r.prototype.listenerCount=function(e){if(this._events){var t=this._events[e];if(a(t))return 1;if(t)return t.length}return 0},r.listenerCount=function(e,t){return e.listenerCount(t)}},function(e,t){e.exports={isChallengeResponse:function(e,t){var n,r,a;return!!e.match(/data-app=[\\]?"authchallenge_response[\\]?"/)&&!(!e.match(/id=[\\]?"captcha-standalone[\\]?"/)&&!e.match(/id=[\\]?"response500[\\]?"/))&&(e.match(/id=[\\]?"response500[\\]?"/)?(a=e.match(/<div id="main"(.+)<\/div>/))&&(r=a[0]):-1!==t.indexOf("application/json")?n=JSON.parse(e).htmlResponse:(a=e.match(/<div id="ads-plugin">(.+)<div id="ads-plugin-end"><\/div>/))&&(n=a[0]),!(!n&&!r)&&{text:e,adsResponse:n,errorResponse:r})},isFailedResponse:function(e){var t=!1;try{t=!!e.match(/class=[\\]?"invalidCode[\\]?"/)}catch(e){console.log("error in checking failed")}return t}}},function(e,t,n){var r=n(8),a=n(2),i=n(1),o=n(0);e.exports={challengeHandler:function(e,t){var n=e.adsResponse,s=e.errorResponse,l=document.querySelector(".ngrl-anomalydetection-div");l&&document.body.removeChild(l);var c=document.createElement("div");c.id="captchaComponent",c.className="ngrl-anomalydetection-div",c.style.display="none";var u=r(t),d={showError:function(e){var t,n;t="focusin"===e.type?document.querySelector(e.target):e,n=o.getParents(t,"textInput")[0],o.hasClass(n,"hasError")&&(n.style["z-index"]=100,o.addClass(o.getSiblings(o.getParents(t,"fieldWrapper"),"errorMessage"),"show"),t.setAttribute("aria-describedby",t.nodeName+"ErrorMessage"))},removeError:function(e){var t=o.getParents(e.target,"textInput")[0];o.hasClass(t,"hasError")&&!o.hasClass(t,"fieldinvalid")&&(t.className=t.className.replace("hasError",""),t.style["z-index"]="",o.removeClass(o.getSiblings(o.getParents(e.target,"fieldWrapper"),"errorMessage"),"show"),e.target.setAttribute("aria-describedby",""))},hideErrorMessage:function(e){var t=document.getElementById(e.target.id);o.getParents(t,"textInput")[0].style["z-index"]="",o.removeClass(o.getSiblings(o.getParents(t,"fieldWrapper"),"errorMessage"),"show")},markError:function(e){var n,r=[].slice.call(e.querySelectorAll(".validate, .validateEmpty")),a=[];0!==r.length&&r.forEach(function(e){a.push(e.getAttribute("name")),e.addEventListener("blur",function(e){var t=document.getElementById(e.target.id);o.hasClass(o.getParents(t,"textInput"),"fieldinvalid")&&o.addClass(o.getParents(t,"textInput"),"hasError")})}),["empty","invalid","valid"].forEach(function(e){a.forEach(function(r){!function(e,r){t.on(e+r,function(t){n=document.getElementById(t+"div"),"invalid"===e&&(n.className+=" field"+e,n.className=n.className.replace("fieldempty",""),o.addClass(o.find(n.querySelectorAll(".errorMessage"),"emptyError"),"hide")),"empty"===e&&(n.className+=" field"+e,n.className=n.className.replace("fieldinvalid",""),o.addClass(o.find(n.querySelectorAll(".errorMessage"),"invalidError"),"hide")),"empty"!==e&&"invalid"!==e||o.removeClass(o.find(n.querySelectorAll(".errorMessage"),e+"Error"),"hide"),"valid"===e&&(o.removeClass(n,"fieldempty"),o.removeClass(n,"fieldinvalid"),o.removeClass(n,"hasError"),o.removeClass(o.find(n,"errorMessage"),"show"),o.addClass(o.find(n.querySelectorAll(".errorMessage"),"emptyError"),"hide"),o.addClass(o.find(n.querySelectorAll(".errorMessage"),"invalidError"),"hide"))})}(e,r)})})},focusError:function(e){var t,n=e.querySelectorAll(".validate, .validateEmpty"),r=[],a=0;n.forEach(function(e){o.getParents(e,"hasError").length>0&&(r.push(a),a+=1)}),(t=n[r[0]]).is(":focus")?d.showError(t):t.focus()},animateNotification:function(){var e=document.getElementById("notifications");e.slideDown(),setTimeout(function(){e.slideUp(function(){t.emit("slidUp")})},5e3)},verifyForm:function(e){var n=e.target,r=[].slice.call(n.querySelectorAll(".validate, .validateEmpty")),a=!0;return 0!==r.length&&r.forEach(function(e){var t=e.name,n=document.getElementById(t+"div");u.doValidation(e),(o.hasClass(n,"fieldempty")||o.hasClass(n,"fieldinvalid"))&&(o.addClass(n,"hasError"),a=!1)}),a?(o.removeClass(n,"hasErrors"),t.emit("valid"+n.name),window.ADS_FPTI&&window.ADS_FPTI.triggerADSClientSideFPTITracking&&window.ADS_FPTI.triggerADSClientSideFPTITracking({captchaState:i.STATES.PPCAPTCHA_SOLVED})):(o.addClass(n,"hasErrors"),e.preventDefault(),t.emit("invalid"+n.name)),a}},p={$el:null,render:function(e){if(o.notifyEvent(i.CLIENT_STATE.TRIGGERED),this.$el=document.getElementById("captcha-standalone"),!this.$el)return this.renderError();this.$el.className+=" captcha-overlay captcha-container",e||(document.getElementsByClassName("captchaRefresh")[0].addEventListener("click",this.refreshCaptcha),document.getElementsByClassName("captchaPlay")[0].addEventListener("click",this.playCaptcha),document.getElementById("captcha").addEventListener("focus",d.showError),document.getElementById("captcha").addEventListener("keydown",d.removeError),document.getElementById("captcha").addEventListener("blur",d.removeError)),t.on("closePopup",function(){p.removePopup()}),this.$el.style.visibility="visible",d.markError(this.$el),u.init(this.$el)},renderError:function(){this.$el=document.getElementById("captchaComponent"),this.$el.className+=" captcha-overlay captcha-container",this.$el.style.display="block",this.$el.style.visibility="visible"},refreshCaptcha:function(e){e.preventDefault(),e.stopPropagation(),a.triggerCustomTracking({adsCaptcha:"captchaRefresh",link:"Captcha refresh."});var t=new XMLHttpRequest;t.open("get","/auth/refreshcaptcha",!0),t.setRequestHeader("Accept","application/json"),t.onreadystatechange=function(){if(4===t.readyState&&this.response){var e=JSON.parse(this.response),n=document.getElementById("captcha");n.querySelector("img").setAttribute("src",e.captchaImgUrl),n.querySelector(".audio a").setAttribute("href",e.captchaAudioUrl),n.querySelector("input").value="",document.getElementById("captchaPlayer").setAttribute("src",e.captchaAudioUrl),document.querySelectorAll("body.desktop").length>0&&n.querySelector("input").focus()}},t.send()},playCaptcha:function(e){a.triggerCustomTracking({adsCaptcha:"playCaptcha",link:"Captcha play audio."});var t=document.querySelector("#captcha.captcha-container"),n=document.getElementById("captchaPlayer");if(!n.canPlayType||!n.canPlayType("audio/mpeg;").replace(/no/,""))return!0;e.preventDefault(),t.querySelector("input").focus(),n.load(),n.play()},removePopup:function(){try{document.body.removeChild(document.getElementById("captchaComponent"))}catch(e){}}};if(t.on("abortChallenge",p.removePopup.bind(p)),s)return c.innerHTML=s,document.body.appendChild(c),p.renderError();c.innerHTML=n,document.body.appendChild(c);var h=!1;0!==document.getElementsByName("recaptcha").length&&(h=!0);var f=document.querySelector("#captchaComponent script[data-name=authchallenge]");if(!f||!f.src)return t.emit("challengeError");var m=document.createElement("script");return m.type="text/javascript",m.src=f.src,m.onerror=function(){var e=document.createEvent("Event");e.initEvent("challengerendered",!0,!0),document.getElementById("captcha-standalone").dispatchEvent(e)},c.appendChild(m),document.getElementById("captcha-standalone").addEventListener("challengerendered",function(){var e=document.querySelector("#captchaComponent form[name=challenge]");if(!e)return t.emit("noChallenge");function n(){t.emit("submitChallenge",{action:e.action,data:a.serialize(e)}),o.notifyEvent(i.CLIENT_STATE.SUBMITTED);var n=document.querySelector("#captchaComponent button[name=continue]");n&&(n.disabled=!0)}"undefined"!=typeof autosubmit&&!0===autosubmit?(a.triggerCustomTracking({adsCaptcha:"silent"}),n()):(h?e.addEventListener("click",function(e){e.preventDefault(),a.triggerCustomTracking({adsCaptcha:"recaptcha"}),n(),t.on("challengeSolved",function(){a.triggerCustomTracking({adsCaptcha:"reCaptchaSolved",link:"Google reCaptcha submit."}),t.emit("closePopup","closePopup")})}):e.addEventListener("submit",function(e){e.preventDefault(),a.triggerCustomTracking({adsCaptcha:"explicit"}),d.verifyForm(e)&&(n(),t.on("challengeSolved",function(){a.triggerCustomTracking({adsCaptcha:"captchaSubmit",link:"Explicit Captcha submit."}),t.emit("closePopup","closePopup")}))}),document.getElementById("captchaComponent").style.display="block",p.render(h))},!1),t}}},function(e,t,n){var r=n(7),a=n(9);!function(){if(!window.paypalADSInterceptorInjected){var e=document.head?document.head:document.getElementsByTagName("head")[0];e&&!e.getAttribute("data-xhr-interceptor-disabled")&&(window.XMLHttpRequest?window.XMLHttpRequest=r:window.ActiveXObject=r),window.fetch&&(window.fetch=a),window.paypalADSInterceptorInjected=!0}}()},function(e,t,n){"use strict";var r=n(3),a=n(4),i=n(5).challengeHandler,o=n(2),s=n(1),l=n(0),c=window.XMLHttpRequest,u=window.ActiveXObject;e.exports=function(e){var t=new r,n=c?new c:new u(e),d=this;d.overriddenMimeType=null,d.challengeSubmit=null,d.xRequestWithHeaderSet=!1,d.isPayPalRequest=!1,d.overrideMimeType=function(e){d.overriddenMimeType=e,n.overrideMimeType(e)},d.setRequestHeader=function(e){"string"==typeof e&&"x-requested-with"===e.toLowerCase()&&(d.xRequestWithHeaderSet=!0),n.setRequestHeader.apply(n,arguments)},d.open=function(e,t){d.isPayPalRequest=o.isRequestToPayPal(t),n.open.apply(n,arguments)},d.send=function(){!d.xRequestWithHeaderSet&&d.isPayPalRequest&&d.setRequestHeader("X-Requested-With","XMLHttpRequest"),n.send.apply(n,arguments),d.xRequestWithHeaderSet=!1},d.abort=function(){d.challengeSubmit&&d.challengeSubmit.abort.apply(d.challengeSubmit,arguments),t.emit("abortChallenge"),n.abort.apply(n,arguments)},d.onreadystatechange=null,n.onreadystatechange=function(){return d.isPayPalRequest?4!==d.readyState||200!==d.status?d.onreadystatechange&&d.onreadystatechange():void 0:d.onreadystatechange&&d.onreadystatechange()},d.onload=null,n.onload=function(){if(!d.isPayPalRequest)return d.onload&&d.onload();var r=function(){d.onreadystatechange&&d.onreadystatechange(),d.onload&&d.onload()},c=n.getResponseHeader("Content-Type");200!==n.status||!c||-1===c.indexOf("application/json")&&-1===c.indexOf("text/html")?r():o.getXMLHTTPResponseText(n,function(o,u){if(o)return r();try{var p=a.isChallengeResponse(u,c);if(!p)return r();a.isFailedResponse(u)&&l.notifyEvent(s.CLIENT_STATE.FAILED),t.on("challengeError",function(){d.onerror&&d.onerror()}),t.on("noChallenge",function(){r()}),t.on("submitChallenge",function(a){!function(r,a){d.challengeSubmit=function(e){return window.XMLHttpRequest?new window.XMLHttpRequest:new window.ActiveXObject(e)}(e),d.challengeSubmit.open("post",r.action,!0),d.challengeSubmit.setRequestHeader("Content-Type","application/x-www-form-urlencoded"),d.overriddenMimeType&&d.challengeSubmit.overrideMimeType(d.overriddenMimeType);d.challengeSubmit.responseType=d.responseType,d.challengeSubmit.onload=function(){n=d.challengeSubmit,a()},d.challengeSubmit.onreadystatechange=function(){4===d.challengeSubmit.readyState&&(l.notifyEvent(s.CLIENT_STATE.SOLVED),n.onreadystatechange&&n.onreadystatechange.apply(n,arguments))},d.ontimeout&&(d.challengeSubmit.timeout=15e3,"ontimeout"in d.challengeSubmit&&(d.challengeSubmit.ontimeout=function(){l.notifyEvent(s.CLIENT_STATE.ERROR,{reason:s.ERROR_STATE.TIME_OUT}),d.ontimeout.apply(d,arguments)}));"onerror"in d.challengeSubmit&&(d.challengeSubmit.onerror=function(){l.notifyEvent(s.CLIENT_STATE.ERROR,{reason:s.ERROR_STATE.ERROR}),d.onerror&&d.onerror.apply(d,arguments)},t.emit("abortChallenge"));d.challengeSubmit.send(r.data)}(a,function(){t.emit("challengeSolved"),r()})}),i(p,t)}catch(e){d.onerror&&d.onerror()}})},["readyState","response","responseText","responseURL","responseXML","status","statusText","upload"].forEach(function(e){Object.defineProperty(d,e,{get:function(){return n[e]}})}),["onerror","onprogress","onloadstart","onloadend","ontimeout","responseType","timeout","withCredentials"].forEach(function(e){Object.defineProperty(d,e,{get:function(){return n[e]},set:function(t){n[e]=t}})}),["addEventListener","removeEventListener","dispatchEvent","getResponseHeader","getAllResponseHeaders"].forEach(function(e){Object.defineProperty(d,e,{value:function(){return n[e].apply(n,arguments)}})})}},function(e,t,n){var r=n(0);e.exports=function(e){var t={init:function(n){if(n){var r=[].slice.call(n.querySelectorAll(".validate, .validateEmpty"));0!==r.length&&r.forEach(function(n){e.on("keyup",function(){t.doValidation(n.target)})})}},doValidation:function(n){if(n){var a=n.type,i=n.name,o=n.getAttribute("disabled"),s=n.value&&n.value.trim();if("text"===a)if(t.isEmpty(n)&&!o)e.emit("empty"+i,i);else if(r.hasClass(n,"validate")&&!o)switch(i){case"captcha":t.isValid(/^\S+$/,s,i)}else e.emit("valid"+i,i)}},isValid:function(t,n,r){t.test(n)?e.emit("valid"+r,r):e.emit("invalid"+r,r)},isEmpty:function(e){return!e.value}};return t}},function(e,t,n){var r=n(3),a=n(4),i=n(5),o=n(2),s=n(1),l=n(0),c=window.fetch;e.exports=function(e,t){var n=e;return e?e instanceof window.Request?n=e.url:e instanceof window.URL&&(n=e.href):n=window.location.href,o.isRequestToPayPal(n)?new Promise(function(n,u){var d=new r;if(e instanceof window.Request)e.headers.has("X-Requested-With")||e.headers.append("X-Requested-With","fetch");else{var p=o.isString(e)||e instanceof window.URL?t:e;p||(t=p={}),p.headers=p.headers||{};var h=!1;for(var f in p.headers)if(f&&"x-requested-with"===f.toLowerCase()){h=!0;break}h||(p.headers["X-Requested-With"]="fetch")}c(e,t).then(function(e){var t=e.headers.get("Content-Type");200!==e.status||!t||-1===t.indexOf("application/json")&&-1===t.indexOf("text/html")?n(e):e.clone().text().then(function(r){var o=a.isChallengeResponse(r,t);if(!o)return n(e);a.isFailedResponse(r)&&l.notifyEvent(s.CLIENT_STATE.FAILED),d.on("challengeError",function(){n(e)}),d.on("noChallenge",function(){n(e)}),d.on("submitChallenge",function(e){(function(e){return window.fetch(e.action,{credentials:"include",method:"post",body:e.data,headers:{"Content-Type":"application/x-www-form-urlencoded"}})})(e).then(function(e){l.notifyEvent(s.CLIENT_STATE.SOLVED),d.emit("challengeSolved"),n(e)}).catch(function(e){l.notifyEvent(s.CLIENT_STATE.ERROR,{reason:s.ERROR_STATE.ERROR}),d.emit("abortChallenge"),u(e)})}),i.challengeHandler(o,d)}).catch(function(){n(e)})}).catch(function(e){u(e)})}):c(e,t)}}]);
+/Users/mac/Downloads/openai-paypal-main/tools/roxy_cdp_capture.mjs:139:  note: 'Attach to an already-open Roxy/Chrome CDP endpoint and continuously record requests, responses, JS, HTML, CSS, WebSocket frames, console, cookies and screenshots.',
+/Users/mac/Downloads/openai-paypal-main/tools/roxy_cdp_capture.mjs:378:  try { await writeJson(path.join(dirs.storage, 'cookies.json'), await context.cookies()); } catch {}
+/Users/mac/Downloads/openai-paypal-main/tools/paypal_manual_capture.mjs:288:  try { await writeJson(path.join(dirs.storage, 'cookies.json'), await context.cookies()); } catch {}
+/Users/mac/Downloads/openai-paypal-main/tools/hcaptcha_passive_node.js:6: * paypalobjects hcaptchapassive_eval.html bridge in happy-dom, lets the
+/Users/mac/Downloads/openai-paypal-main/tools/hcaptcha_passive_node.js:14: *     "iframeUrl": "https://www.paypalobjects.com/.../hcaptchapassive_eval.html?...",
+/Users/mac/Downloads/openai-paypal-main/tools/hcaptcha_passive_node.js:184:  define(nav, 'cookieEnabled', true);
+/Users/mac/Downloads/openai-paypal-main/tools/hcaptcha_passive_node.js:298:    if (msg && msg.log && msg.captchaState) {
+/Users/mac/Downloads/openai-paypal-main/tools/hcaptcha_passive_node.js:299:      console.error('[hcap-state]', msg.captchaState);
+/Users/mac/Downloads/openai-paypal-main/tools/hcaptcha_passive_node.js:303:      if (token === 'NOT_REACHABLE' || token === 'RENDER_FAILURE' || token === 'EMPTY_TOKEN') {
+/Users/mac/Downloads/openai-paypal-main/tools/hcaptcha_passive_node.js:366:    .map((m) => m.msg && m.msg.captchaState)
+/Users/mac/Downloads/openai-paypal-main/web.py:30:from paypal.models import BillingAddress, CardInfo, UserInfo, generate_address, generate_card, generate_user
+/Users/mac/Downloads/openai-paypal-main/web.py:89:PRODUCTION_MODE = env_bool("PAYPAL_WEB_PRODUCTION", False)
+/Users/mac/Downloads/openai-paypal-main/web.py:90:MAX_LOG_LINES = env_int("PAYPAL_WEB_MAX_LOG_LINES", 300, 50, 2000)
+/Users/mac/Downloads/openai-paypal-main/web.py:91:MAX_TOTAL_JOBS = env_int("PAYPAL_WEB_MAX_TOTAL_JOBS", 200, 10, 5000)
+/Users/mac/Downloads/openai-paypal-main/web.py:92:MAX_ACTIVE_JOBS = env_int("PAYPAL_WEB_MAX_ACTIVE_JOBS", 4, 1, 100)
+/Users/mac/Downloads/openai-paypal-main/web.py:93:MAX_ACTIVE_JOBS_PER_DEVICE = env_int("PAYPAL_WEB_MAX_ACTIVE_JOBS_PER_DEVICE", 2, 1, 20)
+/Users/mac/Downloads/openai-paypal-main/web.py:94:JOB_RETENTION_SECONDS = env_int("PAYPAL_WEB_JOB_RETENTION_SECONDS", 24 * 60 * 60, 60, 30 * 24 * 60 * 60)
+/Users/mac/Downloads/openai-paypal-main/web.py:95:OTP_INPUT_TIMEOUT_SECONDS = env_int("PAYPAL_WEB_OTP_TIMEOUT_SECONDS", 30 * 60, 60, 24 * 60 * 60)
+/Users/mac/Downloads/openai-paypal-main/web.py:96:ALLOW_DEBUG_LOGS = env_bool("PAYPAL_WEB_ALLOW_DEBUG_LOGS", False)
+/Users/mac/Downloads/openai-paypal-main/web.py:97:COOKIE_SECURE = env_bool("PAYPAL_WEB_COOKIE_SECURE", False)
+/Users/mac/Downloads/openai-paypal-main/web.py:101:BA_TOKEN_RE = re.compile(r"^BA-[A-Za-z0-9]{8,80}$")
+/Users/mac/Downloads/openai-paypal-main/web.py:107:SMS_PROVIDER_CHOICES = {"manual", "smsbower"}
+/Users/mac/Downloads/openai-paypal-main/web.py:119:def implicit_risk_signals_mode(
+/Users/mac/Downloads/openai-paypal-main/web.py:120:    fingerprint_source: object,
+/Users/mac/Downloads/openai-paypal-main/web.py:129:        str(fingerprint_source or "").strip().lower().replace("-", "_"),
+/Users/mac/Downloads/openai-paypal-main/web.py:151:def mask_card(number: str) -> str:
+/Users/mac/Downloads/openai-paypal-main/web.py:196:        r"(?i)([?&](?:ba_token|token|ec_token|billingAgreementId|billingAgreementToken|billing_agreement_token|access_token|code|pin|password|otp|ssrt|ctxId|ctx_id|cmid|clientMetadataId|client_metadata_id|correlationId|correlation_id|requestId|request_id|sealedResult|sealed_result|visitorToken|visitor_token)=)([^&\s\"']+)",
+/Users/mac/Downloads/openai-paypal-main/web.py:201:        r"(?i)([\"']?\b(?:ba_token|ec_token|billingAgreementId|billingAgreementToken|billing_agreement_token|token|accessToken|password|securityCode|cvv|pin|otp|ssrt|ctxId|ctx_id|cmid|clientMetadataId|client_metadata_id|correlationId|correlation_id|requestId|request_id|sealedResult|sealed_result|visitorToken|visitor_token)\b[\"']?\s*[:=]\s*)([\"']?)([^&,\"'\s}{]+)([\"']?)",
+/Users/mac/Downloads/openai-paypal-main/web.py:207:    text = re.sub(r"\bBA-[A-Za-z0-9]{8,80}\b", lambda m: mask_middle(m.group(0), 4, 4), text)
+/Users/mac/Downloads/openai-paypal-main/web.py:208:    text = re.sub(r"\bEC-[A-Za-z0-9]{8,80}\b", lambda m: mask_middle(m.group(0), 4, 4), text)
+/Users/mac/Downloads/openai-paypal-main/web.py:210:    # Email, CPF, card-like long digit sequences, Brazil/international phone-like values.
+/Users/mac/Downloads/openai-paypal-main/web.py:230:WEB_PHASE1_RISK_TEXT_RE = re.compile(r"(?i)\bphase\s*1\b|\brisk\b|风控")
+/Users/mac/Downloads/openai-paypal-main/web.py:250:    if compact_key in {"password", "securitycode", "cvv", "pin", "otp", "authorization", "cookie", "accesstoken", "euat"}:
+/Users/mac/Downloads/openai-paypal-main/web.py:263:    if compact_key in {"token", "batoken", "ectoken", "billingagreementid", "billingagreementtoken"}:
+/Users/mac/Downloads/openai-paypal-main/web.py:265:    if compact_key in {"cardnumber", "encryptednumber"}:
+/Users/mac/Downloads/openai-paypal-main/web.py:289:        sanitized.pop("risk_runtime", None)
+/Users/mac/Downloads/openai-paypal-main/web.py:290:        sanitized.pop("synthetic_risk_families", None)
+/Users/mac/Downloads/openai-paypal-main/web.py:295:def parse_cookie_header(header: str) -> dict[str, str]:
+/Users/mac/Downloads/openai-paypal-main/web.py:296:    cookies: dict[str, str] = {}
+/Users/mac/Downloads/openai-paypal-main/web.py:300:            cookies[key] = value
+/Users/mac/Downloads/openai-paypal-main/web.py:301:    return cookies
+/Users/mac/Downloads/openai-paypal-main/web.py:304:def public_generated_payload(user: UserInfo, card: CardInfo, address: BillingAddress) -> dict[str, Any]:
+/Users/mac/Downloads/openai-paypal-main/web.py:318:        "card": {
+/Users/mac/Downloads/openai-paypal-main/web.py:319:            "number": mask_card(card.number),
+/Users/mac/Downloads/openai-paypal-main/web.py:320:            "expiry": card.expiry,
+/Users/mac/Downloads/openai-paypal-main/web.py:322:            "card_type": card.card_type,
+/Users/mac/Downloads/openai-paypal-main/web.py:340:    max_card_attempts: int = 5
+/Users/mac/Downloads/openai-paypal-main/web.py:342:    max_authorize_attempts: int = 3
+/Users/mac/Downloads/openai-paypal-main/web.py:343:    card_retry_delay_seconds: float = 6.0
+/Users/mac/Downloads/openai-paypal-main/web.py:344:    card_retry_jitter_seconds: float = 2.0
+/Users/mac/Downloads/openai-paypal-main/web.py:348:    fingerprint_source: str = "headless"
+/Users/mac/Downloads/openai-paypal-main/web.py:351:    risk_signals_mode: str = "headless"
+/Users/mac/Downloads/openai-paypal-main/web.py:471:                "max_card_attempts": self.max_card_attempts,
+/Users/mac/Downloads/openai-paypal-main/web.py:473:                "max_authorize_attempts": self.max_authorize_attempts,
+/Users/mac/Downloads/openai-paypal-main/web.py:474:                "card_retry_delay_seconds": self.card_retry_delay_seconds,
+/Users/mac/Downloads/openai-paypal-main/web.py:475:                "card_retry_jitter_seconds": self.card_retry_jitter_seconds,
+/Users/mac/Downloads/openai-paypal-main/web.py:479:                "fingerprint_source": self.fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/web.py:566:    def _phase2_create_account(self):
+/Users/mac/Downloads/openai-paypal-main/web.py:568:        return super()._phase2_create_account()
+/Users/mac/Downloads/openai-paypal-main/web.py:574:    def _phase4_authorize(self):
+/Users/mac/Downloads/openai-paypal-main/web.py:576:        return super()._phase4_authorize()
+/Users/mac/Downloads/openai-paypal-main/web.py:583:        self.job.set_generated(public_generated_payload(self.user, self.card, self.address))
+/Users/mac/Downloads/openai-paypal-main/web.py:588:            f"注册资料重试 {signup_attempt}/{self.max_card_attempts}：已更换账号/卡信息",
+/Users/mac/Downloads/openai-paypal-main/web.py:590:        self.job.set_generated(public_generated_payload(self.user, self.card, self.address))
+/Users/mac/Downloads/openai-paypal-main/web.py:598:        self.job.set_generated(public_generated_payload(self.user, self.card, self.address))
+/Users/mac/Downloads/openai-paypal-main/web.py:623:            logger.info("SMS verification code sent to phone: {}", self._masked_phone())
+/Users/mac/Downloads/openai-paypal-main/web.py:693:    max_card_attempts: int,
+/Users/mac/Downloads/openai-paypal-main/web.py:696:    max_authorize_attempts: int = 3,
+/Users/mac/Downloads/openai-paypal-main/web.py:697:    card_retry_delay_seconds: float = 6.0,
+/Users/mac/Downloads/openai-paypal-main/web.py:698:    card_retry_jitter_seconds: float = 2.0,
+/Users/mac/Downloads/openai-paypal-main/web.py:702:    fingerprint_source: str = "headless",
+/Users/mac/Downloads/openai-paypal-main/web.py:705:    risk_signals_mode: str = "headless",
+/Users/mac/Downloads/openai-paypal-main/web.py:713:    if sms_provider not in SMS_PROVIDER_CHOICES:
+/Users/mac/Downloads/openai-paypal-main/web.py:717:    if not BA_TOKEN_RE.fullmatch(ba_token):
+/Users/mac/Downloads/openai-paypal-main/web.py:726:        max_card_attempts = int(max_card_attempts)
+/Users/mac/Downloads/openai-paypal-main/web.py:729:    max_card_attempts = max(1, min(max_card_attempts, 20))
+/Users/mac/Downloads/openai-paypal-main/web.py:736:        max_authorize_attempts = int(max_authorize_attempts)
+/Users/mac/Downloads/openai-paypal-main/web.py:739:    max_authorize_attempts = max(1, min(max_authorize_attempts, 10))
+/Users/mac/Downloads/openai-paypal-main/web.py:741:        card_retry_delay_seconds = float(card_retry_delay_seconds)
+/Users/mac/Downloads/openai-paypal-main/web.py:744:    card_retry_delay_seconds = max(0.0, min(card_retry_delay_seconds, 60.0))
+/Users/mac/Downloads/openai-paypal-main/web.py:746:        card_retry_jitter_seconds = float(card_retry_jitter_seconds)
+/Users/mac/Downloads/openai-paypal-main/web.py:749:    card_retry_jitter_seconds = max(0.0, min(card_retry_jitter_seconds, 30.0))
+/Users/mac/Downloads/openai-paypal-main/web.py:759:    fingerprint_source = (fingerprint_source or "headless").strip().lower().replace("-", "_")
+/Users/mac/Downloads/openai-paypal-main/web.py:760:    if fingerprint_source not in FINGERPRINT_SOURCE_CHOICES:
+/Users/mac/Downloads/openai-paypal-main/web.py:764:        raise ValueError("DataDome 模式不正确")
+/Users/mac/Downloads/openai-paypal-main/web.py:768:    risk_signals_mode = (risk_signals_mode or "headless").strip().lower().replace("-", "_")
+/Users/mac/Downloads/openai-paypal-main/web.py:769:    if risk_signals_mode not in RISK_SIGNALS_MODE_CHOICES:
+/Users/mac/Downloads/openai-paypal-main/web.py:770:        raise ValueError("browser risk 模式不正确")
+/Users/mac/Downloads/openai-paypal-main/web.py:795:        max_card_attempts=max_card_attempts,
+/Users/mac/Downloads/openai-paypal-main/web.py:797:        max_authorize_attempts=max_authorize_attempts,
+/Users/mac/Downloads/openai-paypal-main/web.py:798:        card_retry_delay_seconds=card_retry_delay_seconds,
+/Users/mac/Downloads/openai-paypal-main/web.py:799:        card_retry_jitter_seconds=card_retry_jitter_seconds,
+/Users/mac/Downloads/openai-paypal-main/web.py:803:        fingerprint_source=fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/web.py:806:        risk_signals_mode=risk_signals_mode,
+/Users/mac/Downloads/openai-paypal-main/web.py:857:                logger.info("SMS provider: SMSBower auto mode")
+/Users/mac/Downloads/openai-paypal-main/web.py:861:            card = generate_card(proxy_url=proxy_config.url)
+/Users/mac/Downloads/openai-paypal-main/web.py:863:            job.set_generated(public_generated_payload(user, card, address))
+/Users/mac/Downloads/openai-paypal-main/web.py:868:                "Runtime modes: fingerprint={} datadome={} mtr={}",
+/Users/mac/Downloads/openai-paypal-main/web.py:869:                job.fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/web.py:878:                logger.info("Phone: SMSBower auto mode will reserve a Brazil PayPal number before OTP")
+/Users/mac/Downloads/openai-paypal-main/web.py:889:                card=card,
+/Users/mac/Downloads/openai-paypal-main/web.py:891:                max_card_attempts=job.max_card_attempts,
+/Users/mac/Downloads/openai-paypal-main/web.py:893:                max_authorize_attempts=job.max_authorize_attempts,
+/Users/mac/Downloads/openai-paypal-main/web.py:894:                card_retry_delay_seconds=job.card_retry_delay_seconds,
+/Users/mac/Downloads/openai-paypal-main/web.py:895:                card_retry_jitter_seconds=job.card_retry_jitter_seconds,
+/Users/mac/Downloads/openai-paypal-main/web.py:897:                fingerprint_source=job.fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/web.py:900:                risk_signals_mode=job.risk_signals_mode,
+/Users/mac/Downloads/openai-paypal-main/web.py:955:    _set_device_cookie: str = ""
+/Users/mac/Downloads/openai-paypal-main/web.py:1002:        cookies = parse_cookie_header(self.headers.get("Cookie", ""))
+/Users/mac/Downloads/openai-paypal-main/web.py:1003:        device_id = cookies.get(DEVICE_COOKIE_NAME, "").strip()
+/Users/mac/Downloads/openai-paypal-main/web.py:1006:            self._set_device_cookie = device_id
+/Users/mac/Downloads/openai-paypal-main/web.py:1011:    def get_authorized_job(self, job_id: str) -> WebJob | None:
+/Users/mac/Downloads/openai-paypal-main/web.py:1035:            job = self.get_authorized_job(job_id)
+/Users/mac/Downloads/openai-paypal-main/web.py:1058:                fingerprint_source = str(data.get("fingerprint_source", "headless") or "headless")
+/Users/mac/Downloads/openai-paypal-main/web.py:1066:                    max_card_attempts=int(data.get("max_card_attempts", 5) or 5),
+/Users/mac/Downloads/openai-paypal-main/web.py:1069:                    max_authorize_attempts=int(data.get("max_authorize_attempts", 3) or 3),
+/Users/mac/Downloads/openai-paypal-main/web.py:1070:                    card_retry_delay_seconds=float(data.get("card_retry_delay_seconds", 6) or 0),
+/Users/mac/Downloads/openai-paypal-main/web.py:1071:                    card_retry_jitter_seconds=float(data.get("card_retry_jitter_seconds", 2) or 0),
+/Users/mac/Downloads/openai-paypal-main/web.py:1075:                    fingerprint_source=fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/web.py:1078:                    risk_signals_mode=implicit_risk_signals_mode(
+/Users/mac/Downloads/openai-paypal-main/web.py:1079:                        fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/web.py:1082:                        data.get("risk_signals_mode", ""),
+/Users/mac/Downloads/openai-paypal-main/web.py:1095:            job = self.get_authorized_job(job_id)
+/Users/mac/Downloads/openai-paypal-main/web.py:1182:        device_cookie = getattr(self, "_set_device_cookie", "")
+/Users/mac/Downloads/openai-paypal-main/web.py:1183:        if device_cookie:
+/Users/mac/Downloads/openai-paypal-main/web.py:1184:            cookie_attrs = [
+/Users/mac/Downloads/openai-paypal-main/web.py:1185:                f"{DEVICE_COOKIE_NAME}={device_cookie}",
+/Users/mac/Downloads/openai-paypal-main/web.py:1192:                cookie_attrs.append("Secure")
+/Users/mac/Downloads/openai-paypal-main/web.py:1195:                "; ".join(cookie_attrs),
+/Users/mac/Downloads/openai-paypal-main/web.py:1236:        logger.warning("生产模式建议设置 PAYPAL_WEB_COOKIE_SECURE=1，并通过 HTTPS 反向代理访问。")
+/Users/mac/Downloads/openai-paypal-main/web.py:1238:        logger.info("DEBUG 日志已在网页端关闭；设置 PAYPAL_WEB_ALLOW_DEBUG_LOGS=1 才允许显示。")
+/Users/mac/Downloads/openai-paypal-main/config.py:61:# 运行时可用 PAYPAL_FINGERPRINT_SOURCE 覆盖。
+/Users/mac/Downloads/openai-paypal-main/config.py:65:#   PAYPAL_FINGERPRINT_SOURCE=roxy
+/Users/mac/Downloads/openai-paypal-main/config.py:66:#   PAYPAL_ROXY_API_KEY=xxxx
+/Users/mac/Downloads/openai-paypal-main/config.py:67:#   PAYPAL_ROXY_API_PORT=50000
+/Users/mac/Downloads/openai-paypal-main/config.py:79:# DataDome 处理模式：
+/Users/mac/Downloads/openai-paypal-main/config.py:81:#              datadome cookie 时注入 x-datadome-clientid；
+/Users/mac/Downloads/openai-paypal-main/config.py:82:#   "roxy"     使用上面同一个 Roxy 指纹浏览器加载 PayPal/DataDome，让真实
+/Users/mac/Downloads/openai-paypal-main/config.py:83:#              Chrome runtime 执行 ddbm2/paypal challenge 链并回灌 cookie；
+/Users/mac/Downloads/openai-paypal-main/config.py:84:#   "headless" 使用本机 Playwright headless Chromium 执行 DataDome 链；
+/Users/mac/Downloads/openai-paypal-main/config.py:85:#   "auto"     遇到 403/authchallenge 或缺 cookie 时优先 Roxy，失败后回退 protocol；
+/Users/mac/Downloads/openai-paypal-main/config.py:86:#   "off"      不主动处理 DataDome。
+/Users/mac/Downloads/openai-paypal-main/config.py:87:# 运行时可用 PAYPAL_DATADOME_MODE 覆盖。
+/Users/mac/Downloads/openai-paypal-main/config.py:96:#                      requestId/sealedResult/cookies；
+/Users/mac/Downloads/openai-paypal-main/config.py:100:# 运行时可用 PAYPAL_MTR_RUNTIME 覆盖。
+/Users/mac/Downloads/openai-paypal-main/config.py:108:#   PAYPAL_MTR_CHANNEL=iwc-mxo
+/Users/mac/Downloads/openai-paypal-main/config.py:109:#   PAYPAL_MTR_API_KEY=...
+/Users/mac/Downloads/openai-paypal-main/config.py:114:# signup-context browser risk 来源。主流程已移除独立 Phase 1 风控信号步骤。
+/Users/mac/Downloads/openai-paypal-main/config.py:115:#   "roxy"     使用同一个 Roxy 指纹浏览器执行 signup-context browser risk；
+/Users/mac/Downloads/openai-paypal-main/config.py:118:# 运行时可用 PAYPAL_RISK_SIGNALS_MODE 覆盖。
+/Users/mac/Downloads/openai-paypal-main/config.py:119:# PAYPAL_ENABLE_SIGNUP_CONTEXT_RISK 是旧开关，不再允许关闭 Step 3 风控。
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:15:        <p class="subtitle">填写 BA Token 后启动任务；可手动输入手机号，也可使用 SMSBower 自动接码。</p>
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:21:      <section class="card form-card">
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:29:            <input id="baToken" name="baToken" required placeholder="BA-<redacted>" />
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:37:            <span>使用 SMSBower 自动接码</span>
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:54:              <input id="cardRetryDelay" name="cardRetryDelay" type="number" min="0" max="60" step="0.5" value="6" />
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:58:              <input id="cardRetryJitter" name="cardRetryJitter" type="number" min="0" max="30" step="0.5" value="2" />
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:71:                <option value="environment">环境变量代理（PAYPAL_PROXY_URL / PAYPAL_PROXY_POOL）</option>
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:88:              <select id="fingerprintSource" name="fingerprintSource">
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:96:              <span>DataDome 模式</span>
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:146:        <p class="hint">手动模式执行到短信验证时会暂停等待输入；SMSBower 模式会自动取最低价 PayPal 巴西号码并接码。代理按每个任务生效。打开“自动记录程序发包”后会在 captures/program-paypal-* 下保存请求/响应，并可和 roxy 抓包自动生成差异报告。</p>
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:149:      <section class="card jobs-card">
+/Users/mac/Downloads/openai-paypal-main/web_static/index.html:157:      <section class="card current-card span-2">
+/Users/mac/Downloads/openai-paypal-main/web_static/app.css:40:.card { min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); backdrop-filter: blur(20px); padding: 22px; }
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:18:  "cardRetryDelay",
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:19:  "cardRetryJitter",
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:24:  "fingerprintSource",
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:158:      <div class="job-sub">${esc(job.ba_token || "")} · ${esc(fmtTime(job.created_at))} · ${esc(job.proxy_enabled ? (job.proxy_label || "代理开") : "代理关")} · SMS:${esc(job.sms_provider || "manual")} · FP:${esc(job.fingerprint_source || "-")} · DD:${esc(job.datadome_mode || "-")} · MTR:${esc(job.mtr_runtime || "-")}${job.record_traffic ? " · 发包记录开" : ""}</div>
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:186:  phone.placeholder = enabled ? "SMSBower 自动获取，可留空" : "+5591980133818";
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:231:  const runtimeMeta = ` · SMS:${job.sms_provider || "manual"} · FP:${job.fingerprint_source || "-"} · DD:${job.datadome_mode || "-"} · MTR:${job.mtr_runtime || "-"}`;
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:304:        max_card_attempts: Number($("#maxCardAttempts").value || 5),
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:306:        max_authorize_attempts: Number($("#maxAuthorizeAttempts").value || 3),
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:307:        card_retry_delay_seconds: Number($("#cardRetryDelay").value || 6),
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:308:        card_retry_jitter_seconds: Number($("#cardRetryJitter").value || 2),
+/Users/mac/Downloads/openai-paypal-main/web_static/app.js:313:        fingerprint_source: $("#fingerprintSource").value || "headless",
+/Users/mac/Downloads/openai-paypal-main/var/roxy_ios_fingerprint_current.json:26:    "fingerprint_source": "roxy_ios",
+/Users/mac/Downloads/openai-paypal-main/var/roxy_ios_fingerprint_current.json:65:  "device_fingerprint": {
+/Users/mac/Downloads/openai-paypal-main/var/web.log:1:16:31:08 | INFO     | DEBUG 日志已在网页端关闭；设置 PAYPAL_WEB_ALLOW_DEBUG_LOGS=1 才允许显示。
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:4:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:44:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:171:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:220:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:290:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:339:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:409:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:440:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:531:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:580:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:650:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:700:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:772:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:803:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:939:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1049:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1062:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1168:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1208:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1290:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1332:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1502:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1551:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1621:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1641:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1699:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1760:      "cookies": [
+/Users/mac/Downloads/openai-paypal-main/var/headless_cookie_cache.json:1773:          "name": "cookie_check",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:263:      "url": "https://www.paypalobjects.com/webcaptcha/ngrlCaptcha.min.js"
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:368:      "cookieNames": [],
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:384:      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:391:      "cookieNames": [],
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:407:      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:415:    "cookieNames": [],
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:431:    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:437:  "datadome_cookie_len": 128,
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:438:  "datadome_cookie_present": true,
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:441:  "final_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:738:  "page_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:741:  "proxy_fingerprint": "d706f4b5bfb493a7",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:823:    "datadome_cookie_len": 128,
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:824:    "datadome_cookie_present": true,
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:832:      "create account",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:842:    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:850:    "datadome_cookie_len": 128,
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:851:    "datadome_cookie_present": true,
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:859:      "create account",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:869:    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:884:        "create account",
+/Users/mac/Downloads/openai-paypal-main/var/headless_last_missing_signup_context.json:894:      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+/Users/mac/Downloads/openai-paypal-main/README.md:3:PayPal Billing Agreement 流程自动化工具，提供命令行运行方式和本地 Web UI。项目支持代理、浏览器运行时指纹、DataDome/MTR 风控信号、手动手机号 OTP，以及可选的 SMSBower 自动接码。
+/Users/mac/Downloads/openai-paypal-main/README.md:11:- 可选：SMSBower API Key，用于自动接收短信验证码
+/Users/mac/Downloads/openai-paypal-main/README.md:43:PAYPAL_PROXY_ENABLED=1
+/Users/mac/Downloads/openai-paypal-main/README.md:44:PAYPAL_PROXY_URL=http://user:pass@host:port
+/Users/mac/Downloads/openai-paypal-main/README.md:46:PAYPAL_FINGERPRINT_SOURCE=headless
+/Users/mac/Downloads/openai-paypal-main/README.md:47:PAYPAL_DATADOME_MODE=headless
+/Users/mac/Downloads/openai-paypal-main/README.md:48:PAYPAL_MTR_RUNTIME=headless
+/Users/mac/Downloads/openai-paypal-main/README.md:49:PAYPAL_RISK_SIGNALS_MODE=headless
+/Users/mac/Downloads/openai-paypal-main/README.md:51:SMSBOWER_ENABLED=0
+/Users/mac/Downloads/openai-paypal-main/README.md:52:SMSBOWER_API_KEY=replace_with_smsbower_api_key
+/Users/mac/Downloads/openai-paypal-main/README.md:58:- `roxy`：使用 RoxyBrowser Local API，需要配置 `PAYPAL_ROXY_API_KEY`、`PAYPAL_ROXY_API_HOST`、`PAYPAL_ROXY_API_PORT`。
+/Users/mac/Downloads/openai-paypal-main/README.md:70:  --ba-token BA-<redacted> \
+/Users/mac/Downloads/openai-paypal-main/README.md:72:  --fingerprint-source headless \
+/Users/mac/Downloads/openai-paypal-main/README.md:75:  --risk-signals-mode headless
+/Users/mac/Downloads/openai-paypal-main/README.md:78:使用 SMSBower 自动接码：
+/Users/mac/Downloads/openai-paypal-main/README.md:82:  --ba-token BA-<redacted> \
+/Users/mac/Downloads/openai-paypal-main/README.md:84:  --smsbower-api-key YOUR_SMSBOWER_API_KEY
+/Users/mac/Downloads/openai-paypal-main/README.md:91:  --ba-token BA-<redacted> \
+/Users/mac/Downloads/openai-paypal-main/README.md:101:| `--ba-token` | 必填，Billing Agreement token，例如 `BA-...` |
+/Users/mac/Downloads/openai-paypal-main/README.md:103:| `--smsbower` | 启用 SMSBower 自动接码 |
+/Users/mac/Downloads/openai-paypal-main/README.md:107:| `--max-card-attempts` | 卡信息失败后的最大重试次数 |
+/Users/mac/Downloads/openai-paypal-main/README.md:109:| `--fingerprint-source` | 指纹来源：`headless`、`roxy`、`random`、`auto` 等 |
+/Users/mac/Downloads/openai-paypal-main/README.md:110:| `--datadome-mode` | DataDome 模式：`headless`、`roxy`、`protocol`、`auto`、`off` |
+/Users/mac/Downloads/openai-paypal-main/README.md:112:| `--risk-signals-mode` | Signup risk 信号模式：`headless`、`roxy`、`protocol`、`auto`、`off` |
+/Users/mac/Downloads/openai-paypal-main/README.md:135:PAYPAL_WEB_PRODUCTION=1
+/Users/mac/Downloads/openai-paypal-main/README.md:136:PAYPAL_WEB_COOKIE_SECURE=1
+/Users/mac/Downloads/openai-paypal-main/README.md:137:PAYPAL_WEB_ALLOW_DEBUG_LOGS=0
+/Users/mac/Downloads/openai-paypal-main/README.md:138:PAYPAL_WEB_MAX_ACTIVE_JOBS=4
+/Users/mac/Downloads/openai-paypal-main/README.md:139:PAYPAL_WEB_MAX_ACTIVE_JOBS_PER_DEVICE=2
+/Users/mac/Downloads/openai-paypal-main/README.md:149:PAYPAL_FINGERPRINT_SOURCE=roxy
+/Users/mac/Downloads/openai-paypal-main/README.md:150:PAYPAL_DATADOME_MODE=roxy
+/Users/mac/Downloads/openai-paypal-main/README.md:151:PAYPAL_MTR_RUNTIME=roxy
+/Users/mac/Downloads/openai-paypal-main/README.md:152:PAYPAL_RISK_SIGNALS_MODE=roxy
+/Users/mac/Downloads/openai-paypal-main/README.md:154:PAYPAL_ROXY_API_KEY=replace_with_roxy_api_key
+/Users/mac/Downloads/openai-paypal-main/README.md:155:PAYPAL_ROXY_API_HOST=127.0.0.1
+/Users/mac/Downloads/openai-paypal-main/README.md:156:PAYPAL_ROXY_API_PORT=50000
+/Users/mac/Downloads/openai-paypal-main/README.md:157:PAYPAL_ROXY_HEADLESS=1
+/Users/mac/Downloads/openai-paypal-main/README.md:163:PAYPAL_ROXY_WORKSPACE_ID=123456
+/Users/mac/Downloads/openai-paypal-main/README.md:164:PAYPAL_ROXY_PROJECT_ID=123456
+/Users/mac/Downloads/openai-paypal-main/README.md:197:PAYPAL_PROXY_ENABLED=1
+/Users/mac/Downloads/openai-paypal-main/README.md:198:PAYPAL_PROXY_URL=http://user:pass@host:port
+/Users/mac/Downloads/openai-paypal-main/README.md:204:python main.py --ba-token BA-<redacted> --phone +5591999999999 --proxy --proxy-url http://user:pass@host:port
+/Users/mac/Downloads/openai-paypal-main/README.md:212:PAYPAL_WEB_ALLOW_DEBUG_LOGS=1
+/Users/mac/Downloads/openai-paypal-main/README.md:220:PAYPAL_HEADLESS_DEBUG=0
+/Users/mac/Downloads/openai-paypal-main/README.md:221:PAYPAL_HEADLESS_OPTIMIZED_DEBUG=0
+/Users/mac/Downloads/openai-paypal-main/README.md:222:PAYPAL_TRAFFIC_RECORD=0
+/Users/mac/Downloads/openai-paypal-main/requirements-headless.txt:1:# Optional dependency for local Headless Playwright fingerprint/DataDome/MTR modes.
+/Users/mac/Downloads/openai-paypal-main/.gitignore:27:/PAYPAL_*.md
+/Users/mac/Downloads/openai-paypal-main/.gitignore:31:/protocol_payment_reconstruction.md
+/Users/mac/Downloads/openai-paypal-main/paypal/tealeaf.py:169:        if "card" in lowered or "number" in lowered:
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:21:      billingAddress {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:150:query SupportedFundingSourcesQuery($token: String!, $userCountry: CountryCodes) {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:152:    supportedFundingSources(userCountry: $userCountry) {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:171:query InstallmentOptionsQuery($buyerCountry: CountryCodes!, $cardNumber: String!, $cardType: CardIssuerType, $token: String!) {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:174:    cardNumber: $cardNumber
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:175:    cardType: $cardType
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:275:# Step 1: Send SMS OTP
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:292:# Step 2: Verify SMS OTP pin
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:309:# Step 3: Create account + add card + onboard
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:311:mutation SignUpNewMemberMutation($bank: BankAccountInput, $billingAddress: AddressInput, $card: CardInput, $contentIdentifier: String, $country: CountryCodes, $countrySpecificFirstName: String, $countrySpecificLastName: String, $crsData: CommonReportingStandardsInput, $currencyConversionType: CheckoutCurrencyConversionType, $dateOfBirth: DateOfBirth, $email: String!, $firstName: String!, $gender: Gender, $identityDocument: IdentityDocumentInput, $lastName: String!, $middleName: String, $marketingOptOut: Boolean, $nationality: CountryCodes, $occupation: Occupation, $password: <redacted> $phone: PhoneInput!, $placeOfBirth: CountryCodes, $secondaryIdentityDocument: IdentityDocumentInput, $selectedInstallmentOption: InstallmentsInput, $shareAddressWithDonatee: Boolean, $shippingAddress: AddressInput, $supportedThreeDsExperiences: [ThreeDSPaymentExperience], $token: String!, $residentialAddress: AddressInput, $isSignupIncentiveOptIn: Boolean, $isSignupIncentiveOptInStretch: Boolean, $legalAgreements: LegalAgreementsInput, $collectedConsents: [CollectedConsent]) {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:313:    bank: $bank
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:314:    billingAddress: $billingAddress
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:315:    card: $card
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:352:    paymentContingencies {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:439:      paymentCard {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:440:        billingAddress {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:452:        cardProductClass
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:457:        bankIdentificationNumber
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:473:        cardBrandProcessed
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:487:# Step 4: Final billing agreement authorization
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:489:mutation authorize($billingAgreementId: String!, $addressId: String, $fundingPreference: billingFundingPreferenceInput, $legalAgreements: billingLegalAgreementsInput) {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:490:  billing {
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:491:    authorize(
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:492:      billingAgreementId: $billingAgreementId
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:497:      billingAgreementToken
+/Users/mac/Downloads/openai-paypal-main/paypal/graphql.py:498:      paymentAction
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:37:    card_type: str = "CREDIT"
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:60:    datadome_cookie: str = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:76:    paypal_captcha_solved: bool = False
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:77:    show_create_account_action_id: str = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:80:    fetch_device_fingerprint_action_id: str = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:104:    captcha_synthetic_used: bool = False
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:106:    fingerprint_source: str = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:110:    risk_signals_runtime_source: str = ""
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:111:    risk_signals_browser_result: dict[str, object] = field(default_factory=dict)
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:115:    device_fingerprint: dict[str, object] = field(default_factory=dict)
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:122:    def update_from_cookies(self, cookies: dict[str, str]) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:123:        if "nsid" in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:124:            self.nsid = cookies["nsid"]
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:125:        if "d_id" in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:126:            self.d_id = cookies["d_id"]
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:127:        if "datadome" in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:128:            self.datadome_cookie = cookies["datadome"]
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:129:        if "TLTSID" in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:130:            self.tltsid = cookies["TLTSID"]
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:131:        if "TLTDID" in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:132:            self.tltdid = cookies["TLTDID"]
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:134:        if euat_key in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:135:            self.euat_token = cookies[euat_key]
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:385:    """Calculate the Luhn check digit for a partial card number (without the check digit)."""
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:463:    Set PAYPAL_PROXY_GEO_LOOKUP=0 to force purely random Brazil addresses.
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:465:    if not _truthy_env("PAYPAL_PROXY_GEO_LOOKUP", True):
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:523:def _weighted_card_profile() -> dict[str, object]:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:570:def generate_card(proxy_url: str | None = None) -> CardInfo:
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:571:    # Account/card country stays Brazil for this flow; proxy_url is accepted for
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:572:    # API compatibility and future country-aware card profiles.
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:574:    profile = _weighted_card_profile()
+/Users/mac/Downloads/openai-paypal-main/paypal/models.py:590:    return CardInfo(number=number, expiry=expiry, cvv=cvv, card_type="CREDIT")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:61:    def add_cookies(self, cookies: list[JsonObject]) -> None: ...
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:67:    def cookies(self, urls: list[str]) -> list[JsonObject]: ...
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:153:    "cookie",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:162:    "cardnumber",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:318:            "fingerprint_source": "headless",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:358:def _runtime_device_fingerprint(js: JsonObject) -> JsonObject:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:406:        "math_fingerprint_source": js.get("mathFingerprintSource") or "",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:449:        "device_fingerprint": _runtime_device_fingerprint(js),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:547:def _headless_cookie_cache_enabled() -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:548:    raw = _env_text("PAYPAL_HEADLESS_COOKIE_CACHE", "PAYPAL_LOCAL_HEADLESS_COOKIE_CACHE").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:552:def _headless_cookie_cache_path() -> Path:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:553:    raw = _env_text("PAYPAL_HEADLESS_COOKIE_CACHE_PATH", "PAYPAL_LOCAL_HEADLESS_COOKIE_CACHE_PATH")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:554:    return Path(raw).expanduser().resolve() if raw else (_headless_optimized_project_root() / "var" / "headless_cookie_cache.json")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:557:def _headless_cookie_cache_key(proxy_url: str, profile: JsonObject) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:578:def _cookie_identity(cookie: JsonObject) -> tuple[str, str, str]:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:580:        str(cookie.get("name") or ""),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:581:        str(cookie.get("domain") or cookie.get("url") or ""),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:582:        str(cookie.get("path") or "/"),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:586:def _merge_cookie_lists(*groups: list[JsonObject]) -> list[JsonObject]:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:589:    for cookies in groups:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:590:        for cookie in cookies or []:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:591:            item = _normalize_cookie(cookie)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:594:            key = _cookie_identity(item)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:601:def _paypal_cookie_cache_filter(cookies: list[JsonObject]) -> list[JsonObject]:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:604:    for cookie in cookies or []:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:605:        item = _normalize_cookie(cookie)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:620:def _load_headless_cached_cookies(proxy_url: str, profile: JsonObject) -> list[JsonObject]:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:621:    if not _headless_cookie_cache_enabled():
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:623:    path = _headless_cookie_cache_path()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:629:        logger.debug("Local headless cookie cache is unreadable; ignoring: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:631:    key = _headless_cookie_cache_key(proxy_url, profile)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:634:    cookies = _paypal_cookie_cache_filter(cast(list[JsonObject], _list_value(entry.get("cookies"))))
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:635:    return cookies
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:638:def _save_headless_cached_cookies(proxy_url: str, profile: JsonObject, cookies: list[JsonObject]) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:639:    if not _headless_cookie_cache_enabled():
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:641:    filtered = _paypal_cookie_cache_filter(cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:644:    path = _headless_cookie_cache_path()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:647:    key = _headless_cookie_cache_key(proxy_url, profile)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:666:            "cookies": filtered,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:749:    configured_webgl_vendor = _env_text("PAYPAL_HEADLESS_WEBGL_VENDOR")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:750:    configured_webgl_renderer = _env_text("PAYPAL_HEADLESS_WEBGL_RENDERER")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:753:    spoof_webgl = _env_bool("PAYPAL_HEADLESS_SPOOF_WEBGL", False) or _env_bool("PAYPAL_LOCAL_HEADLESS_SPOOF_WEBGL", False)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1044:        "PAYPAL_LOCAL_HEADLESS_BROWSER_CHANNEL",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1045:        "PAYPAL_HEADLESS_BROWSER_CHANNEL",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1046:        "PAYPAL_PLAYWRIGHT_CHANNEL",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1055:    angle_backend = _env_text("PAYPAL_HEADLESS_ANGLE_BACKEND", "PAYPAL_LOCAL_HEADLESS_ANGLE_BACKEND").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1072:    if _env_bool("PAYPAL_HEADLESS_ENABLE_SWIFTSHADER", False) or _env_bool("PAYPAL_LOCAL_HEADLESS_ENABLE_SWIFTSHADER", False):
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1113:def _normalize_cookie(cookie: JsonObject) -> JsonObject | None:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1114:    if not cookie.get("name") or cookie.get("value") is None:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1117:        "name": str(cookie.get("name")),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1118:        "value": str(cookie.get("value")),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1119:        "path": str(cookie.get("path") or "/"),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1120:        "secure": bool(cookie.get("secure", True)),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1122:    domain = str(cookie.get("domain") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1127:    same_site = str(cookie.get("sameSite") or cookie.get("same_site") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1130:    expires = cookie.get("expires")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1133:    if "httpOnly" in cookie:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1134:        item["httpOnly"] = bool(cookie.get("httpOnly"))
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1135:    elif "http_only" in cookie:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1136:        item["httpOnly"] = bool(cookie.get("http_only"))
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1140:def _sanitize_cookies(cookies: list[JsonObject] | None) -> list[JsonObject]:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1142:    for cookie in cookies or []:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1143:        item = _normalize_cookie(cookie)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1188:        from paypal.roxy_fingerprint import _connect_over_cdp
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1378:        "PAYPAL_HEADLESS",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1379:        "PAYPAL_LOCAL_HEADLESS",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1380:        "PAYPAL_HEADLESS_OPTIMIZED",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1381:        "PAYPAL_HEADLESS_OPTIMIZED_ENABLED",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1382:        "PAYPAL_LOCAL_HEADLESS_OPTIMIZED",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1393:        bool(_env_text("PAYPAL_HEADLESS_DEBUG_DIR", "PAYPAL_HEADLESS_OPTIMIZED_DEBUG_DIR"))
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1394:        or _env_bool("PAYPAL_HEADLESS_DEBUG", False)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1395:        or _env_bool("PAYPAL_HEADLESS_OPTIMIZED_DEBUG", False)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1396:        or _env_bool("PAYPAL_HEADLESS_DEBUG_RAW", False)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1397:        or _env_bool("PAYPAL_HEADLESS_OPTIMIZED_DEBUG_RAW", False)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1403:        _env_bool("PAYPAL_HEADLESS_DEBUG_RAW", False)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1404:        or _env_bool("PAYPAL_HEADLESS_OPTIMIZED_DEBUG_RAW", False)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1434:        "PAYPAL_HEADLESS_DATADOME_WAIT_SECONDS",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1438:        "PAYPAL_HEADLESS_OPTIMIZED_DATADOME_WAIT_SECONDS",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1447:    raw = _env_text("PAYPAL_HEADLESS_DATADOME_PREWARM", "PAYPAL_LOCAL_HEADLESS_DATADOME_PREWARM").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1452:    raw = _env_text("PAYPAL_HEADLESS_INTERACTIONS", "PAYPAL_LOCAL_HEADLESS_INTERACTIONS").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1457:    raw = _env_text("PAYPAL_HEADLESS_DATADOME_PREWARM_URLS", "PAYPAL_LOCAL_HEADLESS_DATADOME_PREWARM_URLS")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1481:        "PAYPAL_HEADLESS_MTR_WAIT_SECONDS",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1485:        "PAYPAL_HEADLESS_OPTIMIZED_MTR_WAIT_SECONDS",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1493:def headless_optimized_risk_wait_seconds() -> float:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1495:        "PAYPAL_HEADLESS_RISK_WAIT_SECONDS",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1499:        "PAYPAL_HEADLESS_OPTIMIZED_RISK_WAIT_SECONDS",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1503:def headless_risk_wait_seconds() -> float:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1504:    return headless_optimized_risk_wait_seconds()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1512:                "PAYPAL_HEADLESS_MAX_CONCURRENCY",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1516:                "PAYPAL_HEADLESS_OPTIMIZED_MAX_CONCURRENCY",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1531:    raw = _env_text("PAYPAL_HEADLESS_DEBUG_DIR", "PAYPAL_HEADLESS_OPTIMIZED_DEBUG_DIR")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1537:        "PAYPAL_HEADLESS_MISSING_DIAGNOSTIC_PATH",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1538:        "PAYPAL_HEADLESS_SIGNUP_CONTEXT_DIAGNOSTIC_PATH",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1591:        HeadlessAllowlistRule("www.paypal.com", "/agreements/approve", resource_types=("document",), reason="paypal_document"),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1775:    if host.endswith(".ddc.paypal.com") and any(marker in path for marker in ("/captcha", "/interstitial")):
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1782:            "validatecaptcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1783:            "hcaptcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1784:            "recaptcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1785:            "/captcha/",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1800:    "create account",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1976:        cookies: list[JsonObject] | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:1985:        self.cookies = cookies or []
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2087:            cached_cookies = [] if self.roxy_browser else _load_headless_cached_cookies(self.proxy_url, profile)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2088:            sanitized = _merge_cookie_lists(_sanitize_cookies(self.cookies), cached_cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2090:                self._context.add_cookies(sanitized)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2091:                self.cookies = sanitized
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2166:    def browser_cookies(self) -> list[JsonObject]:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2170:            return cast(list[JsonObject], self._context.cookies(self._target_urls()))
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2174:    def _persist_cookie_cache(self, cookies: list[JsonObject] | None = None) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2179:            _save_headless_cached_cookies(self.proxy_url, profile, cookies or self.browser_cookies())
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2181:            logger.debug("Local headless cookie cache save failed: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2183:    def import_cookies(self, cookies: list[JsonObject] | None) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2184:        sanitized = _sanitize_cookies(cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2187:        self.cookies = sanitized
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2189:            self._context.add_cookies(sanitized)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2191:    def _datadome_cookie(self) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2192:        for cookie in self.browser_cookies():
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2193:            if cookie.get("name") == "datadome" and cookie.get("value"):
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2194:                return str(cookie.get("value") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2198:    def _datadome_cookie_looks_valid(cookies: list[JsonObject]) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2199:        for cookie in cookies or []:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2200:            if cookie.get("name") != "datadome":
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2202:            value = str(cookie.get("value") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2203:            domain = str(cookie.get("domain") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2444:            "paypal_stats": probe("https://b.stats.paypal.com/v2/counter.cgi?p=EC-<redacted>&s=CHECKOUT", method="GET", resource_type="image"),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2460:            "datadome_cookie_present": bool(self._datadome_cookie()),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2461:            "datadome_cookie_len": len(self._datadome_cookie()),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2464:            "proxy_fingerprint": _sha256_hex(self.proxy_url)[:16] if self.proxy_url else "",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2601:                logger.debug("Local headless DataDome navigation did not finish cleanly: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2615:                ready=lambda: bool(self._datadome_cookie()) and not challenge_present(status, read_page_html()),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2626:                    "datadome_present": bool(self._datadome_cookie()),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2632:            if headless_datadome_prewarm_enabled() and not self._datadome_cookie():
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2635:                    if self._datadome_cookie() and not challenge_present(status, html):
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2642:                if self._datadome_cookie() and not challenge_present(status, html):
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2646:            # DataDome often materializes the cookie on a 403 challenge document.
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2647:            # The cookie only becomes useful after the protected URL is loaded
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2649:            # page as final leaves the caller with a challenge-only cookie.
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2651:            while self._datadome_cookie() and challenge_present(status, html) and reload_attempts < 2:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2655:                navigate_once(reason=f"reload_after_datadome_cookie_{reload_attempts}")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2666:        cookies = self.browser_cookies()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2667:        self._persist_cookie_cache(cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2668:        datadome = self._datadome_cookie()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2675:            "cookies": cookies,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2704:        from paypal.roxy_fingerprint import (
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2723:        wait_seconds = wait_seconds if wait_seconds is not None else headless_optimized_risk_wait_seconds()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2790:            assessment["datadome_cookie_present"] = bool(self._datadome_cookie())
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2791:            assessment["datadome_cookie_len"] = len(self._datadome_cookie())
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2817:                        logger.debug("Local headless signup-context DataDome bootstrap navigation did not finish cleanly: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2845:                        "datadome_present": bool(self._datadome_cookie()),
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2860:                    if self._datadome_cookie() and challenged:
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2867:                final_assessment["datadome_cookie_present"] = bool(self._datadome_cookie())
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:2868:                final_assessment["datadome_cookie_len"] = len(self._datadome_cookie())
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3012:        elif not self._datadome_cookie() and not self._datadome_cookie_looks_valid(self.cookies):
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3020:                    logger.debug("Local headless DataDome bootstrap navigation did not finish cleanly: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3022:                while time.time() < datadome_deadline and not self._datadome_cookie():
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3026:            if not self._datadome_cookie():
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3093:        Some Roxy headless pages load the FraudNet/DataDome/Datadog stack but do
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3095:        Sending the log from the browser keeps cookies, proxy, TLS and
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3096:        fingerprint runtime aligned with the selected Roxy/local-headless
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3114:                            (window.PAYPAL && window.PAYPAL.ulData && window.PAYPAL.ulData.correlation_id) ||
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3119:                            (window.PAYPAL && window.PAYPAL.ulData && window.PAYPAL.ulData.app_id) ||
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3210:                    window.PAYPAL = window.PAYPAL || {};
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3211:                    window.PAYPAL.ulData = window.PAYPAL.ulData || {};
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3212:                    window.PAYPAL.ulData.app_id = meta.appId;
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3213:                    window.PAYPAL.ulData.correlation_id = meta.correlationId;
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3214:                    window.PAYPAL.ulData.page = location.href;
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3292:        cookies = self.browser_cookies()
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3293:        self._persist_cookie_cache(cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3301:            "cookies": cookies,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3336:    cookies: list[JsonObject] | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3357:        cookies=cookies,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3439:        const text = `Cwm fjordbank gly ${String.fromCharCode(55357, 56835)}`;
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3748:        cookieEnabled: navigator.cookieEnabled,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3811:def capture_runtime_fingerprint_with_local_headless(
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3840:                logger.debug("Local headless fingerprint stealth init install failed: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3849:                raise LocalHeadlessRuntimeError("local headless fingerprint probe returned no data")
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3852:                "Local headless fingerprint captured: ua={} screen={}x{} viewport={}x{}",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3872:    return capture_runtime_fingerprint_with_local_headless(
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3901:    # DataDome bootstrap code can appear in a perfectly normal PayPal document
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3902:    # (including geo.ddc/captcha endpoint strings used by c.js).  Treat only
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3904:    # documents; generic captcha endpoint URLs are considered challenge proof
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3909:        "ddc-captcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3910:        "datadome captcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3913:        "captcha-delivery.com/captcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3922:            "static.ddc.paypal.com/captcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3924:            "/captcha/",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3925:            "captcha-delivery",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3927:            "captcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3948:    cookies: list[JsonObject] | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3955:    """Local headless DataDome runner.
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:3961:        cookies=cookies,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4023:                const fromWindow = parseMaybe(window.PAYPAL && window.PAYPAL.dfpData);
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4024:                if (fromWindow) return { source: 'window.PAYPAL.dfpData', config: fromWindow };
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4047:                window.PAYPAL = window.PAYPAL || {};
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4048:                window.PAYPAL.dfpData = Object.assign({}, config);
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4075:    cookies: list[JsonObject] | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4090:        cookies=cookies,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4101:def run_phase1_risk_with_local_headless(
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4104:    cookies: list[JsonObject] | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4113:    """Run browser-risk through the shared local-headless implementation.
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4115:    Legacy local-headless risk execution was removed; this now uses the shared
+/Users/mac/Downloads/openai-paypal-main/paypal/local_headless.py:4122:        cookies=cookies,
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1:"""Device fingerprint generation for PayPal anti-fraud system."""
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:21:PAYPAL_RISK_BASE = "https://c.paypal.com/v1/r/d/b"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:22:PAYPAL_RISK_P3 = "https://c6.paypal.com/v1/r/d/b/p3"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:23:PAYPAL_DA_FB_FP_JS = "https://c.paypal.com/da/r/fb_fp.js"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:24:PAYPAL_DFP_JS_LEGACY = "https://www.paypalobjects.com/v15170r-1d3n71ph1c4710n/dfp.js"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:25:PAYPAL_DFP_JS_RDA = "https://www.paypalobjects.com/rdaAssets/fraudnet/ext/dfp.js"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:26:PAYPAL_DDBM_TAGS_JS = "https://ddbm2.paypal.com/tags.js"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:27:PAYPAL_DI_LOG = "https://www.paypal.com/identity/di/log"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:83:def _cookie_value(session, name: str) -> str | None:
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:85:        for cookie in session.client.cookies.jar:
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:86:            if getattr(cookie, "name", "") == name and getattr(cookie, "value", ""):
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:87:                return cookie.value
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:93:def _risk_headers(referer: str, *, content_type: str | None = "application/json") -> dict[str, str]:
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:443:def _build_device_fingerprint(profile: Mapping[str, Any], screen: Mapping[str, Any], viewport: Mapping[str, Any]) -> JsonDict:
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:470:        _digest_bytes("canvas:dataURL:fingerprintjs-like", render_material, length=42)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:508:        "source": str(profile.get("fingerprint_source") or "random"),
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:532:def _normalize_fingerprint_source(source: str | None = None) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:535:        or _load_dotenv_value("PAYPAL_FINGERPRINT_SOURCE")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:562:        _load_dotenv_value("PAYPAL_DATADOME_MODE")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:588:        _load_dotenv_value("PAYPAL_ROXY_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:589:        or _load_dotenv_value("PAYPAL_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:592:    strict = _load_dotenv_value("PAYPAL_ROXY_FINGERPRINT_STRICT").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:600:        _load_dotenv_value("PAYPAL_HEADLESS_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:601:        or _load_dotenv_value("PAYPAL_LOCAL_HEADLESS_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:602:        or _load_dotenv_value("PAYPAL_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:605:    strict = _load_dotenv_value("PAYPAL_HEADLESS_FINGERPRINT_STRICT").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:614:        "PAYPAL_RANDOMIZE_BROWSER_PROFILE",
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:660:            "fingerprint_source": "random",
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:671:    fp = _build_device_fingerprint(profile, screen, viewport)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:676:        "device_fingerprint": fp,
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:688:    """Load a previously captured runtime fingerprint for headless mode.
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:694:    if not _env_truthy("PAYPAL_HEADLESS_USE_PINNED_FINGERPRINT", False):
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:699:        _load_dotenv_value("PAYPAL_HEADLESS_PINNED_FINGERPRINT_PATH")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:700:        or _load_dotenv_value("PAYPAL_PINNED_FINGERPRINT_PATH")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:701:        or "var/roxy_ios_fingerprint_current.json"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:717:    fp = data.get("device_fingerprint")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:724:        "device_fingerprint": dict(cast(JsonDict, fp)),
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:726:    runtime["browser_profile"]["fingerprint_source"] = "headless"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:727:    runtime["browser_profile"]["headless_pinned_fingerprint_path"] = str(path)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:728:    runtime["device_fingerprint"]["source"] = "headless"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:729:    runtime["device_fingerprint"]["pinned_source"] = str(fp.get("source") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:746:    requested = _normalize_fingerprint_source(source)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:750:            from paypal.roxy_fingerprint import configured_roxy_api_key
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:759:            from paypal.roxy_fingerprint import capture_roxy_runtime_profile
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:761:            logger.info("Generating browser fingerprint from Roxy runtime...")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:767:            runtime["browser_profile"]["fingerprint_source"] = "roxy"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:768:            runtime["device_fingerprint"]["source"] = "roxy"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:770:                "Roxy fingerprint captured: ua={} screen={}x{} viewport={}x{}",
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:780:                _load_dotenv_value("PAYPAL_ROXY_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:781:                or _load_dotenv_value("PAYPAL_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:790:                logger.warning("Roxy fingerprint unavailable; falling back to program random: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:797:            from paypal.local_headless import capture_runtime_fingerprint_with_local_headless
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:805:                    "Local headless using pinned fingerprint: ua={} screen={}x{} viewport={}x{}",
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:814:            logger.info("Generating browser fingerprint from local headless runtime...")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:816:            runtime = capture_runtime_fingerprint_with_local_headless(
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:825:            device_fingerprint = cast(dict[str, object], runtime["device_fingerprint"])
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:826:            browser_profile["fingerprint_source"] = "headless"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:827:            device_fingerprint["source"] = "headless"
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:829:                "Local headless fingerprint captured: ua={} screen={}x{} viewport={}x{}",
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:839:                _load_dotenv_value("PAYPAL_HEADLESS_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:840:                or _load_dotenv_value("PAYPAL_LOCAL_HEADLESS_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:841:                or _load_dotenv_value("PAYPAL_FINGERPRINT_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:850:                logger.warning("Local headless fingerprint unavailable; falling back to program random: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:866:    if getattr(state, "browser_profile", None) and getattr(state, "device_fingerprint", None):
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:876:    state.device_fingerprint = runtime["device_fingerprint"]
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:879:    if hasattr(state, "fingerprint_source"):
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:880:        state.fingerprint_source = str(runtime["browser_profile"].get("fingerprint_source") or source or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:907:    dfp = (getattr(state, "device_fingerprint", None) if state else None) or {}
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:928:def _risk_sequence(app_id: str) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1019:            "cookieEnabled": True,
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1048:            "ddi": _cookie_value(session, "ddi"),
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1050:            "vf": _cookie_value(session, "KHcl0EuY7AKSMgfvHl7J5E7hPtK"),
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1067:            "o": ["ua", "colorDepth", "width", "tz", "time", "appId", "correlationId", _risk_sequence(app_id)],
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1216:        "cookie_enabled": True,
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1227:    """Build SignUpNewMember fn_sync_data using the EC token."""
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1235:    urls = [PAYPAL_DA_FB_FP_JS, PAYPAL_DFP_JS_LEGACY, PAYPAL_DFP_JS_RDA]
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1237:        urls.append(PAYPAL_DDBM_TAGS_JS)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1275:        session.post(PAYPAL_DI_LOG, json={"events": events, "meta": {}, "tracking": tracking}, headers={**_risk_headers(referer), "Sec-Fetch-Site": "same-origin"})
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1286:            f"{PAYPAL_RISK_BASE}/w",
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1288:            headers=_risk_headers(referer, content_type=None),
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1294:def send_device_fingerprint(
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1312:    headers = _risk_headers(referer)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1316:            logger.info(f"Sending device fingerprint p3 app_id={app_id}...")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1317:            session.get(PAYPAL_RISK_P3, params={"f": correlation_id, "s": app_id}, headers=_risk_headers(referer, content_type=None))
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1331:            logger.info(f"Sending device fingerprint {endpoint} app_id={app_id}...")
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1332:            session.post(f"{PAYPAL_RISK_BASE}/{endpoint}", json=_wrap(app_id, correlation_id, payload, wrapped), headers=headers)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1338:    if field_id in {"password", "cardCvv"}:
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1340:    if field_id in {"cardNumber", "cardExpiry", "phone", "lastName"}:
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1360:    headers = _risk_headers(str(resolved_referer), content_type=None)
+/Users/mac/Downloads/openai-paypal-main/paypal/fingerprint.py:1375:                f"{PAYPAL_RISK_BASE}/w",
+/Users/mac/Downloads/openai-paypal-main/paypal/proxy.py:65:        # PAYPAL_PROXY_URL=http://user:pass@host:port.
+/Users/mac/Downloads/openai-paypal-main/paypal/proxy.py:150:    env_url = _load_dotenv_value("PAYPAL_PROXY_URL")
+/Users/mac/Downloads/openai-paypal-main/paypal/proxy.py:154:    env_pool = _split_pool(_load_dotenv_value("PAYPAL_PROXY_POOL"))
+/Users/mac/Downloads/openai-paypal-main/paypal/proxy.py:188:        should_enable = bool(custom_proxy) or parse_bool(_load_dotenv_value("PAYPAL_PROXY_ENABLED"), False)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:48:    device_fingerprint: dict[str, object]
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:63:        cookies: list[dict[str, object]] | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:92:    device_fingerprint: dict[str, object] = field(default_factory=dict)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:146:    return os.getenv("PAYPAL_REQUIRE_MTR", "1").strip().lower() not in {
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:156:        _load_dotenv_value("PAYPAL_ROXY_RUNTIME_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:157:        or _load_dotenv_value("PAYPAL_ROXY_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:165:        _load_dotenv_value("PAYPAL_HEADLESS_RUNTIME_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:166:        or _load_dotenv_value("PAYPAL_LOCAL_HEADLESS_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:173:    mode = (mode if mode is not None else os.getenv("PAYPAL_MTR_RUNTIME", str(MTR_RUNTIME_MODE or MTR_RUNTIME_PYTHON_GENERATED))).strip().lower().replace("-", "_")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:192:    raw = os.getenv("PAYPAL_MTR_ROXY_WAIT_SECONDS", "").strip()
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:202:    raw = os.getenv("PAYPAL_MTR_HEADLESS_WAIT_SECONDS", "").strip()
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:240:        _load_dotenv_value("PAYPAL_MTR_CHANNEL")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:249:        _load_dotenv_value("PAYPAL_MTR_API_KEY")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:268:    return bool(re.fullmatch(r"BA-[A-Za-z0-9]{8,80}", (value or "").strip()))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:281:        _load_dotenv_value("PAYPAL_MTR_CLIENT_METADATA_ID")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:282:        or _load_dotenv_value("MTR_CLIENT_METADATA_ID")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:293:        "billingAgreementToken",
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:589:    return state.device_fingerprint or {}
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:974:    return _str_value(profile.get("fingerprint_source")).lower() in {
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:985:def _fingerprint_source(profile: dict[str, object], dfp: dict[str, object] | None = None) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:987:    profile_source = _str_value(profile.get("fingerprint_source"))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:991:def _state_fingerprint_source(state: _MtrState) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:992:    return _fingerprint_source(_profile(state), _dfp(state))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:999:    state.device_fingerprint = _dict_value(runtime.get("device_fingerprint"))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1003:    if hasattr(state, "fingerprint_source"):
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1004:        setattr(state, "fingerprint_source", _state_fingerprint_source(state))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1007:def _ensure_mtr_runtime_fingerprint_source(session: _MtrSession, state: _MtrState, source: str) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1008:    if _state_fingerprint_source(state) == source:
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1010:    fingerprint_module = importlib.import_module("paypal.fingerprint")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1011:    generate_runtime_profile = cast(Callable[..., dict[str, object]], getattr(fingerprint_module, "generate_runtime_profile"))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1012:    strict_env = "PAYPAL_ROXY_FINGERPRINT_STRICT" if source == MTR_RUNTIME_ROXY else "PAYPAL_HEADLESS_FINGERPRINT_STRICT"
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1027:    runtime_dfp = _dict_value(runtime.get("device_fingerprint"))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1028:    if _fingerprint_source(runtime_profile, runtime_dfp) != source:
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1029:        raise RuntimeError(f"MTR {source} runtime requires fingerprint_source={source}")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1196:    source = _fingerprint_source(profile, dfp)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1460:    math_fingerprint_hash = _str_value(dfp.get("math_fingerprint_hash")) or _dfp_source_hash(dfp.get("math_fingerprint_source"), canvas_hash)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1508:        "s46": math_fingerprint_hash,
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1812:            "cookieEnabled": True,
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1853:            "source": _str_value(dfp.get("source"), _str_value(profile.get("fingerprint_source"), "random")),
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:1929:            "fingerprintSource": _str_value(profile.get("fingerprint_source"), _str_value(dfp.get("source"), "random")),
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2066:    _device_fingerprint: dict[str, object] | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2076:        device_fingerprint=_device_fingerprint or {},
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2085:def _export_browser_cookies(session: _MtrSession) -> list[dict[str, object]]:
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2086:    export_cookies = getattr(session, "export_cookies_for_browser", None)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2087:    cookies: list[dict[str, object]] = []
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2088:    if callable(export_cookies):
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2089:        exported_cookies = cast(Callable[[], object], export_cookies)()
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2090:        if isinstance(exported_cookies, list):
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2091:            for item in cast(list[object], exported_cookies):
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2093:                    cookies.append(cast(dict[str, object], item))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2094:    return cookies
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2097:def _import_browser_cookies(session: _MtrSession, result_cookies: object) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2098:    import_cookies = getattr(session, "import_browser_cookies", None)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2099:    if callable(import_cookies) and result_cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2100:        _ = cast(Callable[[object], object], import_cookies)(result_cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2145:        result_cookies = result.get("cookies")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2146:        cookie_count = len(cast(list[object], result_cookies)) if isinstance(result_cookies, list) else 0
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2156:            "cookie_count": cookie_count,
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2176:    roxy_module = importlib.import_module("paypal.roxy_fingerprint")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2225:        cookies=_export_browser_cookies(session),
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2228:    result_cookies = result.get("cookies")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2229:    _import_browser_cookies(session, result_cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2252:        cookies=_export_browser_cookies(session),
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2259:    _import_browser_cookies(session, result.get("cookies"))
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2274:            raise RuntimeError("MTR is disabled while PAYPAL_REQUIRE_MTR=1")
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2279:            _ensure_mtr_runtime_fingerprint_source(session, state, MTR_RUNTIME_ROXY)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2291:            _ensure_mtr_runtime_fingerprint_source(session, state, MTR_RUNTIME_HEADLESS)
+/Users/mac/Downloads/openai-paypal-main/paypal/mtr.py:2337:        f"{page_url}. Per automation_vs_real_browser_risk_diff.md, pure protocol code must not synthesize or submit this browser-runtime device proof."
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:4:from http.cookiejar import Cookie
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:153:def _captcha_mode_raw() -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:155:        _load_dotenv_value("PAYPAL_CAPTCHA_BYPASS_MODE")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:156:        or _load_dotenv_value("PAYPAL_CAPTCHA_MODE")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:161:def _normalize_captcha_mode(mode: str) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:169:def strict_browser_risk_enabled() -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:170:    return _load_dotenv_value("PAYPAL_STRICT_BROWSER_RISK").strip().lower() in {
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:179:def paypal_captcha_bypass_mode() -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:180:    mode = _captcha_mode_raw()
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:181:    normalized = _normalize_captcha_mode(mode)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:184:        if strict_browser_risk_enabled() and not _env_truthy("PAYPAL_ALLOW_SYNTHETIC_CAPTCHA"):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:186:                "Ignoring synthetic CAPTCHA mode {} while PAYPAL_STRICT_BROWSER_RISK=1.",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:204:def captcha_frontend_disable_enabled() -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:205:    return paypal_captcha_bypass_mode() == CAPTCHA_FRONTEND_DISABLE_MODE
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:316:        "payment_intent",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:350:        "billingAgreementId",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:351:        "billingAgreementToken",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:375:        "cookie",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:384:    value = re.sub(r"\bBA-[A-Za-z0-9]{8,80}\b", lambda match: _mask_middle(match.group(0)), value)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:385:    value = re.sub(r"\bEC-[A-Za-z0-9]{8,80}\b", lambda match: _mask_middle(match.group(0)), value)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:390:    """Remove secrets and high-risk PII before writing diagnostics."""
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:403:    if "authorization" in compact_key or "cookie" in compact_key:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:418:    if compact_key in {"token", "batoken", "ectoken", "billingagreementid", "billingagreementtoken"}:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:422:    if compact_key in {"cardnumber", "encryptednumber"}:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:487:def _extract_cookie_value_from_headers(headers: Any, cookie_name: str) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:488:    pattern = re.compile(r"(?:^|,\s*)" + re.escape(cookie_name) + r"=([^;,]*)")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:489:    for header in _header_values(headers, "set-cookie"):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:512:            "data-captcha-type",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:513:            "/auth/validatecaptcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:514:            "hcaptchapassive",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:515:            "recaptcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:516:            "captcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:536:    """Manages HTTP session with cookie persistence and logging."""
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:548:            "PAYPAL_FORCE_HIGH_ENTROPY_CH",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:554:            "PAYPAL_USE_CURL_CFFI",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:565:            "http2": os.getenv("PAYPAL_HTTP2", "1").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:573:            impersonate = os.getenv("PAYPAL_CURL_IMPERSONATE", "chrome").strip() or "chrome"
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:596:            "pps_validatecaptcha_*.json",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:597:            "pps_hcaptchapassive_*.json",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:634:        clear_cookies: bool = False,
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:639:        GuJumpgate's browser-side cleanup only removes the visible captcha DOM;
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:640:        it does **not** delete PayPal session cookies.  Keeping cookies is
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:642:        request escalate from hcaptchapassive to reCAPTCHA.  Cookie/file purge
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:647:        removed_cookies: set[str] = set()
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:648:        challenge_cookie_names = {"tsrce", "nsid", "x-pp-s", "l7_az"}
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:649:        if clear_cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:651:                cookie_names: set[str] = set()
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:653:                    cookie_names.update(str(name) for name, _ in self.client.cookies.items())
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:656:                        cookie_names.update(
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:657:                            str(getattr(cookie, "name", cookie)) for cookie in self.client.cookies
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:661:                for name in sorted(challenge_cookie_names & cookie_names):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:663:                        self.client.cookies.delete(name)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:664:                        removed_cookies.add(name)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:667:                            del self.client.cookies[name]
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:668:                            removed_cookies.add(name)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:672:                jar = self.client.cookies.jar
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:673:                for cookie in list(jar):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:674:                    name = getattr(cookie, "name", "")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:675:                    if name not in challenge_cookie_names:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:679:                            domain=getattr(cookie, "domain", None),
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:680:                            path=getattr(cookie, "path", None),
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:683:                        removed_cookies.add(name)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:686:            if "nsid" in removed_cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:688:            self._sync_state_cookies()
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:696:                "data-captcha-type",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:697:                "recaptcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:698:                "hcaptchapassive",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:703:            "PayPal authchallenge frontend state purged reason={} files={} cookies={} markers={} clear_cookies={} clear_files={}",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:706:            ",".join(sorted(removed_cookies)) or "-",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:708:            clear_cookies,
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:714:            "removed_cookies": sorted(removed_cookies),
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:721:    def _sync_state_cookies(self):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:722:        """Pull important cookies into SessionState after each request."""
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:723:        cookie_dict = {}
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:725:            cookies = self.client.cookies
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:727:                for name, value in cookies.items():
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:728:                    cookie_dict[str(name)] = str(value)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:730:                for cookie in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:731:                    name = getattr(cookie, "name", cookie)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:732:                    value = getattr(cookie, "value", None)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:735:                            value = cookies[name]
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:738:                    cookie_dict[str(name)] = str(value)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:740:            jar = self.client.cookies
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:741:            # PayPal may set the same cookie name for multiple domain/path scopes
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:744:            for cookie in jar.jar:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:745:                if isinstance(cookie, Cookie):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:746:                    cookie_dict[cookie.name] = cookie.value
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:747:        self.state.update_from_cookies(cookie_dict)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:750:        """Capture auth cookies directly from Set-Cookie in case the jar misses them."""
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:752:            token = _extract_cookie_value_from_headers(
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:760:            logger.info("EUAT cookie captured from response Set-Cookie header len={}", len(token))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:762:    def export_cookies_for_browser(self) -> list[dict[str, Any]]:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:763:        """Export current HTTP-session cookies in Playwright add_cookies shape."""
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:767:        def add_cookie(
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:796:            jar = getattr(getattr(self, "client", None), "cookies", None)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:799:                for cookie in raw_jar:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:800:                    add_cookie(
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:801:                        getattr(cookie, "name", ""),
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:802:                        getattr(cookie, "value", ""),
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:803:                        domain=getattr(cookie, "domain", "") or ".paypal.com",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:804:                        path=getattr(cookie, "path", "/") or "/",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:805:                        secure=bool(getattr(cookie, "secure", True)),
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:806:                        http_only=bool(getattr(cookie, "_rest", {}).get("HttpOnly", False))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:807:                        if isinstance(getattr(cookie, "_rest", None), dict)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:812:                    add_cookie(str(name), str(value))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:817:    def import_browser_cookies(self, cookies: list[dict[str, Any]]) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:818:        """Import cookies captured from a real browser into the HTTP session."""
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:819:        if not cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:821:        cookie_dict: dict[str, str] = {}
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:822:        jar = getattr(getattr(self, "client", None), "cookies", None)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:823:        for cookie in cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:824:            name = str(cookie.get("name") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:825:            value = str(cookie.get("value") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:828:            domain = str(cookie.get("domain") or ".paypal.com")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:829:            path = str(cookie.get("path") or "/")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:830:            secure = bool(cookie.get("secure", True))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:841:                    self.client.cookies.set(name, value, domain=domain, path=path)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:844:            cookie_dict[name] = value
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:845:        if cookie_dict:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:846:            self.state.update_from_cookies(cookie_dict)
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:963:        """Mirror PayPal's DataDome bootstrap hook.
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:967:        datadome cookie has not yet been materialized.  Keep the behavior at the
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:971:        if not client_id or getattr(self.state, "datadome_cookie", ""):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:991:    def _is_captcha_fake_200_endpoint(url: str) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1000:        return path in {"/auth/validatecaptcha", "/auth/verifyhcaptchapassive"}
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1003:    def _is_captcha_block_204_asset(url: str) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1011:                "ngrlcaptcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1012:                "hcaptchapassive",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1013:                "hcaptcha.html",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1014:                "recaptcha_v2",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1015:                "recaptcha_v3",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1016:                "captcha-standalone",
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1035:                "x-paypal-captcha-bypass": CAPTCHA_FRONTEND_DISABLE_MODE,
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1040:    def _captcha_frontend_disable_response(
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1047:        if not force and not captcha_frontend_disable_enabled():
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1049:        if self._is_captcha_fake_200_endpoint(url):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1051:                self.state.captcha_synthetic_used = True
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1066:        if self._is_captcha_block_204_asset(url):
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1068:                self.state.captcha_synthetic_used = True
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1087:        disable_captcha_synthetic = bool(kwargs.pop("disable_captcha_synthetic", False))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1088:        force_captcha_synthetic = bool(kwargs.pop("force_captcha_synthetic", False))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1101:            if disable_captcha_synthetic
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1102:            else self._captcha_frontend_disable_response(
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1105:                force=force_captcha_synthetic,
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1133:        self._sync_state_cookies()
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1142:        disable_captcha_synthetic = bool(kwargs.pop("disable_captcha_synthetic", False))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1143:        force_captcha_synthetic = bool(kwargs.pop("force_captcha_synthetic", False))
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1156:            if disable_captcha_synthetic
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1157:            else self._captcha_frontend_disable_response(
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1160:                force=force_captcha_synthetic,
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1196:        self._sync_state_cookies()
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1216:            or variables.get("billingAgreementId")
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1226:        app_name = "checkoutuinodeweb" if operation_name == "authorize" else "checkoutuinodeweb_weasley"
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1250:            # browser-captured final Hagrid authorize call, which posts to
+/Users/mac/Downloads/openai-paypal-main/paypal/session.py:1265:            # GraphQL JSON body for SignUpNewMemberMutation.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:4:  Phase 0: DataDome verification + initial page load
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:5:  Phase 2: Create account (email submission → signup page)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:6:  Phase 3: Fill signup form + submit (triggers 2FA SMS)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:7:  Phase 4: OTP verification + final authorize mutation
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:31:    generate_card,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:41:    captcha_frontend_disable_enabled,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:43:    paypal_captcha_bypass_mode,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:45:    strict_browser_risk_enabled,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:49:from paypal.fingerprint import (
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:54:    send_device_fingerprint,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:104:    "fetch_device_fingerprint_action_id": "40119ea45de7135869f32892c6e0436cc9722b7775",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:105:    "show_create_account_action_id": "408cdbfcfb063642520b8dde73b124955e07000967",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:140:        card: CardInfo,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:142:        max_card_attempts: int = 5,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:144:        max_authorize_attempts: int = 3,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:145:        card_retry_delay_seconds: float = 6.0,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:146:        card_retry_jitter_seconds: float = 2.0,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:150:        fingerprint_source: str | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:153:        risk_signals_mode: str | None = None,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:160:        self.card = card
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:162:        self.max_card_attempts = max(1, max_card_attempts)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:164:        self.max_authorize_attempts = max(1, max_authorize_attempts)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:165:        self.card_retry_delay_seconds = max(0.0, float(card_retry_delay_seconds))
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:166:        self.card_retry_jitter_seconds = max(0.0, float(card_retry_jitter_seconds))
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:171:        self.fingerprint_source = fingerprint_source
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:174:        self.risk_signals_mode = risk_signals_mode
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:176:        self._requested_risk_signals_mode = self._risk_signals_mode_raw()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:182:            source=self.fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:191:        self.captcha_bypass_mode = paypal_captcha_bypass_mode()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:193:        self._billing_address_autocomplete_succeeded = False
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:195:        self._signup_billing_address_prepared = False
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:200:        if keep_roxy_browser and self._fingerprint_runtime_requested_roxy():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:202:                (self.state.browser_profile or {}).get("fingerprint_source")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:203:                or getattr(self.state, "fingerprint_source", "")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:209:                    "Roxy fingerprint fell back to program random; Roxy Local API/runtime is unavailable."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:236:            _load_proxy_dotenv_value("PAYPAL_ROXY_RUNTIME_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:237:            or _load_proxy_dotenv_value("PAYPAL_ROXY_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:246:    def _fingerprint_runtime_requested_roxy(self) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:248:            self.fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:249:            ("PAYPAL_FINGERPRINT_SOURCE", "FINGERPRINT_SOURCE"),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:273:        if self._risk_signals_mode_raw() == "roxy":
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:274:            self.risk_signals_mode = "protocol"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:279:        fingerprint_source = self._raw_mode_value(
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:280:            self.fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:281:            ("PAYPAL_FINGERPRINT_SOURCE", "FINGERPRINT_SOURCE"),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:286:            ("PAYPAL_DATADOME_MODE", "DATADOME_MODE"),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:291:            ("PAYPAL_MTR_RUNTIME", "MTR_RUNTIME"),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:294:        risk_mode = self._raw_mode_value(
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:295:            self.risk_signals_mode,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:296:            ("PAYPAL_RISK_SIGNALS_MODE", "RISK_SIGNALS_MODE"),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:301:            for value in (fingerprint_source, datadome_mode, mtr_runtime, risk_mode)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:330:        # SignUpNewMember sends `country` from the billing/account country.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:406:            profile.get("fingerprint_source") or getattr(self.state, "fingerprint_source", "") or "random",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:424:        # PayPal's DataDome bootstrap stores the initial client id in a local
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:427:        # browser's x-datadome-clientid request hook until the cookie exists.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:443:            logger.info("DataDome client id captured for request header replay len={}", len(client_id))
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:448:            or _load_proxy_dotenv_value("PAYPAL_DATADOME_MODE")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:487:            _load_proxy_dotenv_value("PAYPAL_HEADLESS_RUNTIME_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:488:            or _load_proxy_dotenv_value("PAYPAL_LOCAL_HEADLESS_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:496:            _load_proxy_dotenv_value("PAYPAL_DATADOME_PHASE0_PREFLIGHT")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:497:            or _load_proxy_dotenv_value("PAYPAL_DATADOME_PREFLIGHT")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:498:            or _load_proxy_dotenv_value("PAYPAL_HEADLESS_DATADOME_PREFLIGHT")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:506:            _load_proxy_dotenv_value("PAYPAL_HEADLESS_DATADOME_ROXY_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:507:            or _load_proxy_dotenv_value("PAYPAL_LOCAL_HEADLESS_DATADOME_ROXY_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:513:            from paypal.roxy_fingerprint import configured_roxy_api_key
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:522:            _load_proxy_dotenv_value("PAYPAL_HEADLESS_SIGNUP_CONTEXT_ROXY_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:523:            or _load_proxy_dotenv_value("PAYPAL_LOCAL_HEADLESS_SIGNUP_CONTEXT_ROXY_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:524:            or _load_proxy_dotenv_value("PAYPAL_HEADLESS_DATADOME_ROXY_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:525:            or _load_proxy_dotenv_value("PAYPAL_LOCAL_HEADLESS_DATADOME_ROXY_FALLBACK")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:531:            from paypal.roxy_fingerprint import configured_roxy_api_key
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:539:        raw = _load_proxy_dotenv_value("PAYPAL_DATADOME_ROXY_WAIT_SECONDS")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:549:        raw = _load_proxy_dotenv_value("PAYPAL_DATADOME_HEADLESS_WAIT_SECONDS")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:559:        from paypal.roxy_fingerprint import (
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:575:        logger.info("Opening Roxy browser for DataDome runtime with proxy: {}", self.proxy_config.label)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:584:            self.state.device_fingerprint = runtime.get("device_fingerprint", {})
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:632:            "datadome captcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:633:            "ddc-captcha",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:649:            "cookie_count": len(result.get("cookies") or []),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:658:        if solved and result.get("cookies"):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:659:            self.session.import_browser_cookies(result["cookies"])
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:661:            self.state.datadome_cookie = str(result["datadome"])
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:664:                "DataDome solved through {} browser reason={} cookies={} datadome_len={}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:667:                len(result.get("cookies") or []),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:672:            "{} DataDome run did not clear challenge reason={} status={} url={} datadome_present={} blocked_by_datadome={}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:700:                        "Local headless DataDome remained challenged; retrying the same check through Roxy browser runtime."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:703:                        from paypal.roxy_fingerprint import solve_datadome_with_roxy
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:709:                            cookies=self.session.export_cookies_for_browser(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:721:                            "Roxy fallback after local headless DataDome challenge failed: {}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:728:                        "Local headless DataDome did not clear challenge; falling back to protocol mode for this job."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:731:            from paypal.roxy_fingerprint import solve_datadome_with_roxy
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:737:                cookies=self.session.export_cookies_for_browser(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:753:                logger.warning("Local headless DataDome failed; falling back to protocol method: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:758:            logger.warning("Roxy DataDome failed; falling back to protocol method: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:764:            or _load_proxy_dotenv_value("PAYPAL_MTR_RUNTIME")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:804:    def _risk_signals_mode_raw(self) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:806:            self.risk_signals_mode
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:807:            or _load_proxy_dotenv_value("PAYPAL_RISK_SIGNALS_MODE")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:811:        return self._normalize_risk_signals_mode(raw)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:814:    def _normalize_risk_signals_mode(raw: str) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:845:    def _risk_signals_mode(self) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:846:        mode = self._risk_signals_mode_raw()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:851:    def _signup_context_risk_mode(self) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:852:        current_mode = self._risk_signals_mode()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:853:        requested_mode = str(getattr(self, "_requested_risk_signals_mode", "") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:854:        runtime_source = str(getattr(self.state, "risk_signals_runtime_source", "") or "")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:864:    def _risk_roxy_wait_seconds() -> float:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:865:        raw = _load_proxy_dotenv_value("PAYPAL_RISK_ROXY_WAIT_SECONDS")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:874:    def _risk_headless_wait_seconds() -> float:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:875:        raw = _load_proxy_dotenv_value("PAYPAL_RISK_HEADLESS_WAIT_SECONDS")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:881:        return PayPalFlow._risk_roxy_wait_seconds()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:950:        ``/api/v2/rum`` before the browser-risk wait times out.  The browser-side runtime is
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:951:        still present and operational, so don't fail strict browser-risk checks on that
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1001:            "Roxy browser-risk Datadog intake request was not captured, but DD_RUM runtime is loaded; accepting datadog_rum runtime signal."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1044:        raw_cookies = result.get("cookies")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1045:        result_cookies = cast(list[dict[str, Any]], raw_cookies) if isinstance(raw_cookies, list) else []
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1046:        if result_cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1047:            self.session.import_browser_cookies(result_cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1051:        self.state.risk_signals_runtime_source = runtime
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1052:        self.state.risk_signals_browser_result = {
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1063:            "cookie_count": len(result_cookies),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1110:        if any(marker in url for marker in ("geo.ddc.paypal.com", "/captcha/", "/interstitial/", "authchallenge")):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1122:    def _send_signup_context_risk_signals_with_roxy(self, signup_url: str, token: str, *, force: bool = False) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1123:        mode = self._signup_context_risk_mode()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1124:        if not force and mode not in {"roxy", "auto"} and not self._roxy_risk_runtime_active():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1127:            from paypal.roxy_fingerprint import run_phase1_risk_with_roxy_browser
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1142:            result = run_phase1_risk_with_roxy_browser(
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1145:                cookies=self.session.export_cookies_for_browser(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1146:                wait_seconds=self._risk_roxy_wait_seconds(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1152:            if result.get("cookies"):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1153:                self.session.import_browser_cookies(result["cookies"])
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1169:                "cookie_count": len(result.get("cookies") or []),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1199:            previous = getattr(self.state, "risk_signals_browser_result", {})
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1204:                self.state.risk_signals_browser_result = merged
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1206:                self.state.risk_signals_browser_result = {"signup_context": signup_context_result}
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1207:            self.state.risk_signals_runtime_source = "roxy"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1209:                "Signup context risk signals executed through Roxy browser observed={} missing={}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1220:                    "Roxy signup-context risk runtime is missing required browser signals: "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1223:                if mode == "roxy" or strict_browser_risk_enabled():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1229:            self.state.risk_signals_runtime_source = "roxy_failed"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1230:            self.state.risk_signals_browser_result = {
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1234:            if (mode == "roxy" and not self._roxy_runtime_fallback_enabled()) or strict_browser_risk_enabled():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1238:                "Roxy signup-context risk runtime failed; falling back to local headless signup-context risk: {}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1243:    def _send_signup_context_risk_signals_with_headless(self, signup_url: str, token: str) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1244:        mode = self._signup_context_risk_mode()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1248:            error_text = "Local headless signup-context risk runtime is disabled."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1249:            self.state.risk_signals_runtime_source = "headless_failed"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1250:            self.state.risk_signals_browser_result = {
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1277:                cookies=self.session.export_cookies_for_browser(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1278:                wait_seconds=self._risk_headless_wait_seconds(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1293:            raw_cookies = result.get("cookies")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1294:            result_cookies = cast(list[dict[str, Any]], raw_cookies) if isinstance(raw_cookies, list) else []
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1295:            if result_cookies:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1296:                self.session.import_browser_cookies(result_cookies)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1302:                    "Local headless signup-context stopped on DataDome challenge; retrying signup-context risk through Roxy fallback."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1305:                    if self._send_signup_context_risk_signals_with_roxy(signup_url, token, force=True):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1308:                    if strict_browser_risk_enabled():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1311:                        "Roxy fallback after signup-context DataDome challenge failed: {}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1332:                "cookie_count": len(result_cookies),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1359:            previous = getattr(self.state, "risk_signals_browser_result", {})
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1364:                self.state.risk_signals_browser_result = merged
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1366:                self.state.risk_signals_browser_result = {"signup_context": signup_context_result}
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1367:            self.state.risk_signals_runtime_source = "headless"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1369:                "Signup context risk signals executed through local headless observed={} missing={}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1375:                message = "Headless signup-context risk runtime is missing required browser signals: " + ",".join(required_missing_text)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1379:                if strict_browser_risk_enabled():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1385:            self.state.risk_signals_runtime_source = "headless_failed"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1386:            self.state.risk_signals_browser_result = {
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1390:            logger.warning("Local headless signup-context risk runtime failed: {}", error_text)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1398:            from paypal.roxy_fingerprint import close_roxy_browser
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1448:                cookies=self.session.export_cookies_for_browser(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1459:            session.import_cookies(self.session.export_cookies_for_browser())
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1467:            self._extract_hcaptcha_passive_iframe_src(challenge_html)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1468:            or self._extract_hcaptcha_iframe_src(challenge_html)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1478:                "proxy/IP/cookie locale may be inconsistent.",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1490:    def _captcha_frontend_disable_enabled(self) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1491:        return captcha_frontend_disable_enabled()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1512:            _load_proxy_dotenv_value("PAYPAL_MODXO_STATIC_ACTION_IDS")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1513:            or _load_proxy_dotenv_value("PAYPAL_MODXO_HARDCODED_ACTION_IDS")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1528:    def _synthetic_captcha_allowed() -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1529:        return PayPalFlow._env_truthy("PAYPAL_ALLOW_SYNTHETIC_CAPTCHA")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1532:    def _synthetic_risk_signals_allowed() -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1533:        return not strict_browser_risk_enabled()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1535:    def _roxy_risk_runtime_active(self) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1536:        """True when browser/Roxy owns risk telemetry for this flow."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1538:            self._risk_signals_mode() in {"roxy", "headless"}
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1539:            or getattr(self.state, "risk_signals_runtime_source", "") in {"roxy", "headless", "headless_optimized"}
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1543:        if not self._roxy_risk_runtime_active():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1548:                "Skipping synthetic {} telemetry because browser risk runtime is active.",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1564:        if strict_browser_risk_enabled() and self._skip_synthetic_behavior_telemetry("Datadog RUM view"):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1569:        if strict_browser_risk_enabled() and self._skip_synthetic_behavior_telemetry("Datadog RUM action"):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1604:            "cardNumber",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1605:            "cardExpiry",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1606:            "cardCvv",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1610:            "billingLine1",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1611:            "billingCity",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1612:            "billingPostalCode",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1613:            "billingState",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1620:        return bool(token and (token == state_token or token.startswith("EC-")))
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1688:    def _risk_runtime_report(self) -> dict[str, object]:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1689:        """Summarize strict-browser-risk gaps from automation_vs_real_browser_risk_diff.md."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1690:        high_entropy_forced = os.getenv("PAYPAL_FORCE_HIGH_ENTROPY_CH", "0").strip().lower() not in {
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1697:        datadome_cookie_present = bool(self.state.datadome_cookie)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1699:        captcha_synthetic_used = bool(self.state.captcha_synthetic_used)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1700:        captcha_synthetic_allowed = self._synthetic_captcha_allowed()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1701:        risk_browser_result = getattr(self.state, "risk_signals_browser_result", {}) or {}
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1702:        risk_browser_ok = bool(
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1703:            getattr(self.state, "risk_signals_runtime_source", "") in {"roxy", "headless", "headless_optimized"}
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1704:            and isinstance(risk_browser_result, dict)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1705:            and risk_browser_result.get("ok")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1707:        synthetic_risk_families_used = not risk_browser_ok
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1708:        synthetic_risk_families_allowed = self._synthetic_risk_signals_allowed() or not synthetic_risk_families_used
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1719:        if captcha_synthetic_used or (
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1720:            self.captcha_bypass_mode == CAPTCHA_FRONTEND_DISABLE_MODE
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1721:            and not captcha_synthetic_allowed
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1723:            blockers.append("captcha_synthetic_or_fake_path")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1724:        if datadome_header_injected and not datadome_cookie_present:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1725:            blockers.append("datadome_header_without_cookie_chain")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1728:        if synthetic_risk_families_used and not synthetic_risk_families_allowed:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1738:        risk_browser_result_public = cast(dict[str, object], sanitize_for_log(risk_browser_result))
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1740:            "strict_browser_risk": strict_browser_risk_enabled(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1752:                "cookie_present": datadome_cookie_present,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1757:                "browser_js_cookie_chain_verified": bool(
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1758:                    datadome_cookie_present and getattr(self.state, "datadome_browser_solved", False)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1761:            "captcha": {
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1762:                "mode": self.captcha_bypass_mode,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1763:                "paypal_captcha_solved": bool(self.state.paypal_captcha_solved),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1764:                "synthetic_used": captcha_synthetic_used,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1765:                "synthetic_allowed": captcha_synthetic_allowed,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1771:            "synthetic_risk_families": {
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1772:                "mode": self._risk_signals_mode(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1773:                "runtime_source": getattr(self.state, "risk_signals_runtime_source", "") or "not_sent",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1774:                "browser_result": risk_browser_result_public,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1775:                "fraudnet_python_generated": synthetic_risk_families_used,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1776:                "fpti_python_generated": synthetic_risk_families_used,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1777:                "tealeaf_template_generated": synthetic_risk_families_used,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1778:                "datadog_template_generated": synthetic_risk_families_used,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1779:                "allowed": synthetic_risk_families_allowed,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1784:    def _with_risk_runtime_report(self, result: dict[str, object]) -> dict[str, object]:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1786:        result["risk_runtime"] = self._risk_runtime_report()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1790:        if not strict_browser_risk_enabled():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1792:        report = self._risk_runtime_report()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1803:            "Strict browser-risk preflight blocked SignUpNewMemberMutation because "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1843:    def _mark_frontend_captcha_solved(self, reason: str) -> None:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1844:        if not self.state.paypal_captcha_solved:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1848:                self.captcha_bypass_mode,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1850:        self.state.paypal_captcha_solved = True
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1862:        """Return the browser header form of the signed PayPal nsid cookie."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1887:                        "cookiedViewUl": ["(__SLOT__)", {"children": ["__PAGE__", {}, None, None, 0]}, None, None, 0],
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1968:    def _frontend_captcha_solved_cfci(self) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:1980:        The browser trace does this right after the passive captcha path is
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2029:    def _send_modxo_frontend_captcha_solved_packets(
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2036:        if strict_browser_risk_enabled() and not self._synthetic_captcha_allowed():
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2038:                "Skipping synthetic ModXO CAPTCHA_SOLVED packets in strict browser-risk mode."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2041:        if os.getenv("PAYPAL_SKIP_MODXO_CAPTCHA_SOLVED_PACKETS", "").strip().lower() in {
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2049:        cfci = self._frontend_captcha_solved_cfci()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2051:        self._mark_frontend_captcha_solved("modxo_frontend_packets")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2106:                    self._phase2_create_account()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2108:                    result = self._with_risk_runtime_report(self._phase4_authorize())
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2119:                            "risk_runtime": self._risk_runtime_report(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2139:                        "with a fresh session, user, address and card...",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2153:                "risk_runtime": self._risk_runtime_report(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2172:        self.captcha_bypass_mode = paypal_captcha_bypass_mode()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2173:        logger.info("CAPTCHA mode: {}", self.captcha_bypass_mode)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2190:            "Signup failed: card was rejected",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2193:            "Create account flow did not produce an EC checkout token",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2206:        BUYER_NOT_SET after a partial SignUpNewMember response means the current
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2207:        EC checkout has an access token but no buyer bound to the billing
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2208:        agreement. Reusing the same SignUpNewMember request usually produces
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2210:        session plus freshly generated signup/card data.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2220:        self.card = generate_card(proxy_url=self.proxy_config.url)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2225:            source=self.fingerprint_source,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2234:        self.captcha_bypass_mode = paypal_captcha_bypass_mode()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2236:        self._billing_address_autocomplete_succeeded = False
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2237:        self._signup_billing_address_prepared = False
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2244:            "Regenerated retry identity: email={}, phone={}, card={} exp={}, address={}, {}-{} (preserved)",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2247:            self._masked_card_number(),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2248:            self.card.expiry,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2255:        """Load the agreement approval page, handle DataDome if needed."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2258:        url = f"https://www.paypal.com/agreements/approve?ba_token={self.ba_token}"
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2263:            and not self.state.datadome_cookie
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2272:                        "Using local headless browser document for Phase 0 after DataDome preflight status={} url={}",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2276:        elif datadome_mode in {"roxy", "headless"} and not self.state.datadome_cookie:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2278:                "Skipping Phase 0 DataDome browser preflight; protocol GET will run first and browser runtime is reserved for HTTP 403."
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2281:        # First GET - may return 403 with DataDome challenge or 302 redirect
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2294:            logger.info("Got 403 - DataDome challenge detected")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2326:                    raise RuntimeError(f"{datadome_mode} DataDome did not produce a datadome cookie after HTTP 403")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2328:                    # DataDome returns a page with embedded dd object and ct.ddc.paypal.com/c.js.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2330:                    logger.warning("DataDome challenge using protocol fallback. "
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2333:                    # Try the POST approach that the browser uses after DataDome resolves
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2393:            ec_match = re.search(r"\b(EC-[A-Z0-9]+)\b", f"{resp.url}\n{html}")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2586:        The browser capture shows SignUpNewMember uses the per-locale entry
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2814:            # This can be a DataDome/authchallenge shell or a redirect/error
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2864:        configured = (os.getenv("PAYPAL_SIGNUP_CONTENT_CACHE") or "").strip()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2885:            os.getenv("PAYPAL_SIGNUP_CONTENT_MANIFEST_URL")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2886:            or os.getenv("PAYPAL_CONTENT_MANIFEST_URL")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2899:            os.getenv("PAYPAL_SIGNUP_CONTENT_IDENTIFIER")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2900:            or os.getenv("PAYPAL_CONTENT_IDENTIFIER")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2904:            os.getenv("PAYPAL_SIGNUP_CONTENT_HASH")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:2905:            or os.getenv("PAYPAL_CONTENT_HASH")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3189:        """Always try one live content-manifest request before SignUpNewMember.
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3246:            ("cookieBannerVariant", "hidden"),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3275:    def _sync_euat_token_from_cookie(self) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3276:        """Refresh SessionState from the cookie jar and return the EUAT token if present."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3278:            sync = getattr(self.session, "_sync_state_cookies", None)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3282:            logger.debug("EUAT cookie sync failed: {}", exc)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3286:        """Find an access token in the full signup response or EUAT cookie state."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3289:            logger.info("Access token found in SignUpNewMember response; continuing.")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3291:        cookie_token = self._sync_euat_token_from_cookie()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3292:        if cookie_token:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3293:            logger.info("EUAT token found in cookie jar after SignUpNewMember; continuing.")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3294:            return cookie_token
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3295:        logger.info("No access token/EUAT found after SignUpNewMember response.")
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3318:        return bool(re.match(r"^EC-[A-Z0-9]+$", token or "", re.I))
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3336:        m = re.search(r"PAYPAL\.analytics\.setup\(\{data:'([^']+)'", challenge_html or "", re.I)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3348:    def _authchallenge_captcha_type(challenge_html: str) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3349:        return (PayPalFlow._html_attr_value(challenge_html, "data-captcha-type") or "").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3352:    def _extract_hcaptcha_passive_iframe_src(challenge_html: str) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3354:            r'<iframe[^>]+src=["\']([^"\']*hcaptcha/hcaptchapassive(?:_eval)?\.html[^"\']*)',
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3361:    def _is_hcaptcha_passive_challenge(challenge_html: str) -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3362:        captcha_type = PayPalFlow._authchallenge_captcha_type(challenge_html)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3363:        return "hcaptchapassive" in captcha_type or bool(
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3364:            PayPalFlow._extract_hcaptcha_passive_iframe_src(challenge_html)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3368:    def _hcaptcha_passive_frontend_skip_enabled() -> bool:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3369:        value = os.getenv("PAYPAL_HCAPTCHA_PASSIVE_FRONTEND_SKIP", "1").strip().lower()
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3373:    def _extract_hcaptcha_site_key(challenge_html: str, iframe_src: str = "") -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3387:    def _extract_hcaptcha_iframe_src(challenge_html: str) -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3390:            r'<iframe[^>]+src=["\']([^"\']*hcaptcha[^"\']*)',
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3391:            r'<iframe[^>]+src=["\']([^"\']*hcaptcha\.com[^"\']*)',
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3399:    def _extract_hcaptcha_rqdata(challenge_html: str, iframe_src: str = "") -> str:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3406:            PayPalFlow._html_attr_value(challenge_html, "data-hcaptcha-rqdata"),
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3414:    def _authchallenge_session_cookie_dict(self) -> dict[str, str]:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3417:            for cookie in self.session.client.cookies.jar:
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3418:                out[str(cookie.name)] = str(cookie.value)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3430:        captcha_state: str,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3433:        """Replay authchallenge captcha-state telemetry seen in browser traces."""
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3459:            "captchaState": captcha_state,
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3465:        if captcha_state != "CLIENT_SIDE_RECAPTCHAV3_SERVED":
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3467:        if captcha_state == "CLIENT_SIDE_PPCAPTCHA_SOLVED":
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3487:            logger.info("auth logclientdata {} status={}", captcha_state, resp.status_code)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3489:            logger.debug("auth logclientdata {} soft-failed: {}", captcha_state, e)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3492:        captcha_type = self._authchallenge_captcha_type(challenge_html)
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3494:        if "hcaptchapassive" in captcha_type or self._extract_hcaptcha_passive_iframe_src(challenge_html):
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3496:                "CLIENT_SIDE_HCAPTCHA_PASSIVE_SERVED",
+/Users/mac/Downloads/openai-paypal-main/paypal/flow.py:3497:                "CLIENT_SIDE_HCAPTCHA_PASSIVE_SCRIPT_ONLOAD",

@@ -1,0 +1,32 @@
+{
+  "ok": true,
+  "user": {
+    "email": "matthew.hernandez7837@gmail.com",
+    "phone_country_code": "+1",
+    "phone_local": "8352891555"
+  },
+  "address": {
+    "line1": "400 Addie St",
+    "city": "Lexington",
+    "state": "KY",
+    "postal_code": "40508-1323",
+    "country": "US"
+  },
+  "card_type": "VISA",
+  "profile": {
+    "country": "US",
+    "locale": "en_US",
+    "lang": "en-US"
+  },
+  "signup": {
+    "country": "US",
+    "phone": {
+      "countryCode": "1",
+      "number": "8352891555",
+      "type": "MOBILE"
+    },
+    "has_identityDocument": false,
+    "has_dateOfBirth": false,
+    "has_productClass": false
+  }
+}

@@ -1,0 +1,40 @@
+2026-07-23 21:55:14.556 | INFO     | paypal.session:__init__:586 - HTTP client: httpx (http2=True)
+2026-07-23 21:55:14.556 | INFO     | paypal.session:__init__:587 - HTTP outbound proxy: socks5h://***:***@global.rp.linkup.onl:10000
+2026-07-23 21:55:14.556 | INFO     | paypal.flow:_phase0_initial_load:2256 - --- Phase 0: Initial page load ---
+2026-07-23 21:55:14.556 | DEBUG    | paypal.session:get:1086 - GET https://www.paypal.com/agreements/approve?ba_token=BA-5SK36951DM296273L
+2026-07-23 21:55:21.399 | DEBUG    | paypal.session:get:1137 -   -> 200 (144079 bytes)
+2026-07-23 21:55:21.402 | INFO     | paypal.flow:_capture_datadome_clientid:443 - DataDome client id captured for request header replay len=128
+2026-07-23 21:55:21.417 | INFO     | paypal.flow:_capture_mtr_metadata:1649 - MTR dfpconfig captured: channel=iwc-mxo cmid=BA-5SK...273L api_key_present=True
+2026-07-23 21:55:21.418 | INFO     | paypal.flow:_phase0_initial_load:2373 - Page loaded: 200, 144038 bytes
+2026-07-23 21:55:21.461 | INFO     | paypal.flow:_apply_modxo_inline_metadata:5044 - ModXO country action id: 604aee93ac65e654fa4a8234584263c9111a04f637
+2026-07-23 21:55:21.461 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action fetch_device_fingerprint_action_id: 40119ea45de7135869f32892c6e0436cc9722b7775 (static)
+2026-07-23 21:55:21.461 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action show_create_account_action_id: 408cdbfcfb063642520b8dde73b124955e07000967 (static)
+2026-07-23 21:55:21.461 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action submit_public_credential_action_id: 403375d290e5845b191b7f22e6b940617e87334e8b (static)
+2026-07-23 21:55:21.461 | INFO     | paypal.flow:_apply_static_modxo_action_ids:5061 - ModXO action create_user_action_id: 60187d0e8cbc4131987e2c84c8e430dce698c2ace3 (static)
+2026-07-23 21:55:21.461 | INFO     | paypal.flow:_phase0_initial_load:2381 - Context ID: b1e1ccc5-d7a0-44cd-a87d-cc99cdf1a61f
+2026-07-23 21:55:21.462 | INFO     | paypal.flow:_phase0_initial_load:2390 - SSRT: 1784814919699
+2026-07-23 21:55:21.463 | INFO     | paypal.flow:_phase0_initial_load:2396 - EC Token already present on approval page: EC-5WC...515J
+2026-07-23 21:55:21.463 | INFO     | paypal.flow:_phase2_create_account:6433 - --- Phase 2: Create account flow ---
+2026-07-23 21:55:21.463 | INFO     | paypal.flow:_phase2_create_account:6437 - EC checkout token is already available; skipping ModXO create-account action: EC-5WC...515J
+2026-07-23 21:55:21.463 | DEBUG    | paypal.session:get:1086 - GET https://www.paypal.com/checkoutweb/signup?ssrt=1784814919699&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=BA-5SK36951DM296273L&token=EC-5WC90023EE717515J&rcache=1&cookieBannerVariant=hidden
+2026-07-23 21:55:22.009 | DEBUG    | paypal.session:get:1137 -   -> 403 (8067 bytes)
+2026-07-23 21:55:22.026 | DEBUG    | paypal.flow:_apply_signup_content_metadata:2818 - Loaded signup document did not contain content metadata; preserving contentIdentifier=<missing>
+2026-07-23 21:55:22.028 | INFO     | paypal.flow:_apply_configured_or_cached_signup_content_metadata:2952 - Content metadata restored from cache /tmp/paypal_signup_content_manifest_last.json identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+2026-07-23 21:55:22.028 | DEBUG    | paypal.session:get:1086 - GET https://www.paypalobjects.com/checkoutweb/release/weasley/content-manifest.11f545996f2c4231476c31cc5d858b86.json
+2026-07-23 21:55:24.479 | DEBUG    | paypal.session:get:1137 -   -> 200 (34502 bytes)
+2026-07-23 21:55:24.482 | INFO     | paypal.flow:_apply_signup_content_manifest:2740 - Content metadata found in content manifest: key=US_en hash=d24460aee36e4b7d4579aea096ec5056 identifier=US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms
+2026-07-23 21:55:24.482 | DEBUG    | paypal.session:post:1141 - POST https://www.paypal.com/graphql?UserAgreementProbe
+2026-07-23 21:55:25.075 | DEBUG    | paypal.session:post:1200 -   -> 200 (361 bytes)
+2026-07-23 21:55:25.075 | INFO     | paypal.session:graphql:1272 - GraphQL UserAgreementProbe HTTP 200 bytes=361 paypal_debug_id=f69195220e42b
+{
+  "ok": false,
+  "graphql_errors": null,
+  "userAgreement_present": false,
+  "majorVersion_present": false,
+  "minorVersion_present": false,
+  "activeUrl_present": false,
+  "userAgreement": null,
+  "legalAgreements_expected": {},
+  "ba_sha12": "b6c9793d48dd",
+  "ec_sha12": "f1d9b8e42a6b"
+}

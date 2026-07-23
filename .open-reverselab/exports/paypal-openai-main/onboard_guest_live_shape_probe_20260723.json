@@ -1,0 +1,53 @@
+{
+  "ok": true,
+  "stage": "onboard_guest_live_shape_probe",
+  "ec_present": true,
+  "resolver_reached": true,
+  "graphql_validation_failed": true,
+  "payment_attempted": false,
+  "error_names": [
+    "fi is missing"
+  ],
+  "checkpoints": [],
+  "raw_response_sanitized": {
+    "errors": [
+      {
+        "errorType": "VALIDATION_ERROR",
+        "message": "fi is missing",
+        "path": [
+          "onboardAccount"
+        ],
+        "extensions": {
+          "code": "GRAPHQL_VALIDATION_FAILED"
+        },
+        "statusCode": 200
+      }
+    ],
+    "data": {
+      "onboardAccount": null
+    },
+    "extensions": {
+      "tracing": {
+        "version": 1,
+        "startTime": "2026-07-23T15:11:27.058Z",
+        "endTime": "2026-07-23T15:11:27.213Z",
+        "duration": 155000000,
+        "execution": {
+          "resolvers": [
+            {
+              "path": [
+                "onboardGuest"
+              ],
+              "parentType": "Query",
+              "fieldName": "onboardGuest",
+              "returnType": "Object",
+              "startOffset": 0,
+              "duration": 154078697
+            }
+          ]
+        }
+      },
+      "correlationId": "f6359757b1c14"
+    }
+  }
+}

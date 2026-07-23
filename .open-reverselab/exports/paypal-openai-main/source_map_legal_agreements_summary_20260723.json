@@ -1,0 +1,19 @@
+{
+  "date": "2026-07-23",
+  "source_map": "/tmp/paypal_assets/weasley_latest/main.map",
+  "extracted_files": [
+    "/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_miscUtils.ts",
+    "/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_util_formatters.ts",
+    "/tmp/paypal_assets/weasley_latest/extracted/src_initialDataQuery.graphql",
+    "/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx"
+  ],
+  "findings": {
+    "serializeFormData_includes_legalAgreements_when_signup": true,
+    "getLegalAgreementsData_behavior": "returns { legalAgreements: { userAgreement: {majorVersion, minorVersion} } } only when api.userAgreement has both versions; otherwise returns { legalAgreements: {} }",
+    "userAgreement_source": "InitialDataQuery userAgreement(flow: ONBOARDING) { minorVersion majorVersion activeUrl } copied into api.userAgreement store",
+    "collectedConsents_behavior": "undefined unless feature hasThirdPartyDataConsentCheckbox is active; then includes checked privacy/third-party/unique-information consent entries",
+    "fresh_ba_probe_userAgreement": "live minimal UserAgreementProbe returned null; legalAgreements_expected remains {} for observed US fresh BA context",
+    "current_patch_status": "existing US schema dry-run with legalAgreements={} remains frontend-consistent for observed context"
+  },
+  "sensitive_data": "none"
+}

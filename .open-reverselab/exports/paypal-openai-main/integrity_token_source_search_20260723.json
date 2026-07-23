@@ -1,0 +1,62 @@
+{
+  "date": "2026-07-23",
+  "patterns": [
+    "integrityToken",
+    "GUEST_PAYMENT_INTEGRITY",
+    "paymentTokenId",
+    "paymentToken",
+    "approveGuestPaymentWithCreditCard",
+    "HS256"
+  ],
+  "hits": [
+    {
+      "path": "/private/tmp/paypal_assets/weasley_latest/extracted/src_components_Form_graphql_api.ts",
+      "size": 22029,
+      "sha256_12": "a9be3500411e",
+      "hits": [
+        "paymentToken"
+      ],
+      "samples": [
+        {
+          "pattern": "paymentToken",
+          "offset": 14088,
+          "snippet": "rt?.paymentId ?? undefined, // Payment ID of the transaction. Only present if created via the payments API.             paymentToken: token,             returnUrl,           };            if (window.xprops && isFunction(window.xprops?.getConnectURL)) {"
+        }
+      ]
+    },
+    {
+      "path": "/private/tmp/paypal_assets/weasley_latest/extracted/generated_graphql.tsx",
+      "size": 604733,
+      "sha256_12": "d35323ef9091",
+      "hits": [
+        "integrityToken",
+        "paymentTokenId",
+        "paymentToken",
+        "approveGuestPaymentWithCreditCard",
+        "HS256"
+      ],
+      "samples": [
+        {
+          "pattern": "integrityToken",
+          "offset": 259102,
+          "snippet": "ally accepts a paymentToken as a String    * Optionally accepts a feeReferenceId as a String    * Optionally accepts an integrityToken (HS256-signed JWT) used to validate request integrity    *    * Returns a CheckoutSession type.    *    * Average SLA r"
+        },
+        {
+          "pattern": "paymentTokenId",
+          "offset": 385000,
+          "snippet": "* Allows you to query for currency conversion rates and metadata    * from a token and either a credit card number or a paymentTokenId    *    * Requires a PAY/EC token (Ex: \"EC-5NY05678GP2575040\")    * Optional credit card number (Ex: '4111111111111111'"
+        },
+        {
+          "pattern": "paymentToken",
+          "offset": 258288,
+          "snippet": "pprove with total payment at once. This is only available for Brazil and Mexico at the moment.    *    * If provided, a paymentToken is used to complete payment using a Fastlane profile payment instrument.    * If provided, a card is used to complete p"
+        },
+        {
+          "pattern": "approveGuestPaymentWithCreditCard",
+          "offset": 257219,
+          "snippet": "* Required auth states: ANONYMOUS    */   approveGuestPaymentWithApplePayToken?: Maybe<CheckoutSession>;   /**    * The approveGuestPaymentWithCreditCard mutation will approve a guest payment transaction with credit card.    *    * If passed an phone number, i"
+        }
+      ]
+    }
+  ]
+}

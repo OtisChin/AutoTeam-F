@@ -1,0 +1,96 @@
+2026-07-23 23:34:36.983 | INFO     | paypal.fingerprint:generate_runtime_profile:804 - Local headless using pinned fingerprint: ua=Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHT screen=390x844 viewport=390x753
+2026-07-23 23:34:37.044 | INFO     | paypal.session:__init__:587 - HTTP client: httpx (http2=True)
+2026-07-23 23:34:37.044 | INFO     | paypal.session:__init__:588 - HTTP outbound proxy: 代理关闭
+{
+  "ok": true,
+  "stage": "create_member_no_fi_candidate_v8_offline",
+  "checks": {
+    "create_member_has_no_card_arg": true,
+    "create_member_auth_anonymous_per_schema": true,
+    "buyer_access_token_saved": true,
+    "no_instrument_id_after_create_member": true,
+    "approval_skips_sticky_fi_when_no_instrument": true,
+    "approval_mock_completed": true
+  },
+  "variables_keys": [
+    "billingAddress",
+    "contentIdentifier",
+    "country",
+    "dateOfBirth",
+    "email",
+    "firstName",
+    "lastName",
+    "legalAgreements",
+    "marketingOptOut",
+    "password",
+    "phone",
+    "residentialAddress",
+    "shippingAddress",
+    "token"
+  ],
+  "calls": [
+    {
+      "operationName": "CreateMemberAccountMutation",
+      "variables": {
+        "billingAddress": {
+          "line1": " 1201 N Market Street",
+          "line2": null,
+          "city": "Wilmington",
+          "state": "DE",
+          "postalCode": "19801",
+          "country": "US"
+        },
+        "contentIdentifier": "US:en:localmock:compliance.signupTerms",
+        "country": "US",
+        "dateOfBirth": {
+          "day": "14",
+          "month": "01",
+          "year": "1992"
+        },
+        "email": "amanda.anderson3770@icloud.com",
+        "firstName": "Amanda",
+        "lastName": "Anderson",
+        "legalAgreements": null,
+        "marketingOptOut": true,
+        "password": "I!R5Z%yK&1LG1*Xa",
+        "phone": {
+          "countryCode": "US",
+          "nationalNumber": "8355550123",
+          "phoneCountryCode": "+1",
+          "type": "MOBILE"
+        },
+        "residentialAddress": {
+          "line1": " 1201 N Market Street",
+          "line2": null,
+          "city": "Wilmington",
+          "state": "DE",
+          "postalCode": "19801",
+          "country": "US"
+        },
+        "shippingAddress": {
+          "line1": " 1201 N Market Street",
+          "line2": null,
+          "city": "Wilmington",
+          "state": "DE",
+          "postalCode": "19801",
+          "country": "US"
+        },
+        "token": "EC-CREATEMEMBERMOCK"
+      },
+      "query_has_card": false
+    },
+    {
+      "operationName": "ApproveOnboardPaymentMutation",
+      "variables": {
+        "token": "EC-CREATEMEMBERMOCK",
+        "instrumentId": null,
+        "isBillingAgreement": false,
+        "supportedThreeDsExperiences": [
+          "THREE_DS_2"
+        ]
+      },
+      "query_has_card": true
+    }
+  ],
+  "interpretation": "Candidate only: PayPal schema proves createMemberAccount can create a buyer without FI for ANONYMOUS flows; live terminal success still requires validating whether BA approval accepts no sticky FI / no primaryFundingOptionId after this auth state."
+}

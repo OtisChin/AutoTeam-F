@@ -1,0 +1,531 @@
+--- orig/paypal/country_profile.py	1970-01-01 08:00:00
++++ work/paypal/country_profile.py	2026-07-23 20:54:23
+@@ -0,0 +1,24 @@
++from __future__ import annotations
++from dataclasses import dataclass
++
++@dataclass(frozen=True)
++class CountryProfile:
++    country: str
++    locale: str
++    language: str
++    phone_country_code: str
++    kyc_fields: tuple[str, ...] = ()
++    collect_card_product_class: bool = False
++    card_dob_required: bool = False
++
++    @property
++    def content_language(self) -> str:
++        return self.language.split('-', 1)[0].lower()
++
++COUNTRY_PROFILES: dict[str, CountryProfile] = {
++    "US": CountryProfile("US", "en_US", "en-US", "1", (), False, False),
++    "BR": CountryProfile("BR", "pt_BR", "pt-BR", "55", ("DateOfBirth", "IdentityDocumentType", "IdentityDocumentNumber"), True, True),
++}
++
++def get_country_profile(country: str | None) -> CountryProfile:
++    return COUNTRY_PROFILES.get((country or "BR").upper(), COUNTRY_PROFILES["BR"])
+--- orig/paypal/flow.py	2026-07-16 15:07:25
++++ work/paypal/flow.py	2026-07-23 22:18:25
+@@ -46,6 +46,7 @@
+ )
+ from paypal.mtr import MTR_RUNTIME_PYTHON_GENERATED, extract_dfp_script_url, extract_mtr_config, ensure_mtr_config, send_mtr_signals
+ from paypal.proxy import build_proxy_config, ProxyConfig, _load_dotenv_value as _load_proxy_dotenv_value
++from paypal.country_profile import get_country_profile
+ from paypal.fingerprint import (
+     ensure_runtime_profile,
+     build_fn_sync_data,
+@@ -79,6 +80,7 @@
+     INITIATE_2FA_PHONE_MUTATION,
+     CONFIRM_2FA_PHONE_MUTATION,
+     SIGNUP_NEW_MEMBER_MUTATION,
++    APPROVE_ONBOARD_PAYMENT_MUTATION,
+     AUTHORIZE_BILLING_MUTATION,
+ )
+ from config import (
+@@ -317,14 +319,22 @@
+         return str((self.state.browser_profile or {}).get("user_agent") or USER_AGENT)
+ 
+     def _profile_country(self) -> str:
+-        return str((self.state.browser_profile or {}).get("country") or self.address.country or "BR")
++        return get_country_profile(self.address.country).country
+ 
+     def _profile_locale(self) -> str:
+-        return str((self.state.browser_profile or {}).get("locale") or "pt_BR")
++        profile = get_country_profile(self.address.country)
++        browser_profile = self.state.browser_profile or {}
++        if str(browser_profile.get("country") or "").upper() == profile.country:
++            return str(browser_profile.get("locale") or profile.locale)
++        return profile.locale
+ 
+     def _profile_lang(self) -> str:
++        profile = get_country_profile(self.address.country)
++        browser_profile = self.state.browser_profile or {}
+         locale = self._profile_locale()
+-        return str((self.state.browser_profile or {}).get("language") or locale.replace("_", "-") or "pt-BR")
++        if str(browser_profile.get("country") or "").upper() == profile.country:
++            return str(browser_profile.get("language") or locale.replace("_", "-") or profile.language)
++        return profile.language
+ 
+     def _content_country(self) -> str:
+         # SignUpNewMember sends `country` from the billing/account country.
+@@ -3268,6 +3278,47 @@
+         elif isinstance(value, list):
+             for item in value:
+                 found = PayPalFlow._find_access_token(item)
++                if found:
++                    return found
++        return ""
++
++
++    @staticmethod
++    def _find_funding_instrument_id(value) -> str:
++        """Find a fundingInstrument.id in onboarding/approve response order.
++
++        Weasley responseHandlers use `fundingOptions[0].fundingInstrument.id`
++        for BILLING_WITHOUT_PURCHASE, and `allPlans[0].fundingSources[0]` for
++        purchase flows.  Search those common shapes before falling back to a
++        recursive scan.
++        """
++        if isinstance(value, dict):
++            funding_options = value.get("fundingOptions")
++            if isinstance(funding_options, list):
++                for option in funding_options:
++                    if not isinstance(option, dict):
++                        continue
++                    instrument = option.get("fundingInstrument")
++                    if isinstance(instrument, dict) and isinstance(instrument.get("id"), str) and instrument.get("id"):
++                        return instrument["id"]
++                    for plan in option.get("allPlans") or []:
++                        if not isinstance(plan, dict):
++                            continue
++                        for source in plan.get("fundingSources") or []:
++                            if not isinstance(source, dict):
++                                continue
++                            instrument = source.get("fundingInstrument")
++                            if isinstance(instrument, dict) and isinstance(instrument.get("id"), str) and instrument.get("id"):
++                                return instrument["id"]
++            for key, item in value.items():
++                if key == "fundingInstrument" and isinstance(item, dict) and isinstance(item.get("id"), str) and item.get("id"):
++                    return item["id"]
++                found = PayPalFlow._find_funding_instrument_id(item)
++                if found:
++                    return found
++        elif isinstance(value, list):
++            for item in value:
++                found = PayPalFlow._find_funding_instrument_id(item)
+                 if found:
+                     return found
+         return ""
+@@ -5255,7 +5306,7 @@
+ 
+ 
+     def _update_user_phone(self, phone: str):
+-        """Update the BR phone fields used by the signup/2FA GraphQL calls."""
++        """Update phone fields used by the signup/2FA GraphQL calls."""
+         raw = (phone or "").strip()
+         if raw.lower().startswith("phone:"):
+             raw = raw.split(":", 1)[1].strip()
+@@ -5264,16 +5315,16 @@
+         if len(digits) < 8:
+             raise ValueError("phone number is too short")
+ 
+-        # This flow is hard-coded for BR checkout. Accept either +55xxxxxxxxxx
+-        # or a local BR mobile number and normalize to the fields PayPal expects.
+-        if digits.startswith("55") and len(digits) > 10:
+-            country_code = "+55"
+-            local = digits[2:]
++        profile = get_country_profile(self.address.country)
++        dial_code = profile.phone_country_code.lstrip("+")
++        if digits.startswith(dial_code) and len(digits) > len(dial_code) + 7:
++            country_code = f"+{dial_code}"
++            local = digits[len(dial_code):]
+             full = f"+{digits}"
+         else:
+-            country_code = "+55"
++            country_code = f"+{dial_code}"
+             local = digits
+-            full = f"+55{digits}"
++            full = f"+{dial_code}{digits}"
+ 
+         if len(local) < 8:
+             raise ValueError("local phone number is too short")
+@@ -5427,15 +5478,19 @@
+                 "weasley_api_request_initiate_risk_based_two_factor_phone_confirmation_mutation",
+             ],
+             country=self.address.country,
+-            lang="pt",
++            lang=get_country_profile(self.address.country).content_language,
+         )
++        country_profile = get_country_profile(self.address.country)
+         initiate_result = self._graphql_with_authchallenge_frontend_retry(
+             "InitiateRiskBasedTwoFactorPhoneConfirmationMutation",
+             INITIATE_2FA_PHONE_MUTATION,
+             {
+                 "phoneNumber": self.user.phone_local,
+-                "locale": {"country": "BR", "lang": "pt"},
+-                "phoneCountry": "BR",
++                "locale": {
++                    "country": country_profile.country,
++                    "lang": country_profile.content_language,
++                },
++                "phoneCountry": country_profile.country,
+                 "token": token,
+             },
+             signup_url,
+@@ -5477,7 +5532,7 @@
+                 "weasley_api_request_confirm_risk_based_two_factor_phone_confirmation_mutation",
+             ],
+             country=self.address.country,
+-            lang="pt",
++            lang=get_country_profile(self.address.country).content_language,
+         )
+         confirm_result = self._graphql_with_authchallenge_frontend_retry(
+             "ConfirmRiskBasedTwoFactorPhoneConfirmationMutation",
+@@ -5619,9 +5674,11 @@
+         house_number = self.address.house_number.strip()
+         if house_number and f", {house_number}" in self.address.street:
+             return self.address.street
+-        return f"{self.address.street}, {self.address.house_number}"
++        parts = [self.address.street, self.address.house_number]
++        return ", ".join(str(part).strip() for part in parts if str(part or "").strip())
+ 
+     def _build_signup_variables(self, token: str) -> dict[str, object]:
++        country_profile = get_country_profile(self.address.country)
+         card_type = self._card_issuer_type()
+         if self._content_metadata_is_unresolved() and self.state.content_manifest_url:
+             self._fetch_signup_content_manifest_metadata(
+@@ -5634,14 +5691,17 @@
+         billing_autocomplete_type = (
+             "ANS" if self._billing_address_autocomplete_succeeded else "MANUAL"
+         )
+-        return {
+-            "card": {
+-                "cardNumber": self.card.number,
+-                "expirationDate": self._card_expiration_date(),
+-                "securityCode": self.card.cvv,
+-                "type": card_type,
+-                "productClass": self.card.card_type,
+-            },
++        card_payload: dict[str, object] = {
++            "cardNumber": self.card.number,
++            "expirationDate": self._card_expiration_date(),
++            "securityCode": self.card.cvv,
++            "type": card_type,
++        }
++        if country_profile.collect_card_product_class:
++            card_payload["productClass"] = self.card.card_type
++
++        variables: dict[str, object] = {
++            "card": card_payload,
+             "country": self.address.country,
+             "email": self.user.email,
+             "firstName": self.user.first_name,
+@@ -5683,14 +5743,18 @@
+             "contentIdentifier": content_identifier,
+             "marketingOptOut": True,
+             "password": self.user.password,
+-            "dateOfBirth": self._dob_payload(),
+-            "identityDocument": {
+-                "type": "CPF",
+-                "value": self.user.cpf,
+-            },
+             "crsData": None,
+             "legalAgreements": {},
+         }
++        if country_profile.card_dob_required or "DateOfBirth" in country_profile.kyc_fields:
++            variables["dateOfBirth"] = self._dob_payload()
++        if (
++            "IdentityDocumentType" in country_profile.kyc_fields
++            and "IdentityDocumentNumber" in country_profile.kyc_fields
++            and self.address.country.upper() == "BR"
++        ):
++            variables["identityDocument"] = {"type": "CPF", "value": self.user.cpf}
++        return variables
+ 
+     def _send_address_autocomplete(self, token: str) -> None:
+         self._billing_address_autocomplete_succeeded = False
+@@ -5836,7 +5900,7 @@
+                 "weasley_api_request_sign_up_new_member_mutation",
+             ],
+             country=self.address.country,
+-            lang="pt",
++            lang=get_country_profile(self.address.country).content_language,
+         )
+         signup_variables = self._build_signup_variables(token)
+         signup_result = self._post_signup_with_authchallenge_ignore(
+@@ -6115,6 +6179,15 @@
+                     "SignUpNewMember returned onboardAccount but no accessToken "
+                     "was found in auth payload, response body, or EUAT cookie."
+                 )
++            instrument_id = self._find_funding_instrument_id(onboard_data)
++            if instrument_id:
++                self.state.instrument_id = instrument_id
++                logger.info(
++                    "Funding instrument id found after SignUpNewMember: {}",
++                    sanitize_for_log({"token": instrument_id})["token"],
++                )
++            else:
++                logger.warning("SignUpNewMember returned onboardAccount but no fundingInstrument.id was found.")
+             logger.success(f"Account created! User ID: {self.state.user_id}")
+             return True, []
+ 
+@@ -6936,7 +7009,7 @@
+                     "weasley_payment_request_api_available",
+                 ],
+                 country=self.address.country,
+-                lang="pt",
++                lang=get_country_profile(self.address.country).content_language,
+             )
+ 
+         logger.info("Sending checkout session GraphQL queries...")
+@@ -7302,10 +7375,95 @@
+                 result.append(value)
+         return result or [self.state.paypal_client_metadata_id]
+ 
++
++    def _phase4_weasley_approve(self) -> dict[str, object]:
++        """Approve the onboarded checkout via current checkoutweb/weasley mutation."""
++        token = self.state.ec_token or self.ba_token
++        is_billing_agreement = bool(self.state.instrument_id)
++        logger.info(
++            "Approving onboarded checkout via Weasley: token={} instrument_present={} billing_agreement={}",
++            sanitize_for_log({"token": token})["token"],
++            bool(self.state.instrument_id),
++            is_billing_agreement,
++        )
++        result = self.session.graphql(
++            "ApproveOnboardPaymentMutation",
++            APPROVE_ONBOARD_PAYMENT_MUTATION,
++            {
++                "token": token,
++                "instrumentId": self.state.instrument_id or None,
++                "isBillingAgreement": is_billing_agreement,
++                "supportedThreeDsExperiences": ["IFRAME"],
++            },
++            extra_headers={"Referer": self.state.signup_url or self._hermes_url(billing_lite=True)},
++            graphql_error_level="WARNING",
++        )
++        logger.info(
++            "Weasley approve result (sanitized): {}",
++            json.dumps(sanitize_for_log(result), ensure_ascii=False, indent=2)[:3000],
++        )
++        result_obj = result[0] if isinstance(result, list) else result
++        if not isinstance(result_obj, dict):
++            return {"status": "error", "error": "ApproveOnboardPayment returned non-object", "raw_response": result}
++        errors = result_obj.get("errors") or []
++        data = result_obj.get("data") if isinstance(result_obj.get("data"), dict) else {}
++        approve_data = data.get("approveGuestSignUpPayment") if isinstance(data, dict) else None
++        if not isinstance(approve_data, dict):
++            return {"status": "error", "error": "approveGuestSignUpPayment returned empty result", "raw_response": result, "errors": errors}
++        instrument_id = self._find_funding_instrument_id(approve_data)
++        if instrument_id:
++            self.state.instrument_id = instrument_id
++        buyer = approve_data.get("buyer") if isinstance(approve_data.get("buyer"), dict) else {}
++        if buyer.get("userId"):
++            self.state.user_id = buyer.get("userId")
++        cart = approve_data.get("cart") if isinstance(approve_data.get("cart"), dict) else {}
++        return_url_obj = cart.get("returnUrl") if isinstance(cart, dict) else {}
++        return_url = self._href_from_value(return_url_obj)
++        if return_url:
++            self.state.return_url = self._paypal_return_url_with_ba_token(return_url, self.ba_token)
++            try:
++                return_resp = self.session.get(
++                    self.state.return_url,
++                    headers={
++                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
++                        "Referer": self.state.signup_url or self._hermes_url(billing_lite=True),
++                        "Upgrade-Insecure-Requests": "1",
++                    },
++                )
++                final_redirect_url = str(getattr(return_resp, "url", "") or "")
++            except Exception as exc:
++                logger.warning("Following Weasley approve return URL failed: {}", exc)
++                final_redirect_url = self.state.return_url
++        else:
++            final_redirect_url = ""
++        completed = approve_data.get("completedPaymentInfo") if isinstance(approve_data.get("completedPaymentInfo"), dict) else {}
++        return {
++            "status": "success",
++            "return_url": self.state.return_url,
++            "final_redirect_url": final_redirect_url,
++            "buyer_user_id": self.state.user_id,
++            "funding_instrument_present": bool(self.state.instrument_id),
++            "completed_payment_info_present": bool(completed),
++            "completed_payment_info": completed,
++            "raw_response": result,
++        }
++
+     def _phase4_authorize(self) -> dict[str, object]:
+         """Send the final authorize mutation to approve the billing agreement."""
+         logger.info("--- Phase 4: Final authorization ---")
+ 
++        # Current checkoutweb/weasley source calls ApproveOnboardPaymentMutation
++        # after SignUpNewMember. Prefer it when signup produced authenticated state;
++        # keep legacy Hagrid billing.authorize as fallback for older captures.
++        if self.state.euat_token or self.state.instrument_id:
++            weasley_result = self._phase4_weasley_approve()
++            if weasley_result.get("status") == "success":
++                return weasley_result
++            logger.warning(
++                "Weasley approve did not complete; falling back to legacy Hagrid authorize: {}",
++                weasley_result.get("error") or weasley_result.get("reason") or "unknown",
++            )
++
+         if self.state.signup_fallback_reason:
+             self._load_checkoutweb_drop(self.state.signup_url)
+ 
+--- orig/paypal/graphql.py	2026-07-09 16:38:17
++++ work/paypal/graphql.py	2026-07-23 22:02:58
+@@ -484,7 +484,111 @@
+ }
+ """
+ 
+-# Step 4: Final billing agreement authorization
++# Current checkoutweb/weasley post-onboarding approval.  Browser source-map
++# calls this after SignUpNewMember succeeds; for billing-agreement flows it first
++# pins the newly created funding instrument via attemptSetStickyFi.
++APPROVE_ONBOARD_PAYMENT_MUTATION = """
++mutation ApproveOnboardPaymentMutation($token: String!, $instrumentId: String, $isBillingAgreement: Boolean!, $supportedThreeDsExperiences: [ThreeDSPaymentExperience]) {
++  attemptSetStickyFi(token: $token, instrumentId: $instrumentId) @include(if: $isBillingAgreement) {
++    buyer {
++      userId
++      __typename
++    }
++    __typename
++  }
++  approveGuestSignUpPayment(token: $token) {
++    buyer {
++      userId
++      email { stringValue __typename }
++      name { fullName __typename }
++      __typename
++    }
++    cart {
++      paymentId
++      intent
++      returnUrl { href pathname __typename }
++      cancelUrl { href pathname __typename }
++      amounts { total { currencyCode currencyValue currencyFormat currencyFormatSymbolISOCurrency __typename } __typename }
++      __typename
++    }
++    completedPaymentInfo {
++      transactionId
++      transactionState
++      receiptId
++      softDescriptor
++      postbackData
++      __typename
++    }
++    fundingOptions {
++      fundingInstrument {
++        id
++        lastDigits
++        name
++        nameDescription
++        type
++        __typename
++      }
++      __typename
++    }
++    merchant {
++      name
++      preferences {
++        autoReturnToMerchant
++        enablePaymentDataTransfer
++        returnUrl
++        __typename
++      }
++      __typename
++    }
++    paymentContingencies {
++      ...threeDomainSecure
++      ...threeDSContingencyData
++      __typename
++    }
++    __typename
++  }
++}
++
++fragment threeDomainSecure on PaymentContingencies {
++  threeDomainSecure(experiences: $supportedThreeDsExperiences) {
++    status
++    redirectUrl { href __typename }
++    method
++    parameter
++    experience
++    requestParams { key value __typename }
++    __typename
++  }
++  __typename
++}
++
++fragment threeDSContingencyData on PaymentContingencies {
++  threeDSContingencyData {
++    name
++    causeName
++    resolution {
++      type
++      resolutionName
++      paymentCard { id encryptedNumber type number bankIdentificationNumber __typename }
++      contingencyContext {
++        deviceDataCollectionUrl { href __typename }
++        jwtSpecification { jwtDuration jwtIssuer jwtOrgUnitId type __typename }
++        authenticationProvider
++        cardBrandProcessed
++        reason
++        referenceId
++        source
++        __typename
++      }
++      __typename
++    }
++    __typename
++  }
++  __typename
++}
++"""
++
++# Step 4: Legacy Hagrid final billing agreement authorization
+ AUTHORIZE_BILLING_MUTATION = """
+ mutation authorize($billingAgreementId: String!, $addressId: String, $fundingPreference: billingFundingPreferenceInput, $legalAgreements: billingLegalAgreementsInput) {
+   billing {
+--- orig/paypal/models.py	2026-07-16 16:23:31
++++ work/paypal/models.py	2026-07-23 22:02:58
+@@ -57,6 +57,7 @@
+     nsid: str = ""
+     d_id: str = ""
+     user_id: str = ""
++    instrument_id: str = ""
+     datadome_cookie: str = ""
+     datadome_clientid: str = ""
+     tltsid: str = ""
+--- orig/paypal/session.py	2026-07-16 14:14:08
++++ work/paypal/session.py	2026-07-23 20:54:23
+@@ -19,6 +19,7 @@
+ from loguru import logger
+ from typing import Any, Optional, cast
+ from paypal.models import SessionState
++from paypal.country_profile import get_country_profile
+ from paypal.traffic_recorder import get_global_traffic_recorder
+ from config import USER_AGENT, BROWSER_PROFILE
+ 
+@@ -1223,6 +1224,7 @@
+             else f"https://www.paypal.com/pay?token={self.state.ba_token}&ul=1"
+         )
+         profile = getattr(self.state, "browser_profile", None) or BROWSER_PROFILE
++        country_profile = get_country_profile(str(profile.get("country") or "BR"))
+         app_name = "checkoutuinodeweb" if operation_name == "authorize" else "checkoutuinodeweb_weasley"
+         # Browser/Roxy checkoutweb sends the active checkout token (EC/BA) as
+         # both PayPal-Client-Context and PayPal-Client-Metadata-Id.  Keep the
+@@ -1235,8 +1237,8 @@
+             "X-Requested-With": "fetch",
+             "PayPal-Client-Context": context_token,
+             "PayPal-Client-Metadata-Id": metadata_id,
+-            "X-Country": str(profile.get("country") or "BR"),
+-            "X-Locale": str(profile.get("locale") or "pt_BR"),
++            "X-Country": str(profile.get("country") or country_profile.country),
++            "X-Locale": str(profile.get("locale") or country_profile.locale),
+             "Origin": "https://www.paypal.com",
+             "Referer": referer,
+             "Sec-Fetch-Site": "same-origin",

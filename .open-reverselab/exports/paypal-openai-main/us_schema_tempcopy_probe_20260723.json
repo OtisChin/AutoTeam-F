@@ -1,0 +1,41 @@
+2026-07-23 20:55:09.134 | INFO     | paypal.session:__init__:587 - HTTP client: httpx (http2=True)
+2026-07-23 20:55:09.134 | INFO     | paypal.session:__init__:588 - HTTP outbound proxy: 代理关闭
+{
+  "ok": true,
+  "profile_country": "US",
+  "profile_locale": "en_US",
+  "profile_lang": "en-US",
+  "signup_url_country_locale_ok": true,
+  "has_identityDocument": false,
+  "has_dateOfBirth": false,
+  "has_card_productClass": false,
+  "payload_keys": [
+    "billingAddress",
+    "card",
+    "contentIdentifier",
+    "country",
+    "crsData",
+    "email",
+    "firstName",
+    "lastName",
+    "legalAgreements",
+    "marketingOptOut",
+    "password",
+    "phone",
+    "shippingAddress",
+    "supportedThreeDsExperiences",
+    "token"
+  ],
+  "card_keys": [
+    "cardNumber",
+    "expirationDate",
+    "securityCode",
+    "type"
+  ],
+  "contentIdentifier": "US:en:d24460aee36e4b7d4579aea096ec5056:compliance.signupTerms",
+  "phone": {
+    "countryCode": "1",
+    "number": "8352891555",
+    "type": "MOBILE"
+  }
+}

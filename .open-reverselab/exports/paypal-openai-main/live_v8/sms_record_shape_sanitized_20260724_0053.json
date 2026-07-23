@@ -1,0 +1,21 @@
+{
+  "code": "int",
+  "msg": {
+    "str_len": 2,
+    "has_6digit": false
+  },
+  "data": {
+    "code": {
+      "str_len": 53,
+      "has_6digit": true
+    },
+    "code_time": {
+      "str_len": 19,
+      "has_6digit": false
+    },
+    "expired_date": {
+      "str_len": 19,
+      "has_6digit": false
+    }
+  }
+}

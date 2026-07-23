@@ -1,0 +1,20 @@
+{
+  "url_socks5h": {
+    "scheme": "socks5h",
+    "host": "global.rp.linkup.onl",
+    "port": 10000,
+    "masked": "socks5h://***:***@global.rp.linkup.onl:10000"
+  },
+  "url_http": {
+    "scheme": "http",
+    "host": "global.rp.linkup.onl",
+    "port": 10000,
+    "masked": "http://***:***@global.rp.linkup.onl:10000"
+  },
+  "four_part": {
+    "scheme": "http",
+    "host": "global.rp.linkup.onl",
+    "port": 10000,
+    "masked": "http://***:***@global.rp.linkup.onl:10000"
+  }
+}

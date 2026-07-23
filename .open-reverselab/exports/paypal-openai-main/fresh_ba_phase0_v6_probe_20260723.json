@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "stage": "phase0_probe",
+  "proxy_enabled": true,
+  "ec_present": true,
+  "signup_url_present": false,
+  "merchant_or_checkout_seen": true,
+  "country": "US",
+  "content_identifier": "",
+  "error": ""
+}

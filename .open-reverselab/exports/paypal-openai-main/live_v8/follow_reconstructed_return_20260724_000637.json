@@ -1,0 +1,19 @@
+{
+  "stage": "follow_reconstructed_return",
+  "has_payer": true,
+  "has_ba": true,
+  "has_ec": true,
+  "http": 200,
+  "final_host": "stripe.com",
+  "final_path": "/jp",
+  "redirect_status": "success",
+  "has_payment_intent": false,
+  "has_client_secret": false,
+  "body_markers": {
+    "success": true,
+    "succeeded": true,
+    "checkout": true,
+    "error": true,
+    "exception": false
+  }
+}
