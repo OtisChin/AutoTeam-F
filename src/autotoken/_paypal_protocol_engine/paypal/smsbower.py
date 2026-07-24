@@ -597,6 +597,8 @@ def normalize_paypal_sms_provider(raw: object = "") -> str:
         return "sms_record"
     if value in {"hero", "herosms", "hero_sms"}:
         return "hero_sms"
+    if value in {"hero_sms_rent", "herosms_rent", "hero_rent", "hero_long", "hero_sms_long"}:
+        return "hero_sms_rent"
     if value in {"smsbower", "sms_bower"}:
         return "smsbower"
     return value
@@ -849,7 +851,7 @@ class SmsActivateOtpProvider:
 def _sms_provider_base_url(provider: str, explicit: str = "") -> str:
     if explicit:
         return explicit
-    if provider == "hero_sms":
+    if provider in {"hero_sms", "hero_sms_rent"}:
         return HEROSMS_API_URL
     return (
         _load_dotenv_value("PAYPAL_SMSBOWER_BASE_URL")
@@ -863,7 +865,7 @@ def _sms_provider_base_url(provider: str, explicit: str = "") -> str:
 def _sms_provider_api_key(provider: str, explicit: str | None = None) -> str:
     if explicit:
         return str(explicit).strip()
-    if provider == "hero_sms":
+    if provider in {"hero_sms", "hero_sms_rent"}:
         return (
             _load_dotenv_value("PAYPAL_HEROSMS_API_KEY")
             or _load_dotenv_value("PAYPAL_HERO_SMS_API_KEY")
@@ -883,9 +885,10 @@ def _sms_provider_country(provider: str, paypal_country: str, explicit: str = ""
     if explicit:
         return normalize_paypal_sms_country(explicit, paypal_country=paypal_country)
     paypal = str(paypal_country or "").strip().upper()
+    hero_provider = provider in {"hero_sms", "hero_sms_rent"}
     env_prefixes = (
         ("PAYPAL_HERO_SMS", "PAYPAL_HEROSMS")
-        if provider == "hero_sms"
+        if hero_provider
         else ("PAYPAL_SMSBOWER",)
     )
     for prefix in env_prefixes:
@@ -911,7 +914,7 @@ def build_sms_activate_provider(
     preferred_price: str = "",
 ) -> SmsActivateOtpProvider | None:
     normalized = normalize_paypal_sms_provider(provider)
-    if normalized not in {"hero_sms", "smsbower"}:
+    if normalized not in {"hero_sms", "hero_sms_rent", "smsbower"}:
         return None
     if enabled is False:
         return None
@@ -945,4 +948,160 @@ def build_sms_activate_provider(
         min_price=min_price or _load_dotenv_value("PAYPAL_SMS_MIN_PRICE"),
         max_price=max_price or _load_dotenv_value("PAYPAL_SMS_MAX_PRICE"),
         preferred_price=preferred_price or _load_dotenv_value("PAYPAL_SMS_PREFERRED_PRICE"),
+    )
+
+
+class HeroSmsRentOtpProvider:
+    """Use an already-purchased HeroSMS long-term/rental number for PayPal OTP."""
+
+    def __init__(
+        self,
+        *,
+        client: SmsActivateClient,
+        phone_number: str,
+        country: str = PAYPAL_SMS_DEFAULT_COUNTRY,
+        wait_seconds: float = SMSBOWER_DEFAULT_WAIT_SECONDS,
+        poll_interval_seconds: float = SMSBOWER_DEFAULT_POLL_INTERVAL_SECONDS,
+    ) -> None:
+        self.client = client
+        self.phone_number = normalize_sms_activate_phone(phone_number, country=country)
+        self.country = str(country or PAYPAL_SMS_DEFAULT_COUNTRY).strip()
+        self.wait_seconds = max(1.0, float(wait_seconds)) if wait_seconds >= 1 else float(wait_seconds)
+        self.poll_interval_seconds = max(0.01, float(poll_interval_seconds))
+        self.max_attempts = 1
+
+    def reserve_number(self) -> SMSBowerActivation:
+        rent_id = self._find_rent_id_by_phone()
+        if not rent_id:
+            raise SMSBowerApiError(f"HeroSMS rent number not found in active rents: {self._masked_phone()}")
+        return SMSBowerActivation(
+            activation_id=rent_id,
+            phone_number=self.phone_number,
+            provider_id="hero_sms_rent",
+            price=0.0,
+            expires_at=time.time() + 24 * 60 * 60,
+            reused=True,
+        )
+
+    def _masked_phone(self) -> str:
+        return "*" * max(0, len(self.phone_number) - 4) + self.phone_number[-4:]
+
+    def _find_rent_id_by_phone(self) -> str:
+        for action in ("getRentList", "getRentStatus"):
+            try:
+                payload = self.client.request_json_or_text(action, {} if action == "getRentList" else {"phone": self.phone_number})
+            except Exception as exc:
+                logger.debug("HeroSMS rent {} lookup soft-failed: {}", action, exc)
+                continue
+            rent_id = self._rent_id_from_payload(payload)
+            if rent_id:
+                return rent_id
+        return ""
+
+    def _rent_id_from_payload(self, payload: object) -> str:
+        phone_digits = _digits(self.phone_number)
+
+        def walk(value: object) -> str:
+            if isinstance(value, dict):
+                value_phone = _digits(
+                    value.get("phone")
+                    or value.get("phoneNumber")
+                    or value.get("number")
+                    or value.get("phone_number")
+                )
+                if value_phone and value_phone.endswith(phone_digits[-10:]):
+                    rent_id = str(
+                        value.get("id")
+                        or value.get("rentId")
+                        or value.get("rent_id")
+                        or value.get("activationId")
+                        or value.get("activation_id")
+                        or ""
+                    ).strip()
+                    if rent_id:
+                        return rent_id
+                for child in value.values():
+                    found = walk(child)
+                    if found:
+                        return found
+            elif isinstance(value, list):
+                for child in value:
+                    found = walk(child)
+                    if found:
+                        return found
+            return ""
+
+        return walk(payload)
+
+    def mark_sms_sent(self, activation: SMSBowerActivation) -> None:
+        _ = activation
+
+    def wait_for_code(self, activation: SMSBowerActivation, timeout_seconds: float | None = None) -> str | None:
+        deadline = time.time() + (self.wait_seconds if timeout_seconds is None else float(timeout_seconds))
+        while time.time() <= deadline:
+            try:
+                payload = self.client.request_json_or_text("getRentStatus", {"id": activation.activation_id})
+            except Exception as exc:
+                logger.debug("HeroSMS getRentStatus soft-failed: {}", exc)
+                payload = ""
+            code = self._code_from_payload(payload)
+            if code:
+                return code
+            time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
+        return None
+
+    def _code_from_payload(self, payload: object) -> str:
+        if isinstance(payload, str):
+            return SMSBowerOtpProvider._code_from_status(payload)
+        if isinstance(payload, dict):
+            for key in ("code", "smsCode", "sms_code", "otp"):
+                code = str(payload.get(key) or "").strip()
+                if re.fullmatch(r"\d{4,8}", code):
+                    return code
+            for key in ("text", "sms", "message", "lastSms"):
+                text = str(payload.get(key) or "")
+                match = re.search(r"\d{4,8}", text)
+                if match:
+                    return match.group(0)
+            for child in payload.values():
+                code = self._code_from_payload(child)
+                if code:
+                    return code
+        if isinstance(payload, list):
+            for child in payload:
+                code = self._code_from_payload(child)
+                if code:
+                    return code
+        return ""
+
+    def abandon(self, activation: SMSBowerActivation, reason: str) -> None:
+        logger.info("Keeping HeroSMS rent activation={} reason={}", activation.activation_id, reason)
+
+    def register_confirmation_result(self, activation: SMSBowerActivation, confirmed: bool) -> None:
+        logger.info("HeroSMS rent activation={} confirmed={}", activation.activation_id, confirmed)
+
+
+def build_hero_sms_rent_provider(
+    *,
+    phone_number: str,
+    api_key: str | None = None,
+    base_url: str = "",
+    country: str = "",
+    paypal_country: str = "US",
+    wait_seconds: float | None = None,
+    poll_interval_seconds: float | None = None,
+) -> HeroSmsRentOtpProvider:
+    resolved_key = _sms_provider_api_key("hero_sms_rent", api_key)
+    resolved_base_url = _sms_provider_base_url("hero_sms_rent", base_url or _load_dotenv_value("PAYPAL_HERO_SMS_BASE_URL"))
+    resolved_country = _sms_provider_country("hero_sms_rent", paypal_country, country)
+    return HeroSmsRentOtpProvider(
+        client=SmsActivateClient(resolved_key, base_url=resolved_base_url),
+        phone_number=phone_number,
+        country=resolved_country,
+        wait_seconds=wait_seconds
+        if wait_seconds is not None
+        else _env_float("PAYPAL_SMS_WAIT_SECONDS", SMSBOWER_DEFAULT_WAIT_SECONDS, 1.0, 900.0),
+        poll_interval_seconds=poll_interval_seconds
+        if poll_interval_seconds is not None
+        else _env_float("PAYPAL_SMS_POLL_INTERVAL_SECONDS", SMSBOWER_DEFAULT_POLL_INTERVAL_SECONDS, 0.2, 30.0),
     )

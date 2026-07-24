@@ -42,6 +42,10 @@ def _build_sms_activate_provider(**kwargs):
     return _smsbower_module().build_sms_activate_provider(**kwargs)
 
 
+def _build_hero_sms_rent_provider(**kwargs):
+    return _smsbower_module().build_hero_sms_rent_provider(**kwargs)
+
+
 def _normalize_paypal_sms_provider(value: object = "") -> str:
     return _smsbower_module().normalize_paypal_sms_provider(value)
 
@@ -186,7 +190,7 @@ def main():
     parser.add_argument(
         "--sms-provider",
         default=os.getenv("PAYPAL_SMS_PROVIDER", ""),
-        help="SMS OTP provider: sms-record, hero-sms, smsbower, or empty/manual.",
+        help="SMS OTP provider: sms-record, hero-sms, hero-sms-rent, smsbower, or empty/manual.",
     )
     parser.add_argument(
         "--sms-api-key",
@@ -367,6 +371,18 @@ def main():
             args.sms_record_url,
             wait_seconds=args.sms_record_wait,
             poll_interval=args.sms_record_poll,
+        )
+    elif normalized_sms_provider == "hero_sms_rent":
+        if not args.phone:
+            parser.error("--phone is required when --sms-provider=hero-sms-rent")
+        sms_provider = _build_hero_sms_rent_provider(
+            phone_number=args.phone,
+            api_key=args.sms_api_key,
+            base_url=args.sms_base_url,
+            country=args.sms_country,
+            paypal_country=args.country,
+            wait_seconds=args.sms_record_wait,
+            poll_interval_seconds=args.sms_record_poll,
         )
     elif normalized_sms_provider in {"hero_sms", "smsbower"}:
         sms_provider = _build_sms_activate_provider(

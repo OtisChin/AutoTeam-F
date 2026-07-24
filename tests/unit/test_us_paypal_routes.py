@@ -407,6 +407,52 @@ def test_protocol_start_allows_herosms_without_fixed_sms_record(monkeypatch):
     assert captured["args"][1].sms_provider == "hero_sms"
 
 
+def test_protocol_start_allows_herosms_rent_with_phone(monkeypatch):
+    app = _app()
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            captured["args"] = self.args
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+
+    result = _endpoint(app, "/api/us-paypal/protocol/start", "POST")(
+        us_paypal.UsPaypalProtocolStartRequest.model_validate({
+            "paypalLink": "https://www.paypal.com/agreements/approve?ba_token=BA-1HERORENTROUTE123",
+            "smsProvider": "hero-sms-rent",
+            "phone": "+31612345678",
+            "country": "NL",
+        })
+    )
+
+    assert result["job_id"].startswith("ppay-")
+    assert captured["args"][1].sms_provider == "hero_sms_rent"
+    assert captured["args"][1].phone == "+31612345678"
+    assert captured["args"][1].country == "NL"
+
+
+def test_protocol_start_rejects_herosms_rent_without_phone():
+    app = _app()
+
+    with pytest.raises(HTTPException) as exc:
+        _endpoint(app, "/api/us-paypal/protocol/start", "POST")(
+            us_paypal.UsPaypalProtocolStartRequest.model_validate({
+                "paypalLink": "https://www.paypal.com/agreements/approve?ba_token=BA-1HERORENTPHONE123",
+                "smsProvider": "hero-sms-rent",
+                "country": "NL",
+            })
+        )
+
+    assert exc.value.status_code == 400
+    assert "HeroSMS 长效号码" in exc.value.detail["message"]
+
+
 def test_protocol_start_allows_gb_country(monkeypatch):
     app = _app()
     captured = {}

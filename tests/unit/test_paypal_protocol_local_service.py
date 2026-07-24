@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib
+import sys
+
 import pytest
 
 from autotoken.services import paypal_protocol_local as service
@@ -103,6 +106,66 @@ def test_build_protocol_command_supports_herosms_without_fixed_phone(tmp_path, m
     assert "PAYPAL_HERO_SMS_API_KEY" not in env or env["PAYPAL_HERO_SMS_API_KEY"] != "hero-secret"
     assert env["PAYPAL_SMS_COUNTRY"] == "187"
     assert "hero-secret" not in service.sanitize_log_text(" ".join(cmd))
+
+
+def test_build_protocol_command_supports_herosms_rent_phone(tmp_path, monkeypatch):
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
+
+    cmd, env, _cwd = service.build_protocol_command(service.PaypalProtocolRunConfig(
+        ba_token="BA-1HERORENT123",
+        sms_provider="hero-sms-rent",
+        phone="+31612345678",
+        country="NL",
+    ))
+
+    assert cmd[cmd.index("--sms-provider") + 1] == "hero-sms-rent"
+    assert cmd[cmd.index("--phone") + 1] == "+31612345678"
+    assert cmd[cmd.index("--sms-country") + 1] == "48"
+    assert "--sms-record-url" not in cmd
+    assert env["PAYPAL_SMS_PROVIDER"] == "hero_sms_rent"
+    assert env["PAYPAL_SMS_COUNTRY"] == "48"
+
+
+def test_herosms_rent_provider_resolves_phone_and_reads_rent_status():
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        smsbower = importlib.import_module("paypal.smsbower")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    class FakeClient:
+        def __init__(self):
+            self.actions = []
+
+        def request_json_or_text(self, action, params=None):
+            self.actions.append((action, dict(params or {})))
+            if action == "getRentList":
+                return {"items": [{"id": "rent-123", "phone": "+31612345678"}]}
+            if action == "getRentStatus":
+                return {"sms": [{"text": "PayPal code 654321"}]}
+            raise AssertionError(action)
+
+    client = FakeClient()
+    provider = smsbower.HeroSmsRentOtpProvider(
+        client=client,
+        phone_number="+31612345678",
+        country="48",
+        wait_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+
+    activation = provider.reserve_number()
+    assert activation.activation_id == "rent-123"
+    assert activation.phone_number == "+31612345678"
+    assert provider.wait_for_code(activation, timeout_seconds=1) == "654321"
+    assert ("getRentStatus", {"id": "rent-123"}) in client.actions
 
 
 def test_build_protocol_command_supports_gb_with_auto_path_and_sms_default(tmp_path, monkeypatch):

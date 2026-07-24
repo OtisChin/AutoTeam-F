@@ -140,7 +140,7 @@ class UsPaypalProtocolStartRequest(BaseModel):
     @classmethod
     def _clean_sms_provider(cls, value: Any) -> str:
         normalized = paypal_protocol_service.normalize_sms_provider(str(value or "sms_record"))
-        return normalized if normalized in {"sms_record", "hero_sms", "smsbower"} else "sms_record"
+        return normalized if normalized in {"sms_record", "hero_sms", "hero_sms_rent", "smsbower"} else "sms_record"
 
     @field_validator("timeout_seconds", mode="before")
     @classmethod
@@ -753,6 +753,8 @@ def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) ->
                 raise RuntimeError("请填写 PayPal 注册手机号")
             if not sms_record_url:
                 raise RuntimeError("请填写 SMS record URL")
+        elif sms_provider == "hero_sms_rent" and not phone:
+            raise RuntimeError("请填写 HeroSMS 长效号码")
         account_email = str(req.account_email or "").strip()
         with JOBS_LOCK:
             if job_id not in JOBS:
@@ -875,6 +877,9 @@ def create_us_paypal_router() -> APIRouter:
                 raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写手机号"})
             if not str(req.sms_record_url or "").strip():
                 raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写 SMS record URL"})
+        elif sms_provider == "hero_sms_rent":
+            if not str(req.phone or "").strip():
+                raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写 HeroSMS 长效号码"})
         elif sms_provider not in {"hero_sms", "smsbower"}:
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "不支持的 PayPal 手机接码平台"})
         if req.country not in paypal_protocol_service.SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES:

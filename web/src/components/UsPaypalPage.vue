@@ -282,6 +282,34 @@
           <div class="rounded-2xl border border-gray-800 bg-gray-950 p-5">
             <h3 class="text-lg font-bold text-white">协议支付输入</h3>
             <div class="mt-5 space-y-4">
+              <div class="rounded-xl border border-indigo-500/20 bg-indigo-500/10 p-4">
+                <div class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <p class="text-sm font-semibold text-indigo-100">选择已成功提链账号</p>
+                    <p class="mt-1 text-xs text-indigo-200/75">从已保存的真 BA 链接中选择，自动填入 BA 链、国家和关联账号邮箱。</p>
+                  </div>
+                  <span class="text-xs font-semibold text-indigo-200/80">可选 {{ protocolLinkAccountOptions.length }} 个</span>
+                </div>
+                <div class="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
+                  <label class="block">
+                    <span class="mb-1.5 block text-xs font-semibold text-indigo-200">国家筛选</span>
+                    <select v-model="protocolLinkCountryFilter" class="w-full rounded-lg border border-indigo-500/30 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-400 focus:outline-none" :disabled="protocolBusy">
+                      <option value="all">全部国家</option>
+                      <option v-for="country in protocolLinkCountryOptions" :key="country" :value="country">{{ country }}</option>
+                    </select>
+                  </label>
+                  <label class="block">
+                    <span class="mb-1.5 block text-xs font-semibold text-indigo-200">已成功提链账号</span>
+                    <select v-model="selectedProtocolAccountEmail" @change="applySelectedProtocolAccount" class="w-full rounded-lg border border-indigo-500/30 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-400 focus:outline-none" :disabled="protocolBusy || !protocolLinkAccountOptions.length">
+                      <option value="">{{ protocolLinkAccountOptions.length ? '选择账号并填入 BA 链' : '暂无符合条件的成功提链账号' }}</option>
+                      <option v-for="item in protocolLinkAccountOptions" :key="item.email" :value="item.email">
+                        {{ item.country }} · {{ item.email }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
               <label class="block">
                 <span class="mb-1.5 block text-sm font-semibold text-gray-300">BA 链接 / BA token</span>
                 <textarea v-model.trim="protocolForm.paypalLink" rows="3" spellcheck="false" placeholder="https://www.paypal.com/agreements/approve?ba_token=BA-..." class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
@@ -303,9 +331,10 @@
                   <select v-model="protocolForm.smsProvider" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy">
                     <option value="sms_record">固定手机号 + SMS record URL</option>
                     <option value="hero_sms">HeroSMS 自动取号</option>
+                    <option value="hero_sms_rent">HeroSMS 长效号（已购买）</option>
                     <option value="smsbower">SMSBower 自动取号</option>
                   </select>
-                  <span class="mt-1 block text-xs text-gray-500">HeroSMS/SMSBower 使用 SMS-Activate 兼容 API；country 默认随国家联动。</span>
+                  <span class="mt-1 block text-xs text-gray-500">自动取号走服务商库存；HeroSMS 长效号会复用你已购买的号码并由后端轮询验证码。</span>
                 </label>
               </div>
 
@@ -322,24 +351,18 @@
                 </label>
               </template>
 
-              <template v-else>
-                <div class="rounded-xl border border-indigo-500/20 bg-indigo-500/10 px-4 py-3 text-xs text-indigo-100">
-                  <div class="font-semibold">{{ protocolSmsProviderLabel }} 接码配置由后端固定读取。</div>
-                  <div class="mt-1 text-indigo-200/80">
-                    后端会按支付国家自动选择 Country ID：US=187、GB=16、NL=48、BR=73；Service 默认 ts，API Key / API 地址从环境变量读取。
-                  </div>
-                </div>
+              <template v-else-if="protocolForm.smsProvider === 'hero_sms_rent'">
+                <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">HeroSMS 长效号码</span>
+                  <input v-model.trim="protocolForm.phone" placeholder="+316..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                  <span class="mt-1 block text-xs text-gray-500">填写 HeroSMS 已购买的长效号码；后端会通过 HeroSMS API 查找该号码并轮询 PayPal OTP。</span>
+                </label>
               </template>
 
               <label class="block">
                 <span class="mb-1.5 block text-sm font-semibold text-gray-300">US 代理（可选）</span>
                 <textarea v-model.trim="protocolForm.proxies" rows="3" spellcheck="false" placeholder="proxy.example.com:10000:USER-zone-custom-region-US-session-xxxx-sessTime-120-sessAuto-1:pass" class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
                 <span class="mt-1 block text-xs text-gray-500">默认不走代理，复现已验证成功的 no-proxy 组合；填写时后端取第一条并在本地子进程中执行。</span>
-              </label>
-
-              <label class="block">
-                <span class="mb-1.5 block text-sm font-semibold text-gray-300">关联账号邮箱（可选）</span>
-                <input v-model.trim="protocolForm.accountEmail" placeholder="支付成功后标记为 Plus/paid" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
               </label>
 
               <div class="grid gap-4 md:grid-cols-2">
@@ -407,6 +430,11 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import {
+  paypalAccountCountryOptions,
+  resolveSelectedPayPalLinkAccount,
+  successfulPayPalLinkAccounts,
+} from '../paypalAccountOptions.js'
 
 const FORM_STORAGE_KEY = 'autotoken_us_paypal_form'
 const JOB_STORAGE_KEY = 'autotoken_us_paypal_job'
@@ -464,6 +492,8 @@ const accountFilter = ref('')
 const accountStatusFilter = ref('all')
 const accountCountryFilter = ref('all')
 const linkCountryFilter = ref('all')
+const protocolLinkCountryFilter = ref('all')
+const selectedProtocolAccountEmail = ref('')
 const retryFailedEmailSet = ref(new Set())
 const deletingPaypalAccounts = ref(new Set())
 const logRef = ref(null)
@@ -519,6 +549,8 @@ const filteredAccounts = computed(() => accounts.value.filter((account) => {
 const filteredLinks = computed(() => links.value.filter(link => countryMatchesFilter(linkCountry(link), linkCountryFilter.value)))
 const accountCountryOptions = computed(() => Array.from(new Set(accounts.value.map(accountPaypalCountry).filter(country => country && country !== '-'))).sort())
 const linkCountryOptions = computed(() => Array.from(new Set(links.value.map(linkCountry).filter(country => country && country !== '-'))).sort())
+const protocolLinkCountryOptions = computed(() => paypalAccountCountryOptions(accounts.value, links.value))
+const protocolLinkAccountOptions = computed(() => successfulPayPalLinkAccounts(accounts.value, links.value, protocolLinkCountryFilter.value))
 const progressText = computed(() => {
   const job = currentJob.value || {}
   const completed = Number(job.completed || 0)
@@ -565,7 +597,6 @@ const protocolBadgeClass = computed(() => {
 })
 const anyBusy = computed(() => busy.value || protocolBusy.value)
 const activeStatusText = computed(() => activeTab.value === 'protocol' && protocolBusy.value ? protocolBadgeText.value : progressText.value)
-const protocolSmsProviderLabel = computed(() => protocolForm.value.smsProvider === 'smsbower' ? 'SMSBower' : 'HeroSMS')
 
 function setStatus(message, error = false) { statusText.value = message; statusError.value = error }
 function cleanText(value) { return String(value || '未知错误').replace(/\s+/g, ' ').trim() }
@@ -830,15 +861,25 @@ function saveProtocolForm(options = {}) {
   localStorage.setItem(PROTOCOL_FORM_STORAGE_KEY, JSON.stringify(protocolForm.value))
   if (!options.silent && !protocolBusy.value) setProtocolStatus('协议支付输入已保存。')
 }
+function applySelectedProtocolAccount() {
+  const selected = resolveSelectedPayPalLinkAccount(accounts.value, links.value, selectedProtocolAccountEmail.value)
+  if (!selected) return
+  protocolForm.value.paypalLink = selected.paypalLink
+  protocolForm.value.accountEmail = selected.email
+  if (PROTOCOL_COUNTRIES.has(selected.country)) protocolForm.value.country = selected.country
+  setProtocolStatus(`已填入 ${selected.country || '-'} · ${selected.email} 的 BA 链。`)
+}
 function validateProtocolPayment() {
   protocolForm.value.country = String(protocolForm.value.country || 'US').trim().toUpperCase()
   protocolForm.value.smsProvider = String(protocolForm.value.smsProvider || 'sms_record').trim().toLowerCase().replace(/-/g, '_')
-  if (!['sms_record', 'hero_sms', 'smsbower'].includes(protocolForm.value.smsProvider)) protocolForm.value.smsProvider = 'sms_record'
+  if (!['sms_record', 'hero_sms', 'hero_sms_rent', 'smsbower'].includes(protocolForm.value.smsProvider)) protocolForm.value.smsProvider = 'sms_record'
   if (!String(protocolForm.value.paypalLink || '').trim()) { setProtocolStatus('请填写 BA 链接或 BA token。', true); return false }
   if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付仅开放 US/GB/NL/BR。', true); return false }
   if (protocolForm.value.smsProvider === 'sms_record') {
     if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写手机号。', true); return false }
     if (!String(protocolForm.value.smsRecordUrl || '').trim()) { setProtocolStatus('请填写 SMS record URL。', true); return false }
+  } else if (protocolForm.value.smsProvider === 'hero_sms_rent') {
+    if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写 HeroSMS 长效号码。', true); return false }
   }
   protocolForm.value.smsRecordWaitSeconds = Math.max(60, Math.min(900, Number(protocolForm.value.smsRecordWaitSeconds || 300)))
   protocolForm.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(protocolForm.value.smsRecordPollSeconds || 3)))
@@ -985,6 +1026,12 @@ onMounted(async () => {
 
 watch(form, () => localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value)), { deep: true })
 watch(protocolForm, () => localStorage.setItem(PROTOCOL_FORM_STORAGE_KEY, JSON.stringify(protocolForm.value)), { deep: true })
+watch(protocolLinkCountryFilter, () => {
+  if (!selectedProtocolAccountEmail.value) return
+  if (!protocolLinkAccountOptions.value.some(item => item.email === selectedProtocolAccountEmail.value)) {
+    selectedProtocolAccountEmail.value = ''
+  }
+})
 
 onBeforeUnmount(() => { componentUnmounted = true })
 </script>

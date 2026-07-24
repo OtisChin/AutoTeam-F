@@ -271,6 +271,8 @@ def normalize_sms_provider(value: str | None = None) -> str:
         return "sms_record"
     if text in {"hero", "herosms", "hero_sms"}:
         return "hero_sms"
+    if text in {"hero_sms_rent", "herosms_rent", "hero_rent", "hero_long", "hero_sms_long"}:
+        return "hero_sms_rent"
     if text in {"smsbower", "sms_bower"}:
         return "smsbower"
     return text
@@ -292,7 +294,7 @@ def _backend_sms_country(provider: str, paypal_country: str) -> str:
     # Do not let the web payload or a global PAYPAL_SMS_COUNTRY override it.
     country = str(paypal_country or "").strip().upper()
     normalized = normalize_sms_provider(provider)
-    if normalized == "hero_sms":
+    if normalized in {"hero_sms", "hero_sms_rent"}:
         return (
             _env_value(f"PAYPAL_HERO_SMS_COUNTRY_{country}", f"PAYPAL_HEROSMS_COUNTRY_{country}")
             or DEFAULT_HEROSMS_COUNTRY_BY_PAYPAL_COUNTRY.get(country, "187")
@@ -307,7 +309,7 @@ def _backend_sms_country(provider: str, paypal_country: str) -> str:
 
 def _backend_sms_base_url(provider: str) -> str:
     normalized = normalize_sms_provider(provider)
-    if normalized == "hero_sms":
+    if normalized in {"hero_sms", "hero_sms_rent"}:
         return _env_value("PAYPAL_HERO_SMS_BASE_URL", "PAYPAL_HEROSMS_BASE_URL", "OAUTH_HERO_SMS_BASE_URL") or DEFAULT_HEROSMS_BASE_URL
     if normalized == "smsbower":
         return (
@@ -324,7 +326,7 @@ def _backend_sms_base_url(provider: str) -> str:
 
 def _backend_sms_api_key(provider: str) -> str:
     normalized = normalize_sms_provider(provider)
-    if normalized == "hero_sms":
+    if normalized in {"hero_sms", "hero_sms_rent"}:
         return _env_value(
             "PAYPAL_HERO_SMS_API_KEY",
             "PAYPAL_HEROSMS_API_KEY",
@@ -359,7 +361,9 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
             raise ValueError("缺少 PayPal 注册手机号")
         if not str(cfg.sms_record_url or "").strip():
             raise ValueError("缺少 SMS record URL")
-    elif sms_provider in {"hero_sms", "smsbower"}:
+    elif sms_provider in {"hero_sms", "hero_sms_rent", "smsbower"}:
+        if sms_provider == "hero_sms_rent" and not str(cfg.phone or "").strip():
+            raise ValueError("缺少 HeroSMS 长效号码")
         # API key may be supplied by .env/environment; do not require it in the
         # HTTP request payload.
         pass
@@ -405,12 +409,14 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
         sms_country = _backend_sms_country(sms_provider, country)
         cmd.extend([
             "--sms-provider",
-            "hero-sms" if sms_provider == "hero_sms" else "smsbower",
+            "hero-sms-rent" if sms_provider == "hero_sms_rent" else ("hero-sms" if sms_provider == "hero_sms" else "smsbower"),
             "--sms-service",
             sms_service,
             "--sms-country",
             sms_country,
         ])
+        if sms_provider == "hero_sms_rent":
+            cmd.extend(["--phone", str(cfg.phone).strip()])
     proxy = normalize_proxy_url(cfg.proxy_url)
     if proxy:
         cmd.extend(["--proxy-url", proxy, "--proxy"])
@@ -438,9 +444,9 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     env["PAYPAL_SMS_PROVIDER"] = sms_provider
     env["PAYPAL_SMS_SERVICE"] = _backend_sms_service()
     env["PAYPAL_SMS_COUNTRY"] = _backend_sms_country(sms_provider, country)
-    if sms_provider in {"hero_sms", "smsbower"}:
+    if sms_provider in {"hero_sms", "hero_sms_rent", "smsbower"}:
         env["PAYPAL_SMS_BASE_URL"] = _backend_sms_base_url(sms_provider)
-        if sms_provider == "hero_sms":
+        if sms_provider in {"hero_sms", "hero_sms_rent"}:
             env["PAYPAL_HERO_SMS_BASE_URL"] = _backend_sms_base_url(sms_provider)
             key = _backend_sms_api_key(sms_provider)
             if key:
