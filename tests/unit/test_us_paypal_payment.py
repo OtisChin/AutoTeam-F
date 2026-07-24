@@ -27,6 +27,25 @@ class _ProxyContext:
         return False
 
 
+def test_new_http_session_uses_chrome_impersonation_when_available(monkeypatch):
+    created = {}
+
+    class FakeCurlSession:
+        def __init__(self, *, impersonate):
+            created["impersonate"] = impersonate
+            self.trust_env = True
+            self.proxies = {}
+            self.headers = {}
+
+    monkeypatch.setattr(us_paypal, "CurlCffiSession", FakeCurlSession, raising=False)
+
+    session = us_paypal.new_http_session("socks5h://user:pass@proxy.example:1000")
+
+    assert created["impersonate"].startswith("chrome")
+    assert session.trust_env is False
+    assert session.proxies["https"] == "socks5h://user:pass@proxy.example:1000"
+
+
 def test_extract_paypal_result_reads_stripe_and_ba_redirects():
     stripe_payload = {"next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"}}}
     stripe_fields = us_paypal.extract_paypal_result(stripe_payload, "cs_test")
@@ -115,6 +134,45 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     assert result["fields"]["amount"] == "0"
     assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
     assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
+
+
+def test_generate_paypal_trial_warms_chatgpt_context_before_checkout(monkeypatch):
+    calls = []
+
+    class FakeChatgptSession:
+        def get(self, url, **kwargs):
+            calls.append(("get", url))
+            return _JsonResponse({})
+
+        def post(self, url, **kwargs):
+            calls.append(("post", url))
+            if url.endswith("/payments/checkout"):
+                return _JsonResponse({
+                    "checkout_session_id": "cs_test",
+                    "processor_entity": "openai_llc",
+                    "public_key": "pk_test",
+                })
+            raise AssertionError(url)
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: {
+        "total_summary": {"due": 0},
+        "payment_method_types": ["card", "paypal"],
+        "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+    })
+    monkeypatch.setattr(us_paypal, "stripe_update_tax_region", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
+        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-WARM",
+        "submission_attempt": {"state": "requires_action"},
+    })
+
+    us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], region="GB"))
+
+    checkout_index = calls.index(("post", "https://chatgpt.com/backend-api/payments/checkout"))
+    assert any(kind == "get" and "/backend-api/checkout_pricing_config/configs/GB" in url for kind, url in calls[:checkout_index])
+    assert any(kind == "get" and "/backend-api/accounts/check/" in url for kind, url in calls[:checkout_index])
 
 
 def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkeypatch):
@@ -321,6 +379,8 @@ def test_promo_currency_for_region_supports_zero_trial_regions():
     assert us_paypal.promo_currency_for_region("JP") == "JPY"
     assert us_paypal.promo_currency_for_region("br") == "BRL"
     assert us_paypal.promo_currency_for_region("VN") == "VND"
+    assert us_paypal.promo_currency_for_region("TH") == "THB"
+    assert us_paypal.promo_currency_for_region("PH") == "PHP"
     assert us_paypal.promo_currency_for_region("US") == "USD"
 
 

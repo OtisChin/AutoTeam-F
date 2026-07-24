@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import requests
+from curl_cffi.requests import Session as CurlCffiSession
 
 from autotoken.payments.brazil_pix import (
     DEFAULT_STRIPE_PK,
@@ -104,6 +105,7 @@ class PaypalJobConfig:
     promo_region: str = "JP"
     direct_proxies: list[str] = field(default_factory=list)
     apply_promo: bool = False
+    preflighted_checkout_proxy_url: str = ""
 
 
 def normalize_paypal_proxy_url(value: str) -> str:
@@ -187,6 +189,9 @@ def align_paypal_proxy_region(proxy_url: str, region: str = "US") -> str:
 
 def build_paypal_dynamic_proxy(cfg: PaypalJobConfig, stage_index: int, region: str | None = None) -> tuple[str, str]:
     target_region = str(region or cfg.region or "US").strip().upper() or "US"
+    preflighted = normalize_paypal_proxy_url(getattr(cfg, "preflighted_checkout_proxy_url", ""))
+    if stage_index == 0 and preflighted and target_region == (str(cfg.region or "US").strip().upper() or "US"):
+        return preflighted, f"preflighted region={target_region}"
     direct = [
         align_paypal_proxy_region(normalize_paypal_proxy_url(item), target_region)
         for item in (cfg.direct_proxies or [])
@@ -201,8 +206,12 @@ def build_paypal_dynamic_proxy(cfg: PaypalJobConfig, stage_index: int, region: s
 
 
 def new_http_session(proxy_url: str = "") -> requests.Session:
-    session = requests.Session()
-    session.trust_env = False
+    try:
+        session = CurlCffiSession(impersonate="chrome136")
+    except Exception:
+        session = requests.Session()
+    if hasattr(session, "trust_env"):
+        session.trust_env = False
     if proxy_url:
         session.proxies.update({"http": proxy_url, "https": proxy_url})
     return session
@@ -232,6 +241,62 @@ def build_chatgpt_session(access_token: str, proxy_url: str = "", device_id: str
         }
     )
     return session
+
+
+def _browser_timezone_offset_min() -> int:
+    local_utc_offset_seconds = -time.timezone
+    if time.daylight and time.localtime().tm_isdst > 0:
+        local_utc_offset_seconds = -time.altzone
+    return int(-local_utc_offset_seconds / 60)
+
+
+def warm_chatgpt_checkout_context(chatgpt: requests.Session, country: str, log: LogFn | None = None) -> None:
+    """Prime ChatGPT backend context before creating a payment checkout."""
+
+    log = log or (lambda _m: None)
+    getter = getattr(chatgpt, "get", None)
+    poster = getattr(chatgpt, "post", None)
+    if not callable(getter):
+        return
+    target_country = normalize_paypal_country(country, "US")
+    warmups = [
+        (
+            f"https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min={_browser_timezone_offset_min()}",
+            "/backend-api/accounts/check/v4-2023-04-27",
+        ),
+        ("https://chatgpt.com/backend-api/accounts/domain-density-eligibility", "/backend-api/accounts/domain-density-eligibility"),
+        ("https://chatgpt.com/backend-api/checkout_pricing_config/countries", "/backend-api/checkout_pricing_config/countries"),
+        (
+            f"https://chatgpt.com/backend-api/checkout_pricing_config/configs/{target_country}",
+            f"/backend-api/checkout_pricing_config/configs/{target_country}",
+        ),
+    ]
+    statuses: list[str] = []
+    for url, target_path in warmups:
+        try:
+            resp = getter(
+                url,
+                headers={"x-openai-target-path": target_path, "x-openai-target-route": target_path},
+                timeout=8,
+            )
+            statuses.append(f"{target_path.rsplit('/', 1)[-1]}={getattr(resp, 'status_code', 0)}")
+        except Exception as exc:
+            statuses.append(f"{target_path.rsplit('/', 1)[-1]}={type(exc).__name__}")
+    if callable(poster):
+        try:
+            resp = poster(
+                "https://chatgpt.com/backend-api/sentinel/ping",
+                json={},
+                headers={
+                    "x-openai-target-path": "/backend-api/sentinel/ping",
+                    "x-openai-target-route": "/backend-api/sentinel/ping",
+                },
+                timeout=8,
+            )
+            statuses.append(f"sentinel={getattr(resp, 'status_code', 0)}")
+        except Exception as exc:
+            statuses.append(f"sentinel={type(exc).__name__}")
+    log("checkout warmup: " + " ".join(statuses))
 
 
 def build_stripe_session(proxy_url: str = "") -> requests.Session:
@@ -317,7 +382,7 @@ def is_zero_amount(value: Any) -> bool:
 
 
 def promo_currency_for_region(region: str) -> str:
-    return {"JP": "JPY", "BR": "BRL", "VN": "VND"}.get(str(region or "").strip().upper(), "USD")
+    return {"JP": "JPY", "BR": "BRL", "VN": "VND", "TH": "THB", "PH": "PHP"}.get(str(region or "").strip().upper(), "USD")
 
 
 def _ctx() -> dict[str, str]:
@@ -829,6 +894,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
     with pix_proxy_context(cfg.local_proxy, dyn1, log) as chain1:
         p1 = chain1.url
         cg = build_chatgpt_session(token, p1, device_id)
+        warm_chatgpt_checkout_context(cg, checkout_region, log)
         resp = cg.post(
             "https://chatgpt.com/backend-api/payments/checkout",
             json={

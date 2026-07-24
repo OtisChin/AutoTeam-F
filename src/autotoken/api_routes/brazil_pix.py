@@ -18,6 +18,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.brazil_pix import PixJobConfig, build_pix_dynamic_proxy, generate_pix_trial
+from autotoken.services.payment_error_classifier import is_non_zero_amount_error
 from autotoken.services import proxy_runtime
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
@@ -660,10 +661,7 @@ def _is_no_organization_error(error: Any) -> bool:
 
 
 def _is_non_zero_after_promo_error(error: Any) -> bool:
-    text = str(error or "").lower()
-    return ("promo" in text or "套 promo" in text or "套promo" in text) and (
-        "金额不是 0" in text or "amount is not 0" in text or "amount not 0" in text
-    )
+    return is_non_zero_amount_error(error)
 
 
 def _mark_account_plus_pix(email: str, message: str = "User is already paid") -> dict[str, Any]:
@@ -778,8 +776,15 @@ def _preflight_pix_proxy_or_raise(cfg: PixJobConfig, log) -> PixJobConfig:
         log(f"代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} {sid_label}")
         ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
         if ok:
-            log(f"代理预检通过：{message}")
-            return replace(cfg, direct_proxies=[proxy_url])
+            auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(proxy_url, cfg.access_token)
+            if auth_ok:
+                log(f"代理预检通过：{message}; {auth_message}")
+                return replace(cfg, direct_proxies=[proxy_url], preflighted_checkout_proxy_url=proxy_url)
+            log(f"代理认证接口预检失败：{auth_message}")
+            if "token_" in str(auth_message).lower() or "authentication token" in str(auth_message).lower():
+                raise RuntimeError(f"认证接口预检失败: {auth_message}")
+            errors.append(str(auth_message or "unknown"))
+            continue
         errors.append(str(message or "unknown"))
         log(f"代理预检失败：{message}")
     raise RuntimeError(f"代理预检失败: {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
@@ -944,7 +949,7 @@ def _run_batch_account(
                 if _is_non_zero_after_promo_error(last_error):
                     cleanup = _delete_invalid_account(email)
                     status = _set_account_status(email, ACCOUNT_STATUS_FAILED, error=last_error, job_id=job_id)
-                    _append_log(job_id, f"[{index}/{total}] 账号套 promo 后金额非 0，已从账号池删除：{email} cleanup={cleanup}")
+                    _append_log(job_id, f"[{index}/{total}] 账号金额非 0，已从账号池删除：{email} cleanup={cleanup}")
                     return {
                         "ok": False,
                         "email": email,
@@ -952,8 +957,9 @@ def _run_batch_account(
                             "email": email,
                             "elapsed_s": round(time.monotonic() - started, 1),
                             "attempts": attempt,
-                            "error": f"套 promo 后金额非 0，已从账号池删除：{last_error}",
+                            "error": f"金额非 0，已从账号池删除：{last_error}",
                             "cleanup": cleanup,
+                            "account_deleted": True,
                         },
                         "status": status,
                         "account_deleted": True,

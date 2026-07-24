@@ -27,6 +27,7 @@ def isolated_files(monkeypatch, tmp_path):
     monkeypatch.setattr(us_paypal, "LINKS_FILE", tmp_path / "us_paypal_links.json")
     monkeypatch.setattr(us_paypal, "ACCOUNT_STATUS_FILE", tmp_path / "us_paypal_account_status.json")
     monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "HTTP 200"))
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth_api HTTP 200"))
     us_paypal.JOBS.clear()
     yield
     us_paypal.JOBS.clear()
@@ -151,6 +152,33 @@ def test_batch_account_preflights_proxy_before_paypal_generation(monkeypatch):
     assert "代理预检失败" in result["error"]["error"]
     assert "ruleset blocked" in result["error"]["error"]
     assert any("代理预检失败" in line for line in us_paypal.JOBS[job_id]["logs"])
+
+
+def test_batch_account_auth_preflight_blocks_paypal_generation(monkeypatch):
+    email = "auth-blocked@example.com"
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda value: "token-" + value)
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "trace HTTP 200; chatgpt_home HTTP 200"))
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (False, "auth_api HTTP 403; html_challenge"))
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", lambda cfg, log: pytest.fail("should not generate when authenticated proxy preflight fails"))
+    job_id = "paypal-auth-preflight-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-GB-sid-old-t-120:pass",
+        "region": "GB",
+        "maxAttempts": 5,
+    })
+    result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
+
+    assert result["ok"] is False
+    assert "auth_api HTTP 403" in result["error"]["error"]
+    assert any("认证接口预检失败" in line for line in us_paypal.JOBS[job_id]["logs"])
 
 
 def test_paypal_proxy_preflight_has_separate_three_attempt_budget(monkeypatch):
@@ -353,6 +381,39 @@ def test_batch_job_passes_target_region_and_configurable_attempts(monkeypatch):
 
     assert captured["attempts"] == 3
     assert captured["regions"] == [("GB", "VN"), ("GB", "VN"), ("GB", "VN")]
+
+
+def test_batch_account_deletes_paypal_nonzero_amount_account(monkeypatch):
+    email = "AngelesGuttman0186@outlook.com"
+    deleted_accounts: list[str] = []
+    deleted_sessions: list[str] = []
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda _email: "token")
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", lambda cfg, log: (_ for _ in ()).throw(RuntimeError("金额必须为 0: 1667")))
+    monkeypatch.setattr(us_paypal.account_store, "delete_account", lambda value: deleted_accounts.append(value) or True)
+    monkeypatch.setattr(us_paypal, "delete_auth_session", lambda value: deleted_sessions.append(value) or True)
+    job_id = "paypal-nonzero-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-GB-sid-old-t-120:pass",
+        "region": "GB",
+        "promoMode": "promo",
+        "maxAttempts": 5,
+    })
+    result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
+
+    assert result["ok"] is False
+    assert result["account_deleted"] is True
+    assert result["error"]["cleanup"] == {"record_deleted": True, "auth_session_deleted": True}
+    assert "已从账号池删除" in result["error"]["error"]
+    assert deleted_accounts == [email]
+    assert deleted_sessions == [email]
 
 
 def test_protocol_batch_job_assigns_account_link_phone_and_proxy(monkeypatch):

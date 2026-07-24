@@ -325,6 +325,16 @@
       },
       "event": "route",
       "method": "GET",
+      "resource_type": "stylesheet",
+      "url": "https://www.paypalobjects.com/paypal-ui/web/fonts-and-normalize/2-0-0/fonts-and-normalize.min.css"
+    },
+    {
+      "decision": {
+        "action": "abort",
+        "reason": "static_resource_blocked"
+      },
+      "event": "route",
+      "method": "GET",
       "resource_type": "font",
       "url": "https://www.paypalobjects.com/paypal-ui/fonts/PayPalPlain-Medium.woff2"
     },
@@ -357,16 +367,6 @@
       "method": "GET",
       "resource_type": "font",
       "url": "https://www.paypalobjects.com/paypal-ui/fonts/PayPalPro-Black.woff2"
-    },
-    {
-      "decision": {
-        "action": "abort",
-        "reason": "static_resource_blocked"
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "stylesheet",
-      "url": "https://www.paypalobjects.com/paypal-ui/web/fonts-and-normalize/2-0-0/fonts-and-normalize.min.css"
     },
     {
       "decision": {
@@ -411,7 +411,7 @@
     "observability": 1,
     "tealeaf": 0
   },
-  "created_at": 1784904028.1740701,
+  "created_at": 1784908274.7618122,
   "cwd": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine",
   "datadog_flushes": [
     {
@@ -802,7 +802,7 @@
   "page_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
   "project_root": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine",
   "proxy_configured": true,
-  "proxy_fingerprint": "63d452ae33fba65b",
+  "proxy_fingerprint": "46252ac86b420a7e",
   "request_failures_tail": [
     {
       "family": "ddbm",
@@ -887,7 +887,7 @@
     "datadome_cookie_len": 128,
     "datadome_cookie_present": true,
     "host": "www.paypal.com",
-    "html_length": 129409,
+    "html_length": 129475,
     "html_present": true,
     "label": "after_runtime_wait",
     "normal_markers": [
@@ -914,7 +914,7 @@
     "datadome_cookie_len": 128,
     "datadome_cookie_present": true,
     "host": "www.paypal.com",
-    "html_length": 129409,
+    "html_length": 129475,
     "html_present": true,
     "label": "after_runtime_wait",
     "normal_markers": [
@@ -940,7 +940,7 @@
       "challenge_by_url": false,
       "challenge_markers": [],
       "host": "www.paypal.com",
-      "html_length": 128840,
+      "html_length": 128911,
       "html_present": true,
       "normal_markers": [
         "checkoutweb/signup",
@@ -959,7 +959,7 @@
       "url_ok": true
     },
     "enabled": true,
-    "html_length": 128840,
+    "html_length": 128911,
     "status": 200
   },
   "source_file": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine\\paypal\\local_headless.py",

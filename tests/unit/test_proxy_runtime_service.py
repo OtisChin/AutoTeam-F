@@ -1,5 +1,6 @@
 import pytest
 
+from autotoken.services import payment_http
 from autotoken.services import proxy_runtime
 
 def test_parse_proxy_pool_values_dedupes_comments_and_text_lines():
@@ -107,3 +108,137 @@ def test_build_oauth_proxy_selector_uses_proxy_api_country(monkeypatch):
     assert requested_urls == [
         "https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json"
     ]
+
+
+def test_preflight_payment_proxy_rejects_chatgpt_homepage_403(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, text="", headers=None):
+            self.status_code = status_code
+            self.text = text
+            self.headers = headers or {}
+
+    class FakeSession:
+        def get(self, url, timeout):
+            calls.append(url)
+            if url.endswith("/cdn-cgi/trace"):
+                return FakeResponse(200, "loc=IN\n")
+            return FakeResponse(
+                403,
+                "<html><head><title>Access denied</title></head><body>cloudflare challenge</body></html>",
+                {"content-type": "text/html", "cf-ray": "ray-test"},
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(payment_http, "new_http_session", lambda *args, **kwargs: FakeSession())
+
+    ok, message = proxy_runtime.preflight_payment_proxy_url("socks5h://user:pass@proxy.example:1000")
+
+    assert ok is False
+    assert "chatgpt_home HTTP 403" in message
+    assert "html_challenge" in message
+    assert calls == ["https://chatgpt.com/cdn-cgi/trace", "https://chatgpt.com/"]
+
+
+def test_preflight_payment_proxy_accepts_trace_and_homepage_200(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, text="", headers=None):
+            self.status_code = status_code
+            self.text = text
+            self.headers = headers or {}
+
+    class FakeSession:
+        def get(self, url, timeout):
+            calls.append(url)
+            return FakeResponse(200, "ok", {"content-type": "text/plain" if url.endswith("/trace") else "text/html"})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(payment_http, "new_http_session", lambda *args, **kwargs: FakeSession())
+
+    ok, message = proxy_runtime.preflight_payment_proxy_url("socks5h://user:pass@proxy.example:1000")
+
+    assert ok is True
+    assert message == "trace HTTP 200; chatgpt_home HTTP 200"
+    assert calls == ["https://chatgpt.com/cdn-cgi/trace", "https://chatgpt.com/"]
+
+
+def test_preflight_authenticated_proxy_rejects_backend_403_html(monkeypatch):
+    class FakeResponse:
+        status_code = 403
+        text = "<html><body>cloudflare access denied</body></html>"
+        headers = {"content-type": "text/html", "cf-ray": "ray-test"}
+
+    class FakeSession:
+        headers = {}
+        proxies = {}
+
+        def get(self, url, timeout):
+            assert url == "https://chatgpt.com/backend-api/me"
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(payment_http, "new_http_session", lambda *args, **kwargs: FakeSession())
+
+    ok, message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url("socks5h://user:pass@proxy.example:1000", "token")
+
+    assert ok is False
+    assert "auth_api HTTP 403" in message
+    assert "html_challenge" in message
+
+
+def test_preflight_authenticated_proxy_reports_token_revoked(monkeypatch):
+    class FakeResponse:
+        status_code = 401
+        text = '{"error":{"code":"token_revoked"},"status":401}'
+        headers = {"content-type": "application/json"}
+
+    class FakeSession:
+        headers = {}
+        proxies = {}
+
+        def get(self, url, timeout):
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(payment_http, "new_http_session", lambda *args, **kwargs: FakeSession())
+
+    ok, message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url("socks5h://user:pass@proxy.example:1000", "token")
+
+    assert ok is False
+    assert "auth_api HTTP 401" in message
+    assert "token_revoked" in message
+
+
+def test_preflight_authenticated_proxy_accepts_backend_200(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        text = '{"object":"user"}'
+        headers = {"content-type": "application/json"}
+
+    class FakeSession:
+        headers = {}
+        proxies = {}
+
+        def get(self, url, timeout):
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(payment_http, "new_http_session", lambda *args, **kwargs: FakeSession())
+
+    ok, message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url("socks5h://user:pass@proxy.example:1000", "token")
+
+    assert ok is True
+    assert message == "auth_api HTTP 200"

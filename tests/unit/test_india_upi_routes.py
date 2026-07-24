@@ -27,6 +27,7 @@ def isolated_files(monkeypatch, tmp_path):
     monkeypatch.setattr(india_upi, "LINKS_FILE", tmp_path / "india_upi_links.json")
     monkeypatch.setattr(india_upi, "ACCOUNT_STATUS_FILE", tmp_path / "india_upi_account_status.json")
     monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "HTTP 200"))
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth_api HTTP 200"))
     india_upi.JOBS.clear()
     yield
     india_upi.JOBS.clear()
@@ -205,6 +206,33 @@ def test_batch_account_preflights_proxy_before_upi_generation(monkeypatch):
     assert "代理预检失败" in result["error"]["error"]
     assert "ruleset blocked" in result["error"]["error"]
     assert any("代理预检失败" in line for line in india_upi.JOBS[job_id]["logs"])
+
+
+def test_batch_account_auth_preflight_blocks_upi_generation(monkeypatch):
+    email = "auth-blocked@example.com"
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda value: "token-" + value)
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "trace HTTP 200; chatgpt_home HTTP 200"))
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (False, "auth_api HTTP 403; html_challenge"))
+    monkeypatch.setattr(india_upi, "generate_upi_trial", lambda cfg, log: pytest.fail("should not generate when authenticated proxy preflight fails"))
+    job_id = "upi-auth-preflight-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-IN-sid-old-t-120:pass",
+        "maxAttempts": 5,
+        "promoMode": "skip",
+    })
+    result = india_upi._run_batch_account(job_id, req, {"email": email}, 1, 1, india_upi._parse_proxies(req.proxies))
+
+    assert result["ok"] is False
+    assert "auth_api HTTP 403" in result["error"]["error"]
+    assert any("认证接口预检失败" in line for line in india_upi.JOBS[job_id]["logs"])
 
 
 def test_upi_proxy_preflight_has_separate_three_attempt_budget(monkeypatch):
@@ -393,7 +421,39 @@ def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch):
     assert job["result"]["errors"][0]["failure_category"] == "upi_promo_nonzero_account_ineligible"
     assert job["result"]["errors"][0]["failure_stage"] == "promo_amount"
     assert "删除账号" in job["result"]["errors"][0]["retry_hint"]
-    assert "套 promo 后金额非 0，已从账号池删除" in job["result"]["errors"][0]["error"]
+    assert "金额非 0，已从账号池删除" in job["result"]["errors"][0]["error"]
+
+
+def test_batch_job_deletes_any_non_zero_amount_account(monkeypatch):
+    email = "nonzero@example.com"
+    deleted_accounts = []
+    deleted_auth = []
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda _email: "token")
+    monkeypatch.setattr(india_upi.account_store, "delete_account", lambda value: deleted_accounts.append(value) or True)
+    monkeypatch.setattr(india_upi, "delete_auth_session", lambda value: deleted_auth.append(value) or True)
+
+    def fake_generate_upi_trial(cfg, log):
+        raise RuntimeError("金额必须为 0: 1667")
+
+    monkeypatch.setattr(india_upi, "generate_upi_trial", fake_generate_upi_trial)
+    job_id = "upi-any-nonzero-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({"accountEmails": [email], "proxies": "p"})
+    india_upi._run_batch_job(job_id, req)
+
+    job = india_upi.JOBS[job_id]
+    assert deleted_accounts == [email]
+    assert deleted_auth == [email]
+    assert job["result"]["errors"][0]["account_deleted"] is True
+    assert job["result"]["errors"][0]["failure_category"] == "upi_promo_nonzero_account_ineligible"
+    assert "已从账号池删除" in job["result"]["errors"][0]["error"]
 
 
 def test_classify_upi_setup_generic_decline():

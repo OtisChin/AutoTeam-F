@@ -196,6 +196,17 @@ class AccountPoolStore:
         if result.rowcount == 0:
             raise AccountPoolNotFound("账号不存在")
 
+    def disable_account_by_email(self, email: str) -> bool:
+        target = str(email or "").strip()
+        if not target:
+            return False
+        with self._connect() as connection:
+            result = connection.execute(
+                "UPDATE registered_accounts SET status = 'disabled', is_active = 0, updated_at = ? WHERE email = ?",
+                (time.time(), target),
+            )
+        return bool(result.rowcount)
+
     def _set_status(
         self,
         account_id: int,

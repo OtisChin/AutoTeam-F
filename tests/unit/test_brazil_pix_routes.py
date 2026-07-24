@@ -28,6 +28,7 @@ def _isolate_files(monkeypatch, tmp_path):
     monkeypatch.setattr(brazil_pix, "LINKS_FILE", tmp_path / "brazil_pix_links.json")
     monkeypatch.setattr(brazil_pix, "ACCOUNT_STATUS_FILE", tmp_path / "brazil_pix_account_status.json")
     monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "HTTP 200"))
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth_api HTTP 200"))
     return auth_dir
 
 
@@ -388,6 +389,33 @@ def test_batch_account_preflights_proxy_before_pix_generation(monkeypatch, tmp_p
     assert "代理预检失败" in result["error"]["error"]
     assert "ruleset blocked" in result["error"]["error"]
     assert any("代理预检失败" in line for line in brazil_pix.JOBS[job_id]["logs"])
+
+
+def test_batch_account_auth_preflight_blocks_pix_generation(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    email = "auth-blocked@example.com"
+    monkeypatch.setattr(brazil_pix, "_load_token_for_email", lambda value: "token-" + value)
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "trace HTTP 200; chatgpt_home HTTP 200"))
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (False, "auth_api HTTP 403; html_challenge"))
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", lambda cfg, log: pytest.fail("should not generate when authenticated proxy preflight fails"))
+    job_id = "pix-auth-preflight-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-BR-sid-old-t-120:pass",
+        "maxAttempts": 5,
+    })
+    result = brazil_pix._run_batch_account(job_id, req, {"email": email}, 1, 1, brazil_pix._parse_proxies(req.proxies))
+
+    assert result["ok"] is False
+    assert "auth_api HTTP 403" in result["error"]["error"]
+    assert any("认证接口预检失败" in line for line in brazil_pix.JOBS[job_id]["logs"])
 
 
 def test_pix_proxy_preflight_has_separate_three_attempt_budget(monkeypatch, tmp_path):
@@ -849,7 +877,50 @@ def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch, tmp_path):
     assert job["status"] == "error"
     assert account is None
     assert not (auth_dir / "promo@example_com.json").exists()
-    assert "套 promo 后金额非 0，已从账号池删除" in job["result"]["errors"][0]["error"]
+    assert "金额非 0，已从账号池删除" in job["result"]["errors"][0]["error"]
+
+
+def test_batch_job_deletes_any_non_zero_amount_account(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    email = "nonzero@example.com"
+    _write_session(auth_dir, email, "nonzero-token-" + "x" * 80)
+    brazil_pix.account_store.save_accounts([{"email": email, "status": "active", "account_type": "free"}])
+    brazil_pix.JOBS.clear()
+    job_id = "pix-any-nonzero-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 0,
+        "completed": 0,
+        "account_statuses": {},
+    }
+
+    def fake_generate_pix_trial(cfg, log):
+        raise RuntimeError("金额必须为 0: 1667")
+
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate(
+        {
+            "accountEmails": [email],
+            "proxies": "socks5h://proxy.example:1080",
+        }
+    )
+    brazil_pix._run_batch_job(job_id, req)
+
+    account = brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email)
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "error"
+    assert account is None
+    assert not (auth_dir / "nonzero@example_com.json").exists()
+    assert job["result"]["errors"][0]["account_deleted"] is True
+    assert "已从账号池删除" in job["result"]["errors"][0]["error"]
 
 
 def test_batch_job_cancel_skips_not_started_accounts(monkeypatch, tmp_path):

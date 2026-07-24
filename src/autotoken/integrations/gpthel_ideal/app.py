@@ -20,6 +20,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from autotoken.services.payment_error_classifier import is_non_zero_amount_error
+from autotoken.storage import accounts as account_store
+from autotoken.storage.auth_session_store import delete_auth_session
+
 try:
     import qrcode
     from qrcode.exceptions import DataOverflowError
@@ -1170,6 +1174,38 @@ def account_email_from_token(access_token: str) -> str:
         if re.fullmatch(r"[^@\s]{1,128}@[^@\s]{1,190}\.[^@\s]{2,32}", email):
             return email[:254]
     return ""
+
+
+def cleanup_account_for_non_zero_amount(req: LongLinkRequest, reason: Any, steps: JobStepList | None = None) -> dict[str, Any]:
+    email = account_email_from_token(req.access_token)
+    cleanup = {
+        "email": email,
+        "dashboard_account_deleted": False,
+        "auth_session_deleted": False,
+        "legacy_account_disabled": False,
+    }
+    if not email:
+        if steps is not None:
+            add_step(steps, "账号池清理", "warn", "金额非 0，但 accessToken 中未解析到邮箱，无法删除账号池账号。")
+        return cleanup
+    cleanup["dashboard_account_deleted"] = bool(account_store.delete_account(email))
+    cleanup["auth_session_deleted"] = bool(delete_auth_session(email))
+    try:
+        cleanup["legacy_account_disabled"] = bool(account_pool_store.disable_account_by_email(email))
+    except Exception:
+        cleanup["legacy_account_disabled"] = False
+    if steps is not None:
+        add_step(steps, "账号池清理", "ok", f"金额非 0，已从账号池删除：{masked_email(email)} cleanup={cleanup}")
+    return cleanup
+
+
+def apply_non_zero_amount_cleanup(req: LongLinkRequest, detail: str, steps: JobStepList | None = None) -> tuple[str, dict[str, Any] | None]:
+    if not is_non_zero_amount_error(detail):
+        return detail, None
+    cleanup = cleanup_account_for_non_zero_amount(req, detail, steps)
+    if cleanup.get("email"):
+        return f"金额非 0，已从账号池删除：{detail}", cleanup
+    return f"金额非 0，但未解析到邮箱，无法删除账号池账号：{detail}", cleanup
 
 
 def masked_email(email: str) -> str:
@@ -3172,12 +3208,20 @@ def start_long_link_job(req: LongLinkRequest) -> dict[str, str]:
             mark_job(job_id, status="done", result=result.model_dump(), error="", status_code=200)
         except HTTPException as exc:
             detail = short_text(exc.detail)
+            detail, cleanup = apply_non_zero_amount_cleanup(req, detail, steps)
             add_step(steps, "任务失败", "fail", detail)
-            mark_job(job_id, status="error", error=detail, status_code=exc.status_code)
+            updates: dict[str, Any] = {"status": "error", "error": detail, "status_code": exc.status_code}
+            if cleanup:
+                updates["account_cleanup"] = cleanup
+            mark_job(job_id, **updates)
         except Exception as exc:
             detail = short_text(exc)
+            detail, cleanup = apply_non_zero_amount_cleanup(req, detail, steps)
             add_step(steps, "任务异常", "fail", detail)
-            mark_job(job_id, status="error", error=detail, status_code=502)
+            updates = {"status": "error", "error": detail, "status_code": 502}
+            if cleanup:
+                updates["account_cleanup"] = cleanup
+            mark_job(job_id, **updates)
         finally:
             try:
                 diagnostic_path = save_diagnostics(req, job_id, job_snapshot(job_id).get("status", "unknown"))
@@ -3249,8 +3293,12 @@ def run_parallel_proxy_strategies(job_id: str, req: LongLinkRequest, steps: JobS
     if done.is_set():
         return
     detail = "; ".join(f"{label}: {error}" for label, error in errors.items()) or "all proxy strategies failed"
+    detail, cleanup = apply_non_zero_amount_cleanup(req, detail, steps)
     add_step(steps, "并发链路策略", "fail", detail)
-    mark_job(job_id, status="error", error=short_text(detail), status_code=502)
+    updates: dict[str, Any] = {"status": "error", "error": short_text(detail), "status_code": 502}
+    if cleanup:
+        updates["account_cleanup"] = cleanup
+    mark_job(job_id, **updates)
 
 
 def run_sequential_proxy_strategies(job_id: str, req: LongLinkRequest, steps: JobStepList) -> None:
@@ -3286,8 +3334,12 @@ def run_sequential_proxy_strategies(job_id: str, req: LongLinkRequest, steps: Jo
                 req.diagnostic_records.extend(worker_req.diagnostic_records)
 
     detail = "; ".join(f"{label}: {error}" for label, error in errors.items()) or "all sequential proxy strategies failed"
+    detail, cleanup = apply_non_zero_amount_cleanup(req, detail, steps)
     add_step(steps, "Sequential 8 combos", "fail", detail)
-    mark_job(job_id, status="error", error=short_text(detail), status_code=502)
+    updates: dict[str, Any] = {"status": "error", "error": short_text(detail), "status_code": 502}
+    if cleanup:
+        updates["account_cleanup"] = cleanup
+    mark_job(job_id, **updates)
 
 
 @app.get("/api/long-link/jobs/{job_id}")

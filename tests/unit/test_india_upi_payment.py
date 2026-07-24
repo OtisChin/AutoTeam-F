@@ -26,6 +26,25 @@ class _ProxyContext:
         return False
 
 
+def test_new_http_session_uses_chrome_impersonation_when_available(monkeypatch):
+    created = {}
+
+    class FakeCurlSession:
+        def __init__(self, *, impersonate):
+            created["impersonate"] = impersonate
+            self.trust_env = True
+            self.proxies = {}
+            self.headers = {}
+
+    monkeypatch.setattr(india_upi, "CurlCffiSession", FakeCurlSession, raising=False)
+
+    session = india_upi.new_http_session("socks5h://user:pass@proxy.example:1000")
+
+    assert created["impersonate"].startswith("chrome")
+    assert session.trust_env is False
+    assert session.proxies["https"] == "socks5h://user:pass@proxy.example:1000"
+
+
 @pytest.fixture(autouse=True)
 def _noop_tax_sync(monkeypatch, request):
     if request.node.name == "test_sync_upi_tax_region_posts_chatgpt_and_stripe_payloads":
@@ -405,6 +424,52 @@ def test_generate_upi_trial_uses_vn_proxy_for_promo_update(monkeypatch):
     assert "-VN-" in dynamic_proxies[1]
     assert "-IN-" in dynamic_proxies[2]
     assert update_payloads[0]["billing_details"] == {"country": "VN", "currency": "VND"}
+
+
+def test_generate_upi_trial_warms_chatgpt_context_before_checkout(monkeypatch):
+    calls = []
+
+    class FakeChatgptSession:
+        def get(self, url, **kwargs):
+            calls.append(("get", url))
+            return _JsonResponse({})
+
+        def post(self, url, **kwargs):
+            calls.append(("post", url))
+            if url.endswith("/payments/checkout"):
+                return _JsonResponse({
+                    "checkout_session_id": "cs_test",
+                    "processor_entity": "openai_llc",
+                    "public_key": "pk_test",
+                })
+            raise AssertionError(url)
+
+    monkeypatch.setattr(india_upi, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(india_upi, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(india_upi, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(india_upi, "stripe_init", lambda *args, **kwargs: {
+        "total_summary": {"due": 199900},
+        "payment_method_types": ["card", "upi"],
+        "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+    })
+    monkeypatch.setattr(india_upi, "_create_upi_payment_method", lambda *args, **kwargs: "pm_test")
+    monkeypatch.setattr(india_upi, "_confirm_upi", lambda *args, **kwargs: {
+        "payment_intent": {
+            "id": "pi_test",
+            "next_action": {
+                "type": "upi_handle_redirect_or_display_qr_code",
+                "upi_handle_redirect_or_display_qr_code": {
+                    "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/warm",
+                },
+            },
+        }
+    })
+
+    india_upi.generate_upi_trial(india_upi.UpiJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=False))
+
+    checkout_index = calls.index(("post", "https://chatgpt.com/backend-api/payments/checkout"))
+    assert any(kind == "get" and "/backend-api/checkout_pricing_config/configs/IN" in url for kind, url in calls[:checkout_index])
+    assert any(kind == "get" and "/backend-api/accounts/check/" in url for kind, url in calls[:checkout_index])
 
 
 def test_generate_upi_trial_warms_stripe_before_applying_promo(monkeypatch):

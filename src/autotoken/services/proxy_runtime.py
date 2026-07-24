@@ -259,8 +259,9 @@ def preflight_payment_proxy_url(proxy_url: str, *, timeout_seconds: float = 20.0
 
     The probe deliberately touches ChatGPT through curl_cffi Chrome TLS, because
     that is where bad dynamic proxy ports usually fail during checkout creation.
-    Any HTTP response below 500 is enough: this is a transport/TLS proxy check,
-    not a login or Cloudflare bypass check.
+    It first checks the low-risk Cloudflare trace endpoint for transport/TLS,
+    then checks the ChatGPT homepage because trace 200 can still hide a
+    Cloudflare HTML challenge on the real ChatGPT origin.
     """
 
     try:
@@ -275,16 +276,99 @@ def preflight_payment_proxy_url(proxy_url: str, *, timeout_seconds: float = 20.0
             tls_impersonate="chrome136",
         )
         try:
-            resp = http.get("https://chatgpt.com/cdn-cgi/trace", timeout=max(5.0, float(timeout_seconds or 20.0)))
+            timeout = max(5.0, float(timeout_seconds or 20.0))
+            trace_resp = http.get("https://chatgpt.com/cdn-cgi/trace", timeout=timeout)
+            trace_status = int(getattr(trace_resp, "status_code", 0) or 0)
+            if not (200 <= trace_status < 500):
+                return False, f"trace HTTP {trace_status or 'unknown'}"
+            home_resp = http.get("https://chatgpt.com/", timeout=timeout)
+        finally:
+            try:
+                http.close()
+            except Exception:
+                pass
+        home_status = int(getattr(home_resp, "status_code", 0) or 0)
+        message = f"trace HTTP {trace_status}; chatgpt_home HTTP {home_status or 'unknown'}"
+        home_text = str(getattr(home_resp, "text", "") or "")
+        content_type = str((getattr(home_resp, "headers", {}) or {}).get("content-type") or "").lower()
+        looks_html_challenge = (
+            home_status in {403, 429, 503}
+            and ("html" in content_type or "<html" in home_text[:500].lower())
+            and any(marker in home_text.lower() for marker in ("cloudflare", "challenge", "access denied", "just a moment"))
+        )
+        if looks_html_challenge:
+            return False, message + "; html_challenge"
+        if 200 <= home_status < 500:
+            return True, message
+        return False, message
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def preflight_chatgpt_authenticated_proxy_url(
+    proxy_url: str,
+    access_token: str,
+    *,
+    timeout_seconds: float = 20.0,
+) -> tuple[bool, str]:
+    """Check whether an authenticated ChatGPT backend API can pass this proxy.
+
+    ``/cdn-cgi/trace`` and the public homepage can both be 200 while
+    ``/backend-api/*`` with Authorization is still challenged by Cloudflare.
+    This probe keeps checkout creation out of the preflight path while catching
+    the same authenticated-origin risk class before the payment flow starts.
+    """
+
+    token = str(access_token or "").strip()
+    if not token:
+        return False, "auth_api missing_token"
+    try:
+        normalized_proxy_url = normalize_proxy_url(proxy_url, default_auth_scheme="socks5h")
+        from autotoken.services.payment_http import new_http_session
+
+        http = new_http_session(
+            normalized_proxy_url,
+            require_curl_cffi=True,
+            tls_impersonate="chrome136",
+        )
+        try:
+            http.headers.update(
+                {
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                    "Origin": "https://chatgpt.com",
+                    "Referer": "https://chatgpt.com/",
+                    "x-openai-target-path": "/backend-api/me",
+                    "x-openai-target-route": "/backend-api/me",
+                }
+            )
+            resp = http.get("https://chatgpt.com/backend-api/me", timeout=max(5.0, float(timeout_seconds or 20.0)))
         finally:
             try:
                 http.close()
             except Exception:
                 pass
         status_code = int(getattr(resp, "status_code", 0) or 0)
+        text = str(getattr(resp, "text", "") or "")
+        content_type = str((getattr(resp, "headers", {}) or {}).get("content-type") or "").lower()
+        message = f"auth_api HTTP {status_code or 'unknown'}"
+        lower = text.lower()
+        if status_code == 401:
+            if "token_revoked" in lower:
+                return False, message + " token_revoked"
+            if "token_invalidated" in lower or "invalidated oauth token" in lower or "authentication token" in lower:
+                return False, message + " token_invalidated"
+            return False, message
+        looks_html_challenge = (
+            status_code in {403, 429, 503}
+            and ("html" in content_type or "<html" in lower[:500])
+            and any(marker in lower for marker in ("cloudflare", "challenge", "access denied", "just a moment"))
+        )
+        if looks_html_challenge:
+            return False, message + "; html_challenge"
         if 200 <= status_code < 500:
-            return True, f"HTTP {status_code}"
-        return False, f"HTTP {status_code or 'unknown'}"
+            return True, message
+        return False, message
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
 

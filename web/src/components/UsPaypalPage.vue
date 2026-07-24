@@ -500,6 +500,8 @@ const promoRegionOptions = [
   { value: 'JP', label: 'JP · 日本' },
   { value: 'BR', label: 'BR · 巴西' },
   { value: 'VN', label: 'VN · 越南' },
+  { value: 'TH', label: 'TH · 泰国' },
+  { value: 'PH', label: 'PH · 菲律宾' },
 ]
 
 const form = ref({
