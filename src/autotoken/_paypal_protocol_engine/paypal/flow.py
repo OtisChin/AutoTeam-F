@@ -288,7 +288,7 @@ class PayPalFlow:
             logger.debug("Roxy runtime remains disabled for this job: {}", reason_text)
         self._roxy_runtime_disabled_reason = reason_text
         try:
-            setattr(self.state, "roxy_runtime_disabled_reason", reason_text)
+            self.state.roxy_runtime_disabled_reason = reason_text
         except Exception:
             pass
         if self._datadome_mode_raw() == "roxy":
@@ -5944,13 +5944,13 @@ class PayPalFlow:
         return payload
 
     def _shipping_address_payload(self) -> dict[str, object] | None:
-        # The current GB Billing Agreement signup page in the reference HAR has
-        # hideShipping=true and logs shipping callbacks as unavailable/noop. The
-        # Weasley client only sends an address object that exists in form state;
-        # sending an explicitly empty shippingAddress is not equivalent and can
-        # perturb country-specific address validation. Keep the legacy payload
-        # for countries where we have not confirmed hidden-shipping behaviour.
-        if str(self.address.country or "").upper() == "GB":
+        # Current Billing Agreement signup pages hide shipping for the
+        # country-specific protocol locales below. The Weasley client only sends
+        # an address object that exists in form state; sending an explicitly
+        # empty shippingAddress is not equivalent and can perturb address
+        # validation. Keep the legacy payload for BR, where the captured
+        # signup-card path still includes the placeholder shipping form state.
+        if str(self.address.country or "").upper() in {"GB", "NL", "CA", "ID", "JP", "MX", "PH", "TH"}:
             return None
         billing_state = self._billing_state()
         return {
@@ -6134,7 +6134,7 @@ class PayPalFlow:
         self._billing_address_autocomplete_succeeded = False
         skip_countries = {
             item.strip().upper()
-            for item in os.getenv("PAYPAL_SKIP_ADDRESS_AUTOCOMPLETE_COUNTRIES", "GB").split(",")
+            for item in os.getenv("PAYPAL_SKIP_ADDRESS_AUTOCOMPLETE_COUNTRIES", "GB,NL,CA,ID,JP,MX,PH,TH").split(",")
             if item.strip()
         }
         if str(self.address.country or "").upper() in skip_countries:

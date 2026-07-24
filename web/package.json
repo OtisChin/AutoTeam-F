@@ -10,6 +10,7 @@
     "test:india-upi-payment-queue": "node scripts/test-india-upi-payment-queue.mjs",
     "test:paypal-account-options": "node scripts/test-paypal-account-options.mjs",
     "test:paypal-protocol-ui": "node scripts/test-paypal-protocol-ui.mjs",
+    "test:dashboard-account-actions": "node scripts/test-dashboard-account-actions.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

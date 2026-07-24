@@ -511,7 +511,25 @@
               <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'primary') }}</td>
               <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'weekly') }}</td>
               <td class="px-4 py-3 text-right space-x-2">
-                <!-- 缺认证标识：账号没有 data/auths 下的 Codex auth_file → 在补登录按钮旁提示 -->
+                <button
+                  @click="copyAccountAccessToken(acc.email)"
+                  :disabled="accountActionBusy"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+                  :class="accountActionBusy
+                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                    : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
+                  {{ actionEmail === acc.email && actionType === 'access-token' ? '复制中...' : '获取ac' }}
+                </button>
+                <button
+                  @click="queryAccountSubscription(acc.email)"
+                  :disabled="accountActionBusy"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+                  :class="accountActionBusy
+                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                    : 'bg-teal-600/10 text-teal-300 border-teal-500/30 hover:bg-teal-600/20'">
+                  {{ actionEmail === acc.email && actionType === 'subscription' ? '查询中...' : '订阅查询' }}
+                </button>
+                <!-- 缺认证标识：账号没有 data/auths 下的 Codex auth_file → 在订阅查询后提示 -->
                 <span
                   v-if="needsCodexLogin(acc)"
                   class="inline-block px-2 py-0.5 mr-1 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30"
@@ -790,6 +808,101 @@
         </div>
       </div>
 
+      <!-- 订阅状态弹窗 -->
+      <div v-if="subscriptionDialog.open" class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" @click.self="closeSubscriptionDialog">
+        <div class="w-full max-w-6xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+          <div class="max-h-[88vh] overflow-y-auto p-6">
+            <div v-if="subscriptionDialog.loading" class="rounded-xl border border-teal-500/20 bg-teal-500/10 px-4 py-10 text-center text-sm text-teal-200">
+              正在查询 ChatGPT 实时订阅状态...
+            </div>
+            <div v-else-if="subscriptionDialog.error" class="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-5 text-sm text-red-300">
+              {{ subscriptionDialog.error }}
+            </div>
+            <div v-else-if="subscriptionDialog.data" class="space-y-7">
+              <div class="flex flex-col gap-4 border-b border-slate-800 pb-6 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 class="text-3xl font-black text-violet-400">{{ subscriptionPlanLabel }}</h3>
+                  <div class="mt-3 break-all font-mono text-sm text-slate-400">
+                    {{ subscriptionDialog.email }} · {{ subscriptionAccountId }}
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span
+                    class="rounded-full border px-3 py-1.5 text-xs font-bold"
+                    :class="subscriptionActive(activeSubscription)
+                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                      : 'border-amber-500/40 bg-amber-500/15 text-amber-300'">
+                    {{ subscriptionActive(activeSubscription) ? '✓ 订阅生效中' : '订阅未生效' }}
+                  </span>
+                  <span class="rounded-full border px-3 py-1.5 text-xs font-bold"
+                    :class="activeSubscription.renewing
+                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                      : 'border-slate-700 bg-slate-900 text-slate-300'">
+                    {{ activeSubscription.renewing ? '自动续费' : '未自动续费' }}
+                  </span>
+                  <span class="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1.5 text-xs font-bold text-indigo-200">JWT={{ activeSubscription.jwt_plan_type || '-' }}</span>
+                  <button @click="closeSubscriptionDialog" class="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
+                </div>
+              </div>
+
+              <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                <div v-for="item in subscriptionSummaryItems" :key="item.label" class="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+                  <div class="text-xs text-slate-400">{{ item.label }}</div>
+                  <div class="mt-3 whitespace-pre-line text-xl font-black text-white" :class="item.accent ? 'text-emerald-300 text-3xl' : ''">{{ item.value }}</div>
+                  <div v-if="item.meta" class="mt-2 text-sm text-blue-300">{{ item.meta }}</div>
+                </div>
+              </div>
+
+              <div>
+                <div class="mb-3 text-base font-bold text-blue-100">
+                  订阅时间线
+                </div>
+                <div class="grid gap-4 md:grid-cols-3">
+                  <div v-for="item in subscriptionTimelineItems" :key="item.label" class="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+                    <div class="text-xs text-slate-400">{{ item.label }}</div>
+                    <div class="mt-3 break-all font-mono text-lg font-bold text-white">{{ item.value }}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div class="mb-3 text-base font-bold text-blue-100">已应用优惠</div>
+                <div v-if="subscriptionDiscountItems.length" class="space-y-3">
+                  <div v-for="discount in subscriptionDiscountItems" :key="discount.id || discount.label" class="rounded-xl border border-sky-500/30 bg-sky-500/10 p-4">
+                    <div class="font-mono text-sm font-bold text-sky-300">{{ discount.id || '-' }}</div>
+                    <div class="mt-2 text-sm text-blue-200">{{ discount.label }}</div>
+                  </div>
+                </div>
+                <div v-else class="rounded-xl border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-500">暂无优惠</div>
+              </div>
+
+              <div>
+                <div class="mb-3 border-b border-slate-800 pb-3 text-base font-bold text-blue-100">该账号可购买的套餐</div>
+                <div class="flex flex-wrap gap-2">
+                  <span
+                    v-for="plan in subscriptionAvailablePlanItems"
+                    :key="plan"
+                    class="rounded-lg border px-3 py-2 font-mono text-sm"
+                    :class="plan === subscriptionPlanKey
+                      ? 'border-violet-500 bg-violet-500/15 text-cyan-200'
+                      : 'border-slate-800 bg-slate-900 text-slate-100'">
+                    {{ plan }}<span v-if="plan === subscriptionPlanKey"> ★</span>
+                  </span>
+                </div>
+              </div>
+
+              <details class="group">
+                <summary class="cursor-pointer select-none text-sm text-slate-400 transition hover:text-slate-200">查看原始 JSON</summary>
+                <pre class="mt-3 max-h-72 overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-4 text-xs text-slate-300">{{ subscriptionRawJson }}</pre>
+              </details>
+            </div>
+            <div class="mt-6 flex justify-end">
+              <button @click="closeSubscriptionDialog" class="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
+              </div>
+            </div>
+          </div>
+      </div>
+
       <!-- 账号类型编辑弹窗 -->
       <div v-if="accountTypeEditAccount" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeAccountTypeEditor">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
@@ -950,11 +1063,20 @@ const ACCOUNT_DELETE_BATCH_MAX_EMAILS = 1000
 const activeDashboardTab = ref('chatgpt')
 const actionEmail = ref('')
 const actionType = ref('')
+const accountActionBusy = ref(false)
+const accountActionRequestId = ref(0)
 const syncing = ref(false)
 const hubSyncing = ref(false)
 const message = ref('')
 const exportData = ref(null)
 const copied = ref(false)
+const subscriptionDialog = ref({
+  open: false,
+  email: '',
+  loading: false,
+  error: '',
+  data: null,
+})
 const messageClass = ref('')
 const emailFilter = ref('')
 const statusFilter = ref('')
@@ -1533,6 +1655,64 @@ const allSelectableChecked = computed(() =>
 const someSelectableChecked = computed(() =>
   selectedEmails.value.length > 0 && selectedEmails.value.length < selectableEmails.value.length
 )
+const activeSubscription = computed(() => subscriptionDialog.value.data?.subscription || {})
+const subscriptionPlanLabel = computed(() =>
+  activeSubscription.value.plan_label || accountTypeLabel(activeSubscription.value.plan_type) || 'Unknown'
+)
+const subscriptionPlanKey = computed(() =>
+  activeSubscription.value.plan_key || activeSubscription.value.plan_type || '-'
+)
+const subscriptionSummaryItems = computed(() => {
+  const sub = activeSubscription.value
+  const seats = sub.seats || {}
+  return [
+    {
+      label: '剩余时间',
+      value: sub.remaining_days === null || sub.remaining_days === undefined ? '-' : `${sub.remaining_days} 天`,
+      meta: sub.ends_at ? `至 ${formatSubscriptionDate(sub.ends_at, { dateOnly: true })}` : '',
+      accent: true,
+    },
+    { label: '套餐 ID', value: subscriptionPlanKey.value, meta: [sub.billing_period, sub.currency].filter(Boolean).join(' · ') },
+    { label: '渠道', value: sub.channel_label || subscriptionChannelLabel(sub.purchase_origin), meta: sub.payment_processor || '' },
+    {
+      label: '席位',
+      value: seats.used !== null && seats.used !== undefined && seats.total !== null && seats.total !== undefined
+        ? `${seats.used} / ${seats.total}`
+        : '-',
+    },
+    { label: '是否曾付费', value: yesNo(sub.paid) },
+  ]
+})
+const subscriptionTimelineItems = computed(() => {
+  const sub = activeSubscription.value
+  return [
+    { label: '订阅开始', value: formatSubscriptionDate(sub.starts_at) },
+    { label: '订阅结束', value: formatSubscriptionDate(sub.ends_at) },
+    { label: '下次续费', value: formatSubscriptionDate(sub.renews_at) },
+  ]
+})
+const subscriptionAvailablePlanItems = computed(() => {
+  const plans = activeSubscription.value.available_plans
+  return Array.isArray(plans) && plans.length ? plans : []
+})
+const subscriptionDiscountItems = computed(() => {
+  const discounts = activeSubscription.value.applied_discounts
+  if (!Array.isArray(discounts)) return []
+  return discounts.map(discount => ({
+    id: discount?.id || '',
+    label: `${discount?.percent_off ?? '-'}% off · ${discount?.duration_in_months ?? '-'} 期 · 至 ${formatSubscriptionDate(discount?.ends_at)}${discount?.end_behavior ? ` · ${discount.end_behavior}` : ''}`,
+  }))
+})
+const subscriptionRawJson = computed(() => {
+  if (!subscriptionDialog.value.data?.raw) return '{}'
+  return JSON.stringify(subscriptionDialog.value.data.raw, null, 2)
+})
+const subscriptionAccountId = computed(() => subscriptionDialog.value.data?.account_id || '-')
+const subscriptionChannelLiteral = '网页 (Web)'
+
+function subscriptionChannelLabel(origin) {
+  return String(origin || '').trim().toLowerCase() === 'chatgpt_web' ? subscriptionChannelLiteral : (origin || '-')
+}
 
 function isSelected(email) {
   return selectedSet.value.has((email || '').toLowerCase())
@@ -1986,6 +2166,24 @@ function pctColor(val) {
   return 'text-red-400'
 }
 
+function yesNo(value) {
+  return value ? '是' : '否'
+}
+
+function formatSubscriptionDate(value, options = {}) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  const pad = number => String(number).padStart(2, '0')
+  const text = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  if (options.dateOnly) return text
+  return `${text} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function subscriptionActive(subscription) {
+  return Boolean(subscription?.active)
+}
+
 const exportJson = computed(() => {
   if (!exportData.value) return ''
   return JSON.stringify(exportData.value.codex_auth, null, 2)
@@ -2002,13 +2200,12 @@ async function exportCodexAuth(email) {
   }
 }
 
-async function copyExport() {
+async function writeClipboard(value) {
   try {
-    await navigator.clipboard.writeText(exportJson.value)
+    await navigator.clipboard.writeText(value)
   } catch {
-    // HTTP 下 clipboard API 不可用，用 textarea fallback
     const ta = document.createElement('textarea')
-    ta.value = exportJson.value
+    ta.value = value
     ta.style.position = 'fixed'
     ta.style.opacity = '0'
     document.body.appendChild(ta)
@@ -2016,8 +2213,101 @@ async function copyExport() {
     document.execCommand('copy')
     document.body.removeChild(ta)
   }
+}
+
+async function copyExport() {
+  await writeClipboard(exportJson.value)
   copied.value = true
   setTimeout(() => { copied.value = false }, 3000)
+}
+
+async function copyAccountAccessToken(email) {
+  if (accountActionBusy.value) return
+  const requestId = accountActionRequestId.value + 1
+  accountActionRequestId.value = requestId
+  accountActionBusy.value = true
+  actionEmail.value = email
+  actionType.value = 'access-token'
+  message.value = ''
+  try {
+    const result = await api.getAccountAccessToken(email)
+    const token = String(result?.access_token || '')
+    if (!token) throw new Error('该账号没有可复制的 access_token')
+    if (requestId !== accountActionRequestId.value) return
+    await writeClipboard(token)
+    if (requestId !== accountActionRequestId.value) return
+    message.value = `已复制 ${email} 的 access token`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+  } catch (e) {
+    if (requestId !== accountActionRequestId.value) return
+    message.value = `获取 access token 失败: ${e.message}`
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    if (requestId === accountActionRequestId.value) {
+      accountActionBusy.value = false
+      actionEmail.value = ''
+      actionType.value = ''
+      setTimeout(() => { message.value = '' }, 8000)
+    }
+  }
+}
+
+async function queryAccountSubscription(email) {
+  if (accountActionBusy.value) return
+  const requestId = accountActionRequestId.value + 1
+  accountActionRequestId.value = requestId
+  accountActionBusy.value = true
+  actionEmail.value = email
+  actionType.value = 'subscription'
+  subscriptionDialog.value = {
+    open: true,
+    email,
+    loading: true,
+    error: '',
+    data: null,
+  }
+  try {
+    const result = await api.getAccountSubscription(email)
+    if (requestId !== accountActionRequestId.value || !subscriptionDialog.value.open) return
+    subscriptionDialog.value = {
+      open: true,
+      email,
+      loading: false,
+      error: '',
+      data: result,
+    }
+  } catch (e) {
+    if (requestId !== accountActionRequestId.value || !subscriptionDialog.value.open) return
+    subscriptionDialog.value = {
+      open: true,
+      email,
+      loading: false,
+      error: e.message || '订阅查询失败',
+      data: null,
+    }
+  } finally {
+    if (requestId === accountActionRequestId.value) {
+      accountActionBusy.value = false
+      actionEmail.value = ''
+      actionType.value = ''
+    }
+  }
+}
+
+function closeSubscriptionDialog() {
+  if (actionType.value === 'subscription') {
+    accountActionRequestId.value += 1
+    accountActionBusy.value = false
+    actionEmail.value = ''
+    actionType.value = ''
+  }
+  subscriptionDialog.value = {
+    open: false,
+    email: '',
+    loading: false,
+    error: '',
+    data: null,
+  }
 }
 
 function downloadExport() {

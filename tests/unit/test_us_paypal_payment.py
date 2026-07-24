@@ -83,6 +83,31 @@ def test_create_express_billing_agreement_returns_ba_url():
     assert fields["link_binding"] == "unbound_express"
 
 
+@pytest.mark.parametrize(
+    ("country", "currency"),
+    [
+        ("BR", "BRL"),
+        ("CA", "CAD"),
+        ("GB", "GBP"),
+        ("ID", "IDR"),
+        ("JP", "JPY"),
+        ("MX", "MXN"),
+        ("PH", "PHP"),
+        ("TH", "THB"),
+        ("NL", "EUR"),
+    ],
+)
+def test_paypal_billing_supports_requested_countries(country, currency):
+    billing = us_paypal.paypal_billing(account_email=f"user-{country.lower()}@example.test", country=country)
+
+    assert us_paypal.paypal_currency_for_country(country) == currency
+    assert billing["country"] == country
+    assert billing["email"] == f"user-{country.lower()}@example.test"
+    assert billing["line1"]
+    assert billing["city"]
+    assert billing["postal_code"]
+
+
 def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     calls = []
     captured = {}

@@ -34,10 +34,22 @@ USERINFO_RE = re.compile(r"(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s
 DEFAULT_ENGINE_ROOT = PROJECT_ROOT / "src" / "autotoken" / "_paypal_protocol_engine"
 DEFAULT_TIMEOUT_SECONDS = 900
 TERMINAL_BA_FILE = PROJECT_ROOT / "data" / "paypal_protocol_terminal_ba.json"
-SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES = {"US", "GB", "NL", "BR"}
-DEFAULT_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {"US": "187", "GB": "16", "NL": "48", "BR": "73"}
-DEFAULT_HEROSMS_COUNTRY_BY_PAYPAL_COUNTRY = {"US": "187", "GB": "16", "NL": "48", "BR": "73"}
-DEFAULT_SMSBOWER_COUNTRY_BY_PAYPAL_COUNTRY = {"US": "187", "GB": "16", "NL": "48", "BR": "73"}
+SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES = {"US", "GB", "NL", "BR", "CA", "ID", "JP", "MX", "PH", "TH"}
+SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT = "BR/CA/GB/ID/JP/MX/PH/TH/NL/US"
+DEFAULT_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {
+    "US": "187",
+    "GB": "16",
+    "NL": "48",
+    "BR": "73",
+    "CA": "36",
+    "ID": "6",
+    "JP": "182",
+    "MX": "54",
+    "PH": "4",
+    "TH": "52",
+}
+DEFAULT_HEROSMS_COUNTRY_BY_PAYPAL_COUNTRY = dict(DEFAULT_SMS_COUNTRY_BY_PAYPAL_COUNTRY)
+DEFAULT_SMSBOWER_COUNTRY_BY_PAYPAL_COUNTRY = dict(DEFAULT_SMS_COUNTRY_BY_PAYPAL_COUNTRY)
 DEFAULT_PAYPAL_SMS_SERVICE = "ts"
 DEFAULT_HEROSMS_BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 DEFAULT_SMSBOWER_BASE_URL = "https://smsbower.page/stubs/handler_api.php"
@@ -354,7 +366,7 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     if not re.fullmatch(r"[A-Z]{2}", country):
         country = "US"
     if country not in SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES:
-        raise ValueError("当前本地协议支付仅开放 US/GB/NL/BR")
+        raise ValueError(f"当前本地协议支付仅开放 {SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT}")
     sms_provider = normalize_sms_provider(cfg.sms_provider)
     if sms_provider == "sms_record":
         if not str(cfg.phone or "").strip():

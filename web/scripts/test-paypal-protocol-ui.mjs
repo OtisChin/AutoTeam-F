@@ -22,5 +22,10 @@ assert.match(page, /protocolForm\.concurrency/, '协议支付页支持配置并�
 assert.match(page, /api\.startUsPaypalProtocolBatch/, '多账号协议支付使用批量启动接口')
 assert.match(page, /accountEmails:\s*protocolSelectedEmails\.value/, '批量协议支付提交选中的账号邮箱')
 assert.match(page, /每行一个.*长效号码/s, '批量 HeroSMS 长效号提示按行分配号码')
+for (const country of ['BR', 'CA', 'GB', 'ID', 'JP', 'MX', 'PH', 'TH', 'NL']) {
+  assert.match(page, new RegExp(`<option value="${country}">`), `协议支付国家下拉支持 ${country}`)
+  assert.match(page, new RegExp(`PROTOCOL_COUNTRIES = new Set\\(\\[[^\\]]*'${country}'`, 's'), `协议支付校验支持 ${country}`)
+}
+assert.match(page, /当前协议支付支持 BR\/CA\/GB\/ID\/JP\/MX\/PH\/TH\/NL/, '协议支付错误提示列出新增国家')
 
 console.log('paypal protocol UI tests passed')

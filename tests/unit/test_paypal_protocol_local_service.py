@@ -48,19 +48,51 @@ def test_protocol_service_sanitizes_sensitive_values():
     assert "BA-1234567890" not in text
 
 
-def test_build_protocol_command_rejects_unsupported_country(tmp_path, monkeypatch):
+def test_build_protocol_command_rejects_unknown_country(tmp_path, monkeypatch):
     engine = tmp_path / "engine"
     engine.mkdir()
     (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
 
-    with pytest.raises(ValueError, match="US/GB/NL/BR"):
+    with pytest.raises(ValueError, match="BR/CA/GB/ID/JP/MX/PH/TH/NL/US"):
         service.build_protocol_command(service.PaypalProtocolRunConfig(
             ba_token="BA-1CMD123",
             phone="+18350000000",
             sms_record_url="https://sms.example/api?token=secret",
-            country="JP",
+            country="ZZ",
         ))
+
+
+@pytest.mark.parametrize(
+    ("country", "sms_country"),
+    [
+        ("BR", "73"),
+        ("CA", "36"),
+        ("GB", "16"),
+        ("ID", "6"),
+        ("JP", "182"),
+        ("MX", "54"),
+        ("PH", "4"),
+        ("TH", "52"),
+        ("NL", "48"),
+    ],
+)
+def test_build_protocol_command_supports_requested_countries(tmp_path, monkeypatch, country, sms_country):
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
+
+    cmd, env, _cwd = service.build_protocol_command(service.PaypalProtocolRunConfig(
+        ba_token=f"BA-1{country}CMD123",
+        sms_provider="smsbower",
+        country=country,
+    ))
+
+    assert cmd[cmd.index("--country") + 1] == country
+    assert cmd[cmd.index("--sms-country") + 1] == sms_country
+    assert env["PAYPAL_COUNTRY"] == country
+    assert env["PAYPAL_SMS_COUNTRY"] == sms_country
 
 
 def test_build_protocol_command_passes_sms_wait_and_poll(tmp_path, monkeypatch):
@@ -340,6 +372,99 @@ def test_gb_generated_addresses_avoid_known_landmarks():
         assert address.postal_code
 
 
+def test_nl_generated_addresses_avoid_landmarks_and_have_real_house_numbers():
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    blocked = {"damrak", "coolsingel", "spui", "stadhuisplein", "grote markt"}
+    for _ in range(50):
+        address = models.generate_address(country="NL")
+        line = f"{address.street} {address.postal_code}".lower()
+        assert not any(marker in line for marker in blocked)
+        assert address.country == "NL"
+        assert address.house_number
+        assert address.postal_code
+
+
+@pytest.mark.parametrize(
+    ("country", "locale", "language", "dial_code"),
+    [
+        ("BR", "pt_BR", "pt-BR", "55"),
+        ("CA", "en_CA", "en-CA", "1"),
+        ("GB", "en_GB", "en-GB", "44"),
+        ("ID", "id_ID", "id-ID", "62"),
+        ("JP", "ja_JP", "ja-JP", "81"),
+        ("MX", "es_MX", "es-MX", "52"),
+        ("PH", "en_PH", "en-PH", "63"),
+        ("TH", "th_TH", "th-TH", "66"),
+        ("NL", "nl_NL", "nl-NL", "31"),
+    ],
+)
+def test_requested_country_profiles_and_generated_models(country, locale, language, dial_code):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        country_profile = importlib.import_module("paypal.country_profile")
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    profile = country_profile.get_country_profile(country)
+    assert profile.country == country
+    assert profile.locale == locale
+    assert profile.language == language
+    assert profile.phone_country_code == dial_code
+
+    user = models.generate_user(f"+{dial_code}9876543210", country=country)
+    address = models.generate_address(country=country)
+    card = models.generate_card(country=country)
+
+    assert user.phone_country_code == f"+{dial_code}"
+    assert user.phone.startswith(f"+{dial_code}")
+    assert address.country == country
+    assert address.street
+    assert address.city
+    assert address.postal_code
+    assert card.number.isdigit()
+
+
+@pytest.mark.parametrize(
+    ("country", "sms_country", "dial_code"),
+    [
+        ("CA", "36", "1"),
+        ("ID", "6", "62"),
+        ("JP", "182", "81"),
+        ("MX", "54", "52"),
+        ("PH", "4", "63"),
+        ("TH", "52", "66"),
+    ],
+)
+def test_engine_sms_country_normalization_for_new_paypal_countries(country, sms_country, dial_code):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        smsbower = importlib.import_module("paypal.smsbower")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    assert smsbower.normalize_paypal_sms_country("", paypal_country=country) == sms_country
+    assert smsbower.normalize_paypal_sms_country(country, paypal_country="US") == sms_country
+    assert smsbower.PAYPAL_SMS_COUNTRY_DIAL_CODES[sms_country] == dial_code
+
+
 def test_signup_address_error_is_retryable():
     engine_root = service.DEFAULT_ENGINE_ROOT
     sys.path.insert(0, str(engine_root))
@@ -412,6 +537,43 @@ def test_gb_signup_variables_match_weasley_primary_residential_shape(monkeypatch
     assert "state" not in variables["billingAddress"]
     assert variables["residentialAddress"] == variables["billingAddress"]
     assert variables["dateOfBirth"] == {"day": "01", "month": "02", "year": "1988"}
+
+
+@pytest.mark.parametrize("country", ["CA", "ID", "JP", "MX", "PH", "TH", "NL"])
+def test_non_brazil_protocol_countries_omit_empty_shipping_address(monkeypatch, country):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        flow = importlib.import_module("paypal.flow")
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    paypal_flow = flow.PayPalFlow.__new__(flow.PayPalFlow)
+    paypal_flow.address = models.generate_address(country=country)
+    paypal_flow.user = models.generate_user("+19995550123", country=country)
+    paypal_flow.card = models.CardInfo(
+        number="4111111111111111",
+        expiry="08/2028",
+        cvv="123",
+    )
+    paypal_flow.state = models.SessionState()
+    paypal_flow._billing_address_autocomplete_succeeded = False
+    monkeypatch.setattr(paypal_flow, "_content_metadata_is_unresolved", lambda: False)
+    monkeypatch.setattr(
+        paypal_flow,
+        "_resolved_content_identifier",
+        lambda: f"{country}:en:test:compliance.signupTerms",
+    )
+
+    variables = paypal_flow._build_signup_variables("EC-TEST")
+
+    assert "shippingAddress" not in variables
+    assert variables["billingAddress"]["country"] == country
+    assert variables["phone"]["countryCode"] == paypal_flow.user.phone_country_code.lstrip("+")
 
 
 def test_gb_auto_approval_path_uses_create_member_no_fi(monkeypatch):

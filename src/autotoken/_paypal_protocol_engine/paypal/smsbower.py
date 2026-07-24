@@ -22,14 +22,30 @@ SMSBOWER_DEFAULT_MAX_ATTEMPTS = 12
 HEROSMS_API_URL = "https://hero-sms.com/stubs/handler_api.php"
 PAYPAL_SMS_DEFAULT_SERVICE = "ts"
 PAYPAL_SMS_DEFAULT_COUNTRY = "187"
-PAYPAL_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {"US": "187", "GB": "16", "NL": "48", "BR": "73"}
+PAYPAL_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {
+    "US": "187",
+    "GB": "16",
+    "NL": "48",
+    "BR": "73",
+    "CA": "36",
+    "ID": "6",
+    "JP": "182",
+    "MX": "54",
+    "PH": "4",
+    "TH": "52",
+}
 PAYPAL_SMS_COUNTRY_DIAL_CODES = {
     "12": "1",
     "187": "1",
+    "36": "1",
     "16": "44",
     "48": "31",
     "73": "55",
     "6": "62",
+    "182": "81",
+    "54": "52",
+    "4": "63",
+    "52": "66",
     "33": "57",
 }
 
@@ -709,7 +725,7 @@ def normalize_paypal_sms_country(raw: object = "", *, paypal_country: str = "US"
     value = str(raw or "").strip().lower()
     if not value:
         paypal = str(paypal_country or "").strip().upper()
-        return {"US": "187", "GB": "16", "NL": "48", "BR": "73"}.get(paypal, PAYPAL_SMS_DEFAULT_COUNTRY)
+        return PAYPAL_SMS_COUNTRY_BY_PAYPAL_COUNTRY.get(paypal, PAYPAL_SMS_DEFAULT_COUNTRY)
     if value and re.fullmatch(r"\d+", value):
         return value
     if value in {"us", "usa", "united_states", "united states", "+1"}:
@@ -720,8 +736,18 @@ def normalize_paypal_sms_country(raw: object = "", *, paypal_country: str = "US"
         return "48"
     if value in {"br", "bra", "brazil", "brasil", "+55"}:
         return "73"
+    if value in {"ca", "can", "canada"}:
+        return "36"
     if value in {"id", "idn", "indonesia", "+62"}:
         return "6"
+    if value in {"jp", "jpn", "japan", "+81"}:
+        return "182"
+    if value in {"mx", "mex", "mexico"}:
+        return "54"
+    if value in {"ph", "phl", "philippines", "+63"}:
+        return "4"
+    if value in {"th", "tha", "thailand", "+66"}:
+        return "52"
     if value in {"co", "colombia", "+57"}:
         return "33"
     return value

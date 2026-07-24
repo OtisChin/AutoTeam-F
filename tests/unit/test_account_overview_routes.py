@@ -1,10 +1,20 @@
+import base64
 import json
 
 from fastapi import FastAPI, HTTPException
 
 from autotoken import accounts, auth_session_store, auth_storage, codex_auth
+from autotoken.api_routes import account_overview
 from autotoken.api_routes.account_overview import create_account_overview_router
 from autotoken.storage.auth_files import AUTH_JSON_FILE_MAX_BYTES
+
+
+def _b64url(payload):
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+
+def _jwt(payload):
+    return f"{_b64url({'alg': 'none', 'typ': 'JWT'})}.{_b64url(payload)}.sig"
 
 
 def _app(*, loaded_accounts=None, sanitized_accounts=None, sanitize_account=None, is_main_account_email=None):
@@ -186,3 +196,319 @@ def test_account_overview_codex_auth_reports_missing_files(monkeypatch):
         assert exc.detail == "该账号没有认证文件"
     else:
         raise AssertionError("missing account auth file must fail")
+
+
+def test_account_overview_access_token_copies_from_auth_session(monkeypatch, tmp_path):
+    auth_dir = tmp_path / "auths"
+    session_dir = tmp_path / "auth_session"
+    auth_dir.mkdir()
+    session_dir.mkdir()
+    auth_file = auth_dir / "codex-user.json"
+    auth_file.write_text(json.dumps({"access_token": "account-auth-token"}), encoding="utf-8")
+    session_file = session_dir / "user@example.com.json"
+    session_file.write_text(json.dumps({"accessToken": "session-access-token"}), encoding="utf-8")
+    app, _captured = _app()
+
+    monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: str(session_file))
+
+    result = _endpoint(app, "/api/accounts/{email}/access-token", "GET")(" User@example.com ")
+
+    assert result == {"email": "user@example.com", "access_token": "session-access-token"}
+
+
+def test_account_overview_subscription_queries_chatgpt_with_access_token(monkeypatch, tmp_path):
+    auth_dir = tmp_path / "auths"
+    auth_dir.mkdir()
+    auth_file = auth_dir / "codex-user.json"
+    auth_file.write_text(json.dumps({"access_token": "access-token"}), encoding="utf-8")
+    app, _captured = _app()
+    captured = {}
+
+    def fake_query(token, account_id=""):
+        captured["token"] = token
+        captured["account_id"] = account_id
+        return {
+            "raw": {
+                "accounts": {
+                    "account-1": {
+                        "account_plan": {
+                            "subscription_plan": "chatgptplusplan",
+                            "account_plan_type": "plus",
+                            "billing_period": "monthly",
+                            "currency": "INR",
+                            "is_active_subscription": True,
+                            "is_renewing": True,
+                            "will_renew": True,
+                            "is_delinquent": False,
+                            "expires_at": "2026-08-25T00:32:07+00:00",
+                            "renewal_at": "2026-08-24T18:32:07+00:00",
+                            "purchase_origin": "chatgpt_web",
+                            "available_plans": ["chatgptfreeplan", "chatgptplusplan"],
+                            "discount": 1,
+                        }
+                    }
+                }
+            },
+            "queried_url": "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
+        }
+
+    monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: "")
+    monkeypatch.setattr(account_overview, "query_chatgpt_subscription", fake_query, raising=False)
+
+    result = _endpoint(app, "/api/accounts/{email}/subscription", "GET")("user@example.com")
+
+    assert captured["token"] == "access-token"
+    assert captured["account_id"] == ""
+    assert result["email"] == "user@example.com"
+    assert result["subscription"]["plan_label"] == "Plus"
+    assert result["subscription"]["plan_key"] == "chatgptplusplan"
+    assert result["subscription"]["billing_period"] == "monthly"
+    assert result["subscription"]["currency"] == "INR"
+    assert result["subscription"]["active"] is True
+    assert result["subscription"]["renewing"] is True
+    assert result["subscription"]["delinquent"] is False
+    assert result["subscription"]["ends_at"] == "2026-08-25T00:32:07+00:00"
+    assert result["subscription"]["renews_at"] == "2026-08-24T18:32:07+00:00"
+    assert result["subscription"]["purchase_origin"] == "chatgpt_web"
+    assert result["subscription"]["available_plans"] == ["chatgptfreeplan", "chatgptplusplan"]
+    assert result["subscription"]["discount"] == 1
+    assert result["queried_url"].endswith("/backend-api/accounts/check/v4-2023-04-27")
+    assert result["raw"]["accounts"]["account-1"]["account_plan"]["subscription_plan"] == "chatgptplusplan"
+
+
+def test_account_overview_access_token_falls_back_to_auth_file_when_session_has_no_token(monkeypatch, tmp_path):
+    auth_dir = tmp_path / "auths"
+    session_dir = tmp_path / "auth_session"
+    auth_dir.mkdir()
+    session_dir.mkdir()
+    auth_file = auth_dir / "codex-user.json"
+    auth_file.write_text(json.dumps({"access_token": "account-auth-token"}), encoding="utf-8")
+    session_file = session_dir / "user@example.com.json"
+    session_file.write_text(json.dumps({"email": "user@example.com"}), encoding="utf-8")
+    app, _captured = _app()
+
+    monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: str(session_file))
+
+    result = _endpoint(app, "/api/accounts/{email}/access-token", "GET")("user@example.com")
+
+    assert result["access_token"] == "account-auth-token"
+
+
+def test_account_overview_subscription_uses_auth_account_id_and_real_account_check_fields(monkeypatch, tmp_path):
+    auth_dir = tmp_path / "auths"
+    auth_dir.mkdir()
+    auth_file = auth_dir / "codex-user.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "access_token": _jwt(
+                    {
+                        "https://api.openai.com/auth": {
+                            "chatgpt_account_id": "target-account",
+                            "chatgpt_plan_type": "free",
+                        }
+                    }
+                ),
+                "account": {"id": "target-account"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    app, _captured = _app()
+    captured = {}
+
+    def fake_query(token, account_id=""):
+        captured["token"] = token
+        captured["account_id"] = account_id
+        return {
+            "raw": {
+                "id": "sub-123",
+                "plan_type": "plus",
+                "seats_in_use": 1,
+                "seats_entitled": 1,
+                "active_start": "2099-01-01T01:11:00Z",
+                "active_until": "2100-01-01T00:00:00Z",
+                "billing_period": "monthly",
+                "billing_currency": "USD",
+                "will_renew": True,
+                "is_delinquent": False,
+                "is_processor_stripe": True,
+            },
+            "queried_url": "https://chatgpt.com/backend-api/subscriptions?account_id=target-account",
+        }
+
+    monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: "")
+    monkeypatch.setattr(account_overview, "query_chatgpt_subscription", fake_query, raising=False)
+
+    result = _endpoint(app, "/api/accounts/{email}/subscription", "GET")("user@example.com")
+
+    assert captured["account_id"] == "target-account"
+    assert result["subscription"]["plan_label"] == "Plus"
+    assert result["subscription"]["jwt_plan_type"] == "free"
+    assert result["subscription"]["plan_key"] == "chatgptplusplan"
+    assert result["subscription"]["active"] is True
+    assert result["subscription"]["paid"] is True
+    assert result["subscription"]["channel_label"] == "网页 (Web)"
+    assert result["subscription"]["payment_processor"] == "Stripe"
+    assert result["subscription"]["seats"] == {"used": 1, "total": 1}
+    assert result["subscription"]["starts_at"].startswith("2099-01-01T01:11:00")
+    assert result["subscription"]["ends_at"].startswith("2100-01-01T00:00:00")
+    assert result["subscription"]["renews_at"].startswith("2100-01-01T00:00:00")
+    assert isinstance(result["subscription"]["remaining_days"], int)
+    assert result["raw"]["id"] == "sub-123"
+
+
+def test_query_chatgpt_subscription_uses_subscriptions_endpoint_with_account_id(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"plan_type": "plus"}
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, url, **kwargs):
+            calls.append({"url": url, "headers": dict(kwargs.get("headers") or {}), "session_headers": dict(self.headers)})
+            return FakeResponse()
+
+    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+
+    result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
+
+    assert result["raw"] == {"plan_type": "plus"}
+    assert len(calls) == 2
+    assert calls[0]["url"] == "https://chatgpt.com/backend-api/subscriptions?account_id=acc-1"
+    assert calls[0]["headers"]["x-openai-target-path"] == "/backend-api/subscriptions"
+    assert calls[1]["headers"]["x-openai-target-path"] == "/backend-api/accounts/check/v4-2023-04-27"
+    assert "Chatgpt-Account-Id" not in calls[0]["headers"]
+    assert "Chatgpt-Account-Id" not in calls[0]["session_headers"]
+
+
+def test_query_chatgpt_subscription_merges_account_check_discounts(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, url, **kwargs):
+            calls.append({"url": url, "headers": dict(kwargs.get("headers") or {})})
+            if "/backend-api/subscriptions?" in url:
+                return FakeResponse({"plan_type": "plus", "active_until": "2100-01-01T00:00:00Z"})
+            return FakeResponse(
+                {
+                    "accounts": {
+                        "acc-1": {
+                            "entitlement": {
+                                "subscription_plan": "chatgptplusplan",
+                                "applied_discounts": [
+                                    {
+                                        "promo_campaign_id": "plus-1-month-free",
+                                        "amount": 100.0,
+                                        "duration_num_periods": 1,
+                                        "discount_expires_at": "2100-01-01T00:00:00+00:00",
+                                        "cancellation_policy": "term_end",
+                                    }
+                                ],
+                            },
+                            "eligible_offers": {
+                                "offers": [
+                                    {"id": "chatgptfreeplan"},
+                                    {"id": "chatgptplusplan"},
+                                ]
+                            },
+                        }
+                    }
+                }
+            )
+
+    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(account_overview, "_browser_timezone_offset_min", lambda: 480, raising=False)
+
+    result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
+    normalized = account_overview.normalize_chatgpt_subscription(result["raw"], account_id="acc-1")
+
+    assert calls[0]["url"] == "https://chatgpt.com/backend-api/subscriptions?account_id=acc-1"
+    assert calls[1]["url"] == "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=480"
+    assert normalized["plan_key"] == "chatgptplusplan"
+    assert normalized["applied_discounts"] == [
+        {
+            "id": "plus-1-month-free",
+            "percent_off": 100.0,
+            "duration_in_months": 1,
+            "ends_at": "2100-01-01T00:00:00+00:00",
+            "end_behavior": "term_end",
+        }
+    ]
+    assert normalized["available_plans"] == ["chatgptfreeplan", "chatgptplusplan"]
+
+
+def test_query_chatgpt_subscription_falls_back_to_chat_openai_when_chatgpt_forbidden(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload if payload is not None else {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            if "chatgpt.com" in url:
+                return FakeResponse(403, {"detail": "forbidden"})
+            return FakeResponse(200, {"plan_type": "plus"})
+
+    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+
+    result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
+
+    assert len(calls) == 3
+    assert calls[0].startswith("https://chatgpt.com/")
+    assert calls[1].startswith("https://chat.openai.com/")
+    assert calls[0] == "https://chatgpt.com/backend-api/subscriptions?account_id=acc-1"
+    assert calls[1] == "https://chat.openai.com/backend-api/subscriptions?account_id=acc-1"
+    assert calls[2].startswith("https://chat.openai.com/backend-api/accounts/check/")
+    assert result["raw"]["plan_type"] == "plus"

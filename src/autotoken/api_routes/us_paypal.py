@@ -931,7 +931,8 @@ def _validate_protocol_batch_start(req: UsPaypalProtocolBatchStartRequest) -> li
         raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "不支持的 PayPal 手机接码平台"})
     unsupported = sorted({task["country"] for task in tasks if task["country"] not in paypal_protocol_service.SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES})
     if unsupported:
-        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": f"当前协议支付仅开放 US/GB/NL/BR，不支持：{', '.join(unsupported)}"})
+        countries_text = paypal_protocol_service.SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": f"当前协议支付仅开放 {countries_text}，不支持：{', '.join(unsupported)}"})
     return tasks
 
 
@@ -1258,7 +1259,8 @@ def create_us_paypal_router() -> APIRouter:
         elif sms_provider not in {"hero_sms", "smsbower"}:
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "不支持的 PayPal 手机接码平台"})
         if req.country not in paypal_protocol_service.SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES:
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "当前协议支付仅开放 US/GB/NL/BR"})
+            countries_text = paypal_protocol_service.SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": f"当前协议支付仅开放 {countries_text}"})
         job_id = _new_protocol_job(req.account_email)
         threading.Thread(target=_run_protocol_payment_job, args=(job_id, req), daemon=True).start()
         return {"job_id": job_id}

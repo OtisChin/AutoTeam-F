@@ -1,9 +1,410 @@
-"""Account overview and Codex auth export HTTP routes."""
+"""Account overview, access token, and ChatGPT subscription HTTP routes."""
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
+
+CHATGPT_SUBSCRIPTIONS_PATH = "/backend-api/subscriptions"
+CHATGPT_SUBSCRIPTIONS_URL = f"https://chatgpt.com{CHATGPT_SUBSCRIPTIONS_PATH}"
+CHATGPT_SUBSCRIPTIONS_FALLBACK_URL = f"https://chat.openai.com{CHATGPT_SUBSCRIPTIONS_PATH}"
+CHATGPT_ACCOUNT_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
+CHATGPT_ACCOUNT_CHECK_URL = f"https://chatgpt.com{CHATGPT_ACCOUNT_CHECK_PATH}"
+CHATGPT_ACCOUNT_CHECK_FALLBACK_URL = f"https://chat.openai.com{CHATGPT_ACCOUNT_CHECK_PATH}"
+
+
+def _extract_access_token(auth_data: dict[str, Any]) -> str:
+    return str(auth_data.get("access_token", "") or auth_data.get("accessToken", "") or "").strip()
+
+
+def _extract_account_id(auth_data: dict[str, Any]) -> str:
+    account = auth_data.get("account") if isinstance(auth_data.get("account"), dict) else {}
+    account_id = str(auth_data.get("account_id", "") or account.get("id") or "").strip()
+    if account_id:
+        return account_id
+    access_token = _extract_access_token(auth_data)
+    if not access_token:
+        return ""
+    try:
+        from autotoken.core.jwt import decode_jwt_payload
+
+        claims = decode_jwt_payload(access_token)
+    except Exception:
+        return ""
+    auth_claims = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else {}
+    if isinstance(auth_claims, dict):
+        return str(auth_claims.get("chatgpt_account_id") or "").strip()
+    return ""
+
+
+def _extract_jwt_plan_type(access_token: str) -> str:
+    from autotoken.core.jwt import decode_jwt_payload
+
+    try:
+        claims = decode_jwt_payload(access_token)
+    except Exception:
+        return ""
+    auth_claims = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else {}
+    if isinstance(auth_claims, dict):
+        return str(auth_claims.get("chatgpt_plan_type") or "").strip()
+    return ""
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "active", "paid"}
+    return bool(value)
+
+
+def _first_present(mapping: dict[str, Any], *keys: str, default: Any = "") -> Any:
+    for key in keys:
+        if key in mapping and mapping.get(key) not in (None, ""):
+            return mapping.get(key)
+    return default
+
+
+def _first_chatgpt_account(raw: dict[str, Any], account_id: str = "") -> dict[str, Any]:
+    account = raw.get("account")
+    if isinstance(account, dict):
+        return account
+    accounts = raw.get("accounts")
+    if isinstance(accounts, dict):
+        normalized_account_id = str(account_id or "").strip()
+        if normalized_account_id and isinstance(accounts.get(normalized_account_id), dict):
+            return accounts[normalized_account_id]
+        values = [value for value in accounts.values() if isinstance(value, dict)]
+        for value in values:
+            if isinstance(value.get("account_plan"), dict) or isinstance(value.get("subscription"), dict):
+                return value
+        return values[0] if values else {}
+    if isinstance(accounts, list):
+        for value in accounts:
+            if isinstance(value, dict):
+                return value
+    return {}
+
+
+def _plan_label(plan_key: str, plan_type: str) -> str:
+    normalized_type = str(plan_type or "").strip().lower()
+    if normalized_type in {"plus", "pro", "team", "enterprise", "free"}:
+        return normalized_type.capitalize()
+    normalized_key = str(plan_key or "").strip().lower()
+    if "plus" in normalized_key:
+        return "Plus"
+    if "pro" in normalized_key:
+        return "Pro"
+    if "team" in normalized_key:
+        return "Team"
+    if "enterprise" in normalized_key:
+        return "Enterprise"
+    if "free" in normalized_key:
+        return "Free"
+    return str(plan_key or plan_type or "Unknown")
+
+
+def _plan_key(plan_key: str, plan_type: str) -> str:
+    normalized_key = str(plan_key or "").strip()
+    if normalized_key:
+        return normalized_key
+    normalized_type = str(plan_type or "").strip().lower()
+    if normalized_type in {"free", "plus", "pro", "team", "enterprise"}:
+        return f"chatgpt{normalized_type}plan"
+    return normalized_type
+
+
+def _channel_label(origin: str) -> str:
+    normalized = str(origin or "").strip().lower()
+    if normalized == "chatgpt_web":
+        return "网页 (Web)"
+    if normalized == "ios":
+        return "iOS"
+    if normalized == "android":
+        return "Android"
+    return origin or "-"
+
+
+def _coerce_datetime(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000
+        try:
+            return datetime.fromtimestamp(timestamp, UTC).isoformat()
+        except (OSError, OverflowError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _remaining_days(ends_at: Any) -> int | None:
+    coerced = _coerce_datetime(ends_at)
+    if not coerced:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(coerced).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    seconds = (dt - datetime.now(UTC)).total_seconds()
+    return max(0, int((seconds + 86399) // 86400))
+
+
+def _seat_value(plan: dict[str, Any], *keys: str) -> int | None:
+    value = _first_present(plan, *keys, default=None)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_discount(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    return {
+        "id": str(_first_present(item, "id", "coupon_id", "promotion_id", "promo_campaign_id", default="")).strip(),
+        "percent_off": _first_present(item, "percent_off", "percentage_off", "discount_percent", "amount", default=None),
+        "duration_in_months": _first_present(item, "duration_in_months", "duration_num_periods", "months", default=None),
+        "ends_at": _coerce_datetime(_first_present(item, "end_date", "discount_expires_at", "ends_at", "term_end", default="")),
+        "end_behavior": str(_first_present(item, "end_behavior", "cancellation_policy", "ends_when", default="")).strip(),
+    }
+
+
+def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") -> dict[str, Any]:
+    """Normalize ChatGPT subscription responses into UI-friendly fields."""
+
+    wrapped_raw = isinstance(raw.get("subscription"), dict) or isinstance(raw.get("account_check"), dict)
+    subscription_raw = raw.get("subscription") if isinstance(raw.get("subscription"), dict) else raw
+    account_check_raw = raw.get("account_check") if isinstance(raw.get("account_check"), dict) else {}
+    account = _first_chatgpt_account(account_check_raw or raw, account_id=account_id)
+    entitlement = account.get("entitlement") if isinstance(account.get("entitlement"), dict) else {}
+    account_details = account.get("account") if isinstance(account.get("account"), dict) else {}
+    plan = subscription_raw if wrapped_raw and isinstance(subscription_raw, dict) else {}
+    if not plan and entitlement:
+        plan = entitlement
+    if not plan and isinstance(account.get("account_plan"), dict):
+        plan = account.get("account_plan") or {}
+    if not plan and isinstance(account.get("subscription"), dict):
+        plan = account.get("subscription") or {}
+    if not plan and isinstance(raw.get("account_plan"), dict):
+        plan = raw.get("account_plan") or {}
+    if not plan and isinstance(raw.get("subscription"), dict):
+        plan = raw.get("subscription") or {}
+    if not plan:
+        plan = raw
+
+    plan_key = str(_first_present(plan, "subscription_plan", "plan", "plan_key", "product_id", default="")).strip()
+    if not plan_key:
+        plan_key = str(_first_present(entitlement, "subscription_plan", "plan", "plan_key", "product_id", default="")).strip()
+    plan_type = str(_first_present(plan, "account_plan_type", "plan_type", "tier", default="")).strip()
+    ends_at = _first_present(
+        plan,
+        "expires_at",
+        "current_period_end",
+        "subscription_expires_at",
+        "subscription_expires_at_timestamp",
+        "current_period_end_timestamp",
+        "ends_at",
+        default="",
+    )
+    renews_at = _first_present(
+        plan,
+        "renewal_at",
+        "next_invoice_at",
+        "next_billing_date",
+        "next_billing_date_timestamp",
+        "renews_at",
+        default="",
+    )
+    starts_at = _first_present(plan, "start_date", "started_at", "subscription_started_at", default="")
+    if not starts_at:
+        starts_at = _first_present(plan, "active_start", default="")
+    purchase_origin = str(_first_present(plan, "purchase_origin", "purchase_source", "origin", default="")).strip()
+
+    available_plans = _first_present(plan, "available_plans", default=None)
+    if available_plans is None:
+        available_plans = _first_present(account, "available_plans", default=[])
+    if not available_plans and isinstance(account.get("eligible_offers"), dict):
+        offers = account["eligible_offers"].get("offers")
+        if isinstance(offers, list):
+            available_plans = [str(item.get("id") or "").strip() for item in offers if isinstance(item, dict) and item.get("id")]
+    if not isinstance(available_plans, list):
+        available_plans = []
+    total_seats = _seat_value(plan, "total_seats", "seats_entitled", "seats", "quantity", "seat_count", "max_seats")
+    used_seats = _seat_value(plan, "used_seats", "seats_in_use", "occupied_seats", "seat_used", "seat_count_used")
+    discounts = _first_present(plan, "applied_discounts", "discounts", default=[])
+    if not discounts:
+        discounts = _first_present(entitlement, "applied_discounts", "discounts", default=[])
+    if not discounts and isinstance(entitlement.get("discount"), dict):
+        discounts = [entitlement.get("discount")]
+    if isinstance(discounts, dict):
+        discounts = [discounts]
+    if not isinstance(discounts, list):
+        discounts = []
+    applied_discounts = [
+        normalized for normalized in (_normalize_discount(item) for item in discounts) if normalized
+    ]
+
+    if not ends_at:
+        ends_at = _first_present(plan, "active_until", default="")
+    if not renews_at and _truthy(_first_present(plan, "will_renew", "is_renewing", "auto_renews", default=False)):
+        renews_at = ends_at
+    normalized_plan_key = _plan_key(plan_key, plan_type)
+    active_value = _first_present(
+        plan,
+        "is_active_subscription",
+        "is_paid_subscription_active",
+        "active",
+        "has_paid_subscription",
+        default=None,
+    )
+    if active_value is None and ends_at:
+        active_value = _remaining_days(ends_at) is not None and (_remaining_days(ends_at) or 0) > 0
+    payment_processor = str(_first_present(plan, "payment_processor", "processor", "provider", default="")).strip()
+    if not payment_processor and _truthy(_first_present(plan, "is_processor_stripe", default=False)):
+        payment_processor = "Stripe"
+    channel_label = _channel_label(purchase_origin)
+    if channel_label == "-" and isinstance(account.get("last_active_subscription"), dict):
+        purchase_origin = str(_first_present(account["last_active_subscription"], "purchase_origin_platform", default="")).strip()
+        channel_label = _channel_label(purchase_origin)
+    if channel_label == "-" and payment_processor:
+        channel_label = "网页 (Web)"
+
+    return {
+        "plan_label": _plan_label(plan_key, plan_type),
+        "plan_key": normalized_plan_key,
+        "plan_type": plan_type,
+        "billing_period": str(_first_present(plan, "billing_period", "scheduled_billing_period", "billing_cycle", "interval", default="")).strip(),
+        "currency": str(_first_present(plan, "currency", "billing_currency", "currency_code", default="")).strip(),
+        "active": _truthy(active_value),
+        "renewing": _truthy(_first_present(plan, "is_renewing", "will_renew", "auto_renews", default=False)),
+        "delinquent": _truthy(_first_present(plan, "is_delinquent", "delinquent", "past_due", default=False)),
+        "paid": _truthy(
+            _first_present(
+                plan,
+                "has_paid_subscription",
+                "has_had_paid_subscription",
+                "is_paid",
+                default=_truthy(account_details.get("has_previously_paid_subscription"))
+                or str(plan_type).strip().lower() not in {"", "free"},
+            )
+        ),
+        "starts_at": _coerce_datetime(starts_at),
+        "ends_at": _coerce_datetime(ends_at),
+        "renews_at": _coerce_datetime(renews_at),
+        "purchase_origin": purchase_origin,
+        "channel_label": channel_label,
+        "payment_processor": payment_processor,
+        "seats": {"used": used_seats, "total": total_seats},
+        "available_plans": available_plans,
+        "discount": _first_present(plan, "discount", "discount_amount", "discount_percent", default=None),
+        "applied_discounts": applied_discounts,
+        "remaining_days": _remaining_days(ends_at),
+    }
+
+
+def _browser_timezone_offset_min() -> int:
+    import time
+
+    local_utc_offset_seconds = -time.timezone
+    if time.daylight and time.localtime().tm_isdst > 0:
+        local_utc_offset_seconds = -time.altzone
+    return int(-local_utc_offset_seconds / 60)
+
+
+def _new_chatgpt_subscription_session(access_token: str):
+    try:
+        from autotoken.payments.us_paypal import build_chatgpt_session
+
+        return build_chatgpt_session(access_token)
+    except Exception:
+        import requests
+
+        session = requests.Session()
+        session.headers.update(
+            {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "*/*",
+                "User-Agent": "Mozilla/5.0",
+                "Origin": "https://chatgpt.com",
+                "Referer": "https://chatgpt.com/",
+            }
+        )
+        return session
+
+
+def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[str, Any]:
+    account_id = str(account_id or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="缺少 ChatGPT account_id，无法查询订阅")
+    session = _new_chatgpt_subscription_session(access_token)
+    target_path = CHATGPT_SUBSCRIPTIONS_PATH
+    query = f"?account_id={quote(account_id)}"
+    extra_headers = {
+        "x-openai-target-path": target_path,
+        "x-openai-target-route": target_path,
+    }
+    urls = [
+        f"{CHATGPT_SUBSCRIPTIONS_URL}{query}",
+        f"{CHATGPT_SUBSCRIPTIONS_FALLBACK_URL}{query}",
+    ]
+    auth_errors: list[int] = []
+    last_error: Exception | None = None
+    last_status = 0
+
+    raw: dict[str, Any] | None = None
+    queried_url = ""
+    for url in urls:
+        try:
+            resp = session.get(url, headers=extra_headers, timeout=30)
+            last_status = int(getattr(resp, "status_code", 0) or 0)
+            if last_status in {401, 403}:
+                auth_errors.append(last_status)
+                continue
+            resp.raise_for_status()
+            raw = resp.json()
+        except Exception as exc:
+            last_error = exc
+            continue
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="ChatGPT 订阅接口返回格式异常")
+        queried_url = url
+        break
+
+    if raw is None and auth_errors and len(auth_errors) == len(urls):
+        raise HTTPException(status_code=403, detail="ChatGPT 订阅接口拒绝请求：请刷新该账号 auth_session 后重试")
+    if raw is None:
+        detail = f"ChatGPT 订阅接口请求失败: {last_error or f'HTTP {last_status}'}"
+        raise HTTPException(status_code=502, detail=detail)
+
+    account_check_url = CHATGPT_ACCOUNT_CHECK_URL
+    if queried_url.startswith("https://chat.openai.com/"):
+        account_check_url = CHATGPT_ACCOUNT_CHECK_FALLBACK_URL
+    account_check_query = f"?timezone_offset_min={_browser_timezone_offset_min()}"
+    account_check_headers = {
+        "x-openai-target-path": CHATGPT_ACCOUNT_CHECK_PATH,
+        "x-openai-target-route": CHATGPT_ACCOUNT_CHECK_PATH,
+    }
+    account_check_raw: dict[str, Any] = {}
+    try:
+        resp = session.get(f"{account_check_url}{account_check_query}", headers=account_check_headers, timeout=30)
+        if int(getattr(resp, "status_code", 0) or 0) < 400:
+            candidate = resp.json()
+            if isinstance(candidate, dict) and isinstance(candidate.get("accounts"), dict):
+                account_check_raw = candidate
+    except Exception:
+        account_check_raw = {}
+
+    merged_raw = {"subscription": raw, "account_check": account_check_raw} if account_check_raw else raw
+    return {"raw": merged_raw, "queried_url": queried_url}
 
 
 def create_account_overview_router(
@@ -24,45 +425,10 @@ def create_account_overview_router(
     @router.get("/api/accounts/{email}/codex-auth")
     def get_codex_auth(email: str):
         """导出账号的 Codex CLI 格式认证文件（~/.codex/auth.json）"""
-        from autotoken.auth.codex_auth import get_saved_main_auth_file
-        from autotoken.storage.accounts import find_account, load_accounts
-        from autotoken.storage.auth_files import (
-            read_auth_json_file,
-            trusted_auth_file_path,
-            trusted_auth_or_session_path,
-        )
-        from autotoken.storage.auth_session_store import get_auth_session_file
-        from autotoken.storage.auth_storage import AUTH_DIR
+        email, auth_file, auth_data = _load_account_auth_data(email)
 
-        email = email.strip().lower()
-        auth_file = ""
-
-        if is_main_account_email(email):
-            auth_file = get_saved_main_auth_file()
-            if not auth_file or not Path(auth_file).exists():
-                raise HTTPException(status_code=404, detail="主号没有可导出的认证文件")
-        else:
-            account = find_account(load_accounts(), email)
-            if account:
-                candidate = str(account.get("auth_file") or "").strip()
-                if candidate:
-                    path = trusted_auth_file_path(candidate, auth_dir=AUTH_DIR)
-                    if path:
-                        auth_file = str(path)
-            if not auth_file:
-                auth_file = get_auth_session_file(email) or ""
-            auth_path = trusted_auth_or_session_path(auth_file, auth_dir=AUTH_DIR)
-            if not auth_path:
-                raise HTTPException(status_code=404, detail="该账号没有认证文件")
-            auth_file = str(auth_path)
-
-        try:
-            auth_data = read_auth_json_file(auth_file)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"认证文件无法读取: {exc}") from exc
-
-        access_token = auth_data.get("access_token", "") or auth_data.get("accessToken", "")
-        account_id = auth_data.get("account_id", "") or ((auth_data.get("account") or {}).get("id") or "")
+        access_token = _extract_access_token(auth_data)
+        account_id = _extract_account_id(auth_data)
 
         codex_auth = {
             "auth_mode": "chatgpt",
@@ -81,6 +447,119 @@ def create_account_overview_router(
             "codex_auth": codex_auth,
             "auth_file": auth_file,
             "hint": "将内容保存到 ~/.codex/auth.json（Linux/macOS）或 %APPDATA%\\codex\\auth.json（Windows）",
+        }
+
+    def _load_account_auth_data(email: str, *, prefer_auth_session: bool = False) -> tuple[str, str, dict[str, Any]]:
+        from autotoken.auth.codex_auth import get_saved_main_auth_file
+        from autotoken.storage.accounts import find_account, load_accounts
+        from autotoken.storage.auth_files import (
+            read_auth_json_file,
+            trusted_auth_file_path,
+            trusted_auth_or_session_path,
+        )
+        from autotoken.storage.auth_session_store import get_auth_session_file
+        from autotoken.storage.auth_storage import AUTH_DIR
+
+        normalized = email.strip().lower()
+
+        if is_main_account_email(normalized):
+            auth_file = get_saved_main_auth_file()
+            if not auth_file or not Path(auth_file).exists():
+                raise HTTPException(status_code=404, detail="主号没有可导出的认证文件")
+            try:
+                auth_data = read_auth_json_file(auth_file)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"认证文件无法读取: {exc}") from exc
+            if not isinstance(auth_data, dict):
+                raise HTTPException(status_code=400, detail="认证文件格式异常")
+            return normalized, auth_file, auth_data
+
+        account = find_account(load_accounts(), normalized)
+        candidates: list[Path] = []
+        seen_paths: set[str] = set()
+
+        def add_candidate(path: Path | None):
+            if not path:
+                return
+            resolved = str(path.resolve())
+            if resolved in seen_paths:
+                return
+            seen_paths.add(resolved)
+            candidates.append(path)
+
+        if prefer_auth_session:
+            candidate = str(get_auth_session_file(normalized) or "").strip()
+            session_path = trusted_auth_or_session_path(candidate, auth_dir=AUTH_DIR)
+            add_candidate(session_path)
+
+        if account:
+            candidate = str(account.get("auth_file") or "").strip()
+            if candidate:
+                add_candidate(trusted_auth_file_path(candidate, auth_dir=AUTH_DIR))
+
+        if not prefer_auth_session:
+            candidate = str(get_auth_session_file(normalized) or "").strip()
+            add_candidate(trusted_auth_or_session_path(candidate, auth_dir=AUTH_DIR))
+
+        if not candidates:
+            raise HTTPException(status_code=404, detail="该账号没有认证文件")
+
+        first_error = None
+        first_data: tuple[str, dict[str, Any]] | None = None
+        for auth_path in candidates:
+            try:
+                auth_data = read_auth_json_file(auth_path)
+            except Exception as exc:
+                if not prefer_auth_session:
+                    raise HTTPException(status_code=400, detail=f"认证文件无法读取: {exc}") from exc
+                if first_error is None:
+                    first_error = exc
+                continue
+            if not isinstance(auth_data, dict):
+                if not prefer_auth_session:
+                    raise HTTPException(status_code=400, detail="认证文件格式异常")
+                if first_error is None:
+                    first_error = ValueError("认证文件格式异常")
+                continue
+            if first_data is None:
+                first_data = (str(auth_path), auth_data)
+            if not prefer_auth_session or _extract_access_token(auth_data):
+                return normalized, str(auth_path), auth_data
+
+        if first_data is not None:
+            return normalized, first_data[0], first_data[1]
+        raise HTTPException(status_code=400, detail=f"认证文件无法读取: {first_error}") from first_error
+
+    @router.get("/api/accounts/{email}/access-token")
+    def get_account_access_token(email: str):
+        """获取账号 ChatGPT access_token，供仪表盘直接复制。"""
+        email, _auth_file, auth_data = _load_account_auth_data(email, prefer_auth_session=True)
+        access_token = _extract_access_token(auth_data)
+        if not access_token:
+            raise HTTPException(status_code=404, detail="该账号认证文件缺少 access_token")
+        return {"email": email, "access_token": access_token}
+
+    @router.get("/api/accounts/{email}/subscription")
+    def get_account_subscription(email: str):
+        """查询 ChatGPT 账号实时订阅状态。"""
+        email, _auth_file, auth_data = _load_account_auth_data(email, prefer_auth_session=True)
+        access_token = _extract_access_token(auth_data)
+        if not access_token:
+            raise HTTPException(status_code=404, detail="该账号认证文件缺少 access_token")
+        account_id = _extract_account_id(auth_data)
+        result = query_chatgpt_subscription(access_token, account_id=account_id)
+        raw = result.get("raw") if isinstance(result, dict) else {}
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="ChatGPT 订阅接口返回格式异常")
+        return {
+            "email": email,
+            "account_id": account_id,
+            "subscription": {
+                **normalize_chatgpt_subscription(raw, account_id=account_id),
+                "jwt_plan_type": _extract_jwt_plan_type(access_token),
+            },
+            "raw": raw,
+            "queried_url": result.get("queried_url") if isinstance(result, dict) else CHATGPT_SUBSCRIPTIONS_URL,
         }
 
     @router.get("/api/accounts/active")

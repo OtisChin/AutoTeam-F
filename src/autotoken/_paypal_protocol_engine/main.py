@@ -193,8 +193,11 @@ def main():
     parser.add_argument(
         "--country",
         default=os.getenv("PAYPAL_COUNTRY", "BR"),
-        choices=["BR", "US", "GB", "NL", "br", "us", "gb", "nl"],
-        help="Buyer/onboarding country. Default: BR; use US/GB/NL/BR for PayPal.",
+        choices=[
+            "BR", "US", "GB", "NL", "CA", "ID", "JP", "MX", "PH", "TH",
+            "br", "us", "gb", "nl", "ca", "id", "jp", "mx", "ph", "th",
+        ],
+        help="Buyer/onboarding country. Default: BR; use BR/CA/GB/ID/JP/MX/PH/TH/NL/US for PayPal.",
     )
     parser.add_argument(
         "--smsbower",
@@ -432,6 +435,12 @@ def main():
         "GB": "+447700900123",
         "NL": "+31612345678",
         "BR": "+5500000000000",
+        "CA": "+14370000000",
+        "ID": "+6281234567890",
+        "JP": "+819012345678",
+        "MX": "+525512345678",
+        "PH": "+639171234567",
+        "TH": "+66812345678",
     }
     default_phone = default_phones.get(country, "+5500000000000")
     user = generate_user(args.phone or default_phone, country=country)

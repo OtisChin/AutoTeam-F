@@ -345,12 +345,18 @@
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">国家</span>
                   <select v-model="protocolForm.country" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy">
-                    <option value="US">US · 美国</option>
-                    <option value="GB">GB · 英国</option>
-                    <option value="NL">NL · 荷兰</option>
                     <option value="BR">BR · 巴西</option>
+                    <option value="CA">CA · 加拿大</option>
+                    <option value="GB">GB · 英国</option>
+                    <option value="ID">ID · 印度尼西亚</option>
+                    <option value="JP">JP · 日本</option>
+                    <option value="MX">MX · 墨西哥</option>
+                    <option value="PH">PH · 菲律宾</option>
+                    <option value="TH">TH · 泰国</option>
+                    <option value="NL">NL · 荷兰</option>
+                    <option value="US">US · 美国</option>
                   </select>
-                  <span class="mt-1 block text-xs text-gray-500">US 使用 no-FI；GB/NL/BR 使用 signup-card/auto 兼容路径。</span>
+                  <span class="mt-1 block text-xs text-gray-500">US 使用 no-FI；其它国家使用本地化账单/地址 signup-card/auto 兼容路径。</span>
                 </label>
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">手机号接码</span>
@@ -450,7 +456,7 @@
             <pre v-if="protocolResult" class="mt-4 max-h-72 overflow-auto rounded-xl border border-gray-800 bg-gray-950 p-4 text-xs text-gray-300">{{ JSON.stringify(protocolResult, null, 2) }}</pre>
             <div v-else class="flex min-h-36 flex-col items-center justify-center text-center text-gray-500">
               <strong class="text-gray-300">尚未提交协议支付</strong>
-              <span class="mt-1 text-sm">选择 US/GB/NL/BR，填入 BA，并选择固定 SMS URL / HeroSMS / SMSBower 后开始。</span>
+              <span class="mt-1 text-sm">选择 BR/CA/GB/ID/JP/MX/PH/TH/NL/US，填入 BA，并选择固定 SMS URL / HeroSMS / SMSBower 后开始。</span>
             </div>
           </section>
         </div>
@@ -474,7 +480,7 @@ const PROTOCOL_FORM_STORAGE_KEY = 'autotoken_us_paypal_protocol_form'
 const PROTOCOL_JOB_STORAGE_KEY = 'autotoken_us_paypal_protocol_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
-const PROTOCOL_COUNTRIES = new Set(['US', 'GB', 'NL', 'BR'])
+const PROTOCOL_COUNTRIES = new Set(['BR', 'CA', 'GB', 'ID', 'JP', 'MX', 'PH', 'TH', 'NL', 'US'])
 const paypalCountryOptions = [
   { value: 'US', label: 'US · 美国' },
   { value: 'GB', label: 'GB · 英国' },
@@ -499,6 +505,7 @@ const paypalCountryOptions = [
 const promoRegionOptions = [
   { value: 'JP', label: 'JP · 日本' },
   { value: 'BR', label: 'BR · 巴西' },
+  { value: 'ID', label: 'ID · 印度尼西亚' },
   { value: 'VN', label: 'VN · 越南' },
   { value: 'TH', label: 'TH · 泰国' },
   { value: 'PH', label: 'PH · 菲律宾' },
@@ -938,7 +945,7 @@ function validateProtocolPayment() {
   if (!['sms_record', 'hero_sms', 'hero_sms_rent', 'smsbower'].includes(protocolForm.value.smsProvider)) protocolForm.value.smsProvider = 'sms_record'
   const batchCount = protocolSelectedEmails.value.length
   if (!batchCount && !String(protocolForm.value.paypalLink || '').trim()) { setProtocolStatus('请填写 BA 链接或 BA token，或多选已成功提链账号。', true); return false }
-  if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付仅开放 US/GB/NL/BR。', true); return false }
+  if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付支持 BR/CA/GB/ID/JP/MX/PH/TH/NL/US。', true); return false }
   const phoneCount = splitProtocolLines(protocolForm.value.phone).length
   const recordCount = splitProtocolLines(protocolForm.value.smsRecordUrl).length
   if (protocolForm.value.smsProvider === 'sms_record') {

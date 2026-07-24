@@ -140,7 +140,7 @@ class SessionState:
 
 def generate_random_email(country: str | None = None) -> str:
     selected_country = (country or "BR").upper()
-    if selected_country in {"US", "GB", "NL"}:
+    if selected_country != "BR":
         first = random.choice(_US_FIRST_NAMES).lower()
         last = random.choice(_US_LAST_NAMES).lower()
         return f"{first}.{last}{random.randint(10, 9999)}@{random.choice(_US_EMAIL_DOMAINS)}"
@@ -429,13 +429,56 @@ _GB_ADDRESSES = [
     ("Flat 4, Stirling House 44 Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
 ]
 
+_CA_ADDRESSES = [
+    ("Maitland Street", "25", "", "Toronto", "ON", "M4Y 2W1"),
+    ("Brunswick Avenue", "88", "", "Toronto", "ON", "M5S 2L7"),
+    ("West 7th Avenue", "1438", "", "Vancouver", "BC", "V6H 1C1"),
+    ("Rue Saint-Urbain", "5325", "", "Montreal", "QC", "H2T 2W8"),
+    ("19 Avenue SW", "1507", "", "Calgary", "AB", "T2T 0H8"),
+]
+
+_ID_ADDRESSES = [
+    ("Jalan Kemang Raya", "12", "Bangka", "Jakarta Selatan", "DKI Jakarta", "12730"),
+    ("Jalan Diponegoro", "45", "Lebak Gede", "Bandung", "Jawa Barat", "40132"),
+    ("Jalan Gubeng Kertajaya", "28", "Gubeng", "Surabaya", "Jawa Timur", "60282"),
+    ("Jalan Cik Di Tiro", "17", "Terban", "Yogyakarta", "DI Yogyakarta", "55223"),
+]
+
+_JP_ADDRESSES = [
+    ("Jingumae", "3-12-7", "", "Shibuya-ku", "Tokyo", "150-0001"),
+    ("Kichijoji Honcho", "2-18-4", "", "Musashino-shi", "Tokyo", "180-0004"),
+    ("Tenjin", "3-8-15", "", "Fukuoka-shi Chuo-ku", "Fukuoka", "810-0001"),
+    ("Nishiki", "2-7-21", "", "Nagoya-shi Naka-ku", "Aichi", "460-0003"),
+]
+
+_MX_ADDRESSES = [
+    ("Calle Durango", "123", "Roma Norte", "Ciudad de Mexico", "CDMX", "06700"),
+    ("Calle Marsella", "52", "Juarez", "Ciudad de Mexico", "CDMX", "06600"),
+    ("Avenida Chapultepec", "210", "Americana", "Guadalajara", "JAL", "44160"),
+    ("Calle Rio Orinoco", "305", "Del Valle", "Monterrey", "NL", "66220"),
+]
+
+_PH_ADDRESSES = [
+    ("Makati Avenue", "120", "Poblacion", "Makati", "Metro Manila", "1210"),
+    ("Scout Tobias Street", "42", "Laging Handa", "Quezon City", "Metro Manila", "1103"),
+    ("Gorordo Avenue", "78", "Lahug", "Cebu City", "Cebu", "6000"),
+    ("J.P. Laurel Avenue", "155", "Bajada", "Davao City", "Davao del Sur", "8000"),
+]
+
+_TH_ADDRESSES = [
+    ("Sukhumvit Road", "99", "Khlong Toei", "Bangkok", "Bangkok", "10110"),
+    ("Soi Ari Samphan", "41", "Phaya Thai", "Bangkok", "Bangkok", "10400"),
+    ("Nimmanhaemin Road", "24", "Suthep", "Chiang Mai", "Chiang Mai", "50200"),
+    ("Thep Krasattri Road", "67", "Talat Yai", "Phuket", "Phuket", "83000"),
+]
+
 _NL_ADDRESSES = [
-    ("Damrak 1", "", "Amsterdam", "Noord-Holland", "1012 LG"),
-    ("Coolsingel 40", "", "Rotterdam", "Zuid-Holland", "3011 AD"),
-    ("Spui 70", "", "Den Haag", "Zuid-Holland", "2511 BT"),
-    ("Stadhuisplein 1", "", "Eindhoven", "Noord-Brabant", "5611 EM"),
-    ("Oudegracht 167", "", "Utrecht", "Utrecht", "3511 AL"),
-    ("Grote Markt 1", "", "Groningen", "Groningen", "9712 HN"),
+    ("Eerste Jan Steenstraat", "84", "", "Amsterdam", "Noord-Holland", "1072 NP"),
+    ("Van Speijkstraat", "118", "", "Den Haag", "Zuid-Holland", "2518 GE"),
+    ("Nieuwe Binnenweg", "206", "", "Rotterdam", "Zuid-Holland", "3021 GN"),
+    ("Biltstraat", "56", "", "Utrecht", "Utrecht", "3572 BD"),
+    ("Ginnekenweg", "94", "", "Breda", "Noord-Brabant", "4818 JH"),
+    ("Oosterhamrikkade", "31", "", "Groningen", "Groningen", "9714 BB"),
 ]
 
 _US_CARD_PROFILES = [
@@ -452,7 +495,13 @@ _EU_CARD_PROFILES = [
 
 _ADDRESS_BOOK = {
     "US": _US_ADDRESSES,
+    "CA": _CA_ADDRESSES,
     "GB": _GB_ADDRESSES,
+    "ID": _ID_ADDRESSES,
+    "JP": _JP_ADDRESSES,
+    "MX": _MX_ADDRESSES,
+    "PH": _PH_ADDRESSES,
+    "TH": _TH_ADDRESSES,
     "NL": _NL_ADDRESSES,
 }
 
@@ -662,7 +711,7 @@ def generate_card(proxy_url: str | None = None, country: str | None = None) -> C
     # synthetic Luhn-valid candidates and are not a live success condition.
     del proxy_url
     selected_country = (country or "BR").upper()
-    if selected_country == "US":
+    if selected_country in {"US", "CA"}:
         profile = _weighted_profile(_US_CARD_PROFILES)
     elif selected_country in {"GB", "NL"}:
         profile = _weighted_profile(_EU_CARD_PROFILES)
@@ -725,7 +774,7 @@ def generate_password() -> str:
 def generate_user(phone: str, country: str | None = None) -> UserInfo:
     selected_country = (country or ("US" if phone.strip().lstrip("+").startswith("1") else "BR")).upper()
     profile = get_country_profile(selected_country)
-    if selected_country in {"US", "GB", "NL"}:
+    if selected_country != "BR":
         first = random.choice(_US_FIRST_NAMES)
         last = random.choice(_US_LAST_NAMES)
         phone_country_code = f"+{profile.phone_country_code}"
@@ -758,10 +807,15 @@ def generate_user(phone: str, country: str | None = None) -> UserInfo:
 def generate_address(proxy_url: str | None = None, country: str | None = None) -> BillingAddress:
     selected_country = (country or "BR").upper()
     if selected_country in _ADDRESS_BOOK:
-        street, line2, city, state, postal_code = random.choice(_ADDRESS_BOOK[selected_country])
+        entry = random.choice(_ADDRESS_BOOK[selected_country])
+        if len(entry) == 6:
+            street, house_number, line2, city, state, postal_code = entry
+        else:
+            street, line2, city, state, postal_code = entry
+            house_number = ""
         return BillingAddress(
             street=street,
-            house_number="",
+            house_number=house_number,
             district=line2,
             city=city,
             state=state,
