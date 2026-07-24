@@ -7,10 +7,12 @@ It must not call third-party wrapper services.
 import hashlib
 import json
 import os
+import queue
 import re
 import selectors
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -366,6 +368,24 @@ def run_paypal_protocol_payment(
     output_lines: list[str] = []
     suppress_result_log = False
     result_log_notice_sent = False
+
+    def handle_output_line(line: str) -> None:
+        nonlocal suppress_result_log, result_log_notice_sent
+        clean = sanitize_log_text(line.rstrip("\n"))
+        output_lines.append(clean)
+        stripped = clean.strip()
+        if stripped == "RESULT:":
+            suppress_result_log = True
+            if not result_log_notice_sent:
+                log("本地协议引擎已返回 RESULT JSON，详情见结果面板。")
+                result_log_notice_sent = True
+            return
+        if suppress_result_log and stripped.startswith("="):
+            suppress_result_log = False
+            return
+        if stripped and not suppress_result_log:
+            log(clean)
+
     proc = subprocess.Popen(
         cmd,
         cwd=str(cwd),
@@ -375,10 +395,27 @@ def run_paypal_protocol_payment(
         text=True,
         bufsize=1,
     )
+    selector: selectors.BaseSelector | None = None
+    line_queue: queue.Queue[str | None] | None = None
+    reader_thread: threading.Thread | None = None
     try:
         assert proc.stdout is not None
-        selector = selectors.DefaultSelector()
-        selector.register(proc.stdout, selectors.EVENT_READ)
+        if os.name == "nt":
+            line_queue = queue.Queue()
+
+            def _reader() -> None:
+                assert proc.stdout is not None
+                try:
+                    for queued_line in proc.stdout:
+                        line_queue.put(queued_line)
+                finally:
+                    line_queue.put(None)
+
+            reader_thread = threading.Thread(target=_reader, daemon=True)
+            reader_thread.start()
+        else:
+            selector = selectors.DefaultSelector()
+            selector.register(proc.stdout, selectors.EVENT_READ)
         while True:
             if cancel_check():
                 proc.terminate()
@@ -394,47 +431,48 @@ def run_paypal_protocol_payment(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 raise TimeoutError(f"PayPal 协议支付超时: {timeout}s")
-            events = selector.select(timeout=0.2)
-            for key, _mask in events:
-                line = key.fileobj.readline()
-                if line:
-                    clean = sanitize_log_text(line.rstrip("\n"))
-                    output_lines.append(clean)
-                    stripped = clean.strip()
-                    if stripped == "RESULT:":
-                        suppress_result_log = True
-                        if not result_log_notice_sent:
-                            log("本地协议引擎已返回 RESULT JSON，详情见结果面板。")
-                            result_log_notice_sent = True
+            if line_queue is not None:
+                lines: list[str | None] = []
+                try:
+                    lines.append(line_queue.get(timeout=0.2))
+                    while True:
+                        lines.append(line_queue.get_nowait())
+                except queue.Empty:
+                    pass
+                for line in lines:
+                    if line is None:
                         continue
-                    if suppress_result_log and stripped.startswith("="):
-                        suppress_result_log = False
-                        continue
-                    if stripped and not suppress_result_log:
-                        log(clean)
+                    handle_output_line(line)
+            else:
+                assert selector is not None
+                events = selector.select(timeout=0.2)
+                for key, _mask in events:
+                    line = key.fileobj.readline()
+                    if line:
+                        handle_output_line(line)
             if proc.poll() is not None:
-                for line in proc.stdout.readlines():
-                    clean = sanitize_log_text(line.rstrip("\n"))
-                    output_lines.append(clean)
-                    stripped = clean.strip()
-                    if stripped == "RESULT:":
-                        suppress_result_log = True
-                        if not result_log_notice_sent:
-                            log("本地协议引擎已返回 RESULT JSON，详情见结果面板。")
-                            result_log_notice_sent = True
-                        continue
-                    if suppress_result_log and stripped.startswith("="):
-                        suppress_result_log = False
-                        continue
-                    if stripped and not suppress_result_log:
-                        log(clean)
+                if line_queue is not None:
+                    if reader_thread is not None:
+                        reader_thread.join(timeout=1)
+                    while True:
+                        try:
+                            line = line_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if line is None:
+                            continue
+                        handle_output_line(line)
+                else:
+                    for line in proc.stdout.readlines():
+                        handle_output_line(line)
                 break
         rc = proc.wait(timeout=5)
     finally:
-        try:
-            selector.close()  # type: ignore[possibly-undefined]
-        except Exception:
-            pass
+        if selector is not None:
+            try:
+                selector.close()
+            except Exception:
+                pass
         if proc.poll() is None:
             proc.kill()
 

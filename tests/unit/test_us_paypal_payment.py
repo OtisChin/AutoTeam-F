@@ -220,6 +220,8 @@ def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_prox
     assert "-custom-region-GB-session-" in proxy_stages[0]
     assert "-custom-region-GB-session-" in proxy_stages[1]
     assert "-custom-region-JP-session-" in proxy_stages[2]
+    assert "-custom-region-GB-session-" in proxy_stages[3]
+    assert proxy_stages[3] != proxy_stages[1]
     assert result["fields"]["billing"]["country"] == "GB"
     assert result["fields"]["amount"] == "0"
     assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
