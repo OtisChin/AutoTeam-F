@@ -1132,6 +1132,17 @@ const oauthPhoneSmsForm = ref({
   oasis_sms_poll_interval_ms: '5000',
   oasis_sms_account_map_file: 'oasis-cdk-accounts.jsonl',
 })
+const rekberinajaLoading = ref(false)
+const rekberinajaSaving = ref(false)
+const rekberinajaStatus = ref({})
+const rekberinajaForm = ref({
+  enabled: false,
+  email: '',
+  password: '',
+  min_balance: 5000,
+  poll_timeout: 180,
+  invoice_email: '',
+})
 const roxyBrowserLoading = ref(false)
 const roxyBrowserSaving = ref(false)
 const roxyBrowserStatus = ref({})
@@ -1155,6 +1166,7 @@ const oauthPhoneSmsConfigured = computed(() => {
   if (oauthPhoneSmsForm.value.provider === 'oasis') return Number(oauthPhoneSmsStatus.value.oasis_sms_cdk_count || 0) > 0
   return Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
 })
+const rekberinajaConfigured = computed(() => Boolean(rekberinajaStatus.value.configured || rekberinajaForm.value.enabled))
 const roxyBrowserConfigured = computed(() => Boolean(roxyBrowserStatus.value.configured))
 const mailProviderFields = computed(() => mailProviderFieldGroups.value[mailProvider.value] || [])
 const mailProviderFieldTitle = computed(() =>
@@ -1512,6 +1524,49 @@ async function saveOAuthPhoneSmsConfig() {
     setMessage(e.message || '保存 OAuth 接码配置失败', 'error')
   } finally {
     oauthPhoneSmsSaving.value = false
+  }
+}
+
+async function loadRekberinajaConfig() {
+  rekberinajaLoading.value = true
+  try {
+    const cfg = await api.getRekberinajaConfig()
+    rekberinajaStatus.value = cfg || {}
+    rekberinajaForm.value = {
+      enabled: Boolean(cfg?.transfer_enabled ?? cfg?.enabled),
+      email: cfg?.email || '',
+      password: '',
+      min_balance: Number(cfg?.min_balance || 5000),
+      poll_timeout: Number(cfg?.poll_timeout || 180),
+      invoice_email: cfg?.invoice_email || '',
+    }
+  } catch (e) {
+    setMessage(e.message || '加载 Rekberinaja 配置失败', 'error')
+  } finally {
+    rekberinajaLoading.value = false
+  }
+}
+
+async function saveRekberinajaConfig() {
+  rekberinajaSaving.value = true
+  try {
+    const result = await api.saveRekberinajaConfig({
+      enabled: Boolean(rekberinajaForm.value.enabled),
+      transfer_enabled: Boolean(rekberinajaForm.value.enabled),
+      email: rekberinajaForm.value.email,
+      password: rekberinajaForm.value.password,
+      min_balance: rekberinajaForm.value.min_balance,
+      poll_timeout: rekberinajaForm.value.poll_timeout,
+      invoice_email: rekberinajaForm.value.invoice_email,
+    })
+    rekberinajaStatus.value = result || {}
+    rekberinajaForm.value.password = ''
+    setMessage(result.message || 'Rekberinaja 配置已保存')
+    await loadRekberinajaConfig()
+  } catch (e) {
+    setMessage(e.message || '保存 Rekberinaja 配置失败', 'error')
+  } finally {
+    rekberinajaSaving.value = false
   }
 }
 
