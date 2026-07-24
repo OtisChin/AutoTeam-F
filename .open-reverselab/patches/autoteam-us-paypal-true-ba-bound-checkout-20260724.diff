@@ -1,0 +1,285 @@
+diff --git a/src/autotoken/api_routes/us_paypal.py b/src/autotoken/api_routes/us_paypal.py
+index da97185..894519d 100644
+--- a/src/autotoken/api_routes/us_paypal.py
++++ b/src/autotoken/api_routes/us_paypal.py
+@@ -17,16 +17,16 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
+ from autotoken.api_routes import brazil_pix as pix_routes
+ from autotoken.core.paths import PROJECT_ROOT
+ from autotoken.payments.us_paypal import PaypalJobConfig, generate_paypal_trial
+-from autotoken.services.paypal_protocol_local import (
+-    PaypalProtocolRunConfig,
+-    extract_ba_token as extract_protocol_ba_token,
+-    first_proxy as first_protocol_proxy,
+-    run_paypal_protocol_payment,
+-    sanitize_log_text as sanitize_protocol_log_text,
+-)
++from autotoken.services import paypal_protocol_local as paypal_protocol_service
+ from autotoken.storage import accounts as account_store
+ from autotoken.storage.auth_session_store import delete_auth_session
+ 
++PaypalProtocolRunConfig = paypal_protocol_service.PaypalProtocolRunConfig
++extract_protocol_ba_token = paypal_protocol_service.extract_ba_token
++first_protocol_proxy = paypal_protocol_service.first_proxy
++run_paypal_protocol_payment = paypal_protocol_service.run_paypal_protocol_payment
++sanitize_protocol_log_text = paypal_protocol_service.sanitize_log_text
++
+ LINKS_FILE = PROJECT_ROOT / "data" / "us_paypal_links.json"
+ ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "us_paypal_account_status.json"
+ MAX_BATCH_CONCURRENCY = 10
+@@ -372,6 +372,8 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str,
+         "provider_redirect_url": str(fields.get("provider_redirect_url") or ""),
+         "stripe_redirect_url": str(fields.get("stripe_redirect_url") or ""),
+         "ba_token": str(fields.get("ba_token") or ""),
++        "link_source": str(fields.get("link_source") or ""),
++        "link_binding": str(fields.get("link_binding") or ""),
+         "chatgpt_checkout_url": str(fields.get("chatgpt_checkout_url") or ""),
+         "billing": billing,
+     }
+diff --git a/src/autotoken/payments/us_paypal.py b/src/autotoken/payments/us_paypal.py
+index 45fa943..bb5c369 100644
+--- a/src/autotoken/payments/us_paypal.py
++++ b/src/autotoken/payments/us_paypal.py
+@@ -545,6 +545,39 @@ def is_success(fields: dict[str, Any]) -> bool:
+     return link.startswith("https://pm-redirects.stripe.com/authorize/") or is_paypal_ba_approve_url(link)
+ 
+ 
++def finalize_bound_paypal_result(
++    stripe: requests.Session,
++    fields: dict[str, Any],
++    *,
++    link_source: str,
++) -> bool:
++    """Resolve and accept only a PayPal BA redirect produced by this checkout.
++
++    Stripe's standalone Express Billing Agreement endpoint can return a valid
++    looking ``BA-*`` approval URL without taking the current OpenAI checkout
++    session id. Those links are not sufficient evidence that the agreement is
++    bound to ChatGPT/OpenAI billing. The accepted path here is narrower: a
++    redirect must come from ``payment_pages/{cs_id}/confirm`` or from the
++    subsequent ChatGPT approve + Stripe poll for the same ``cs_id``.
++    """
++
++    candidate = str(fields.get("paypal_link") or fields.get("provider_redirect_url") or fields.get("stripe_redirect_url") or "").strip()
++    if not candidate:
++        return False
++    provider = resolve_external_redirect(stripe, candidate)
++    if not provider:
++        provider = candidate
++    if not is_paypal_ba_approve_url(provider):
++        return False
++    fields["provider_redirect_url"] = provider
++    fields["paypal_link"] = provider
++    token_match = re.search(r"BA-[A-Za-z0-9_-]+", provider)
++    fields["ba_token"] = token_match.group(0) if token_match else str(fields.get("ba_token") or "")
++    fields["link_source"] = link_source
++    fields["link_binding"] = "chatgpt_checkout_session"
++    return True
++
++
+ def resolve_external_redirect(stripe: requests.Session, redirect_url: str, max_hops: int = 5) -> str:
+     current = str(redirect_url or "").strip()
+     for _ in range(max(1, int(max_hops or 1))):
+@@ -739,10 +772,9 @@ def create_express_billing_agreement(
+ ) -> dict[str, str]:
+     """Create a PayPal Billing Agreement token through Stripe Express Checkout.
+ 
+-    Stripe's PayPal Payment Element path creates a Checkout-owned SetupIntent for
+-    zero-amount trials. In current OpenAI/Stripe sessions that SetupIntent can be
+-    provider-declined before a PayPal redirect is emitted. Express Checkout has a
+-    separate Billing Agreement creation endpoint that returns a BA token directly.
++    Diagnostic helper only. This endpoint does not take the current ChatGPT
++    ``checkout_session_id`` and therefore its BA token must not be persisted as a
++    ChatGPT/OpenAI billing link.
+     """
+ 
+     resp = stripe.post(
+@@ -769,6 +801,7 @@ def create_express_billing_agreement(
+         "stripe_redirect_url": "",
+         "ba_token": token,
+         "link_source": "stripe_express_billing_agreement",
++        "link_binding": "unbound_express",
+         "paypal_sdk_version": sdk_version,
+     }
+ 
+@@ -870,24 +903,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
+             raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
+         hosted = str(init_payload.get("stripe_hosted_url") or "")
+ 
+-        log("[5/6] Express Checkout Billing Agreement 提链")
+-        try:
+-            fields = create_express_billing_agreement(stripe, stripe_pk=pk, sdk_version="v5")
+-            fields["amount"] = amount
+-            fields["pre_promo_amount"] = pre_promo_amount
+-            fields["pre_promo_payment_method_types"] = pre_promo_pmt
+-            fields["pre_promo_ordered_payment_method_types"] = pre_promo_ordered
+-            fields["post_promo_payment_method_types"] = pmt
+-            fields["post_promo_ordered_payment_method_types"] = ordered
+-            fields["cs_id"] = cs_id
+-            fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
+-            fields["billing"] = billing
+-            log(f"Express BA 提链成功 source={fields.get('link_source')} ba_token={bool(fields.get('ba_token'))}")
+-            return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
+-        except Exception as exc:
+-            log(f"Express BA 提链失败，回退 inline confirm: {short(exc)}")
+-
+-        log("[5/6] inline confirm PayPal")
++        log("[5/6] inline confirm PayPal（只接受绑定当前 checkout session 的 BA redirect）")
+         confirm_payload = _confirm_paypal_inline(
+             stripe,
+             cs_id=cs_id,
+@@ -900,13 +916,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
+         fields = extract_paypal_result(confirm_payload, cs_id)
+         sub = find_submission_attempt(confirm_payload)
+         log(f"confirm submission={sub.get('state')} redirect={bool(fields.get('stripe_redirect_url') or fields.get('paypal_link'))}")
+-        if is_success(fields):
+-            provider = resolve_external_redirect(stripe, fields.get("paypal_link") or fields.get("stripe_redirect_url") or "")
+-            if provider and is_paypal_ba_approve_url(provider):
+-                fields["provider_redirect_url"] = provider
+-                fields["paypal_link"] = provider
+-                token_match = re.search(r"BA-[A-Za-z0-9_-]+", provider)
+-                fields["ba_token"] = token_match.group(0) if token_match else fields.get("ba_token", "")
++        if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_payment_pages_confirm"):
+             fields["amount"] = amount
+             fields["pre_promo_amount"] = pre_promo_amount
+             fields["pre_promo_payment_method_types"] = pre_promo_pmt
+@@ -926,13 +936,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
+             sub = find_submission_attempt(page_data)
+             err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
+             log(f"poll {i}/19 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
+-            if is_success(fields):
+-                provider = resolve_external_redirect(stripe, fields.get("paypal_link") or fields.get("stripe_redirect_url") or "")
+-                if provider and is_paypal_ba_approve_url(provider):
+-                    fields["provider_redirect_url"] = provider
+-                    fields["paypal_link"] = provider
+-                    token_match = re.search(r"BA-[A-Za-z0-9_-]+", provider)
+-                    fields["ba_token"] = token_match.group(0) if token_match else fields.get("ba_token", "")
++            if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_checkout_approve_poll"):
+                 fields["amount"] = amount
+                 fields["pre_promo_amount"] = pre_promo_amount
+                 fields["pre_promo_payment_method_types"] = pre_promo_pmt
+diff --git a/tests/unit/test_us_paypal_payment.py b/tests/unit/test_us_paypal_payment.py
+index b156375..820d5d3 100644
+--- a/tests/unit/test_us_paypal_payment.py
++++ b/tests/unit/test_us_paypal_payment.py
+@@ -61,6 +61,7 @@ def test_create_express_billing_agreement_returns_ba_url():
+     assert fields["provider_redirect_url"] == fields["paypal_link"]
+     assert fields["ba_token"] == "BA-EXPRESS"
+     assert fields["link_source"] == "stripe_express_billing_agreement"
++    assert fields["link_binding"] == "unbound_express"
+ 
+ 
+ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
+@@ -91,7 +92,7 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
+         captured["billing"] = kwargs["billing"]
+         return {"submission_attempt": {"state": "requires_approval"}}
+ 
+-    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("express unavailable")))
++    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
+     monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", fake_confirm)
+ 
+     def fake_approve(*args, **kwargs):
+@@ -112,6 +113,8 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
+     assert result["fields"]["paypal_link"] == "https://www.paypal.com/agreements/approve?ba_token=BA-TEST"
+     assert result["fields"]["ba_token"] == "BA-TEST"
+     assert result["fields"]["amount"] == "0"
++    assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
++    assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
+ 
+ 
+ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkeypatch):
+@@ -147,14 +150,11 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
+     monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
+-    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: {
+-        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO",
+-        "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO",
+-        "stripe_redirect_url": "",
+-        "ba_token": "BA-LATEPROMO",
+-        "link_source": "stripe_express_billing_agreement",
++    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
++    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
++        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO",
++        "submission_attempt": {"state": "requires_action"},
+     })
+-    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: pytest.fail("express BA should short-circuit inline confirm"))
+ 
+     result = us_paypal.generate_paypal_trial(
+         us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
+@@ -166,7 +166,8 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
+     assert result["fields"]["pre_promo_amount"] == "2120"
+     assert result["fields"]["post_promo_payment_method_types"] == ["card", "paypal"]
+     assert result["fields"]["ba_token"] == "BA-LATEPROMO"
+-    assert result["fields"]["link_source"] == "stripe_express_billing_agreement"
++    assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
++    assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
+ 
+ 
+ def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_proxy(monkeypatch):
+@@ -197,12 +198,9 @@ def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_prox
+     monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
+-    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: {
+-        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-GB",
+-        "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-GB",
+-        "stripe_redirect_url": "",
+-        "ba_token": "BA-GB",
+-        "link_source": "stripe_express_billing_agreement",
++    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
++    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
++        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-GB",
+     })
+ 
+     result = us_paypal.generate_paypal_trial(
+@@ -224,6 +222,7 @@ def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_prox
+     assert "-custom-region-JP-session-" in proxy_stages[2]
+     assert result["fields"]["billing"]["country"] == "GB"
+     assert result["fields"]["amount"] == "0"
++    assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
+ 
+ def test_generate_paypal_trial_stops_when_amount_is_not_zero(monkeypatch):
+     class FakeChatgptSession:
+@@ -406,12 +405,9 @@ def test_generate_paypal_trial_allows_promo_when_initial_stripe_has_no_paypal(mo
+     monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
+-    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: {
+-        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
+-        "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
+-        "stripe_redirect_url": "",
+-        "ba_token": "BA-LATEPAYPAL",
+-        "link_source": "stripe_express_billing_agreement",
++    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
++    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
++        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
+     })
+ 
+     result = us_paypal.generate_paypal_trial(
+@@ -420,3 +416,4 @@ def test_generate_paypal_trial_allows_promo_when_initial_stripe_has_no_paypal(mo
+ 
+     assert any(kind == "chatgpt_post" and url.endswith("/checkout/update") for kind, url, _payload in calls)
+     assert result["fields"]["ba_token"] == "BA-LATEPAYPAL"
++    assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
+diff --git a/tests/unit/test_us_paypal_routes.py b/tests/unit/test_us_paypal_routes.py
+index 1470584..1080902 100644
+--- a/tests/unit/test_us_paypal_routes.py
++++ b/tests/unit/test_us_paypal_routes.py
+@@ -69,6 +69,8 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
+                 "stripe_redirect_url": "https://pm-redirects.stripe.com/authorize/test",
+                 "ba_token": "BA-TEST",
+                 "cs_id": "cs_test",
++                "link_source": "stripe_payment_pages_confirm",
++                "link_binding": "chatgpt_checkout_session",
+                 "billing": {"country": "US"},
+             },
+             "billing": {"country": "US"},
+@@ -101,6 +103,8 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
+     assert captured["cfg"].apply_promo is False
+     saved = json.loads(us_paypal.LINKS_FILE.read_text(encoding="utf-8"))[0]
+     assert saved["ba_token"] == "BA-TEST"
++    assert saved["link_source"] == "stripe_payment_pages_confirm"
++    assert saved["link_binding"] == "chatgpt_checkout_session"
+     statuses = json.loads(us_paypal.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+     assert statuses[email]["status"] == "success"
+ 

@@ -69,6 +69,8 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
                 "stripe_redirect_url": "https://pm-redirects.stripe.com/authorize/test",
                 "ba_token": "BA-TEST",
                 "cs_id": "cs_test",
+                "link_source": "stripe_payment_pages_confirm",
+                "link_binding": "chatgpt_checkout_session",
                 "billing": {"country": "US"},
             },
             "billing": {"country": "US"},
@@ -101,6 +103,8 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
     assert captured["cfg"].apply_promo is False
     saved = json.loads(us_paypal.LINKS_FILE.read_text(encoding="utf-8"))[0]
     assert saved["ba_token"] == "BA-TEST"
+    assert saved["link_source"] == "stripe_payment_pages_confirm"
+    assert saved["link_binding"] == "chatgpt_checkout_session"
     statuses = json.loads(us_paypal.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses[email]["status"] == "success"
 

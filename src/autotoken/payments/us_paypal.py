@@ -545,6 +545,39 @@ def is_success(fields: dict[str, Any]) -> bool:
     return link.startswith("https://pm-redirects.stripe.com/authorize/") or is_paypal_ba_approve_url(link)
 
 
+def finalize_bound_paypal_result(
+    stripe: requests.Session,
+    fields: dict[str, Any],
+    *,
+    link_source: str,
+) -> bool:
+    """Resolve and accept only a PayPal BA redirect produced by this checkout.
+
+    Stripe's standalone Express Billing Agreement endpoint can return a valid
+    looking ``BA-*`` approval URL without taking the current OpenAI checkout
+    session id. Those links are not sufficient evidence that the agreement is
+    bound to ChatGPT/OpenAI billing. The accepted path here is narrower: a
+    redirect must come from ``payment_pages/{cs_id}/confirm`` or from the
+    subsequent ChatGPT approve + Stripe poll for the same ``cs_id``.
+    """
+
+    candidate = str(fields.get("paypal_link") or fields.get("provider_redirect_url") or fields.get("stripe_redirect_url") or "").strip()
+    if not candidate:
+        return False
+    provider = resolve_external_redirect(stripe, candidate)
+    if not provider:
+        provider = candidate
+    if not is_paypal_ba_approve_url(provider):
+        return False
+    fields["provider_redirect_url"] = provider
+    fields["paypal_link"] = provider
+    token_match = re.search(r"BA-[A-Za-z0-9_-]+", provider)
+    fields["ba_token"] = token_match.group(0) if token_match else str(fields.get("ba_token") or "")
+    fields["link_source"] = link_source
+    fields["link_binding"] = "chatgpt_checkout_session"
+    return True
+
+
 def resolve_external_redirect(stripe: requests.Session, redirect_url: str, max_hops: int = 5) -> str:
     current = str(redirect_url or "").strip()
     for _ in range(max(1, int(max_hops or 1))):
@@ -739,10 +772,9 @@ def create_express_billing_agreement(
 ) -> dict[str, str]:
     """Create a PayPal Billing Agreement token through Stripe Express Checkout.
 
-    Stripe's PayPal Payment Element path creates a Checkout-owned SetupIntent for
-    zero-amount trials. In current OpenAI/Stripe sessions that SetupIntent can be
-    provider-declined before a PayPal redirect is emitted. Express Checkout has a
-    separate Billing Agreement creation endpoint that returns a BA token directly.
+    Diagnostic helper only. This endpoint does not take the current ChatGPT
+    ``checkout_session_id`` and therefore its BA token must not be persisted as a
+    ChatGPT/OpenAI billing link.
     """
 
     resp = stripe.post(
@@ -769,6 +801,7 @@ def create_express_billing_agreement(
         "stripe_redirect_url": "",
         "ba_token": token,
         "link_source": "stripe_express_billing_agreement",
+        "link_binding": "unbound_express",
         "paypal_sdk_version": sdk_version,
     }
 
@@ -870,24 +903,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             raise RuntimeError(f"PayPal 金额必须为 0: {amount}")
         hosted = str(init_payload.get("stripe_hosted_url") or "")
 
-        log("[5/6] Express Checkout Billing Agreement 提链")
-        try:
-            fields = create_express_billing_agreement(stripe, stripe_pk=pk, sdk_version="v5")
-            fields["amount"] = amount
-            fields["pre_promo_amount"] = pre_promo_amount
-            fields["pre_promo_payment_method_types"] = pre_promo_pmt
-            fields["pre_promo_ordered_payment_method_types"] = pre_promo_ordered
-            fields["post_promo_payment_method_types"] = pmt
-            fields["post_promo_ordered_payment_method_types"] = ordered
-            fields["cs_id"] = cs_id
-            fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
-            fields["billing"] = billing
-            log(f"Express BA 提链成功 source={fields.get('link_source')} ba_token={bool(fields.get('ba_token'))}")
-            return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
-        except Exception as exc:
-            log(f"Express BA 提链失败，回退 inline confirm: {short(exc)}")
-
-        log("[5/6] inline confirm PayPal")
+        log("[5/6] inline confirm PayPal（只接受绑定当前 checkout session 的 BA redirect）")
         confirm_payload = _confirm_paypal_inline(
             stripe,
             cs_id=cs_id,
@@ -900,13 +916,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         fields = extract_paypal_result(confirm_payload, cs_id)
         sub = find_submission_attempt(confirm_payload)
         log(f"confirm submission={sub.get('state')} redirect={bool(fields.get('stripe_redirect_url') or fields.get('paypal_link'))}")
-        if is_success(fields):
-            provider = resolve_external_redirect(stripe, fields.get("paypal_link") or fields.get("stripe_redirect_url") or "")
-            if provider and is_paypal_ba_approve_url(provider):
-                fields["provider_redirect_url"] = provider
-                fields["paypal_link"] = provider
-                token_match = re.search(r"BA-[A-Za-z0-9_-]+", provider)
-                fields["ba_token"] = token_match.group(0) if token_match else fields.get("ba_token", "")
+        if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_payment_pages_confirm"):
             fields["amount"] = amount
             fields["pre_promo_amount"] = pre_promo_amount
             fields["pre_promo_payment_method_types"] = pre_promo_pmt
@@ -926,13 +936,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             sub = find_submission_attempt(page_data)
             err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
             log(f"poll {i}/19 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
-            if is_success(fields):
-                provider = resolve_external_redirect(stripe, fields.get("paypal_link") or fields.get("stripe_redirect_url") or "")
-                if provider and is_paypal_ba_approve_url(provider):
-                    fields["provider_redirect_url"] = provider
-                    fields["paypal_link"] = provider
-                    token_match = re.search(r"BA-[A-Za-z0-9_-]+", provider)
-                    fields["ba_token"] = token_match.group(0) if token_match else fields.get("ba_token", "")
+            if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_checkout_approve_poll"):
                 fields["amount"] = amount
                 fields["pre_promo_amount"] = pre_promo_amount
                 fields["pre_promo_payment_method_types"] = pre_promo_pmt

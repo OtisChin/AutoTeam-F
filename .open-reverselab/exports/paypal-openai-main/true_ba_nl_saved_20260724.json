@@ -1,0 +1,13 @@
+{
+  "event": "saved_success",
+  "email": "Em***@outlook.com",
+  "region": "NL",
+  "amount": "0",
+  "cs_id": "cs_live_a1lH4fCrmy7hNSpfSAByt9YnOnka5GvPNbZozj3rxyWokM91bZrdpIDlWD",
+  "link_source": "stripe_checkout_approve_poll",
+  "link_binding": "chatgpt_checkout_session",
+  "ba_token_present": true,
+  "paypal_link_masked": "https://www.paypal.com/agreements/approve?ba_token=BA-***",
+  "saved_record_id": "5b7dcd149a134419",
+  "saved_file": "/Users/mac/code/my/AutoTeam-F/data/us_paypal_links.json"
+}

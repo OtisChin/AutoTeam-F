@@ -61,6 +61,7 @@ def test_create_express_billing_agreement_returns_ba_url():
     assert fields["provider_redirect_url"] == fields["paypal_link"]
     assert fields["ba_token"] == "BA-EXPRESS"
     assert fields["link_source"] == "stripe_express_billing_agreement"
+    assert fields["link_binding"] == "unbound_express"
 
 
 def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
@@ -91,7 +92,7 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
         captured["billing"] = kwargs["billing"]
         return {"submission_attempt": {"state": "requires_approval"}}
 
-    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("express unavailable")))
+    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
     monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", fake_confirm)
 
     def fake_approve(*args, **kwargs):
@@ -112,6 +113,8 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     assert result["fields"]["paypal_link"] == "https://www.paypal.com/agreements/approve?ba_token=BA-TEST"
     assert result["fields"]["ba_token"] == "BA-TEST"
     assert result["fields"]["amount"] == "0"
+    assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
+    assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
 
 
 def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkeypatch):
@@ -147,14 +150,11 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
     monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
-    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: {
-        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO",
-        "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO",
-        "stripe_redirect_url": "",
-        "ba_token": "BA-LATEPROMO",
-        "link_source": "stripe_express_billing_agreement",
+    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
+        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPROMO",
+        "submission_attempt": {"state": "requires_action"},
     })
-    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: pytest.fail("express BA should short-circuit inline confirm"))
 
     result = us_paypal.generate_paypal_trial(
         us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"], apply_promo=True)
@@ -166,7 +166,8 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
     assert result["fields"]["pre_promo_amount"] == "2120"
     assert result["fields"]["post_promo_payment_method_types"] == ["card", "paypal"]
     assert result["fields"]["ba_token"] == "BA-LATEPROMO"
-    assert result["fields"]["link_source"] == "stripe_express_billing_agreement"
+    assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
+    assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
 
 
 def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_proxy(monkeypatch):
@@ -197,12 +198,9 @@ def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_prox
     monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
-    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: {
-        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-GB",
-        "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-GB",
-        "stripe_redirect_url": "",
-        "ba_token": "BA-GB",
-        "link_source": "stripe_express_billing_agreement",
+    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
+        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-GB",
     })
 
     result = us_paypal.generate_paypal_trial(
@@ -224,6 +222,7 @@ def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_prox
     assert "-custom-region-JP-session-" in proxy_stages[2]
     assert result["fields"]["billing"]["country"] == "GB"
     assert result["fields"]["amount"] == "0"
+    assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
 
 def test_generate_paypal_trial_stops_when_amount_is_not_zero(monkeypatch):
     class FakeChatgptSession:
@@ -406,12 +405,9 @@ def test_generate_paypal_trial_allows_promo_when_initial_stripe_has_no_paypal(mo
     monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
-    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: {
-        "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
-        "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
-        "stripe_redirect_url": "",
-        "ba_token": "BA-LATEPAYPAL",
-        "link_source": "stripe_express_billing_agreement",
+    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
+        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-LATEPAYPAL",
     })
 
     result = us_paypal.generate_paypal_trial(
@@ -420,3 +416,4 @@ def test_generate_paypal_trial_allows_promo_when_initial_stripe_has_no_paypal(mo
 
     assert any(kind == "chatgpt_post" and url.endswith("/checkout/update") for kind, url, _payload in calls)
     assert result["fields"]["ba_token"] == "BA-LATEPAYPAL"
+    assert result["fields"]["link_binding"] == "chatgpt_checkout_session"

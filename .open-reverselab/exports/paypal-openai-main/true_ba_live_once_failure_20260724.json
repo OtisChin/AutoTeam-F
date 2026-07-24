@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "date": "2026-07-24",
+  "target_country": "US",
+  "attempted_accounts": 5,
+  "observed": {
+    "chatgpt_checkout_http": 200,
+    "stripe_payment_methods_include_paypal": true,
+    "post_promo_amount": "0",
+    "inline_confirm_submission": "requires_approval",
+    "inline_confirm_redirect": false,
+    "chatgpt_approve_http": 200,
+    "chatgpt_approve_result": "approved",
+    "poll_terminal_state": "failed",
+    "poll_error": "checkout_approval_payment_failure_with_payment_error"
+  },
+  "true_ba_extracted": false,
+  "accepted_link_binding_required": "chatgpt_checkout_session",
+  "notes": "No BA link was persisted. Existing old data/us_paypal_links.json records predate the strict link_binding field and are not accepted as proof of OpenAI-bound BA."
+}

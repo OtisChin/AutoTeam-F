@@ -1,0 +1,13 @@
+{
+  "event": "success",
+  "region": "NL",
+  "email": "Em***@outlook.com",
+  "ok": true,
+  "true_ba": true,
+  "amount": "0",
+  "cs_id": "cs_live_a1NFIxO0igjgJEESoLHPvRH1ipp8zFoAuK30pTl6fAMhDYodjv84DoTnGJ",
+  "link_source": "stripe_checkout_approve_poll",
+  "link_binding": "chatgpt_checkout_session",
+  "ba_token_present": true,
+  "paypal_link_masked": "https://www.paypal.com/agreements/approve?ba_token=BA-***"
+}

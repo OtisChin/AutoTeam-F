@@ -17,15 +17,15 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from autotoken.api_routes import brazil_pix as pix_routes
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.us_paypal import PaypalJobConfig, generate_paypal_trial
-from autotoken.services.paypal_protocol_local import (
-    PaypalProtocolRunConfig,
-    extract_ba_token as extract_protocol_ba_token,
-    first_proxy as first_protocol_proxy,
-    run_paypal_protocol_payment,
-    sanitize_log_text as sanitize_protocol_log_text,
-)
+from autotoken.services import paypal_protocol_local as paypal_protocol_service
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
+
+PaypalProtocolRunConfig = paypal_protocol_service.PaypalProtocolRunConfig
+extract_protocol_ba_token = paypal_protocol_service.extract_ba_token
+first_protocol_proxy = paypal_protocol_service.first_proxy
+run_paypal_protocol_payment = paypal_protocol_service.run_paypal_protocol_payment
+sanitize_protocol_log_text = paypal_protocol_service.sanitize_log_text
 
 LINKS_FILE = PROJECT_ROOT / "data" / "us_paypal_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "us_paypal_account_status.json"
@@ -372,6 +372,8 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
         "provider_redirect_url": str(fields.get("provider_redirect_url") or ""),
         "stripe_redirect_url": str(fields.get("stripe_redirect_url") or ""),
         "ba_token": str(fields.get("ba_token") or ""),
+        "link_source": str(fields.get("link_source") or ""),
+        "link_binding": str(fields.get("link_binding") or ""),
         "chatgpt_checkout_url": str(fields.get("chatgpt_checkout_url") or ""),
         "billing": billing,
     }
