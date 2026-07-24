@@ -106,6 +106,10 @@
             <option value="success">已提链</option>
             <option value="paid">已支付</option>
           </select>
+          <select v-model="accountCountryFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+            <option value="all">全部国家</option>
+            <option v-for="country in accountCountryOptions" :key="country" :value="country">{{ country }}</option>
+          </select>
           <div class="flex flex-wrap gap-2">
             <button @click="selectAllFiltered" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button>
             <button @click="clearSelectedAccounts" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
@@ -121,6 +125,7 @@
               <tr>
                 <th class="w-10 px-3 py-2"></th>
                 <th class="px-3 py-2">邮箱</th>
+                <th class="px-3 py-2">国家</th>
                 <th class="px-3 py-2">有效期</th>
                 <th class="px-3 py-2">提链状态</th>
                 <th class="px-3 py-2 text-right">操作</th>
@@ -128,13 +133,14 @@
             </thead>
             <tbody class="divide-y divide-gray-900">
               <tr v-if="!filteredAccounts.length">
-                <td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td>
+                <td colspan="6" class="px-3 py-10 text-center text-gray-500">暂无账号</td>
               </tr>
               <tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50">
                 <td class="px-3 py-2">
                   <input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="busy || !accountSelectable(account)" @change="toggleAccount(account.email)" />
                 </td>
                 <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ account.email }}</td>
+                <td class="px-3 py-2 text-xs text-gray-400">{{ accountPaypalCountry(account) }}</td>
                 <td class="px-3 py-2 text-xs text-gray-500">{{ ttlText(account.ttl_seconds) }}</td>
                 <td class="px-3 py-2 text-xs">
                   <span class="inline-flex rounded-full border px-2 py-1 font-semibold" :class="accountStatusClass(account)" :title="accountStatusError(account)">
@@ -187,6 +193,7 @@
             </div>
             <div v-for="item in currentResult.successes || []" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="font-mono text-emerald-200">{{ item.email }}</div>
+              <div class="mt-1 text-[11px] text-emerald-300/80">国家：{{ linkCountry(item.link) }}</div>
               <div class="mt-2 flex flex-wrap gap-2">
                 <a :href="item.link?.paypal_link || item.link?.provider_redirect_url || item.link?.stripe_redirect_url || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!(item.link?.paypal_link || item.link?.provider_redirect_url || item.link?.stripe_redirect_url) ? 'pointer-events-none opacity-50' : ''">打开</a>
                 <button @click="copy(item.link?.paypal_link || item.link?.provider_redirect_url || item.link?.stripe_redirect_url)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100">复制链</button>
@@ -210,20 +217,25 @@
           <h3 class="mt-1 text-xl font-bold text-white">已提取 PayPal 链接</h3>
         </div>
         <div class="flex flex-wrap gap-2">
+          <select v-model="linkCountryFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs font-semibold text-gray-200 focus:border-blue-500 focus:outline-none">
+            <option value="all">全部国家</option>
+            <option v-for="country in linkCountryOptions" :key="country" :value="country">{{ country }}</option>
+          </select>
           <button @click="refreshLinks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800">刷新</button>
-          <button @click="exportLinks" :disabled="!links.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">导出 JSON</button>
+          <button @click="exportLinks" :disabled="!filteredLinks.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">导出 JSON</button>
           <button @click="deleteSelectedLinks" :disabled="!selectedLinkIds.size" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">删除选中</button>
           <button @click="clearLinks" :disabled="!links.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">清空</button>
         </div>
       </div>
 
       <div class="mt-4 max-h-[520px] overflow-auto rounded-xl border border-gray-800">
-        <table class="min-w-[1180px] w-full text-left text-sm">
+        <table class="min-w-[1260px] w-full text-left text-sm">
           <thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500">
             <tr>
               <th class="w-10 px-3 py-2"></th>
               <th class="px-3 py-2">时间</th>
               <th class="px-3 py-2">账号</th>
+              <th class="px-3 py-2">国家</th>
               <th class="px-3 py-2">金额</th>
               <th class="px-3 py-2">CS ID</th>
               <th class="px-3 py-2">操作</th>
@@ -231,13 +243,14 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-900">
-            <tr v-if="!links.length">
-              <td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
+            <tr v-if="!filteredLinks.length">
+              <td colspan="8" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
             </tr>
-            <tr v-for="link in links" :key="link.id" class="hover:bg-gray-900/50">
+            <tr v-for="link in filteredLinks" :key="link.id" class="hover:bg-gray-900/50">
               <td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td>
               <td class="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{{ link.created_at || link.createdAt || '-' }}</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || link.accountEmail || '-' }}</td>
+              <td class="px-3 py-2 text-xs"><span class="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-1 font-semibold text-cyan-200">{{ linkCountry(link) }}</span></td>
               <td class="px-3 py-2 text-xs text-gray-400">{{ link.amount || '-' }}</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-400">{{ link.cs_id || '-' }}</td>
               <td class="px-3 py-2">
@@ -279,20 +292,44 @@
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">国家</span>
                   <select v-model="protocolForm.country" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy">
                     <option value="US">US · 美国</option>
+                    <option value="GB">GB · 英国</option>
+                    <option value="NL">NL · 荷兰</option>
+                    <option value="BR">BR · 巴西</option>
                   </select>
-                  <span class="mt-1 block text-xs text-gray-500">当前仅开放已验证的 US no-FI 链路。</span>
+                  <span class="mt-1 block text-xs text-gray-500">US 使用 no-FI；GB/NL/BR 使用 signup-card/auto 兼容路径。</span>
                 </label>
+                <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">手机号接码</span>
+                  <select v-model="protocolForm.smsProvider" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy">
+                    <option value="sms_record">固定手机号 + SMS record URL</option>
+                    <option value="hero_sms">HeroSMS 自动取号</option>
+                    <option value="smsbower">SMSBower 自动取号</option>
+                  </select>
+                  <span class="mt-1 block text-xs text-gray-500">HeroSMS/SMSBower 使用 SMS-Activate 兼容 API；country 默认随国家联动。</span>
+                </label>
+              </div>
+
+              <template v-if="protocolForm.smsProvider === 'sms_record'">
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">手机号</span>
                   <input v-model.trim="protocolForm.phone" placeholder="+1835..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
                 </label>
-              </div>
 
-              <label class="block">
-                <span class="mb-1.5 block text-sm font-semibold text-gray-300">SMS record URL</span>
-                <input v-model.trim="protocolForm.smsRecordUrl" placeholder="https://sms.example/api/record?token=..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
-                <span class="mt-1 block text-xs text-gray-500">后端会轮询该 URL，并只使用本次请求后的新 OTP。</span>
-              </label>
+                <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">SMS record URL</span>
+                  <input v-model.trim="protocolForm.smsRecordUrl" placeholder="https://sms.example/api/record?token=..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                  <span class="mt-1 block text-xs text-gray-500">后端会轮询该 URL，并只使用本次请求后的新 OTP。</span>
+                </label>
+              </template>
+
+              <template v-else>
+                <div class="rounded-xl border border-indigo-500/20 bg-indigo-500/10 px-4 py-3 text-xs text-indigo-100">
+                  <div class="font-semibold">{{ protocolSmsProviderLabel }} 接码配置由后端固定读取。</div>
+                  <div class="mt-1 text-indigo-200/80">
+                    后端会按支付国家自动选择 Country ID：US=187、GB=16、NL=48、BR=73；Service 默认 ts，API Key / API 地址从环境变量读取。
+                  </div>
+                </div>
+              </template>
 
               <label class="block">
                 <span class="mb-1.5 block text-sm font-semibold text-gray-300">US 代理（可选）</span>
@@ -358,7 +395,7 @@
             <pre v-if="protocolResult" class="mt-4 max-h-72 overflow-auto rounded-xl border border-gray-800 bg-gray-950 p-4 text-xs text-gray-300">{{ JSON.stringify(protocolResult, null, 2) }}</pre>
             <div v-else class="flex min-h-36 flex-col items-center justify-center text-center text-gray-500">
               <strong class="text-gray-300">尚未提交协议支付</strong>
-              <span class="mt-1 text-sm">填入 BA、手机号、SMS URL 和代理后开始。</span>
+              <span class="mt-1 text-sm">选择 US/GB/NL/BR，填入 BA，并选择固定 SMS URL / HeroSMS / SMSBower 后开始。</span>
             </div>
           </section>
         </div>
@@ -377,6 +414,7 @@ const PROTOCOL_FORM_STORAGE_KEY = 'autotoken_us_paypal_protocol_form'
 const PROTOCOL_JOB_STORAGE_KEY = 'autotoken_us_paypal_protocol_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
+const PROTOCOL_COUNTRIES = new Set(['US', 'GB', 'NL', 'BR'])
 const paypalCountryOptions = [
   { value: 'US', label: 'US · 美国' },
   { value: 'GB', label: 'GB · 英国' },
@@ -385,6 +423,7 @@ const paypalCountryOptions = [
   { value: 'JP', label: 'JP · 日本' },
   { value: 'BR', label: 'BR · 巴西' },
   { value: 'VN', label: 'VN · 越南' },
+  { value: 'TH', label: 'TH · 泰国' },
   { value: 'DE', label: 'DE · 德国' },
   { value: 'FR', label: 'FR · 法国' },
   { value: 'IT', label: 'IT · 意大利' },
@@ -423,11 +462,23 @@ const logs = ref([])
 const currentResult = ref(null)
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
+const accountCountryFilter = ref('all')
+const linkCountryFilter = ref('all')
 const retryFailedEmailSet = ref(new Set())
 const deletingPaypalAccounts = ref(new Set())
 const logRef = ref(null)
 const activeTab = ref('links')
-const protocolForm = ref({ paypalLink: '', phone: '', smsRecordUrl: '', proxies: '', country: 'US', accountEmail: '', smsRecordWaitSeconds: 300, smsRecordPollSeconds: 3 })
+const protocolForm = ref({
+  paypalLink: '',
+  phone: '',
+  smsRecordUrl: '',
+  smsProvider: 'sms_record',
+  proxies: '',
+  country: 'US',
+  accountEmail: '',
+  smsRecordWaitSeconds: 300,
+  smsRecordPollSeconds: 3,
+})
 const protocolBusy = ref(false)
 const protocolCanceling = ref(false)
 const protocolJob = ref(null)
@@ -440,10 +491,34 @@ let componentUnmounted = false
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
 const retryFailedEmails = computed(() => Array.from(retryFailedEmailSet.value).filter(email => accounts.value.some(account => account.email === email && accountSelectable(account))))
+function linkCountry(link) {
+  const billing = link?.billing && typeof link.billing === 'object' ? link.billing : {}
+  return String(link?.country || link?.region || billing.country || '-').trim().toUpperCase() || '-'
+}
+
+function accountPaypalCountry(account) {
+  const status = accountStatus(account)
+  const country = String(account?.paypal_country || account?.paypalCountry || '').trim().toUpperCase()
+  return status === 'success' && country ? country : '-'
+}
+
+function countryMatchesFilter(country, filter) {
+  const normalized = String(country || '-').trim().toUpperCase() || '-'
+  const target = String(filter || 'all').trim().toUpperCase()
+  return target === 'ALL' || normalized === target
+}
+
 const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const status = accountStatus(account)
-  return (!accountFilter.value || String(account.email || '').toLowerCase().includes(accountFilter.value.toLowerCase())) && (accountStatusFilter.value === 'all' || status === accountStatusFilter.value)
+  return (
+    (!accountFilter.value || String(account.email || '').toLowerCase().includes(accountFilter.value.toLowerCase()))
+    && (accountStatusFilter.value === 'all' || status === accountStatusFilter.value)
+    && countryMatchesFilter(accountPaypalCountry(account), accountCountryFilter.value)
+  )
 }))
+const filteredLinks = computed(() => links.value.filter(link => countryMatchesFilter(linkCountry(link), linkCountryFilter.value)))
+const accountCountryOptions = computed(() => Array.from(new Set(accounts.value.map(accountPaypalCountry).filter(country => country && country !== '-'))).sort())
+const linkCountryOptions = computed(() => Array.from(new Set(links.value.map(linkCountry).filter(country => country && country !== '-'))).sort())
 const progressText = computed(() => {
   const job = currentJob.value || {}
   const completed = Number(job.completed || 0)
@@ -490,6 +565,7 @@ const protocolBadgeClass = computed(() => {
 })
 const anyBusy = computed(() => busy.value || protocolBusy.value)
 const activeStatusText = computed(() => activeTab.value === 'protocol' && protocolBusy.value ? protocolBadgeText.value : progressText.value)
+const protocolSmsProviderLabel = computed(() => protocolForm.value.smsProvider === 'smsbower' ? 'SMSBower' : 'HeroSMS')
 
 function setStatus(message, error = false) { statusText.value = message; statusError.value = error }
 function cleanText(value) { return String(value || '未知错误').replace(/\s+/g, ' ').trim() }
@@ -725,7 +801,7 @@ async function clearLinks() {
 }
 
 function exportLinks() {
-  const blob = new Blob([JSON.stringify(links.value, null, 2)], { type: 'application/json' })
+  const blob = new Blob([JSON.stringify(filteredLinks.value, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
@@ -756,10 +832,14 @@ function saveProtocolForm(options = {}) {
 }
 function validateProtocolPayment() {
   protocolForm.value.country = String(protocolForm.value.country || 'US').trim().toUpperCase()
+  protocolForm.value.smsProvider = String(protocolForm.value.smsProvider || 'sms_record').trim().toLowerCase().replace(/-/g, '_')
+  if (!['sms_record', 'hero_sms', 'smsbower'].includes(protocolForm.value.smsProvider)) protocolForm.value.smsProvider = 'sms_record'
   if (!String(protocolForm.value.paypalLink || '').trim()) { setProtocolStatus('请填写 BA 链接或 BA token。', true); return false }
-  if (protocolForm.value.country !== 'US') { setProtocolStatus('当前协议支付仅开放 US。', true); return false }
-  if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写手机号。', true); return false }
-  if (!String(protocolForm.value.smsRecordUrl || '').trim()) { setProtocolStatus('请填写 SMS record URL。', true); return false }
+  if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付仅开放 US/GB/NL/BR。', true); return false }
+  if (protocolForm.value.smsProvider === 'sms_record') {
+    if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写手机号。', true); return false }
+    if (!String(protocolForm.value.smsRecordUrl || '').trim()) { setProtocolStatus('请填写 SMS record URL。', true); return false }
+  }
   protocolForm.value.smsRecordWaitSeconds = Math.max(60, Math.min(900, Number(protocolForm.value.smsRecordWaitSeconds || 300)))
   protocolForm.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(protocolForm.value.smsRecordPollSeconds || 3)))
   return true
@@ -780,6 +860,7 @@ async function startProtocolPayment() {
       paypalLink: protocolForm.value.paypalLink,
       phone: protocolForm.value.phone,
       smsRecordUrl: protocolForm.value.smsRecordUrl,
+      smsProvider: protocolForm.value.smsProvider,
       proxies: protocolForm.value.proxies,
       country: protocolForm.value.country,
       accountEmail: protocolForm.value.accountEmail,

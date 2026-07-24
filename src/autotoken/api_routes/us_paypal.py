@@ -117,6 +117,7 @@ class UsPaypalProtocolStartRequest(BaseModel):
     paypal_link: str = Field("", alias="paypalLink")
     phone: str = ""
     sms_record_url: str = Field("", alias="smsRecordUrl")
+    sms_provider: str = Field("sms_record", alias="smsProvider")
     proxy_url: str = Field("", alias="proxyUrl")
     proxies: str = ""
     country: str = "US"
@@ -134,6 +135,12 @@ class UsPaypalProtocolStartRequest(BaseModel):
         if not re.fullmatch(r"[A-Z]{2}", text):
             return "US"
         return text
+
+    @field_validator("sms_provider", mode="before")
+    @classmethod
+    def _clean_sms_provider(cls, value: Any) -> str:
+        normalized = paypal_protocol_service.normalize_sms_provider(str(value or "sms_record"))
+        return normalized if normalized in {"sms_record", "hero_sms", "smsbower"} else "sms_record"
 
     @field_validator("timeout_seconds", mode="before")
     @classmethod
@@ -185,7 +192,7 @@ def _write_json(path: Path, data: Any) -> None:
 def _load_links() -> list[dict[str, Any]]:
     with LINKS_LOCK:
         data = _read_json(LINKS_FILE, [])
-        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        return [_normalize_link_record(item) for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
 
 def _save_links(items: list[dict[str, Any]]) -> None:
@@ -249,10 +256,15 @@ def _paypal_paid_emails() -> set[str]:
 def _iter_auth_accounts_with_paypal_status() -> list[dict[str, Any]]:
     statuses = _load_account_statuses()
     paid_emails = _paypal_paid_emails()
-    linked_emails = {
-        str(item.get("account_email") or "").strip().lower()
+    links_by_email = {
+        str(item.get("account_email") or "").strip().lower(): item
         for item in _load_links()
         if str(item.get("account_email") or "").strip()
+    }
+    linked_emails = {
+        email
+        for email, item in links_by_email.items()
+        if str(item.get("paypal_link") or item.get("provider_redirect_url") or item.get("stripe_redirect_url") or "").strip()
     }
     try:
         dashboard_by_email = {
@@ -277,12 +289,15 @@ def _iter_auth_accounts_with_paypal_status() -> list[dict[str, Any]]:
         status = str(item.get("status") or PAYPAL_STATUS_PENDING)
         if status not in PAYPAL_STATUS_TEXT:
             status = PAYPAL_STATUS_PENDING
+        link_item = links_by_email.get(key) if status == PAYPAL_STATUS_SUCCESS else {}
+        paypal_country = _link_country_from_item(link_item) if isinstance(link_item, dict) else ""
         rows.append({
             field: (email if field == "email" else dashboard_account.get(field, account.get(field))) for field in ACCOUNT_UI_FIELDS
         } | {
             "paypal_status": status,
             "paypal_status_text": str(item.get("status_text") or PAYPAL_STATUS_TEXT[status]),
             "paypal_error": str(item.get("error") or ""),
+            "paypal_country": paypal_country,
             "paypal_status_updated_at": item.get("updated_at"),
             "paypal_selectable": status != PAYPAL_STATUS_PAID,
         })
@@ -335,6 +350,18 @@ def _normalize_link(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+def _link_country_from_item(item: dict[str, Any]) -> str:
+    billing = item.get("billing") if isinstance(item.get("billing"), dict) else {}
+    country = str(item.get("country") or item.get("region") or billing.get("country") or "").strip().upper()
+    return country if re.fullmatch(r"[A-Z]{2}", country) else ""
+
+
+def _normalize_link_record(item: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(item)
+    normalized["country"] = _link_country_from_item(normalized)
+    return normalized
+
+
 def _dedupe_link_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen_accounts: set[str] = set()
     seen_links: set[str] = set()
@@ -361,11 +388,12 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
     fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
     billing = fields.get("billing") if isinstance(fields.get("billing"), dict) else result.get("billing") or {}
     paypal_link = str(fields.get("paypal_link") or fields.get("provider_redirect_url") or fields.get("stripe_redirect_url") or "")
-    return {
+    record = {
         "id": uuid.uuid4().hex[:16],
         "job_id": job_id,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "account_email": account_email,
+        "country": _link_country_from_item({"country": fields.get("country") or result.get("country"), "billing": billing}),
         "amount": str(fields.get("amount") or result.get("amount") or ""),
         "cs_id": str(fields.get("cs_id") or ""),
         "paypal_link": paypal_link,
@@ -377,6 +405,7 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
         "chatgpt_checkout_url": str(fields.get("chatgpt_checkout_url") or ""),
         "billing": billing,
     }
+    return _normalize_link_record(record)
 
 
 def _append_link(record: dict[str, Any]) -> None:
@@ -716,12 +745,14 @@ def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) ->
         if not ba_token:
             raise RuntimeError("缺少有效 PayPal BA token/link")
         proxy_url = first_protocol_proxy(req.proxy_url or req.proxies)
+        sms_provider = paypal_protocol_service.normalize_sms_provider(req.sms_provider)
         phone = str(req.phone or "").strip()
-        if not phone:
-            raise RuntimeError("请填写 PayPal 注册手机号")
         sms_record_url = str(req.sms_record_url or "").strip()
-        if not sms_record_url:
-            raise RuntimeError("请填写 SMS record URL")
+        if sms_provider == "sms_record":
+            if not phone:
+                raise RuntimeError("请填写 PayPal 注册手机号")
+            if not sms_record_url:
+                raise RuntimeError("请填写 SMS record URL")
         account_email = str(req.account_email or "").strip()
         with JOBS_LOCK:
             if job_id not in JOBS:
@@ -733,6 +764,17 @@ def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) ->
             ba_token=ba_token,
             phone=phone,
             sms_record_url=sms_record_url,
+            sms_provider=sms_provider,
+            # Provider API key/base/service/country/price are fixed backend
+            # configuration.  Keep request fields only for backward-compatible
+            # parsing; do not trust or forward web payload overrides.
+            sms_api_key="",
+            sms_base_url="",
+            sms_service="",
+            sms_country="",
+            sms_min_price="",
+            sms_max_price="",
+            sms_preferred_price="",
             proxy_url=proxy_url,
             country=req.country,
             timeout_seconds=req.timeout_seconds,
@@ -827,12 +869,16 @@ def create_us_paypal_router() -> APIRouter:
     def start_us_paypal_protocol(req: UsPaypalProtocolStartRequest) -> dict[str, str]:
         if not extract_protocol_ba_token(req.ba_token or req.paypal_link):
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写有效 BA 链接或 BA token"})
-        if not str(req.phone or "").strip():
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写手机号"})
-        if not str(req.sms_record_url or "").strip():
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写 SMS record URL"})
-        if req.country != "US":
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "当前协议支付仅开放 US"})
+        sms_provider = paypal_protocol_service.normalize_sms_provider(req.sms_provider)
+        if sms_provider == "sms_record":
+            if not str(req.phone or "").strip():
+                raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写手机号"})
+            if not str(req.sms_record_url or "").strip():
+                raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请填写 SMS record URL"})
+        elif sms_provider not in {"hero_sms", "smsbower"}:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "不支持的 PayPal 手机接码平台"})
+        if req.country not in paypal_protocol_service.SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "当前协议支付仅开放 US/GB/NL/BR"})
         job_id = _new_protocol_job(req.account_email)
         threading.Thread(target=_run_protocol_payment_job, args=(job_id, req), daemon=True).start()
         return {"job_id": job_id}

@@ -45,18 +45,18 @@ def test_protocol_service_sanitizes_sensitive_values():
     assert "BA-1234567890" not in text
 
 
-def test_build_protocol_command_rejects_non_us(tmp_path, monkeypatch):
+def test_build_protocol_command_rejects_unsupported_country(tmp_path, monkeypatch):
     engine = tmp_path / "engine"
     engine.mkdir()
     (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
 
-    with pytest.raises(ValueError, match="仅开放 US"):
+    with pytest.raises(ValueError, match="US/GB/NL/BR"):
         service.build_protocol_command(service.PaypalProtocolRunConfig(
             ba_token="BA-1CMD123",
             phone="+18350000000",
             sms_record_url="https://sms.example/api?token=secret",
-            country="BR",
+            country="JP",
         ))
 
 
@@ -76,6 +76,94 @@ def test_build_protocol_command_passes_sms_wait_and_poll(tmp_path, monkeypatch):
 
     assert cmd[cmd.index("--sms-record-wait") + 1] == "600"
     assert cmd[cmd.index("--sms-record-poll") + 1] == "2.0"
+
+
+def test_build_protocol_command_supports_herosms_without_fixed_phone(tmp_path, monkeypatch):
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
+
+    cmd, env, _cwd = service.build_protocol_command(service.PaypalProtocolRunConfig(
+        ba_token="BA-1HERO123",
+        sms_provider="hero-sms",
+        sms_api_key="hero-secret",
+        sms_service="ts",
+        sms_country="48",
+        sms_max_price="0.20",
+    ))
+
+    assert "--phone" not in cmd
+    assert "--sms-record-url" not in cmd
+    assert cmd[cmd.index("--sms-provider") + 1] == "hero-sms"
+    assert cmd[cmd.index("--sms-service") + 1] == "ts"
+    assert cmd[cmd.index("--sms-country") + 1] == "187"
+    assert "--sms-max-price" not in cmd
+    assert env["PAYPAL_SMS_PROVIDER"] == "hero_sms"
+    assert "PAYPAL_HERO_SMS_API_KEY" not in env or env["PAYPAL_HERO_SMS_API_KEY"] != "hero-secret"
+    assert env["PAYPAL_SMS_COUNTRY"] == "187"
+    assert "hero-secret" not in service.sanitize_log_text(" ".join(cmd))
+
+
+def test_build_protocol_command_supports_gb_with_auto_path_and_sms_default(tmp_path, monkeypatch):
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
+
+    cmd, env, _cwd = service.build_protocol_command(service.PaypalProtocolRunConfig(
+        ba_token="BA-1GBCMD123",
+        sms_provider="smsbower",
+        country="GB",
+    ))
+
+    assert cmd[cmd.index("--country") + 1] == "GB"
+    assert cmd[cmd.index("--approval-path") + 1] == "auto"
+    assert cmd[cmd.index("--sms-country") + 1] == "16"
+    assert env["PAYPAL_COUNTRY"] == "GB"
+    assert env["PAYPAL_APPROVAL_PATH"] == "auto"
+    assert env["PAYPAL_SMS_COUNTRY"] == "16"
+
+
+def test_build_protocol_command_uses_provider_country_map_not_frontend_or_global(tmp_path, monkeypatch):
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
+    monkeypatch.setenv("PAYPAL_SMS_COUNTRY", "999")
+    monkeypatch.setenv("PAYPAL_HERO_SMS_COUNTRY_NL", "148")
+
+    cmd, env, _cwd = service.build_protocol_command(service.PaypalProtocolRunConfig(
+        ba_token="BA-1NLCMD123",
+        sms_provider="hero_sms",
+        sms_country="777",
+        country="NL",
+    ))
+
+    assert cmd[cmd.index("--sms-country") + 1] == "148"
+    assert env["PAYPAL_SMS_COUNTRY"] == "148"
+
+
+def test_build_protocol_command_reuses_settings_smsbower_key_fallback(tmp_path, monkeypatch):
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
+    monkeypatch.delenv("PAYPAL_SMSBOWER_API_KEY", raising=False)
+    monkeypatch.delenv("SMSBOWER_API_KEY", raising=False)
+    monkeypatch.delenv("OAUTH_SMSBOWER_API_KEY", raising=False)
+    monkeypatch.setenv("GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY", "settings-smsbower-key")
+    monkeypatch.setenv("GOPAY_AUTO_SIGNUP_SMSBOWER_BASE_URL", "https://settings.example/stubs/handler_api.php")
+
+    cmd, env, _cwd = service.build_protocol_command(service.PaypalProtocolRunConfig(
+        ba_token="BA-1SMSBOWERSETTINGS123",
+        sms_provider="smsbower",
+        country="GB",
+    ))
+
+    assert cmd[cmd.index("--sms-country") + 1] == "16"
+    assert env["PAYPAL_SMSBOWER_API_KEY"] == "settings-smsbower-key"
+    assert env["PAYPAL_SMSBOWER_BASE_URL"] == "https://settings.example/stubs/handler_api.php"
 
 
 def test_protocol_service_classifies_oas_error(tmp_path, monkeypatch):

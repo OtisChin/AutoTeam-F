@@ -5,19 +5,19 @@ Usage:
     python main.py --ba-token BA-xxx --phone +5591980133818
 """
 import argparse
+import datetime as _dt
 import importlib
 import json
 import os
 import re
-import time
-import datetime as _dt
-import urllib.request
 import sys
+import time
+import urllib.request
 from pathlib import Path
-from loguru import logger
 
-from paypal.models import generate_user, generate_card, generate_address
+from loguru import logger
 from paypal.flow import PayPalFlow
+from paypal.models import generate_address, generate_card, generate_user
 from paypal.proxy import build_proxy_config
 from paypal.session import sanitize_for_log
 from paypal.traffic_recorder import close_global_traffic_recorder, reset_global_traffic_recorder
@@ -28,14 +28,22 @@ def _smsbower_module():
 
 
 def _smsbower_enabled() -> bool:
-    return bool(getattr(_smsbower_module(), "smsbower_enabled")())
+    return bool(_smsbower_module().smsbower_enabled())
 
 
 def _build_smsbower_provider(enabled: bool, api_key: str | None):
-    return getattr(_smsbower_module(), "build_smsbower_provider")(
+    return _smsbower_module().build_smsbower_provider(
         enabled=enabled,
         api_key=api_key,
     )
+
+
+def _build_sms_activate_provider(**kwargs):
+    return _smsbower_module().build_sms_activate_provider(**kwargs)
+
+
+def _normalize_paypal_sms_provider(value: object = "") -> str:
+    return _smsbower_module().normalize_paypal_sms_provider(value)
 
 
 
@@ -162,8 +170,8 @@ def main():
     parser.add_argument(
         "--country",
         default=os.getenv("PAYPAL_COUNTRY", "BR"),
-        choices=["BR", "US", "br", "us"],
-        help="Buyer/onboarding country. Default: BR; use US for United States PayPal.",
+        choices=["BR", "US", "GB", "NL", "br", "us", "gb", "nl"],
+        help="Buyer/onboarding country. Default: BR; use US/GB/NL/BR for PayPal.",
     )
     parser.add_argument(
         "--smsbower",
@@ -174,6 +182,46 @@ def main():
         "--smsbower-api-key",
         default=None,
         help="SMSBower API key. Defaults to SMSBOWER_API_KEY or PAYPAL_SMSBOWER_API_KEY from .env/environment",
+    )
+    parser.add_argument(
+        "--sms-provider",
+        default=os.getenv("PAYPAL_SMS_PROVIDER", ""),
+        help="SMS OTP provider: sms-record, hero-sms, smsbower, or empty/manual.",
+    )
+    parser.add_argument(
+        "--sms-api-key",
+        default=None,
+        help="HeroSMS/SMSBower API key. Prefer environment variables in web runner to keep logs clean.",
+    )
+    parser.add_argument(
+        "--sms-base-url",
+        default=os.getenv("PAYPAL_SMS_BASE_URL", ""),
+        help="SMS-Activate compatible API base URL.",
+    )
+    parser.add_argument(
+        "--sms-service",
+        default=os.getenv("PAYPAL_SMS_SERVICE", ""),
+        help="SMS provider service code. Default: ts (PayPal).",
+    )
+    parser.add_argument(
+        "--sms-country",
+        default=os.getenv("PAYPAL_SMS_COUNTRY", ""),
+        help="SMS provider country ID. Default for US: 187.",
+    )
+    parser.add_argument(
+        "--sms-min-price",
+        default=os.getenv("PAYPAL_SMS_MIN_PRICE", ""),
+        help="Optional SMS provider minPrice.",
+    )
+    parser.add_argument(
+        "--sms-max-price",
+        default=os.getenv("PAYPAL_SMS_MAX_PRICE", ""),
+        help="Optional SMS provider maxPrice.",
+    )
+    parser.add_argument(
+        "--sms-preferred-price",
+        default=os.getenv("PAYPAL_SMS_PREFERRED_PRICE", ""),
+        help="Optional SMS provider preferred/fixed price.",
     )
     parser.add_argument(
         "--debug", action="store_true",
@@ -308,14 +356,31 @@ def main():
         proxy_url=args.proxy_url,
     )
     sms_provider = None
-    if args.sms_record_url:
+    normalized_sms_provider = _normalize_paypal_sms_provider(args.sms_provider)
+    if args.sms_record_url or normalized_sms_provider == "sms_record":
         if not args.phone:
             parser.error("--phone is required with --sms-record-url")
+        if not args.sms_record_url:
+            parser.error("--sms-record-url is required when --sms-provider=sms-record")
         sms_provider = SmsRecordOtpProvider(
             args.phone,
             args.sms_record_url,
             wait_seconds=args.sms_record_wait,
             poll_interval=args.sms_record_poll,
+        )
+    elif normalized_sms_provider in {"hero_sms", "smsbower"}:
+        sms_provider = _build_sms_activate_provider(
+            provider=normalized_sms_provider,
+            api_key=args.sms_api_key or (args.smsbower_api_key if normalized_sms_provider == "smsbower" else None),
+            base_url=args.sms_base_url,
+            service=args.sms_service,
+            country=args.sms_country,
+            paypal_country=args.country,
+            wait_seconds=args.sms_record_wait,
+            poll_interval_seconds=args.sms_record_poll,
+            min_price=args.sms_min_price,
+            max_price=args.sms_max_price,
+            preferred_price=args.sms_preferred_price,
         )
     else:
         sms_provider_requested = bool(args.smsbower or args.smsbower_api_key or _smsbower_enabled())
@@ -327,7 +392,13 @@ def main():
         parser.error("--phone is required unless --smsbower, --sms-record-url, or SMSBOWER_ENABLED=1 is set")
 
     country = str(args.country or "BR").upper()
-    default_phone = "+12025550123" if country == "US" else "+5500000000000"
+    default_phones = {
+        "US": "+12025550123",
+        "GB": "+447700900123",
+        "NL": "+31612345678",
+        "BR": "+5500000000000",
+    }
+    default_phone = default_phones.get(country, "+5500000000000")
     user = generate_user(args.phone or default_phone, country=country)
     card = generate_card(proxy_url=proxy_config.url, country=country)
     address = generate_address(proxy_url=proxy_config.url, country=country)

@@ -324,6 +324,15 @@ def test_promo_currency_for_region_supports_zero_trial_regions():
     assert us_paypal.promo_currency_for_region("US") == "USD"
 
 
+def test_thailand_checkout_country_uses_thb_and_th_billing_profile():
+    billing = us_paypal.paypal_billing(country="TH")
+
+    assert us_paypal.paypal_currency_for_country("TH") == "THB"
+    assert billing["country"] == "TH"
+    assert billing["city"] == "Bangkok"
+    assert billing["postal_code"] == "10110"
+
+
 def test_build_paypal_dynamic_proxy_aligns_711_region_to_us():
     raw = "global.rotgb.711proxy.com:10000:USER-zone-custom-region-IN-session-abc123-sessTime-120:pass"
 

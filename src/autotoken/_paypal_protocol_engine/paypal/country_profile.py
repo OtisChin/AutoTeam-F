@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 
 @dataclass(frozen=True)
 class CountryProfile:
@@ -19,6 +21,8 @@ class CountryProfile:
 
 COUNTRY_PROFILES: dict[str, CountryProfile] = {
     "US": CountryProfile("US", "en_US", "en-US", "1", "America/Los_Angeles", 420, (), False, False),
+    "GB": CountryProfile("GB", "en_GB", "en-GB", "44", "Europe/London", -60, (), False, False),
+    "NL": CountryProfile("NL", "nl_NL", "nl-NL", "31", "Europe/Amsterdam", -120, (), False, False),
     "BR": CountryProfile("BR", "pt_BR", "pt-BR", "55", "America/Sao_Paulo", 180, ("DateOfBirth", "IdentityDocumentType", "IdentityDocumentNumber"), True, True),
 }
 

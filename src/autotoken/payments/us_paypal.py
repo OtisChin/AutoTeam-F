@@ -52,6 +52,7 @@ PAYPAL_COUNTRY_CURRENCIES = {
     "JP": "JPY",
     "BR": "BRL",
     "VN": "VND",
+    "TH": "THB",
     "DE": "EUR",
     "FR": "EUR",
     "IT": "EUR",
@@ -77,6 +78,7 @@ PAYPAL_COUNTRY_BILLING_PRESETS = {
     "JP": ("Yuki Tanaka", "1-1 Chiyoda", "Tokyo", "", "100-0001"),
     "BR": ("Lucas Silva", "Rua da Consolacao 787", "Sao Paulo", "SP", "01301-000"),
     "VN": ("Minh Nguyen", "1 Dong Khoi", "Ho Chi Minh City", "", "700000"),
+    "TH": ("Niran Chai", "1 Sukhumvit Road", "Bangkok", "", "10110"),
     "DE": ("Lukas Weber", "Unter den Linden 1", "Berlin", "", "10117"),
     "FR": ("Emma Martin", "10 Rue de Rivoli", "Paris", "", "75004"),
     "IT": ("Marco Rossi", "Via del Corso 1", "Rome", "", "00186"),
@@ -879,8 +881,12 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
                 )
                 log(f"promo update success={bool(update_payload.get('success', True))} keys={sorted(update_payload.keys())[:6]}")
 
-            log(f"[4/6] {checkout_region} Stripe re-init 验证 0 元 + PayPal")
-            init_payload = stripe_init(stripe, cs_id, pk, ctx)
+            dyn4, sid4 = build_paypal_dynamic_proxy(cfg, 3, checkout_region)
+            log(f"[4/6] {checkout_region} Stripe re-init 验证 0 元 + PayPal sid={sid4}")
+            with pix_proxy_context(cfg.local_proxy, dyn4, log) as chain4:
+                stripe_proxy = chain4.url
+                stripe = build_stripe_session(stripe_proxy)
+                init_payload = stripe_init(stripe, cs_id, pk, ctx)
             amount = amount_info(init_payload)
             pmt, ordered, has_paypal = pmt_info(init_payload)
             log(f"后注入金额={amount} 支付方式={pmt} ordered={ordered} has_paypal={has_paypal}")

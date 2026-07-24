@@ -103,10 +103,73 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
     assert captured["cfg"].apply_promo is False
     saved = json.loads(us_paypal.LINKS_FILE.read_text(encoding="utf-8"))[0]
     assert saved["ba_token"] == "BA-TEST"
+    assert saved["country"] == "US"
     assert saved["link_source"] == "stripe_payment_pages_confirm"
     assert saved["link_binding"] == "chatgpt_checkout_session"
     statuses = json.loads(us_paypal.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses[email]["status"] == "success"
+
+
+def test_load_links_backfills_country_from_billing_for_old_records():
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "old",
+                    "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-OLD",
+                    "billing": {"country": "nl"},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    links = us_paypal._load_links()
+
+    assert links[0]["country"] == "NL"
+
+
+def test_accounts_show_country_only_for_successful_extracted_links(monkeypatch):
+    app = _app()
+    us_paypal.LINKS_FILE.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "success-link",
+                    "account_email": "success@example.com",
+                    "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-SUCCESS",
+                    "country": "NL",
+                },
+                {
+                    "id": "failed-link",
+                    "account_email": "failed@example.com",
+                    "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-FAILED",
+                    "country": "US",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    us_paypal.ACCOUNT_STATUS_FILE.write_text(
+        json.dumps({"failed@example.com": {"status": "failed", "error": "boom"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(us_paypal.account_store, "load_accounts", lambda: [])
+    monkeypatch.setattr(us_paypal, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "success@example.com", "auth_file": "auth-success.json"},
+        {"email": "failed@example.com", "auth_file": "auth-failed.json"},
+        {"email": "pending@example.com", "auth_file": "auth-pending.json"},
+    ])
+
+    result = _endpoint(app, "/api/us-paypal/accounts", "GET")()
+    rows = {row["email"]: row for row in result["accounts"]}
+
+    assert rows["success@example.com"]["paypal_status"] == "success"
+    assert rows["success@example.com"]["paypal_country"] == "NL"
+    assert rows["failed@example.com"]["paypal_status"] == "failed"
+    assert rows["failed@example.com"]["paypal_country"] == ""
+    assert rows["pending@example.com"]["paypal_status"] == "pending"
+    assert rows["pending@example.com"]["paypal_country"] == ""
 
 
 def test_batch_job_passes_apply_promo_mode(monkeypatch):
@@ -314,6 +377,65 @@ def test_protocol_start_allows_no_proxy_to_match_verified_runner(monkeypatch):
     assert captured["args"][1].proxies == ""
 
 
+def test_protocol_start_allows_herosms_without_fixed_sms_record(monkeypatch):
+    app = _app()
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            captured["args"] = self.args
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+
+    result = _endpoint(app, "/api/us-paypal/protocol/start", "POST")(
+        us_paypal.UsPaypalProtocolStartRequest.model_validate({
+            "paypalLink": "https://www.paypal.com/agreements/approve?ba_token=BA-1HEROROUTE123",
+            "smsProvider": "hero-sms",
+            "smsApiKey": "hero-secret",
+            "smsService": "ts",
+            "smsCountry": "187",
+            "country": "US",
+        })
+    )
+
+    assert result["job_id"].startswith("ppay-")
+    assert captured["args"][1].sms_provider == "hero_sms"
+
+
+def test_protocol_start_allows_gb_country(monkeypatch):
+    app = _app()
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            captured["args"] = self.args
+
+    monkeypatch.setattr(us_paypal.threading, "Thread", FakeThread)
+
+    result = _endpoint(app, "/api/us-paypal/protocol/start", "POST")(
+        us_paypal.UsPaypalProtocolStartRequest.model_validate({
+            "paypalLink": "https://www.paypal.com/agreements/approve?ba_token=BA-1GBROUTE123",
+            "smsProvider": "smsbower",
+            "smsCountry": "16",
+            "country": "GB",
+        })
+    )
+
+    assert result["job_id"].startswith("ppay-")
+    assert captured["args"][1].country == "GB"
+    assert captured["args"][1].sms_provider == "smsbower"
+
+
 def test_protocol_job_uses_local_runner_and_sanitizes_logs(monkeypatch):
     captured = {}
     job_id = us_paypal._new_protocol_job("buyer@example.com")
@@ -350,6 +472,42 @@ def test_protocol_job_uses_local_runner_and_sanitizes_logs(monkeypatch):
     assert captured["marked"][0] == "buyer@example.com"
     assert all("token=secret" not in line for line in job["logs"])
     assert all("u:p@" not in line for line in job["logs"])
+
+
+def test_protocol_job_ignores_frontend_sms_provider_overrides(monkeypatch):
+    captured = {}
+    job_id = us_paypal._new_protocol_job("")
+
+    def fake_runner(cfg, log, cancel_check):
+        captured["cfg"] = cfg
+        return {"status": "success", "protocol_result": {"status": "success"}}
+
+    monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", fake_runner)
+
+    req = us_paypal.UsPaypalProtocolStartRequest.model_validate({
+        "baToken": "BA-1IGNOREOVERRIDE123",
+        "smsProvider": "hero-sms",
+        "smsApiKey": "frontend-secret",
+        "smsBaseUrl": "https://frontend.invalid/stubs/handler_api.php",
+        "smsService": "bad-service",
+        "smsCountry": "999",
+        "smsMinPrice": "0.01",
+        "smsMaxPrice": "9.99",
+        "smsPreferredPrice": "1.23",
+        "country": "GB",
+    })
+    us_paypal._run_protocol_payment_job(job_id, req)
+
+    cfg = captured["cfg"]
+    assert cfg.sms_provider == "hero_sms"
+    assert cfg.country == "GB"
+    assert cfg.sms_api_key == ""
+    assert cfg.sms_base_url == ""
+    assert cfg.sms_service == ""
+    assert cfg.sms_country == ""
+    assert cfg.sms_min_price == ""
+    assert cfg.sms_max_price == ""
+    assert cfg.sms_preferred_price == ""
 
 
 def test_main_api_mounts_us_paypal_protocol_routes():

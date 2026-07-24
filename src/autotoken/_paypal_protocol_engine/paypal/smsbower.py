@@ -11,7 +11,6 @@ from typing import Protocol
 import httpx
 from loguru import logger
 
-
 SMSBOWER_API_URL = "https://smsbower.page/stubs/handler_api.php"
 SMSBOWER_DEFAULT_SERVICE = "ts"
 SMSBOWER_DEFAULT_COUNTRY = "73"
@@ -20,6 +19,19 @@ SMSBOWER_DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 SMSBOWER_DEFAULT_MAX_CHANNEL_FAILURES = 3
 SMSBOWER_DEFAULT_ACTIVATION_TTL_SECONDS = 20 * 60
 SMSBOWER_DEFAULT_MAX_ATTEMPTS = 12
+HEROSMS_API_URL = "https://hero-sms.com/stubs/handler_api.php"
+PAYPAL_SMS_DEFAULT_SERVICE = "ts"
+PAYPAL_SMS_DEFAULT_COUNTRY = "187"
+PAYPAL_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {"US": "187", "GB": "16", "NL": "48", "BR": "73"}
+PAYPAL_SMS_COUNTRY_DIAL_CODES = {
+    "12": "1",
+    "187": "1",
+    "16": "44",
+    "48": "31",
+    "73": "55",
+    "6": "62",
+    "33": "57",
+}
 
 
 class SMSBowerApiError(RuntimeError):
@@ -135,6 +147,13 @@ def _parse_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _safe_api_error(action: str, status_code: int, body: object) -> SMSBowerApiError:
+    text = str(body or "").strip()
+    if len(text) > 300:
+        text = text[:300] + "..."
+    return SMSBowerApiError(f"{action} HTTP {status_code}: {text or '<empty response>'}")
+
+
 class SMSBowerClient:
     def __init__(
         self,
@@ -155,8 +174,9 @@ class SMSBowerClient:
             query[key] = str(value)
         with httpx.Client(timeout=httpx.Timeout(self.timeout_seconds), trust_env=False) as client:
             response = client.get(self.base_url, params=query)
-            response.raise_for_status()
         text = (response.text or "").strip()
+        if response.status_code >= 400:
+            raise _safe_api_error(action, response.status_code, text)
         if text in {"BAD_KEY", "BAD_ACTION", "BAD_SERVICE", "BAD_COUNTRY"}:
             raise SMSBowerApiError(text)
         return text
@@ -567,3 +587,362 @@ def activation_to_public_dict(activation: SMSBowerActivation) -> dict[str, objec
     payload = asdict(activation)
     payload["phone_number"] = "*" * max(0, len(activation.phone_number) - 4) + activation.phone_number[-4:]
     return payload
+
+
+def normalize_paypal_sms_provider(raw: object = "") -> str:
+    value = str(raw or "").strip().lower().replace("-", "_")
+    if value in {"", "manual", "interactive", "none"}:
+        return ""
+    if value in {"sms_record", "smscc", "record", "fixed_url"}:
+        return "sms_record"
+    if value in {"hero", "herosms", "hero_sms"}:
+        return "hero_sms"
+    if value in {"smsbower", "sms_bower"}:
+        return "smsbower"
+    return value
+
+
+def normalize_paypal_sms_country(raw: object = "", *, paypal_country: str = "US") -> str:
+    value = str(raw or "").strip().lower()
+    if not value:
+        paypal = str(paypal_country or "").strip().upper()
+        return {"US": "187", "GB": "16", "NL": "48", "BR": "73"}.get(paypal, PAYPAL_SMS_DEFAULT_COUNTRY)
+    if value and re.fullmatch(r"\d+", value):
+        return value
+    if value in {"us", "usa", "united_states", "united states", "+1"}:
+        return "187" if str(paypal_country or "").strip().upper() == "US" else PAYPAL_SMS_DEFAULT_COUNTRY
+    if value in {"gb", "uk", "gbr", "united_kingdom", "united kingdom", "great_britain", "great britain", "+44"}:
+        return "16"
+    if value in {"nl", "nld", "netherlands", "holland", "nederland", "+31"}:
+        return "48"
+    if value in {"br", "bra", "brazil", "brasil", "+55"}:
+        return "73"
+    if value in {"id", "idn", "indonesia", "+62"}:
+        return "6"
+    if value in {"co", "colombia", "+57"}:
+        return "33"
+    return value
+
+
+def normalize_sms_activate_phone(value: object, *, country: str) -> str:
+    digits = _digits(value)
+    if not digits:
+        raise SMSBowerApiError("SMS provider returned an empty phone number")
+    dial_code = PAYPAL_SMS_COUNTRY_DIAL_CODES.get(str(country or "").strip(), "")
+    if dial_code and not digits.startswith(dial_code):
+        digits = f"{dial_code}{digits}"
+    return f"+{digits}"
+
+
+class SmsActivateClient:
+    """SMS-Activate compatible client used by HeroSMS and SMSBower."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        base_url: str,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        self.api_key = (api_key or "").strip()
+        if not self.api_key:
+            raise SMSBowerApiError("SMS provider API key is not configured")
+        self.base_url = (base_url or "").strip() or SMSBOWER_API_URL
+        self.timeout_seconds = timeout_seconds
+
+    def request_text(self, action: str, params: dict[str, object] | None = None) -> str:
+        query: dict[str, str] = {"api_key": self.api_key, "action": action}
+        for key, value in (params or {}).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                query[key] = text
+        with httpx.Client(timeout=httpx.Timeout(self.timeout_seconds), trust_env=False) as client:
+            response = client.get(self.base_url, params=query)
+        text = (response.text or "").strip()
+        if response.status_code >= 400:
+            raise _safe_api_error(action, response.status_code, text)
+        if text in {"BAD_KEY", "BAD_ACTION", "BAD_SERVICE", "BAD_COUNTRY"}:
+            raise SMSBowerApiError(text)
+        return text
+
+    def request_json_or_text(self, action: str, params: dict[str, object] | None = None) -> object:
+        text = self.request_text(action, params)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+    def get_status(self, activation_id: str) -> str:
+        return self.request_text("getStatus", {"id": activation_id})
+
+    def set_status(self, activation_id: str, status: int) -> str:
+        return self.request_text("setStatus", {"id": activation_id, "status": status})
+
+
+class SmsActivateOtpProvider:
+    """Acquire PayPal OTP numbers through a SMS-Activate compatible API."""
+
+    def __init__(
+        self,
+        *,
+        client: SmsActivateClient,
+        provider_name: str,
+        service: str = PAYPAL_SMS_DEFAULT_SERVICE,
+        country: str = PAYPAL_SMS_DEFAULT_COUNTRY,
+        wait_seconds: float = SMSBOWER_DEFAULT_WAIT_SECONDS,
+        poll_interval_seconds: float = SMSBOWER_DEFAULT_POLL_INTERVAL_SECONDS,
+        activation_ttl_seconds: int = SMSBOWER_DEFAULT_ACTIVATION_TTL_SECONDS,
+        max_attempts: int = SMSBOWER_DEFAULT_MAX_ATTEMPTS,
+        min_price: str = "",
+        max_price: str = "",
+        preferred_price: str = "",
+    ) -> None:
+        self.client = client
+        self.provider_name = normalize_paypal_sms_provider(provider_name) or provider_name
+        self.service = str(service or PAYPAL_SMS_DEFAULT_SERVICE).strip()
+        self.country = str(country or PAYPAL_SMS_DEFAULT_COUNTRY).strip()
+        self.wait_seconds = max(1.0, float(wait_seconds)) if wait_seconds >= 1 else float(wait_seconds)
+        self.poll_interval_seconds = max(0.01, float(poll_interval_seconds))
+        self.activation_ttl_seconds = max(60, int(activation_ttl_seconds))
+        self.max_attempts = max(1, int(max_attempts))
+        self.min_price = str(min_price or "").strip()
+        self.max_price = str(max_price or "").strip()
+        self.preferred_price = str(preferred_price or "").strip()
+
+    def reserve_number(self) -> SMSBowerActivation:
+        params = self._number_params()
+        payload = self._request_number(params)
+        activation = self._activation_from_payload(payload)
+        logger.info(
+            "Reserved {} PayPal number country={} service={} activation={} price={}",
+            self.provider_name,
+            self.country,
+            self.service,
+            activation.activation_id,
+            activation.price,
+        )
+        return activation
+
+    def _number_params(self) -> dict[str, object]:
+        params: dict[str, object] = {"service": self.service, "country": self.country}
+        if self.min_price and self.preferred_price and self.min_price == self.preferred_price:
+            params["minPrice"] = self.preferred_price
+            params["maxPrice"] = self.preferred_price
+        elif self.preferred_price:
+            params["maxPrice"] = self.preferred_price
+        else:
+            if self.min_price:
+                params["minPrice"] = self.min_price
+            if self.max_price:
+                params["maxPrice"] = self.max_price
+        return params
+
+    def _request_number(self, params: dict[str, object]) -> object:
+        last_error = ""
+        for action in ("getNumberV2", "getNumber"):
+            try:
+                payload = self.client.request_json_or_text(action, params)
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+            activation_id, phone = self._parse_number_payload(payload)
+            if activation_id and phone:
+                return payload
+            text = str(payload or "").strip()
+            last_error = text or f"{action} returned empty response"
+            if re.search(r"\b(?:NO_NUMBERS|WRONG_MAX_PRICE|NO_BALANCE|BAD_KEY|BAD_SERVICE|BAD_COUNTRY|NO_ACTIVATION)\b", last_error, re.I):
+                continue
+        raise SMSBowerApiError(f"{self.provider_name} could not reserve PayPal number: {last_error}")
+
+    def _activation_from_payload(self, payload: object) -> SMSBowerActivation:
+        activation_id, phone = self._parse_number_payload(payload)
+        if not activation_id or not phone:
+            raise SMSBowerApiError(f"Unexpected getNumber response: {payload!r}")
+        price = 0.0
+        provider_id = self.provider_name
+        if isinstance(payload, dict):
+            price = _parse_float(
+                payload.get("activationCost")
+                or payload.get("price")
+                or payload.get("cost")
+                or payload.get("activation_cost")
+            )
+            provider_id = str(payload.get("activationOperator") or payload.get("operator") or provider_id)
+        return SMSBowerActivation(
+            activation_id=activation_id,
+            phone_number=normalize_sms_activate_phone(phone, country=self.country),
+            provider_id=provider_id,
+            price=price,
+            expires_at=time.time() + self.activation_ttl_seconds,
+            reused=False,
+        )
+
+    @staticmethod
+    def _parse_number_payload(payload: object) -> tuple[str, str]:
+        if isinstance(payload, dict):
+            activation_id = str(
+                payload.get("activationId")
+                or payload.get("activation_id")
+                or payload.get("id")
+                or ""
+            ).strip()
+            phone = str(
+                payload.get("phoneNumber")
+                or payload.get("phone")
+                or payload.get("number")
+                or ""
+            ).strip()
+            return activation_id, phone
+        line = str(payload or "").strip()
+        if line.upper().startswith("ACCESS_NUMBER:"):
+            parts = line.split(":", 2)
+            if len(parts) >= 3:
+                return parts[1].strip(), parts[2].strip()
+        return "", ""
+
+    def mark_sms_sent(self, activation: SMSBowerActivation) -> None:
+        # SMS-Activate-compatible APIs use status=1 as "SMS sent" in many
+        # implementations; HeroSMS docs only require 3/6/8, so failure here is
+        # non-fatal.
+        try:
+            self.client.set_status(activation.activation_id, 1)
+        except Exception as exc:
+            logger.debug("{} setStatus(1) soft-failed: {}", self.provider_name, exc)
+
+    def wait_for_code(self, activation: SMSBowerActivation, timeout_seconds: float | None = None) -> str | None:
+        deadline = time.time() + (self.wait_seconds if timeout_seconds is None else float(timeout_seconds))
+        while time.time() <= deadline:
+            try:
+                status = self.client.get_status(activation.activation_id)
+            except Exception as exc:
+                logger.debug("{} getStatus soft-failed: {}", self.provider_name, exc)
+                status = ""
+            code = SMSBowerOtpProvider._code_from_status(status)
+            if code:
+                return code
+            if str(status or "").strip().upper() in {"STATUS_CANCEL", "NO_ACTIVATION", "ACCESS_CANCEL"}:
+                return None
+            time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
+        return None
+
+    def abandon(self, activation: SMSBowerActivation, reason: str) -> None:
+        logger.warning(
+            "Abandoning {} activation provider={} reason={}",
+            self.provider_name,
+            activation.provider_id,
+            reason,
+        )
+        try:
+            self.client.set_status(activation.activation_id, 8)
+        except Exception as exc:
+            logger.warning("{} activation cancel failed: {}", self.provider_name, exc)
+
+    def register_confirmation_result(self, activation: SMSBowerActivation, confirmed: bool) -> None:
+        try:
+            self.client.set_status(activation.activation_id, 6 if confirmed else 8)
+        except Exception as exc:
+            logger.warning("{} activation finalize failed: {}", self.provider_name, exc)
+
+
+def _sms_provider_base_url(provider: str, explicit: str = "") -> str:
+    if explicit:
+        return explicit
+    if provider == "hero_sms":
+        return HEROSMS_API_URL
+    return (
+        _load_dotenv_value("PAYPAL_SMSBOWER_BASE_URL")
+        or _load_dotenv_value("SMSBOWER_BASE_URL")
+        or _load_dotenv_value("OAUTH_SMSBOWER_BASE_URL")
+        or _load_dotenv_value("GOPAY_AUTO_SIGNUP_SMSBOWER_BASE_URL")
+        or SMSBOWER_API_URL
+    )
+
+
+def _sms_provider_api_key(provider: str, explicit: str | None = None) -> str:
+    if explicit:
+        return str(explicit).strip()
+    if provider == "hero_sms":
+        return (
+            _load_dotenv_value("PAYPAL_HEROSMS_API_KEY")
+            or _load_dotenv_value("PAYPAL_HERO_SMS_API_KEY")
+            or _load_dotenv_value("HERO_SMS_API_KEY")
+            or _load_dotenv_value("HEROSMS_API_KEY")
+            or _load_dotenv_value("OAUTH_HERO_SMS_API_KEY")
+        )
+    return (
+        _load_dotenv_value("PAYPAL_SMSBOWER_API_KEY")
+        or _load_dotenv_value("SMSBOWER_API_KEY")
+        or _load_dotenv_value("OAUTH_SMSBOWER_API_KEY")
+        or _load_dotenv_value("GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY")
+    )
+
+
+def _sms_provider_country(provider: str, paypal_country: str, explicit: str = "") -> str:
+    if explicit:
+        return normalize_paypal_sms_country(explicit, paypal_country=paypal_country)
+    paypal = str(paypal_country or "").strip().upper()
+    env_prefixes = (
+        ("PAYPAL_HERO_SMS", "PAYPAL_HEROSMS")
+        if provider == "hero_sms"
+        else ("PAYPAL_SMSBOWER",)
+    )
+    for prefix in env_prefixes:
+        country = _load_dotenv_value(f"{prefix}_COUNTRY_{paypal}")
+        if country:
+            return normalize_paypal_sms_country(country, paypal_country=paypal)
+    return PAYPAL_SMS_COUNTRY_BY_PAYPAL_COUNTRY.get(paypal, PAYPAL_SMS_DEFAULT_COUNTRY)
+
+
+def build_sms_activate_provider(
+    *,
+    provider: str,
+    enabled: bool | None = None,
+    api_key: str | None = None,
+    base_url: str = "",
+    service: str = "",
+    country: str = "",
+    paypal_country: str = "US",
+    wait_seconds: float | None = None,
+    poll_interval_seconds: float | None = None,
+    min_price: str = "",
+    max_price: str = "",
+    preferred_price: str = "",
+) -> SmsActivateOtpProvider | None:
+    normalized = normalize_paypal_sms_provider(provider)
+    if normalized not in {"hero_sms", "smsbower"}:
+        return None
+    if enabled is False:
+        return None
+    resolved_key = _sms_provider_api_key(normalized, api_key)
+    resolved_base_url = _sms_provider_base_url(normalized, base_url or _load_dotenv_value(f"PAYPAL_{normalized.upper()}_BASE_URL"))
+    resolved_service = str(
+        service
+        or _load_dotenv_value("PAYPAL_SMS_SERVICE")
+        or _load_dotenv_value(f"PAYPAL_{normalized.upper()}_SERVICE")
+        or PAYPAL_SMS_DEFAULT_SERVICE
+    ).strip()
+    resolved_country = _sms_provider_country(normalized, paypal_country, country)
+    return SmsActivateOtpProvider(
+        client=SmsActivateClient(resolved_key, base_url=resolved_base_url),
+        provider_name=normalized,
+        service=resolved_service,
+        country=resolved_country,
+        wait_seconds=wait_seconds
+        if wait_seconds is not None
+        else _env_float("PAYPAL_SMS_WAIT_SECONDS", SMSBOWER_DEFAULT_WAIT_SECONDS, 1.0, 900.0),
+        poll_interval_seconds=poll_interval_seconds
+        if poll_interval_seconds is not None
+        else _env_float("PAYPAL_SMS_POLL_INTERVAL_SECONDS", SMSBOWER_DEFAULT_POLL_INTERVAL_SECONDS, 0.2, 30.0),
+        activation_ttl_seconds=_env_int(
+            "PAYPAL_SMS_ACTIVATION_TTL_SECONDS",
+            SMSBOWER_DEFAULT_ACTIVATION_TTL_SECONDS,
+            60,
+            24 * 60 * 60,
+        ),
+        max_attempts=_env_int("PAYPAL_SMS_MAX_ATTEMPTS", SMSBOWER_DEFAULT_MAX_ATTEMPTS, 1, 100),
+        min_price=min_price or _load_dotenv_value("PAYPAL_SMS_MIN_PRICE"),
+        max_price=max_price or _load_dotenv_value("PAYPAL_SMS_MAX_PRICE"),
+        preferred_price=preferred_price or _load_dotenv_value("PAYPAL_SMS_PREFERRED_PRICE"),
+    )

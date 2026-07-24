@@ -1,28 +1,29 @@
 import json
 import os
 import re
-from http.cookiejar import Cookie
-from pathlib import Path
 import tempfile
 import urllib.parse
+from http.cookiejar import Cookie
+from pathlib import Path
 
 import httpx
 
 try:
     from curl_cffi import CurlMime  # pyright: ignore[reportMissingImports]
-    from curl_cffi.requests import Session as CurlSession  # pyright: ignore[reportMissingImports]
+    from curl_cffi.requests import Session as CurlSession  # noqa: F401  # pyright: ignore[reportMissingImports]
     HAS_CURL_CFFI = True
 except ImportError:
     CurlMime = None  # type: ignore[assignment]
     HAS_CURL_CFFI = False  # pyright: ignore[reportConstantRedefinition]
 
-from loguru import logger
-from typing import Any, Optional, cast
-from paypal.models import SessionState
-from paypal.country_profile import get_country_profile
-from paypal.traffic_recorder import get_global_traffic_recorder
-from config import USER_AGENT, BROWSER_PROFILE
+from typing import Any, cast
 
+from config import BROWSER_PROFILE, USER_AGENT
+from loguru import logger
+
+from paypal.country_profile import get_country_profile
+from paypal.models import SessionState
+from paypal.traffic_recorder import get_global_traffic_recorder
 
 EUAT_COOKIE_NAME = "AV894Kt2TSumQQrJwe-8mzmyREO"
 CAPTCHA_SOLVED_CFCI = "modxo_vaulted_not_recurring-CAPTCHA_SOLVED"
@@ -118,6 +119,18 @@ def _full_version_ua_brands(profile: dict[str, Any]) -> list[dict[str, str]]:
         {"brand": "Chromium", "version": full_version},
         {"brand": "Google Chrome", "version": full_version},
     ]
+
+
+def _accept_language_header(language: str) -> str:
+    primary = str(language or "en-US").strip() or "en-US"
+    root = primary.split("-", 1)[0].lower()
+    values = [primary]
+    if root and root.lower() != primary.lower():
+        values.append(f"{root};q=0.9")
+    for fallback in ("en-US;q=0.8", "en;q=0.7"):
+        if fallback.split(";", 1)[0].lower() not in {item.split(";", 1)[0].lower() for item in values}:
+            values.append(fallback)
+    return ",".join(values)
 
 
 def _format_sec_ch_ua(entries: list[dict[str, str]]) -> str:
@@ -222,11 +235,11 @@ def build_common_headers(state: SessionState | None = None) -> dict[str, str]:
         else None
     ) or BROWSER_PROFILE)
     user_agent = str(profile.get("user_agent") or USER_AGENT)
-    language = str(profile.get("language") or "pt-BR")
+    language = str(profile.get("language") or "en-US")
     headers = {
         "User-Agent": user_agent,
         "Accept": "*/*",
-        "Accept-Language": f"{language},pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Language": _accept_language_header(language),
     }
     if not bool(profile.get("omit_client_hints")):
         headers.update({
@@ -1202,10 +1215,10 @@ class PayPalSession:
         return resp
 
     def graphql(self, operation_name: str, query: str, variables: dict[str, object],
-                extra_headers: Optional[dict[str, object]] = None,
-                extra_body: Optional[dict[str, object]] = None,
+                extra_headers: dict[str, object] | None = None,
+                extra_body: dict[str, object] | None = None,
                 batched: bool = False,
-                endpoint: Optional[str] = None,
+                endpoint: str | None = None,
                 graphql_error_level: str = "ERROR") -> dict[str, object] | list[dict[str, object]]:
         """Send a GraphQL request to PayPal's graphql endpoint."""
         url = endpoint or "https://www.paypal.com/graphql"

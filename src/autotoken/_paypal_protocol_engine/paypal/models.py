@@ -1,4 +1,3 @@
-from dataclasses import dataclass, field
 import calendar
 import hashlib
 import ipaddress
@@ -12,8 +11,11 @@ import unicodedata
 import urllib.parse
 import urllib.request
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
+
+from paypal.country_profile import get_country_profile
 
 
 @dataclass
@@ -138,7 +140,7 @@ class SessionState:
 
 def generate_random_email(country: str | None = None) -> str:
     selected_country = (country or "BR").upper()
-    if selected_country == "US":
+    if selected_country in {"US", "GB", "NL"}:
         first = random.choice(_US_FIRST_NAMES).lower()
         last = random.choice(_US_LAST_NAMES).lower()
         return f"{first}.{last}{random.randint(10, 9999)}@{random.choice(_US_EMAIL_DOMAINS)}"
@@ -411,12 +413,41 @@ _US_ADDRESSES = [
     ("200 E Randolph St", "", "Chicago", "IL", "60601"),
 ]
 
+_GB_ADDRESSES = [
+    ("10 Downing Street", "", "London", "London", "SW1A 2AA"),
+    ("221B Baker Street", "", "London", "London", "NW1 6XE"),
+    ("1 Deansgate", "", "Manchester", "Greater Manchester", "M3 1AZ"),
+    ("25 Albion Street", "", "Leeds", "West Yorkshire", "LS1 5AP"),
+    ("100 Temple Street", "", "Bristol", "Bristol", "BS1 6AG"),
+    ("1 Victoria Square", "", "Birmingham", "West Midlands", "B1 1BD"),
+]
+
+_NL_ADDRESSES = [
+    ("Damrak 1", "", "Amsterdam", "Noord-Holland", "1012 LG"),
+    ("Coolsingel 40", "", "Rotterdam", "Zuid-Holland", "3011 AD"),
+    ("Spui 70", "", "Den Haag", "Zuid-Holland", "2511 BT"),
+    ("Stadhuisplein 1", "", "Eindhoven", "Noord-Brabant", "5611 EM"),
+    ("Oudegracht 167", "", "Utrecht", "Utrecht", "3511 AL"),
+    ("Grote Markt 1", "", "Groningen", "Groningen", "9712 HN"),
+]
+
 _US_CARD_PROFILES = [
     {"issuer": "VISA", "length": 16, "cvv_length": 3, "weight": 50, "prefixes": ["411111", "424242", "401288"]},
     {"issuer": "MASTER_CARD", "length": 16, "cvv_length": 3, "weight": 30, "prefixes": ["555555", "510510", "520082"]},
     {"issuer": "AMEX", "length": 15, "cvv_length": 4, "weight": 10, "prefixes": ["378282", "371449"]},
     {"issuer": "DISCOVER", "length": 16, "cvv_length": 3, "weight": 10, "prefixes": ["601111", "601100"]},
 ]
+
+_EU_CARD_PROFILES = [
+    {"issuer": "VISA", "length": 16, "cvv_length": 3, "weight": 65, "prefixes": ["411111", "424242", "401288"]},
+    {"issuer": "MASTER_CARD", "length": 16, "cvv_length": 3, "weight": 35, "prefixes": ["555555", "510510", "520082"]},
+]
+
+_ADDRESS_BOOK = {
+    "US": _US_ADDRESSES,
+    "GB": _GB_ADDRESSES,
+    "NL": _NL_ADDRESSES,
+}
 
 
 def _luhn_checksum(partial: str) -> int:
@@ -569,6 +600,19 @@ def _weighted_card_profile() -> dict[str, object]:
     return _BR_CARD_PROFILES[0]
 
 
+def _weighted_profile(profiles: list[dict[str, object]]) -> dict[str, object]:
+    total = sum(int(profile["weight"]) for profile in profiles)
+    pick = random.randint(1, total)
+    running = 0
+    selected = profiles[0]
+    for candidate in profiles:
+        running += int(candidate["weight"])
+        if pick <= running:
+            selected = candidate
+            break
+    return selected
+
+
 def _location_for_proxy(proxy_url: str | None = None) -> _BrLocation:
     geo = _proxy_geo_lookup(proxy_url)
     if not geo or str(geo.get("countryCode") or "").upper() != "BR":
@@ -612,15 +656,9 @@ def generate_card(proxy_url: str | None = None, country: str | None = None) -> C
     del proxy_url
     selected_country = (country or "BR").upper()
     if selected_country == "US":
-        total = sum(int(profile["weight"]) for profile in _US_CARD_PROFILES)
-        pick = random.randint(1, total)
-        running = 0
-        profile = _US_CARD_PROFILES[0]
-        for candidate in _US_CARD_PROFILES:
-            running += int(candidate["weight"])
-            if pick <= running:
-                profile = candidate
-                break
+        profile = _weighted_profile(_US_CARD_PROFILES)
+    elif selected_country in {"GB", "NL"}:
+        profile = _weighted_profile(_EU_CARD_PROFILES)
     else:
         profile = _weighted_card_profile()
     prefixes = profile["prefixes"]
@@ -679,13 +717,14 @@ def generate_password() -> str:
 
 def generate_user(phone: str, country: str | None = None) -> UserInfo:
     selected_country = (country or ("US" if phone.strip().lstrip("+").startswith("1") else "BR")).upper()
-    if selected_country == "US":
+    profile = get_country_profile(selected_country)
+    if selected_country in {"US", "GB", "NL"}:
         first = random.choice(_US_FIRST_NAMES)
         last = random.choice(_US_LAST_NAMES)
-        phone_country_code = "+1"
+        phone_country_code = f"+{profile.phone_country_code}"
         phone_local = "".join(ch for ch in phone if ch.isdigit())
-        if phone_local.startswith("1") and len(phone_local) > 10:
-            phone_local = phone_local[1:]
+        if phone_local.startswith(profile.phone_country_code) and len(phone_local) > 8:
+            phone_local = phone_local[len(profile.phone_country_code):]
         email = f"{first.lower()}.{last.lower()}{random.randint(10, 9999)}@{random.choice(_US_EMAIL_DOMAINS)}"
     else:
         first = random.choice(_BR_FIRST_NAMES)
@@ -711,8 +750,8 @@ def generate_user(phone: str, country: str | None = None) -> UserInfo:
 
 def generate_address(proxy_url: str | None = None, country: str | None = None) -> BillingAddress:
     selected_country = (country or "BR").upper()
-    if selected_country == "US":
-        street, line2, city, state, postal_code = random.choice(_US_ADDRESSES)
+    if selected_country in _ADDRESS_BOOK:
+        street, line2, city, state, postal_code = random.choice(_ADDRESS_BOOK[selected_country])
         return BillingAddress(
             street=street,
             house_number="",
@@ -720,7 +759,7 @@ def generate_address(proxy_url: str | None = None, country: str | None = None) -
             city=city,
             state=state,
             postal_code=postal_code,
-            country="US",
+            country=selected_country,
         )
 
     location = _location_for_proxy(proxy_url)

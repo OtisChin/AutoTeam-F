@@ -5862,13 +5862,13 @@ class PayPalFlow:
             try:
                 auth_id, challenge_id = self._initiate_2fa_phone_confirmation(token, signup_url)
             except Exception as exc:
-                logger.error("Failed to initiate OTP for SMSBower phone {}: {}", self._masked_phone(), exc)
+                logger.error("Failed to initiate OTP for SMS provider phone {}: {}", self._masked_phone(), exc)
                 self.sms_provider.abandon(activation, "paypal_initiation_failed")
                 continue
 
             self.sms_provider.mark_sms_sent(activation)
             logger.info(
-                "Waiting for SMSBower OTP attempt={} provider={} reused={} timeout={}s",
+                "Waiting for SMS provider OTP attempt={} provider={} reused={} timeout={}s",
                 attempt,
                 activation.provider_id,
                 activation.reused,
@@ -5882,8 +5882,8 @@ class PayPalFlow:
                 self.sms_provider.register_confirmation_result(activation, True)
                 return
             self.sms_provider.register_confirmation_result(activation, False)
-            logger.warning("SMSBower OTP was rejected by PayPal; trying another number.")
-        raise RuntimeError("SMSBower OTP confirmation failed after all attempts")
+            logger.warning("SMS provider OTP was rejected by PayPal; trying another number.")
+        raise RuntimeError("SMS provider OTP confirmation failed after all attempts")
 
     def _card_expiration_date(self) -> str:
         exp_parts = self.card.expiry.split("/")

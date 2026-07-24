@@ -34,6 +34,13 @@ USERINFO_RE = re.compile(r"(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s
 DEFAULT_ENGINE_ROOT = PROJECT_ROOT / "src" / "autotoken" / "_paypal_protocol_engine"
 DEFAULT_TIMEOUT_SECONDS = 900
 TERMINAL_BA_FILE = PROJECT_ROOT / "data" / "paypal_protocol_terminal_ba.json"
+SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES = {"US", "GB", "NL", "BR"}
+DEFAULT_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {"US": "187", "GB": "16", "NL": "48", "BR": "73"}
+DEFAULT_HEROSMS_COUNTRY_BY_PAYPAL_COUNTRY = {"US": "187", "GB": "16", "NL": "48", "BR": "73"}
+DEFAULT_SMSBOWER_COUNTRY_BY_PAYPAL_COUNTRY = {"US": "187", "GB": "16", "NL": "48", "BR": "73"}
+DEFAULT_PAYPAL_SMS_SERVICE = "ts"
+DEFAULT_HEROSMS_BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
+DEFAULT_SMSBOWER_BASE_URL = "https://smsbower.page/stubs/handler_api.php"
 
 
 @dataclass(slots=True)
@@ -42,6 +49,14 @@ class PaypalProtocolRunConfig:
     paypal_link: str = ""
     phone: str = ""
     sms_record_url: str = ""
+    sms_provider: str = "sms_record"
+    sms_api_key: str = ""
+    sms_base_url: str = ""
+    sms_service: str = "ts"
+    sms_country: str = ""
+    sms_min_price: str = ""
+    sms_max_price: str = ""
+    sms_preferred_price: str = ""
     proxy_url: str = ""
     country: str = "US"
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
@@ -103,6 +118,7 @@ def sanitize_log_text(value: Any) -> str:
     text = SMS_TOKEN_RE.sub(r"\1<redacted>", text)
     text = USERINFO_RE.sub(lambda m: f"{m.group('scheme')}<proxy-auth>@", text)
     text = re.sub(r"(?i)(--sms-record-url\s+)\S+", r"\1<redacted>", text)
+    text = re.sub(r"(?i)(--sms-api-key\s+)\S+", r"\1<redacted>", text)
     text = re.sub(r"(?i)(--proxy-url\s+)\S+", r"\1<redacted>", text)
     text = _mask_ba(text)
     return text
@@ -113,7 +129,7 @@ def sanitize_result(value: Any) -> Any:
         output: dict[str, Any] = {}
         for key, item in value.items():
             lowered = str(key).lower()
-            if any(marker in lowered for marker in ("password", "secret", "access_token", "cookie")):
+            if any(marker in lowered for marker in ("password", "secret", "access_token", "cookie", "api_key")):
                 output[key] = "<redacted>"
             elif "sms" in lowered and "url" in lowered:
                 output[key] = sanitize_log_text(item)
@@ -221,21 +237,134 @@ def _engine_main(root: Path) -> Path:
     return main_py
 
 
+def _load_project_env() -> dict[str, str]:
+    result: dict[str, str] = {}
+    path = PROJECT_ROOT / ".env"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return result
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            result[key] = value
+    return result
+
+
+def _env_value(*names: str) -> str:
+    project_env = _load_project_env()
+    for name in names:
+        value = str(os.getenv(name) or project_env.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def normalize_sms_provider(value: str | None = None) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"", "sms_record", "smscc", "record", "fixed_url"}:
+        return "sms_record"
+    if text in {"hero", "herosms", "hero_sms"}:
+        return "hero_sms"
+    if text in {"smsbower", "sms_bower"}:
+        return "smsbower"
+    return text
+
+
+def _default_sms_country(provider_country: str, paypal_country: str) -> str:
+    raw = str(provider_country or "").strip()
+    if raw:
+        return raw
+    return DEFAULT_SMS_COUNTRY_BY_PAYPAL_COUNTRY.get(str(paypal_country or "").strip().upper(), "187")
+
+
+def _backend_sms_service() -> str:
+    return _env_value("PAYPAL_SMS_SERVICE") or DEFAULT_PAYPAL_SMS_SERVICE
+
+
+def _backend_sms_country(provider: str, paypal_country: str) -> str:
+    # Country ID is always derived from the selected PayPal payment country.
+    # Do not let the web payload or a global PAYPAL_SMS_COUNTRY override it.
+    country = str(paypal_country or "").strip().upper()
+    normalized = normalize_sms_provider(provider)
+    if normalized == "hero_sms":
+        return (
+            _env_value(f"PAYPAL_HERO_SMS_COUNTRY_{country}", f"PAYPAL_HEROSMS_COUNTRY_{country}")
+            or DEFAULT_HEROSMS_COUNTRY_BY_PAYPAL_COUNTRY.get(country, "187")
+        )
+    if normalized == "smsbower":
+        return (
+            _env_value(f"PAYPAL_SMSBOWER_COUNTRY_{country}")
+            or DEFAULT_SMSBOWER_COUNTRY_BY_PAYPAL_COUNTRY.get(country, "187")
+        )
+    return DEFAULT_SMS_COUNTRY_BY_PAYPAL_COUNTRY.get(country, "187")
+
+
+def _backend_sms_base_url(provider: str) -> str:
+    normalized = normalize_sms_provider(provider)
+    if normalized == "hero_sms":
+        return _env_value("PAYPAL_HERO_SMS_BASE_URL", "PAYPAL_HEROSMS_BASE_URL", "OAUTH_HERO_SMS_BASE_URL") or DEFAULT_HEROSMS_BASE_URL
+    if normalized == "smsbower":
+        return (
+            _env_value(
+                "PAYPAL_SMSBOWER_BASE_URL",
+                "SMSBOWER_BASE_URL",
+                "OAUTH_SMSBOWER_BASE_URL",
+                "GOPAY_AUTO_SIGNUP_SMSBOWER_BASE_URL",
+            )
+            or DEFAULT_SMSBOWER_BASE_URL
+        )
+    return ""
+
+
+def _backend_sms_api_key(provider: str) -> str:
+    normalized = normalize_sms_provider(provider)
+    if normalized == "hero_sms":
+        return _env_value(
+            "PAYPAL_HERO_SMS_API_KEY",
+            "PAYPAL_HEROSMS_API_KEY",
+            "HERO_SMS_API_KEY",
+            "HEROSMS_API_KEY",
+            "OAUTH_HERO_SMS_API_KEY",
+        )
+    if normalized == "smsbower":
+        return _env_value(
+            "PAYPAL_SMSBOWER_API_KEY",
+            "SMSBOWER_API_KEY",
+            "OAUTH_SMSBOWER_API_KEY",
+            "GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY",
+        )
+    return ""
+
+
 def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | None = None) -> tuple[list[str], dict[str, str], Path]:
     root = (engine_root or _engine_root()).resolve()
     main_py = _engine_main(root)
     ba_token = extract_ba_token(cfg.ba_token or cfg.paypal_link)
     if not ba_token:
         raise ValueError("缺少有效 PayPal BA token/link")
-    if not str(cfg.phone or "").strip():
-        raise ValueError("缺少 PayPal 注册手机号")
-    if not str(cfg.sms_record_url or "").strip():
-        raise ValueError("缺少 SMS record URL")
     country = str(cfg.country or "US").strip().upper()
     if not re.fullmatch(r"[A-Z]{2}", country):
         country = "US"
-    if country != "US":
-        raise ValueError("当前本地协议支付仅开放 US，其他国家后续扩展")
+    if country not in SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES:
+        raise ValueError("当前本地协议支付仅开放 US/GB/NL/BR")
+    sms_provider = normalize_sms_provider(cfg.sms_provider)
+    if sms_provider == "sms_record":
+        if not str(cfg.phone or "").strip():
+            raise ValueError("缺少 PayPal 注册手机号")
+        if not str(cfg.sms_record_url or "").strip():
+            raise ValueError("缺少 SMS record URL")
+    elif sms_provider in {"hero_sms", "smsbower"}:
+        # API key may be supplied by .env/environment; do not require it in the
+        # HTTP request payload.
+        pass
+    else:
+        raise ValueError("不支持的 PayPal 手机接码平台")
 
     cmd = [
         sys.executable,
@@ -243,10 +372,6 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
         str(main_py),
         "--ba-token",
         ba_token,
-        "--phone",
-        str(cfg.phone).strip(),
-        "--sms-record-url",
-        str(cfg.sms_record_url).strip(),
         "--sms-record-wait",
         str(max(60, int(cfg.sms_record_wait_seconds or 300))),
         "--sms-record-poll",
@@ -254,7 +379,7 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
         "--country",
         country,
         "--approval-path",
-        "create-member-no-fi",
+        "create-member-no-fi" if country == "US" else "auto",
         "--fingerprint-source",
         "headless",
         "--datadome-mode",
@@ -266,6 +391,26 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
         "--max-flow-attempts",
         "1",
     ]
+    if sms_provider == "sms_record":
+        cmd.extend([
+            "--sms-provider",
+            "sms-record",
+            "--phone",
+            str(cfg.phone).strip(),
+            "--sms-record-url",
+            str(cfg.sms_record_url).strip(),
+        ])
+    else:
+        sms_service = _backend_sms_service()
+        sms_country = _backend_sms_country(sms_provider, country)
+        cmd.extend([
+            "--sms-provider",
+            "hero-sms" if sms_provider == "hero_sms" else "smsbower",
+            "--sms-service",
+            sms_service,
+            "--sms-country",
+            sms_country,
+        ])
     proxy = normalize_proxy_url(cfg.proxy_url)
     if proxy:
         cmd.extend(["--proxy-url", proxy, "--proxy"])
@@ -282,7 +427,7 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     env["PAYPAL_DATADOME_MODE"] = "headless"
     env["PAYPAL_MTR_RUNTIME"] = "headless"
     env["PAYPAL_MTR_HEADLESS_WAIT_SECONDS"] = "45"
-    env["PAYPAL_APPROVAL_PATH"] = "create_member_no_fi"
+    env["PAYPAL_APPROVAL_PATH"] = "create_member_no_fi" if country == "US" else "auto"
     env["PAYPAL_COUNTRY"] = country
     # The verified AutoTeam-F tuple is a normal preflight run, not strict lab
     # mode.  Parent shells may export PAYPAL_STRICT_BROWSER_RISK=1 while doing
@@ -290,6 +435,21 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     # usable runs with diagnostic-only blockers such as mtr_sealedResult_missing.
     env["PAYPAL_STRICT_BROWSER_RISK"] = "0"
     env["PAYPAL_ALLOW_SYNTHETIC_CAPTCHA"] = "0"
+    env["PAYPAL_SMS_PROVIDER"] = sms_provider
+    env["PAYPAL_SMS_SERVICE"] = _backend_sms_service()
+    env["PAYPAL_SMS_COUNTRY"] = _backend_sms_country(sms_provider, country)
+    if sms_provider in {"hero_sms", "smsbower"}:
+        env["PAYPAL_SMS_BASE_URL"] = _backend_sms_base_url(sms_provider)
+        if sms_provider == "hero_sms":
+            env["PAYPAL_HERO_SMS_BASE_URL"] = _backend_sms_base_url(sms_provider)
+            key = _backend_sms_api_key(sms_provider)
+            if key:
+                env["PAYPAL_HERO_SMS_API_KEY"] = key
+        elif sms_provider == "smsbower":
+            env["PAYPAL_SMSBOWER_BASE_URL"] = _backend_sms_base_url(sms_provider)
+            key = _backend_sms_api_key(sms_provider)
+            if key:
+                env["PAYPAL_SMSBOWER_API_KEY"] = key
     fingerprint_path = root / "var" / "roxy_ios_fingerprint_current.json"
     if fingerprint_path.exists():
         env["PAYPAL_HEADLESS_PINNED_FINGERPRINT_PATH"] = str(fingerprint_path)
@@ -503,8 +663,8 @@ def run_paypal_protocol_payment(
                 failure_message = "PayPal 返回 PAYER_INVALID_FOR_PAYMENT；当前 payer 与该 payment/checkout session 不匹配或 BA/EC 已不可继续"
             elif "returned PayPal authchallenge HTML" in output:
                 failure_message = "PayPal authchallenge/recaptcha 拦截了 OTP 发起；短信未发送，需更换新 BA/代理会话/风险环境后重试"
-            elif "SMSBower OTP confirmation failed after all attempts" in output:
-                failure_message = "SMS record OTP 等待超时，未收到本次请求后的新验证码"
+            elif "SMS provider OTP confirmation failed after all attempts" in output or "SMSBower OTP confirmation failed after all attempts" in output:
+                failure_message = "手机接码平台 OTP 等待超时，未收到本次请求后的新验证码"
             elif "VALIDATION_FAILED" in output:
                 failure_message = "PayPal OTP 校验失败，可能拿到了旧码或错误验证码"
     if not ok and _member_approve_terminal_after_create(output, parsed):

@@ -16,10 +16,8 @@ from typing import Any, Protocol, cast
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
-from loguru import logger
-
 from config import BROWSER_PROFILE, SCREEN, USER_AGENT, VIEWPORT
-
+from loguru import logger
 
 JsonObject = dict[str, object]
 
@@ -710,17 +708,32 @@ def _sec_ch_ua_header_from_metadata(metadata: JsonObject, *, full: bool = False)
     return ", ".join(parts)
 
 
+def _accept_language_header(language: str) -> str:
+    primary = str(language or "en-US").strip() or "en-US"
+    root = primary.split("-", 1)[0].lower()
+    values = [primary]
+    if root and root.lower() != primary.lower():
+        values.append(f"{root};q=0.9")
+    seen = {item.split(";", 1)[0].lower() for item in values}
+    for fallback in ("en-US;q=0.8", "en;q=0.7"):
+        fallback_language = fallback.split(";", 1)[0].lower()
+        if fallback_language not in seen:
+            values.append(fallback)
+            seen.add(fallback_language)
+    return ",".join(values)
+
+
 def _headless_extra_http_headers(profile: JsonObject) -> dict[str, str]:
+    language = str(profile.get("language") or "en-US")
     if bool(profile.get("omit_client_hints")):
         return {
-            "Accept-Language": f"{str(profile.get('language') or 'pt-BR')},pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Language": _accept_language_header(language),
         }
     metadata = _chrome_user_agent_metadata(profile)
-    language = str(profile.get("language") or "pt-BR")
     bitness = str(metadata.get("bitness") or profile.get("sec_ch_bitness") or "64")
     platform_version = str(metadata.get("platformVersion") or profile.get("sec_ch_platform_version") or "").strip('"')
     return {
-        "Accept-Language": f"{language},pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Language": _accept_language_header(language),
         "Sec-CH-UA": _sec_ch_ua_header_from_metadata(metadata),
         "Sec-CH-UA-Mobile": str(profile.get("sec_ch_ua_mobile") or "?0"),
         "Sec-CH-UA-Platform": str(profile.get("sec_ch_platform") or '"Linux"'),
@@ -743,7 +756,7 @@ def _stealth_init_script(
     profile = _merged_context_dict(BROWSER_PROFILE, browser_profile)
     viewport_options = _merged_context_dict(VIEWPORT, viewport)
     screen_options = _merged_context_dict(SCREEN, screen)
-    language = str(profile.get("language") or "pt-BR")
+    language = str(profile.get("language") or "en-US")
     user_agent = str(profile.get("user_agent") or USER_AGENT)
     ua_data = _ua_data_script_config(profile)
     configured_webgl_vendor = _env_text("PAYPAL_HEADLESS_WEBGL_VENDOR")
@@ -981,7 +994,7 @@ def _apply_cdp_stealth_overrides(
             "Network.setUserAgentOverride",
             {
                 "userAgent": str(profile.get("user_agent") or USER_AGENT),
-                "acceptLanguage": f"{language},pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                "acceptLanguage": _accept_language_header(language),
                 "platform": str(profile.get("platform") or "Linux x86_64"),
                 "userAgentMetadata": _chrome_user_agent_metadata(profile),
             },
@@ -2824,12 +2837,15 @@ class LocalHeadlessSession:
                                 "error": str(exc),
                             }
                         )
+                    def bootstrap_ready(current_status: int = status) -> bool:
+                        return signup_context_ready(current_status)
+
                     _wait_for_page_state_or_ready(
                         page,
                         "networkidle",
                         timeout_ms=min(wait_ms, 4000),
                         max_wait_ms=min(wait_ms, 4000),
-                        ready=lambda: signup_context_ready(status),
+                        ready=bootstrap_ready,
                         poll_ms=250,
                     )
                     html = read_page_html()
@@ -3238,7 +3254,10 @@ class LocalHeadlessSession:
 
     def _inject_mtr_and_phase1_scripts(self, page: Any, *, dfp_config: JsonObject, dfp_script_url: str, run_mtr: bool = True) -> None:
         config = dict(dfp_config)
-        ready = lambda: (not run_mtr or self._mtr_ready()) and not self._required_missing()
+
+        def ready() -> bool:
+            return (not run_mtr or self._mtr_ready()) and not self._required_missing()
+
         if run_mtr:
             live_config = _read_live_dfp_config(page)
             raw_config = live_config.get("config")
