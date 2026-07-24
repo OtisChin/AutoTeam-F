@@ -1,0 +1,1 @@
+const e={ORDER_REPLENISHMENT:"order_replenishment",SUCCESS_REPLENISHMENT:"success_replenishment",ERROR_REPLENISHMENT:"error_replenishment",APP_DOWNLOAD:"app_download"},o={GooglePlay:"google_play",Apk:"apk",AppStore:"app_store"};export{e as A,o as a};

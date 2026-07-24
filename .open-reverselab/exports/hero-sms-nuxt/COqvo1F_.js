@@ -1,0 +1,1 @@
+import{h as e,o,c as s,f as n}from"./Ce7G41BA.js";const t={},d={class:"lds-ring"};function a(c,l){return o(),s("div",d,[...l[0]||(l[0]=[n("div",null,null,-1),n("div",null,null,-1),n("div",null,null,-1),n("div",null,null,-1)])])}const r=e(t,[["render",a],["__scopeId","data-v-6728db07"]]);export{r as L};

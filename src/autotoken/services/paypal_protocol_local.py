@@ -310,7 +310,15 @@ def _backend_sms_country(provider: str, paypal_country: str) -> str:
 def _backend_sms_base_url(provider: str) -> str:
     normalized = normalize_sms_provider(provider)
     if normalized in {"hero_sms", "hero_sms_rent"}:
-        return _env_value("PAYPAL_HERO_SMS_BASE_URL", "PAYPAL_HEROSMS_BASE_URL", "OAUTH_HERO_SMS_BASE_URL") or DEFAULT_HEROSMS_BASE_URL
+        return (
+            _env_value(
+                "PAYPAL_HERO_SMS_BASE_URL",
+                "PAYPAL_HEROSMS_BASE_URL",
+                "OAUTH_HERO_SMS_BASE_URL",
+                "GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL",
+            )
+            or DEFAULT_HEROSMS_BASE_URL
+        )
     if normalized == "smsbower":
         return (
             _env_value(
@@ -333,6 +341,7 @@ def _backend_sms_api_key(provider: str) -> str:
             "HERO_SMS_API_KEY",
             "HEROSMS_API_KEY",
             "OAUTH_HERO_SMS_API_KEY",
+            "GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY",
         )
     if normalized == "smsbower":
         return _env_value(
@@ -414,6 +423,8 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
             sms_service,
             "--sms-country",
             sms_country,
+            "--sms-number-wait",
+            "60",
         ])
         if sms_provider == "hero_sms_rent":
             cmd.extend(["--phone", str(cfg.phone).strip()])
@@ -444,6 +455,7 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     env["PAYPAL_SMS_PROVIDER"] = sms_provider
     env["PAYPAL_SMS_SERVICE"] = _backend_sms_service()
     env["PAYPAL_SMS_COUNTRY"] = _backend_sms_country(sms_provider, country)
+    env["PAYPAL_SMS_NUMBER_WAIT_SECONDS"] = "60"
     if sms_provider in {"hero_sms", "hero_sms_rent", "smsbower"}:
         env["PAYPAL_SMS_BASE_URL"] = _backend_sms_base_url(sms_provider)
         if sms_provider in {"hero_sms", "hero_sms_rent"}:

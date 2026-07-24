@@ -50,6 +50,16 @@ def _normalize_paypal_sms_provider(value: object = "") -> str:
     return _smsbower_module().normalize_paypal_sms_provider(value)
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 
 class SmsRecordActivation:
     def __init__(self, phone_number: str):
@@ -170,6 +180,15 @@ def main():
         type=float,
         default=float(os.getenv("SMS_RECORD_POLL_INTERVAL", "5")),
         help="Seconds between --sms-record-url polls.",
+    )
+    parser.add_argument(
+        "--sms-number-wait",
+        type=float,
+        default=_env_float("PAYPAL_SMS_NUMBER_WAIT_SECONDS", 60.0),
+        help=(
+            "Seconds to wait per acquired HeroSMS/SMSBower number before "
+            "abandoning it and switching to a new number. Default: 60."
+        ),
     )
     parser.add_argument(
         "--country",
@@ -381,7 +400,7 @@ def main():
             base_url=args.sms_base_url,
             country=args.sms_country,
             paypal_country=args.country,
-            wait_seconds=args.sms_record_wait,
+            wait_seconds=args.sms_number_wait,
             poll_interval_seconds=args.sms_record_poll,
         )
     elif normalized_sms_provider in {"hero_sms", "smsbower"}:
@@ -392,7 +411,7 @@ def main():
             service=args.sms_service,
             country=args.sms_country,
             paypal_country=args.country,
-            wait_seconds=args.sms_record_wait,
+            wait_seconds=args.sms_number_wait,
             poll_interval_seconds=args.sms_record_poll,
             min_price=args.sms_min_price,
             max_price=args.sms_max_price,

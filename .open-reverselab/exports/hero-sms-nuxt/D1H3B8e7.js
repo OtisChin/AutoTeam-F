@@ -1,0 +1,1 @@
+const m=(t,{locale:e="en-US",currency:i="USD",digits:n=4}={})=>{const r=Number(t);return Number.isFinite(r)?new Intl.NumberFormat(e,{style:"currency",currency:i,minimumFractionDigits:0,maximumFractionDigits:n}).format(r):"—"};export{m as f};

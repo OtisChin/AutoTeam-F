@@ -1,0 +1,34 @@
+--- generator.js GB LOCATIONS/generateGbProfile refs ---
+17:  const LOCATIONS = [
+19:      city: "London",
+21:      postcodes: ["NW1 6XE", "W1D 1BS", "SW3 4UD", "EC1A 1BB"],
+22:      streets: ["Baker Street", "Oxford Street", "King's Road", "Fleet Street"]
+25:      city: "Manchester",
+27:      postcodes: ["M3 2BW", "M1 7ED", "M1 3BE"],
+28:      streets: ["Deansgate", "Oxford Road", "Portland Street"]
+31:      city: "Birmingham",
+33:      postcodes: ["B2 4QA", "B1 2HF", "B4 6TB"],
+34:      streets: ["New Street", "Broad Street", "Corporation Street"]
+37:      city: "Edinburgh",
+39:      postcodes: ["EH2 2ER", "EH2 2PF", "EH1 1SG"],
+40:      streets: ["Princes Street", "George Street", "Royal Mile"]
+43:      city: "Cardiff",
+45:      postcodes: ["CF10 1EP", "CF10 2HE", "CF11 9HB"],
+46:      streets: ["Queen Street", "Westgate Street", "Cathedral Road"]
+192:      city: "Manama",
+199:  function generateGbProfile(now = new Date()) {
+208:    const postcode = pick(location.postcodes);
+210:    let street = `${houseNumber} ${pick(location.streets)}`;
+211:    if (randomFloat() < 0.35) street = `Flat ${randomInt(1, 30)}, ${street}`;
+223:      postcode,
+226:      city: location.city,
+227:      street,
+228:      fullAddress: `${street}, ${location.city}, ${postcode}, United Kingdom`,
+--- page-actions.js fillGbProfile refs ---
+67:  function fillGbProfile(document, profile, phone, fallbackEmail) {
+89:      ["billingLine1", "#billingLine1", profile.street],
+104:    const countries = visibleElements(document, "select#countryCode_0");
+109:      setNativeValue(select, "GB");
+117:    const selects = visibleElements(document, "select#country, select#countryCode_0");
+153:      ["billingLine1", "#billingLine1", profile.address1],
+154:      ["billingCity", "#billingCity", profile.city],

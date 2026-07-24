@@ -101,10 +101,12 @@ def test_build_protocol_command_supports_herosms_without_fixed_phone(tmp_path, m
     assert cmd[cmd.index("--sms-provider") + 1] == "hero-sms"
     assert cmd[cmd.index("--sms-service") + 1] == "ts"
     assert cmd[cmd.index("--sms-country") + 1] == "187"
+    assert cmd[cmd.index("--sms-number-wait") + 1] == "60"
     assert "--sms-max-price" not in cmd
     assert env["PAYPAL_SMS_PROVIDER"] == "hero_sms"
     assert "PAYPAL_HERO_SMS_API_KEY" not in env or env["PAYPAL_HERO_SMS_API_KEY"] != "hero-secret"
     assert env["PAYPAL_SMS_COUNTRY"] == "187"
+    assert env["PAYPAL_SMS_NUMBER_WAIT_SECONDS"] == "60"
     assert "hero-secret" not in service.sanitize_log_text(" ".join(cmd))
 
 
@@ -129,7 +131,32 @@ def test_build_protocol_command_supports_herosms_rent_phone(tmp_path, monkeypatc
     assert env["PAYPAL_SMS_COUNTRY"] == "48"
 
 
-def test_herosms_rent_provider_resolves_phone_and_reads_rent_status():
+def test_build_protocol_command_reuses_gopay_herosms_settings(tmp_path, monkeypatch):
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
+    monkeypatch.setattr(service, "_load_project_env", lambda: {})
+    monkeypatch.delenv("PAYPAL_HERO_SMS_API_KEY", raising=False)
+    monkeypatch.delenv("PAYPAL_HEROSMS_API_KEY", raising=False)
+    monkeypatch.delenv("HERO_SMS_API_KEY", raising=False)
+    monkeypatch.delenv("HEROSMS_API_KEY", raising=False)
+    monkeypatch.delenv("OAUTH_HERO_SMS_API_KEY", raising=False)
+    monkeypatch.setenv("GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY", "gopay-hero-key")
+    monkeypatch.setenv("GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL", "https://hero.example/stubs/handler_api.php")
+
+    _cmd, env, _cwd = service.build_protocol_command(service.PaypalProtocolRunConfig(
+        ba_token="BA-1HEROGOPAY123",
+        sms_provider="hero-sms",
+        country="GB",
+    ))
+
+    assert env["PAYPAL_HERO_SMS_API_KEY"] == "gopay-hero-key"
+    assert env["PAYPAL_HERO_SMS_BASE_URL"] == "https://hero.example/stubs/handler_api.php"
+    assert env["PAYPAL_SMS_COUNTRY"] == "16"
+
+
+def test_herosms_rent_provider_resolves_phone_and_reads_rent_status(tmp_path):
     engine_root = service.DEFAULT_ENGINE_ROOT
     sys.path.insert(0, str(engine_root))
     try:
@@ -144,18 +171,19 @@ def test_herosms_rent_provider_resolves_phone_and_reads_rent_status():
         def __init__(self):
             self.actions = []
 
-        def request_json_or_text(self, action, params=None):
-            self.actions.append((action, dict(params or {})))
-            if action == "getRentList":
-                return {"items": [{"id": "rent-123", "phone": "+31612345678"}]}
-            if action == "getRentStatus":
-                return {"sms": [{"text": "PayPal code 654321"}]}
-            raise AssertionError(action)
+        def get_status(self, activation_id):
+            self.actions.append(("getStatus", {"id": activation_id}))
+            return "STATUS_OK:654321"
+
+        def set_status(self, activation_id, status):
+            self.actions.append(("setStatus", {"id": activation_id, "status": status}))
+            return "ACCESS_READY"
 
     client = FakeClient()
     provider = smsbower.HeroSmsRentOtpProvider(
         client=client,
-        phone_number="+31612345678",
+        phone_number="+31612345678#rent-123",
+        store=smsbower.SMSBowerActivationStore(tmp_path / "rent-cache.json"),
         country="48",
         wait_seconds=1,
         poll_interval_seconds=0.01,
@@ -165,7 +193,249 @@ def test_herosms_rent_provider_resolves_phone_and_reads_rent_status():
     assert activation.activation_id == "rent-123"
     assert activation.phone_number == "+31612345678"
     assert provider.wait_for_code(activation, timeout_seconds=1) == "654321"
-    assert ("getRentStatus", {"id": "rent-123"}) in client.actions
+    assert ("getStatus", {"id": "rent-123"}) in client.actions
+
+
+def test_sms_activate_provider_reuses_number_without_finishing(tmp_path):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        smsbower = importlib.import_module("paypal.smsbower")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    class FakeClient:
+        def __init__(self):
+            self.actions = []
+            self.statuses = ["STATUS_OK:111111", "STATUS_OK:111111", "STATUS_OK:222222"]
+
+        def request_json_or_text(self, action, params=None):
+            self.actions.append((action, dict(params or {})))
+            if action == "getNumberV2":
+                return {"activationId": "act-1", "phoneNumber": "447700900123", "activationCost": "0.1"}
+            raise AssertionError(action)
+
+        def get_status(self, activation_id):
+            self.actions.append(("getStatus", {"id": activation_id}))
+            return self.statuses.pop(0)
+
+        def set_status(self, activation_id, status):
+            self.actions.append(("setStatus", {"id": activation_id, "status": status}))
+            return "ACCESS_READY"
+
+    store = smsbower.SMSBowerActivationStore(tmp_path / "sms-cache.json")
+    client = FakeClient()
+    provider = smsbower.SmsActivateOtpProvider(
+        client=client,
+        provider_name="hero_sms",
+        store=store,
+        service="ts",
+        country="16",
+        wait_seconds=1,
+        poll_interval_seconds=0.01,
+        reuse_enabled=True,
+        finalize_on_success=False,
+    )
+
+    first = provider.reserve_number()
+    assert first.phone_number == "+447700900123"
+    assert provider.wait_for_code(first, timeout_seconds=1) == "111111"
+    provider.register_confirmation_result(first, True)
+
+    reused = provider.reserve_number()
+    assert reused.activation_id == "act-1"
+    assert reused.reused is True
+    assert provider.wait_for_code(reused, timeout_seconds=1) == "222222"
+    provider.register_confirmation_result(reused, True)
+
+    statuses = [item[1]["status"] for item in client.actions if item[0] == "setStatus"]
+    assert 6 not in statuses
+    assert statuses.count(3) >= 2
+
+
+def test_sms_activate_provider_timeout_switches_number(tmp_path):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        smsbower = importlib.import_module("paypal.smsbower")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    class FakeClient:
+        def __init__(self):
+            self.actions = []
+            self.next_id = 1
+
+        def request_json_or_text(self, action, params=None):
+            self.actions.append((action, dict(params or {})))
+            if action == "getNumberV2":
+                value = self.next_id
+                self.next_id += 1
+                return {
+                    "activationId": f"act-{value}",
+                    "phoneNumber": f"44770090012{value}",
+                    "activationCost": "0.1",
+                }
+            raise AssertionError(action)
+
+        def get_status(self, activation_id):
+            self.actions.append(("getStatus", {"id": activation_id}))
+            return "STATUS_WAIT_CODE"
+
+        def set_status(self, activation_id, status):
+            self.actions.append(("setStatus", {"id": activation_id, "status": status}))
+            return "ACCESS_CANCEL"
+
+    store = smsbower.SMSBowerActivationStore(tmp_path / "sms-cache.json")
+    client = FakeClient()
+    provider = smsbower.SmsActivateOtpProvider(
+        client=client,
+        provider_name="hero_sms",
+        store=store,
+        service="ts",
+        country="16",
+        wait_seconds=0.02,
+        poll_interval_seconds=0.01,
+        reuse_enabled=True,
+        cancel_on_abandon=False,
+    )
+
+    first = provider.reserve_number()
+    assert first.activation_id == "act-1"
+    assert provider.wait_for_code(first, timeout_seconds=0.02) is None
+    provider.abandon(first, "sms_timeout")
+
+    second = provider.reserve_number()
+    assert second.activation_id == "act-2"
+    assert second.reused is False
+    assert ("setStatus", {"id": "act-1", "status": 8}) in client.actions
+
+
+def test_gb_generated_addresses_avoid_known_landmarks():
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    blocked = {"10 downing", "baker street", "deansgate", "temple street", "victoria square"}
+    for _ in range(50):
+        address = models.generate_address(country="GB")
+        line = f"{address.street} {address.postal_code}".lower()
+        assert not any(marker in line for marker in blocked)
+        assert address.country == "GB"
+        assert address.postal_code
+
+
+def test_signup_address_error_is_retryable():
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        flow = importlib.import_module("paypal.flow")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    assert flow.PayPalFlow._is_address_related_signup_error([
+        {
+            "errorType": "VALIDATION_ERROR",
+            "message": "RESIDENTIAL_ADDRESS_NOT_FOUND",
+            "path": ["onboardAccount"],
+        }
+    ])
+
+
+def test_gb_signup_variables_match_weasley_primary_residential_shape(monkeypatch):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        flow = importlib.import_module("paypal.flow")
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    paypal_flow = flow.PayPalFlow.__new__(flow.PayPalFlow)
+    paypal_flow.address = models.BillingAddress(
+        street="27 Victoria Road",
+        house_number="",
+        district="",
+        city="Cambridge",
+        state="",
+        postal_code="CB4 3BW",
+        country="GB",
+    )
+    paypal_flow.user = models.UserInfo(
+        first_name="Oliver",
+        last_name="Smith",
+        email="oliver.smith123@example.test",
+        phone="+447700900123",
+        phone_local="7700900123",
+        phone_country_code="+44",
+        password="Passw0rd!",
+        dob="01/02/1988",
+        cpf="",
+    )
+    paypal_flow.card = models.CardInfo(
+        number="4111111111111111",
+        expiry="08/2028",
+        cvv="123",
+    )
+    paypal_flow.state = models.SessionState()
+    paypal_flow._billing_address_autocomplete_succeeded = False
+    monkeypatch.setattr(paypal_flow, "_content_metadata_is_unresolved", lambda: False)
+    monkeypatch.setattr(paypal_flow, "_resolved_content_identifier", lambda: "GB:en:test:compliance.signupTerms")
+
+    variables = paypal_flow._build_signup_variables("EC-TEST")
+
+    assert "shippingAddress" not in variables
+    assert variables["billingAddress"]["postalCode"] == "CB4 3BW"
+    assert variables["billingAddress"]["line1"] == "27 Victoria Road"
+    assert "line2" not in variables["billingAddress"]
+    assert "state" not in variables["billingAddress"]
+    assert variables["residentialAddress"] == variables["billingAddress"]
+    assert variables["dateOfBirth"] == {"day": "01", "month": "02", "year": "1988"}
+
+
+def test_gb_auto_approval_path_uses_create_member_no_fi(monkeypatch):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        flow = importlib.import_module("paypal.flow")
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    paypal_flow = flow.PayPalFlow.__new__(flow.PayPalFlow)
+    paypal_flow.address = models.BillingAddress(
+        street="27 Victoria Road",
+        house_number="",
+        district="",
+        city="Cambridge",
+        state="",
+        postal_code="CB4 3BW",
+        country="GB",
+    )
+    monkeypatch.setenv("PAYPAL_APPROVAL_PATH", "auto")
+
+    assert paypal_flow._create_member_no_fi_enabled() is True
 
 
 def test_build_protocol_command_supports_gb_with_auto_path_and_sms_default(tmp_path, monkeypatch):

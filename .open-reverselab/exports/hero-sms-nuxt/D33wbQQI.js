@@ -1,0 +1,1 @@
+import"./Ce7G41BA.js";const s=t=>{const r=Math.abs(t),u=r%100,n=r%10;return u>=11&&u<=19?2:n===1?0:n>=2&&n<=4?1:2},e=(t,r,u)=>{const n=Math.abs(t),a=s(t);return r===4?n===0?0:a+1:r===3?a:u?u(t,r):n===1?0:1},o=()=>({pluralRules:{ru:e}});export{o as default};

@@ -6,37 +6,94 @@ Implements the complete protocol:
   Phase 3: Fill signup form + submit (triggers 2FA SMS)
   Phase 4: OTP verification + final authorize mutation
 """
-import re
-import time
+import html as html_lib
 import json
 import os
 import random
+import re
 import string
-import html as html_lib
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Protocol, cast
 from uuid import uuid4
+
+from config import (
+    DATADOME_MODE,
+    DATADOME_ROXY_WAIT_SECONDS,
+    FINGERPRINT_SOURCE,
+    MTR_RUNTIME_MODE,
+    RISK_ROXY_WAIT_SECONDS,
+    RISK_SIGNALS_MODE,
+    USER_AGENT,
+)
 from loguru import logger
 
+from paypal.analytics import (
+    _DD_AUTHCHALLENGE_CONFIG,
+    _DD_HAGRID_CONFIG,
+    _DD_WEASLEY_CONFIG,
+    send_analytics_ts,
+    send_datadog_rum_action,
+    send_datadog_rum_view,
+    send_observability_emit,
+    send_weasley_log,
+)
+from paypal.country_profile import get_country_profile
+from paypal.fingerprint import (
+    build_fn_sync_data,
+    build_signup_fn_sync_data,
+    ensure_runtime_profile,
+    send_da_bootstrap,
+    send_device_fingerprint,
+    send_fraudnet_rdt,
+    send_identity_di_log,
+    send_signup_field_events,
+)
+from paypal.graphql import (
+    ADDRESS_AUTOCOMPLETE_FROM_POSTAL_CODE_QUERY,
+    APPROVE_GUEST_PAYMENT_WITH_CREDIT_CARD_MUTATION,
+    APPROVE_MEMBER_PAYMENT_MUTATION,
+    APPROVE_ONBOARD_PAYMENT_MUTATION,
+    AUTHORIZE_BILLING_MUTATION,
+    CHECKOUT_SESSION_DATA_QUERY,
+    CONFIRM_2FA_PHONE_MUTATION,
+    CREATE_MEMBER_ACCOUNT_MUTATION,
+    DEFERRED_FEATURE_QUERY,
+    GRIFFIN_METADATA_QUERY,
+    INITIATE_2FA_PHONE_MUTATION,
+    INSTALLMENT_OPTIONS_QUERY,
+    ONBOARD_GUEST_MUTATION,
+    SIGNUP_NEW_MEMBER_MUTATION,
+    SUPPORTED_FUNDING_SOURCES_QUERY,
+)
 from paypal.models import (
+    BillingAddress,
+    CardInfo,
     SessionState,
     UserInfo,
-    CardInfo,
-    BillingAddress,
-    generate_user,
+    generate_address,
     generate_card,
     generate_random_email,
+    generate_user,
 )
+from paypal.mtr import (
+    MTR_RUNTIME_PYTHON_GENERATED,
+    ensure_mtr_config,
+    extract_dfp_script_url,
+    extract_mtr_config,
+)
+from paypal.proxy import ProxyConfig, build_proxy_config
+from paypal.proxy import _load_dotenv_value as _load_proxy_dotenv_value
 from paypal.session import (
-    CAPTCHA_SOLVED_CFCI,
     CAPTCHA_FRONTEND_DISABLE_MODE,
     CAPTCHA_MANUAL_REQUIRED_MODE,
+    CAPTCHA_SOLVED_CFCI,
     PayPalAuthChallenge,
     PayPalSession,
     build_common_headers,
@@ -46,59 +103,7 @@ from paypal.session import (
     sanitize_for_log,
     strict_browser_risk_enabled,
 )
-from paypal.mtr import MTR_RUNTIME_PYTHON_GENERATED, extract_dfp_script_url, extract_mtr_config, ensure_mtr_config, send_mtr_signals
-from paypal.proxy import build_proxy_config, ProxyConfig, _load_dotenv_value as _load_proxy_dotenv_value
-from paypal.country_profile import get_country_profile
-from paypal.fingerprint import (
-    ensure_runtime_profile,
-    build_fn_sync_data,
-    build_signup_fn_sync_data,
-    send_da_bootstrap,
-    send_device_fingerprint,
-    send_fraudnet_rdt,
-    send_identity_di_log,
-    send_signup_field_events,
-)
-from paypal.tealeaf import send_tealeaf_data, TealeafSession
-from paypal.analytics import (
-    _DD_AUTHCHALLENGE_CONFIG,
-    _DD_MODXO_CONFIG,
-    _DD_WEASLEY_CONFIG,
-    _DD_HAGRID_CONFIG,
-    send_xo_logger,
-    send_analytics_ts,
-    send_observability_emit,
-    send_weasley_log,
-    send_datadog_rum_view,
-    send_datadog_rum_action,
-)
-from paypal.graphql import (
-    CHECKOUT_SESSION_DATA_QUERY,
-    GRIFFIN_METADATA_QUERY,
-    SUPPORTED_FUNDING_SOURCES_QUERY,
-    DEFERRED_FEATURE_QUERY,
-    INSTALLMENT_OPTIONS_QUERY,
-    ADDRESS_AUTOCOMPLETE_FROM_POSTAL_CODE_QUERY,
-    INITIATE_2FA_PHONE_MUTATION,
-    CONFIRM_2FA_PHONE_MUTATION,
-    SIGNUP_NEW_MEMBER_MUTATION,
-    CREATE_MEMBER_ACCOUNT_MUTATION,
-    ONBOARD_GUEST_MUTATION,
-    APPROVE_MEMBER_PAYMENT_MUTATION,
-    APPROVE_ONBOARD_PAYMENT_MUTATION,
-    APPROVE_GUEST_PAYMENT_WITH_CREDIT_CARD_MUTATION,
-    AUTHORIZE_BILLING_MUTATION,
-)
-from config import (
-    USER_AGENT,
-    FINGERPRINT_SOURCE,
-    DATADOME_MODE,
-    DATADOME_ROXY_WAIT_SECONDS,
-    MTR_RUNTIME_MODE,
-    RISK_ROXY_WAIT_SECONDS,
-    RISK_SIGNALS_MODE,
-)
-
+from paypal.tealeaf import TealeafSession, send_tealeaf_data
 
 _PHASE1_BROWSER_REQUIRED_SIGNALS = (
     "fraudnet_p1",
@@ -2365,7 +2370,7 @@ class PayPalFlow:
                 final_result = result
 
                 if result.get("status") == "success":
-                    logger.success(f"=== Flow completed successfully ===")
+                    logger.success("=== Flow completed successfully ===")
                     return result
 
                 if self._should_retry_full_flow(result) and flow_attempt < self.max_flow_attempts:
@@ -2378,10 +2383,10 @@ class PayPalFlow:
                     )
                     continue
 
-                logger.error(f"=== Flow completed with error status ===")
+                logger.error("=== Flow completed with error status ===")
                 return result
 
-            logger.error(f"=== Flow completed with error status ===")
+            logger.error("=== Flow completed with error status ===")
             return final_result or {
                 "status": "error",
                 "error": "flow ended without result",
@@ -5904,6 +5909,64 @@ class PayPalFlow:
         parts = [self.address.street, self.address.house_number]
         return ", ".join(str(part).strip() for part in parts if str(part or "").strip())
 
+    def _billing_line2(self) -> str:
+        if str(self.address.country or "").upper() == "GB":
+            return ""
+        return self.address.district
+
+    def _billing_state(self) -> str:
+        if str(self.address.country or "").upper() == "GB":
+            return ""
+        return self.address.state
+
+    def _primary_billing_address_payload(self) -> dict[str, object]:
+        billing_autocomplete_type = (
+            "ANS" if self._billing_address_autocomplete_succeeded else "MANUAL"
+        )
+        payload: dict[str, object] = {
+            "postalCode": self.address.postal_code,
+            "line1": self._billing_line1(),
+            "city": self.address.city,
+            "accountQuality": {
+                "autoCompleteType": billing_autocomplete_type,
+                "isUserModified": True,
+            },
+            "country": self.address.country,
+            "familyName": self.user.last_name,
+            "givenName": self.user.first_name,
+        }
+        billing_line2 = self._billing_line2()
+        billing_state = self._billing_state()
+        if billing_line2:
+            payload["line2"] = billing_line2
+        if billing_state:
+            payload["state"] = billing_state
+        return payload
+
+    def _shipping_address_payload(self) -> dict[str, object] | None:
+        # The current GB Billing Agreement signup page in the reference HAR has
+        # hideShipping=true and logs shipping callbacks as unavailable/noop. The
+        # Weasley client only sends an address object that exists in form state;
+        # sending an explicitly empty shippingAddress is not equivalent and can
+        # perturb country-specific address validation. Keep the legacy payload
+        # for countries where we have not confirmed hidden-shipping behaviour.
+        if str(self.address.country or "").upper() == "GB":
+            return None
+        billing_state = self._billing_state()
+        return {
+            "postalCode": "",
+            "line1": "",
+            "city": "",
+            "state": billing_state,
+            "accountQuality": {
+                "autoCompleteType": "MANUAL",
+                "isUserModified": False,
+            },
+            "country": self.address.country,
+            "familyName": self.user.last_name,
+            "givenName": self.user.first_name,
+        }
+
     def _build_signup_variables(self, token: str) -> dict[str, object]:
         country_profile = get_country_profile(self.address.country)
         card_type = self._card_issuer_type()
@@ -5915,9 +5978,8 @@ class PayPalFlow:
         if self._content_metadata_is_unresolved():
             self._apply_configured_or_cached_signup_content_metadata()
         content_identifier = self._resolved_content_identifier()
-        billing_autocomplete_type = (
-            "ANS" if self._billing_address_autocomplete_succeeded else "MANUAL"
-        )
+        billing_address = self._primary_billing_address_payload()
+        shipping_address = self._shipping_address_payload()
         card_payload: dict[str, object] = {
             "cardNumber": self.card.number,
             "expirationDate": self._card_expiration_date(),
@@ -5940,41 +6002,27 @@ class PayPalFlow:
             },
             "supportedThreeDsExperiences": ["IFRAME"],
             "token": token,
-            "billingAddress": {
-                "postalCode": self.address.postal_code,
-                "line1": self._billing_line1(),
-                "line2": self.address.district,
-                "city": self.address.city,
-                "state": self.address.state,
-                "accountQuality": {
-                    "autoCompleteType": billing_autocomplete_type,
-                    "isUserModified": True,
-                },
-                "country": self.address.country,
-                "familyName": self.user.last_name,
-                "givenName": self.user.first_name,
-            },
-            "shippingAddress": {
-                "postalCode": "",
-                "line1": "",
-                "city": "",
-                "state": "",
-                "accountQuality": {
-                    "autoCompleteType": "MANUAL",
-                    "isUserModified": False,
-                },
-                "country": self.address.country,
-                "familyName": self.user.last_name,
-                "givenName": self.user.first_name,
-            },
+            "billingAddress": billing_address,
             "contentIdentifier": content_identifier,
             "marketingOptOut": True,
             "password": self.user.password,
             "crsData": None,
             "legalAgreements": {},
         }
+        if shipping_address is not None:
+            variables["shippingAddress"] = shipping_address
+        if str(self.address.country or "").upper() == "GB":
+            # GB Weasley signup in the captured HAR resolves
+            # hasPrimaryResidentialAddress=true. Frontend variables include a
+            # separate residentialAddress when that form section exists; using
+            # the same verified primary address aligns the protocol path with
+            # the browser path and avoids misclassifying the primary residential
+            # check as a generic billing-address failure.
+            variables["residentialAddress"] = dict(billing_address)
         if country_profile.card_dob_required or "DateOfBirth" in country_profile.kyc_fields:
             variables["dateOfBirth"] = self._dob_payload()
+        if "Nationality" in country_profile.kyc_fields:
+            variables["nationality"] = self.address.country
         if (
             "IdentityDocumentType" in country_profile.kyc_fields
             and "IdentityDocumentNumber" in country_profile.kyc_fields
@@ -5995,7 +6043,7 @@ class PayPalFlow:
             return True
         if raw in {"signup", "signup_card", "card", "legacy"}:
             return False
-        return str(self.address.country or "").upper() == "US"
+        return str(self.address.country or "").upper() in {"US", "GB"}
 
     def _build_create_member_no_fi_variables(self, token: str) -> dict[str, Any]:
         base = self._build_signup_variables(token)
@@ -6019,7 +6067,7 @@ class PayPalFlow:
             "secondaryIdentityDocument": base.get("secondaryIdentityDocument"),
             "shippingAddress": base.get("shippingAddress"),
             "token": token,
-            "residentialAddress": base.get("billingAddress"),
+            "residentialAddress": base.get("residentialAddress") or base.get("billingAddress"),
             "legalAgreements": base.get("legalAgreements") or {},
         }
 
@@ -6084,6 +6132,17 @@ class PayPalFlow:
 
     def _send_address_autocomplete(self, token: str) -> None:
         self._billing_address_autocomplete_succeeded = False
+        skip_countries = {
+            item.strip().upper()
+            for item in os.getenv("PAYPAL_SKIP_ADDRESS_AUTOCOMPLETE_COUNTRIES", "GB").split(",")
+            if item.strip()
+        }
+        if str(self.address.country or "").upper() in skip_countries:
+            logger.info(
+                "Skipping AddressAutocompleteFromPostalCodeQuery for country={}; using MANUAL billing address metadata.",
+                self.address.country,
+            )
+            return
         try:
             address_result = self.session.graphql(
                 "AddressAutocompleteFromPostalCodeQuery",
@@ -6603,6 +6662,24 @@ class PayPalFlow:
                 return True
         return False
 
+    @staticmethod
+    def _is_address_related_signup_error(errors: list[dict[str, Any]]) -> bool:
+        address_messages = {
+            "RESIDENTIAL_ADDRESS_NOT_FOUND",
+            "ADDRESS_NOT_FOUND",
+            "INVALID_BILLING_ADDRESS",
+            "BILLING_ADDRESS_INVALID",
+        }
+        for err in errors or []:
+            message = str(err.get("message") or err.get("_name") or "")
+            if message in address_messages:
+                return True
+            path = {str(item) for item in (err.get("path") or [])}
+            checkpoints = {str(item) for item in (err.get("checkpoints") or [])}
+            if "billingAddress" in path or "billingAddress" in checkpoints:
+                return True
+        return False
+
     def _wait_and_rotate_card(self, reason: str) -> None:
         logger.warning(
             "{}. Waiting before generating a fresh local Visa/MasterCard...",
@@ -6620,6 +6697,47 @@ class PayPalFlow:
             "New generated card for retry: {} exp={}",
             self._masked_card_number(),
             self.card.expiry,
+        )
+
+    def _wait_and_rotate_address(self, reason: str) -> None:
+        logger.warning(
+            "{}. Rotating billing address and re-running address autocomplete...",
+            reason,
+        )
+        delay = self.card_retry_delay_seconds
+        if self.card_retry_jitter_seconds:
+            delay += random.uniform(0, self.card_retry_jitter_seconds)
+        if delay > 0:
+            logger.info("Waiting {:.1f}s before address retry...", delay)
+            time.sleep(delay)
+
+        old_address = (
+            self.address.street,
+            self.address.city,
+            self.address.state,
+            self.address.postal_code,
+        )
+        for _ in range(8):
+            candidate = generate_address(proxy_url=self.proxy_config.url, country=self.address.country)
+            new_address = (
+                candidate.street,
+                candidate.city,
+                candidate.state,
+                candidate.postal_code,
+            )
+            if new_address != old_address:
+                self.address = candidate
+                break
+        else:
+            self.address = generate_address(proxy_url=self.proxy_config.url, country=self.address.country)
+        self._billing_address_autocomplete_succeeded = False
+        self._signup_billing_address_prepared = False
+        logger.info(
+            "New billing address for retry: {}, {}, {} {}",
+            self._billing_line1(),
+            self.address.city,
+            self.address.state,
+            self.address.postal_code,
         )
 
     def _wait_and_rotate_signup_identity(self, reason: str, signup_attempt: int) -> None:
@@ -6705,6 +6823,15 @@ class PayPalFlow:
                         f"{self.max_card_attempts} attempts"
                     )
                 self._wait_and_rotate_card("3DS interactive challenge required")
+                continue
+
+            if self._is_address_related_signup_error(errors):
+                if attempt >= self.max_card_attempts:
+                    raise RuntimeError(
+                        "Signup failed: billing address was rejected after "
+                        f"{self.max_card_attempts} attempts"
+                    )
+                self._wait_and_rotate_address("Billing address rejected by signup")
                 continue
 
             if self._is_card_related_signup_error(errors):

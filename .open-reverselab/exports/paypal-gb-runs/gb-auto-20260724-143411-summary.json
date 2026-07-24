@@ -1,0 +1,58 @@
+[
+  {
+    "idx": 1,
+    "ba": "BA-6YK…802D",
+    "status": "failed",
+    "message": "本地协议引擎退出码 1",
+    "log": ".open-reverselab/exports/paypal-gb-runs/gb-auto-20260724-143411-1.log"
+  },
+  {
+    "idx": 2,
+    "ba": "BA-5VR…212V",
+    "status": "failed",
+    "message": "PayPal authchallenge/recaptcha 拦截了 OTP 发起；短信未发送，需更换新 BA/代理会话/风险环境后重试",
+    "log": ".open-reverselab/exports/paypal-gb-runs/gb-auto-20260724-143411-2.log"
+  },
+  {
+    "idx": 3,
+    "ba": "BA-88T…254R",
+    "status": "failed",
+    "message": "本地协议引擎退出码 1",
+    "log": ".open-reverselab/exports/paypal-gb-runs/gb-auto-20260724-143411-3.log"
+  },
+  {
+    "idx": 4,
+    "ba": "BA-0G0…801W",
+    "status": "failed",
+    "message": "本地协议引擎退出码 1",
+    "log": ".open-reverselab/exports/paypal-gb-runs/gb-auto-20260724-143411-4.log"
+  },
+  {
+    "idx": 5,
+    "ba": "BA-34W…980E",
+    "status": "failed",
+    "message": "PayPal authchallenge/recaptcha 拦截了 OTP 发起；短信未发送，需更换新 BA/代理会话/风险环境后重试",
+    "log": ".open-reverselab/exports/paypal-gb-runs/gb-auto-20260724-143411-5.log"
+  },
+  {
+    "idx": 6,
+    "ba": "BA-25S…413K",
+    "status": "failed",
+    "message": "PayPal authchallenge/recaptcha 拦截了 OTP 发起；短信未发送，需更换新 BA/代理会话/风险环境后重试",
+    "log": ".open-reverselab/exports/paypal-gb-runs/gb-auto-20260724-143411-6.log"
+  },
+  {
+    "idx": 7,
+    "ba": "BA-2P2…664G",
+    "status": "failed",
+    "message": "PayPal authchallenge/recaptcha 拦截了 OTP 发起；短信未发送，需更换新 BA/代理会话/风险环境后重试",
+    "log": ".open-reverselab/exports/paypal-gb-runs/gb-auto-20260724-143411-7.log"
+  },
+  {
+    "idx": 8,
+    "ba": "BA-6P2…434V",
+    "status": "failed",
+    "message": "PayPal authchallenge/recaptcha 拦截了 OTP 发起；短信未发送，需更换新 BA/代理会话/风险环境后重试",
+    "log": ".open-reverselab/exports/paypal-gb-runs/gb-auto-20260724-143411-8.log"
+  }
+]

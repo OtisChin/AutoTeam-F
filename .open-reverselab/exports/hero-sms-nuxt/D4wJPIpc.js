@@ -1,0 +1,1 @@
+var e=(c=>(c[c.Wait=3]="Wait",c[c.Cancel=4]="Cancel",c[c.Success=5]="Success",c[c.CancelAfterSuccess=6]="CancelAfterSuccess",c[c.Refunded=7]="Refunded",c))(e||{});const n={Wait:"WAIT",Cancel:"CANCEL",Success:"SUCCESS",CancelAfterSuccess:"CANCEL_AFTER_SUCCESS"},s=[4,6,7];export{s as E,n as a,e as b};

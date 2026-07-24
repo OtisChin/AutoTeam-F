@@ -1,0 +1,1 @@
+function(e,n,t){"use strict";t.d(n,"a",(function(){return r}));const r=e=>"function"===typeof e}

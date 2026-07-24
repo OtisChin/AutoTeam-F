@@ -414,12 +414,19 @@ _US_ADDRESSES = [
 ]
 
 _GB_ADDRESSES = [
-    ("10 Downing Street", "", "London", "London", "SW1A 2AA"),
-    ("221B Baker Street", "", "London", "London", "NW1 6XE"),
-    ("1 Deansgate", "", "Manchester", "Greater Manchester", "M3 1AZ"),
-    ("25 Albion Street", "", "Leeds", "West Yorkshire", "LS1 5AP"),
-    ("100 Temple Street", "", "Bristol", "Bristol", "BS1 6AG"),
-    ("1 Victoria Square", "", "Birmingham", "West Midlands", "B1 1BD"),
+    # Keep these away from landmarks, government buildings, offices, PO boxes,
+    # and obvious commercial addresses. PayPal GB onboarding may accept the
+    # phone OTP and then reject signup with RESIDENTIAL_ADDRESS_NOT_FOUND when
+    # the billing address normalizes to a non-residential/landmark location
+    # (for example 10 Downing Street / SW1A 2AA).
+    ("27 Victoria Road", "", "Cambridge", "", "CB4 3BW"),
+    ("39 Victoria Road", "", "Cambridge", "", "CB4 3BW"),
+    ("Flat 1, 63 Victoria Road", "", "Cambridge", "", "CB4 3BW"),
+    ("Flat 2, 63 Victoria Road", "", "Cambridge", "", "CB4 3BW"),
+    ("Flat 3, 42c Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
+    ("Flat 1, Higgs Yard 42c Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
+    ("Flat 2, Higgs Yard 42c Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
+    ("Flat 4, Stirling House 44 Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
 ]
 
 _NL_ADDRESSES = [

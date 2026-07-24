@@ -1,0 +1,1 @@
+const a="10%",o=new Date("2026-07-01T00:00:00+03:00"),t=new Date("2026-07-15T23:59:59+03:00"),n="Europe/Moscow",T=(s=new Date)=>s>=o&&s<=t,O=T()?"75%":"60%";export{a as F,O as M,n as P,t as a,o as b,T as i};

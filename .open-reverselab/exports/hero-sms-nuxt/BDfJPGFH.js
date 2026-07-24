@@ -1,0 +1,1 @@
+const $=e=>{switch(e.length){case 8:return e.replace(/(\d{3})(\d{3})(\d{2})/,"$1 $2 $3");case 7:return e.replace(/(\d{3})(\d{2})(\d{2})/,"$1 $2 $3");case 6:return e.replace(/(\d{2})(\d{2})(\d{2})/,"$1 $2 $3");default:return e}},l=(e,r,n=!0)=>{if(e==null||!r)return"";const t=r.slice(e.length),a=t.slice(0,3),c=t.slice(3),s=$(c);return`${n?"+":""}${e} (${a}) ${s}`};export{l as p};

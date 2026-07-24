@@ -1,0 +1,1 @@
+import{ax as r,ag as s}from"./Ce7G41BA.js";const u=(c,i)=>{let e;const o=()=>{e&&(clearTimeout(e),e=void 0)},t=((...n)=>{o(),e=setTimeout(()=>{e=void 0,c(...n)},i)});return t.cancel=o,r()&&s(o),t};export{u as d};

@@ -1,0 +1,1 @@
+import{d as n,H as o,n as s,c,J as _,R as r,o as l}from"./Ce7G41BA.js";const d=n({__name:"index",async setup(p){let e,a;const t=o();return[e,a]=s(()=>_(t(r.PROFILE_HISTORY_NUMBERS),{replace:!0})),await e,a(),(i,m)=>(l(),c("div"))}});export{d as default};

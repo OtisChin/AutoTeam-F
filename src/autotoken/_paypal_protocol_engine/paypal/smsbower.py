@@ -53,6 +53,11 @@ class SMSBowerActivation:
     price: float
     expires_at: float
     reused: bool = False
+    provider_name: str = ""
+    service: str = ""
+    country: str = ""
+    last_code: str = ""
+    use_count: int = 0
 
 
 class SMSBowerClientProtocol(Protocol):
@@ -291,7 +296,16 @@ class SMSBowerActivationStore:
         tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(self.path)
 
-    def reusable_activation(self, now: float | None = None) -> SMSBowerActivation | None:
+    def reusable_activation(
+        self,
+        now: float | None = None,
+        *,
+        provider_name: str = "",
+        service: str = "",
+        country: str = "",
+        phone_number: str = "",
+        max_uses: int = 0,
+    ) -> SMSBowerActivation | None:
         now = time.time() if now is None else now
         data = self.load()
         activations = data.get("activations")
@@ -299,6 +313,10 @@ class SMSBowerActivationStore:
             return None
         fresh_rows: list[dict[str, object]] = []
         selected: SMSBowerActivation | None = None
+        expected_provider = str(provider_name or "").strip()
+        expected_service = str(service or "").strip()
+        expected_country = str(country or "").strip()
+        expected_phone_digits = _digits(phone_number)
         for row in activations:
             if not isinstance(row, dict):
                 continue
@@ -306,6 +324,19 @@ class SMSBowerActivationStore:
             if expires_at <= now:
                 continue
             fresh_rows.append(row)
+            if expected_provider and str(row.get("provider_name") or row.get("provider_id") or "").strip() != expected_provider:
+                continue
+            if expected_service and str(row.get("service") or "").strip() not in {"", expected_service}:
+                continue
+            if expected_country and str(row.get("country") or "").strip() not in {"", expected_country}:
+                continue
+            if expected_phone_digits:
+                value_digits = _digits(row.get("phone_number"))
+                if not value_digits or not value_digits.endswith(expected_phone_digits[-10:]):
+                    continue
+            use_count = _parse_int(row.get("use_count"))
+            if max_uses > 0 and use_count >= max_uses:
+                continue
             if selected is None:
                 selected = SMSBowerActivation(
                     activation_id=str(row.get("activation_id") or ""),
@@ -314,6 +345,11 @@ class SMSBowerActivationStore:
                     price=_parse_float(row.get("price")),
                     expires_at=expires_at,
                     reused=True,
+                    provider_name=str(row.get("provider_name") or row.get("provider_id") or ""),
+                    service=str(row.get("service") or ""),
+                    country=str(row.get("country") or ""),
+                    last_code=str(row.get("last_code") or ""),
+                    use_count=use_count,
                 )
         if len(fresh_rows) != len(activations):
             data["activations"] = fresh_rows
@@ -330,10 +366,18 @@ class SMSBowerActivationStore:
         provider_id: str,
         price: float,
         expires_at: float,
+        provider_name: str = "",
+        service: str = "",
+        country: str = "",
+        last_code: str = "",
+        increment_use: bool = True,
     ) -> None:
         data = self.load()
         activations = data.get("activations")
         rows = [row for row in activations if isinstance(row, dict)] if isinstance(activations, list) else []
+        existing = next((row for row in rows if str(row.get("activation_id") or "") == activation_id), {})
+        previous_use_count = _parse_int(existing.get("use_count")) if isinstance(existing, dict) else 0
+        use_count = previous_use_count + 1 if increment_use else previous_use_count
         rows = [row for row in rows if str(row.get("activation_id") or "") != activation_id]
         rows.insert(
             0,
@@ -343,6 +387,12 @@ class SMSBowerActivationStore:
                 "provider_id": provider_id,
                 "price": price,
                 "expires_at": expires_at,
+                "provider_name": provider_name or provider_id,
+                "service": service,
+                "country": country,
+                "last_code": last_code,
+                "use_count": use_count,
+                "last_used_at": time.time(),
             },
         )
         data["activations"] = rows[:20]
@@ -350,6 +400,26 @@ class SMSBowerActivationStore:
         if isinstance(failures, dict):
             failures[str(provider_id)] = 0
         self.save(data)
+
+    def remember_activation(
+        self,
+        activation: SMSBowerActivation,
+        *,
+        last_code: str = "",
+        increment_use: bool = True,
+    ) -> None:
+        self.remember_success(
+            activation_id=activation.activation_id,
+            phone_number=activation.phone_number,
+            provider_id=activation.provider_id,
+            price=activation.price,
+            expires_at=activation.expires_at,
+            provider_name=activation.provider_name or activation.provider_id,
+            service=activation.service,
+            country=activation.country,
+            last_code=last_code or activation.last_code,
+            increment_use=increment_use,
+        )
 
     def abandon(self, activation_id: str) -> None:
         data = self.load()
@@ -404,7 +474,7 @@ class SMSBowerOtpProvider:
         self.max_attempts = max(1, int(max_attempts))
 
     def reserve_number(self) -> SMSBowerActivation:
-        reusable = self.store.reusable_activation()
+        reusable = self.store.reusable_activation(service=self.service, country=self.country)
         if reusable is not None:
             logger.info("Reusing active SMSBower phone from provider {}", reusable.provider_id)
             self._set_status(reusable.activation_id, 3)
@@ -429,6 +499,9 @@ class SMSBowerOtpProvider:
                     price=_parse_float(data.get("activationCost"), price.price),
                     expires_at=time.time() + self.activation_ttl_seconds,
                     reused=False,
+                    provider_name="smsbower",
+                    service=self.service,
+                    country=self.country,
                 )
                 logger.info(
                     "Reserved SMSBower PayPal Brazil number provider={} price={}",
@@ -455,12 +528,23 @@ class SMSBowerOtpProvider:
             status = self._get_status(activation.activation_id)
             code = self._code_from_status(status)
             if code:
+                if activation.reused and activation.last_code and code == activation.last_code:
+                    logger.debug("Ignoring stale SMSBower OTP code for reused activation {}", activation.activation_id)
+                    time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
+                    continue
+                activation.last_code = code
+                activation.use_count = int(activation.use_count or 0) + 1
                 self.store.remember_success(
                     activation_id=activation.activation_id,
                     phone_number=activation.phone_number,
                     provider_id=activation.provider_id,
                     price=activation.price,
                     expires_at=activation.expires_at,
+                    provider_name=activation.provider_name or "smsbower",
+                    service=self.service,
+                    country=self.country,
+                    last_code=code,
+                    increment_use=False,
                 )
                 return code
             if status in {"STATUS_CANCEL", "NO_ACTIVATION"}:
@@ -476,11 +560,14 @@ class SMSBowerOtpProvider:
             activation.reused,
             reason,
         )
-        try:
-            self._set_status(activation.activation_id, 8)
-        except Exception as exc:
-            logger.warning("SMSBower activation cancel failed: {}", exc)
-        self.store.abandon(activation.activation_id)
+        if _env_bool("PAYPAL_SMS_CANCEL_ON_ABANDON", default=not activation.reused):
+            try:
+                self._set_status(activation.activation_id, 8)
+            except Exception as exc:
+                logger.warning("SMSBower activation cancel failed: {}", exc)
+            self.store.abandon(activation.activation_id)
+        elif activation.reused:
+            self.store.remember_activation(activation)
         self.store.record_failure(activation.provider_id)
 
     def register_confirmation_result(self, activation: SMSBowerActivation, confirmed: bool) -> None:
@@ -491,7 +578,21 @@ class SMSBowerOtpProvider:
                 provider_id=activation.provider_id,
                 price=activation.price,
                 expires_at=activation.expires_at,
+                provider_name=activation.provider_name or "smsbower",
+                service=self.service,
+                country=self.country,
+                last_code=activation.last_code,
             )
+            if not _env_bool("PAYPAL_SMS_FINALIZE_ON_SUCCESS", default=False):
+                try:
+                    self._set_status(activation.activation_id, 3)
+                except Exception as exc:
+                    logger.debug("SMSBower setStatus(3) after success soft-failed: {}", exc)
+                return
+            try:
+                self._set_status(activation.activation_id, 6)
+            except Exception as exc:
+                logger.warning("SMSBower activation finalize failed: {}", exc)
             return
         self.abandon(activation, "paypal_rejected_code")
 
@@ -691,6 +792,7 @@ class SmsActivateOtpProvider:
         *,
         client: SmsActivateClient,
         provider_name: str,
+        store: SMSBowerActivationStore | None = None,
         service: str = PAYPAL_SMS_DEFAULT_SERVICE,
         country: str = PAYPAL_SMS_DEFAULT_COUNTRY,
         wait_seconds: float = SMSBOWER_DEFAULT_WAIT_SECONDS,
@@ -700,9 +802,14 @@ class SmsActivateOtpProvider:
         min_price: str = "",
         max_price: str = "",
         preferred_price: str = "",
+        reuse_enabled: bool = True,
+        reuse_max_uses: int = 5,
+        finalize_on_success: bool = False,
+        cancel_on_abandon: bool = False,
     ) -> None:
         self.client = client
         self.provider_name = normalize_paypal_sms_provider(provider_name) or provider_name
+        self.store = store or SMSBowerActivationStore(_project_root() / "cache" / "paypal_sms_activate_numbers.json")
         self.service = str(service or PAYPAL_SMS_DEFAULT_SERVICE).strip()
         self.country = str(country or PAYPAL_SMS_DEFAULT_COUNTRY).strip()
         self.wait_seconds = max(1.0, float(wait_seconds)) if wait_seconds >= 1 else float(wait_seconds)
@@ -712,8 +819,33 @@ class SmsActivateOtpProvider:
         self.min_price = str(min_price or "").strip()
         self.max_price = str(max_price or "").strip()
         self.preferred_price = str(preferred_price or "").strip()
+        self.reuse_enabled = bool(reuse_enabled)
+        self.reuse_max_uses = max(1, int(reuse_max_uses))
+        self.finalize_on_success = bool(finalize_on_success)
+        self.cancel_on_abandon = bool(cancel_on_abandon)
 
     def reserve_number(self) -> SMSBowerActivation:
+        if self.reuse_enabled:
+            reusable = self.store.reusable_activation(
+                provider_name=self.provider_name,
+                service=self.service,
+                country=self.country,
+                max_uses=self.reuse_max_uses,
+            )
+            if reusable is not None:
+                logger.info(
+                    "Reusing active {} phone country={} service={} activation={} uses={}",
+                    self.provider_name,
+                    self.country,
+                    self.service,
+                    reusable.activation_id,
+                    reusable.use_count,
+                )
+                try:
+                    self.client.set_status(reusable.activation_id, 3)
+                except Exception as exc:
+                    logger.debug("{} setStatus(3) for reused number soft-failed: {}", self.provider_name, exc)
+                return reusable
         params = self._number_params()
         payload = self._request_number(params)
         activation = self._activation_from_payload(payload)
@@ -779,6 +911,9 @@ class SmsActivateOtpProvider:
             price=price,
             expires_at=time.time() + self.activation_ttl_seconds,
             reused=False,
+            provider_name=self.provider_name,
+            service=self.service,
+            country=self.country,
         )
 
     @staticmethod
@@ -823,8 +958,17 @@ class SmsActivateOtpProvider:
                 status = ""
             code = SMSBowerOtpProvider._code_from_status(status)
             if code:
+                if activation.reused and activation.last_code and code == activation.last_code:
+                    logger.debug("Ignoring stale {} OTP code for reused activation {}", self.provider_name, activation.activation_id)
+                    time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
+                    continue
+                activation.last_code = code
+                activation.use_count = int(activation.use_count or 0) + 1
+                if self.reuse_enabled:
+                    self.store.remember_activation(activation, last_code=code, increment_use=False)
                 return code
             if str(status or "").strip().upper() in {"STATUS_CANCEL", "NO_ACTIVATION", "ACCESS_CANCEL"}:
+                self.store.abandon(activation.activation_id)
                 return None
             time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
         return None
@@ -836,23 +980,69 @@ class SmsActivateOtpProvider:
             activation.provider_id,
             reason,
         )
-        try:
-            self.client.set_status(activation.activation_id, 8)
-        except Exception as exc:
-            logger.warning("{} activation cancel failed: {}", self.provider_name, exc)
+        if str(reason or "").strip().lower() == "sms_timeout":
+            # A timed-out number must not be selected again in the same auto
+            # OTP flow.  The caller expects "60 seconds without an OTP" to mean
+            # "switch to a different number"; keeping it in the reusable cache
+            # causes reserve_number() to immediately pick the same activation
+            # again.
+            self.store.abandon(activation.activation_id)
+            self.store.record_failure(activation.provider_id)
+            if not activation.reused:
+                try:
+                    self.client.set_status(activation.activation_id, 8)
+                except Exception as exc:
+                    logger.debug("{} activation cancel after sms_timeout soft-failed: {}", self.provider_name, exc)
+            logger.info("{} activation={} removed from reuse cache after sms_timeout", self.provider_name, activation.activation_id)
+            return
+        if self.cancel_on_abandon and not activation.reused:
+            try:
+                self.client.set_status(activation.activation_id, 8)
+            except Exception as exc:
+                logger.warning("{} activation cancel failed: {}", self.provider_name, exc)
+            self.store.abandon(activation.activation_id)
+        elif self.reuse_enabled:
+            self.store.remember_activation(activation)
+            logger.info("Keeping {} activation={} reusable after {}", self.provider_name, activation.activation_id, reason)
+        else:
+            self.store.record_failure(activation.provider_id)
 
     def register_confirmation_result(self, activation: SMSBowerActivation, confirmed: bool) -> None:
-        try:
-            self.client.set_status(activation.activation_id, 6 if confirmed else 8)
-        except Exception as exc:
-            logger.warning("{} activation finalize failed: {}", self.provider_name, exc)
+        if confirmed:
+            if self.reuse_enabled:
+                self.store.remember_activation(activation)
+            if self.finalize_on_success:
+                try:
+                    self.client.set_status(activation.activation_id, 6)
+                except Exception as exc:
+                    logger.warning("{} activation finalize failed: {}", self.provider_name, exc)
+            else:
+                try:
+                    self.client.set_status(activation.activation_id, 3)
+                except Exception as exc:
+                    logger.debug("{} setStatus(3) after success soft-failed: {}", self.provider_name, exc)
+            return
+        if self.cancel_on_abandon:
+            try:
+                self.client.set_status(activation.activation_id, 8)
+            except Exception as exc:
+                logger.warning("{} activation cancel failed: {}", self.provider_name, exc)
+            self.store.abandon(activation.activation_id)
+        elif self.reuse_enabled:
+            self.store.remember_activation(activation)
 
 
 def _sms_provider_base_url(provider: str, explicit: str = "") -> str:
     if explicit:
         return explicit
     if provider in {"hero_sms", "hero_sms_rent"}:
-        return HEROSMS_API_URL
+        return (
+            _load_dotenv_value("PAYPAL_HERO_SMS_BASE_URL")
+            or _load_dotenv_value("PAYPAL_HEROSMS_BASE_URL")
+            or _load_dotenv_value("OAUTH_HERO_SMS_BASE_URL")
+            or _load_dotenv_value("GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL")
+            or HEROSMS_API_URL
+        )
     return (
         _load_dotenv_value("PAYPAL_SMSBOWER_BASE_URL")
         or _load_dotenv_value("SMSBOWER_BASE_URL")
@@ -872,6 +1062,7 @@ def _sms_provider_api_key(provider: str, explicit: str | None = None) -> str:
             or _load_dotenv_value("HERO_SMS_API_KEY")
             or _load_dotenv_value("HEROSMS_API_KEY")
             or _load_dotenv_value("OAUTH_HERO_SMS_API_KEY")
+            or _load_dotenv_value("GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY")
         )
     return (
         _load_dotenv_value("PAYPAL_SMSBOWER_API_KEY")
@@ -930,6 +1121,7 @@ def build_sms_activate_provider(
     return SmsActivateOtpProvider(
         client=SmsActivateClient(resolved_key, base_url=resolved_base_url),
         provider_name=normalized,
+        store=SMSBowerActivationStore(_project_root() / "cache" / f"paypal_{normalized}_numbers.json"),
         service=resolved_service,
         country=resolved_country,
         wait_seconds=wait_seconds
@@ -948,7 +1140,102 @@ def build_sms_activate_provider(
         min_price=min_price or _load_dotenv_value("PAYPAL_SMS_MIN_PRICE"),
         max_price=max_price or _load_dotenv_value("PAYPAL_SMS_MAX_PRICE"),
         preferred_price=preferred_price or _load_dotenv_value("PAYPAL_SMS_PREFERRED_PRICE"),
+        reuse_enabled=_env_bool("PAYPAL_SMS_REUSE_ENABLED", default=True),
+        reuse_max_uses=_env_int("PAYPAL_SMS_REUSE_MAX_USES", 5, 1, 50),
+        finalize_on_success=_env_bool("PAYPAL_SMS_FINALIZE_ON_SUCCESS", default=False),
+        cancel_on_abandon=_env_bool("PAYPAL_SMS_CANCEL_ON_ABANDON", default=False),
     )
+
+
+def _hero_sms_web_base_url() -> str:
+    return (
+        _load_dotenv_value("PAYPAL_HERO_SMS_WEB_BASE_URL")
+        or _load_dotenv_value("PAYPAL_HEROSMS_WEB_BASE_URL")
+        or _load_dotenv_value("HERO_SMS_WEB_BASE_URL")
+        or "https://hero-sms.com"
+    ).rstrip("/")
+
+
+class HeroSmsWebClient:
+    """Small client for HeroSMS' browser REST API.
+
+    The public API key used by ``stubs/handler_api.php`` does not authenticate
+    browser REST endpoints such as ``/api/v1/activations``.  These endpoints
+    require the same authenticated browser session cookies as the web UI.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "",
+        cookie: str = "",
+        bearer_token: str = "",
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        self.base_url = (base_url or _hero_sms_web_base_url()).rstrip("/")
+        self.cookie = str(cookie or "").strip()
+        self.bearer_token = str(bearer_token or "").strip()
+        self.timeout_seconds = timeout_seconds
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.cookie or self.bearer_token)
+
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, object] | None = None,
+        body: dict[str, object] | None = None,
+    ) -> object:
+        if not self.has_credentials:
+            raise SMSBowerApiError("HeroSMS web session is not configured")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+        if self.bearer_token:
+            headers["Authorization"] = f"Bearer {self.bearer_token}"
+        url = self.base_url + (path if path.startswith("/") else f"/{path}")
+        with httpx.Client(timeout=httpx.Timeout(self.timeout_seconds), follow_redirects=True, trust_env=False) as client:
+            response = client.request(method.upper(), url, params=params, json=body, headers=headers)
+        if response.status_code >= 400:
+            raise _safe_api_error(f"{method.upper()} {path}", response.status_code, response.text)
+        try:
+            return response.json()
+        except json.JSONDecodeError as exc:
+            raise SMSBowerApiError(f"HeroSMS web API returned non-JSON for {path}: {response.text[:120]}") from exc
+
+    def get_active_activations(self) -> object:
+        return self.request_json("GET", "/api/v1/activations", params={"page": 1, "size": 100})
+
+    def get_activation(self, activation_id: str) -> object:
+        return self.request_json("GET", f"/api/v1/activations/{activation_id}")
+
+    def patch_sms(self) -> object:
+        return self.request_json("PATCH", "/api/v1/get-sms")
+
+    def request_extra_sms(self, activation_id: str) -> object:
+        return self.request_json("POST", f"/api/v1/activations/{activation_id}/request-extra-sms")
+
+
+def _load_hero_sms_web_client() -> HeroSmsWebClient | None:
+    cookie = (
+        _load_dotenv_value("PAYPAL_HERO_SMS_COOKIE")
+        or _load_dotenv_value("PAYPAL_HEROSMS_COOKIE")
+        or _load_dotenv_value("HERO_SMS_COOKIE")
+    )
+    bearer = (
+        _load_dotenv_value("PAYPAL_HERO_SMS_BEARER_TOKEN")
+        or _load_dotenv_value("PAYPAL_HEROSMS_BEARER_TOKEN")
+        or _load_dotenv_value("HERO_SMS_BEARER_TOKEN")
+    )
+    client = HeroSmsWebClient(cookie=cookie, bearer_token=bearer)
+    return client if client.has_credentials else None
 
 
 class HeroSmsRentOtpProvider:
@@ -959,21 +1246,46 @@ class HeroSmsRentOtpProvider:
         *,
         client: SmsActivateClient,
         phone_number: str,
+        activation_id: str = "",
+        store: SMSBowerActivationStore | None = None,
+        web_client: HeroSmsWebClient | None = None,
         country: str = PAYPAL_SMS_DEFAULT_COUNTRY,
         wait_seconds: float = SMSBOWER_DEFAULT_WAIT_SECONDS,
         poll_interval_seconds: float = SMSBOWER_DEFAULT_POLL_INTERVAL_SECONDS,
     ) -> None:
         self.client = client
-        self.phone_number = normalize_sms_activate_phone(phone_number, country=country)
+        phone_text, inline_activation_id = self._split_phone_activation_ref(phone_number)
+        self.phone_number = normalize_sms_activate_phone(phone_text, country=country)
+        self.activation_id = str(activation_id or inline_activation_id or "").strip()
+        self.store = store or SMSBowerActivationStore(_project_root() / "cache" / "paypal_hero_sms_rent_numbers.json")
+        self.web_client = web_client
         self.country = str(country or PAYPAL_SMS_DEFAULT_COUNTRY).strip()
         self.wait_seconds = max(1.0, float(wait_seconds)) if wait_seconds >= 1 else float(wait_seconds)
         self.poll_interval_seconds = max(0.01, float(poll_interval_seconds))
         self.max_attempts = 1
 
+    @staticmethod
+    def _split_phone_activation_ref(value: object) -> tuple[str, str]:
+        text = str(value or "").strip()
+        for sep in ("#", "|", ","):
+            if sep in text:
+                phone, ref = text.split(sep, 1)
+                ref = ref.strip()
+                if ref:
+                    return phone.strip(), ref
+        match = re.match(r"(?i)^\s*id[:=]([A-Za-z0-9_-]+)\s+(.+)$", text)
+        if match:
+            return match.group(2).strip(), match.group(1).strip()
+        return text, ""
+
     def reserve_number(self) -> SMSBowerActivation:
         rent_id = self._find_rent_id_by_phone()
         if not rent_id:
-            raise SMSBowerApiError(f"HeroSMS rent number not found in active rents: {self._masked_phone()}")
+            raise SMSBowerApiError(
+                "HeroSMS rent number not found in reusable cache/web session: "
+                f"{self._masked_phone()}. Configure PAYPAL_HERO_SMS_RENT_ACTIVATION_ID, "
+                "enter '<phone>#<activation_id>', or configure PAYPAL_HERO_SMS_COOKIE for web REST lookup."
+            )
         return SMSBowerActivation(
             activation_id=rent_id,
             phone_number=self.phone_number,
@@ -981,12 +1293,44 @@ class HeroSmsRentOtpProvider:
             price=0.0,
             expires_at=time.time() + 24 * 60 * 60,
             reused=True,
+            provider_name="hero_sms_rent",
+            country=self.country,
         )
 
     def _masked_phone(self) -> str:
         return "*" * max(0, len(self.phone_number) - 4) + self.phone_number[-4:]
 
     def _find_rent_id_by_phone(self) -> str:
+        if self.activation_id:
+            return self.activation_id
+        env_id = (
+            _load_dotenv_value("PAYPAL_HERO_SMS_RENT_ACTIVATION_ID")
+            or _load_dotenv_value("PAYPAL_HEROSMS_RENT_ACTIVATION_ID")
+            or _load_dotenv_value("HERO_SMS_RENT_ACTIVATION_ID")
+        )
+        if env_id:
+            return env_id.strip()
+        reusable = self.store.reusable_activation(
+            provider_name="hero_sms_rent",
+            country=self.country,
+            phone_number=self.phone_number,
+        ) or SMSBowerActivationStore(_project_root() / "cache" / "paypal_hero_sms_numbers.json").reusable_activation(
+            provider_name="hero_sms",
+            country=self.country,
+            phone_number=self.phone_number,
+        )
+        if reusable is not None:
+            return reusable.activation_id
+        if self.web_client is not None:
+            try:
+                payload = self.web_client.get_active_activations()
+                rent_id = self._rent_id_from_payload(payload)
+                if rent_id:
+                    return rent_id
+            except Exception as exc:
+                logger.debug("HeroSMS web activation lookup soft-failed: {}", exc)
+        if not _env_bool("PAYPAL_HERO_SMS_RENT_ALLOW_LEGACY_ACTIONS", default=False):
+            return ""
         for action in ("getRentList", "getRentStatus"):
             try:
                 payload = self.client.request_json_or_text(action, {} if action == "getRentList" else {"phone": self.phone_number})
@@ -1034,18 +1378,42 @@ class HeroSmsRentOtpProvider:
         return walk(payload)
 
     def mark_sms_sent(self, activation: SMSBowerActivation) -> None:
-        _ = activation
+        try:
+            self.client.set_status(activation.activation_id, 3)
+        except Exception as exc:
+            logger.debug("HeroSMS rent setStatus(3) soft-failed: {}", exc)
+        if self.web_client is not None:
+            try:
+                self.web_client.request_extra_sms(activation.activation_id)
+            except Exception as exc:
+                logger.debug("HeroSMS rent request-extra-sms soft-failed: {}", exc)
 
     def wait_for_code(self, activation: SMSBowerActivation, timeout_seconds: float | None = None) -> str | None:
         deadline = time.time() + (self.wait_seconds if timeout_seconds is None else float(timeout_seconds))
         while time.time() <= deadline:
             try:
-                payload = self.client.request_json_or_text("getRentStatus", {"id": activation.activation_id})
+                payload: object = self.client.get_status(activation.activation_id)
             except Exception as exc:
-                logger.debug("HeroSMS getRentStatus soft-failed: {}", exc)
+                logger.debug("HeroSMS rent getStatus soft-failed: {}", exc)
                 payload = ""
             code = self._code_from_payload(payload)
+            if not code and self.web_client is not None:
+                try:
+                    self.web_client.patch_sms()
+                except Exception as exc:
+                    logger.debug("HeroSMS patchSMS soft-failed: {}", exc)
+                try:
+                    payload = self.web_client.get_activation(activation.activation_id)
+                    code = self._code_from_payload(payload)
+                except Exception as exc:
+                    logger.debug("HeroSMS web activation status soft-failed: {}", exc)
             if code:
+                if activation.last_code and code == activation.last_code:
+                    logger.debug("Ignoring stale HeroSMS rent OTP code for activation {}", activation.activation_id)
+                    time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
+                    continue
+                activation.last_code = code
+                self.store.remember_activation(activation, last_code=code, increment_use=False)
                 return code
             time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
         return None
@@ -1075,9 +1443,15 @@ class HeroSmsRentOtpProvider:
         return ""
 
     def abandon(self, activation: SMSBowerActivation, reason: str) -> None:
+        self.store.remember_activation(activation, increment_use=False)
         logger.info("Keeping HeroSMS rent activation={} reason={}", activation.activation_id, reason)
 
     def register_confirmation_result(self, activation: SMSBowerActivation, confirmed: bool) -> None:
+        self.store.remember_activation(activation, increment_use=confirmed)
+        try:
+            self.client.set_status(activation.activation_id, 3)
+        except Exception as exc:
+            logger.debug("HeroSMS rent setStatus(3) after confirmation soft-failed: {}", exc)
         logger.info("HeroSMS rent activation={} confirmed={}", activation.activation_id, confirmed)
 
 
@@ -1097,6 +1471,13 @@ def build_hero_sms_rent_provider(
     return HeroSmsRentOtpProvider(
         client=SmsActivateClient(resolved_key, base_url=resolved_base_url),
         phone_number=phone_number,
+        activation_id=(
+            _load_dotenv_value("PAYPAL_HERO_SMS_RENT_ACTIVATION_ID")
+            or _load_dotenv_value("PAYPAL_HEROSMS_RENT_ACTIVATION_ID")
+            or _load_dotenv_value("HERO_SMS_RENT_ACTIVATION_ID")
+        ),
+        store=SMSBowerActivationStore(_project_root() / "cache" / "paypal_hero_sms_rent_numbers.json"),
+        web_client=_load_hero_sms_web_client(),
         country=resolved_country,
         wait_seconds=wait_seconds
         if wait_seconds is not None
