@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from autotoken.core.paths import PROJECT_ROOT
-from autotoken.payments.brazil_pix import PixJobConfig, generate_pix_trial
+from autotoken.payments.brazil_pix import PixJobConfig, build_pix_dynamic_proxy, generate_pix_trial
+from autotoken.services import proxy_runtime
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
 
@@ -28,6 +30,7 @@ TEMP_PIX_CDK_API_BASE = "https://pix.olimap.top/api/v1"
 MAX_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
+PROXY_PREFLIGHT_MAX_ATTEMPTS = 3
 JOBS: dict[str, dict[str, Any]] = {}
 PAYMENT_JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
@@ -709,6 +712,7 @@ def _run_job(job_id: str, req: BrazilPixStartRequest) -> None:
             region=(req.region or "BR").strip().upper() or "BR",
             direct_proxies=proxies,
         )
+        cfg = _preflight_pix_proxy_or_raise(cfg, log)
         result = generate_pix_trial(cfg, log=log)
         result["account_email"] = account_email
         link_record = _link_record_from_result(job_id, account_email, result)
@@ -761,6 +765,24 @@ def _account_attempt_limit(req: BrazilPixBatchStartRequest) -> int:
     except Exception:
         attempts = MAX_ACCOUNT_ATTEMPTS
     return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+
+def _preflight_pix_proxy_or_raise(cfg: PixJobConfig, log) -> PixJobConfig:
+    if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
+        return cfg
+    errors: list[str] = []
+    for stage_index in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
+        proxy_url, sid_label = build_pix_dynamic_proxy(cfg, stage_index)
+        if not proxy_url:
+            continue
+        log(f"代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} {sid_label}")
+        ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
+        if ok:
+            log(f"代理预检通过：{message}")
+            return replace(cfg, direct_proxies=[proxy_url])
+        errors.append(str(message or "unknown"))
+        log(f"代理预检失败：{message}")
+    raise RuntimeError(f"代理预检失败: {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
 
 
 def _temp_batch_concurrency(req: BrazilPixTempBatchStartRequest, total: int) -> int:
@@ -850,12 +872,27 @@ def _run_batch_account(
                 direct_proxies=attempt_proxies,
             )
             try:
+                cfg = _preflight_pix_proxy_or_raise(cfg, account_log)
                 result = generate_pix_trial(cfg, log=account_log)
                 if attempt > 1:
                     _append_log(job_id, f"[{index}/{total}] 重试成功：{email} attempt={attempt}")
                 break
             except Exception as exc:
                 last_error = str(exc)
+                if last_error.startswith("代理预检失败"):
+                    status = _set_account_status(email, ACCOUNT_STATUS_FAILED, error=last_error, job_id=job_id)
+                    _append_log(job_id, f"[{index}/{total}] 代理预检已达到上限，停止真实提链：{email} {last_error}")
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": last_error,
+                        },
+                        "status": status,
+                    }
                 if _is_already_paid_error(last_error):
                     _mark_account_plus_pix(email, last_error)
                     status = _set_account_status(email, ACCOUNT_STATUS_SUCCESS, error=last_error, job_id=job_id)

@@ -17,5 +17,10 @@ assert.match(page, /<option value="hero_sms_rent">HeroSMS 长效号（已购买�
 assert.match(page, /protocolForm\.smsProvider === 'hero_sms_rent'/, 'HeroSMS 长效号模式有独立输入区')
 assert.match(page, /HeroSMS 长效号码/, 'HeroSMS 长效号模式要求输入已购买号码')
 assert.match(page, /请填写 HeroSMS 长效号码。/, 'HeroSMS 长效号提交前校验号码')
+assert.match(page, /selectedProtocolAccountEmails/, '协议支付页支持多选已提链账号')
+assert.match(page, /protocolForm\.concurrency/, '协议支付页支持配置并发支付数')
+assert.match(page, /api\.startUsPaypalProtocolBatch/, '多账号协议支付使用批量启动接口')
+assert.match(page, /accountEmails:\s*protocolSelectedEmails\.value/, '批量协议支付提交选中的账号邮箱')
+assert.match(page, /每行一个.*长效号码/s, '批量 HeroSMS 长效号提示按行分配号码')
 
 console.log('paypal protocol UI tests passed')

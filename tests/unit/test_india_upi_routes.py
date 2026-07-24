@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 
 from autotoken.api_routes import india_upi
+from autotoken.services import proxy_runtime
 
 
 def _app():
@@ -25,6 +26,7 @@ def _endpoint(app, path, method):
 def isolated_files(monkeypatch, tmp_path):
     monkeypatch.setattr(india_upi, "LINKS_FILE", tmp_path / "india_upi_links.json")
     monkeypatch.setattr(india_upi, "ACCOUNT_STATUS_FILE", tmp_path / "india_upi_account_status.json")
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "HTTP 200"))
     india_upi.JOBS.clear()
     yield
     india_upi.JOBS.clear()
@@ -163,6 +165,100 @@ def test_batch_job_generates_upi_link_and_records_status(monkeypatch, tmp_path):
     assert json.loads(india_upi.LINKS_FILE.read_text(encoding="utf-8"))[0]["account_email"] == email
     statuses = json.loads(india_upi.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses[email]["status"] == "success"
+
+
+def test_batch_account_preflights_proxy_before_upi_generation(monkeypatch):
+    email = "blocked@example.com"
+    preflighted: list[str] = []
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (False, "ProxyError: ruleset blocked")
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(india_upi, "generate_upi_trial", lambda cfg, log: pytest.fail("should not generate when proxy preflight fails"))
+    job_id = "upi-preflight-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-fixed-sessTime-120-sessAuto-1:pass",
+        "maxAttempts": 5,
+    })
+    result = india_upi._run_batch_account(
+        job_id,
+        req,
+        {"email": email, "auth_file": "auth.json"},
+        1,
+        1,
+        india_upi._parse_proxies(req.proxies),
+    )
+
+    assert result["ok"] is False
+    assert len(preflighted) == 3
+    assert "代理预检失败" in result["error"]["error"]
+    assert "ruleset blocked" in result["error"]["error"]
+    assert any("代理预检失败" in line for line in india_upi.JOBS[job_id]["logs"])
+
+
+def test_upi_proxy_preflight_has_separate_three_attempt_budget(monkeypatch):
+    email = "preflight-ok@example.com"
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda value: "token-" + value)
+    preflighted: list[str] = []
+    captured = {}
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (len(preflighted) == 3, "HTTP 200" if len(preflighted) == 3 else "ProxyError: ruleset blocked")
+
+    def fake_generate_upi_trial(cfg, log):
+        captured["cfg"] = cfg
+        return {
+            "ok": True,
+            "amount": "199900",
+            "fields": {
+                "upi_link": "https://payments.stripe.com/upi/instructions/test",
+                "hosted_instructions_url": "https://payments.stripe.com/upi/instructions/test",
+                "cs_id": "cs_test",
+                "billing": {"country": "IN"},
+            },
+            "billing": {"country": "IN"},
+        }
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(india_upi, "generate_upi_trial", fake_generate_upi_trial)
+    job_id = "upi-preflight-ok-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "\n".join([
+            "proxy1.example:1000:user-region-US-sid-old1-t-120:pass",
+            "proxy2.example:1000:user-region-US-sid-old2-t-120:pass",
+            "proxy3.example:1000:user-region-US-sid-old3-t-120:pass",
+            "proxy4.example:1000:user-region-US-sid-old4-t-120:pass",
+        ]),
+        "maxAttempts": 1,
+        "promoMode": "skip",
+    })
+    result = india_upi._run_batch_account(job_id, req, {"email": email}, 1, 1, india_upi._parse_proxies(req.proxies))
+
+    assert result["ok"] is True
+    assert len(preflighted) == 3
+    assert "proxy3.example" in captured["cfg"].direct_proxies[0]
+    assert india_upi.build_upi_dynamic_proxy(captured["cfg"], 0)[0] == preflighted[-1]
+    assert not any("proxy4.example" in proxy for proxy in preflighted)
 
 
 def test_link_record_includes_five_minute_upi_expiry(monkeypatch):
@@ -531,6 +627,92 @@ def test_cancel_temp_job_posts_public_upi_stop(monkeypatch):
     )]
 
 
+def test_payment_submit_proxies_upi_scan_api(monkeypatch):
+    app = _app()
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        ok = True
+        text = '{"ok": true}'
+
+        def json(self):
+            return {"ok": True, "job_id": "scan-1", "status_token": "scan-token-1", "status": "running"}
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(india_upi.requests, "post", fake_post)
+
+    data = _endpoint(app, "/api/india-upi/payment/submit", "POST")(
+        india_upi.IndiaUpiPaymentSubmitRequest(cdk="UPI-SCAN-1", link="https://payments.stripe.com/upi/instructions/pay")
+    )
+
+    assert data["job_id"] == "scan-1"
+    assert calls == [(
+        "https://ahwuoc.site/api/submit",
+        {
+            "json": {"cdk": "UPI-SCAN-1", "link": "https://payments.stripe.com/upi/instructions/pay"},
+            "headers": {"Content-Type": "application/json"},
+            "timeout": 70,
+        },
+    )]
+
+
+def test_payment_job_query_uses_upi_scan_status_token_and_marks_account_plus(monkeypatch):
+    app = _app()
+    email = "paid-upi@example.com"
+    link = "https://payments.stripe.com/upi/instructions/pay"
+    calls = []
+    updates = []
+    india_upi.LINKS_FILE.write_text(json.dumps([{"account_email": email, "hosted_instructions_url": link}]), encoding="utf-8")
+    india_upi.PAYMENT_JOBS["scan-1"] = {
+        "job_id": "scan-1",
+        "status_token": "scan-token-1",
+        "link": link,
+        "cdk": "UPI-SCAN-1",
+        "account_email": email,
+        "account_marked": False,
+        "account_update": {},
+    }
+
+    class FakeResponse:
+        status_code = 200
+        ok = True
+        text = '{"status": "success"}'
+
+        def json(self):
+            return {
+                "ok": True,
+                "job": {
+                    "id": "scan-1",
+                    "status": "succeeded",
+                    "message": "UPI-SCAN paid",
+                },
+            }
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(india_upi.requests, "get", fake_get)
+    monkeypatch.setattr(india_upi.account_store, "ensure_session_only_account", lambda value: None)
+    monkeypatch.setattr(india_upi.account_store, "update_account", lambda value, **kwargs: updates.append((value, kwargs)) or {"email": value, **kwargs})
+
+    data = _endpoint(app, "/api/india-upi/payment/jobs/{job_id}", "GET")("scan-1", token="scan-token-1")
+
+    assert data["job"]["status"] == "succeeded"
+    assert data["job"]["account_email"] == email
+    assert data["job"]["last_bind_provider"] == "upi"
+    assert updates and updates[0][0] == email
+    assert updates[0][1]["last_bind_provider"] == "upi"
+    assert calls == [(
+        "https://ahwuoc.site/api/jobs/scan-1",
+        {"params": {"token": "scan-token-1"}, "headers": {"X-Job-Token": "scan-token-1"}, "timeout": 20},
+    )]
+
+
 def test_delete_upi_account_removes_account_auth_links_and_status(monkeypatch):
     app = _app()
     deleted_accounts = []
@@ -565,5 +747,7 @@ def test_main_api_mounts_india_upi_router():
     assert "/api/india-upi/accounts/{email}" in paths
     assert "/api/india-upi/batch/start" in paths
     assert "/api/india-upi/temp/batch/start" in paths
+    assert "/api/india-upi/payment/submit" in paths
+    assert "/api/india-upi/payment/jobs/{job_id}" in paths
     assert "/api/india-upi/jobs/{job_id}" in paths
     assert "/api/india-upi/links" in paths

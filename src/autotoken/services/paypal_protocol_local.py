@@ -199,15 +199,6 @@ def remember_terminal_ba(token: str, *, reason: str, stage: str = "member_approv
     _save_terminal_ba_records(records)
 
 
-def _terminal_ba_retry_allowed() -> bool:
-    return str(os.getenv("PAYPAL_PROTOCOL_ALLOW_TERMINAL_BA_RETRY") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def _member_approve_terminal_after_create(output: str, parsed: dict[str, Any]) -> bool:
     text = output or ""
     parsed_text = json.dumps(parsed, ensure_ascii=False) if parsed else ""
@@ -518,28 +509,24 @@ def run_paypal_protocol_payment(
     cmd, env, cwd = build_protocol_command(cfg)
     ba_token = extract_ba_token(cfg.ba_token or cfg.paypal_link)
     terminal_record = terminal_ba_record(ba_token)
-    if terminal_record and not _terminal_ba_retry_allowed():
-        message = (
-            "该 BA 已在本机进入 CreateMemberAccount 后于 member approve 阶段失败，"
-            "属于不可安全重试状态；请使用 fresh BA"
-        )
+    if terminal_record:
+        message = "该 BA 已在本机进入 CreateMemberAccount 后于 member approve 阶段失败，属于不可安全重试状态；请使用 fresh BA"
         log(
-            "阻止重复协议支付："
-            + message
+            "检测到该 BA 曾在本机进入 CreateMemberAccount 后于 member approve 阶段失败；"
+            "阻止重复协议支付，请使用 fresh BA。"
             + f" stage={terminal_record.get('stage') or '<unknown>'}"
         )
         return {
             "status": "failed",
-            "returncode": 0,
-            "elapsed_s": 0.0,
+            "returncode": None,
+            "elapsed_s": 0,
             "ba_token": sanitize_log_text(ba_token),
             "paypal_link": sanitize_log_text(paypal_approve_url(ba_token)),
             "country": str(cfg.country or "US").strip().upper() or "US",
             "engine": "bundled-local",
             "engine_root": str(cwd),
-            "protocol_result": {},
+            "protocol_result": {"status": "failed", "terminal_ba_record": terminal_record},
             "message": message,
-            "terminal_ba_record": sanitize_result(terminal_record),
         }
     log("本地 PayPal 协议引擎启动：" + sanitize_log_text(" ".join(cmd)))
     started = time.monotonic()

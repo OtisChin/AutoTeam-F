@@ -770,6 +770,7 @@ class PixJobConfig:
     kookeey_endpoint: str = "gate.kookeey.info:1000"
     region: str = "BR"
     direct_proxies: list[str] = field(default_factory=list)
+    preflighted_checkout_proxy_url: str = ""
 
 
 
@@ -849,6 +850,9 @@ def pix_proxy_context(local_proxy: str, dynamic_proxy: str, log: LogFn | None = 
 
 
 def build_pix_dynamic_proxy(cfg: PixJobConfig, stage_index: int) -> tuple[str, str]:
+    preflighted = normalize_pix_proxy_url(getattr(cfg, "preflighted_checkout_proxy_url", ""))
+    if stage_index == 0 and preflighted:
+        return preflighted, "preflighted"
     direct = [normalize_pix_proxy_url(item) for item in (cfg.direct_proxies or []) if str(item or "").strip()]
     if direct:
         idx = stage_index % len(direct)

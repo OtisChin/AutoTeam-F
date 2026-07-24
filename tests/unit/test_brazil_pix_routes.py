@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from autotoken.api_routes import brazil_pix
+from autotoken.services import proxy_runtime
 from autotoken.storage import auth_session_store
 
 
@@ -26,6 +27,7 @@ def _isolate_files(monkeypatch, tmp_path):
     monkeypatch.setattr(brazil_pix.account_store, "ACCOUNTS_FILE", tmp_path / "accounts.json")
     monkeypatch.setattr(brazil_pix, "LINKS_FILE", tmp_path / "brazil_pix_links.json")
     monkeypatch.setattr(brazil_pix, "ACCOUNT_STATUS_FILE", tmp_path / "brazil_pix_account_status.json")
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "HTTP 200"))
     return auth_dir
 
 
@@ -335,6 +337,108 @@ def test_batch_job_updates_account_statuses(monkeypatch, tmp_path):
     statuses = json.loads(brazil_pix.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses["ok@example.com"]["status"] == "success"
     assert statuses["bad@example.com"]["status"] == "failed"
+
+
+def test_batch_account_preflights_proxy_before_pix_generation(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    _write_session(auth_dir, "blocked@example.com", "blocked-token-" + "x" * 80)
+    preflighted: list[str] = []
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (False, "ProxyError: ruleset blocked")
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", lambda cfg, log: pytest.fail("should not generate when proxy preflight fails"))
+    job_id = "pix-preflight-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "total": 1,
+        "completed": 0,
+        "concurrency": 1,
+        "cancel_requested": False,
+        "running_count": 0,
+        "skipped": [],
+        "account_statuses": {},
+    }
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate({
+        "accountEmails": ["blocked@example.com"],
+        "proxies": "global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-fixed-sessTime-120-sessAuto-1:pass",
+        "maxAttempts": 5,
+    })
+    result = brazil_pix._run_batch_account(
+        job_id,
+        req,
+        {"email": "blocked@example.com", "auth_file": "auth.json"},
+        1,
+        1,
+        brazil_pix._parse_proxies(req.proxies),
+    )
+
+    assert result["ok"] is False
+    assert len(preflighted) == 3
+    assert "代理预检失败" in result["error"]["error"]
+    assert "ruleset blocked" in result["error"]["error"]
+    assert any("代理预检失败" in line for line in brazil_pix.JOBS[job_id]["logs"])
+
+
+def test_pix_proxy_preflight_has_separate_three_attempt_budget(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    email = "preflight-ok@example.com"
+    monkeypatch.setattr(brazil_pix, "_load_token_for_email", lambda value: "token-" + value)
+    preflighted: list[str] = []
+    captured = {}
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (len(preflighted) == 3, "HTTP 200" if len(preflighted) == 3 else "ProxyError: ruleset blocked")
+
+    def fake_generate_pix_trial(cfg, log):
+        captured["cfg"] = cfg
+        return {
+            "fields": {
+                "amount": "R$0.00",
+                "cs_id": "cs_test",
+                "pix_copy_paste": "pix-code",
+                "hosted_instructions_url": "https://pay.example/pix",
+            }
+        }
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+    job_id = "pix-preflight-ok-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "\n".join([
+            "proxy1.example:1000:user-region-US-sid-old1-t-120:pass",
+            "proxy2.example:1000:user-region-US-sid-old2-t-120:pass",
+            "proxy3.example:1000:user-region-US-sid-old3-t-120:pass",
+            "proxy4.example:1000:user-region-US-sid-old4-t-120:pass",
+        ]),
+        "maxAttempts": 1,
+    })
+    result = brazil_pix._run_batch_account(job_id, req, {"email": email}, 1, 1, brazil_pix._parse_proxies(req.proxies))
+
+    assert result["ok"] is True
+    assert len(preflighted) == 3
+    assert "proxy3.example" in captured["cfg"].direct_proxies[0]
+    assert brazil_pix.build_pix_dynamic_proxy(captured["cfg"], 0)[0] == preflighted[-1]
+    assert not any("proxy4.example" in proxy for proxy in preflighted)
 
 
 def test_single_job_deletes_token_revoked_account(monkeypatch, tmp_path):

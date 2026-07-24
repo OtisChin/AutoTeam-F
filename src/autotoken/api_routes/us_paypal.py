@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +17,15 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from autotoken.api_routes import brazil_pix as pix_routes
 from autotoken.core.paths import PROJECT_ROOT
-from autotoken.payments.us_paypal import PaypalJobConfig, generate_paypal_trial
+from autotoken.payments.us_paypal import (
+    PaypalJobConfig,
+    build_paypal_dynamic_proxy,
+    generate_paypal_trial,
+    normalize_paypal_proxy_url,
+    paypal_proxy_with_fresh_sid,
+)
 from autotoken.services import paypal_protocol_local as paypal_protocol_service
+from autotoken.services import proxy_runtime
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
 
@@ -32,6 +40,7 @@ ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "us_paypal_account_status.json"
 MAX_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
+PROXY_PREFLIGHT_MAX_ATTEMPTS = 3
 PAYPAL_STATUS_PENDING = "pending"
 PAYPAL_STATUS_RUNNING = "running"
 PAYPAL_STATUS_SUCCESS = "success"
@@ -168,6 +177,37 @@ class UsPaypalProtocolStartRequest(BaseModel):
         except Exception:
             seconds = 3.0
         return max(1.0, min(30.0, seconds))
+
+
+class UsPaypalProtocolBatchStartRequest(UsPaypalProtocolStartRequest):
+    account_emails: list[str] = Field(default_factory=list, alias="accountEmails")
+    concurrency: int = 1
+
+    @field_validator("account_emails", mode="before")
+    @classmethod
+    def _clean_account_emails(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("accountEmails must be a list")
+        seen: set[str] = set()
+        emails: list[str] = []
+        for item in value:
+            email = str(item or "").strip()
+            key = email.lower()
+            if email and key not in seen:
+                seen.add(key)
+                emails.append(email)
+        return emails
+
+    @field_validator("concurrency", mode="before")
+    @classmethod
+    def _clean_concurrency(cls, value: Any) -> int:
+        try:
+            concurrency = int(value or 1)
+        except Exception:
+            concurrency = 1
+        return max(1, min(MAX_BATCH_CONCURRENCY, concurrency))
 
 class UsPaypalDeleteLinksRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
@@ -334,6 +374,25 @@ def _account_attempt_limit(req: UsPaypalBatchStartRequest) -> int:
     except Exception:
         attempts = MAX_ACCOUNT_ATTEMPTS
     return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+
+def _preflight_paypal_link_proxies_or_raise(cfg: PaypalJobConfig, log) -> PaypalJobConfig:
+    region = str(cfg.region or "US").strip().upper() or "US"
+    if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
+        return cfg
+    errors: list[str] = []
+    for stage_index in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
+        proxy_url, sid_label = build_paypal_dynamic_proxy(cfg, stage_index, region)
+        if not proxy_url:
+            continue
+        log(f"目标国家代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} region={region} {sid_label}")
+        ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
+        if ok:
+            log(f"目标国家代理预检通过：{message}")
+            return replace(cfg, direct_proxies=[proxy_url])
+        errors.append(str(message or "unknown"))
+        log(f"目标国家代理预检失败：{message}")
+    raise RuntimeError(f"代理预检失败: {region} {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
 
 
 def _select_batch_accounts(req: UsPaypalBatchStartRequest) -> list[dict[str, Any]]:
@@ -546,12 +605,27 @@ def _run_batch_account(
                 apply_promo=req.promo_mode == "promo",
             )
             try:
+                cfg = _preflight_paypal_link_proxies_or_raise(cfg, account_log)
                 result = generate_paypal_trial(cfg, log=account_log)
                 if attempt > 1:
                     _append_log(job_id, f"[{index}/{total}] 重试成功：{email} attempt={attempt}")
                 break
             except Exception as exc:
                 last_error = str(exc)
+                if last_error.startswith("代理预检失败"):
+                    status = _set_account_status(email, PAYPAL_STATUS_FAILED, error=last_error, job_id=job_id)
+                    _append_log(job_id, f"[{index}/{total}] 代理预检已达到上限，停止真实提链：{email} {last_error}")
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": last_error,
+                        },
+                        "status": status,
+                    }
                 if pix_routes._is_already_paid_error(last_error):
                     _mark_account_plus_paypal(email, last_error)
                     status = _set_account_status(email, PAYPAL_STATUS_SUCCESS, error=last_error, job_id=job_id)
@@ -711,9 +785,10 @@ def _job_snapshot(job_id: str) -> dict[str, Any]:
         return {"id": job["id"], "status": job["status"], "logs": list(job["logs"]), "result": job["result"], "error": job["error"], "created_at": job["created_at"], "finished_at": job["finished_at"], "account_email": job.get("account_email") or "", "total": job.get("total") or 0, "completed": job.get("completed") or 0, "concurrency": job.get("concurrency") or 1, "running_count": job.get("running_count") or 0, "cancel_requested": bool(job.get("cancel_requested")), "skipped": job.get("skipped") or [], "account_statuses": job.get("account_statuses") or {}}
 
 
-def _new_protocol_job(account_email: str = "") -> str:
+def _new_protocol_batch_job(account_emails: list[str], concurrency: int = 1) -> str:
     job_id = "ppay-" + uuid.uuid4().hex[:10]
     created = time.time()
+    clean_emails = [str(email or "").strip() for email in account_emails if str(email or "").strip()]
     with JOBS_LOCK:
         JOBS[job_id] = {
             "id": job_id,
@@ -724,16 +799,125 @@ def _new_protocol_job(account_email: str = "") -> str:
             "error": None,
             "created_at": created,
             "finished_at": None,
-            "account_email": str(account_email or "").strip(),
-            "total": 1,
+            "account_email": clean_emails[0] if len(clean_emails) == 1 else "",
+            "total": len(clean_emails) or 1,
             "completed": 0,
-            "concurrency": 1,
+            "concurrency": max(1, min(MAX_BATCH_CONCURRENCY, int(concurrency or 1))),
             "cancel_requested": False,
             "running_count": 0,
             "skipped": [],
             "account_statuses": {},
         }
     return job_id
+
+
+def _new_protocol_job(account_email: str = "") -> str:
+    return _new_protocol_batch_job([str(account_email or "").strip()] if str(account_email or "").strip() else [], 1)
+
+
+def _split_protocol_values(value: str | list[str]) -> list[str]:
+    if isinstance(value, list):
+        return [str(item or "").strip() for item in value if str(item or "").strip()]
+    return [item.strip() for item in str(value or "").replace(",", "\n").splitlines() if item.strip()]
+
+
+def _protocol_batch_concurrency(req: UsPaypalProtocolBatchStartRequest, total: int) -> int:
+    try:
+        requested = int(req.concurrency or 1)
+    except Exception:
+        requested = 1
+    return max(1, min(MAX_BATCH_CONCURRENCY, total, requested))
+
+
+def _protocol_proxy_for_country(proxy_value: str, country: str) -> str:
+    raw = str(proxy_value or "").strip()
+    if not raw:
+        return ""
+    proxy, _sid = paypal_proxy_with_fresh_sid(normalize_paypal_proxy_url(raw), str(country or "US").strip().upper() or "US")
+    return proxy
+
+
+def _preflight_protocol_proxy_or_raise(proxy_values: str | list[str], country: str, log) -> str:
+    candidates = _parse_proxies(proxy_values)
+    if not candidates:
+        return ""
+    target_country = str(country or "US").strip().upper() or "US"
+    errors: list[str] = []
+    for attempt in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
+        raw_proxy = candidates[attempt % len(candidates)]
+        proxy_url = _protocol_proxy_for_country(raw_proxy, target_country)
+        if not proxy_url:
+            continue
+        log(f"协议支付代理预检开始：{attempt + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} country={target_country}")
+        ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
+        if ok:
+            log(f"协议支付代理预检通过：{message}")
+            return proxy_url
+        errors.append(str(message or "unknown"))
+        log(f"协议支付代理预检失败：{message}")
+    raise RuntimeError(f"代理预检失败: {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
+
+
+def _protocol_proxy_for_index(proxies: list[str], index: int, country: str) -> str:
+    if not proxies:
+        return ""
+    return _protocol_proxy_for_country(proxies[(max(1, index) - 1) % len(proxies)], country)
+
+
+def _protocol_value_for_index(values: list[str], index: int) -> str:
+    if not values:
+        return ""
+    return values[(max(1, index) - 1) % len(values)]
+
+
+def _protocol_links_by_email() -> dict[str, dict[str, Any]]:
+    links: dict[str, dict[str, Any]] = {}
+    for item in _load_links():
+        email = str(item.get("account_email") or "").strip().lower()
+        link = str(item.get("paypal_link") or item.get("provider_redirect_url") or item.get("stripe_redirect_url") or "").strip()
+        token = extract_protocol_ba_token(link or str(item.get("ba_token") or ""))
+        if email and token and email not in links:
+            links[email] = item
+    return links
+
+
+def _protocol_batch_tasks(req: UsPaypalProtocolBatchStartRequest) -> list[dict[str, Any]]:
+    links_by_email = _protocol_links_by_email()
+    tasks: list[dict[str, Any]] = []
+    for email in req.account_emails:
+        key = str(email or "").strip().lower()
+        link = links_by_email.get(key)
+        if not link:
+            continue
+        paypal_link = str(link.get("paypal_link") or link.get("provider_redirect_url") or link.get("stripe_redirect_url") or link.get("ba_token") or "")
+        ba_token = extract_protocol_ba_token(paypal_link)
+        if not ba_token:
+            continue
+        country = _link_country_from_item(link) or req.country
+        tasks.append({"email": str(email).strip(), "ba_token": ba_token, "paypal_link": paypal_link, "country": country})
+    return tasks
+
+
+def _validate_protocol_batch_start(req: UsPaypalProtocolBatchStartRequest) -> list[dict[str, Any]]:
+    if not req.account_emails:
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请选择要支付的已提链账号"})
+    tasks = _protocol_batch_tasks(req)
+    if not tasks:
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请选择已成功提链且包含有效 BA 链接的账号"})
+    sms_provider = paypal_protocol_service.normalize_sms_provider(req.sms_provider)
+    phones = _split_protocol_values(req.phone)
+    record_urls = _split_protocol_values(req.sms_record_url)
+    if sms_provider == "sms_record":
+        if len(phones) < len(tasks) or len(record_urls) < len(tasks):
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "固定手机号支付时每个账号都需要分配手机号和 SMS record URL"})
+    elif sms_provider == "hero_sms_rent" and len(phones) < len(tasks):
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "HeroSMS 长效号支付时每个账号都需要分配一个长效号码"})
+    elif sms_provider not in {"hero_sms", "smsbower", "hero_sms_rent"}:
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "不支持的 PayPal 手机接码平台"})
+    unsupported = sorted({task["country"] for task in tasks if task["country"] not in paypal_protocol_service.SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES})
+    if unsupported:
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": f"当前协议支付仅开放 US/GB/NL/BR，不支持：{', '.join(unsupported)}"})
+    return tasks
 
 
 def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) -> None:
@@ -744,7 +928,7 @@ def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) ->
         ba_token = extract_protocol_ba_token(req.ba_token or req.paypal_link)
         if not ba_token:
             raise RuntimeError("缺少有效 PayPal BA token/link")
-        proxy_url = first_protocol_proxy(req.proxy_url or req.proxies)
+        proxy_candidates = _parse_proxies(req.proxy_url) or _parse_proxies(req.proxies)
         sms_provider = paypal_protocol_service.normalize_sms_provider(req.sms_provider)
         phone = str(req.phone or "").strip()
         sms_record_url = str(req.sms_record_url or "").strip()
@@ -762,6 +946,7 @@ def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) ->
             JOBS[job_id]["status"] = "running"
             JOBS[job_id]["running_count"] = 1
         log(f"PayPal 协议支付开始：country={req.country} ba_token={ba_token}")
+        proxy_url = _preflight_protocol_proxy_or_raise(proxy_candidates, req.country, log)
         cfg = PaypalProtocolRunConfig(
             ba_token=ba_token,
             phone=phone,
@@ -815,6 +1000,181 @@ def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) ->
             JOBS[job_id]["running_count"] = 0
             JOBS[job_id]["finished_at"] = time.time()
         _append_log(job_id, f"协议支付失败: {error}")
+
+
+def _run_protocol_batch_account(
+    job_id: str,
+    req: UsPaypalProtocolBatchStartRequest,
+    task: dict[str, Any],
+    index: int,
+    total: int,
+    proxies: list[str],
+    phones: list[str],
+    record_urls: list[str],
+) -> dict[str, Any]:
+    email = str(task.get("email") or "").strip()
+    started = time.monotonic()
+    if _is_job_cancel_requested(job_id):
+        _append_log(job_id, f"[{index}/{total}] 跳过协议支付：{email}（任务已取消）")
+        return {"skipped": True, "email": email, "reason": "任务已取消", "status": _set_account_status(email, PAYPAL_STATUS_SUCCESS, job_id=job_id)}
+
+    sms_provider = paypal_protocol_service.normalize_sms_provider(req.sms_provider)
+    phone = _protocol_value_for_index(phones, index) if sms_provider in {"sms_record", "hero_sms_rent"} else ""
+    sms_record_url = _protocol_value_for_index(record_urls, index) if sms_provider == "sms_record" else ""
+    proxy_candidates = _rotate_proxies_for_account(proxies, index)
+    proxy_slot = f" proxy槽={(index - 1) % len(proxies) + 1}/{len(proxies)}" if proxies else " no-proxy"
+    _set_job_running_delta(job_id, 1)
+    _set_account_status(email, PAYPAL_STATUS_RUNNING, job_id=job_id)
+    _append_log(job_id, f"[{index}/{total}] PayPal 协议支付开始：{email} country={task.get('country')}{proxy_slot}")
+
+    def account_log(message: str) -> None:
+        _append_log(job_id, f"[{index}/{total}] {message}")
+
+    try:
+        proxy_url = _preflight_protocol_proxy_or_raise(proxy_candidates, str(task.get("country") or req.country), account_log)
+        cfg = PaypalProtocolRunConfig(
+            ba_token=str(task.get("ba_token") or ""),
+            paypal_link=str(task.get("paypal_link") or ""),
+            phone=phone,
+            sms_record_url=sms_record_url,
+            sms_provider=sms_provider,
+            sms_api_key="",
+            sms_base_url="",
+            sms_service="",
+            sms_country="",
+            sms_min_price="",
+            sms_max_price="",
+            sms_preferred_price="",
+            proxy_url=proxy_url,
+            country=str(task.get("country") or req.country),
+            timeout_seconds=req.timeout_seconds,
+            sms_record_wait_seconds=req.sms_record_wait_seconds,
+            sms_record_poll_seconds=req.sms_record_poll_seconds,
+            debug=req.debug,
+        )
+        result = run_paypal_protocol_payment(
+            cfg,
+            log=account_log,
+            cancel_check=lambda: _is_job_cancel_requested(job_id),
+        )
+        terminal = str(result.get("status") or "").lower()
+        if terminal == "success":
+            _mark_account_plus_paypal(email, "PayPal protocol approval success")
+            status = _set_account_status(email, PAYPAL_STATUS_PAID, job_id=job_id)
+            compact = {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "country": cfg.country, "result": result}
+            _append_log(job_id, f"[{index}/{total}] 协议支付成功：{email}")
+            return {"ok": True, "email": email, "success": compact, "status": status}
+        if terminal == "cancelled":
+            status = _set_account_status(email, PAYPAL_STATUS_SUCCESS, error="协议支付已取消", job_id=job_id)
+            return {"skipped": True, "email": email, "reason": "协议支付已取消", "status": status}
+        message = str(result.get("message") or terminal or "协议支付失败")
+        status = _set_account_status(email, PAYPAL_STATUS_FAILED, error=message, job_id=job_id)
+        _append_log(job_id, f"[{index}/{total}] 协议支付失败：{email} {message}")
+        return {
+            "ok": False,
+            "email": email,
+            "error": {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "country": cfg.country, "error": message, "result": result},
+            "status": status,
+        }
+    except Exception as exc:
+        error = sanitize_protocol_log_text(str(exc))
+        status = _set_account_status(email, PAYPAL_STATUS_FAILED, error=error, job_id=job_id)
+        _append_log(job_id, f"[{index}/{total}] 协议支付异常：{email} {error}")
+        return {
+            "ok": False,
+            "email": email,
+            "error": {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "country": task.get("country"), "error": error},
+            "status": status,
+        }
+    finally:
+        _set_job_running_delta(job_id, -1)
+
+
+def _run_protocol_batch_payment_job(job_id: str, req: UsPaypalProtocolBatchStartRequest) -> None:
+    def log(message: str) -> None:
+        _append_log(job_id, sanitize_protocol_log_text(message))
+
+    try:
+        tasks = _validate_protocol_batch_start(req)
+        sms_provider = paypal_protocol_service.normalize_sms_provider(req.sms_provider)
+        proxies = _parse_proxies(req.proxies or req.proxy_url)
+        phones = _split_protocol_values(req.phone)
+        record_urls = _split_protocol_values(req.sms_record_url)
+        concurrency = _protocol_batch_concurrency(req, len(tasks))
+        successes: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        account_statuses: dict[str, dict[str, Any]] = {}
+        for task in tasks:
+            email = str(task.get("email") or "")
+            if email:
+                account_statuses[email] = _set_account_status(email, PAYPAL_STATUS_PENDING, job_id=job_id)
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            cancel_requested = bool(JOBS[job_id].get("cancel_requested"))
+            JOBS[job_id]["status"] = "cancelling" if cancel_requested else "running"
+            JOBS[job_id]["total"] = len(tasks)
+            JOBS[job_id]["completed"] = 0
+            JOBS[job_id]["concurrency"] = concurrency
+            JOBS[job_id]["running_count"] = 0
+            JOBS[job_id]["cancel_requested"] = cancel_requested
+            JOBS[job_id]["skipped"] = []
+            JOBS[job_id]["account_statuses"] = account_statuses
+        log(f"PayPal 协议批量支付开始：{len(tasks)} 个账号，并发 {concurrency}，接码={sms_provider}，代理={len(proxies)} 条")
+
+        completed = 0
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [
+                executor.submit(_run_protocol_batch_account, job_id, req, task, index, len(tasks), proxies, phones, record_urls)
+                for index, task in enumerate(tasks, start=1)
+            ]
+            for future in as_completed(futures):
+                item = future.result()
+                email = str(item.get("email") or "")
+                if item.get("skipped"):
+                    skipped.append({"email": email, "reason": item.get("reason") or "任务已取消"})
+                elif item.get("ok"):
+                    successes.append(item["success"])
+                else:
+                    errors.append(item["error"])
+                if email:
+                    account_statuses[email] = item.get("status") or {}
+                completed += 1
+                with JOBS_LOCK:
+                    if job_id not in JOBS:
+                        return
+                    JOBS[job_id]["completed"] = completed
+                    JOBS[job_id]["account_statuses"] = account_statuses
+                    JOBS[job_id]["skipped"] = skipped
+                    JOBS[job_id]["result"] = {"batch": True, "successes": successes, "errors": errors, "skipped": skipped}
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            cancelled = bool(JOBS[job_id].get("cancel_requested"))
+            has_non_error_outcome = bool(successes or skipped)
+            JOBS[job_id]["status"] = "cancelled" if cancelled else ("success" if has_non_error_outcome else "error")
+            JOBS[job_id]["error"] = "任务已取消" if cancelled else ("" if has_non_error_outcome else "全部账号支付失败")
+            JOBS[job_id]["finished_at"] = time.time()
+        log(f"PayPal 协议批量支付完成：成功 {len(successes)}，失败 {len(errors)}，跳过 {len(skipped)}")
+    except HTTPException as exc:
+        message = exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc.detail)
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = str(message or "协议批量支付失败")
+            JOBS[job_id]["finished_at"] = time.time()
+        log(f"协议批量支付失败: {message}")
+    except Exception as exc:
+        error = sanitize_protocol_log_text(str(exc))
+        with JOBS_LOCK:
+            if job_id not in JOBS:
+                return
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = error
+            JOBS[job_id]["finished_at"] = time.time()
+        log(f"协议批量支付失败: {error}")
 
 
 def create_us_paypal_router() -> APIRouter:
@@ -886,6 +1246,13 @@ def create_us_paypal_router() -> APIRouter:
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "当前协议支付仅开放 US/GB/NL/BR"})
         job_id = _new_protocol_job(req.account_email)
         threading.Thread(target=_run_protocol_payment_job, args=(job_id, req), daemon=True).start()
+        return {"job_id": job_id}
+
+    @router.post("/api/us-paypal/protocol/batch/start")
+    def start_us_paypal_protocol_batch(req: UsPaypalProtocolBatchStartRequest) -> dict[str, str]:
+        tasks = _validate_protocol_batch_start(req)
+        job_id = _new_protocol_batch_job([str(task.get("email") or "") for task in tasks], req.concurrency)
+        threading.Thread(target=_run_protocol_batch_payment_job, args=(job_id, req), daemon=True).start()
         return {"job_id": job_id}
 
     @router.get("/api/us-paypal/protocol/jobs/{job_id}")

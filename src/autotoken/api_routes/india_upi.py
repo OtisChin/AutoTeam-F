@@ -7,26 +7,30 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from autotoken.api_routes import brazil_pix as pix_routes
 from autotoken.core.paths import PROJECT_ROOT
-from autotoken.payments.india_upi import UpiJobConfig, generate_upi_trial
+from autotoken.payments.india_upi import UpiJobConfig, build_upi_dynamic_proxy, generate_upi_trial
+from autotoken.services import proxy_runtime
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
 
 LINKS_FILE = PROJECT_ROOT / "data" / "india_upi_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "india_upi_account_status.json"
 TEMP_UPI_API_BASE = "https://ahwuoc.site"
+UPI_SCAN_API_BASE = "https://ahwuoc.site"
 MAX_BATCH_CONCURRENCY = 10
 MAX_TEMP_BATCH_CONCURRENCY = 20
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
+PROXY_PREFLIGHT_MAX_ATTEMPTS = 3
 UPI_LINK_TTL_SECONDS = 5 * 60
 UPI_STATUS_PENDING = "pending"
 UPI_STATUS_RUNNING = "running"
@@ -85,7 +89,9 @@ ACCOUNT_UI_FIELDS = (
     "email", "status", "account_type", "seat_type", "ttl_seconds", "expires_at", "last_active_at", "updated_at", "note",
 )
 JOBS: dict[str, dict[str, Any]] = {}
+PAYMENT_JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.RLock()
+PAYMENT_JOBS_LOCK = threading.RLock()
 LINKS_LOCK = threading.RLock()
 ACCOUNT_STATUS_LOCK = threading.RLock()
 TERMINAL_STATUSES = {"success", "error", "failed", "cancelled"}
@@ -168,6 +174,26 @@ class IndiaUpiTempBatchStartRequest(BaseModel):
                 seen.add(key)
                 emails.append(email)
         return emails
+
+
+class IndiaUpiPaymentSubmitRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    cdk: str = Field("", validation_alias=AliasChoices("cdk", "CDK", "code", "value"))
+    link: str = Field("", validation_alias=AliasChoices("link", "url", "paymentLink", "payment_link"))
+
+    @field_validator("cdk", "link", mode="before")
+    @classmethod
+    def _coerce_payment_submit_text(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            for key in ("value", "cdk", "CDK", "code", "link", "url", "paymentLink", "payment_link"):
+                nested = value.get(key)
+                if nested is not None:
+                    return str(nested).strip()
+            return ""
+        return str(value).strip()
 
 
 class IndiaUpiDeleteLinksRequest(BaseModel):
@@ -384,6 +410,25 @@ def _account_attempt_limit(req: IndiaUpiBatchStartRequest) -> int:
     except Exception:
         attempts = MAX_ACCOUNT_ATTEMPTS
     return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+
+def _preflight_upi_proxy_or_raise(cfg: UpiJobConfig, log) -> UpiJobConfig:
+    region = str(cfg.region or "IN").strip().upper() or "IN"
+    if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
+        return cfg
+    errors: list[str] = []
+    for stage_index in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
+        proxy_url, sid_label = build_upi_dynamic_proxy(cfg, stage_index, region)
+        if not proxy_url:
+            continue
+        log(f"目标国家代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} region={region} {sid_label}")
+        ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
+        if ok:
+            log(f"目标国家代理预检通过：{message}")
+            return replace(cfg, direct_proxies=[proxy_url])
+        errors.append(str(message or "unknown"))
+        log(f"目标国家代理预检失败：{message}")
+    raise RuntimeError(f"代理预检失败: {region} {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
 
 
 def _select_batch_accounts(req: IndiaUpiBatchStartRequest) -> list[dict[str, Any]]:
@@ -672,6 +717,89 @@ def _mark_account_plus_upi(email: str, message: str = "User is already paid") ->
     ) or {}
 
 
+def _payment_api_response_body(resp: requests.Response) -> dict[str, Any]:
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {"ok": False, "code": f"http_{resp.status_code}", "message": resp.text[:500] or "支付服务返回非 JSON 响应"}
+    if not isinstance(data, dict):
+        return {"ok": False, "code": "bad_payment_api_response", "message": "支付服务响应格式错误", "raw": str(data)[:500]}
+    return data
+
+
+def _payment_api_json(resp: requests.Response) -> dict[str, Any]:
+    data = _payment_api_response_body(resp)
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=data)
+    if data.get("code") == "bad_payment_api_response":
+        raise HTTPException(status_code=502, detail={"message": "支付服务响应格式错误"})
+    return data
+
+
+def _payment_api_submit_json(resp: requests.Response) -> dict[str, Any]:
+    data = _payment_api_response_body(resp)
+    if not resp.ok:
+        result = dict(data)
+        result["ok"] = False
+        result["http_status"] = resp.status_code
+        result.setdefault("code", f"http_{resp.status_code}")
+        result.setdefault("message", "UPI-SCAN 支付服务拒绝提交")
+        return result
+    if data.get("code") == "bad_payment_api_response":
+        raise HTTPException(status_code=502, detail={"message": "支付服务响应格式错误"})
+    return data
+
+
+def _payment_api_error(exc: requests.RequestException) -> HTTPException:
+    return HTTPException(status_code=502, detail={"ok": False, "code": "upi_scan_api_unreachable", "message": f"UPI-SCAN 支付服务请求失败：{exc}"})
+
+
+def _normalize_payment_link(value: Any) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def _account_email_for_payment_link(link: str) -> str:
+    target = _normalize_payment_link(link)
+    if not target:
+        return ""
+    for item in _load_links():
+        candidates = (
+            item.get("hosted_instructions_url"),
+            item.get("upi_link"),
+            item.get("link"),
+            item.get("url"),
+        )
+        if any(_normalize_payment_link(candidate) == target for candidate in candidates):
+            return str(item.get("account_email") or item.get("accountEmail") or "").strip()
+    return ""
+
+
+def _mark_payment_success_account(job_id: str, message: str = "UPI-SCAN payment succeeded") -> dict[str, Any]:
+    with PAYMENT_JOBS_LOCK:
+        payment_job = PAYMENT_JOBS.get(job_id) or {}
+        if payment_job.get("account_marked"):
+            return dict(payment_job.get("account_update") or {})
+        email = str(payment_job.get("account_email") or "").strip()
+        link = str(payment_job.get("link") or "")
+    if not email:
+        email = _account_email_for_payment_link(link)
+    if not email:
+        return {}
+    updated = _mark_account_plus_upi(email, message)
+    result = {
+        "email": email,
+        "account_type": str(updated.get("account_type") or ""),
+        "last_bind_provider": str(updated.get("last_bind_provider") or ""),
+    }
+    _set_account_status(email, UPI_STATUS_PAID, job_id=job_id)
+    with PAYMENT_JOBS_LOCK:
+        if job_id in PAYMENT_JOBS:
+            PAYMENT_JOBS[job_id]["account_email"] = email
+            PAYMENT_JOBS[job_id]["account_marked"] = True
+            PAYMENT_JOBS[job_id]["account_update"] = result
+    return result
+
+
 def _delete_invalid_account(email: str) -> dict[str, Any]:
     return {
         "record_deleted": bool(account_store.delete_account(email)),
@@ -755,6 +883,7 @@ def _run_batch_account(
                 apply_promo=req.promo_mode == "promo",
             )
             try:
+                cfg = _preflight_upi_proxy_or_raise(cfg, account_log)
                 result = generate_upi_trial(cfg, log=account_log)
                 if attempt > 1:
                     _append_log(job_id, f"[{index}/{total}] 重试成功：{email} attempt={attempt}")
@@ -762,6 +891,21 @@ def _run_batch_account(
             except Exception as exc:
                 last_error = str(exc)
                 failure = classify_upi_failure(last_error)
+                if last_error.startswith("代理预检失败"):
+                    status = _set_account_status(email, UPI_STATUS_FAILED, error=last_error, job_id=job_id, failure=failure)
+                    _append_log(job_id, f"[{index}/{total}] 代理预检已达到上限，停止真实提链：{email} {last_error}")
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": last_error,
+                            **failure,
+                        },
+                        "status": status,
+                    }
                 if pix_routes._is_already_paid_error(last_error):
                     _mark_account_plus_upi(email, last_error)
                     status = _set_account_status(email, UPI_STATUS_SUCCESS, error=last_error, job_id=job_id, failure=failure)
@@ -1170,5 +1314,63 @@ def create_india_upi_router() -> APIRouter:
         count = len(_load_links())
         _save_links([])
         return {"deleted": count, "links": []}
+
+    @router.post("/api/india-upi/payment/submit")
+    def submit_india_upi_payment(req: IndiaUpiPaymentSubmitRequest | None = None) -> dict[str, Any]:
+        req = req or IndiaUpiPaymentSubmitRequest()
+        cdk = str(req.cdk or "").strip()
+        link = str(req.link or "").strip()
+        if not cdk or not link:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "UPI-SCAN CDK 和 UPI 链接不能为空"})
+        try:
+            resp = requests.post(
+                f"{UPI_SCAN_API_BASE}/api/submit",
+                json={"cdk": cdk, "link": link},
+                headers={"Content-Type": "application/json"},
+                timeout=70,
+            )
+        except requests.RequestException as exc:
+            raise _payment_api_error(exc) from exc
+        data = _payment_api_submit_json(resp)
+        job_id = str(data.get("job_id") or data.get("jobId") or data.get("id") or "").strip()
+        if job_id:
+            with PAYMENT_JOBS_LOCK:
+                PAYMENT_JOBS[job_id] = {
+                    "job_id": job_id,
+                    "status_token": str(data.get("status_token") or data.get("jobToken") or data.get("job_token") or data.get("token") or ""),
+                    "link": link,
+                    "cdk": cdk,
+                    "account_email": _account_email_for_payment_link(link),
+                    "account_marked": False,
+                    "account_update": {},
+                    "created_at": time.time(),
+                }
+        return data
+
+    @router.get("/api/india-upi/payment/jobs/{job_id}")
+    def get_india_upi_payment_job(job_id: str, token: str = Query("")) -> dict[str, Any]:
+        clean_job_id = str(job_id or "").strip()
+        clean_token = str(token or "").strip()
+        if not clean_job_id or not clean_token:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "job_id 和 token 不能为空"})
+        try:
+            resp = requests.get(
+                f"{UPI_SCAN_API_BASE}/api/jobs/{clean_job_id}",
+                params={"token": clean_token},
+                headers={"X-Job-Token": clean_token},
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise _payment_api_error(exc) from exc
+        data = _payment_api_json(resp)
+        job = data.get("job") if isinstance(data.get("job"), dict) else {}
+        if str(job.get("status") or "").strip().lower() == "succeeded":
+            account_update = _mark_payment_success_account(clean_job_id, str(job.get("message") or "UPI-SCAN payment succeeded"))
+            if account_update:
+                job["account_email"] = account_update.get("email") or ""
+                job["account_type"] = account_update.get("account_type") or ""
+                job["last_bind_provider"] = account_update.get("last_bind_provider") or ""
+                job["account_marked_plus"] = True
+        return data
 
     return router

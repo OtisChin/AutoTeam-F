@@ -308,6 +308,32 @@
                     </select>
                   </label>
                 </div>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <button @click="selectAllProtocolAccounts" :disabled="protocolBusy || !protocolLinkAccountOptions.length" class="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-100 hover:bg-indigo-500/20 disabled:opacity-50">全选当前</button>
+                  <button @click="clearSelectedProtocolAccounts" :disabled="protocolBusy || !selectedProtocolAccountEmails.size" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空协议多选</button>
+                  <span class="text-xs font-semibold text-indigo-200/80">已选支付账号 {{ protocolSelectedEmails.length }}</span>
+                </div>
+                <div class="mt-3 max-h-44 overflow-y-auto rounded-xl border border-indigo-500/20">
+                  <table class="w-full text-left text-xs">
+                    <thead class="sticky top-0 bg-gray-900 text-indigo-200/70">
+                      <tr>
+                        <th class="w-10 px-3 py-2"></th>
+                        <th class="px-3 py-2">账号</th>
+                        <th class="px-3 py-2">国家</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-900">
+                      <tr v-if="!protocolLinkAccountOptions.length">
+                        <td colspan="3" class="px-3 py-6 text-center text-gray-500">暂无符合条件的成功提链账号</td>
+                      </tr>
+                      <tr v-for="item in protocolLinkAccountOptions" :key="item.email" class="hover:bg-gray-900/60">
+                        <td class="px-3 py-2"><input :checked="selectedProtocolAccountEmails.has(item.email)" type="checkbox" class="accent-indigo-500" :disabled="protocolBusy" @change="toggleProtocolAccount(item.email)" /></td>
+                        <td class="px-3 py-2 font-mono text-gray-300">{{ item.email }}</td>
+                        <td class="px-3 py-2 text-gray-400">{{ item.country }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
               <label class="block">
@@ -341,31 +367,37 @@
               <template v-if="protocolForm.smsProvider === 'sms_record'">
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">手机号</span>
-                  <input v-model.trim="protocolForm.phone" placeholder="+1835..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                  <textarea v-model.trim="protocolForm.phone" rows="3" placeholder="+1835..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
+                  <span class="mt-1 block text-xs text-gray-500">批量支付时每行一个手机号，按账号顺序分配。</span>
                 </label>
 
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">SMS record URL</span>
-                  <input v-model.trim="protocolForm.smsRecordUrl" placeholder="https://sms.example/api/record?token=..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
-                  <span class="mt-1 block text-xs text-gray-500">后端会轮询该 URL，并只使用本次请求后的新 OTP。</span>
+                  <textarea v-model.trim="protocolForm.smsRecordUrl" rows="3" placeholder="https://sms.example/api/record?token=..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
+                  <span class="mt-1 block text-xs text-gray-500">后端会轮询该 URL；批量支付时每行一个 URL，按账号顺序分配。</span>
                 </label>
               </template>
 
               <template v-else-if="protocolForm.smsProvider === 'hero_sms_rent'">
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">HeroSMS 长效号码</span>
-                  <input v-model.trim="protocolForm.phone" placeholder="+316..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
-                  <span class="mt-1 block text-xs text-gray-500">填写 HeroSMS 已购买的长效号码；后端会通过 HeroSMS API 查找该号码并轮询 PayPal OTP。</span>
+                  <textarea v-model.trim="protocolForm.phone" rows="3" placeholder="+316..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
+                  <span class="mt-1 block text-xs text-gray-500">填写 HeroSMS 已购买的长效号码；批量支付时每行一个长效号码，后端按账号顺序分配并轮询 PayPal OTP。</span>
                 </label>
               </template>
 
               <label class="block">
-                <span class="mb-1.5 block text-sm font-semibold text-gray-300">US 代理（可选）</span>
+                <span class="mb-1.5 block text-sm font-semibold text-gray-300">协议支付代理（可选）</span>
                 <textarea v-model.trim="protocolForm.proxies" rows="3" spellcheck="false" placeholder="proxy.example.com:10000:USER-zone-custom-region-US-session-xxxx-sessTime-120-sessAuto-1:pass" class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy"></textarea>
-                <span class="mt-1 block text-xs text-gray-500">默认不走代理，复现已验证成功的 no-proxy 组合；填写时后端取第一条并在本地子进程中执行。</span>
+                <span class="mt-1 block text-xs text-gray-500">每行一个代理；批量支付时按账号顺序分配，代理少于账号时循环复用。</span>
               </label>
 
               <div class="grid gap-4 md:grid-cols-2">
+                <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发支付数</span>
+                  <input v-model.number="protocolForm.concurrency" type="number" min="1" max="10" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                  <span class="mt-1 block text-xs text-gray-500">多选账号时生效，默认 1，最高 10。</span>
+                </label>
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">OTP 等待秒数</span>
                   <input v-model.number="protocolForm.smsRecordWaitSeconds" type="number" min="60" max="900" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
@@ -380,7 +412,7 @@
 
               <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
                 <button @click="startProtocolPayment" :disabled="protocolBusy" class="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50">
-                  {{ protocolBusy ? '支付中...' : '开始协议支付' }}
+                  {{ protocolBusy ? '支付中...' : `开始协议支付${protocolSelectedEmails.length ? ` (${protocolSelectedEmails.length})` : ''}` }}
                 </button>
                 <button v-if="protocolBusy" @click="cancelProtocolJob" :disabled="protocolCanceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
                   {{ protocolCanceling ? '取消中...' : '取消支付' }}
@@ -494,6 +526,7 @@ const accountCountryFilter = ref('all')
 const linkCountryFilter = ref('all')
 const protocolLinkCountryFilter = ref('all')
 const selectedProtocolAccountEmail = ref('')
+const selectedProtocolAccountEmails = ref(new Set())
 const retryFailedEmailSet = ref(new Set())
 const deletingPaypalAccounts = ref(new Set())
 const logRef = ref(null)
@@ -506,6 +539,7 @@ const protocolForm = ref({
   proxies: '',
   country: 'US',
   accountEmail: '',
+  concurrency: 1,
   smsRecordWaitSeconds: 300,
   smsRecordPollSeconds: 3,
 })
@@ -520,6 +554,7 @@ const protocolLogRef = ref(null)
 let componentUnmounted = false
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
+const protocolSelectedEmails = computed(() => Array.from(selectedProtocolAccountEmails.value))
 const retryFailedEmails = computed(() => Array.from(retryFailedEmailSet.value).filter(email => accounts.value.some(account => account.email === email && accountSelectable(account))))
 function linkCountry(link) {
   const billing = link?.billing && typeof link.billing === 'object' ? link.billing : {}
@@ -869,18 +904,50 @@ function applySelectedProtocolAccount() {
   if (PROTOCOL_COUNTRIES.has(selected.country)) protocolForm.value.country = selected.country
   setProtocolStatus(`已填入 ${selected.country || '-'} · ${selected.email} 的 BA 链。`)
 }
+function toggleProtocolAccount(email) {
+  const target = String(email || '').trim()
+  if (!target) return
+  const available = new Set(protocolLinkAccountOptions.value.map(item => item.email))
+  if (!available.has(target)) return
+  const next = new Set(selectedProtocolAccountEmails.value)
+  next.has(target) ? next.delete(target) : next.add(target)
+  selectedProtocolAccountEmails.value = next
+  if (next.size === 1) {
+    selectedProtocolAccountEmail.value = Array.from(next)[0]
+    applySelectedProtocolAccount()
+  }
+}
+function selectAllProtocolAccounts() {
+  selectedProtocolAccountEmails.value = new Set(protocolLinkAccountOptions.value.map(item => item.email))
+  if (selectedProtocolAccountEmails.value.size === 1) {
+    selectedProtocolAccountEmail.value = protocolSelectedEmails.value[0]
+    applySelectedProtocolAccount()
+  }
+}
+function clearSelectedProtocolAccounts() {
+  selectedProtocolAccountEmails.value = new Set()
+}
+function splitProtocolLines(value) {
+  return String(value || '').replace(/,/g, '\n').split(/\r?\n/).map(item => item.trim()).filter(Boolean)
+}
 function validateProtocolPayment() {
   protocolForm.value.country = String(protocolForm.value.country || 'US').trim().toUpperCase()
   protocolForm.value.smsProvider = String(protocolForm.value.smsProvider || 'sms_record').trim().toLowerCase().replace(/-/g, '_')
   if (!['sms_record', 'hero_sms', 'hero_sms_rent', 'smsbower'].includes(protocolForm.value.smsProvider)) protocolForm.value.smsProvider = 'sms_record'
-  if (!String(protocolForm.value.paypalLink || '').trim()) { setProtocolStatus('请填写 BA 链接或 BA token。', true); return false }
+  const batchCount = protocolSelectedEmails.value.length
+  if (!batchCount && !String(protocolForm.value.paypalLink || '').trim()) { setProtocolStatus('请填写 BA 链接或 BA token，或多选已成功提链账号。', true); return false }
   if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付仅开放 US/GB/NL/BR。', true); return false }
+  const phoneCount = splitProtocolLines(protocolForm.value.phone).length
+  const recordCount = splitProtocolLines(protocolForm.value.smsRecordUrl).length
   if (protocolForm.value.smsProvider === 'sms_record') {
     if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写手机号。', true); return false }
     if (!String(protocolForm.value.smsRecordUrl || '').trim()) { setProtocolStatus('请填写 SMS record URL。', true); return false }
+    if (batchCount > 1 && (phoneCount < batchCount || recordCount < batchCount)) { setProtocolStatus('固定手机号批量支付时，每个账号都需要一行手机号和一行 SMS record URL。', true); return false }
   } else if (protocolForm.value.smsProvider === 'hero_sms_rent') {
     if (!String(protocolForm.value.phone || '').trim()) { setProtocolStatus('请填写 HeroSMS 长效号码。', true); return false }
+    if (batchCount > 1 && phoneCount < batchCount) { setProtocolStatus('HeroSMS 长效号批量支付时，每个账号都需要一行长效号码。', true); return false }
   }
+  protocolForm.value.concurrency = Math.max(1, Math.min(10, Number(protocolForm.value.concurrency || 1)))
   protocolForm.value.smsRecordWaitSeconds = Math.max(60, Math.min(900, Number(protocolForm.value.smsRecordWaitSeconds || 300)))
   protocolForm.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(protocolForm.value.smsRecordPollSeconds || 3)))
   return true
@@ -905,13 +972,17 @@ async function startProtocolPayment() {
       proxies: protocolForm.value.proxies,
       country: protocolForm.value.country,
       accountEmail: protocolForm.value.accountEmail,
+      concurrency: protocolForm.value.concurrency,
       smsRecordWaitSeconds: protocolForm.value.smsRecordWaitSeconds,
       smsRecordPollSeconds: protocolForm.value.smsRecordPollSeconds,
     }
-    const data = await api.startUsPaypalProtocol(payload)
+    const selectedEmails = protocolSelectedEmails.value
+    const data = selectedEmails.length
+      ? await api.startUsPaypalProtocolBatch({ ...payload, accountEmails: protocolSelectedEmails.value })
+      : await api.startUsPaypalProtocol(payload)
     if (!data.job_id) throw new Error('后端没有返回协议支付任务 ID')
-    protocolJob.value = { id: data.job_id, status: 'queued', total: 1, completed: 0 }
-    localStorage.setItem(PROTOCOL_JOB_STORAGE_KEY, JSON.stringify({ jobId: data.job_id, startedAt: Date.now() }))
+    protocolJob.value = { id: data.job_id, status: 'queued', total: selectedEmails.length || 1, completed: 0, concurrency: protocolForm.value.concurrency }
+    localStorage.setItem(PROTOCOL_JOB_STORAGE_KEY, JSON.stringify({ jobId: data.job_id, accountCount: selectedEmails.length || 1, concurrency: protocolForm.value.concurrency, startedAt: Date.now() }))
     await pollProtocolJob(data.job_id)
   } catch (error) {
     setProtocolStatus(cleanError(error), true)
@@ -932,7 +1003,7 @@ async function pollProtocolJob(jobId) {
     await nextTick()
     if (protocolLogRef.value) protocolLogRef.value.scrollTop = protocolLogRef.value.scrollHeight
     if (job.status === 'success') {
-      setProtocolStatus('协议支付成功。')
+      setProtocolStatus(Number(job.total || 0) > 1 ? `协议批量支付完成，已完成 ${job.completed || 0}/${job.total || 0}。` : '协议支付成功。')
       localStorage.removeItem(PROTOCOL_JOB_STORAGE_KEY)
       await refreshAccounts()
       return
@@ -946,8 +1017,10 @@ async function pollProtocolJob(jobId) {
       localStorage.removeItem(PROTOCOL_JOB_STORAGE_KEY)
       throw new Error(job.error || '协议支付失败')
     }
-    setProtocolStatus(`协议支付执行中，已记录 ${protocolLogs.value.length} 条日志。`)
-    localStorage.setItem(PROTOCOL_JOB_STORAGE_KEY, JSON.stringify({ jobId, startedAt: Date.now() }))
+    const total = Number(job.total || 0)
+    const completed = Number(job.completed || 0)
+    setProtocolStatus(total > 1 ? `协议批量支付执行中，已完成 ${completed}/${total}，已记录 ${protocolLogs.value.length} 条日志。` : `协议支付执行中，已记录 ${protocolLogs.value.length} 条日志。`)
+    localStorage.setItem(PROTOCOL_JOB_STORAGE_KEY, JSON.stringify({ jobId, accountCount: total || 1, concurrency: job.concurrency || protocolForm.value.concurrency, startedAt: Date.now() }))
     await new Promise(resolve => window.setTimeout(resolve, 1000))
   }
 }
@@ -1007,7 +1080,7 @@ onMounted(async () => {
       activeTab.value = 'protocol'
       protocolBusy.value = true
       protocolCanceling.value = false
-      protocolJob.value = { id: savedProtocol.jobId, status: 'queued', total: 1, completed: 0 }
+      protocolJob.value = { id: savedProtocol.jobId, status: 'queued', total: Number(savedProtocol.accountCount || 1), completed: 0, concurrency: Number(savedProtocol.concurrency || 1) }
       setProtocolStatus('已恢复协议支付任务，正在重新同步后端进度。')
       await pollProtocolJob(savedProtocol.jobId)
     }
@@ -1031,6 +1104,8 @@ watch(protocolLinkCountryFilter, () => {
   if (!protocolLinkAccountOptions.value.some(item => item.email === selectedProtocolAccountEmail.value)) {
     selectedProtocolAccountEmail.value = ''
   }
+  const available = new Set(protocolLinkAccountOptions.value.map(item => item.email))
+  selectedProtocolAccountEmails.value = new Set(protocolSelectedEmails.value.filter(email => available.has(email)))
 })
 
 onBeforeUnmount(() => { componentUnmounted = true })

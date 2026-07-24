@@ -142,6 +142,9 @@ def test_build_protocol_command_reuses_gopay_herosms_settings(tmp_path, monkeypa
     monkeypatch.delenv("HERO_SMS_API_KEY", raising=False)
     monkeypatch.delenv("HEROSMS_API_KEY", raising=False)
     monkeypatch.delenv("OAUTH_HERO_SMS_API_KEY", raising=False)
+    monkeypatch.delenv("PAYPAL_HERO_SMS_BASE_URL", raising=False)
+    monkeypatch.delenv("PAYPAL_HEROSMS_BASE_URL", raising=False)
+    monkeypatch.delenv("OAUTH_HERO_SMS_BASE_URL", raising=False)
     monkeypatch.setenv("GOPAY_AUTO_SIGNUP_HERO_SMS_API_KEY", "gopay-hero-key")
     monkeypatch.setenv("GOPAY_AUTO_SIGNUP_HERO_SMS_BASE_URL", "https://hero.example/stubs/handler_api.php")
 
@@ -482,9 +485,13 @@ def test_build_protocol_command_reuses_settings_smsbower_key_fallback(tmp_path, 
     engine.mkdir()
     (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
+    monkeypatch.setattr(service, "_load_project_env", lambda: {})
     monkeypatch.delenv("PAYPAL_SMSBOWER_API_KEY", raising=False)
     monkeypatch.delenv("SMSBOWER_API_KEY", raising=False)
     monkeypatch.delenv("OAUTH_SMSBOWER_API_KEY", raising=False)
+    monkeypatch.delenv("PAYPAL_SMSBOWER_BASE_URL", raising=False)
+    monkeypatch.delenv("SMSBOWER_BASE_URL", raising=False)
+    monkeypatch.delenv("OAUTH_SMSBOWER_BASE_URL", raising=False)
     monkeypatch.setenv("GOPAY_AUTO_SIGNUP_SMSBOWER_API_KEY", "settings-smsbower-key")
     monkeypatch.setenv("GOPAY_AUTO_SIGNUP_SMSBOWER_BASE_URL", "https://settings.example/stubs/handler_api.php")
 
@@ -590,7 +597,7 @@ def test_protocol_service_classifies_member_approve_failure_from_result(tmp_path
     assert "member approve" in result["message"]
 
 
-def test_protocol_service_records_and_blocks_terminal_ba_retry(tmp_path, monkeypatch):
+def test_protocol_service_records_terminal_ba_and_blocks_retry(tmp_path, monkeypatch):
     engine = tmp_path / "engine"
     engine.mkdir()
     script = engine / "main.py"
@@ -617,14 +624,22 @@ def test_protocol_service_records_and_blocks_terminal_ba_retry(tmp_path, monkeyp
     assert service.terminal_ba_record("BA-1TERM123")
     assert any("本机终态" in line for line in first_logs)
 
-    script.write_text("print('should not run')\nraise SystemExit(0)\n", encoding="utf-8")
+    script.write_text(
+        "print('should run')\n"
+        "print('GraphQL ApproveMemberPaymentMutation HTTP 200 bytes=1166')\n"
+        "print('  \"state\": \"APPROVED\",')\n"
+        "print('=== Flow completed successfully ===')\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
     second_logs: list[str] = []
     second = service.run_paypal_protocol_payment(cfg, log=second_logs.append)
 
     assert second["status"] == "failed"
+    assert "不可安全重试" in second["message"]
     assert "fresh BA" in second["message"]
+    assert not any("should run" in line for line in second_logs)
     assert any("阻止重复协议支付" in line for line in second_logs)
-    assert not any("should not run" in line for line in second_logs)
 
 
 def test_protocol_service_treats_success_log_as_success_when_result_json_missing(tmp_path, monkeypatch):
