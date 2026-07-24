@@ -799,6 +799,7 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
         with pix_proxy_context(cfg.local_proxy, dyn2, log) as chain2:
             p2 = chain2.url
             cg2 = build_chatgpt_session(token, p2, device_id)
+            warm_chatgpt_checkout_context(cg2, promo_region, log)
             update = cg2.post(
                 "https://chatgpt.com/backend-api/payments/checkout/update",
                 json={

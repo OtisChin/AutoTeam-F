@@ -645,12 +645,85 @@ def test_temp_batch_job_calls_public_upi_generate_api_and_records_payment_uri(mo
     assert [call[0] for call in calls] == ["POST", "GET"]
     job = india_upi.JOBS[job_id]
     assert job["status"] == "success"
+    assert job["result"]["successes"][0]["cdk"] == "UPI-GEN-1"
+    assert india_upi._job_snapshot(job_id)["temp"] is True
     link = job["result"]["successes"][0]["link"]
     assert link["account_email"] == email
     assert link["hosted_instructions_url"] == "https://payments.stripe.com/upi/instructions/temp"
     assert link["upi_payment_uri"] == "https://qr.stripe.com/temp.svg?border=0"
     assert link["qr_image_url_svg"] == "https://qr.stripe.com/temp.svg?border=0"
     assert link["upi_expires_at_ts"] == 1784700000
+
+
+def test_temp_batch_job_flags_already_used_cdk_error(monkeypatch):
+    email = "temp-used-cdk@example.com"
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda _email: "chatgpt-token")
+
+    class FakeResponse:
+        status_code = 400
+        ok = False
+        text = '{"error":"CDK has already been used."}'
+
+        def json(self):
+            return {"error": "CDK has already been used."}
+
+    def fake_post(url, **kwargs):
+        assert url == "https://ahwuoc.site/api/run"
+        assert kwargs["json"] == {"accessToken": "chatgpt-token", "cdk": "UPI-GEN-USED"}
+        return FakeResponse()
+
+    monkeypatch.setattr(india_upi.requests, "post", fake_post)
+    job_id = "upi-temp-used-cdk-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {}, "temp": True, "external_jobs": {},
+    }
+
+    req = india_upi.IndiaUpiTempBatchStartRequest.model_validate({"accountEmails": [email], "cdk": "UPI-GEN-USED"})
+    india_upi._run_temp_batch_job(job_id, req)
+
+    error = india_upi.JOBS[job_id]["result"]["errors"][0]
+    assert error["cdk"] == "UPI-GEN-USED"
+    assert error["cdk_used"] is True
+
+
+def test_temp_batch_job_flags_running_cdk_cooldown_error(monkeypatch):
+    email = "temp-cooling-cdk@example.com"
+    monkeypatch.setattr(india_upi, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda _email: "chatgpt-token")
+
+    class FakeResponse:
+        status_code = 409
+        ok = False
+        text = '{"error":"CDK is already running in another task."}'
+
+        def json(self):
+            return {"error": "CDK is already running in another task."}
+
+    def fake_post(url, **kwargs):
+        assert url == "https://ahwuoc.site/api/run"
+        assert kwargs["json"] == {"accessToken": "chatgpt-token", "cdk": "UPI-GEN-COOL"}
+        return FakeResponse()
+
+    monkeypatch.setattr(india_upi.requests, "post", fake_post)
+    job_id = "upi-temp-cooling-cdk-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {}, "temp": True, "external_jobs": {},
+    }
+
+    req = india_upi.IndiaUpiTempBatchStartRequest.model_validate({"accountEmails": [email], "cdk": "UPI-GEN-COOL"})
+    india_upi._run_temp_batch_job(job_id, req)
+
+    error = india_upi.JOBS[job_id]["result"]["errors"][0]
+    assert error["cdk"] == "UPI-GEN-COOL"
+    assert error["cdk_cooling"] is True
+    assert error["cdk_cooldown_seconds"] == 180
 
 
 def test_cancel_temp_job_posts_public_upi_stop(monkeypatch):

@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "test:bind-link": "node scripts/test-bind-link-payload.mjs",
+    "test:india-upi-payment-queue": "node scripts/test-india-upi-payment-queue.mjs",
     "test:paypal-account-options": "node scripts/test-paypal-account-options.mjs",
     "test:paypal-protocol-ui": "node scripts/test-paypal-protocol-ui.mjs",
     "preview": "vite preview"

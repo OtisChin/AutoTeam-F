@@ -28,6 +28,7 @@ TEMP_UPI_API_BASE = "https://ahwuoc.site"
 UPI_SCAN_API_BASE = "https://ahwuoc.site"
 MAX_BATCH_CONCURRENCY = 10
 MAX_TEMP_BATCH_CONCURRENCY = 20
+TEMP_CDK_COOLDOWN_SECONDS = 3 * 60
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 PROXY_PREFLIGHT_MAX_ATTEMPTS = 3
@@ -585,6 +586,28 @@ def _temp_status(data: dict[str, Any]) -> str:
     return _temp_field(data, "status", "state").strip().lower()
 
 
+def _is_temp_cdk_used_error(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    return (
+        "cdk has already been used" in text
+        or "cdk already used" in text
+        or "cdk 已使用" in text
+        or "cdk已使用" in text
+    )
+
+
+def _is_temp_cdk_cooling_error(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    return (
+        "cdk is already running in another task" in text
+        or "cdk already running in another task" in text
+        or "cdk is running in another task" in text
+        or "already running in another task" in text
+        or "cdk 正在其他任务中运行" in text
+        or "cdk正在其他任务中运行" in text
+    )
+
+
 def _temp_cdks(req: IndiaUpiTempBatchStartRequest) -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
@@ -986,9 +1009,10 @@ def _run_temp_batch_account(
 ) -> dict[str, Any]:
     email = str(account.get("email") or "").strip()
     started = time.monotonic()
+    clean_cdk = str(cdk or "").strip()
     if _is_job_cancel_requested(job_id):
         _append_log(job_id, f"[{index}/{total}] 跳过账号：{email}（任务已取消）")
-        return {"skipped": True, "email": email, "status": _set_account_status(email, UPI_STATUS_PENDING, job_id=job_id)}
+        return {"skipped": True, "email": email, "cdk": clean_cdk, "status": _set_account_status(email, UPI_STATUS_PENDING, job_id=job_id)}
     _set_job_running_delta(job_id, 1)
     _append_log(job_id, f"[{index}/{total}] 临时 UPI 提链开始账号：{email}")
     try:
@@ -996,7 +1020,6 @@ def _run_temp_batch_account(
         token = _load_token_for_email(email)
         if not token:
             raise RuntimeError("账号缺少有效 accessToken")
-        clean_cdk = str(cdk or "").strip()
         if not clean_cdk:
             raise RuntimeError("临时 UPI 提链缺少 CDK")
         remote_job_id, job_token, created = _create_temp_external_job(token, clean_cdk)
@@ -1020,12 +1043,23 @@ def _run_temp_batch_account(
             "attempts": 1,
             "link": record,
             "remote_job_id": remote_job_id,
+            "cdk": clean_cdk,
         }
         _append_log(job_id, f"[{index}/{total}] 临时 UPI 提链成功：{email} remote_job={remote_job_id}")
         return {"ok": True, "email": email, "success": compact, "status": status}
     except Exception as exc:
         error = str(exc)
-        item = {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "attempts": 1, "error": error}
+        cdk_cooling = _is_temp_cdk_cooling_error(error)
+        item = {
+            "email": email,
+            "elapsed_s": round(time.monotonic() - started, 1),
+            "attempts": 1,
+            "error": error,
+            "cdk": clean_cdk,
+            "cdk_used": _is_temp_cdk_used_error(error),
+            "cdk_cooling": cdk_cooling,
+            "cdk_cooldown_seconds": TEMP_CDK_COOLDOWN_SECONDS if cdk_cooling else 0,
+        }
         status = _set_account_status(email, UPI_STATUS_FAILED, error=error, job_id=job_id)
         _append_log(job_id, f"[{index}/{total}] 临时 UPI 提链失败：{email} {error}")
         return {"ok": False, "email": email, "error": item, "status": status}
@@ -1079,7 +1113,7 @@ def _run_temp_batch_job(job_id: str, req: IndiaUpiTempBatchStartRequest) -> None
                 item = future.result()
                 email = str(item.get("email") or "")
                 if item.get("skipped"):
-                    skipped.append({"email": email, "reason": item.get("reason") or "任务已取消"})
+                    skipped.append({"email": email, "cdk": item.get("cdk") or "", "reason": item.get("reason") or "任务已取消"})
                 elif item.get("ok"):
                     successes.append(item["success"])
                 else:
@@ -1211,7 +1245,7 @@ def _job_snapshot(job_id: str) -> dict[str, Any]:
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
-        return {"id": job["id"], "status": job["status"], "logs": list(job["logs"]), "result": job["result"], "error": job["error"], "created_at": job["created_at"], "finished_at": job["finished_at"], "account_email": job.get("account_email") or "", "total": job.get("total") or 0, "completed": job.get("completed") or 0, "concurrency": job.get("concurrency") or 1, "running_count": job.get("running_count") or 0, "cancel_requested": bool(job.get("cancel_requested")), "skipped": job.get("skipped") or [], "account_statuses": job.get("account_statuses") or {}}
+        return {"id": job["id"], "status": job["status"], "logs": list(job["logs"]), "result": job["result"], "error": job["error"], "created_at": job["created_at"], "finished_at": job["finished_at"], "account_email": job.get("account_email") or "", "total": job.get("total") or 0, "completed": job.get("completed") or 0, "concurrency": job.get("concurrency") or 1, "running_count": job.get("running_count") or 0, "cancel_requested": bool(job.get("cancel_requested")), "skipped": job.get("skipped") or [], "account_statuses": job.get("account_statuses") or {}, "temp": bool(job.get("temp"))}
 
 
 def create_india_upi_router() -> APIRouter:
