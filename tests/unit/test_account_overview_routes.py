@@ -211,13 +211,56 @@ def test_account_overview_access_token_copies_from_auth_session(monkeypatch, tmp
 
     monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
     monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
-    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": str(auth_file)}])
-    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    def fail_load_accounts():
+        raise AssertionError("access-token route should not scan account pool when auth_session has accessToken")
+
+    monkeypatch.setattr(accounts, "load_accounts", fail_load_accounts)
     monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: str(session_file))
 
     result = _endpoint(app, "/api/accounts/{email}/access-token", "GET")(" User@example.com ")
 
     assert result == {"email": "user@example.com", "access_token": "session-access-token"}
+
+
+def test_account_overview_latest_mail_fetches_only_newest_message(monkeypatch):
+    app, _captured = _app()
+    account = {
+        "email": "user@mail.com",
+        "original_email": "user@mail.com",
+        "mail_provider": "mail.com",
+    }
+    captured = {}
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr(
+        "autotoken.storage.mail_accounts.get_mail_account",
+        lambda email: {"email": email, "mail_password": "mail-password", "refresh_token": ""},
+    )
+
+    def fake_fetch_mailcom_messages(mail_account, size=10):
+        captured["email"] = mail_account["email"]
+        captured["size"] = size
+        return [
+            {
+                "id": "mail-1",
+                "subject": "Newest mail",
+                "sendEmail": "sender@example.com",
+                "toEmail": "user@mail.com",
+                "text": "latest body",
+                "createTime": 1700000000,
+            }
+        ]
+
+    monkeypatch.setattr("autotoken.services.mailcom_webmail.fetch_mailcom_messages", fake_fetch_mailcom_messages)
+
+    result = _endpoint(app, "/api/accounts/{email}/latest-mail", "GET")("User@mail.com")
+
+    assert captured == {"email": "user@mail.com", "size": 1}
+    assert result["email"] == "user@mail.com"
+    assert result["mail_email"] == "user@mail.com"
+    assert result["provider"] == "mail.com"
+    assert result["message"]["subject"] == "Newest mail"
+    assert result["message"]["text"] == "latest body"
 
 
 def test_account_overview_subscription_queries_chatgpt_with_access_token(monkeypatch, tmp_path):

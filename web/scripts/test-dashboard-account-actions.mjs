@@ -6,9 +6,18 @@ const dashboard = readFileSync(new URL('../src/components/Dashboard.vue', import
 
 assert.match(api, /getAccountAccessToken:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/access-token`\)/, 'API exposes per-account access token route')
 assert.match(api, /getAccountSubscription:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/subscription`\)/, 'API exposes per-account subscription route')
+assert.match(api, /getAccountLatestMail:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/latest-mail`\)/, 'API exposes per-account latest mail route')
 
 assert.match(dashboard, /@click="copyAccountAccessToken\(acc\.email\)"/, 'account row has 获取ac action')
 assert.match(dashboard, /@click="queryAccountSubscription\(acc\.email\)"/, 'account row has 订阅查询 action')
+assert.match(dashboard, /@click="queryAccountLatestMail\(acc\.email\)"/, 'account row has 获取邮件 action')
+assert.match(dashboard, /最近一封邮件/, 'dashboard renders latest mail dialog')
+assert.match(dashboard, /activeLatestMail/, 'dashboard tracks latest mail message')
+assert.match(dashboard, /getAccountLatestMail\(email\)/, '获取邮件 action calls latest mail API')
+assert.match(dashboard, /toggleAccountDisplayOrder/, 'operation header has account order toggle action')
+assert.match(dashboard, /accountDisplayOrder/, 'dashboard tracks account display order')
+assert.match(dashboard, /↑↓/, 'operation header shows requested ↑↓ icon')
+assert.match(dashboard, /accountDisplayOrder\.value === 'desc'\s*\?\s*items\.reverse\(\)/, 'filtered accounts can be reversed')
 assert.ok(
   dashboard.indexOf("{{ actionEmail === acc.email && actionType === 'subscription' ? '查询中...' : '订阅查询' }}")
     < dashboard.indexOf('缺认证'),
@@ -18,6 +27,8 @@ assert.match(dashboard, /subscriptionDialog/, 'dashboard renders subscription di
 assert.match(dashboard, /accountActionBusy/, 'account actions share a global busy guard')
 assert.match(dashboard, /accountActionRequestId/, 'account actions guard stale async responses')
 assert.match(dashboard, /requestId !== accountActionRequestId\.value/, 'stale account action responses are ignored')
+assert.doesNotMatch(dashboard, /:disabled="accountActionBusy"/, 'account action busy state does not disable every row button')
+assert.match(dashboard, /:disabled="accountActionBusy && actionEmail === acc\.email"/, 'account action busy state only disables the active row')
 assert.match(dashboard, /订阅状态/, 'subscription dialog uses requested title')
 assert.match(dashboard, /订阅生效中/, 'subscription dialog shows active status pill')
 assert.match(dashboard, /自动续费/, 'subscription dialog shows auto-renew pill')
@@ -30,3 +41,6 @@ assert.match(dashboard, /网页 \(Web\)/, 'subscription dialog maps chatgpt_web 
 assert.match(dashboard, /subscriptionPlanKey/, 'subscription dialog can render raw ChatGPT plan keys')
 assert.match(dashboard, /remaining_days/, 'subscription dialog renders remaining subscription days')
 assert.doesNotMatch(dashboard, /if \(subscriptionDialog\.value\.loading\) return/, 'subscription dialog can be closed while loading')
+assert.doesNotMatch(dashboard, /placeholder="GoPay 任务ID"/, 'GoPay 任务ID查询入口已移除')
+assert.doesNotMatch(dashboard, /bindTaskFilter/, 'GoPay 任务ID筛选状态已移除')
+assert.doesNotMatch(dashboard, /gopay_task_id/, '导出筛选元数据不再包含 GoPay 任务ID查询条件')

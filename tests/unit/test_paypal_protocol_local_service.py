@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 
 import pytest
@@ -371,6 +372,36 @@ def test_gb_generated_addresses_avoid_known_landmarks():
         assert not any(marker in line for marker in blocked)
         assert address.country == "GB"
         assert address.postal_code
+
+
+def test_protocol_engine_us_address_pool_has_100_realistic_entries_in_original_states():
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    addresses = models._ADDRESS_BOOK["US"]
+    preferred_states = {"DE", "KY", "TX", "CA", "NY", "FL", "IL"}
+    assert len(addresses) >= 100
+    assert len(set(addresses)) == len(addresses)
+    state_counts: dict[str, int] = {}
+    for street, line2, city, state, postal_code in addresses:
+        assert street
+        assert city
+        assert state in preferred_states
+        assert re.fullmatch(r"\d{5}(?:-\d{4})?", postal_code)
+        assert not any(marker in street.lower() for marker in {"white house", "congress ave", "amphitheatre", "market street"})
+        assert line2 == ""
+        state_counts[state] = state_counts.get(state, 0) + 1
+    assert state_counts["CA"] >= 20
+    assert state_counts["TX"] >= 18
+    assert state_counts["FL"] >= 15
+    assert max(state_counts.values()) - min(state_counts.values()) >= 10
 
 
 def test_nl_generated_addresses_avoid_landmarks_and_have_real_house_numbers():

@@ -420,6 +420,126 @@ def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[
     return {"raw": merged_raw, "queried_url": queried_url}
 
 
+def _normalize_mail_provider_name(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "cloudflare": "cloudflare-temp-email",
+        "cloudflare-temp": "cloudflare-temp-email",
+        "cloudflare-temp-email": "cloudflare-temp-email",
+        "cloud-mail": "cloud-mail",
+        "cloudmail": "cloud-mail",
+        "mail.com": "mail.com",
+        "mailcom": "mail.com",
+        "mail-com": "mail.com",
+        "outlook": "outlook",
+        "hotmail": "outlook",
+        "microsoft": "outlook",
+        "microsoft-outlook": "outlook",
+        "luckmail": "luckmail",
+        "lucky-mail": "luckmail",
+    }
+    return aliases.get(raw, raw)
+
+
+def _normalize_mail_email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _mail_recipient_candidates(account: dict[str, Any] | None, fallback_email: str) -> list[str]:
+    candidates = [
+        (account or {}).get("original_email"),
+        (account or {}).get("display_email"),
+        (account or {}).get("email"),
+        fallback_email,
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        email = _normalize_mail_email(value)
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        out.append(email)
+    return out
+
+
+def _normalize_latest_mail(message: dict[str, Any]) -> dict[str, Any]:
+    html = str(_first_present(message, "html", "body_html", "content", default="") or "")
+    text = str(_first_present(message, "text", "plain_text", "message", "body", "summary", default="") or "")
+    return {
+        "id": str(_first_present(message, "id", "message_id", "messageId", default="")).strip(),
+        "subject": str(_first_present(message, "subject", "title", default="")).strip(),
+        "sendEmail": str(_first_present(message, "sendEmail", "from", "sender", "fromEmail", default="")).strip(),
+        "toEmail": str(_first_present(message, "toEmail", "accountEmail", "email", "recipient", default="")).strip(),
+        "text": text,
+        "html": html,
+        "content": html or text,
+        "createTime": _first_present(message, "createTime", "createdAt", "received_at", "receivedAt", "date", "time", default=""),
+        "createdAt": _first_present(message, "createdAt", "createTime", "received_at", "receivedAt", "date", "time", default=""),
+        "raw": message.get("raw", {}),
+    }
+
+
+def _provider_order(provider: str, account: dict[str, Any] | None, recipients: list[str]) -> list[str]:
+    provider = _normalize_mail_provider_name(provider)
+    order: list[str] = []
+
+    def add(name: str) -> None:
+        normalized = _normalize_mail_provider_name(name)
+        if normalized and normalized not in order:
+            order.append(normalized)
+
+    if provider:
+        add(provider)
+
+    cloudmail_account_id = str((account or {}).get("cloudmail_account_id") or "").strip()
+    if cloudmail_account_id:
+        add("cloudflare-temp-email")
+        add("cloud-mail")
+
+    for email in recipients:
+        domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+        if domain == "mail.com":
+            add("mail.com")
+        if domain in {"outlook.com", "hotmail.com", "live.com", "msn.com"} or domain.startswith("outlook."):
+            add("outlook")
+            add("luckmail")
+
+    add("mail.com")
+    add("outlook")
+    add("luckmail")
+    if cloudmail_account_id:
+        add("cloudflare-temp-email")
+        add("cloud-mail")
+    return order
+
+
+def _fetch_latest_mail_with_provider(provider: str, recipient: str, account: dict[str, Any] | None) -> list[dict[str, Any]]:
+    provider = _normalize_mail_provider_name(provider)
+    account_id = str((account or {}).get("cloudmail_account_id") or "").strip() or None
+    if provider == "mail.com":
+        from autotoken.mail.mailcom import MailComMailProvider
+
+        return MailComMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
+    if provider == "outlook":
+        from autotoken.mail.outlook import OutlookMailProvider
+
+        return OutlookMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
+    if provider == "luckmail":
+        from autotoken.mail.luckmail import LuckMailProvider
+
+        return LuckMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
+    if provider == "cloud-mail":
+        from autotoken.mail.cloud_mail import CloudMailProviderClient
+
+        return CloudMailProviderClient().search_emails_by_recipient(recipient, size=1, account_id=account_id)
+    if provider == "cloudflare-temp-email":
+        from autotoken.mail.cloudflare_temp_email import CloudflareTempEmailClient
+
+        return CloudflareTempEmailClient().search_emails_by_recipient(recipient, size=1, account_id=account_id)
+    return []
+
+
 def create_account_overview_router(
     *,
     load_accounts_with_session_stubs: Callable[..., list[dict]],
@@ -487,9 +607,10 @@ def create_account_overview_router(
                 raise HTTPException(status_code=400, detail="认证文件格式异常")
             return normalized, auth_file, auth_data
 
-        account = find_account(load_accounts(), normalized)
         candidates: list[Path] = []
         seen_paths: set[str] = set()
+        first_error = None
+        first_data: tuple[str, dict[str, Any]] | None = None
 
         def add_candidate(path: Path | None):
             if not path:
@@ -503,7 +624,21 @@ def create_account_overview_router(
         if prefer_auth_session:
             candidate = str(get_auth_session_file(normalized) or "").strip()
             session_path = trusted_auth_or_session_path(candidate, auth_dir=AUTH_DIR)
-            add_candidate(session_path)
+            if session_path:
+                try:
+                    auth_data = read_auth_json_file(session_path)
+                except Exception as exc:
+                    first_error = exc
+                else:
+                    if isinstance(auth_data, dict):
+                        first_data = (str(session_path), auth_data)
+                        if _extract_access_token(auth_data):
+                            return normalized, str(session_path), auth_data
+                    else:
+                        first_error = ValueError("认证文件格式异常")
+                add_candidate(session_path)
+
+        account = find_account(load_accounts(), normalized)
 
         if account:
             candidate = str(account.get("auth_file") or "").strip()
@@ -517,8 +652,6 @@ def create_account_overview_router(
         if not candidates:
             raise HTTPException(status_code=404, detail="该账号没有认证文件")
 
-        first_error = None
-        first_data: tuple[str, dict[str, Any]] | None = None
         for auth_path in candidates:
             try:
                 auth_data = read_auth_json_file(auth_path)
@@ -574,6 +707,45 @@ def create_account_overview_router(
             "raw": raw,
             "queried_url": result.get("queried_url") if isinstance(result, dict) else CHATGPT_SUBSCRIPTIONS_URL,
         }
+
+    @router.get("/api/accounts/{email}/latest-mail")
+    def get_account_latest_mail(email: str):
+        """获取账号对应邮箱的最近一封邮件。"""
+        from autotoken.storage.accounts import find_account, load_accounts
+
+        normalized = email.strip().lower()
+        account = find_account(load_accounts(), normalized)
+        if not account:
+            raise HTTPException(status_code=404, detail="账号不存在")
+
+        recipients = _mail_recipient_candidates(account, normalized)
+        providers = _provider_order(str(account.get("mail_provider") or ""), account, recipients)
+        errors: list[str] = []
+        attempted = 0
+        for provider in providers:
+            for recipient in recipients:
+                attempted += 1
+                try:
+                    messages = _fetch_latest_mail_with_provider(provider, recipient, account)
+                except Exception as exc:
+                    errors.append(f"{provider}/{recipient}: {safe_error}" if (safe_error := str(exc).strip()) else f"{provider}/{recipient}: 失败")
+                    continue
+                if messages:
+                    return {
+                        "email": normalized,
+                        "mail_email": recipient,
+                        "provider": provider,
+                        "message": _normalize_latest_mail(messages[0]),
+                    }
+        if attempted:
+            return {
+                "email": normalized,
+                "mail_email": recipients[0] if recipients else normalized,
+                "provider": providers[0] if providers else "",
+                "message": None,
+                "errors": errors[:5],
+            }
+        raise HTTPException(status_code=404, detail="该账号没有可用邮箱取件配置")
 
     @router.get("/api/accounts/active")
     def get_active():

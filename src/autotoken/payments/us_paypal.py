@@ -31,18 +31,114 @@ LogFn = Callable[[str], None]
 PAYPAL_STRIPE_VERSION = "2020-08-27;custom_checkout_beta=v1; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
 PAYPAL_STRIPE_RUNTIME_VERSION = "81274c9437"
 PAYPAL_BA_APPROVE_BASE = "https://www.paypal.com/agreements/approve"
+PAYPAL_CHECKOUT_SESSION_PREFIXES = ("cs_",)
 PAYPAL_BA_TOKEN_RE = re.compile(r"(?i)ba_token[=:%22'\\\s]+(?P<token>BA-[A-Za-z0-9_-]+)")
 PAYPAL_BA_APPROVE_RE = re.compile(
     r"(?i)(?:(?:https?:)?//)?(?:www\.)?paypal\.com/agreements/approve\?[^\\\s\"'<>]*?ba_token=(?P<token>BA-[A-Za-z0-9_-]+)"
 )
 
 US_ADDRESSES = [
-    # Prefer states without sales tax so ChatGPT approval and Stripe amount stay aligned.
-    ("John", "Miller", "121 SW Morrison Street", "Portland", "OR", "97204"),
-    ("Sarah", "Clark", "1000 SW Broadway", "Portland", "OR", "97205"),
-    ("Emily", "Lewis", "1201 N Market Street", "Wilmington", "DE", "19801"),
-    ("James", "Anderson", "100 N Main Street", "Concord", "NH", "03301"),
-    ("Robert", "Thomas", "101 N Last Chance Gulch", "Helena", "MT", "59601"),
+    # Prefer states without statewide sales tax so ChatGPT approval and Stripe amount stay aligned.
+    ('John', 'Miller', '1307 Shallcross Avenue', 'Wilmington', 'DE', '19806'),
+    ('Sarah', 'Clark', '214 S Bradford Street', 'Dover', 'DE', '19904'),
+    ('Emily', 'Lewis', '705 N Harrison Street', 'Wilmington', 'DE', '19805'),
+    ('James', 'Anderson', '38 W Park Place', 'Newark', 'DE', '19711'),
+    ('Robert', 'Thomas', '127 Delaware Avenue', 'Lewes', 'DE', '19958'),
+    ('Michael', 'Harris', '24 Lake Avenue', 'Rehoboth Beach', 'DE', '19971'),
+    ('Jennifer', 'Walker', '317 N Walnut Street', 'Milford', 'DE', '19963'),
+    ('David', 'Young', '19 Columbia Avenue', 'New Castle', 'DE', '19720'),
+    ('Ashley', 'King', '407 S Bedford Street', 'Georgetown', 'DE', '19947'),
+    ('Matthew', 'Wright', '83 E Green Street', 'Middletown', 'DE', '19709'),
+    ('Amanda', 'Lopez', '62 N Union Street', 'Smyrna', 'DE', '19977'),
+    ('Daniel', 'Hill', '118 W 6th Street', 'Laurel', 'DE', '19956'),
+    ('Jessica', 'Scott', '44 Chestnut Street', 'Milton', 'DE', '19968'),
+    ('Andrew', 'Green', '236 S State Street', 'Dover', 'DE', '19901'),
+    ('Mary', 'Adams', '15 W Commerce Street', 'Smyrna', 'DE', '19977'),
+    ('William', 'Baker', '506 W 7th Street', 'Wilmington', 'DE', '19801'),
+    ('Lauren', 'Nelson', '121 Academy Street', 'Newark', 'DE', '19711'),
+    ('Joseph', 'Carter', '72 Park Avenue', 'Seaford', 'DE', '19973'),
+    ('Megan', 'Mitchell', '29 The Strand', 'New Castle', 'DE', '19720'),
+    ('Elizabeth', 'Perez', '208 W Pine Street', 'Georgetown', 'DE', '19947'),
+    ('John', 'Miller', '91 Kings Highway', 'Lewes', 'DE', '19958'),
+    ('Sarah', 'Clark', '64 Hickman Street', 'Rehoboth Beach', 'DE', '19971'),
+    ('Emily', 'Lewis', '312 N Church Street', 'Milford', 'DE', '19963'),
+    ('James', 'Anderson', '46 W Frazier Street', 'Smyrna', 'DE', '19977'),
+    ('Robert', 'Thomas', '203 Delaware Street', 'New Castle', 'DE', '19720'),
+    ('Michael', 'Harris', '48 School Street', 'Concord', 'NH', '03301'),
+    ('Jennifer', 'Walker', '12 Ash Street', 'Portsmouth', 'NH', '03801'),
+    ('David', 'Young', '73 Pine Street', 'Manchester', 'NH', '03103'),
+    ('Ashley', 'King', '19 Grove Street', 'Peterborough', 'NH', '03458'),
+    ('Matthew', 'Wright', '142 Pleasant Street', 'Concord', 'NH', '03301'),
+    ('Amanda', 'Lopez', '31 Court Street', 'Exeter', 'NH', '03833'),
+    ('Daniel', 'Hill', '86 Hanover Street', 'Lebanon', 'NH', '03766'),
+    ('Jessica', 'Scott', '27 Summer Street', 'Dover', 'NH', '03820'),
+    ('Andrew', 'Green', '114 Maple Street', 'Keene', 'NH', '03431'),
+    ('Mary', 'Adams', '55 Central Street', 'Claremont', 'NH', '03743'),
+    ('William', 'Baker', '18 High Street', 'Plymouth', 'NH', '03264'),
+    ('Lauren', 'Nelson', '92 Union Street', 'Littleton', 'NH', '03561'),
+    ('Joseph', 'Carter', '146 Pearl Street', 'Manchester', 'NH', '03104'),
+    ('Megan', 'Mitchell', '33 Lincoln Avenue', 'Portsmouth', 'NH', '03801'),
+    ('Elizabeth', 'Perez', '65 Franklin Street', 'Concord', 'NH', '03301'),
+    ('John', 'Miller', '24 Grove Street', 'Dover', 'NH', '03820'),
+    ('Sarah', 'Clark', '138 Water Street', 'Exeter', 'NH', '03833'),
+    ('Emily', 'Lewis', '57 Roxbury Street', 'Keene', 'NH', '03431'),
+    ('James', 'Anderson', '81 Pleasant Street', 'Laconia', 'NH', '03246'),
+    ('Robert', 'Thomas', '39 Washington Street', 'Rochester', 'NH', '03867'),
+    ('Michael', 'Harris', '204 Main Street', 'Nashua', 'NH', '03060'),
+    ('Jennifer', 'Walker', '17 Prospect Street', 'Hanover', 'NH', '03755'),
+    ('David', 'Young', '76 Elm Street', 'Milford', 'NH', '03055'),
+    ('Ashley', 'King', '28 Park Street', 'Berlin', 'NH', '03570'),
+    ('Matthew', 'Wright', '101 High Street', 'Somersworth', 'NH', '03878'),
+    ('Amanda', 'Lopez', '718 S 3rd Street W', 'Missoula', 'MT', '59801'),
+    ('Daniel', 'Hill', '311 N Tracy Avenue', 'Bozeman', 'MT', '59715'),
+    ('Jessica', 'Scott', '92 S Rodney Street', 'Helena', 'MT', '59601'),
+    ('Andrew', 'Green', '514 4th Avenue N', 'Great Falls', 'MT', '59401'),
+    ('Mary', 'Adams', '1719 Poly Drive', 'Billings', 'MT', '59102'),
+    ('William', 'Baker', '836 2nd Avenue E', 'Kalispell', 'MT', '59901'),
+    ('Lauren', 'Nelson', '409 W Granite Street', 'Butte', 'MT', '59701'),
+    ('Joseph', 'Carter', '122 S Yellowstone Street', 'Livingston', 'MT', '59047'),
+    ('Megan', 'Mitchell', '215 S 7th Street', 'Miles City', 'MT', '59301'),
+    ('Elizabeth', 'Perez', '64 Highland Park Drive', 'Havre', 'MT', '59501'),
+    ('John', 'Miller', '928 Gerald Avenue', 'Missoula', 'MT', '59801'),
+    ('Sarah', 'Clark', '47 W Koch Street', 'Bozeman', 'MT', '59715'),
+    ('Emily', 'Lewis', '203 N Benton Avenue', 'Helena', 'MT', '59601'),
+    ('James', 'Anderson', '725 3rd Avenue N', 'Great Falls', 'MT', '59401'),
+    ('Robert', 'Thomas', '2502 1st Avenue N', 'Billings', 'MT', '59101'),
+    ('Michael', 'Harris', '319 5th Street E', 'Kalispell', 'MT', '59901'),
+    ('Jennifer', 'Walker', '37 W Silver Street', 'Butte', 'MT', '59701'),
+    ('David', 'Young', '109 S H Street', 'Livingston', 'MT', '59047'),
+    ('Ashley', 'King', '713 Palmer Street', 'Miles City', 'MT', '59301'),
+    ('Matthew', 'Wright', '426 3rd Street', 'Havre', 'MT', '59501'),
+    ('Amanda', 'Lopez', '1420 S 5th Street W', 'Missoula', 'MT', '59801'),
+    ('Daniel', 'Hill', '611 W Story Street', 'Bozeman', 'MT', '59715'),
+    ('Jessica', 'Scott', '416 N Ewing Street', 'Helena', 'MT', '59601'),
+    ('Andrew', 'Green', '1801 4th Avenue N', 'Great Falls', 'MT', '59401'),
+    ('Mary', 'Adams', '612 Clark Avenue', 'Billings', 'MT', '59101'),
+    ('William', 'Baker', '2834 SE Belmont Street', 'Portland', 'OR', '97214'),
+    ('Lauren', 'Nelson', '1340 Ferry Street', 'Eugene', 'OR', '97401'),
+    ('Joseph', 'Carter', '721 NW 23rd Avenue', 'Portland', 'OR', '97210'),
+    ('Megan', 'Mitchell', '364 Lincoln Street', 'Ashland', 'OR', '97520'),
+    ('Elizabeth', 'Perez', '524 NW 10th Street', 'Corvallis', 'OR', '97330'),
+    ('John', 'Miller', '1820 NE 8th Street', 'Bend', 'OR', '97701'),
+    ('Sarah', 'Clark', '77 High Street SE', 'Salem', 'OR', '97301'),
+    ('Emily', 'Lewis', '421 Siskiyou Boulevard', 'Ashland', 'OR', '97520'),
+    ('James', 'Anderson', '936 Oak Street', 'Hood River', 'OR', '97031'),
+    ('Robert', 'Thomas', '210 Washington Street', 'The Dalles', 'OR', '97058'),
+    ('Michael', 'Harris', '1580 Pearl Street', 'Eugene', 'OR', '97401'),
+    ('Jennifer', 'Walker', '622 NW 12th Avenue', 'Portland', 'OR', '97209'),
+    ('David', 'Young', '425 NW 6th Street', 'Corvallis', 'OR', '97330'),
+    ('Ashley', 'King', '1445 NW Harmon Boulevard', 'Bend', 'OR', '97703'),
+    ('Matthew', 'Wright', '286 Chemeketa Street NE', 'Salem', 'OR', '97301'),
+    ('Amanda', 'Lopez', '91 N 2nd Street', 'Ashland', 'OR', '97520'),
+    ('Daniel', 'Hill', '1105 Columbia Street', 'Hood River', 'OR', '97031'),
+    ('Jessica', 'Scott', '417 E 7th Street', 'The Dalles', 'OR', '97058'),
+    ('Andrew', 'Green', '1955 Potter Street', 'Eugene', 'OR', '97405'),
+    ('Mary', 'Adams', '2534 NE 32nd Avenue', 'Portland', 'OR', '97212'),
+    ('William', 'Baker', '1045 NW Van Buren Avenue', 'Corvallis', 'OR', '97330'),
+    ('Lauren', 'Nelson', '608 NW Congress Street', 'Bend', 'OR', '97703'),
+    ('Joseph', 'Carter', '742 Mill Street SE', 'Salem', 'OR', '97301'),
+    ('Megan', 'Mitchell', '137 Morton Street', 'Ashland', 'OR', '97520'),
+    ('Elizabeth', 'Perez', '1309 Pine Street', 'Hood River', 'OR', '97031'),
 ]
 
 PAYPAL_COUNTRY_CURRENCIES = {
@@ -389,6 +485,14 @@ def is_zero_amount(value: Any) -> bool:
         return text in {"0", "0.0", "0.00"}
 
 
+def is_checkout_session_id(value: Any) -> bool:
+    return str(value or "").startswith(PAYPAL_CHECKOUT_SESSION_PREFIXES)
+
+
+def is_openai_custom_checkout_session_id(value: Any) -> bool:
+    return str(value or "").startswith("oaics_")
+
+
 def promo_currency_for_region(region: str) -> str:
     return {"JP": "JPY", "BR": "BRL", "VN": "VND", "TH": "THB", "PH": "PHP", "TR": "TRY"}.get(str(region or "").strip().upper(), "USD")
 
@@ -690,17 +794,18 @@ def paypal_return_url(cs_id: str, processor: str, hosted_url: str) -> str:
     return urlunsplit((parsed.scheme or "https", parsed.netloc or "pay.openai.com", parsed.path, urlencode(query), parsed.fragment))
 
 
-def chatgpt_approve(access_token: str, cs_id: str, processor: str, proxy_url: str, device_id: str, log: LogFn) -> None:
+def chatgpt_approve(
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    proxy_url: str,
+    device_id: str,
+    log: LogFn,
+    *,
+    country: str = "US",
+) -> None:
     cg = build_chatgpt_session(access_token, proxy_url, device_id)
-    try:
-        cg.post(
-            "https://chatgpt.com/backend-api/sentinel/ping",
-            json={},
-            headers={"x-openai-target-path": "/backend-api/sentinel/ping", "x-openai-target-route": "/backend-api/sentinel/ping"},
-            timeout=TIMEOUT,
-        )
-    except Exception:
-        pass
+    warm_chatgpt_checkout_context(cg, country, log)
     last_err = ""
     for attempt in range(1, 4):
         try:
@@ -921,7 +1026,11 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             raise RuntimeError(f"checkout failed: {short(resp.text)}")
         data = resp.json() or {}
         cs_id = str(data.get("checkout_session_id") or data.get("session_id") or data.get("id") or "")
-        if not cs_id.startswith("cs_"):
+        if is_openai_custom_checkout_session_id(cs_id):
+            raise RuntimeError(
+                "openai_custom_checkout_unsupported: oaics checkout cannot use Stripe payment_pages PayPal flow"
+            )
+        if not is_checkout_session_id(cs_id):
             raise RuntimeError(f"checkout missing cs_id: {short(data)}")
         pk = extract_pk(data) or DEFAULT_STRIPE_PK
         processor = str(data.get("processor_entity") or "openai_llc")
@@ -1011,7 +1120,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
         log("[6/6] approve + poll PayPal")
-        chatgpt_approve(token, cs_id, processor, stripe_proxy, device_id, log)
+        chatgpt_approve(token, cs_id, processor, p1, device_id, log, country=checkout_region)
         last_err: dict[str, Any] = {}
         for i in range(1, 20):
             page_data = page_get(stripe, cs_id, pk, ctx)

@@ -220,10 +220,7 @@
             <button @click="retryFailedAccounts" :disabled="busy || !retryFailedEmails.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50" title="一键重试上一轮提链失败且仍在账号池中的账号">
               失败重试{{ retryFailedEmails.length ? ` (${retryFailedEmails.length})` : '' }}
             </button>
-            <label class="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs font-semibold text-gray-200">
-              <input v-model="form.notificationSoundEnabled" type="checkbox" class="accent-emerald-500" :disabled="busy" />
-              提示音
-            </label>
+            <NotificationSoundControl v-model="form.notificationSoundEnabled" :disabled="busy" />
           </div>
 
           <div class="text-sm" :class="statusError ? 'text-rose-300' : 'text-gray-400'">{{ statusText }}</div>
@@ -428,6 +425,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import NotificationSoundControl from './NotificationSoundControl.vue'
 import { PAYMENT_RETRYABLE_LINK_STATUSES, extractedLinkPaymentSeed, indiaUpiCdkStatusClass, isTempCdkCoolingError, paymentPairUnavailableMessage, tempCdkCooldownUntil, tempCdkRemainingText } from '../indiaUpiPaymentQueue.js'
 import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 

@@ -304,10 +304,7 @@
             >
               失败重试{{ retryFailedEmails.length ? ` (${retryFailedEmails.length})` : '' }}
             </button>
-            <label class="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs font-semibold text-gray-200">
-              <input v-model="form.notificationSoundEnabled" type="checkbox" class="accent-emerald-500" :disabled="busy" />
-              提示音
-            </label>
+            <NotificationSoundControl v-model="form.notificationSoundEnabled" :disabled="busy" />
           </div>
 
           <div class="text-sm" :class="statusError ? 'text-rose-300' : 'text-gray-400'">{{ statusText }}</div>
@@ -518,6 +515,7 @@
 <script setup>
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import NotificationSoundControl from './NotificationSoundControl.vue'
 import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
 const PROXY_STORAGE_KEY = 'autotoken_brazil_pix_proxies'
@@ -1721,7 +1719,7 @@ async function startWithEmails(emails, actionText = '提取') {
       })
     } else {
       saveProxy()
-      const payload = { ...form.value }
+      const { notificationSoundEnabled: _notificationSoundEnabled, ...payload } = form.value
       data = await api.startBrazilPixBatch({ ...payload, accountEmails })
     }
     if (!data.job_id) throw new Error('后端没有返回任务 ID')

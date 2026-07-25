@@ -1,4 +1,4 @@
-from __future__ import annotations
+import re
 
 import pytest
 
@@ -109,6 +109,20 @@ def test_paypal_billing_supports_requested_countries(country, currency):
     assert billing["postal_code"]
 
 
+def test_paypal_trial_us_billing_address_pool_has_100_realistic_tax_free_entries():
+    tax_free_states = {"AK", "DE", "MT", "NH", "OR"}
+    assert len(us_paypal.US_ADDRESSES) >= 100
+    assert len(set(us_paypal.US_ADDRESSES)) == len(us_paypal.US_ADDRESSES)
+    for first, last, line1, city, state, postal_code in us_paypal.US_ADDRESSES:
+        assert first
+        assert last
+        assert line1
+        assert city
+        assert state in tax_free_states
+        assert re.fullmatch(r"\d{5}(?:-\d{4})?", postal_code)
+        assert not any(marker in line1.lower() for marker in {"white house", "congress ave", "amphitheatre", "market street"})
+
+
 def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     calls = []
     captured = {}
@@ -160,6 +174,118 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     assert result["fields"]["amount"] == "0"
     assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
     assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
+
+
+def test_generate_paypal_trial_approve_reuses_preflighted_checkout_proxy(monkeypatch):
+    captured = {}
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            if url.endswith("/checkout/update"):
+                return _JsonResponse({"success": True, "checkout_session": {}})
+            return _JsonResponse({
+                "checkout_session_id": "cs_test",
+                "processor_entity": "openai_llc",
+                "public_key": "pk_test",
+            })
+
+    init_payloads = iter([
+        {
+            "total_summary": {"due": 1901},
+            "payment_method_types": ["card", "ideal", "paypal"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+        },
+        {
+            "total_summary": {"due": 0},
+            "payment_method_types": ["card", "ideal", "paypal"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_test",
+        },
+    ])
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
+        "submission_attempt": {"state": "requires_approval"},
+    })
+
+    def fake_approve(access_token, cs_id, processor, proxy_url, device_id, log, *, country="US"):
+        captured["approve_proxy"] = proxy_url
+        captured["approve_country"] = country
+
+    monkeypatch.setattr(us_paypal, "chatgpt_approve", fake_approve)
+    monkeypatch.setattr(us_paypal, "page_get", lambda *args, **kwargs: {
+        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-PREFLIGHTED",
+        "submission_attempt": {"state": "processing"},
+    })
+
+    preflighted = "socks5h://preflighted-nl.example:1000"
+    result = us_paypal.generate_paypal_trial(
+        us_paypal.PaypalJobConfig(
+            access_token="token",
+            direct_proxies=["socks5h://user-zone-custom-region-NL-session-fresh:pass@proxy.example:10000"],
+            preflighted_checkout_proxy_url=preflighted,
+            preflighted_promo_proxy_url="socks5h://preflighted-jp.example:1000",
+            region="NL",
+            promo_region="JP",
+            apply_promo=True,
+        )
+    )
+
+    assert captured["approve_proxy"] == preflighted
+    assert captured["approve_country"] == "NL"
+    assert result["fields"]["ba_token"] == "BA-PREFLIGHTED"
+
+
+def test_generate_paypal_trial_rejects_openai_custom_checkout_session_id_before_stripe_init(monkeypatch):
+    stripe_session_ids = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            return _JsonResponse({
+                "tag": "custom_checkout_session",
+                "checkout_session_id": "oaics_test_custom",
+                "publishable_key": "pk_test",
+                "processor_entity": "openai_llc",
+            })
+
+    def fake_stripe_init(_stripe, cs_id, *_args, **_kwargs):
+        stripe_session_ids.append(cs_id)
+        return {
+            "total_summary": {"due": 0},
+            "payment_method_types": ["card", "paypal"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/oaics_test_custom",
+        }
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", fake_stripe_init)
+
+    with pytest.raises(RuntimeError, match="openai_custom_checkout_unsupported"):
+        us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"]))
+
+    assert us_paypal.is_checkout_session_id("cs_test") is True
+    assert us_paypal.is_checkout_session_id("oaics_test_custom") is False
+    assert stripe_session_ids == []
+
+
+def test_chatgpt_approve_warms_checkout_context_for_target_country(monkeypatch):
+    warmed = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            return _JsonResponse({"result": "approved"})
+
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda session, country, log=None: warmed.append(country))
+
+    us_paypal.chatgpt_approve("token", "cs_test", "openai_llc", "proxy", "device", lambda _message: None, country="NL")
+
+    assert warmed == ["NL"]
 
 
 def test_generate_paypal_trial_warms_chatgpt_context_before_checkout(monkeypatch):

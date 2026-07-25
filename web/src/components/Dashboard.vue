@@ -399,13 +399,8 @@
               {{ option.label }}
             </option>
           </select>
-          <input
-            v-model.trim="bindTaskFilter"
-            type="search"
-            placeholder="GoPay 任务ID"
-            class="w-full sm:w-40 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter || bindTaskFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -445,7 +440,22 @@
               <th class="px-4 py-3 font-medium text-right">周 剩余</th>
               <th class="px-4 py-3 font-medium">5h 重置</th>
               <th class="px-4 py-3 font-medium">周 重置</th>
-              <th class="px-4 py-3 font-medium text-right">操作</th>
+              <th class="px-4 py-3 font-medium text-right">
+                <div class="inline-flex items-center justify-end gap-2">
+                  <span>操作</span>
+                  <button
+                    type="button"
+                    @click="toggleAccountDisplayOrder"
+                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-md border px-1.5 text-[11px] font-semibold transition"
+                    :class="accountDisplayOrder === 'desc'
+                      ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                      : 'border-gray-700 bg-gray-800/70 text-gray-400 hover:border-gray-600 hover:text-gray-200'"
+                    :title="accountDisplayOrder === 'desc' ? '当前倒序显示，点击切换正序' : '当前正序显示，点击切换倒序'"
+                    :aria-label="accountDisplayOrder === 'desc' ? '切换为账号正序显示' : '切换为账号倒序显示'">
+                    ↑↓
+                  </button>
+                </div>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -513,21 +523,30 @@
               <td class="px-4 py-3 text-right space-x-2">
                 <button
                   @click="copyAccountAccessToken(acc.email)"
-                  :disabled="accountActionBusy"
+                  :disabled="accountActionBusy && actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="accountActionBusy
+                  :class="accountActionBusy && actionEmail === acc.email
                     ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                     : 'bg-emerald-600/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-600/20'">
                   {{ actionEmail === acc.email && actionType === 'access-token' ? '复制中...' : '获取ac' }}
                 </button>
                 <button
                   @click="queryAccountSubscription(acc.email)"
-                  :disabled="accountActionBusy"
+                  :disabled="accountActionBusy && actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-                  :class="accountActionBusy
+                  :class="accountActionBusy && actionEmail === acc.email
                     ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                     : 'bg-teal-600/10 text-teal-300 border-teal-500/30 hover:bg-teal-600/20'">
                   {{ actionEmail === acc.email && actionType === 'subscription' ? '查询中...' : '订阅查询' }}
+                </button>
+                <button
+                  @click="queryAccountLatestMail(acc.email)"
+                  :disabled="accountActionBusy && actionEmail === acc.email"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+                  :class="accountActionBusy && actionEmail === acc.email
+                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                    : 'bg-sky-600/10 text-sky-300 border-sky-500/30 hover:bg-sky-600/20'">
+                  {{ actionEmail === acc.email && actionType === 'latest-mail' ? '取件中...' : '获取邮件' }}
                 </button>
                 <!-- 缺认证标识：账号没有 data/auths 下的 Codex auth_file → 在订阅查询后提示 -->
                 <span
@@ -903,6 +922,59 @@
           </div>
       </div>
 
+      <!-- 最近邮件弹窗 -->
+      <div v-if="latestMailDialog.open" class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" @click.self="closeLatestMailDialog">
+        <div class="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+          <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 px-6 py-4">
+            <div class="min-w-0">
+              <h3 class="text-xl font-bold text-sky-300">最近一封邮件</h3>
+              <div class="mt-1 break-all font-mono text-xs text-slate-400">{{ latestMailDialog.email }}</div>
+            </div>
+            <button @click="closeLatestMailDialog" class="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white">关闭</button>
+          </div>
+          <div class="max-h-[82vh] overflow-y-auto p-6">
+            <div v-if="latestMailDialog.loading" class="rounded-xl border border-sky-500/20 bg-sky-500/10 px-4 py-10 text-center text-sm text-sky-200">
+              正在获取最新邮件...
+            </div>
+            <div v-else-if="latestMailDialog.error" class="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-5 text-sm text-red-300">
+              {{ latestMailDialog.error }}
+            </div>
+            <div v-else-if="!activeLatestMail" class="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-10 text-center text-sm text-slate-500">
+              收件箱暂无邮件
+              <div v-if="latestMailDialog.data?.provider || latestMailDialog.data?.mail_email" class="mt-2 font-mono text-xs text-slate-600">
+                {{ latestMailDialog.data?.provider || '-' }} · {{ latestMailDialog.data?.mail_email || '-' }}
+              </div>
+            </div>
+            <div v-else class="space-y-4">
+              <div class="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+                <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div class="min-w-0">
+                    <div class="text-xs text-slate-500">
+                      {{ latestMailDialog.data?.provider || '-' }} · {{ latestMailDialog.data?.mail_email || '-' }}
+                    </div>
+                    <h4 class="mt-2 break-words text-lg font-bold text-white">{{ activeLatestMail.subject || '(无主题)' }}</h4>
+                    <div class="mt-2 space-y-1 text-xs text-slate-400">
+                      <div>发件人：<span class="font-mono text-slate-200">{{ activeLatestMail.sendEmail || '-' }}</span></div>
+                      <div>收件人：<span class="font-mono text-slate-200">{{ activeLatestMail.toEmail || latestMailDialog.data?.mail_email || '-' }}</span></div>
+                    </div>
+                  </div>
+                  <div class="shrink-0 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-400">
+                    {{ formatLatestMailDate(activeLatestMail.createTime || activeLatestMail.createdAt) }}
+                  </div>
+                </div>
+              </div>
+              <iframe
+                v-if="activeLatestMail.html || activeLatestMail.content"
+                :srcdoc="latestMailSrcdoc"
+                sandbox=""
+                class="h-[48vh] w-full rounded-xl border border-slate-800 bg-white"
+              ></iframe>
+              <pre v-else class="max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs leading-5 text-slate-200">{{ activeLatestMail.text || '无正文' }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 账号类型编辑弹窗 -->
       <div v-if="accountTypeEditAccount" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeAccountTypeEditor">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
@@ -1061,6 +1133,7 @@ const dashboardTabs = [
 const ACCOUNT_HUB_SYNC_MAX_EMAILS = 1000
 const ACCOUNT_DELETE_BATCH_MAX_EMAILS = 1000
 const activeDashboardTab = ref('chatgpt')
+const accountDisplayOrder = ref('asc')
 const actionEmail = ref('')
 const actionType = ref('')
 const accountActionBusy = ref(false)
@@ -1071,6 +1144,13 @@ const message = ref('')
 const exportData = ref(null)
 const copied = ref(false)
 const subscriptionDialog = ref({
+  open: false,
+  email: '',
+  loading: false,
+  error: '',
+  data: null,
+})
+const latestMailDialog = ref({
   open: false,
   email: '',
   loading: false,
@@ -1090,7 +1170,6 @@ const authCredentialFilter = ref('')
 const bindDateFilter = ref(dateKey(new Date()))
 const bindStartTimeFilter = ref('')
 const bindEndTimeFilter = ref('')
-const bindTaskFilter = ref('')
 const accountTypeEditAccount = ref(null)
 const accountTypeEditValue = ref('')
 const accountTypeSaving = ref(false)
@@ -1476,8 +1555,7 @@ const filteredAccounts = computed(() => {
   const hubSyncNeedle = accountHubSyncFilter.value
   const authNeedle = authCredentialFilter.value
   const bindRange = bindTimeRange.value
-  const bindTaskNeedle = bindTaskFilter.value.trim().toLowerCase()
-  return allAccounts.value
+  const items = allAccounts.value
     .map((acc, index) => ({ acc, index }))
     .filter(({ acc }) => {
     const email = `${acc?.email || ''} ${displayEmail(acc)}`.toLowerCase()
@@ -1486,7 +1564,6 @@ const filteredAccounts = computed(() => {
     const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
     const hubSyncStatus = acc?.account_hub_synced ? 'synced' : 'unsynced'
     const authStatus = hasCodexAuthFile(acc) ? 'has_auth' : 'missing_auth'
-    const bindTaskId = String(acc?.last_bind_task_id || '').toLowerCase()
     if (emailNeedle && !email.includes(emailNeedle)) return false
     if (statusNeedle && status !== statusNeedle) return false
     if (typeNeedle && accountType !== typeNeedle) return false
@@ -1505,7 +1582,6 @@ const filteredAccounts = computed(() => {
       if (bindRange.start && bindTs < bindRange.start) return false
       if (bindRange.end && bindTs > bindRange.end) return false
     }
-    if (bindTaskNeedle && !bindTaskId.includes(bindTaskNeedle)) return false
     return true
   })
     .sort((a, b) => {
@@ -1519,6 +1595,7 @@ const filteredAccounts = computed(() => {
       return a.index - b.index
     })
     .map(({ acc }) => acc)
+  return accountDisplayOrder.value === 'desc' ? items.reverse() : items
 })
 const accountStatusOptions = computed(() => {
   const counts = new Map()
@@ -1708,6 +1785,21 @@ const subscriptionRawJson = computed(() => {
   return JSON.stringify(subscriptionDialog.value.data.raw, null, 2)
 })
 const subscriptionAccountId = computed(() => subscriptionDialog.value.data?.account_id || '-')
+const activeLatestMail = computed(() => latestMailDialog.value.data?.message || null)
+const latestMailSrcdoc = computed(() => {
+  const mail = activeLatestMail.value
+  if (!mail) return ''
+  const html = String(mail.html || mail.content || '').trim()
+  if (html) return html
+  const text = String(mail.text || '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[char])
+  return `<pre style="white-space:pre-wrap;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#111827;padding:16px;">${text || '无正文'}</pre>`
+})
 const subscriptionChannelLiteral = '网页 (Web)'
 
 function subscriptionChannelLabel(origin) {
@@ -1724,6 +1816,10 @@ function toggleSelect(email) {
   if (next.has(key)) next.delete(key)
   else next.add(key)
   selectedSet.value = next
+}
+
+function toggleAccountDisplayOrder() {
+  accountDisplayOrder.value = accountDisplayOrder.value === 'desc' ? 'asc' : 'desc'
 }
 
 function toggleSelectAll() {
@@ -1846,7 +1942,6 @@ function clearFilters() {
   bindDateFilter.value = dateKey(new Date())
   bindStartTimeFilter.value = ''
   bindEndTimeFilter.value = ''
-  bindTaskFilter.value = ''
 }
 
 function openAccountTypeEditor(acc) {
@@ -2180,6 +2275,19 @@ function formatSubscriptionDate(value, options = {}) {
   return `${text} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+function formatLatestMailDate(value) {
+  if (!value) return '-'
+  let dateValue = value
+  if (typeof value === 'number' || /^\d+$/.test(String(value))) {
+    const numeric = Number(value)
+    dateValue = numeric > 10000000000 ? numeric : numeric * 1000
+  }
+  const date = new Date(dateValue)
+  if (Number.isNaN(date.getTime())) return String(value)
+  const pad = number => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 function subscriptionActive(subscription) {
   return Boolean(subscription?.active)
 }
@@ -2294,6 +2402,48 @@ async function queryAccountSubscription(email) {
   }
 }
 
+async function queryAccountLatestMail(email) {
+  if (accountActionBusy.value) return
+  const requestId = accountActionRequestId.value + 1
+  accountActionRequestId.value = requestId
+  accountActionBusy.value = true
+  actionEmail.value = email
+  actionType.value = 'latest-mail'
+  latestMailDialog.value = {
+    open: true,
+    email,
+    loading: true,
+    error: '',
+    data: null,
+  }
+  try {
+    const result = await api.getAccountLatestMail(email)
+    if (requestId !== accountActionRequestId.value || !latestMailDialog.value.open) return
+    latestMailDialog.value = {
+      open: true,
+      email,
+      loading: false,
+      error: '',
+      data: result,
+    }
+  } catch (e) {
+    if (requestId !== accountActionRequestId.value || !latestMailDialog.value.open) return
+    latestMailDialog.value = {
+      open: true,
+      email,
+      loading: false,
+      error: e.message || '获取邮件失败',
+      data: null,
+    }
+  } finally {
+    if (requestId === accountActionRequestId.value) {
+      accountActionBusy.value = false
+      actionEmail.value = ''
+      actionType.value = ''
+    }
+  }
+}
+
 function closeSubscriptionDialog() {
   if (actionType.value === 'subscription') {
     accountActionRequestId.value += 1
@@ -2302,6 +2452,22 @@ function closeSubscriptionDialog() {
     actionType.value = ''
   }
   subscriptionDialog.value = {
+    open: false,
+    email: '',
+    loading: false,
+    error: '',
+    data: null,
+  }
+}
+
+function closeLatestMailDialog() {
+  if (actionType.value === 'latest-mail') {
+    accountActionRequestId.value += 1
+    accountActionBusy.value = false
+    actionEmail.value = ''
+    actionType.value = ''
+  }
+  latestMailDialog.value = {
     open: false,
     email: '',
     loading: false,
@@ -2338,7 +2504,6 @@ function exportAccounts() {
       bind_end_time: bindEndTimeFilter.value || '',
       bind_time_start: bindTimeRange.value.start || null,
       bind_time_end: bindTimeRange.value.end || null,
-      gopay_task_id: bindTaskFilter.value || '',
       selected_only: selectedEmails.value.length > 0,
     },
     accounts: rows.map(acc => ({
