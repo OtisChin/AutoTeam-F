@@ -87,6 +87,7 @@ def test_create_express_billing_agreement_returns_ba_url():
     ("country", "currency"),
     [
         ("BR", "BRL"),
+        ("AU", "AUD"),
         ("CA", "CAD"),
         ("GB", "GBP"),
         ("ID", "IDR"),
@@ -202,6 +203,7 @@ def test_generate_paypal_trial_warms_chatgpt_context_before_checkout(monkeypatch
 
 def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkeypatch):
     calls = []
+    warmup_countries = []
 
     class FakeChatgptSession:
         def post(self, url, **kwargs):
@@ -231,6 +233,7 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
 
     monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
     monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda session, country, log=None: warmup_countries.append(country))
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
     monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
@@ -245,6 +248,7 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
 
     update_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout/update"))
     assert update_payload["billing_details"] == {"country": "JP", "currency": "JPY"}
+    assert warmup_countries == ["US", "JP"]
     assert result["amount"] == "0"
     assert result["fields"]["pre_promo_amount"] == "2120"
     assert result["fields"]["post_promo_payment_method_types"] == ["card", "paypal"]

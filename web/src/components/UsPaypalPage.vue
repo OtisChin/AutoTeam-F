@@ -1,5 +1,19 @@
 <template>
   <div class="space-y-5">
+    <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-2">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div class="inline-flex w-fit rounded-xl border border-gray-800 bg-gray-900/80 p-1">
+          <button type="button" @click="activeTab = 'links'" class="rounded-lg px-4 py-2 text-sm font-bold transition" :class="activeTab === 'links' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'">
+            PayPal 提链
+          </button>
+          <button type="button" @click="activeTab = 'protocol'" class="rounded-lg px-4 py-2 text-sm font-bold transition" :class="activeTab === 'protocol' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'">
+            协议支付
+          </button>
+        </div>
+        <p class="px-2 text-xs text-gray-500">提链和协议支付分开管理，切换不会清空当前输入。</p>
+      </div>
+    </section>
+
     <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5 md:p-6">
       <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
@@ -11,17 +25,6 @@
           <span class="h-2.5 w-2.5 rounded-full" :class="busy ? 'bg-blue-400' : 'bg-emerald-400'"></span>
           {{ anyBusy ? activeStatusText : '本地服务在线' }}
         </span>
-      </div>
-    </section>
-
-    <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-2">
-      <div class="flex flex-wrap gap-2">
-        <button type="button" @click="activeTab = 'links'" class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="activeTab === 'links' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'">
-          PayPal 提链
-        </button>
-        <button type="button" @click="activeTab = 'protocol'" class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="activeTab === 'protocol' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-950/40' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'">
-          协议支付
-        </button>
       </div>
     </section>
 
@@ -60,8 +63,8 @@
           <div class="grid gap-4 md:grid-cols-2">
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
-              <input v-model.number="form.concurrency" type="number" min="1" max="10" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 10；并发越高越依赖代理质量。</span>
+              <input v-model.number="form.concurrency" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 20；并发越高越依赖代理质量。</span>
             </label>
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
@@ -268,16 +271,7 @@
     </template>
 
     <section v-else class="rounded-2xl border border-indigo-500/20 bg-gray-950/70 p-5 md:p-6">
-      <div class="flex flex-col gap-4 border-b border-indigo-500/20 pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300/70">PayPal Protocol Payment</p>
-          <h2 class="mt-1 text-2xl font-bold text-white">本地协议支付页</h2>
-          <p class="mt-2 text-sm text-gray-400">使用 AutoTeam-F 内置的 PayPal 协议引擎执行 BA approval；不调用任何第三方远程兼容网站。</p>
-        </div>
-        <span class="rounded-full border px-3 py-1 text-xs font-semibold" :class="protocolBadgeClass">{{ protocolBadgeText }}</span>
-      </div>
-
-      <div class="mt-6 grid gap-5 xl:grid-cols-[minmax(360px,0.9fr)_minmax(460px,1.1fr)]">
+      <div class="grid gap-5 xl:grid-cols-[minmax(360px,0.9fr)_minmax(460px,1.1fr)]">
         <div class="space-y-5">
           <div class="rounded-2xl border border-gray-800 bg-gray-950 p-5">
             <h3 class="text-lg font-bold text-white">协议支付输入</h3>
@@ -345,6 +339,7 @@
                 <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">国家</span>
                   <select v-model="protocolForm.country" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy">
+                    <option value="AU">AU · 澳大利亚</option>
                     <option value="BR">BR · 巴西</option>
                     <option value="CA">CA · 加拿大</option>
                     <option value="GB">GB · 英国</option>
@@ -456,7 +451,7 @@
             <pre v-if="protocolResult" class="mt-4 max-h-72 overflow-auto rounded-xl border border-gray-800 bg-gray-950 p-4 text-xs text-gray-300">{{ JSON.stringify(protocolResult, null, 2) }}</pre>
             <div v-else class="flex min-h-36 flex-col items-center justify-center text-center text-gray-500">
               <strong class="text-gray-300">尚未提交协议支付</strong>
-              <span class="mt-1 text-sm">选择 BR/CA/GB/ID/JP/MX/PH/TH/NL/US，填入 BA，并选择固定 SMS URL / HeroSMS / SMSBower 后开始。</span>
+              <span class="mt-1 text-sm">选择 AU/BR/CA/GB/ID/JP/MX/PH/TH/NL/US，填入 BA，并选择固定 SMS URL / HeroSMS / SMSBower 后开始。</span>
             </div>
           </section>
         </div>
@@ -480,7 +475,7 @@ const PROTOCOL_FORM_STORAGE_KEY = 'autotoken_us_paypal_protocol_form'
 const PROTOCOL_JOB_STORAGE_KEY = 'autotoken_us_paypal_protocol_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
-const PROTOCOL_COUNTRIES = new Set(['BR', 'CA', 'GB', 'ID', 'JP', 'MX', 'PH', 'TH', 'NL', 'US'])
+const PROTOCOL_COUNTRIES = new Set(['AU', 'BR', 'CA', 'GB', 'ID', 'JP', 'MX', 'PH', 'TH', 'NL', 'US'])
 const paypalCountryOptions = [
   { value: 'US', label: 'US · 美国' },
   { value: 'GB', label: 'GB · 英国' },
@@ -945,7 +940,7 @@ function validateProtocolPayment() {
   if (!['sms_record', 'hero_sms', 'hero_sms_rent', 'smsbower'].includes(protocolForm.value.smsProvider)) protocolForm.value.smsProvider = 'sms_record'
   const batchCount = protocolSelectedEmails.value.length
   if (!batchCount && !String(protocolForm.value.paypalLink || '').trim()) { setProtocolStatus('请填写 BA 链接或 BA token，或多选已成功提链账号。', true); return false }
-  if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付支持 BR/CA/GB/ID/JP/MX/PH/TH/NL/US。', true); return false }
+  if (!PROTOCOL_COUNTRIES.has(protocolForm.value.country)) { setProtocolStatus('当前协议支付支持 AU/BR/CA/GB/ID/JP/MX/PH/TH/NL/US。', true); return false }
   const phoneCount = splitProtocolLines(protocolForm.value.phone).length
   const recordCount = splitProtocolLines(protocolForm.value.smsRecordUrl).length
   if (protocolForm.value.smsProvider === 'sms_record') {

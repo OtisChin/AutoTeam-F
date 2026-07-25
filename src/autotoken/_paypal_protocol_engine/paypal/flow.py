@@ -5950,7 +5950,7 @@ class PayPalFlow:
         # empty shippingAddress is not equivalent and can perturb address
         # validation. Keep the legacy payload for BR, where the captured
         # signup-card path still includes the placeholder shipping form state.
-        if str(self.address.country or "").upper() in {"GB", "NL", "CA", "ID", "JP", "MX", "PH", "TH"}:
+        if str(self.address.country or "").upper() in {"GB", "NL", "AU", "CA", "ID", "JP", "MX", "PH", "TH"}:
             return None
         billing_state = self._billing_state()
         return {
@@ -6134,7 +6134,7 @@ class PayPalFlow:
         self._billing_address_autocomplete_succeeded = False
         skip_countries = {
             item.strip().upper()
-            for item in os.getenv("PAYPAL_SKIP_ADDRESS_AUTOCOMPLETE_COUNTRIES", "GB,NL,CA,ID,JP,MX,PH,TH").split(",")
+            for item in os.getenv("PAYPAL_SKIP_ADDRESS_AUTOCOMPLETE_COUNTRIES", "GB,NL,AU,CA,ID,JP,MX,PH,TH").split(",")
             if item.strip()
         }
         if str(self.address.country or "").upper() in skip_countries:

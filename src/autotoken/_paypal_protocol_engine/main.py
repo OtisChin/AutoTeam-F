@@ -194,10 +194,10 @@ def main():
         "--country",
         default=os.getenv("PAYPAL_COUNTRY", "BR"),
         choices=[
-            "BR", "US", "GB", "NL", "CA", "ID", "JP", "MX", "PH", "TH",
-            "br", "us", "gb", "nl", "ca", "id", "jp", "mx", "ph", "th",
+            "BR", "US", "GB", "NL", "AU", "CA", "ID", "JP", "MX", "PH", "TH",
+            "br", "us", "gb", "nl", "au", "ca", "id", "jp", "mx", "ph", "th",
         ],
-        help="Buyer/onboarding country. Default: BR; use BR/CA/GB/ID/JP/MX/PH/TH/NL/US for PayPal.",
+        help="Buyer/onboarding country. Default: BR; use AU/BR/CA/GB/ID/JP/MX/PH/TH/NL/US for PayPal.",
     )
     parser.add_argument(
         "--smsbower",
@@ -435,6 +435,7 @@ def main():
         "GB": "+447700900123",
         "NL": "+31612345678",
         "BR": "+5500000000000",
+        "AU": "+61412345678",
         "CA": "+14370000000",
         "ID": "+6281234567890",
         "JP": "+819012345678",

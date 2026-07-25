@@ -34,13 +34,14 @@ USERINFO_RE = re.compile(r"(?P<scheme>\b[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s
 DEFAULT_ENGINE_ROOT = PROJECT_ROOT / "src" / "autotoken" / "_paypal_protocol_engine"
 DEFAULT_TIMEOUT_SECONDS = 900
 TERMINAL_BA_FILE = PROJECT_ROOT / "data" / "paypal_protocol_terminal_ba.json"
-SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES = {"US", "GB", "NL", "BR", "CA", "ID", "JP", "MX", "PH", "TH"}
-SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT = "BR/CA/GB/ID/JP/MX/PH/TH/NL/US"
+SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES = {"US", "GB", "NL", "BR", "AU", "CA", "ID", "JP", "MX", "PH", "TH"}
+SUPPORTED_PAYPAL_PROTOCOL_COUNTRIES_TEXT = "AU/BR/CA/GB/ID/JP/MX/PH/TH/NL/US"
 DEFAULT_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {
     "US": "187",
     "GB": "16",
     "NL": "48",
     "BR": "73",
+    "AU": "175",
     "CA": "36",
     "ID": "6",
     "JP": "182",

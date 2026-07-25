@@ -27,6 +27,7 @@ PAYPAL_SMS_COUNTRY_BY_PAYPAL_COUNTRY = {
     "GB": "16",
     "NL": "48",
     "BR": "73",
+    "AU": "175",
     "CA": "36",
     "ID": "6",
     "JP": "182",
@@ -38,6 +39,7 @@ PAYPAL_SMS_COUNTRY_DIAL_CODES = {
     "12": "1",
     "187": "1",
     "36": "1",
+    "175": "61",
     "16": "44",
     "48": "31",
     "73": "55",
@@ -736,6 +738,8 @@ def normalize_paypal_sms_country(raw: object = "", *, paypal_country: str = "US"
         return "48"
     if value in {"br", "bra", "brazil", "brasil", "+55"}:
         return "73"
+    if value in {"au", "aus", "australia", "+61"}:
+        return "175"
     if value in {"ca", "can", "canada"}:
         return "36"
     if value in {"id", "idn", "indonesia", "+62"}:

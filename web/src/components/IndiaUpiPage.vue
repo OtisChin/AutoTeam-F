@@ -175,8 +175,8 @@
           <div class="grid gap-4 md:grid-cols-2">
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
-              <input v-model.number="form.concurrency" type="number" min="1" max="10" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 10。</span>
+              <input v-model.number="form.concurrency" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 20。</span>
             </label>
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>

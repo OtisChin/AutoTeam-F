@@ -77,7 +77,7 @@ PAYPAL_COUNTRY_CURRENCIES = {
 PAYPAL_COUNTRY_BILLING_PRESETS = {
     "GB": ("Olivia Brown", "221B Baker Street", "London", "", "NW1 6XE"),
     "CA": ("Noah Wilson", "100 Queen Street W", "Toronto", "ON", "M5H 2N2"),
-    "AU": ("Charlotte Taylor", "1 Macquarie Street", "Sydney", "NSW", "2000"),
+    "AU": ("Charlotte Taylor", "42 Victoria Street", "Paddington", "NSW", "2021"),
     "JP": ("Yuki Tanaka", "1-1 Chiyoda", "Tokyo", "", "100-0001"),
     "BR": ("Lucas Silva", "Rua da Consolacao 787", "Sao Paulo", "SP", "01301-000"),
     "ID": ("Adi Pratama", "Jalan Kemang Raya 12", "Jakarta Selatan", "DKI Jakarta", "12730"),
@@ -110,6 +110,7 @@ class PaypalJobConfig:
     direct_proxies: list[str] = field(default_factory=list)
     apply_promo: bool = False
     preflighted_checkout_proxy_url: str = ""
+    preflighted_promo_proxy_url: str = ""
 
 
 def normalize_paypal_proxy_url(value: str) -> str:
@@ -196,6 +197,9 @@ def build_paypal_dynamic_proxy(cfg: PaypalJobConfig, stage_index: int, region: s
     preflighted = normalize_paypal_proxy_url(getattr(cfg, "preflighted_checkout_proxy_url", ""))
     if stage_index == 0 and preflighted and target_region == (str(cfg.region or "US").strip().upper() or "US"):
         return preflighted, f"preflighted region={target_region}"
+    preflighted_promo = normalize_paypal_proxy_url(getattr(cfg, "preflighted_promo_proxy_url", ""))
+    if preflighted_promo and target_region == (str(cfg.promo_region or "JP").strip().upper() or "JP"):
+        return preflighted_promo, f"preflighted region={target_region}"
     direct = [
         align_paypal_proxy_region(normalize_paypal_proxy_url(item), target_region)
         for item in (cfg.direct_proxies or [])
@@ -737,8 +741,10 @@ def chatgpt_update_trial_promo(
     device_id: str,
     country: str = "JP",
     currency: str = "JPY",
+    log: LogFn | None = None,
 ) -> dict[str, Any]:
     cg = build_chatgpt_session(access_token, proxy_url, device_id)
+    warm_chatgpt_checkout_context(cg, country, log)
     resp = cg.post(
         "https://chatgpt.com/backend-api/payments/checkout/update",
         json={
@@ -948,6 +954,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
                     device_id=device_id,
                     country=promo_region,
                     currency=promo_currency_for_region(promo_region),
+                    log=log,
                 )
                 log(f"promo update success={bool(update_payload.get('success', True))} keys={sorted(update_payload.keys())[:6]}")
 

@@ -21,6 +21,7 @@ class CountryProfile:
 
 COUNTRY_PROFILES: dict[str, CountryProfile] = {
     "US": CountryProfile("US", "en_US", "en-US", "1", "America/Los_Angeles", 420, (), False, False),
+    "AU": CountryProfile("AU", "en_AU", "en-AU", "61", "Australia/Sydney", -600, (), False, False),
     "CA": CountryProfile("CA", "en_CA", "en-CA", "1", "America/Toronto", 240, (), False, False),
     "GB": CountryProfile("GB", "en_GB", "en-GB", "44", "Europe/London", -60, ("DateOfBirth", "Nationality"), False, False),
     "ID": CountryProfile("ID", "id_ID", "id-ID", "62", "Asia/Jakarta", -420, (), False, False),

@@ -385,7 +385,7 @@ def test_batch_account_preflights_proxy_before_pix_generation(monkeypatch, tmp_p
     )
 
     assert result["ok"] is False
-    assert len(preflighted) == 3
+    assert len(preflighted) == 5
     assert "代理预检失败" in result["error"]["error"]
     assert "ruleset blocked" in result["error"]["error"]
     assert any("代理预检失败" in line for line in brazil_pix.JOBS[job_id]["logs"])
@@ -418,7 +418,7 @@ def test_batch_account_auth_preflight_blocks_pix_generation(monkeypatch, tmp_pat
     assert any("认证接口预检失败" in line for line in brazil_pix.JOBS[job_id]["logs"])
 
 
-def test_pix_proxy_preflight_has_separate_three_attempt_budget(monkeypatch, tmp_path):
+def test_pix_proxy_preflight_has_separate_five_attempt_budget(monkeypatch, tmp_path):
     _isolate_files(monkeypatch, tmp_path)
     email = "preflight-ok@example.com"
     monkeypatch.setattr(brazil_pix, "_load_token_for_email", lambda value: "token-" + value)
@@ -427,7 +427,7 @@ def test_pix_proxy_preflight_has_separate_three_attempt_budget(monkeypatch, tmp_
 
     def fake_preflight(proxy_url):
         preflighted.append(proxy_url)
-        return (len(preflighted) == 3, "HTTP 200" if len(preflighted) == 3 else "ProxyError: ruleset blocked")
+        return (len(preflighted) == 5, "HTTP 200" if len(preflighted) == 5 else "ProxyError: ruleset blocked")
 
     def fake_generate_pix_trial(cfg, log):
         captured["cfg"] = cfg
@@ -457,16 +457,18 @@ def test_pix_proxy_preflight_has_separate_three_attempt_budget(monkeypatch, tmp_
             "proxy2.example:1000:user-region-US-sid-old2-t-120:pass",
             "proxy3.example:1000:user-region-US-sid-old3-t-120:pass",
             "proxy4.example:1000:user-region-US-sid-old4-t-120:pass",
+            "proxy5.example:1000:user-region-US-sid-old5-t-120:pass",
+            "proxy6.example:1000:user-region-US-sid-old6-t-120:pass",
         ]),
         "maxAttempts": 1,
     })
     result = brazil_pix._run_batch_account(job_id, req, {"email": email}, 1, 1, brazil_pix._parse_proxies(req.proxies))
 
     assert result["ok"] is True
-    assert len(preflighted) == 3
-    assert "proxy3.example" in captured["cfg"].direct_proxies[0]
+    assert len(preflighted) == 5
+    assert "proxy5.example" in captured["cfg"].direct_proxies[0]
     assert brazil_pix.build_pix_dynamic_proxy(captured["cfg"], 0)[0] == preflighted[-1]
-    assert not any("proxy4.example" in proxy for proxy in preflighted)
+    assert not any("proxy6.example" in proxy for proxy in preflighted)
 
 
 def test_single_job_deletes_token_revoked_account(monkeypatch, tmp_path):
@@ -565,6 +567,13 @@ def test_batch_job_honors_concurrency(monkeypatch, tmp_path):
     assert job["concurrency"] == 2
     assert len(job["result"]["successes"]) == 3
     assert max_active >= 2
+
+
+def test_batch_concurrency_allows_twenty(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate({"accountEmails": [], "concurrency": 25})
+
+    assert brazil_pix._batch_concurrency(req, total=30) == 20
 
 
 def test_batch_job_retries_failed_account_up_to_five_attempts(monkeypatch, tmp_path):

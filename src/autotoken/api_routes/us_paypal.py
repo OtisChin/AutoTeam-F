@@ -37,10 +37,11 @@ sanitize_protocol_log_text = paypal_protocol_service.sanitize_log_text
 
 LINKS_FILE = PROJECT_ROOT / "data" / "us_paypal_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "us_paypal_account_status.json"
-MAX_BATCH_CONCURRENCY = 10
+MAX_BATCH_CONCURRENCY = 20
+MAX_PROTOCOL_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
-PROXY_PREFLIGHT_MAX_ATTEMPTS = 3
+PROXY_PREFLIGHT_MAX_ATTEMPTS = 5
 PAYPAL_STATUS_PENDING = "pending"
 PAYPAL_STATUS_RUNNING = "running"
 PAYPAL_STATUS_SUCCESS = "success"
@@ -207,7 +208,7 @@ class UsPaypalProtocolBatchStartRequest(UsPaypalProtocolStartRequest):
             concurrency = int(value or 1)
         except Exception:
             concurrency = 1
-        return max(1, min(MAX_BATCH_CONCURRENCY, concurrency))
+        return max(1, min(MAX_PROTOCOL_BATCH_CONCURRENCY, concurrency))
 
 class UsPaypalDeleteLinksRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
@@ -380,26 +381,36 @@ def _preflight_paypal_link_proxies_or_raise(cfg: PaypalJobConfig, log) -> Paypal
     region = str(cfg.region or "US").strip().upper() or "US"
     if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
         return cfg
-    errors: list[str] = []
-    for stage_index in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
-        proxy_url, sid_label = build_paypal_dynamic_proxy(cfg, stage_index, region)
-        if not proxy_url:
-            continue
-        log(f"目标国家代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} region={region} {sid_label}")
-        ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
-        if ok:
-            auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(proxy_url, cfg.access_token)
-            if auth_ok:
-                log(f"目标国家代理预检通过：{message}; {auth_message}")
-                return replace(cfg, direct_proxies=[proxy_url], preflighted_checkout_proxy_url=proxy_url)
-            log(f"目标国家代理认证接口预检失败：{auth_message}")
-            if "token_" in str(auth_message).lower() or "authentication token" in str(auth_message).lower():
-                raise RuntimeError(f"认证接口预检失败: {auth_message}")
-            errors.append(str(auth_message or "unknown"))
-            continue
-        errors.append(str(message or "unknown"))
-        log(f"目标国家代理预检失败：{message}")
-    raise RuntimeError(f"代理预检失败: {region} {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
+
+    def preflight_region(current_cfg: PaypalJobConfig, target_region: str, label: str) -> str:
+        region_errors: list[str] = []
+        for stage_index in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
+            proxy_url, sid_label = build_paypal_dynamic_proxy(current_cfg, stage_index, target_region)
+            if not proxy_url:
+                continue
+            log(f"{label}代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} region={target_region} {sid_label}")
+            ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
+            if ok:
+                auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(proxy_url, current_cfg.access_token)
+                if auth_ok:
+                    log(f"{label}代理预检通过：{message}; {auth_message}")
+                    return proxy_url
+                log(f"{label}代理认证接口预检失败：{auth_message}")
+                if "token_" in str(auth_message).lower() or "authentication token" in str(auth_message).lower():
+                    raise RuntimeError(f"认证接口预检失败: {auth_message}")
+                region_errors.append(str(auth_message or "unknown"))
+                continue
+            region_errors.append(str(message or "unknown"))
+            log(f"{label}代理预检失败：{message}")
+        raise RuntimeError(f"代理预检失败: {target_region} {'; '.join(region_errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
+
+    checkout_proxy = preflight_region(cfg, region, "目标国家")
+    cfg = replace(cfg, direct_proxies=[checkout_proxy], preflighted_checkout_proxy_url=checkout_proxy)
+    promo_region = str(cfg.promo_region or "JP").strip().upper() or "JP"
+    if cfg.apply_promo and promo_region != region:
+        promo_proxy = preflight_region(cfg, promo_region, "优惠区")
+        cfg = replace(cfg, preflighted_promo_proxy_url=promo_proxy)
+    return cfg
 
 
 def _select_batch_accounts(req: UsPaypalBatchStartRequest) -> list[dict[str, Any]]:
@@ -817,7 +828,7 @@ def _new_protocol_batch_job(account_emails: list[str], concurrency: int = 1) -> 
             "account_email": clean_emails[0] if len(clean_emails) == 1 else "",
             "total": len(clean_emails) or 1,
             "completed": 0,
-            "concurrency": max(1, min(MAX_BATCH_CONCURRENCY, int(concurrency or 1))),
+            "concurrency": max(1, min(MAX_PROTOCOL_BATCH_CONCURRENCY, int(concurrency or 1))),
             "cancel_requested": False,
             "running_count": 0,
             "skipped": [],
@@ -841,7 +852,7 @@ def _protocol_batch_concurrency(req: UsPaypalProtocolBatchStartRequest, total: i
         requested = int(req.concurrency or 1)
     except Exception:
         requested = 1
-    return max(1, min(MAX_BATCH_CONCURRENCY, total, requested))
+    return max(1, min(MAX_PROTOCOL_BATCH_CONCURRENCY, total, requested))
 
 
 def _protocol_proxy_for_country(proxy_value: str, country: str) -> str:

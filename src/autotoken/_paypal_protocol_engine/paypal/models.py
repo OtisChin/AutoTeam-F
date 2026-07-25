@@ -429,6 +429,17 @@ _GB_ADDRESSES = [
     ("Flat 4, Stirling House 44 Richmond Road", "", "Kingston upon Thames", "", "KT2 5EE"),
 ]
 
+_AU_ADDRESSES = [
+    ("42 Victoria Street", "", "", "Paddington", "NSW", "2021"),
+    ("18 Church Street", "", "", "Richmond", "VIC", "3121"),
+    ("73 Macquarie Street", "", "", "Teneriffe", "QLD", "4005"),
+    ("21 Halifax Street", "", "", "Adelaide", "SA", "5000"),
+    ("56 Beaufort Street", "", "", "Mount Lawley", "WA", "6050"),
+    ("9 Arthur Street", "", "", "North Hobart", "TAS", "7000"),
+    ("14 Torrens Street", "", "", "Braddon", "ACT", "2612"),
+    ("31 Cavenagh Street", "", "", "Darwin City", "NT", "0800"),
+]
+
 _CA_ADDRESSES = [
     ("Maitland Street", "25", "", "Toronto", "ON", "M4Y 2W1"),
     ("Brunswick Avenue", "88", "", "Toronto", "ON", "M5S 2L7"),
@@ -495,6 +506,7 @@ _EU_CARD_PROFILES = [
 
 _ADDRESS_BOOK = {
     "US": _US_ADDRESSES,
+    "AU": _AU_ADDRESSES,
     "CA": _CA_ADDRESSES,
     "GB": _GB_ADDRESSES,
     "ID": _ID_ADDRESSES,
@@ -713,7 +725,7 @@ def generate_card(proxy_url: str | None = None, country: str | None = None) -> C
     selected_country = (country or "BR").upper()
     if selected_country in {"US", "CA"}:
         profile = _weighted_profile(_US_CARD_PROFILES)
-    elif selected_country in {"GB", "NL"}:
+    elif selected_country in {"GB", "NL", "AU"}:
         profile = _weighted_profile(_EU_CARD_PROFILES)
     else:
         profile = _weighted_card_profile()

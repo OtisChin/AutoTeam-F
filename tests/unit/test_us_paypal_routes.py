@@ -113,6 +113,18 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
     assert statuses[email]["status"] == "success"
 
 
+def test_paypal_link_batch_concurrency_allows_twenty():
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": [], "concurrency": 25})
+
+    assert us_paypal._batch_concurrency(req, total=30) == 20
+
+
+def test_paypal_protocol_batch_concurrency_stays_capped_at_ten():
+    req = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({"accountEmails": [], "concurrency": 25})
+
+    assert us_paypal._protocol_batch_concurrency(req, total=30) == 10
+
+
 def test_batch_account_preflights_proxy_before_paypal_generation(monkeypatch):
     email = "blocked@example.com"
     preflighted: list[str] = []
@@ -148,7 +160,7 @@ def test_batch_account_preflights_proxy_before_paypal_generation(monkeypatch):
     )
 
     assert result["ok"] is False
-    assert len(preflighted) == 3
+    assert len(preflighted) == 5
     assert "代理预检失败" in result["error"]["error"]
     assert "ruleset blocked" in result["error"]["error"]
     assert any("代理预检失败" in line for line in us_paypal.JOBS[job_id]["logs"])
@@ -181,7 +193,7 @@ def test_batch_account_auth_preflight_blocks_paypal_generation(monkeypatch):
     assert any("认证接口预检失败" in line for line in us_paypal.JOBS[job_id]["logs"])
 
 
-def test_paypal_proxy_preflight_has_separate_three_attempt_budget(monkeypatch):
+def test_paypal_proxy_preflight_has_separate_five_attempt_budget(monkeypatch):
     email = "preflight-ok@example.com"
     captured = {}
     preflighted: list[str] = []
@@ -189,7 +201,7 @@ def test_paypal_proxy_preflight_has_separate_three_attempt_budget(monkeypatch):
 
     def fake_preflight(proxy_url):
         preflighted.append(proxy_url)
-        return (len(preflighted) == 3, "HTTP 200" if len(preflighted) == 3 else "ProxyError: ruleset blocked")
+        return (len(preflighted) == 5, "HTTP 200" if len(preflighted) == 5 else "ProxyError: ruleset blocked")
 
     def fake_generate_paypal_trial(cfg, log):
         captured["cfg"] = cfg
@@ -222,17 +234,72 @@ def test_paypal_proxy_preflight_has_separate_three_attempt_budget(monkeypatch):
             "proxy2.example:1000:user-region-US-sid-old2-t-120:pass",
             "proxy3.example:1000:user-region-US-sid-old3-t-120:pass",
             "proxy4.example:1000:user-region-US-sid-old4-t-120:pass",
+            "proxy5.example:1000:user-region-US-sid-old5-t-120:pass",
+            "proxy6.example:1000:user-region-US-sid-old6-t-120:pass",
         ]),
         "region": "NL",
+        "promoMode": "skip",
         "maxAttempts": 1,
     })
     result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
 
     assert result["ok"] is True
-    assert len(preflighted) == 3
-    assert "proxy3.example" in captured["cfg"].direct_proxies[0]
+    assert len(preflighted) == 5
+    assert "proxy5.example" in captured["cfg"].direct_proxies[0]
     assert us_paypal.build_paypal_dynamic_proxy(captured["cfg"], 0, "NL")[0] == preflighted[-1]
-    assert not any("proxy4.example" in proxy for proxy in preflighted)
+    assert not any("proxy6.example" in proxy for proxy in preflighted)
+
+
+def test_paypal_preflights_promo_region_before_generation(monkeypatch):
+    email = "promo-preflight@example.com"
+    preflighted: list[str] = []
+    captured = {}
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (True, "HTTP 200")
+
+    def fake_generate_paypal_trial(cfg, log):
+        captured["cfg"] = cfg
+        return {
+            "ok": True,
+            "amount": "0",
+            "fields": {
+                "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-PROMO-PREFLIGHT",
+                "ba_token": "BA-PROMO-PREFLIGHT",
+                "cs_id": "cs_test",
+                "billing": {"country": "US"},
+            },
+            "billing": {"country": "US"},
+        }
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", fake_generate_paypal_trial)
+    job_id = "paypal-promo-preflight-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-US-sid-old-t-120:pass",
+        "region": "US",
+        "promoRegion": "JP",
+        "promoMode": "promo",
+        "maxAttempts": 1,
+    })
+    result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
+
+    assert result["ok"] is True
+    assert any("-region-US-sid-" in proxy for proxy in preflighted)
+    assert any("-region-JP-sid-" in proxy for proxy in preflighted)
+    assert captured["cfg"].preflighted_promo_proxy_url
+    assert us_paypal.build_paypal_dynamic_proxy(captured["cfg"], 2, "JP")[0] == captured["cfg"].preflighted_promo_proxy_url
+    assert any("优惠区代理预检通过" in line for line in us_paypal.JOBS[job_id]["logs"])
 
 
 def test_load_links_backfills_country_from_billing_for_old_records():
@@ -797,20 +864,20 @@ def test_protocol_job_preflights_proxy_before_runner(monkeypatch):
 
     job = us_paypal.JOBS[job_id]
     assert job["status"] == "error"
-    assert len(preflighted) == 3
+    assert len(preflighted) == 5
     assert "代理预检失败" in job["error"]
     assert "ruleset blocked" in job["error"]
     assert any("代理预检失败" in line for line in job["logs"])
 
 
-def test_protocol_proxy_preflight_has_separate_three_attempt_budget(monkeypatch):
+def test_protocol_proxy_preflight_has_separate_five_attempt_budget(monkeypatch):
     captured = {}
     preflighted: list[str] = []
     job_id = us_paypal._new_protocol_job("buyer@example.com")
 
     def fake_preflight(proxy_url):
         preflighted.append(proxy_url)
-        return (len(preflighted) == 3, "HTTP 200" if len(preflighted) == 3 else "ProxyError: ruleset blocked")
+        return (len(preflighted) == 5, "HTTP 200" if len(preflighted) == 5 else "ProxyError: ruleset blocked")
 
     def fake_runner(cfg, log, cancel_check):
         captured["cfg"] = cfg
@@ -829,6 +896,8 @@ def test_protocol_proxy_preflight_has_separate_three_attempt_budget(monkeypatch)
             "proxy2.example:1000:user-region-US-sid-old2-t-120:pass",
             "proxy3.example:1000:user-region-US-sid-old3-t-120:pass",
             "proxy4.example:1000:user-region-US-sid-old4-t-120:pass",
+            "proxy5.example:1000:user-region-US-sid-old5-t-120:pass",
+            "proxy6.example:1000:user-region-US-sid-old6-t-120:pass",
         ]),
         "accountEmail": "buyer@example.com",
         "country": "GB",
@@ -836,10 +905,10 @@ def test_protocol_proxy_preflight_has_separate_three_attempt_budget(monkeypatch)
     us_paypal._run_protocol_payment_job(job_id, req)
 
     assert us_paypal.JOBS[job_id]["status"] == "success"
-    assert len(preflighted) == 3
-    assert "proxy3.example" in captured["cfg"].proxy_url
+    assert len(preflighted) == 5
+    assert "proxy5.example" in captured["cfg"].proxy_url
     assert "-region-GB-sid-" in captured["cfg"].proxy_url
-    assert not any("proxy4.example" in proxy for proxy in preflighted)
+    assert not any("proxy6.example" in proxy for proxy in preflighted)
 
 
 def test_protocol_batch_account_rewrites_proxy_region_and_sid_for_link_country(monkeypatch):

@@ -54,7 +54,7 @@ def test_build_protocol_command_rejects_unknown_country(tmp_path, monkeypatch):
     (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.setenv("AUTOTEAM_PAYPAL_ENGINE_ROOT", str(engine))
 
-    with pytest.raises(ValueError, match="BR/CA/GB/ID/JP/MX/PH/TH/NL/US"):
+    with pytest.raises(ValueError, match="AU/BR/CA/GB/ID/JP/MX/PH/TH/NL/US"):
         service.build_protocol_command(service.PaypalProtocolRunConfig(
             ba_token="BA-1CMD123",
             phone="+18350000000",
@@ -67,6 +67,7 @@ def test_build_protocol_command_rejects_unknown_country(tmp_path, monkeypatch):
     ("country", "sms_country"),
     [
         ("BR", "73"),
+        ("AU", "175"),
         ("CA", "36"),
         ("GB", "16"),
         ("ID", "6"),
@@ -397,6 +398,7 @@ def test_nl_generated_addresses_avoid_landmarks_and_have_real_house_numbers():
     ("country", "locale", "language", "dial_code"),
     [
         ("BR", "pt_BR", "pt-BR", "55"),
+        ("AU", "en_AU", "en-AU", "61"),
         ("CA", "en_CA", "en-CA", "1"),
         ("GB", "en_GB", "en-GB", "44"),
         ("ID", "id_ID", "id-ID", "62"),
@@ -442,6 +444,7 @@ def test_requested_country_profiles_and_generated_models(country, locale, langua
     ("country", "sms_country", "dial_code"),
     [
         ("CA", "36", "1"),
+        ("AU", "175", "61"),
         ("ID", "6", "62"),
         ("JP", "182", "81"),
         ("MX", "54", "52"),
@@ -539,7 +542,7 @@ def test_gb_signup_variables_match_weasley_primary_residential_shape(monkeypatch
     assert variables["dateOfBirth"] == {"day": "01", "month": "02", "year": "1988"}
 
 
-@pytest.mark.parametrize("country", ["CA", "ID", "JP", "MX", "PH", "TH", "NL"])
+@pytest.mark.parametrize("country", ["AU", "CA", "ID", "JP", "MX", "PH", "TH", "NL"])
 def test_non_brazil_protocol_countries_omit_empty_shipping_address(monkeypatch, country):
     engine_root = service.DEFAULT_ENGINE_ROOT
     sys.path.insert(0, str(engine_root))
@@ -574,6 +577,28 @@ def test_non_brazil_protocol_countries_omit_empty_shipping_address(monkeypatch, 
     assert "shippingAddress" not in variables
     assert variables["billingAddress"]["country"] == country
     assert variables["phone"]["countryCode"] == paypal_flow.user.phone_country_code.lstrip("+")
+
+
+def test_australia_generated_address_uses_state_abbreviation_and_four_digit_postcode():
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    valid_states = {"NSW", "VIC", "QLD", "SA", "WA", "TAS", "ACT", "NT"}
+    for _ in range(50):
+        address = models.generate_address(country="AU")
+        assert address.country == "AU"
+        assert address.state in valid_states
+        assert address.postal_code.isdigit()
+        assert len(address.postal_code) == 4
+        assert address.street[0].isdigit()
+        assert not address.house_number
 
 
 def test_gb_auto_approval_path_uses_create_member_no_fi(monkeypatch):
