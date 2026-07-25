@@ -153,7 +153,7 @@
       </div>
     </section>
 
-    <div class="grid grid-cols-1 gap-5 2xl:grid-cols-[minmax(360px,0.85fr)_minmax(460px,1.1fr)_minmax(420px,0.9fr)]">
+    <div class="grid grid-cols-1 items-start gap-5 2xl:grid-cols-[minmax(360px,0.85fr)_minmax(460px,1.1fr)_minmax(420px,0.9fr)]">
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
         <div class="border-b border-gray-800 pb-4">
           <p class="text-xs font-semibold text-gray-500">任务输入</p>
@@ -304,6 +304,10 @@
             >
               失败重试{{ retryFailedEmails.length ? ` (${retryFailedEmails.length})` : '' }}
             </button>
+            <label class="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs font-semibold text-gray-200">
+              <input v-model="form.notificationSoundEnabled" type="checkbox" class="accent-emerald-500" :disabled="busy" />
+              提示音
+            </label>
           </div>
 
           <div class="text-sm" :class="statusError ? 'text-rose-300' : 'text-gray-400'">{{ statusText }}</div>
@@ -412,11 +416,18 @@
             <span class="mt-1 text-sm">从账号池勾选账号后开始提链</span>
           </div>
 
-          <div v-else-if="currentResult.batch" class="mt-5 space-y-3 text-sm">
-            <div class="rounded-xl border border-gray-800 bg-gray-950 p-4 text-gray-300">
-              本次完成：成功 <span class="font-semibold text-emerald-300">{{ currentResult.successes?.length || 0 }}</span>，失败 <span class="font-semibold text-rose-300">{{ currentResult.errors?.length || 0 }}</span>，跳过 <span class="font-semibold text-gray-300">{{ currentResult.skipped?.length || 0 }}</span>
+          <div v-else-if="currentResult.batch" class="mt-5 max-h-72 space-y-3 overflow-y-auto pr-1 text-sm">
+            <div class="flex flex-col gap-3 rounded-xl border border-gray-800 bg-gray-950 p-4 text-gray-300 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                本次完成：成功 <span class="font-semibold text-emerald-300">{{ currentResult.successes?.length || 0 }}</span>，失败 <span class="font-semibold text-rose-300">{{ currentResult.errors?.length || 0 }}</span>，跳过 <span class="font-semibold text-gray-300">{{ currentResult.skipped?.length || 0 }}</span>
+              </div>
+              <select v-model="recentResultFilter" class="w-fit rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-200 focus:border-blue-500 focus:outline-none">
+                <option value="all">全部</option>
+                <option value="success">已提链</option>
+                <option value="failed">提链失败</option>
+              </select>
             </div>
-            <div v-for="item in currentResult.successes || []" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+            <div v-if="recentResultFilter !== 'failed'" v-for="item in currentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="font-mono text-emerald-200">{{ item.email }}</div>
               <div class="mt-2 flex flex-wrap gap-2">
                 <a :href="item.link?.hosted_instructions_url || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!item.link?.hosted_instructions_url ? 'pointer-events-none opacity-50' : ''">打开</a>
@@ -424,15 +435,16 @@
                 <button @click="copy(item.link?.hosted_instructions_url)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100">复制链</button>
               </div>
             </div>
-            <div v-for="item in currentResult.errors || []" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            <div v-if="recentResultFilter !== 'success'" v-for="item in currentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
               {{ item.email }}：{{ item.error }}
             </div>
-            <div v-for="item in currentResult.skipped || []" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
+            <div v-if="recentResultFilter === 'all'" v-for="item in currentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
               {{ item.email }}：{{ item.reason || '已跳过' }}
             </div>
+            <div v-if="!filteredRecentResultCount" class="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-8 text-center text-xs text-gray-500">当前筛选下暂无结果</div>
           </div>
 
-          <div v-else class="mt-5 space-y-4">
+          <div v-else class="mt-5 max-h-72 space-y-4 overflow-y-auto pr-1">
             <div class="flex flex-col items-center gap-4">
               <div class="flex h-44 w-44 items-center justify-center rounded-xl border border-gray-700 bg-white p-2">
                 <img v-if="fields.image_url_png || fields.image_url_svg" :src="fields.image_url_png || fields.image_url_svg" alt="PIX QR" class="h-full w-full object-contain" />
@@ -506,6 +518,7 @@
 <script setup>
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
 const PROXY_STORAGE_KEY = 'autotoken_brazil_pix_proxies'
 const PIX_FORM_STORAGE_KEY = 'autotoken_brazil_pix_form'
@@ -561,6 +574,7 @@ const form = ref({
   kookeeyUser: '',
   kookeeyPass: '',
   kookeeyEndpoint: 'gate.kookeey.info:1000',
+  notificationSoundEnabled: true,
 })
 const tempForm = ref({
   cdk: '',
@@ -576,6 +590,7 @@ const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
+const recentResultFilter = ref('all')
 const logRef = ref(null)
 const lastFailedEmails = ref([])
 const deletingPixAccounts = ref(new Set())
@@ -618,6 +633,14 @@ const statusError = computed(() => activeExtractTask.value.statusError.value)
 const logs = computed(() => activeExtractTask.value.logs.value)
 const currentResult = computed(() => activeExtractTask.value.currentResult.value)
 const fields = computed(() => currentResult.value?.fields || {})
+const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? [...currentResult.value.successes].reverse() : [])
+const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? [...currentResult.value.errors].reverse() : [])
+const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? [...currentResult.value.skipped].reverse() : [])
+const filteredRecentResultCount = computed(() => {
+  if (recentResultFilter.value === 'success') return currentResultSuccesses.value.length
+  if (recentResultFilter.value === 'failed') return currentResultErrors.value.length
+  return currentResultSuccesses.value.length + currentResultErrors.value.length + currentResultSkipped.value.length
+})
 const accountEmailByLower = computed(() => {
   const map = new Map()
   for (const account of accounts.value) {
@@ -871,14 +894,15 @@ function loadExtractFormState() {
   form.value.proxies = localStorage.getItem(PROXY_STORAGE_KEY) || ''
   try {
     const raw = JSON.parse(localStorage.getItem(PIX_FORM_STORAGE_KEY) || '{}')
-    form.value.concurrency = Math.max(1, Math.min(10, Number(raw.concurrency || form.value.concurrency || 1)))
+    form.value.concurrency = Math.max(1, Math.min(20, Number(raw.concurrency || form.value.concurrency || 1)))
     form.value.maxAttempts = Math.max(1, Math.min(20, Number(raw.maxAttempts || form.value.maxAttempts || 5)))
     form.value.localProxy = String(raw.localProxy || '')
     form.value.kookeeyUser = String(raw.kookeeyUser || '')
     form.value.kookeeyPass = String(raw.kookeeyPass || '')
     form.value.kookeeyEndpoint = String(raw.kookeeyEndpoint || form.value.kookeeyEndpoint || 'gate.kookeey.info:1000')
+    if (raw.notificationSoundEnabled !== undefined) form.value.notificationSoundEnabled = Boolean(raw.notificationSoundEnabled)
   } catch {
-    form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
+    form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
     form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   }
 }
@@ -886,12 +910,13 @@ function loadExtractFormState() {
 function saveExtractFormState() {
   localStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
   localStorage.setItem(PIX_FORM_STORAGE_KEY, JSON.stringify({
-    concurrency: Math.max(1, Math.min(10, Number(form.value.concurrency || 1))),
+    concurrency: Math.max(1, Math.min(20, Number(form.value.concurrency || 1))),
     maxAttempts: Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5))),
     localProxy: form.value.localProxy || '',
     kookeeyUser: form.value.kookeeyUser || '',
     kookeeyPass: form.value.kookeeyPass || '',
     kookeeyEndpoint: form.value.kookeeyEndpoint || 'gate.kookeey.info:1000',
+    notificationSoundEnabled: Boolean(form.value.notificationSoundEnabled),
     savedAt: Date.now(),
   }))
 }
@@ -1477,6 +1502,7 @@ async function poll(jobId, task = activeExtractTask.value) {
       task.currentResult.value = data.result || {}
       rememberFailedEmails(task.currentResult.value)
       setStatus('提链任务已完成，链接已写入管理表。', false, task)
+      if ((task.currentResult.value?.successes || []).length) playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
       clearStoredPixTask(key, jobId)
       await Promise.all([refreshLinks(), reloadAccounts()])
       return
@@ -1547,7 +1573,7 @@ function validateStart(emails = selectedEmails.value) {
     }
     return true
   }
-  form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
+  form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
   form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   if (!form.value.proxies.trim() && (!form.value.kookeeyUser || !form.value.kookeeyPass)) {
     setStatus('请填写 BR 代理列表，或在高级设置填写 Kookeey 用户名/密码。', true)

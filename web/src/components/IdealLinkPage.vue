@@ -1,260 +1,122 @@
 <template>
   <div class="space-y-5">
+    <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-2">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div class="inline-flex w-fit rounded-xl border border-gray-800 bg-gray-900/80 p-1">
+          <button type="button" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white shadow-lg shadow-emerald-950/40 transition">提链页</button>
+        </div>
+        <p class="px-2 text-xs text-gray-500">荷兰 iDEAL 提链页按巴西 Pix / 印度 UPI 对齐：账号池、任务输入、日志、结果和链接管理分区一致。</p>
+      </div>
+    </section>
+
     <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5 md:p-6">
       <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">本地任务系统</p>
-          <h2 class="mt-1 text-2xl font-bold text-white">iDEAL 链提取</h2>
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">独立 iDEAL 任务</p>
+          <h2 class="mt-1 text-2xl font-bold text-white">荷兰iDEAL 提链</h2>
+          <p class="mt-2 text-sm text-gray-400">在账号池中勾选一个或多个账号执行提链，结果会进入下方链接管理表。</p>
         </div>
         <span class="inline-flex w-fit items-center gap-2 rounded-xl border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-300">
-          <span class="h-2.5 w-2.5 rounded-full bg-emerald-400"></span>
-          本地服务在线
+          <span class="h-2.5 w-2.5 rounded-full" :class="busy ? 'bg-blue-400' : 'bg-emerald-400'"></span>
+          {{ busy ? progressText : '本地服务在线' }}
         </span>
       </div>
     </section>
 
-    <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-4 md:p-5">
-      <div class="grid gap-4 md:grid-cols-[1fr_1fr_1fr]">
-        <div v-for="step in workflowSteps" :key="step.id" class="flex items-center gap-3">
-          <span
-            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-bold"
-            :class="workflowStage >= step.id ? 'border-emerald-400 bg-emerald-500 text-white' : 'border-gray-700 bg-gray-900 text-gray-500'"
-          >
-            {{ step.id }}
-          </span>
-          <div class="min-w-0">
-            <div class="text-sm font-semibold" :class="workflowStage >= step.id ? 'text-white' : 'text-gray-400'">{{ step.title }}</div>
-            <div class="text-xs text-gray-500">{{ step.caption }}</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <div class="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(420px,0.8fr)]">
+    <div class="grid grid-cols-1 items-start gap-5 2xl:grid-cols-[minmax(360px,0.85fr)_minmax(460px,1.1fr)_minmax(420px,0.9fr)]">
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
-        <div class="flex flex-col gap-3 border-b border-gray-800 pb-4 md:flex-row md:items-end md:justify-between">
-          <div>
-            <p class="text-xs font-semibold text-gray-500">任务输入</p>
-            <h3 class="mt-1 text-xl font-bold text-white">授权与链路参数</h3>
-          </div>
-          <span class="text-sm font-semibold text-emerald-400">Token 不写入本地记录</span>
+        <div class="border-b border-gray-800 pb-4">
+          <p class="text-xs font-semibold text-gray-500">任务输入</p>
+          <h3 class="mt-1 text-xl font-bold text-white">NL 代理</h3>
         </div>
-
         <div class="mt-5 space-y-5">
           <label class="block">
-            <span class="mb-2 block text-sm font-semibold text-gray-300">Access Token 或 session JSON</span>
-            <textarea
-              v-model.trim="form.accessToken"
-              rows="6"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="粘贴已有授权 Token"
-              class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white transition placeholder:text-gray-600 focus:border-blue-500 focus:outline-none"
-              :disabled="busy"
-            ></textarea>
-            <span class="mt-1 block text-xs text-gray-500">{{ tokenMeta }}</span>
+            <span class="mb-2 block text-sm font-semibold text-gray-300">NL 代理列表</span>
+            <textarea v-model.trim="form.proxies" rows="8" spellcheck="false" placeholder="每行一个代理；支持 host:port:user:pass 或 socks5h://user:pass@host:port" class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" :disabled="busy"></textarea>
+            <span class="mt-1 block text-xs text-gray-500">批量提链时按账号顺序轮换代理；留空使用备用出口代理或后台默认链路。</span>
           </label>
-
-          <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div class="grid gap-4 md:grid-cols-2">
             <label class="block">
-              <span class="mb-1.5 block text-sm font-semibold text-gray-300">链类型</span>
-              <select disabled class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-sm text-gray-500">
-                <option>iDEAL link (NL → NL)</option>
-              </select>
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
+              <input v-model.number="form.concurrency" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 20。</span>
             </label>
             <label class="block">
-              <span class="mb-1.5 block text-sm font-semibold text-gray-300">支付页模式</span>
-              <select v-model="form.checkoutUiMode" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy">
-                <option value="hosted">hosted: pay.openai.com</option>
-              </select>
-            </label>
-            <label class="block">
-              <span class="mb-1.5 block text-sm font-semibold text-gray-300">支付页语言</span>
-              <select v-model="form.paymentLocale" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy">
-                <option value="auto">自动跟随链路</option>
-                <option value="en">英文</option>
-                <option value="nl-NL">荷兰语</option>
-                <option value="zh-CN">简体中文</option>
-                <option value="zh-TW">繁体中文</option>
-                <option value="ja">日文</option>
-                <option value="ko">韩文</option>
-                <option value="de">德文</option>
-                <option value="fr">法文</option>
-                <option value="es">西班牙文</option>
-                <option value="id">印尼文</option>
-                <option value="pt-BR">葡萄牙文</option>
-              </select>
-            </label>
-            <label class="block">
-              <span class="mb-1.5 block text-sm font-semibold text-gray-300">地区</span>
-              <select disabled class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-sm text-gray-400">
-                <option>荷兰 NL</option>
-              </select>
-            </label>
-            <label class="block">
-              <span class="mb-1.5 block text-sm font-semibold text-gray-300">币种</span>
-              <input value="EUR" readonly class="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-sm text-gray-400" />
-            </label>
-            <label class="block">
-              <span class="mb-1.5 block text-sm font-semibold text-gray-300">自定义出口代理</span>
-              <input
-                v-model.trim="form.proxy"
-                placeholder="留空使用后台默认代理"
-                class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none"
-                :disabled="busy"
-              />
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
+              <input v-model.number="form.maxAttempts" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">默认 5。</span>
             </label>
           </div>
-
           <details class="rounded-xl border border-gray-800 bg-gray-900/40 p-4">
             <summary class="cursor-pointer text-sm font-semibold text-gray-200">高级设置</summary>
             <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">Stripe Publishable Key</span>
-                <input v-model.trim="form.stripePublishableKey" placeholder="pk_live_..." class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              </label>
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">Device ID</span>
-                <input v-model.trim="form.deviceId" placeholder="留空自动生成" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              </label>
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">客户端指纹</span>
-                <select v-model="form.clientFingerprint" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy">
-                  <option value="chrome">Chrome 桌面</option>
-                  <option value="apple-safari">Apple Safari</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">User Agent</span>
-                <input v-model.trim="form.userAgent" placeholder="留空使用默认 UA" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              </label>
-              <label class="block">
-                <span class="mb-1.5 block text-xs text-gray-400">代理链路</span>
-                <select v-model="form.proxyChainPreset" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy">
-                  <option value="default">源码默认</option>
-                  <option value="dual_ideal">双链路 JP→NL + NL→NL</option>
-                  <option value="JP_NL">日本 JP → 荷兰 NL</option>
-                  <option value="NL_NL">荷兰 NL → 荷兰 NL</option>
-                  <option value="US_US">美国 US → 美国 US</option>
-                  <option value="JP_US">日本 JP → 美国 US</option>
-                  <option value="JP_US_US">JP → US → approve US</option>
-                  <option value="JP_US_JP">JP → US → approve JP</option>
-                  <option value="JP_JP">日本 JP → 日本 JP</option>
-                  <option value="US_JP">美国 US → 日本 JP</option>
-                  <option value="parallel4">同时跑 4 策略</option>
-                  <option value="matrix8">Matrix 8 combos</option>
-                  <option value="sequential8">Sequential 8 combos</option>
-                  <option value="manual">手动选择</option>
-                </select>
-              </label>
-              <label class="flex items-center gap-2 self-end rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2 text-sm text-gray-300">
-                <input v-model="form.diagnosticEnabled" type="checkbox" class="accent-blue-500" :disabled="busy" />
-                开启诊断抓取
-              </label>
+              <label class="block"><span class="mb-1.5 block text-xs text-gray-400">备用出口代理</span><input v-model.trim="form.proxy" placeholder="留空使用后台默认代理" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" :disabled="busy" /></label>
+              <label class="block"><span class="mb-1.5 block text-xs text-gray-400">支付页语言</span><select v-model="form.paymentLocale" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy"><option value="auto">自动跟随链路</option><option value="nl-NL">荷兰语</option><option value="en">英文</option><option value="zh-CN">简体中文</option></select></label>
+              <label class="block"><span class="mb-1.5 block text-xs text-gray-400">代理链路</span><select v-model="form.proxyChainPreset" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy"><option value="default">源码默认</option><option value="dual_ideal">双链路 JP→NL + NL→NL</option><option value="JP_NL">日本 JP → 荷兰 NL</option><option value="NL_NL">荷兰 NL → 荷兰 NL</option><option value="parallel4">同时跑 4 策略</option><option value="matrix8">Matrix 8 combos</option><option value="sequential8">Sequential 8 combos</option><option value="manual">手动选择</option></select></label>
+              <label class="flex items-center gap-2 self-end rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2 text-sm text-gray-300"><input v-model="form.diagnosticEnabled" type="checkbox" class="accent-blue-500" :disabled="busy" />开启诊断抓取</label>
               <template v-if="form.proxyChainPreset === 'manual'">
-                <label class="block">
-                  <span class="mb-1.5 block text-xs text-gray-400">前段代理地区</span>
-                  <input v-model.trim="form.checkoutProxyRegion" placeholder="例如 JP" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-                </label>
-                <label class="block">
-                  <span class="mb-1.5 block text-xs text-gray-400">后段代理地区</span>
-                  <input v-model.trim="form.providerProxyRegion" placeholder="例如 NL" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-                </label>
+                <label class="block"><span class="mb-1.5 block text-xs text-gray-400">前段代理地区</span><input v-model.trim="form.checkoutProxyRegion" placeholder="例如 JP" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" /></label>
+                <label class="block"><span class="mb-1.5 block text-xs text-gray-400">后段代理地区</span><input v-model.trim="form.providerProxyRegion" placeholder="例如 NL" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" /></label>
               </template>
             </div>
             <div class="mt-3 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-xs text-gray-400">{{ proxyChainSummary }}</div>
             <div v-if="proxyTestResult" class="mt-2 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-xs text-gray-400">{{ proxyTestResult }}</div>
           </details>
-
           <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
-            <button @click="generate" :disabled="busy" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50">
-              {{ busy ? '提取中...' : '提取 iDEAL 链' }}
-            </button>
-            <button @click="testProxy" :disabled="busy || testingProxy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">
-              {{ testingProxy ? '测试中...' : '测试代理' }}
-            </button>
+            <button @click="start" :disabled="busy" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50">{{ busy ? '提取中...' : `开始提链 (${selectedEmails.length})` }}</button>
+            <button v-if="busy" @click="cancelJob" :disabled="canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">{{ canceling ? '取消中...' : '取消提链' }}</button>
+            <button @click="reloadAll" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">刷新账号/链接</button>
+            <button @click="testProxy" :disabled="busy || testingProxy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">{{ testingProxy ? '测试中...' : '测试代理' }}</button>
             <button @click="saveProxy" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存代理</button>
-            <button @click="clearProxy" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">清除保存</button>
+            <button @click="retryFailedAccounts" :disabled="busy || !retryFailedEmails.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50">失败重试{{ retryFailedEmails.length ? ` (${retryFailedEmails.length})` : '' }}</button>
+            <label class="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs font-semibold text-gray-200">
+              <input v-model="form.notificationSoundEnabled" type="checkbox" class="accent-emerald-500" :disabled="busy" />
+              提示音
+            </label>
           </div>
-
           <div class="text-sm" :class="statusError ? 'text-rose-300' : 'text-gray-400'">{{ statusText }}</div>
+        </div>
+      </section>
+
+      <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
+        <div class="flex flex-col gap-3 border-b border-gray-800 pb-4 md:flex-row md:items-end md:justify-between">
+          <div><p class="text-xs font-semibold text-gray-500">账号管理</p><h3 class="mt-1 text-xl font-bold text-white">账号池选择</h3></div>
+          <div class="text-sm text-gray-400">已选 <span class="font-semibold text-emerald-300">{{ selectedEmails.length }}</span> / {{ filteredAccounts.length }}</div>
+        </div>
+        <div class="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
+          <input v-model.trim="accountFilter" placeholder="搜索账号邮箱" class="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" />
+          <select v-model="accountStatusFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"><option value="all">全部状态</option><option value="pending">未提链</option><option value="failed">提链失败</option><option value="success">已提链</option><option value="paid">已支付</option></select>
+          <div class="flex flex-wrap gap-2"><button @click="selectAllFiltered" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button><button @click="clearSelectedAccounts" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button><button @click="deleteSelectedIdealAccounts" :disabled="busy || deletingIdealAccounts.size > 0 || !selectedEmails.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">删除选中{{ selectedEmails.length ? ` (${selectedEmails.length})` : '' }}</button></div>
+        </div>
+        <div class="mt-4 max-h-[520px] overflow-y-auto rounded-xl border border-gray-800">
+          <table class="w-full text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-10 px-3 py-2"></th><th class="px-3 py-2">邮箱</th><th class="px-3 py-2">有效期</th><th class="px-3 py-2">提链状态</th><th class="px-3 py-2 text-right">操作</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!filteredAccounts.length"><td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td></tr><tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50"><td class="px-3 py-2"><input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="busy || !accountSelectable(account)" @change="toggleAccount(account.email)" /></td><td class="px-3 py-2 font-mono text-xs text-gray-300">{{ account.email }}</td><td class="px-3 py-2 text-xs text-gray-500">{{ ttlText(account.ttl_seconds) }}</td><td class="px-3 py-2 text-xs"><span class="inline-flex rounded-full border px-2 py-1 font-semibold" :class="accountStatusClass(account)" :title="accountStatusError(account)">{{ accountStatusText(account) }}</span></td><td class="px-3 py-2 text-right"><button @click="deleteIdealAccount(account.email)" :disabled="busy || deletingIdealAccounts.has(account.email)" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">{{ deletingIdealAccounts.has(account.email) ? '删除中' : '删除' }}</button></td></tr></tbody></table>
         </div>
       </section>
 
       <div class="space-y-5">
         <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
-          <div class="flex items-center justify-between border-b border-gray-800 pb-4">
-            <div>
-              <p class="text-xs font-semibold text-gray-500">实时状态</p>
-              <h3 class="mt-1 text-xl font-bold text-white">执行日志</h3>
-            </div>
-            <span class="rounded-full border px-3 py-1 text-xs font-semibold" :class="badgeClass(runtimeBadge.kind)">{{ runtimeBadge.text }}</span>
-          </div>
-          <div ref="logRef" class="mt-4 h-72 overflow-y-auto rounded-xl border border-gray-800 bg-gray-950 p-3">
-            <div v-if="!steps.length" class="flex h-full items-center justify-center text-sm text-gray-500">暂无执行日志</div>
-            <div v-for="(step, index) in steps" :key="`${step.time}-${index}`" class="grid grid-cols-[72px_52px_minmax(0,1fr)] gap-2 border-b border-gray-900 py-2 text-xs last:border-b-0">
-              <span class="font-mono text-gray-500">{{ step.time || '-' }}</span>
-              <span class="font-semibold" :class="stepStatusClass(step.status)">{{ stepStatusLabel(step.status) }}</span>
-              <span class="min-w-0">
-                <span class="font-semibold text-gray-300">{{ step.name || '-' }}</span>
-                <span class="ml-2 text-gray-500">{{ cleanText(step.detail) }}</span>
-              </span>
-            </div>
-          </div>
+          <div class="flex items-center justify-between border-b border-gray-800 pb-4"><div><p class="text-xs font-semibold text-gray-500">实时状态</p><h3 class="mt-1 text-xl font-bold text-white">执行日志</h3></div><span class="rounded-full border px-3 py-1 text-xs font-semibold" :class="badgeClass(runtimeBadge.kind)">{{ runtimeBadge.text }}</span></div>
+          <div ref="logRef" class="mt-4 h-72 overflow-y-auto rounded-xl border border-gray-800 bg-gray-950 p-3 font-mono text-xs text-gray-400"><div v-if="!logs.length && !steps.length" class="flex h-full items-center justify-center font-sans text-sm text-gray-500">暂无执行日志</div><div v-for="(line, index) in logs" :key="`log-${index}`" class="border-b border-gray-900 py-1 last:border-b-0">{{ line }}</div><div v-for="(step, index) in steps" :key="`step-${index}`" class="grid grid-cols-[72px_52px_minmax(0,1fr)] gap-2 border-b border-gray-900 py-2 text-xs last:border-b-0"><span class="font-mono text-gray-500">{{ step.time || '-' }}</span><span class="font-semibold" :class="stepStatusClass(step.status)">{{ stepStatusLabel(step.status) }}</span><span class="min-w-0"><span class="font-semibold text-gray-300">{{ step.name || '-' }}</span><span class="ml-2 text-gray-500">{{ cleanText(step.detail) }}</span></span></div></div>
         </section>
-
         <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
-          <div class="flex items-center justify-between border-b border-gray-800 pb-4">
-            <div>
-              <p class="text-xs font-semibold text-gray-500">输出结果</p>
-              <h3 class="mt-1 text-xl font-bold text-white">iDEAL 链与二维码</h3>
-            </div>
-            <span class="rounded-full border px-3 py-1 text-xs font-semibold" :class="badgeClass(resultBadge.kind)">{{ resultBadge.text }}</span>
-          </div>
-
-          <div v-if="!result" class="flex min-h-72 flex-col items-center justify-center text-center text-gray-500">
-            <div class="h-32 w-32 rounded-xl border border-dashed border-gray-700 bg-gray-900/50"></div>
-            <strong class="mt-4 text-gray-300">尚未生成结果</strong>
-            <span class="mt-1 text-sm">任务完成后将在此显示二维码</span>
-          </div>
-
-          <div v-else class="mt-5 space-y-4">
-            <div class="flex flex-col items-center gap-4">
-              <div class="flex h-40 w-40 items-center justify-center rounded-xl border border-gray-700 bg-white p-2">
-                <img v-if="qrUrl" :src="qrUrl" alt="iDEAL 支付链接二维码" class="h-full w-full object-contain" />
-                <span v-else class="text-sm text-gray-500">正在生成二维码</span>
-              </div>
-              <div class="flex flex-wrap justify-center gap-2">
-                <a :href="safeLongUrl" target="_blank" rel="noopener" class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500" :class="!safeLongUrl ? 'pointer-events-none opacity-50' : ''">打开长链</a>
-                <button @click="copyLongUrl" :disabled="!safeLongUrl" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">复制长链</button>
-                <button @click="downloadQr" :disabled="!qrUrl" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">下载二维码</button>
-              </div>
-            </div>
-
-            <div class="space-y-3 rounded-xl border border-gray-800 bg-gray-950 p-4 text-sm">
-              <div class="text-emerald-300">第 {{ result.cs_count || 1 }} 个 Checkout Session 提取成功</div>
-              <ResultRow label="长链" :value="safeLongUrl" />
-              <ResultRow label="CS ID / 地区 / 币种" :value="summaryText" />
-              <ResultRow label="提取状态" :value="result.fallback ? `已回退 hosted：${result.provider_error || 'provider redirect 提取失败'}` : 'iDEAL 链提取成功'" />
-              <details class="pt-1">
-                <summary class="cursor-pointer text-gray-400">原始链接信息</summary>
-                <div class="mt-3 space-y-3">
-                  <ResultRow label="Provider Redirect URL" :value="result.provider_redirect_url || ''" />
-                  <ResultRow label="Stripe Redirect URL" :value="result.stripe_redirect_url || ''" />
-                  <ResultRow label="原始 Stripe URL" :value="result.stripe_hosted_url || ''" />
-                </div>
-              </details>
-            </div>
-          </div>
+          <div class="flex items-center justify-between border-b border-gray-800 pb-4"><div><p class="text-xs font-semibold text-gray-500">当前结果</p><h3 class="mt-1 text-xl font-bold text-white">最近一次任务</h3></div><span class="rounded-full border px-3 py-1 text-xs font-semibold" :class="result ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-gray-700 bg-gray-900 text-gray-400'">{{ result ? '有结果' : '等待提取' }}</span></div>
+          <div v-if="!result" class="flex min-h-48 flex-col items-center justify-center text-center text-gray-500"><strong class="text-gray-300">尚未生成结果</strong><span class="mt-1 text-sm">从账号池勾选账号后开始提链</span></div>
+          <div v-else class="mt-5 max-h-72 space-y-4 overflow-y-auto pr-1"><div class="flex flex-col items-center gap-4"><div class="flex h-44 w-44 items-center justify-center rounded-xl border border-gray-700 bg-white p-2"><img v-if="qrUrl" :src="qrUrl" alt="iDEAL QR" class="h-full w-full object-contain" /><span v-else class="text-sm text-gray-500">无二维码图片</span></div><div class="flex flex-wrap justify-center gap-2"><a :href="safeLongUrl || '#'" target="_blank" rel="noopener" class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500" :class="!safeLongUrl ? 'pointer-events-none opacity-50' : ''">打开 iDEAL 链接</a><button @click="copyLongUrl" :disabled="!safeLongUrl" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">复制 iDEAL 链</button><button @click="downloadQr" :disabled="!qrUrl" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">下载二维码</button></div></div><div class="space-y-3 rounded-xl border border-gray-800 bg-gray-950 p-4 text-sm"><div class="text-emerald-300">Checkout Session 提取成功</div><ResultRow label="长链" :value="safeLongUrl" /><ResultRow label="CS ID / 地区 / 币种" :value="summaryText" /><ResultRow label="提取状态" :value="result.fallback ? `已回退 hosted：${result.provider_error || 'provider redirect 提取失败'}` : 'iDEAL 链提取成功'" /></div></div>
         </section>
       </div>
     </div>
+
+    <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
+      <div class="flex flex-col gap-3 border-b border-gray-800 pb-4 md:flex-row md:items-end md:justify-between"><div><p class="text-xs font-semibold text-gray-500">链接管理</p><h3 class="mt-1 text-xl font-bold text-white">已提取 iDEAL 链接</h3></div><div class="flex flex-wrap gap-2"><button @click="refreshLinks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800">刷新</button><button @click="exportLinks" :disabled="!links.length" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">导出 JSON</button><button @click="deleteSelectedLinks" :disabled="!selectedLinkIds.size" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">删除选中</button><button @click="clearLinks" :disabled="!links.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">清空</button></div></div>
+      <div class="mt-4 max-h-[520px] overflow-auto rounded-xl border border-gray-800"><table class="min-w-[1120px] w-full text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-10 px-3 py-2"></th><th class="px-3 py-2">时间</th><th class="px-3 py-2">账号</th><th class="px-3 py-2">金额</th><th class="px-3 py-2">CS ID</th><th class="px-3 py-2">操作</th><th class="px-3 py-2">iDEAL 链接</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!links.length"><td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无链接</td></tr><tr v-for="link in links" :key="link.id" class="hover:bg-gray-900/50"><td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td><td class="px-3 py-2 text-xs text-gray-500">{{ link.created_at || '-' }}</td><td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || '-' }}</td><td class="px-3 py-2 text-xs text-gray-400">{{ link.amount_display || link.amount || '-' }}</td><td class="px-3 py-2 font-mono text-xs text-gray-500">{{ link.cs_id || '-' }}</td><td class="px-3 py-2"><div class="flex flex-wrap gap-2"><a :href="link.ideal_link || link.long_url || '#'" target="_blank" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-100" :class="!(link.ideal_link || link.long_url) ? 'pointer-events-none opacity-50' : ''">打开</a><button @click="copy(link.ideal_link || link.long_url)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-100">复制链</button></div></td><td class="max-w-[460px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ link.ideal_link || link.long_url || '-' }}</td></tr></tbody></table></div>
+    </section>
   </div>
 </template>
 
 <script setup>
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
 const STORAGE_KEY = 'autotoken_ideal_form_v1'
 const SAVED_PROXY_KEY = 'autotoken_ideal_saved_proxy'
@@ -278,6 +140,9 @@ const workflowSteps = [
 const form = ref({
   accessToken: '',
   proxy: '',
+  proxies: '',
+  concurrency: 1,
+  maxAttempts: 5,
   checkoutUiMode: 'hosted',
   paymentLocale: 'auto',
   stripePublishableKey: '',
@@ -288,6 +153,7 @@ const form = ref({
   proxyChainPreset: 'JP_NL',
   checkoutProxyRegion: '',
   providerProxyRegion: '',
+  notificationSoundEnabled: true,
 })
 const busy = ref(false)
 const testingProxy = ref(false)
@@ -303,6 +169,15 @@ const proxyTestResult = ref('')
 const workflowStage = ref(1)
 const runtimeBadge = ref({ text: '等待任务', kind: 'neutral' })
 const resultBadge = ref({ text: '等待提取', kind: 'neutral' })
+const accounts = ref([])
+const links = ref([])
+const logs = ref([])
+const accountFilter = ref('')
+const accountStatusFilter = ref('all')
+const selectedAccounts = ref(new Set())
+const selectedLinkIds = ref(new Set())
+const deletingIdealAccounts = ref(new Set())
+const canceling = ref(false)
 
 const DEFAULT_PROXY_CHAIN_BY_TYPE = {
   ideal: { checkout: 'JP', provider: 'NL' },
@@ -334,6 +209,25 @@ const summaryText = computed(() => {
   const amount = result.value.amount_display || (result.value.amount ? `amount=${result.value.amount}` : '')
   return `${result.value.cs_id || ''} / ${result.value.billing_country || ''} / ${result.value.currency || ''} / ${result.value.link_type || 'ideal'}${amount ? ` / ${amount}` : ''}`
 })
+const selectedEmails = computed(() => Array.from(selectedAccounts.value))
+const progressText = computed(() => {
+  if (!currentJobId.value) return '提链中...'
+  return `任务 ${currentJobId.value.slice(0, 8)} 执行中`
+})
+const filteredAccounts = computed(() => {
+  const keyword = accountFilter.value.toLowerCase()
+  return accounts.value.filter((account) => {
+    const email = String(account.email || '').toLowerCase()
+    const status = String(account.ideal_status || 'pending')
+    const matchesKeyword = !keyword || email.includes(keyword)
+    const matchesStatus = accountStatusFilter.value === 'all' || status === accountStatusFilter.value
+    return matchesKeyword && matchesStatus
+  })
+})
+const retryFailedEmails = computed(() => accounts.value
+  .filter(account => account.ideal_status === 'failed' && accountSelectable(account))
+  .map(account => account.email)
+  .filter(Boolean))
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
@@ -479,6 +373,249 @@ function requestPayload() {
   }
 }
 
+function batchPayload(accountEmails = selectedEmails.value) {
+  return {
+    accountEmails,
+    proxies: form.value.proxies,
+    proxy: form.value.proxy,
+    concurrency: form.value.concurrency,
+    maxAttempts: form.value.maxAttempts,
+    ...proxyPayload(),
+    checkoutUiMode: form.value.checkoutUiMode,
+    paymentLocale: form.value.paymentLocale,
+    stripePublishableKey: form.value.stripePublishableKey,
+    deviceId: form.value.deviceId,
+    clientFingerprint: form.value.clientFingerprint,
+    userAgent: form.value.userAgent,
+  }
+}
+
+function ttlText(seconds) {
+  const value = Number(seconds || 0)
+  if (!value) return '-'
+  if (value < 60) return `${value} 秒`
+  if (value < 3600) return `${Math.floor(value / 60)} 分钟`
+  if (value < 86400) return `${Math.floor(value / 3600)} 小时`
+  return `${Math.floor(value / 86400)} 天`
+}
+
+function accountSelectable(account) {
+  return String(account?.ideal_status || 'pending') !== 'paid' && Boolean(account?.email)
+}
+
+function accountStatusText(account) {
+  return account?.ideal_status_text || ({ pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }[account?.ideal_status] || '未提链')
+}
+
+function accountStatusError(account) {
+  return account?.ideal_error || ''
+}
+
+function accountStatusClass(account) {
+  return {
+    success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+    running: 'border-blue-500/30 bg-blue-500/10 text-blue-300',
+    failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+    paid: 'border-violet-500/30 bg-violet-500/10 text-violet-300',
+  }[String(account?.ideal_status || 'pending')] || 'border-gray-700 bg-gray-900 text-gray-400'
+}
+
+function toggleAccount(email) {
+  const next = new Set(selectedAccounts.value)
+  if (next.has(email)) next.delete(email)
+  else next.add(email)
+  selectedAccounts.value = next
+}
+
+function selectAllFiltered() {
+  selectedAccounts.value = new Set(filteredAccounts.value.filter(accountSelectable).map(account => account.email))
+}
+
+function clearSelectedAccounts() {
+  selectedAccounts.value = new Set()
+}
+
+function toggleLink(id) {
+  const next = new Set(selectedLinkIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedLinkIds.value = next
+}
+
+async function copy(value) {
+  const text = String(value || '')
+  if (!text) return
+  await navigator.clipboard?.writeText(text)
+  setStatus('已复制。')
+}
+
+async function refreshAccounts() {
+  const data = await api.getIdealAccounts()
+  accounts.value = Array.isArray(data.accounts) ? data.accounts : []
+  const live = new Set(accounts.value.map(account => account.email).filter(Boolean))
+  selectedAccounts.value = new Set(Array.from(selectedAccounts.value).filter(email => live.has(email)))
+}
+
+async function refreshLinks() {
+  const data = await api.getIdealLinks()
+  links.value = Array.isArray(data.links) ? data.links : []
+  const live = new Set(links.value.map(link => link.id).filter(Boolean))
+  selectedLinkIds.value = new Set(Array.from(selectedLinkIds.value).filter(id => live.has(id)))
+}
+
+async function reloadAll() {
+  setStatus('正在刷新账号和链接。')
+  await Promise.all([refreshAccounts(), refreshLinks()])
+  setStatus('账号和链接已刷新。')
+}
+
+async function pollIdealJob(jobId) {
+  currentJobId.value = jobId
+  for (;;) {
+    const data = await api.getIdealJob(jobId)
+    logs.value = Array.isArray(data.logs) ? data.logs : []
+    if (data.current_result) result.value = data.current_result
+    await nextTick()
+    if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight
+    if (data.status === 'success' || data.status === 'error' || data.status === 'cancelled') {
+      const lastSuccess = Array.isArray(data.successes) && data.successes.length ? data.successes[data.successes.length - 1] : null
+      if (lastSuccess?.result) result.value = lastSuccess.result
+      if (result.value?.long_url) {
+        try { await renderQr(result.value.long_url) } catch {}
+      }
+      if (data.status === 'success') {
+        runtimeBadge.value = { text: '执行完成', kind: 'success' }
+        resultBadge.value = { text: '二维码就绪', kind: result.value ? 'success' : 'neutral' }
+        setStatus(`任务完成：成功 ${data.successes?.length || 0}，失败 ${data.errors?.length || 0}。`)
+        if ((data.successes || []).length) playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
+      } else if (data.status === 'cancelled') {
+        runtimeBadge.value = { text: '已取消', kind: 'error' }
+        setStatus('任务已取消。', true)
+      } else {
+        runtimeBadge.value = { text: '执行失败', kind: 'error' }
+        setStatus(data.error || '任务执行失败。', true)
+      }
+      await reloadAll()
+      return
+    }
+    setStatus(`任务执行中：${data.completed || 0}/${data.total || 0}。`)
+    await new Promise(resolve => {
+      pollTimer.value = window.setTimeout(resolve, 1200)
+    })
+  }
+}
+
+async function start() {
+  if (!selectedEmails.value.length) {
+    setStatus('请先选择至少一个 iDEAL 账号。', true)
+    return
+  }
+  busy.value = true
+  result.value = null
+  steps.value = []
+  logs.value = []
+  if (qrUrl.value) URL.revokeObjectURL(qrUrl.value)
+  qrUrl.value = ''
+  runtimeBadge.value = { text: '正在执行', kind: 'running' }
+  resultBadge.value = { text: '等待结果', kind: 'neutral' }
+  setStatus(`任务已提交，正在为 ${selectedEmails.value.length} 个账号提取 iDEAL 链。`)
+  try {
+    persistForm()
+    const data = await api.startIdealBatch(batchPayload())
+    if (!data.job_id) throw new Error('后端没有返回任务 ID')
+    await pollIdealJob(data.job_id)
+  } catch (error) {
+    setStatus(cleanText(error.message || error), true)
+    runtimeBadge.value = { text: '执行失败', kind: 'error' }
+  } finally {
+    busy.value = false
+  }
+}
+
+async function cancelJob() {
+  if (!currentJobId.value) return
+  canceling.value = true
+  try {
+    await api.cancelIdealJob(currentJobId.value)
+    setStatus('已请求取消任务。')
+  } catch (error) {
+    setStatus(cleanText(error.message || error), true)
+  } finally {
+    canceling.value = false
+  }
+}
+
+async function retryFailedAccounts() {
+  if (!retryFailedEmails.value.length) return
+  selectedAccounts.value = new Set(retryFailedEmails.value)
+  await start()
+}
+
+async function deleteIdealAccount(email) {
+  const target = String(email || '').trim()
+  if (!target || deletingIdealAccounts.value.has(target)) return
+  if (!window.confirm(`确认从 iDEAL 账号池和仪表盘账号池中删除 ${target}？`)) return
+  deletingIdealAccounts.value = new Set([...deletingIdealAccounts.value, target])
+  try {
+    const data = await api.deleteIdealAccount(target)
+    selectedAccounts.value.delete(target)
+    setStatus(`已删除账号 ${target}，清理 iDEAL 链接 ${data.links_deleted || 0} 条。`)
+    await reloadAll()
+  } catch (error) {
+    setStatus(cleanText(error.message || error), true)
+  } finally {
+    const next = new Set(deletingIdealAccounts.value)
+    next.delete(target)
+    deletingIdealAccounts.value = next
+  }
+}
+
+async function deleteSelectedIdealAccounts() {
+  const emails = selectedEmails.value
+  if (!emails.length || deletingIdealAccounts.value.size) return
+  if (!window.confirm(`确认批量删除选中的 ${emails.length} 个账号？这些账号会同时从 iDEAL 账号池和仪表盘账号池删除。`)) return
+  deletingIdealAccounts.value = new Set(emails)
+  try {
+    const data = await api.deleteIdealAccounts(emails)
+    selectedAccounts.value = new Set()
+    setStatus(`已批量删除 ${data.deleted || 0} 个账号。`)
+    await reloadAll()
+  } catch (error) {
+    setStatus(cleanText(error.message || error), true)
+  } finally {
+    deletingIdealAccounts.value = new Set()
+  }
+}
+
+async function deleteSelectedLinks() {
+  const ids = Array.from(selectedLinkIds.value)
+  if (!ids.length) return
+  const data = await api.deleteIdealLinks(ids)
+  links.value = Array.isArray(data.links) ? data.links : []
+  selectedLinkIds.value = new Set()
+  setStatus(`已删除 ${data.deleted || 0} 条 iDEAL 链接。`)
+}
+
+async function clearLinks() {
+  if (!links.value.length || !window.confirm('确认清空所有已提取 iDEAL 链接？')) return
+  const data = await api.clearIdealLinks()
+  links.value = []
+  selectedLinkIds.value = new Set()
+  setStatus(`已清空 ${data.deleted || 0} 条 iDEAL 链接。`)
+}
+
+function exportLinks() {
+  const blob = new Blob([JSON.stringify(links.value, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `ideal-links-${Date.now()}.json`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 async function renderQr(value) {
   if (qrUrl.value) URL.revokeObjectURL(qrUrl.value)
   qrUrl.value = ''
@@ -506,6 +643,7 @@ async function pollJob(jobId) {
         resultBadge.value = { text: '无有效长链', kind: 'error' }
       }
       setStatus('iDEAL 链与二维码已生成。')
+      if (url) playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
       return
     }
     if (data.status === 'error') {
@@ -629,7 +767,10 @@ function loadForm() {
 
 watch(() => form.value.proxyChainPreset, applyDefaultProxyChain)
 
-onMounted(loadForm)
+onMounted(() => {
+  loadForm()
+  reloadAll().catch(error => setStatus(cleanText(error.message || error), true))
+})
 
 onBeforeUnmount(() => {
   if (pollTimer.value) window.clearTimeout(pollTimer.value)

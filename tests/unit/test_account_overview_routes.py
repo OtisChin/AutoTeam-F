@@ -476,6 +476,72 @@ def test_query_chatgpt_subscription_merges_account_check_discounts(monkeypatch):
     assert normalized["available_plans"] == ["chatgptfreeplan", "chatgptplusplan"]
 
 
+def test_query_chatgpt_subscription_handles_no_subscription_404_with_account_check(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload if payload is not None else {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            if "/backend-api/subscriptions?" in url:
+                return FakeResponse(404, {"detail": "No subscription found for account"})
+            return FakeResponse(
+                200,
+                {
+                    "accounts": {
+                        "acc-free": {
+                            "account": {
+                                "plan_type": "free",
+                                "has_previously_paid_subscription": False,
+                            },
+                            "entitlement": {
+                                "has_active_subscription": False,
+                                "subscription_plan": "chatgptfreeplan",
+                                "applied_discounts": [],
+                            },
+                            "eligible_offers": {
+                                "offers": [
+                                    {"id": "chatgptfreeplan"},
+                                    {"id": "chatgptplusplan"},
+                                ]
+                            },
+                        }
+                    }
+                },
+            )
+
+    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(account_overview, "_browser_timezone_offset_min", lambda: 480, raising=False)
+
+    result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-free")
+    normalized = account_overview.normalize_chatgpt_subscription(result["raw"], account_id="acc-free")
+
+    assert calls == [
+        "https://chatgpt.com/backend-api/subscriptions?account_id=acc-free",
+        "https://chat.openai.com/backend-api/subscriptions?account_id=acc-free",
+        "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=480",
+    ]
+    assert normalized["plan_label"] == "Free"
+    assert normalized["plan_key"] == "chatgptfreeplan"
+    assert normalized["active"] is False
+    assert normalized["paid"] is False
+    assert normalized["available_plans"] == ["chatgptfreeplan", "chatgptplusplan"]
+
+
 def test_query_chatgpt_subscription_falls_back_to_chat_openai_when_chatgpt_forbidden(monkeypatch):
     calls = []
 

@@ -123,6 +123,8 @@ def _channel_label(origin: str) -> str:
     normalized = str(origin or "").strip().lower()
     if normalized == "chatgpt_web":
         return "网页 (Web)"
+    if normalized == "chatgpt_not_purchased":
+        return "未购买"
     if normalized == "ios":
         return "iOS"
     if normalized == "android":
@@ -205,6 +207,8 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
     if not plan_key:
         plan_key = str(_first_present(entitlement, "subscription_plan", "plan", "plan_key", "product_id", default="")).strip()
     plan_type = str(_first_present(plan, "account_plan_type", "plan_type", "tier", default="")).strip()
+    if not plan_type:
+        plan_type = str(_first_present(account_details, "plan_type", default="")).strip()
     ends_at = _first_present(
         plan,
         "expires_at",
@@ -260,11 +264,12 @@ def normalize_chatgpt_subscription(raw: dict[str, Any], account_id: str = "") ->
     normalized_plan_key = _plan_key(plan_key, plan_type)
     active_value = _first_present(
         plan,
-        "is_active_subscription",
-        "is_paid_subscription_active",
-        "active",
-        "has_paid_subscription",
-        default=None,
+                "is_active_subscription",
+                "is_paid_subscription_active",
+                "has_active_subscription",
+                "active",
+                "has_paid_subscription",
+                default=None,
     )
     if active_value is None and ends_at:
         active_value = _remaining_days(ends_at) is not None and (_remaining_days(ends_at) or 0) > 0
@@ -359,6 +364,7 @@ def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[
     auth_errors: list[int] = []
     last_error: Exception | None = None
     last_status = 0
+    no_subscription_404 = False
 
     raw: dict[str, Any] | None = None
     queried_url = ""
@@ -368,6 +374,10 @@ def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[
             last_status = int(getattr(resp, "status_code", 0) or 0)
             if last_status in {401, 403}:
                 auth_errors.append(last_status)
+                continue
+            if last_status == 404:
+                no_subscription_404 = True
+                last_error = RuntimeError("HTTP 404")
                 continue
             resp.raise_for_status()
             raw = resp.json()
@@ -382,8 +392,11 @@ def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[
     if raw is None and auth_errors and len(auth_errors) == len(urls):
         raise HTTPException(status_code=403, detail="ChatGPT 订阅接口拒绝请求：请刷新该账号 auth_session 后重试")
     if raw is None:
-        detail = f"ChatGPT 订阅接口请求失败: {last_error or f'HTTP {last_status}'}"
-        raise HTTPException(status_code=502, detail=detail)
+        if not no_subscription_404:
+            detail = f"ChatGPT 订阅接口请求失败: {last_error or f'HTTP {last_status}'}"
+            raise HTTPException(status_code=502, detail=detail)
+        raw = {}
+        queried_url = urls[0]
 
     account_check_url = CHATGPT_ACCOUNT_CHECK_URL
     if queried_url.startswith("https://chat.openai.com/"):

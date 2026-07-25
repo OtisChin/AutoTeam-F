@@ -7570,6 +7570,7 @@ def _stop_auto_check():
 # ---------------------------------------------------------------------------
 
 DIST_DIR = Path(__file__).resolve().parents[1] / "web" / "dist"
+NOTIFICATION_SOUNDS_DIR = Path(__file__).resolve().parents[3] / "assets"
 
 
 class _FrontendPathConvertor(Convertor[str]):
@@ -7583,6 +7584,14 @@ class _FrontendPathConvertor(Convertor[str]):
 
 
 register_url_convertor("frontend_path", _FrontendPathConvertor())
+
+
+if NOTIFICATION_SOUNDS_DIR.exists():
+    app.mount(
+        "/notification-sounds",
+        StaticFiles(directory=str(NOTIFICATION_SOUNDS_DIR)),
+        name="notification_sounds",
+    )
 
 
 if DIST_DIR.exists():

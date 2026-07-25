@@ -29,7 +29,7 @@
     </section>
 
     <template v-if="activeTab === 'links'">
-    <div class="grid grid-cols-1 gap-5 2xl:grid-cols-[minmax(360px,0.85fr)_minmax(460px,1.1fr)_minmax(420px,0.9fr)]">
+    <div class="grid grid-cols-1 items-start gap-5 2xl:grid-cols-[minmax(360px,0.85fr)_minmax(460px,1.1fr)_minmax(420px,0.9fr)]">
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
         <div class="border-b border-gray-800 pb-4">
           <p class="text-xs font-semibold text-gray-500">任务输入</p>
@@ -85,6 +85,10 @@
             <button @click="retryFailedAccounts" :disabled="busy || !retryFailedEmails.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50" title="一键重试上一轮提链失败且仍在账号池中的账号">
               失败重试{{ retryFailedEmails.length ? ` (${retryFailedEmails.length})` : '' }}
             </button>
+            <label class="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs font-semibold text-gray-200">
+              <input v-model="form.notificationSoundEnabled" type="checkbox" class="accent-emerald-500" :disabled="busy" />
+              提示音
+            </label>
           </div>
 
           <div class="text-sm" :class="statusError ? 'text-rose-300' : 'text-gray-400'">{{ statusText }}</div>
@@ -190,11 +194,18 @@
             <span class="mt-1 text-sm">从账号池勾选账号后开始提链</span>
           </div>
 
-          <div v-else class="mt-5 space-y-3 text-sm">
-            <div class="rounded-xl border border-gray-800 bg-gray-950 p-4 text-gray-300">
-              本次完成：成功 <span class="font-semibold text-emerald-300">{{ currentResult.successes?.length || 0 }}</span>，失败 <span class="font-semibold text-rose-300">{{ currentResult.errors?.length || 0 }}</span>，跳过 <span class="font-semibold text-gray-300">{{ currentResult.skipped?.length || 0 }}</span>
+          <div v-else class="mt-5 max-h-72 space-y-3 overflow-y-auto pr-1 text-sm">
+            <div class="flex flex-col gap-3 rounded-xl border border-gray-800 bg-gray-950 p-4 text-gray-300 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                本次完成：成功 <span class="font-semibold text-emerald-300">{{ currentResult.successes?.length || 0 }}</span>，失败 <span class="font-semibold text-rose-300">{{ currentResult.errors?.length || 0 }}</span>，跳过 <span class="font-semibold text-gray-300">{{ currentResult.skipped?.length || 0 }}</span>
+              </div>
+              <select v-model="recentResultFilter" class="w-fit rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-200 focus:border-blue-500 focus:outline-none">
+                <option value="all">全部</option>
+                <option value="success">已提链</option>
+                <option value="failed">提链失败</option>
+              </select>
             </div>
-            <div v-for="item in currentResult.successes || []" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+            <div v-if="recentResultFilter !== 'failed'" v-for="item in currentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="font-mono text-emerald-200">{{ item.email }}</div>
               <div class="mt-1 text-[11px] text-emerald-300/80">国家：{{ linkCountry(item.link) }}</div>
               <div class="mt-2 flex flex-wrap gap-2">
@@ -202,12 +213,13 @@
                 <button @click="copy(item.link?.paypal_link || item.link?.provider_redirect_url || item.link?.stripe_redirect_url)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100">复制链</button>
               </div>
             </div>
-            <div v-for="item in currentResult.errors || []" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            <div v-if="recentResultFilter !== 'success'" v-for="item in currentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
               {{ item.email }}：{{ item.error }}
             </div>
-            <div v-for="item in currentResult.skipped || []" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
+            <div v-if="recentResultFilter === 'all'" v-for="item in currentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
               {{ item.email }}：{{ item.reason || '已跳过' }}
             </div>
+            <div v-if="!filteredRecentResultCount" class="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-8 text-center text-xs text-gray-500">当前筛选下暂无结果</div>
           </div>
         </section>
       </div>
@@ -468,6 +480,7 @@ import {
   resolveSelectedPayPalLinkAccount,
   successfulPayPalLinkAccounts,
 } from '../paypalAccountOptions.js'
+import { PAYPAL_LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
 const FORM_STORAGE_KEY = 'autotoken_us_paypal_form'
 const JOB_STORAGE_KEY = 'autotoken_us_paypal_job'
@@ -504,6 +517,7 @@ const promoRegionOptions = [
   { value: 'VN', label: 'VN · 越南' },
   { value: 'TH', label: 'TH · 泰国' },
   { value: 'PH', label: 'PH · 菲律宾' },
+  { value: 'TR', label: 'TR · 土耳其' },
 ]
 
 const form = ref({
@@ -512,6 +526,7 @@ const form = ref({
   maxAttempts: 5,
   region: 'US',
   promoRegion: 'JP',
+  notificationSoundEnabled: true,
 })
 const accounts = ref([])
 const links = ref([])
@@ -529,6 +544,7 @@ const accountStatusFilter = ref('all')
 const accountCountryFilter = ref('all')
 const linkCountryFilter = ref('all')
 const protocolLinkCountryFilter = ref('all')
+const recentResultFilter = ref('all')
 const selectedProtocolAccountEmail = ref('')
 const selectedProtocolAccountEmails = ref(new Set())
 const retryFailedEmailSet = ref(new Set())
@@ -590,6 +606,14 @@ const accountCountryOptions = computed(() => Array.from(new Set(accounts.value.m
 const linkCountryOptions = computed(() => Array.from(new Set(links.value.map(linkCountry).filter(country => country && country !== '-'))).sort())
 const protocolLinkCountryOptions = computed(() => paypalAccountCountryOptions(accounts.value, links.value))
 const protocolLinkAccountOptions = computed(() => successfulPayPalLinkAccounts(accounts.value, links.value, protocolLinkCountryFilter.value))
+const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? [...currentResult.value.successes].reverse() : [])
+const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? [...currentResult.value.errors].reverse() : [])
+const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? [...currentResult.value.skipped].reverse() : [])
+const filteredRecentResultCount = computed(() => {
+  if (recentResultFilter.value === 'success') return currentResultSuccesses.value.length
+  if (recentResultFilter.value === 'failed') return currentResultErrors.value.length
+  return currentResultSuccesses.value.length + currentResultErrors.value.length + currentResultSkipped.value.length
+})
 const progressText = computed(() => {
   const job = currentJob.value || {}
   const completed = Number(job.completed || 0)
@@ -686,7 +710,7 @@ function validateStart(emails = selectedEmails.value) {
     setStatus('请在账号池中选择至少一个账号。', true)
     return false
   }
-  form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
+  form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
   form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   form.value.region = String(form.value.region || 'US').trim().toUpperCase()
   form.value.promoRegion = String(form.value.promoRegion || 'JP').trim().toUpperCase()
@@ -764,6 +788,7 @@ async function pollJob(jobId) {
     if (job.status === 'success') {
       rememberFailedEmails(job.result || {})
       setStatus('提链任务已完成，链接已写入管理表。')
+      if ((job.result?.successes || []).length) playNotificationSound(PAYPAL_LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
       localStorage.removeItem(JOB_STORAGE_KEY)
       await Promise.all([refreshAccounts(), refreshLinks()])
       return

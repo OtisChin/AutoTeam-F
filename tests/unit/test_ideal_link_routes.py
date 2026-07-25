@@ -6,7 +6,13 @@ import json
 
 from fastapi import FastAPI, HTTPException
 
-from autotoken.api_routes.ideal_link import IdealLongLinkRequest, IdealQrRequest, create_ideal_link_router
+from autotoken.api_routes.ideal_link import (
+    IdealBatchStartRequest,
+    IdealDeleteLinksRequest,
+    IdealLongLinkRequest,
+    IdealQrRequest,
+    create_ideal_link_router,
+)
 from autotoken.integrations.gpthel_ideal import app as ideal_app
 
 
@@ -166,3 +172,92 @@ def test_ideal_amount_policy_accepts_one_minor_unit():
     assert ideal_app.is_acceptable_low_amount("0") is True
     assert ideal_app.is_acceptable_low_amount(0) is True
     assert ideal_app.is_acceptable_low_amount("1") is True
+
+
+def test_ideal_accounts_default_to_pending_status(monkeypatch, tmp_path):
+    app = _app()
+    from autotoken.api_routes import ideal_link
+
+    monkeypatch.setattr(ideal_link, "LINKS_FILE", tmp_path / "ideal_links.json")
+    monkeypatch.setattr(ideal_link, "ACCOUNT_STATUS_FILE", tmp_path / "ideal_account_status.json")
+    monkeypatch.setattr(ideal_link.pix_routes, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "ideal@example.com", "ttl_seconds": 3600, "updated_at": 1},
+    ])
+    monkeypatch.setattr(ideal_link.account_store, "load_accounts", lambda: [
+        {"email": "ideal@example.com", "status": "active"},
+    ])
+
+    result = _endpoint(app, "/api/ideal/accounts", "GET")()
+
+    assert result["accounts"][0]["email"] == "ideal@example.com"
+    assert result["accounts"][0]["ideal_status"] == "pending"
+    assert result["accounts"][0]["ideal_status_text"] == "未提链"
+    assert result["accounts"][0]["ideal_selectable"] is True
+
+
+def test_ideal_batch_start_runs_accounts_and_persists_link(monkeypatch, tmp_path):
+    app = _app()
+    from autotoken.api_routes import ideal_link
+
+    class ImmediateThread:
+        def __init__(self, target, daemon=False):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    class FakeResult:
+        def model_dump(self):
+            return {
+                "ok": True,
+                "cs_id": "cs_ideal",
+                "billing_country": "NL",
+                "currency": "EUR",
+                "link_type": "ideal",
+                "long_url": "https://pay.openai.com/ideal",
+                "amount": "0",
+                "amount_display": "€0.00",
+                "steps": [{"time": "12:00:00", "name": "done", "status": "ok", "detail": ""}],
+            }
+
+    monkeypatch.setattr(ideal_link, "LINKS_FILE", tmp_path / "ideal_links.json")
+    monkeypatch.setattr(ideal_link, "ACCOUNT_STATUS_FILE", tmp_path / "ideal_account_status.json")
+    monkeypatch.setattr(ideal_link.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(ideal_link.pix_routes, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "ideal@example.com", "ttl_seconds": 3600, "updated_at": 1},
+    ])
+    monkeypatch.setattr(ideal_link.pix_routes, "_load_token_for_email", lambda email: "token-for-" + email)
+    monkeypatch.setattr(ideal_link.account_store, "load_accounts", lambda: [])
+    monkeypatch.setattr(ideal_link.legacy, "prepare_request_proxy", lambda req: False)
+    monkeypatch.setattr(ideal_link.legacy, "generate_long_link_once", lambda req, use_explicit_proxy, steps=None: FakeResult())
+    ideal_link.JOBS.clear()
+
+    result = _endpoint(app, "/api/ideal/batch/start", "POST")(
+        IdealBatchStartRequest.model_validate({"accountEmails": ["ideal@example.com"], "concurrency": 1})
+    )
+    job = _endpoint(app, "/api/ideal/jobs/{job_id}", "GET")(result["job_id"])
+    links = _endpoint(app, "/api/ideal/links", "GET")()
+
+    assert job["status"] == "success"
+    assert job["successes"][0]["email"] == "ideal@example.com"
+    assert links["links"][0]["ideal_link"] == "https://pay.openai.com/ideal"
+    assert links["links"][0]["account_email"] == "ideal@example.com"
+
+
+def test_ideal_links_delete_and_clear_use_ideal_file(tmp_path, monkeypatch):
+    app = _app()
+    from autotoken.api_routes import ideal_link
+
+    links_file = tmp_path / "ideal_links.json"
+    links_file.write_text(json.dumps([
+        {"id": "keep", "ideal_link": "https://pay.openai.com/keep"},
+        {"id": "remove", "ideal_link": "https://pay.openai.com/remove"},
+    ]), encoding="utf-8")
+    monkeypatch.setattr(ideal_link, "LINKS_FILE", links_file)
+
+    deleted = _endpoint(app, "/api/ideal/links/delete", "POST")(IdealDeleteLinksRequest(ids=["remove", "missing"]))
+    cleared = _endpoint(app, "/api/ideal/links/clear", "POST")()
+
+    assert deleted["deleted"] == 1
+    assert cleared["deleted"] == 1
+    assert json.loads(links_file.read_text(encoding="utf-8")) == []

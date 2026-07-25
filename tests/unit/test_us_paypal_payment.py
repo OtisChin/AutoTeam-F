@@ -410,6 +410,7 @@ def test_promo_currency_for_region_supports_zero_trial_regions():
     assert us_paypal.promo_currency_for_region("VN") == "VND"
     assert us_paypal.promo_currency_for_region("TH") == "THB"
     assert us_paypal.promo_currency_for_region("PH") == "PHP"
+    assert us_paypal.promo_currency_for_region("TR") == "TRY"
     assert us_paypal.promo_currency_for_region("US") == "USD"
 
 

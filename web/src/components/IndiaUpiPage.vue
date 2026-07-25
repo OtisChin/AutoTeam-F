@@ -125,7 +125,7 @@
     </section>
 
     <template v-else>
-    <div class="grid grid-cols-1 gap-5 2xl:grid-cols-[minmax(360px,0.85fr)_minmax(460px,1.1fr)_minmax(420px,0.9fr)]">
+    <div class="grid grid-cols-1 items-start gap-5 2xl:grid-cols-[minmax(360px,0.85fr)_minmax(460px,1.1fr)_minmax(420px,0.9fr)]">
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
         <div class="border-b border-gray-800 pb-4">
           <p class="text-xs font-semibold text-gray-500">任务输入</p>
@@ -220,6 +220,10 @@
             <button @click="retryFailedAccounts" :disabled="busy || !retryFailedEmails.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50" title="一键重试上一轮提链失败且仍在账号池中的账号">
               失败重试{{ retryFailedEmails.length ? ` (${retryFailedEmails.length})` : '' }}
             </button>
+            <label class="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs font-semibold text-gray-200">
+              <input v-model="form.notificationSoundEnabled" type="checkbox" class="accent-emerald-500" :disabled="busy" />
+              提示音
+            </label>
           </div>
 
           <div class="text-sm" :class="statusError ? 'text-rose-300' : 'text-gray-400'">{{ statusText }}</div>
@@ -319,11 +323,18 @@
             <span class="mt-1 text-sm">从账号池勾选账号后开始提链</span>
           </div>
 
-          <div v-else class="mt-5 space-y-3 text-sm">
-            <div class="rounded-xl border border-gray-800 bg-gray-950 p-4 text-gray-300">
-              本次完成：成功 <span class="font-semibold text-emerald-300">{{ currentResult.successes?.length || 0 }}</span>，失败 <span class="font-semibold text-rose-300">{{ currentResult.errors?.length || 0 }}</span>，跳过 <span class="font-semibold text-gray-300">{{ currentResult.skipped?.length || 0 }}</span>
+          <div v-else class="mt-5 max-h-72 space-y-3 overflow-y-auto pr-1 text-sm">
+            <div class="flex flex-col gap-3 rounded-xl border border-gray-800 bg-gray-950 p-4 text-gray-300 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                本次完成：成功 <span class="font-semibold text-emerald-300">{{ currentResult.successes?.length || 0 }}</span>，失败 <span class="font-semibold text-rose-300">{{ currentResult.errors?.length || 0 }}</span>，跳过 <span class="font-semibold text-gray-300">{{ currentResult.skipped?.length || 0 }}</span>
+              </div>
+              <select v-model="recentResultFilter" class="w-fit rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-200 focus:border-blue-500 focus:outline-none">
+                <option value="all">全部</option>
+                <option value="success">已提链</option>
+                <option value="failed">提链失败</option>
+              </select>
             </div>
-            <div v-for="item in currentResult.successes || []" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+            <div v-if="recentResultFilter !== 'failed'" v-for="item in currentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="flex flex-wrap items-center gap-2">
                 <span class="font-mono text-emerald-200">{{ item.email }}</span>
                 <span class="rounded-full border px-2 py-0.5 font-semibold" :class="upiExpiryClass(item.link)">
@@ -335,7 +346,7 @@
                 <button @click="copy(upiLinkUrl(item.link))" :disabled="!upiLinkActionable(item.link)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50">复制链</button>
               </div>
             </div>
-            <div v-for="item in currentResult.errors || []" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            <div v-if="recentResultFilter !== 'success'" v-for="item in currentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
               <div class="flex flex-wrap items-center gap-2">
                 <span class="font-mono">{{ item.email }}</span>
                 <span v-if="failureLabel(item)" class="rounded-full border border-rose-400/30 bg-rose-400/10 px-2 py-0.5 font-semibold text-rose-100">{{ failureLabel(item) }}</span>
@@ -343,9 +354,10 @@
               <div class="mt-1 break-words">{{ item.error }}</div>
               <div v-if="retryHint(item)" class="mt-1 text-amber-200">建议：{{ retryHint(item) }}</div>
             </div>
-            <div v-for="item in currentResult.skipped || []" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
+            <div v-if="recentResultFilter === 'all'" v-for="item in currentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
               {{ item.email }}：{{ item.reason || '已跳过' }}
             </div>
+            <div v-if="!filteredRecentResultCount" class="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-8 text-center text-xs text-gray-500">当前筛选下暂无结果</div>
           </div>
         </section>
       </div>
@@ -417,6 +429,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import { PAYMENT_RETRYABLE_LINK_STATUSES, extractedLinkPaymentSeed, indiaUpiCdkStatusClass, isTempCdkCoolingError, paymentPairUnavailableMessage, tempCdkCooldownUntil, tempCdkRemainingText } from '../indiaUpiPaymentQueue.js'
+import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
 const FORM_STORAGE_KEY = 'autotoken_india_upi_form'
 const TEMP_FORM_STORAGE_KEY = 'autotoken_india_upi_temp_form'
@@ -430,7 +443,7 @@ const PAYMENT_MAX_CONCURRENCY = 5
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
 const UPI_LINK_TTL_MS = 5 * 60 * 1000
 
-const form = ref({ proxies: '', concurrency: 1, maxAttempts: 5, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '' })
+const form = ref({ proxies: '', concurrency: 1, maxAttempts: 5, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '', notificationSoundEnabled: true })
 const tempForm = ref({ cdk: '', concurrency: 5 })
 const tempCdkInput = ref('')
 const tempCdks = ref([])
@@ -450,6 +463,7 @@ const logs = ref([])
 const currentResult = ref(null)
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
+const recentResultFilter = ref('all')
 const retryFailedEmailSet = ref(new Set())
 const deletingUpiAccounts = ref(new Set())
 const paymentCdkInput = ref('')
@@ -468,6 +482,14 @@ const retryFailedEmails = computed(() => Array.from(retryFailedEmailSet.value).f
 const availableTempCdkCount = computed(() => tempCdks.value.filter(item => item.status === 'available').length)
 const coolingTempCdkCount = computed(() => tempCdks.value.filter(item => item.status === 'cooling').length)
 const usedTempCdkCount = computed(() => tempCdks.value.filter(item => item.status === 'used').length)
+const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? [...currentResult.value.successes].reverse() : [])
+const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? [...currentResult.value.errors].reverse() : [])
+const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? [...currentResult.value.skipped].reverse() : [])
+const filteredRecentResultCount = computed(() => {
+  if (recentResultFilter.value === 'success') return currentResultSuccesses.value.length
+  if (recentResultFilter.value === 'failed') return currentResultErrors.value.length
+  return currentResultSuccesses.value.length + currentResultErrors.value.length + currentResultSkipped.value.length
+})
 const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const status = accountStatus(account)
   return (!accountFilter.value || String(account.email || '').toLowerCase().includes(accountFilter.value.toLowerCase())) && (accountStatusFilter.value === 'all' || status === accountStatusFilter.value)
@@ -1176,7 +1198,7 @@ function validateStart(emails = selectedEmails.value) {
     }
     return true
   }
-  form.value.concurrency = Math.max(1, Math.min(10, Number(form.value.concurrency || 1)))
+  form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
   form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   if (!form.value.proxies.trim() && (!form.value.kookeeyUser || !form.value.kookeeyPass)) {
     setStatus('请填写 IN 代理列表，或在高级设置填写 Kookeey 用户名/密码。', true)
@@ -1265,6 +1287,7 @@ async function pollJob(jobId) {
       rememberFailedEmails(job.result || {})
       if (job.temp) releaseReservedTempCdks(jobId, '任务已结束，未使用 CDK 已释放。')
       setStatus('提链任务已完成，链接已写入管理表。')
+      if ((job.result?.successes || []).length) playNotificationSound(LINK_SUCCESS_SOUND_URL, form.value.notificationSoundEnabled)
       localStorage.removeItem(JOB_STORAGE_KEY)
       await Promise.all([refreshAccounts(), refreshLinks()])
       return

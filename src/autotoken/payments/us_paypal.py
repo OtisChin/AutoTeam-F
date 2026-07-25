@@ -390,7 +390,7 @@ def is_zero_amount(value: Any) -> bool:
 
 
 def promo_currency_for_region(region: str) -> str:
-    return {"JP": "JPY", "BR": "BRL", "VN": "VND", "TH": "THB", "PH": "PHP"}.get(str(region or "").strip().upper(), "USD")
+    return {"JP": "JPY", "BR": "BRL", "VN": "VND", "TH": "THB", "PH": "PHP", "TR": "TRY"}.get(str(region or "").strip().upper(), "USD")
 
 
 def _ctx() -> dict[str, str]:
