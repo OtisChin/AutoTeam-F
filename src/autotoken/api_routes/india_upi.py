@@ -31,7 +31,7 @@ MAX_TEMP_BATCH_CONCURRENCY = 20
 TEMP_CDK_COOLDOWN_SECONDS = 3 * 60
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
-PROXY_PREFLIGHT_MAX_ATTEMPTS = 5
+PROXY_PREFLIGHT_MAX_ATTEMPTS = 10
 UPI_LINK_TTL_SECONDS = 5 * 60
 UPI_STATUS_PENDING = "pending"
 UPI_STATUS_RUNNING = "running"
@@ -735,15 +735,17 @@ def _set_job_running_delta(job_id: str, delta: int) -> None:
 
 def _mark_account_plus_upi(email: str, message: str = "User is already paid") -> dict[str, Any]:
     account_store.ensure_session_only_account(email)
+    now = time.time()
     return account_store.update_account(
         email,
         account_type=account_store.ACCOUNT_TYPE_PLUS,
         last_bind_provider="upi",
         last_bind_status="success",
-        last_bind_at=time.time(),
-        plus_bound_at=time.time(),
+        last_bind_at=now,
+        plus_bound_at=now,
         last_bind_message=message,
         last_bind_failure_stage="",
+        last_quota={"plan_type": account_store.ACCOUNT_TYPE_PLUS, "source": "upi_payment_success", "checked_at": now},
     ) or {}
 
 

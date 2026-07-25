@@ -2230,6 +2230,10 @@ function accountTypeLabel(type) {
 function bindProviderLabel(provider) {
   return {
     pix: 'Pix',
+    paypal: 'PayPal',
+    upi: 'UPI',
+    ideal: 'iDEAL',
+    kakao_pay: 'Kakao Pay',
     gopay: 'GoPay',
     card: 'Card',
     external_import: '外部导入',
@@ -2248,6 +2252,10 @@ function effectiveBindProvider(acc) {
 function bindProviderClass(provider) {
   return {
     pix: 'bg-cyan-500/10 text-cyan-300',
+    paypal: 'bg-indigo-500/10 text-indigo-300',
+    upi: 'bg-orange-500/10 text-orange-300',
+    ideal: 'bg-blue-500/10 text-blue-300',
+    kakao_pay: 'bg-yellow-500/10 text-yellow-300',
     gopay: 'bg-emerald-500/10 text-emerald-300',
     card: 'bg-amber-500/10 text-amber-300',
     external_import: 'bg-teal-500/10 text-teal-300',
@@ -2339,8 +2347,22 @@ function quotaReset(acc, type) {
   if (!qi || !slot) return '-'
   let ts = numericOrNull(slot.reset_at)
   const resetAfterSeconds = numericOrNull(slot.reset_after_seconds)
+  const usedPercent = numericOrNull(slot.used_percent)
+  const windowSeconds = numericOrNull(slot.limit_window_seconds)
   const checkedAt = numericOrNull(qi.checked_at)
-  if (!ts && resetAfterSeconds !== null && checkedAt) {
+  let suppressFullUnusedWindowReset = false
+  if (usedPercent !== null && usedPercent <= 0 && windowSeconds && resetAfterSeconds !== null && resetAfterSeconds >= windowSeconds) {
+    ts = null
+    suppressFullUnusedWindowReset = true
+  }
+  if (usedPercent !== null && usedPercent <= 0 && windowSeconds && ts && checkedAt && ts - checkedAt >= windowSeconds - 60) {
+    ts = null
+    suppressFullUnusedWindowReset = true
+  }
+  if (ts && checkedAt && resetAfterSeconds !== null && resetAfterSeconds <= 0 && ts <= checkedAt) {
+    ts = null
+  }
+  if (!ts && !suppressFullUnusedWindowReset && resetAfterSeconds !== null && resetAfterSeconds > 0 && checkedAt) {
     ts = checkedAt + resetAfterSeconds
   }
   if (!ts) return '-'

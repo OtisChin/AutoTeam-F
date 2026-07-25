@@ -1621,3 +1621,23 @@ def test_temp_batch_job_keeps_requested_concurrency_when_cdk_reports_one_slot(mo
     assert job["status"] == "success"
     assert job["concurrency"] == 10
     assert len(job["result"]["successes"]) == 10
+
+
+def test_mark_account_plus_pix_sets_dashboard_plus_snapshot(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(brazil_pix.account_store, "ensure_session_only_account", lambda email: captured.setdefault("ensured", email))
+
+    def fake_update_account(email, **payload):
+        captured["email"] = email
+        captured["payload"] = payload
+        return {"email": email, **payload}
+
+    monkeypatch.setattr(brazil_pix.account_store, "update_account", fake_update_account)
+
+    updated = brazil_pix._mark_account_plus_pix("paid@example.com", "paid ok")
+
+    assert captured["ensured"] == "paid@example.com"
+    assert updated["account_type"] == brazil_pix.account_store.ACCOUNT_TYPE_PLUS
+    assert updated["last_bind_provider"] == "pix"
+    assert updated["last_bind_status"] == "success"
+    assert updated["last_quota"]["plan_type"] == "plus"

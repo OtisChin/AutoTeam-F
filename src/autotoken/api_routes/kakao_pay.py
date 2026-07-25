@@ -19,6 +19,7 @@ from autotoken.api_routes import brazil_pix as pix_routes
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.kakao_pay import (
     KakaoPayJobConfig,
+    build_kakao_chatgpt_session,
     build_kakao_dynamic_proxy,
     generate_kakao_trial,
 )
@@ -31,7 +32,7 @@ ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "kakao_pay_account_status.json"
 MAX_BATCH_CONCURRENCY = 20
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
-PROXY_PREFLIGHT_MAX_ATTEMPTS = 5
+PROXY_PREFLIGHT_MAX_ATTEMPTS = 10
 KAKAO_STATUS_PENDING = "pending"
 KAKAO_STATUS_RUNNING = "running"
 KAKAO_STATUS_SUCCESS = "success"
@@ -235,7 +236,7 @@ def _dedupe_link_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         email = str(item.get("account_email") or "").strip().lower()
-        link = _normalize_link(item.get("kakao_link") or item.get("provider_redirect_url") or item.get("stripe_redirect_url"))
+        link = _normalize_link(item.get("provider_redirect_url") or item.get("kakao_link") or item.get("stripe_redirect_url"))
         if email:
             if email in seen_accounts:
                 continue
@@ -313,6 +314,7 @@ def _iter_auth_accounts_with_kakao_status() -> list[dict[str, Any]]:
 def _link_record_from_result(job_id: str, account_email: str, result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
     billing = fields.get("billing") if isinstance(fields.get("billing"), dict) else result.get("billing") or {}
+    primary_link = str(fields.get("provider_redirect_url") or fields.get("kakao_link") or fields.get("stripe_redirect_url") or "")
     return _normalize_link_record({
         "id": uuid.uuid4().hex[:16],
         "job_id": job_id,
@@ -321,7 +323,7 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
         "country": "KR",
         "amount": str(fields.get("amount") or result.get("amount") or ""),
         "cs_id": str(fields.get("cs_id") or ""),
-        "kakao_link": str(fields.get("kakao_link") or fields.get("provider_redirect_url") or fields.get("stripe_redirect_url") or ""),
+        "kakao_link": primary_link,
         "provider_redirect_url": str(fields.get("provider_redirect_url") or ""),
         "stripe_redirect_url": str(fields.get("stripe_redirect_url") or ""),
         "link_source": str(fields.get("link_source") or ""),
@@ -335,11 +337,11 @@ def _append_link(record: dict[str, Any]) -> None:
     with LINKS_LOCK:
         items = _load_links()
         record_email = str(record.get("account_email") or "").strip().lower()
-        record_link = _normalize_link(record.get("kakao_link") or record.get("provider_redirect_url") or record.get("stripe_redirect_url"))
+        record_link = _normalize_link(record.get("provider_redirect_url") or record.get("kakao_link") or record.get("stripe_redirect_url"))
         if record_email:
             items = [item for item in items if str(item.get("account_email") or "").strip().lower() != record_email]
         elif record_link:
-            items = [item for item in items if _normalize_link(item.get("kakao_link") or item.get("provider_redirect_url") or item.get("stripe_redirect_url")) != record_link]
+            items = [item for item in items if _normalize_link(item.get("provider_redirect_url") or item.get("kakao_link") or item.get("stripe_redirect_url")) != record_link]
         items.insert(0, record)
         _save_links(items)
 
@@ -366,30 +368,137 @@ def _set_job_running_delta(job_id: str, delta: int) -> None:
             job["running_count"] = max(0, int(job.get("running_count") or 0) + delta)
 
 
+def _preflight_kakao_checkout_backend_proxy_url(proxy_url: str, access_token: str, region: str) -> tuple[bool, str]:
+    token = str(access_token or "").strip()
+    if not token:
+        return False, "checkout_backend missing_token"
+    target_region = str(region or "KR").strip().upper() or "KR"
+    target_path = f"/backend-api/checkout_pricing_config/configs/{target_region}"
+    try:
+        session = build_kakao_chatgpt_session(token, proxy_url, str(uuid.uuid4()))
+        try:
+            resp = session.get(
+                f"https://chatgpt.com{target_path}",
+                headers={"x-openai-target-path": target_path, "x-openai-target-route": target_path},
+                timeout=20,
+            )
+        finally:
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()
+        status_code = int(getattr(resp, "status_code", 0) or 0)
+        text = str(getattr(resp, "text", "") or "")
+        content_type = str((getattr(resp, "headers", {}) or {}).get("content-type") or "").lower()
+        message = f"checkout_backend HTTP {status_code or 'unknown'}"
+        lower = text.lower()
+        looks_html_challenge = (
+            status_code in {403, 429, 503}
+            and ("html" in content_type or "<html" in lower[:500])
+            and any(marker in lower for marker in ("cloudflare", "challenge", "access denied", "just a moment"))
+        )
+        if looks_html_challenge:
+            return False, message + "; html_challenge"
+        if status_code == 401:
+            if "token_revoked" in lower:
+                return False, message + " token_revoked"
+            if "token_invalidated" in lower or "invalidated oauth token" in lower or "authentication token" in lower:
+                return False, message + " token_invalidated"
+            return False, message
+        if 200 <= status_code < 500:
+            return True, message
+        return False, message
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _token_preflight_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return "token_" in text or "authentication token" in text
+
+
+def _preflight_kakao_proxy_role(
+    cfg: KakaoPayJobConfig,
+    *,
+    role: str,
+    stage_index: int,
+    require_auth: bool,
+    attempt: int,
+    total_attempts: int,
+    log,
+) -> tuple[bool, str, str]:
+    proxy_url, sid_label = build_kakao_dynamic_proxy(cfg, stage_index)
+    if not proxy_url:
+        return False, "", "empty proxy"
+    log(f"Kakao {role} 代理预检开始：{attempt}/{total_attempts} {sid_label}")
+    ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
+    if not ok:
+        log(f"Kakao {role} 代理出口预检失败：{message}")
+        return False, proxy_url, str(message or "unknown")
+    if not require_auth:
+        log(f"Kakao {role} 代理预检通过：{message}")
+        return True, proxy_url, ""
+
+    auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(proxy_url, cfg.access_token)
+    if not auth_ok:
+        log(f"Kakao {role} 代理认证接口预检失败：{auth_message}")
+        if _token_preflight_error(str(auth_message)):
+            raise RuntimeError(f"认证接口预检失败: {auth_message}")
+        return False, proxy_url, str(auth_message or "unknown")
+
+    backend_ok, backend_message = _preflight_kakao_checkout_backend_proxy_url(
+        proxy_url,
+        cfg.access_token,
+        "KR" if role != "promotion" else "VN",
+    )
+    if not backend_ok:
+        log(f"Kakao {role} checkout backend 预检失败：{backend_message}")
+        if _token_preflight_error(str(backend_message)):
+            raise RuntimeError(f"认证接口预检失败: {backend_message}")
+        return False, proxy_url, str(backend_message or "unknown")
+
+    log(f"Kakao {role} 代理预检通过：{message}; {auth_message}; {backend_message}")
+    return True, proxy_url, ""
+
+
 def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log) -> KakaoPayJobConfig:
     if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
         return cfg
-    region = str(cfg.region or "KR").strip().upper() or "KR"
+    stage_specs = [
+        ("checkout", 0, True),
+        ("promotion", 1, False),
+        ("provider", 2, True),
+    ]
     errors: list[str] = []
-    for stage_index in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
-        proxy_url, sid_label = build_kakao_dynamic_proxy(cfg, stage_index)
-        if not proxy_url:
-            continue
-        log(f"代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} region={region} {sid_label}")
-        ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
-        if ok:
-            auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(proxy_url, cfg.access_token)
-            if auth_ok:
-                log(f"代理预检通过：{message}; {auth_message}")
-                return replace(cfg, direct_proxies=[proxy_url], preflighted_checkout_proxy_url=proxy_url)
-            log(f"代理认证接口预检失败：{auth_message}")
-            if "token_" in str(auth_message).lower() or "authentication token" in str(auth_message).lower():
-                raise RuntimeError(f"认证接口预检失败: {auth_message}")
-            errors.append(str(auth_message or "unknown"))
-            continue
-        errors.append(str(message or "unknown"))
-        log(f"代理预检失败：{message}")
-    raise RuntimeError(f"代理预检失败: {region} {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
+    candidate_cfg = replace(cfg, direct_proxies=(cfg.direct_proxies[:1] if cfg.direct_proxies else []))
+
+    for attempt in range(1, PROXY_PREFLIGHT_MAX_ATTEMPTS + 1):
+        preflighted: dict[str, str] = {}
+        candidate_errors: list[str] = []
+        for role, stage_index, require_auth in stage_specs:
+            ok, proxy_url, message = _preflight_kakao_proxy_role(
+                candidate_cfg,
+                role=role,
+                stage_index=stage_index,
+                require_auth=require_auth,
+                attempt=attempt,
+                total_attempts=PROXY_PREFLIGHT_MAX_ATTEMPTS,
+                log=log,
+            )
+            if ok:
+                preflighted[role] = proxy_url
+                continue
+            candidate_errors.append(f"{role}: {message}")
+            break
+        if len(preflighted) == len(stage_specs):
+            return replace(
+                cfg,
+                preflighted_checkout_proxy_url=preflighted["checkout"],
+                preflighted_promotion_proxy_url=preflighted["promotion"],
+                preflighted_provider_proxy_url=preflighted["provider"],
+            )
+        errors.extend(candidate_errors)
+
+    raise RuntimeError(f"Kakao 代理预检失败: {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
 
 
 def _select_batch_accounts(req: KakaoPayBatchStartRequest) -> list[dict[str, Any]]:
@@ -404,12 +513,14 @@ def _select_batch_accounts(req: KakaoPayBatchStartRequest) -> list[dict[str, Any
 
 def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dict[str, Any], index: int, total: int, proxies: list[str]) -> dict[str, Any]:
     email = str(account.get("email") or "").strip()
+    proxies = proxies[:1] if proxies else []
     started = time.monotonic()
     if _is_job_cancel_requested(job_id):
         _append_log(job_id, f"[{index}/{total}] 跳过账号：{email}（任务已取消）")
         return {"skipped": True, "email": email, "status": _set_account_status(email, KAKAO_STATUS_PENDING, job_id=job_id)}
+    proxy_slot = f" proxy槽={(index - 1) % len(proxies) + 1}/{len(proxies)}" if proxies else ""
     _set_job_running_delta(job_id, 1)
-    _append_log(job_id, f"[{index}/{total}] 开始账号：{email}")
+    _append_log(job_id, f"[{index}/{total}] 开始账号：{email}{proxy_slot}")
 
     def account_log(message: str) -> None:
         _append_log(job_id, f"[{index}/{total}] {message}")
@@ -435,7 +546,7 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
                 kookeey_pass=str(req.kookeey_pass or ""),
                 kookeey_endpoint=str(req.kookeey_endpoint or "gate.kookeey.info:1000").strip(),
                 region=(req.region or "KR").strip().upper() or "KR",
-                direct_proxies=_rotate_proxies_for_account(proxies, attempt),
+                direct_proxies=proxies,
             )
             try:
                 cfg = _preflight_kakao_proxies_or_raise(cfg, account_log)
@@ -443,6 +554,20 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
                 break
             except Exception as exc:
                 last_error = str(exc)
+                if last_error.startswith("Kakao 代理预检失败"):
+                    status = _set_account_status(email, KAKAO_STATUS_FAILED, error=last_error, job_id=job_id)
+                    _append_log(job_id, f"[{index}/{total}] 代理预检已达到上限，停止真实提链：{email} {last_error}")
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": last_error,
+                        },
+                        "status": status,
+                    }
                 if pix_routes._is_already_paid_error(last_error):
                     _mark_account_plus_kakao(email, last_error)
                     status = _set_account_status(email, KAKAO_STATUS_SUCCESS, error=last_error, job_id=job_id)
@@ -480,15 +605,17 @@ def _delete_invalid_account(email: str) -> dict[str, Any]:
 
 def _mark_account_plus_kakao(email: str, message: str = "User is already paid") -> dict[str, Any]:
     account_store.ensure_session_only_account(email)
+    now = time.time()
     return account_store.update_account(
         email,
         account_type=account_store.ACCOUNT_TYPE_PLUS,
         last_bind_provider="kakao_pay",
         last_bind_status="success",
-        last_bind_at=time.time(),
-        plus_bound_at=time.time(),
+        last_bind_at=now,
+        plus_bound_at=now,
         last_bind_message=message,
         last_bind_failure_stage="",
+        last_quota={"plan_type": account_store.ACCOUNT_TYPE_PLUS, "source": "kakao_pay_payment_success", "checked_at": now},
     ) or {}
 
 
@@ -526,6 +653,8 @@ def _run_batch_job(job_id: str, req: KakaoPayBatchStartRequest) -> None:
         proxies = _parse_proxies(req.proxies)
         if not proxies and (not req.kookeey_user or not req.kookeey_pass):
             raise RuntimeError("请填写代理")
+        if len(proxies) > 1:
+            log(f"Kakao Pay 仅使用首条代理模板，其余 {len(proxies) - 1} 条已忽略")
         concurrency = _batch_concurrency(req, len(accounts))
         successes: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
@@ -541,11 +670,12 @@ def _run_batch_job(job_id: str, req: KakaoPayBatchStartRequest) -> None:
             JOBS[job_id]["concurrency"] = concurrency
             JOBS[job_id]["running_count"] = 0
             JOBS[job_id]["account_statuses"] = account_statuses
-        log(f"Kakao Pay 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，目标国家={req.region}")
+        proxy_pool = f"，代理池={len(proxies)}" if proxies else ""
+        log(f"Kakao Pay 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，目标国家={req.region}{proxy_pool}")
         completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = [
-                executor.submit(_run_batch_account, job_id, req, account, index, len(accounts), _rotate_proxies_for_account(proxies, index))
+                executor.submit(_run_batch_account, job_id, req, account, index, len(accounts), proxies)
                 for index, account in enumerate(accounts, start=1)
             ]
             for future in as_completed(futures):

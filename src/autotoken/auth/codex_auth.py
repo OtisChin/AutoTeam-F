@@ -6424,13 +6424,28 @@ def _int_or_none(value):
         return None
 
 
-def _quota_reset_at(window: dict, *, checked_at: int) -> int | None:
+def _quota_reset_at(
+    window: dict,
+    *,
+    checked_at: int,
+    used_percent: object = None,
+    limit_seconds: int | None = None,
+) -> int | None:
+    reset_after = _int_or_none((window or {}).get("reset_after_seconds"))
+    used = _int_or_none(used_percent)
+    # /backend-api/wham/usage 会在窗口完全未使用时返回
+    # reset_after_seconds == limit_window_seconds、reset_at ~= now + limit_window_seconds。
+    # 这不是一个真实的“恢复/重置时间”，如果照单全收，每次刷新都会显示成“当前时间 + 5h/7d/30d”。
+    if used is not None and used <= 0 and limit_seconds and reset_after is not None and reset_after >= limit_seconds:
+        return None
+
     reset_at = _int_or_none((window or {}).get("reset_at"))
     if reset_at:
+        if used is not None and used <= 0 and limit_seconds and reset_at - checked_at >= limit_seconds - 60:
+            return None
         return reset_at
-    reset_after = _int_or_none((window or {}).get("reset_after_seconds"))
-    if reset_after is not None:
-        return checked_at + max(0, reset_after)
+    if reset_after is not None and reset_after > 0:
+        return checked_at + reset_after
     return None
 
 
@@ -6467,9 +6482,16 @@ def _normalize_wham_usage_quota(data: dict, *, checked_at: int | None = None) ->
             continue
         label = _quota_window_label(window, fallback_label)
         used_percent = window.get("used_percent")
-        reset_at = _quota_reset_at(window, checked_at=checked_at)
         limit_seconds = _int_or_none(window.get("limit_window_seconds"))
         reset_after = _int_or_none(window.get("reset_after_seconds"))
+        reset_at = _quota_reset_at(
+            window,
+            checked_at=checked_at,
+            used_percent=used_percent,
+            limit_seconds=limit_seconds,
+        )
+        if reset_at is None:
+            reset_after = None
         normalized_window = {
             "source": source_key,
             "used_percent": used_percent,

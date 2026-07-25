@@ -11,6 +11,7 @@
     "test:paypal-account-options": "node scripts/test-paypal-account-options.mjs",
     "test:paypal-protocol-ui": "node scripts/test-paypal-protocol-ui.mjs",
     "test:dashboard-account-actions": "node scripts/test-dashboard-account-actions.mjs",
+    "test:kakao-pay-job-persistence": "node scripts/test-kakao-pay-job-persistence.mjs",
     "preview": "vite preview",
     "test:notification-sounds": "node scripts/test-notification-sounds.mjs"
   },

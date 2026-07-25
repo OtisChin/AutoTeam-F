@@ -430,6 +430,90 @@ def test_check_codex_quota_classifies_windows_by_limit_seconds_and_keeps_plan(mo
     assert info["weekly_window_seconds"] == 604800
 
 
+def test_check_codex_quota_does_not_treat_zero_reset_after_as_current_time(monkeypatch):
+    import requests
+
+    from autotoken import codex_auth
+
+    monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: None)
+    monkeypatch.setattr(codex_auth.time, "time", lambda: 1785000000)
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {
+                        "limit_window_seconds": 18000,
+                        "used_percent": 1,
+                        "reset_at": 0,
+                        "reset_after_seconds": 0,
+                    },
+                    "secondary_window": {
+                        "limit_window_seconds": 604800,
+                        "used_percent": 2,
+                        "reset_after_seconds": 0,
+                    },
+                    "limit_reached": False,
+                },
+            }
+
+    monkeypatch.setattr(requests, "get", lambda *_args, **_kwargs: FakeResp())
+
+    status, info = codex_auth.check_codex_quota("tok")
+
+    assert status == "ok"
+    assert info["primary_pct"] == 1
+    assert info["weekly_pct"] == 2
+    assert info.get("primary_resets_at") is None
+    assert info.get("weekly_resets_at") is None
+    assert info["windows"]["primary"]["reset_at"] is None
+    assert info["windows"]["weekly"]["reset_at"] is None
+
+
+def test_check_codex_quota_hides_full_unused_window_reset_time(monkeypatch):
+    import requests
+
+    from autotoken import codex_auth
+
+    monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: None)
+    monkeypatch.setattr(codex_auth.time, "time", lambda: 1785000000)
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {
+                        "limit_window_seconds": 604800,
+                        "used_percent": 0,
+                        "reset_after_seconds": 604800,
+                        "reset_at": 1785604805,
+                    },
+                    "secondary_window": None,
+                    "limit_reached": False,
+                },
+            }
+
+    monkeypatch.setattr(requests, "get", lambda *_args, **_kwargs: FakeResp())
+
+    status, info = codex_auth.check_codex_quota("tok")
+
+    assert status == "ok"
+    assert info["weekly_pct"] == 0
+    assert info["weekly_window_seconds"] == 604800
+    assert info["weekly_resets_at"] is None
+    assert info["weekly_reset_after_seconds"] is None
+    assert info["windows"]["weekly"]["reset_at"] is None
+    assert info["windows"]["weekly"]["reset_after_seconds"] is None
+
+
 def test_check_codex_quota_does_not_show_monthly_window_as_5h_or_weekly(monkeypatch):
     import requests
 

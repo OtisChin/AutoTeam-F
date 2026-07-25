@@ -666,15 +666,17 @@ def _is_non_zero_after_promo_error(error: Any) -> bool:
 
 def _mark_account_plus_pix(email: str, message: str = "User is already paid") -> dict[str, Any]:
     account_store.ensure_session_only_account(email)
+    now = time.time()
     updated = account_store.update_account(
         email,
         account_type=account_store.ACCOUNT_TYPE_PLUS,
         last_bind_provider="pix",
         last_bind_status="success",
-        last_bind_at=time.time(),
-        plus_bound_at=time.time(),
+        last_bind_at=now,
+        plus_bound_at=now,
         last_bind_message=message,
         last_bind_failure_stage="",
+        last_quota={"plan_type": account_store.ACCOUNT_TYPE_PLUS, "source": "pix_payment_success", "checked_at": now},
     )
     return updated or {}
 

@@ -208,7 +208,7 @@ def test_batch_account_preflights_proxy_before_upi_generation(monkeypatch):
     )
 
     assert result["ok"] is False
-    assert len(preflighted) == 5
+    assert len(preflighted) == 10
     assert "代理预检失败" in result["error"]["error"]
     assert "ruleset blocked" in result["error"]["error"]
     assert any("代理预检失败" in line for line in india_upi.JOBS[job_id]["logs"])
@@ -241,7 +241,7 @@ def test_batch_account_auth_preflight_blocks_upi_generation(monkeypatch):
     assert any("认证接口预检失败" in line for line in india_upi.JOBS[job_id]["logs"])
 
 
-def test_upi_proxy_preflight_has_separate_five_attempt_budget(monkeypatch):
+def test_upi_proxy_preflight_has_separate_ten_attempt_budget(monkeypatch):
     email = "preflight-ok@example.com"
     monkeypatch.setattr(india_upi, "_load_token_for_email", lambda value: "token-" + value)
     preflighted: list[str] = []
@@ -249,7 +249,7 @@ def test_upi_proxy_preflight_has_separate_five_attempt_budget(monkeypatch):
 
     def fake_preflight(proxy_url):
         preflighted.append(proxy_url)
-        return (len(preflighted) == 5, "HTTP 200" if len(preflighted) == 5 else "ProxyError: ruleset blocked")
+        return (len(preflighted) == 10, "HTTP 200" if len(preflighted) == 10 else "ProxyError: ruleset blocked")
 
     def fake_generate_upi_trial(cfg, log):
         captured["cfg"] = cfg
@@ -291,10 +291,10 @@ def test_upi_proxy_preflight_has_separate_five_attempt_budget(monkeypatch):
     result = india_upi._run_batch_account(job_id, req, {"email": email}, 1, 1, india_upi._parse_proxies(req.proxies))
 
     assert result["ok"] is True
-    assert len(preflighted) == 5
-    assert "proxy5.example" in captured["cfg"].direct_proxies[0]
+    assert len(preflighted) == 10
+    assert "proxy4.example" in captured["cfg"].direct_proxies[0]
     assert india_upi.build_upi_dynamic_proxy(captured["cfg"], 0)[0] == preflighted[-1]
-    assert not any("proxy6.example" in proxy for proxy in preflighted)
+    assert any("proxy6.example" in proxy for proxy in preflighted)
 
 
 def test_link_record_includes_five_minute_upi_expiry(monkeypatch):
@@ -892,3 +892,23 @@ def test_main_api_mounts_india_upi_router():
     assert "/api/india-upi/payment/jobs/{job_id}" in paths
     assert "/api/india-upi/jobs/{job_id}" in paths
     assert "/api/india-upi/links" in paths
+
+
+def test_mark_account_plus_upi_sets_dashboard_plus_snapshot(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(india_upi.account_store, "ensure_session_only_account", lambda email: captured.setdefault("ensured", email))
+
+    def fake_update_account(email, **payload):
+        captured["email"] = email
+        captured["payload"] = payload
+        return {"email": email, **payload}
+
+    monkeypatch.setattr(india_upi.account_store, "update_account", fake_update_account)
+
+    updated = india_upi._mark_account_plus_upi("paid@example.com", "paid ok")
+
+    assert captured["ensured"] == "paid@example.com"
+    assert updated["account_type"] == india_upi.account_store.ACCOUNT_TYPE_PLUS
+    assert updated["last_bind_provider"] == "upi"
+    assert updated["last_bind_status"] == "success"
+    assert updated["last_quota"]["plan_type"] == "plus"
