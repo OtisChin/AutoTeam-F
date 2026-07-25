@@ -53,6 +53,7 @@ def _extract_jwt_plan_type(access_token: str) -> str:
     return ""
 
 
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -464,8 +465,11 @@ def _mail_recipient_candidates(account: dict[str, Any] | None, fallback_email: s
 
 
 def _normalize_latest_mail(message: dict[str, Any]) -> dict[str, Any]:
-    html = str(_first_present(message, "html", "body_html", "content", default="") or "")
+    html = str(_first_present(message, "html", "body_html", default="") or "")
     text = str(_first_present(message, "text", "plain_text", "message", "body", "summary", default="") or "")
+    content = str(_first_present(message, "content", default="") or "")
+    if not html and content.lstrip().lower().startswith(("<!doctype", "<html", "<body", "<div", "<table")):
+        html = content
     return {
         "id": str(_first_present(message, "id", "message_id", "messageId", default="")).strip(),
         "subject": str(_first_present(message, "subject", "title", default="")).strip(),
@@ -473,7 +477,7 @@ def _normalize_latest_mail(message: dict[str, Any]) -> dict[str, Any]:
         "toEmail": str(_first_present(message, "toEmail", "accountEmail", "email", "recipient", default="")).strip(),
         "text": text,
         "html": html,
-        "content": html or text,
+        "content": html or content or text,
         "createTime": _first_present(message, "createTime", "createdAt", "received_at", "receivedAt", "date", "time", default=""),
         "createdAt": _first_present(message, "createdAt", "createTime", "received_at", "receivedAt", "date", "time", default=""),
         "raw": message.get("raw", {}),
@@ -550,10 +554,17 @@ def create_account_overview_router(
     router = APIRouter()
 
     @router.get("/api/accounts")
-    def get_accounts(include_session_stubs: bool = True):
-        """获取所有账号列表"""
+    def get_accounts(
+        include_session_stubs: bool = True,
+    ):
+        """获取所有账号列表；仪表盘分页、筛选和排序在前端完成。"""
         accounts = load_accounts_with_session_stubs(include_session_stubs=include_session_stubs)
-        return sanitize_accounts_batch(accounts, None)
+        quota_cache = {
+            account["email"]: account.get("last_quota")
+            for account in accounts
+            if isinstance(account.get("last_quota"), dict) and account.get("email")
+        }
+        return sanitize_accounts_batch(accounts, quota_cache)
 
     @router.get("/api/accounts/{email}/codex-auth")
     def get_codex_auth(email: str):

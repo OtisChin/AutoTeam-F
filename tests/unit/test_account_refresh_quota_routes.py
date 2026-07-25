@@ -170,3 +170,84 @@ def test_refresh_quota_raises_404_when_no_accounts(monkeypatch):
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "账号不存在"
+
+
+def test_refresh_quota_aligns_account_type_from_wham_plan_type(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {"email": "user@example.com", "auth_file": _auth_file(tmp_path, "tok"), "status": "active", "account_type": "free"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.check_codex_quota",
+        lambda *_args, **_kwargs: (
+            "ok",
+            {
+                "plan_type": "plus",
+                "primary_pct": 12,
+                "primary_resets_at": 1785000000,
+                "primary_window_seconds": 18000,
+                "weekly_pct": 98,
+                "weekly_resets_at": 1785551222,
+                "weekly_window_seconds": 604800,
+            },
+        ),
+    )
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert run_result["ok"][0]["quota"]["plan_type"] == "plus"
+    assert updated[0][0] == "user@example.com"
+    assert updated[0][1]["account_type"] == "plus"
+    assert updated[0][1]["last_quota"]["weekly_window_seconds"] == 604800
+
+
+def test_refresh_quota_accepts_auth_session_access_token_casing(tmp_path, monkeypatch):
+    started = []
+    quota_calls = []
+    updated = []
+    session_file = tmp_path / "auth_session" / "user@example.com.json"
+    session_file.write_text(json.dumps({"accessToken": "session-token", "account": {"id": "acct-session"}}), encoding="utf-8")
+    account = {"email": "user@example.com", "auth_file": str(session_file), "status": "active", "account_type": "free"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+
+    def fake_check(token, account_id=None, **_kwargs):
+        quota_calls.append((token, account_id))
+        return "ok", {"plan_type": "free", "primary_pct": 1}
+
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", fake_check)
+
+    routes = _routes(started, progress=[], main_email="owner@example.com")
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert quota_calls == [("session-token", "acct-session")]
+    assert run_result["skipped"] == []
+    assert updated[0][1]["last_quota"] == {"plan_type": "free", "primary_pct": 1}
+
+
+def test_refresh_quota_defaults_to_eight_concurrency_for_large_batches(tmp_path, monkeypatch):
+    started = []
+    rows = [
+        {"email": f"user{i}@example.com", "auth_file": _auth_file(tmp_path, f"tok{i}"), "status": "active"}
+        for i in range(12)
+    ]
+    monkeypatch.delenv("REFRESH_QUOTA_CONCURRENCY", raising=False)
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda loaded, email: next((account for account in loaded if account["email"] == email), None),
+    )
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda *_args, **_kwargs: ("ok", {"plan_type": "free"}))
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=[row["email"] for row in rows]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert run_result["concurrency"] == 8

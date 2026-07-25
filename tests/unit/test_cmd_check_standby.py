@@ -383,3 +383,86 @@ def test_probe_auth_error_only_for_401_403(monkeypatch):
     assert status == "ok"
     assert isinstance(info, dict)
     assert info["primary_pct"] == 10
+
+
+def test_check_codex_quota_classifies_windows_by_limit_seconds_and_keeps_plan(monkeypatch):
+    import requests
+
+    from autotoken import codex_auth
+
+    monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: None)
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {
+                        "limit_window_seconds": 604800,
+                        "used_percent": 98,
+                        "reset_at": 1785551222,
+                        "reset_after_seconds": 557535,
+                    },
+                    "secondary_window": {
+                        "limit_window_seconds": 18000,
+                        "used_percent": 12,
+                        "reset_at": 1785000000,
+                        "reset_after_seconds": 1200,
+                    },
+                    "limit_reached": False,
+                },
+            }
+
+    monkeypatch.setattr(requests, "get", lambda *_args, **_kwargs: FakeResp())
+
+    status, info = codex_auth.check_codex_quota("tok")
+
+    assert status == "ok"
+    assert info["plan_type"] == "plus"
+    assert info["primary_pct"] == 12
+    assert info["primary_resets_at"] == 1785000000
+    assert info["primary_window_seconds"] == 18000
+    assert info["weekly_pct"] == 98
+    assert info["weekly_resets_at"] == 1785551222
+    assert info["weekly_window_seconds"] == 604800
+
+
+def test_check_codex_quota_does_not_show_monthly_window_as_5h_or_weekly(monkeypatch):
+    import requests
+
+    from autotoken import codex_auth
+
+    monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: None)
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "plan_type": "free",
+                "rate_limit": {
+                    "primary_window": {
+                        "limit_window_seconds": 2592000,
+                        "used_percent": 40,
+                        "reset_at": 1787585552,
+                    },
+                    "secondary_window": None,
+                    "limit_reached": False,
+                },
+            }
+
+    monkeypatch.setattr(requests, "get", lambda *_args, **_kwargs: FakeResp())
+
+    status, info = codex_auth.check_codex_quota("tok")
+
+    assert status == "ok"
+    assert info["plan_type"] == "free"
+    assert info.get("primary_pct") is None
+    assert info.get("weekly_pct") is None
+    assert info["monthly_pct"] == 40
+    assert info["monthly_resets_at"] == 1787585552
+    assert info["monthly_window_seconds"] == 2592000

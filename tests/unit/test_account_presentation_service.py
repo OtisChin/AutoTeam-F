@@ -6,11 +6,12 @@ from autotoken.storage.auth_files import AUTH_JSON_FILE_MAX_BYTES
 def _normalize_email(value):
     return str(value or "").strip().lower()
 
-def test_quota_snapshot_status_uses_primary_and_weekly_percentages():
+def test_quota_snapshot_status_uses_classified_window_percentages():
     assert account_presentation.quota_snapshot_status(None) == ""
     assert account_presentation.quota_snapshot_status({"primary_pct": "100"}) == ""
     assert account_presentation.quota_snapshot_status({"primary_pct": 99, "weekly_pct": 20}) == "active"
     assert account_presentation.quota_snapshot_status({"primary_pct": 40, "weekly_pct": 100}) == "exhausted"
+    assert account_presentation.quota_snapshot_status({"monthly_pct": 100}) == "exhausted"
 
 def test_display_account_type_preserves_explicit_type_and_falls_back_from_status():
     assert account_presentation.display_account_type({"account_type": "Pro", "status": "active"}) == "pro"
@@ -195,3 +196,9 @@ def test_sanitize_account_with_indexes_uses_main_fallback_auth_file():
     assert sanitized["status"] == "exhausted"
     assert sanitized["codex_auth_file"] == "main-auth.json"
     assert sanitized["needs_codex_login"] is False
+
+
+def test_display_account_type_prefers_wham_plan_type_snapshot():
+    assert account_presentation.display_account_type({"account_type": "free", "last_quota": {"plan_type": "plus"}}) == "plus"
+    assert account_presentation.display_account_type({"account_type": "plus", "last_quota": {"plan_type": "free"}}) == "free"
+    assert account_presentation.display_account_type({"account_type": "free", "last_quota": {"plan_type": "business"}}) == "team"

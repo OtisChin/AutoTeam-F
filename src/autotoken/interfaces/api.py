@@ -7268,7 +7268,7 @@ def _load_auto_refresh_quota_config() -> None:
 
         saved = sqlite_store.get_json("config", "auto_refresh_quota", default={})
     except Exception as exc:
-        logger.warning("[刷新凭证] 读取自动刷新配置失败，使用默认关闭: %s", exc)
+        logger.warning("[刷新额度] 读取自动刷新配置失败，使用默认关闭: %s", exc)
         saved = {}
     try:
         interval = int((saved or {}).get("interval") or os.environ.get("AUTO_REFRESH_QUOTA_INTERVAL", "0") or 0)
@@ -7289,7 +7289,7 @@ def _save_auto_refresh_quota_config() -> None:
 
         sqlite_store.set_json("config", "auto_refresh_quota", _auto_refresh_quota_config.copy())
     except Exception as exc:
-        logger.warning("[刷新凭证] 保存自动刷新配置失败: %s", exc)
+        logger.warning("[刷新额度] 保存自动刷新配置失败: %s", exc)
 
 
 app.include_router(
@@ -7328,13 +7328,13 @@ def _auto_refresh_quota_loop():
         if not enabled or interval <= 0:
             _auto_refresh_quota_restart.clear()
             if not logged_disabled:
-                logger.info("[刷新凭证] 自动刷新已关闭，等待重新启用")
+                logger.info("[刷新额度] 自动刷新已关闭，等待重新启用")
                 logged_disabled = True
             _auto_refresh_quota_restart.wait(60)
             continue
 
         logged_disabled = False
-        logger.info("[刷新凭证] 等待 %d 分钟后执行下一轮自动刷新", max(1, interval // 60))
+        logger.info("[刷新额度] 等待 %d 分钟后执行下一轮自动刷新", max(1, interval // 60))
         _auto_refresh_quota_restart.clear()
         if _auto_refresh_quota_stop.wait(interval):
             break
@@ -7342,17 +7342,17 @@ def _auto_refresh_quota_loop():
             continue
 
         try:
-            logger.info("[刷新凭证] 开始自动提交刷新凭证任务")
+            logger.info("[刷新额度] 开始自动提交刷新额度任务")
             post_accounts_refresh_quota(AccountEmailBatchParams(emails=[]))
         except HTTPException as exc:
             if exc.status_code == 409:
-                logger.info("[刷新凭证] 已有刷新凭证任务在执行，本轮自动刷新跳过")
+                logger.info("[刷新额度] 已有刷新额度任务在执行，本轮自动刷新跳过")
             elif exc.status_code == 404:
-                logger.info("[刷新凭证] 没有可刷新凭证的账号，本轮跳过")
+                logger.info("[刷新额度] 没有可刷新额度的账号，本轮跳过")
             else:
-                logger.warning("[刷新凭证] 自动刷新提交失败: %s", exc.detail)
+                logger.warning("[刷新额度] 自动刷新提交失败: %s", exc.detail)
         except Exception as exc:
-            logger.warning("[刷新凭证] 自动刷新提交异常: %s", exc)
+            logger.warning("[刷新额度] 自动刷新提交异常: %s", exc)
 
 
 def _auto_check_loop():

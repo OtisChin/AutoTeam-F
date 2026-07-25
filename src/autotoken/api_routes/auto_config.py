@@ -72,7 +72,7 @@ def create_auto_config_router(
         save_auto_refresh_quota_config()
         auto_refresh_quota_restart.set()
         logger.info(
-            "[刷新凭证] 自动刷新配置已更新: enabled=%s interval=%ds",
+            "[刷新额度] 自动刷新配置已更新: enabled=%s interval=%ds",
             auto_refresh_quota_config["enabled"],
             auto_refresh_quota_config["interval"],
         )

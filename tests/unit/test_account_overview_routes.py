@@ -19,7 +19,6 @@ def _jwt(payload):
 
 def _app(*, loaded_accounts=None, sanitized_accounts=None, sanitize_account=None, is_main_account_email=None):
     loaded_accounts = loaded_accounts if loaded_accounts is not None else []
-    sanitized_accounts = sanitized_accounts if sanitized_accounts is not None else loaded_accounts
     captured = {}
     app = FastAPI()
 
@@ -27,10 +26,16 @@ def _app(*, loaded_accounts=None, sanitized_accounts=None, sanitize_account=None
         captured["include_session_stubs"] = kwargs.get("include_session_stubs")
         return loaded_accounts
 
+    def fake_sanitize_accounts_batch(_accounts, _quota_cache):
+        captured["sanitized_count"] = len(_accounts)
+        if sanitized_accounts is not None:
+            return sanitized_accounts
+        return list(_accounts)
+
     app.include_router(
         create_account_overview_router(
             load_accounts_with_session_stubs=fake_load_accounts_with_session_stubs,
-            sanitize_accounts_batch=lambda _accounts, _quota_cache: sanitized_accounts,
+            sanitize_accounts_batch=fake_sanitize_accounts_batch,
             sanitize_account=sanitize_account or (lambda account: {**account, "sanitized": True}),
             is_main_account_email=is_main_account_email or (lambda _email: False),
         )
@@ -55,6 +60,18 @@ def test_account_overview_list_delegates_loading_and_sanitization():
 
     assert result == [{"email": "safe@example.com"}]
     assert captured["include_session_stubs"] is False
+
+
+def test_account_overview_list_returns_full_pool_for_frontend_pagination():
+    loaded_accounts = [{"email": f"user-{index:03d}@example.com"} for index in range(250)]
+    app, _captured = _app(loaded_accounts=loaded_accounts)
+
+    result = _endpoint(app, "/api/accounts", "GET")()
+
+    assert [account["email"] for account in result] == [
+        f"user-{index:03d}@example.com" for index in range(250)
+    ]
+    assert _captured["sanitized_count"] == 250
 
 
 def test_account_overview_active_and_standby_routes_sanitize_accounts(monkeypatch):

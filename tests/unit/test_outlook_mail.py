@@ -52,6 +52,26 @@ def test_graph_token_refresh_uses_delegated_mail_read_scope(monkeypatch):
     assert kwargs["data"]["scope"] == "https://graph.microsoft.com/Mail.Read offline_access"
 
 
+def test_graph_message_preserves_original_html_body():
+    message = OutlookMailProvider._parse_graph_message(
+        {
+            "id": "msg-1",
+            "subject": "HTML mail",
+            "from": {"emailAddress": {"address": "sender@example.com"}},
+            "toRecipients": [{"emailAddress": {"address": "user@outlook.com"}}],
+            "receivedDateTime": "2026-07-25T10:30:00Z",
+            "bodyPreview": "Preview text",
+            "body": {
+                "contentType": "html",
+                "content": "<html><body><table><tr><td>Original layout</td></tr></table></body></html>",
+            },
+        }
+    )
+
+    assert message.text == "Preview text"
+    assert message.html == "<html><body><table><tr><td>Original layout</td></tr></table></body></html>"
+
+
 def test_imap_oauth_refresh_uses_common_endpoint_and_office365_host(monkeypatch):
     client = OutlookMailProvider()
     account = OutlookMailProvider._parse_account_line(

@@ -67,6 +67,9 @@ def create_account_refresh_quota_router(
             from autotoken.auth.codex_auth import check_codex_quota, quota_result_quota_info, quota_result_resets_at
             from autotoken.storage.accounts import (
                 ACCOUNT_TYPE_FREE,
+                ACCOUNT_TYPE_PLUS,
+                ACCOUNT_TYPE_PRO,
+                ACCOUNT_TYPE_TEAM,
                 STATUS_ACTIVE,
                 STATUS_EXHAUSTED,
                 STATUS_FAIL,
@@ -92,6 +95,38 @@ def create_account_refresh_quota_router(
                     value = default
                 return max(minimum, min(maximum, value))
 
+            def _account_type_from_quota_info(info: dict | None) -> str:
+                if not isinstance(info, dict):
+                    return ""
+                plan_type = str(info.get("plan_type") or "").strip().lower()
+                if plan_type in {ACCOUNT_TYPE_FREE, ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM}:
+                    return plan_type
+                if plan_type in {"business", "enterprise", "edu"}:
+                    return ACCOUNT_TYPE_TEAM
+                return ""
+
+            def _apply_plan_type(update_payload: dict, info: dict | None) -> None:
+                next_account_type = _account_type_from_quota_info(info)
+                if next_account_type:
+                    update_payload["account_type"] = next_account_type
+
+            def _access_token_from_auth_data(auth_data: dict) -> str:
+                return str(
+                    auth_data.get("access_token")
+                    or auth_data.get("accessToken")
+                    or auth_data.get("chatgpt_access_token")
+                    or ""
+                ).strip()
+
+            def _account_id_from_auth_data(auth_data: dict) -> str:
+                account = auth_data.get("account") if isinstance(auth_data.get("account"), dict) else {}
+                return str(
+                    account_id_from_auth_data(auth_data)
+                    or auth_data.get("accountId")
+                    or account.get("id")
+                    or ""
+                ).strip()
+
             max_workers = min(total, _int_env("REFRESH_QUOTA_CONCURRENCY", 8, minimum=1, maximum=32))
             retry_count = _int_env("REFRESH_QUOTA_RETRIES", 1, minimum=0, maximum=5)
             account_timeout = _int_env("REFRESH_QUOTA_ACCOUNT_TIMEOUT", 25, minimum=10, maximum=60)
@@ -109,7 +144,7 @@ def create_account_refresh_quota_router(
                     "concurrency": max_workers,
                     "retry_count": retry_count,
                     "account_timeout": account_timeout,
-                    "message": f"开始并发刷新凭证: {total} 个账号，并发 {max_workers}，超时 {account_timeout}s，失败重试 {retry_count} 次",
+                    "message": f"开始并发刷新额度: {total} 个账号，并发 {max_workers}，超时 {account_timeout}s，失败重试 {retry_count} 次",
                 },
             )
 
@@ -171,7 +206,7 @@ def create_account_refresh_quota_router(
                         "message": f"跳过 {email}: 认证文件无法读取",
                     }
 
-                access_token = str(auth_data.get("access_token") or "").strip()
+                access_token = _access_token_from_auth_data(auth_data)
                 if not access_token:
                     return {
                         "kind": "skipped",
@@ -189,7 +224,7 @@ def create_account_refresh_quota_router(
                     attempts = attempt + 1
                     status, info = check_codex_quota(
                         access_token,
-                        account_id=account_id_from_auth_data(auth_data) or None,
+                        account_id=_account_id_from_auth_data(auth_data) or None,
                         timeout=account_timeout,
                     )
                     if status != "network_error" or attempt >= retry_count:
@@ -203,21 +238,22 @@ def create_account_refresh_quota_router(
                             "total": total,
                             "attempt": attempts,
                             "retry_count": retry_count,
-                            "message": f"刷新凭证临时失败，准备重试: {email} ({attempts}/{retry_count + 1})",
+                            "message": f"刷新额度临时失败，准备重试: {email} ({attempts}/{retry_count + 1})",
                             "level": "warn",
                         },
                     )
 
                 current_status = str(acc.get("status") or "").strip().lower()
                 account_type = str(acc.get("account_type") or "").strip().lower()
-                is_free_personal_account = account_type == ACCOUNT_TYPE_FREE or current_status == STATUS_PERSONAL
                 recoverable_free_statuses = {"", STATUS_ACTIVE, STATUS_EXHAUSTED, STATUS_PERSONAL, "pending", "session_only"}
 
                 if status == "ok":
                     update_payload = {"last_quota": info, "last_quota_check_at": now_ts}
-                    if account_type == ACCOUNT_TYPE_FREE and current_status in recoverable_free_statuses:
+                    _apply_plan_type(update_payload, info)
+                    effective_account_type = update_payload.get("account_type") or account_type
+                    if effective_account_type == ACCOUNT_TYPE_FREE and current_status in recoverable_free_statuses:
                         update_payload["status"] = STATUS_PERSONAL
-                    elif (acc.get("status") or "") not in {STATUS_PERSONAL, STATUS_PLUS, STATUS_STANDBY}:
+                    elif (acc.get("status") or "") not in {STATUS_PLUS, STATUS_STANDBY}:
                         update_payload["status"] = STATUS_ACTIVE
                     return {
                         "kind": "ok",
@@ -238,8 +274,11 @@ def create_account_refresh_quota_router(
                     }
                     if quota_info:
                         update_payload["last_quota"] = quota_info
+                    _apply_plan_type(update_payload, quota_info)
+                    effective_account_type = update_payload.get("account_type") or account_type
+                    is_free_personal_account = effective_account_type == ACCOUNT_TYPE_FREE
                     if is_free_personal_account:
-                        if account_type == ACCOUNT_TYPE_FREE and current_status in recoverable_free_statuses:
+                        if effective_account_type == ACCOUNT_TYPE_FREE and current_status in recoverable_free_statuses:
                             update_payload["status"] = STATUS_PERSONAL
                     else:
                         update_payload["status"] = STATUS_EXHAUSTED
@@ -305,9 +344,9 @@ def create_account_refresh_quota_router(
                             "reason": "exception",
                             "error": str(exc),
                             "attempts": 1,
-                            "message": f"刷新凭证异常，未改状态: {email}: {exc}",
+                            "message": f"刷新额度异常，未改状态: {email}: {exc}",
                         }
-                        logger.exception("[刷新凭证] worker 异常: email=%s", email)
+                        logger.exception("[刷新额度] worker 异常: email=%s", email)
 
                     results_by_index[index] = (item, email)
 
@@ -361,7 +400,7 @@ def create_account_refresh_quota_router(
                         "skipped": len(skipped),
                         "network_error": len(network_error),
                         "attempts": item.get("attempts", 1),
-                        "message": item.get("message") or f"刷新凭证完成: {email}",
+                        "message": item.get("message") or f"刷新额度完成: {email}",
                         "level": level,
                     },
                 )

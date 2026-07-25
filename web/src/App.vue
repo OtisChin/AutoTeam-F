@@ -175,6 +175,7 @@ const CURRENT_PAGE_KEY = 'autotoken_current_page'
 const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'paypal', 'ideal', 'brazilPix', 'indiaUpi', 'kakaoPay', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
+const ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS = 10000
 const IDLE_POLLING_ENABLED = false
 const TASK_PANEL_POSITION_KEY = 'autotoken_task_panel_position'
 const savedPage = localStorage.getItem(CURRENT_PAGE_KEY)
@@ -185,7 +186,6 @@ const codexStatus = ref(null)
 const manualAccountStatus = ref(null)
 const tasks = ref([])
 const loading = ref(false)
-const statusRefreshing = ref(false)
 const runningTask = ref(null)
 const taskPanelRef = ref(null)
 const taskPanelPosition = ref(loadTaskPanelPosition())
@@ -307,6 +307,8 @@ function taskNoticeSubtitle(task) {
 
 let pollTimer = null
 let pollIntervalMs = null
+let lastDashboardStatusRefreshAt = 0
+let dashboardStatusRequestId = 0
 
 function taskCommandLabel(command) {
   const value = String(command || '')
@@ -319,7 +321,7 @@ function taskCommandLabel(command) {
     'bind-card': '绑卡任务',
     'gopay-bind': 'GoPay 绑定',
     'login-batch': '批量补登录',
-    'refresh-quota': '刷新凭证',
+    'refresh-quota': '刷新额度',
     check: '额度检测',
     rotate: '账号轮换',
     replace: '替换账号',
@@ -406,8 +408,8 @@ function withTimeout(promise, ms, label) {
   })
 }
 
-function buildDashboardStatusFromAccounts(accounts) {
-  const rows = (Array.isArray(accounts) ? accounts : []).map(acc => {
+function buildDashboardStatusFromAccounts(payload) {
+  const rows = (Array.isArray(payload) ? payload : []).map(acc => {
     const status = String(acc?.status || '').trim().toLowerCase()
     const normalized = ['personal', 'plus'].includes(status) ? 'active' : status
     const lastBindProvider = String(acc?.last_bind_provider || '').trim().toLowerCase()
@@ -418,7 +420,7 @@ function buildDashboardStatusFromAccounts(accounts) {
       last_bind_provider: lastBindProvider,
     }
   })
-  const summary = {
+  const computedSummary = {
     active: 0,
     standby: 0,
     exhausted: 0,
@@ -434,17 +436,17 @@ function buildDashboardStatusFromAccounts(accounts) {
   }
   for (const acc of rows) {
     const statusKey = String(acc?.status || 'pending').toLowerCase()
-    if (Object.prototype.hasOwnProperty.call(summary, statusKey)) {
-      summary[statusKey] += 1
+    if (Object.prototype.hasOwnProperty.call(computedSummary, statusKey)) {
+      computedSummary[statusKey] += 1
     }
     const typeKey = String(acc?.account_type || acc?.seat_type || 'free').toLowerCase()
     if (['free', 'team', 'plus', 'pro'].includes(typeKey)) {
-      summary[typeKey] += 1
+      computedSummary[typeKey] += 1
     }
   }
   return {
     accounts: rows,
-    summary,
+    summary: computedSummary,
     quota_cache: {},
     fallback: true,
   }
@@ -455,20 +457,30 @@ async function loadDashboardStatus() {
   return buildDashboardStatusFromAccounts(accounts)
 }
 
-async function refreshFullStatusInBackground() {
-  if (statusRefreshing.value) return
-  statusRefreshing.value = true
+async function refreshAuxiliaryState() {
   try {
-    const fullStatus = await withTimeout(api.getStatus(), 30000, 'status')
-    status.value = fullStatus
+    const [t, admin, codex, manualAccount] = await Promise.all([
+      loadOrFallback(api.getTasks(), tasks.value || [], 'tasks'),
+      loadOrFallback(api.getAdminStatus(), adminStatus.value || null, 'admin-status'),
+      loadOrFallback(api.getMainCodexStatus(), codexStatus.value || null, 'main-codex-status'),
+      loadOrFallback(api.getManualAccountStatus(), manualAccountStatus.value || null, 'manual-account-status'),
+    ])
+    tasks.value = t
+    adminStatus.value = admin
+    codexStatus.value = codex
+    manualAccountStatus.value = manualAccount
+    runningTask.value = t.find(task =>
+      (task.status === 'running' || task.status === 'pending') && task.command === 'refresh-quota'
+    ) || t.find(task =>
+      (task.status === 'running' || task.status === 'pending') && task.exclusive !== false
+    ) || null
+    syncPollingWithTasks()
   } catch (e) {
     if (e.status === 401) {
       authenticated.value = false
-      return
+    } else {
+      console.warn('辅助状态刷新失败:', e)
     }
-    console.warn('完整状态刷新失败，保留账号列表数据:', e)
-  } finally {
-    statusRefreshing.value = false
   }
 }
 
@@ -537,32 +549,13 @@ function navigateTo(page) {
 
 async function refresh() {
   loading.value = true
-  const tasksPromise = loadOrFallback(api.getTasks(), tasks.value || [], 'tasks')
-  const adminPromise = loadOrFallback(api.getAdminStatus(), adminStatus.value || null, 'admin-status')
-  const codexPromise = loadOrFallback(api.getMainCodexStatus(), codexStatus.value || null, 'main-codex-status')
-  const manualAccountPromise = loadOrFallback(api.getManualAccountStatus(), manualAccountStatus.value || null, 'manual-account-status')
-  const auxiliaryPromise = Promise.all([tasksPromise, adminPromise, codexPromise, manualAccountPromise])
-    .then(([t, admin, codex, manualAccount]) => {
-      tasks.value = t
-      adminStatus.value = admin
-      codexStatus.value = codex
-      manualAccountStatus.value = manualAccount
-      runningTask.value = t.find(task =>
-        (task.status === 'running' || task.status === 'pending') && task.command === 'refresh-quota'
-      ) || t.find(task =>
-        (task.status === 'running' || task.status === 'pending') && task.exclusive !== false
-      ) || null
-      syncPollingWithTasks()
-    })
-    .catch(e => {
-      if (e.status === 401) {
-        authenticated.value = false
-      } else {
-        console.warn('辅助状态刷新失败:', e)
-      }
-    })
+  const requestId = ++dashboardStatusRequestId
+  const auxiliaryPromise = refreshAuxiliaryState()
   try {
-    status.value = await loadDashboardStatus()
+    const nextStatus = await loadDashboardStatus()
+    if (requestId !== dashboardStatusRequestId) return
+    status.value = nextStatus
+    lastDashboardStatusRefreshAt = Date.now()
   } catch (e) {
     if (e.status === 401) {
       authenticated.value = false
@@ -574,8 +567,30 @@ async function refresh() {
   }
 
   void auxiliaryPromise
+}
 
-  refreshFullStatusInBackground()
+async function refreshTaskStateOnly() {
+  const hadBusyTasks = busyTasks.value.length > 0
+  await refreshAuxiliaryState()
+  if (hadBusyTasks && !busyTasks.value.length) {
+    await refresh()
+    return
+  }
+  if (busyTasks.value.length && Date.now() - lastDashboardStatusRefreshAt >= ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS) {
+    const requestId = ++dashboardStatusRequestId
+    try {
+      const nextStatus = await loadDashboardStatus()
+      if (requestId !== dashboardStatusRequestId) return
+      status.value = nextStatus
+      lastDashboardStatusRefreshAt = Date.now()
+    } catch (e) {
+      if (e.status === 401) {
+        authenticated.value = false
+      } else {
+        console.warn('账号池刷新失败，保留旧值:', e)
+      }
+    }
+  }
 }
 
 function onTaskStarted() {
@@ -598,7 +613,7 @@ function startPolling(interval = IDLE_POLL_INTERVAL_MS) {
   }
   pollIntervalMs = interval
   pollTimer = setInterval(async () => {
-    await refresh()
+    await refreshTaskStateOnly()
   }, interval)
 }
 

@@ -57,8 +57,9 @@ export const api = {
   getMainCodexStatus: () => request('GET', '/main-codex/status'),
   getManualAccountStatus: () => request('GET', '/manual-account/status'),
   getAccounts: (options = {}) => {
-    const includeSessionStubs = Boolean(options.includeSessionStubs || options.include_session_stubs)
-    return request('GET', `/accounts${includeSessionStubs ? '?include_session_stubs=true' : ''}`)
+    const includeSessionStubs = options.includeSessionStubs ?? options.include_session_stubs
+    if (includeSessionStubs === undefined) return request('GET', '/accounts')
+    return request('GET', `/accounts?include_session_stubs=${includeSessionStubs ? 'true' : 'false'}`)
   },
   getActiveAccounts: () => request('GET', '/accounts/active'),
   getStandbyAccounts: () => request('GET', '/accounts/standby'),

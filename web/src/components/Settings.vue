@@ -965,9 +965,9 @@
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
-          <h2 class="text-lg font-semibold text-white">自动刷新凭证</h2>
+          <h2 class="text-lg font-semibold text-white">自动刷新额度</h2>
           <p class="text-sm text-gray-400 mt-1">
-            按固定间隔后台刷新账号额度快照，使用“刷新凭证”的并发逻辑；已有刷新任务运行时会自动跳过本轮。
+            按固定间隔后台刷新账号额度快照，使用“刷新额度”的并发逻辑；已有刷新任务运行时会自动跳过本轮。
           </p>
         </div>
         <span v-if="quotaRefreshSaved" class="text-xs text-green-400 transition">已保存</span>
@@ -976,7 +976,7 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <label class="inline-flex items-center gap-2 text-sm text-gray-300">
           <input v-model="quotaRefreshForm.enabled" type="checkbox" class="accent-blue-500" />
-          启用自动刷新凭证
+          启用自动刷新额度
         </label>
         <div>
           <label class="block text-sm text-gray-400 mb-1">刷新间隔</label>
@@ -995,7 +995,7 @@
 
       <div class="mt-3 flex items-center justify-between gap-3">
         <p class="text-xs text-gray-500">
-          {{ quotaRefreshForm.enabled ? `每 ${quotaRefreshForm.interval || 1} 分钟自动执行一次刷新凭证任务` : '当前关闭，不会自动刷新凭证' }}
+          {{ quotaRefreshForm.enabled ? `每 ${quotaRefreshForm.interval || 1} 分钟自动执行一次刷新额度任务` : '当前关闭，不会自动刷新额度' }}
         </p>
         <button
           @click="saveAutoRefreshQuota"
@@ -1206,7 +1206,7 @@ onMounted(async () => {
       interval: Math.max(1, Math.round((cfg.interval || 1800) / 60)),
     }
   } catch (e) {
-    console.error('加载自动刷新凭证配置失败:', e)
+    console.error('加载自动刷新额度配置失败:', e)
   }
   loadRegisterDomains()
   loadAccountHubConfig()
@@ -1346,7 +1346,7 @@ async function saveAutoRefreshQuota() {
     quotaRefreshSaved.value = true
     setTimeout(() => { quotaRefreshSaved.value = false }, 3000)
   } catch (e) {
-    setMessage(e.message || '保存自动刷新凭证配置失败', 'error')
+    setMessage(e.message || '保存自动刷新额度配置失败', 'error')
   } finally {
     quotaRefreshSaving.value = false
   }

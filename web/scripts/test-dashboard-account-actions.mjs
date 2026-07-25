@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 
 const api = readFileSync(new URL('../src/api.js', import.meta.url), 'utf8')
 const dashboard = readFileSync(new URL('../src/components/Dashboard.vue', import.meta.url), 'utf8')
+const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 
 assert.match(api, /getAccountAccessToken:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/access-token`\)/, 'API exposes per-account access token route')
 assert.match(api, /getAccountSubscription:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/subscription`\)/, 'API exposes per-account subscription route')
@@ -17,7 +18,7 @@ assert.match(dashboard, /getAccountLatestMail\(email\)/, '获取邮件 action ca
 assert.match(dashboard, /toggleAccountDisplayOrder/, 'operation header has account order toggle action')
 assert.match(dashboard, /accountDisplayOrder/, 'dashboard tracks account display order')
 assert.match(dashboard, /↑↓/, 'operation header shows requested ↑↓ icon')
-assert.match(dashboard, /accountDisplayOrder\.value === 'desc'\s*\?\s*items\.reverse\(\)/, 'filtered accounts can be reversed')
+assert.doesNotMatch(dashboard, /accounts-query-change/, 'account filters and order stay in the frontend')
 assert.ok(
   dashboard.indexOf("{{ actionEmail === acc.email && actionType === 'subscription' ? '查询中...' : '订阅查询' }}")
     < dashboard.indexOf('缺认证'),
@@ -44,3 +45,38 @@ assert.doesNotMatch(dashboard, /if \(subscriptionDialog\.value\.loading\) return
 assert.doesNotMatch(dashboard, /placeholder="GoPay 任务ID"/, 'GoPay 任务ID查询入口已移除')
 assert.doesNotMatch(dashboard, /bindTaskFilter/, 'GoPay 任务ID筛选状态已移除')
 assert.doesNotMatch(dashboard, /gopay_task_id/, '导出筛选元数据不再包含 GoPay 任务ID查询条件')
+assert.doesNotMatch(dashboard, /注册失败明细/, '仪表盘不再显示注册失败明细')
+assert.doesNotMatch(dashboard, /getRegisterFailures\(/, '仪表盘不再请求注册失败明细')
+
+assert.match(dashboard, /quotaWindow\(acc, 'primary'\)/, '5h quota display uses classified quota window')
+assert.match(dashboard, /quotaWindow\(acc, 'weekly'\)/, 'weekly quota display uses classified quota window')
+assert.match(dashboard, /limit_window_seconds|primary_window_seconds/, 'dashboard checks quota window seconds before rendering 5h/week columns')
+assert.doesNotMatch(dashboard, /@click="exportCodexAuth\(acc\.email\)"/, 'per-account row 导出 button has been removed')
+
+assert.match(app, /refreshTaskStateOnly/, 'App has lightweight task-only polling while background tasks run')
+assert.match(app, /await refreshTaskStateOnly\(\)/, 'active polling avoids reloading dashboard accounts every tick')
+assert.match(app, /hadBusyTasks && !busyTasks\.value\.length[\s\S]*await refresh\(\)/, 'App refreshes dashboard accounts once after active tasks finish')
+
+assert.match(app, /ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS\s*=\s*10000/, 'App refreshes dashboard accounts every 10 seconds during active tasks')
+assert.match(app, /Date\.now\(\) - lastDashboardStatusRefreshAt >= ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS/, 'App throttles dashboard account refreshes while active tasks run')
+
+assert.match(dashboard, /DEFAULT_ACCOUNT_PAGE_SIZE\s*=\s*100/, 'dashboard account pool default page size is 100')
+assert.match(dashboard, /ACCOUNT_PAGE_SIZE_OPTIONS/, 'dashboard exposes selectable account page sizes')
+assert.match(dashboard, /v-model\.number="accountPageSize"/, 'dashboard renders a page size selector')
+assert.doesNotMatch(dashboard, /page_size: accountPageSize\.value/, 'dashboard no longer sends page size changes to backend')
+assert.doesNotMatch(dashboard, /accountQueryEmitTimer/, 'dashboard no longer reloads accounts on filter changes')
+assert.match(dashboard, /paginatedAccounts/, 'dashboard renders a paginated account list')
+assert.match(dashboard, /v-for="\(acc, i\) in paginatedAccounts"/, 'account table only renders the current page')
+assert.match(dashboard, /accountPageStartIndex \+ i \+ 1/, 'row index accounts for current page offset')
+assert.match(dashboard, /账号分页/, 'dashboard shows account pagination controls')
+assert.match(dashboard, /setAccountPage\(accountCurrentPage - 1\)/, 'dashboard has previous page control')
+assert.match(dashboard, /setAccountPage\(accountCurrentPage \+ 1\)/, 'dashboard has next page control')
+assert.doesNotMatch(api, /URLSearchParams/, 'getAccounts no longer builds backend pagination query parameters')
+assert.doesNotMatch(api, /addParam\('page'/, 'getAccounts no longer sends requested page')
+assert.doesNotMatch(api, /addParam\('page_size'/, 'getAccounts no longer sends requested page size')
+assert.doesNotMatch(api, /wantsPagedPayload/, 'getAccounts no longer handles backend pagination payloads')
+assert.doesNotMatch(app, /dashboardAccountQuery/, 'App no longer stores dashboard backend account query')
+assert.doesNotMatch(app, /isPagedPayload|filter_options/, 'App no longer handles backend pagination metadata')
+assert.doesNotMatch(dashboard, /accountFilterOptions|filter_options/, 'Dashboard no longer uses backend filter metadata')
+assert.match(app, /api\.getAccounts\(\)/, 'App loads the full account pool once for frontend pagination')
+assert.doesNotMatch(app, /refreshFullStatusInBackground\(\)\s*\n}/, 'Dashboard refresh no longer overwrites paged accounts with full status payload')

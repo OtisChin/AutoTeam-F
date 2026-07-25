@@ -11,7 +11,7 @@ def quota_snapshot_status(quota_info: dict | None) -> str:
         return ""
 
     values = []
-    for key in ("primary_pct", "weekly_pct"):
+    for key in ("primary_pct", "weekly_pct", "monthly_pct"):
         value = quota_info.get(key)
         if isinstance(value, (int, float)):
             values.append(value)
@@ -135,6 +135,12 @@ def display_account_status(
 
 
 def display_account_type(acc: dict) -> str:
+    last_quota = acc.get("last_quota") if isinstance(acc.get("last_quota"), dict) else {}
+    quota_plan = str((last_quota or {}).get("plan_type") or "").strip().lower()
+    if quota_plan in {"free", "plus", "pro", "team"}:
+        return quota_plan
+    if quota_plan in {"business", "enterprise", "edu"}:
+        return "team"
     account_type = (acc.get("account_type") or "").strip().lower()
     if account_type in {"free", "team", "plus", "pro"}:
         return account_type

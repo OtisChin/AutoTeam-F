@@ -677,7 +677,7 @@ class OutlookMailProvider(MailProvider):
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
-                    "Prefer": "outlook.body-content-type='text'",
+                    "Prefer": "outlook.body-content-type='html'",
                 },
                 proxies=proxies,
                 timeout=30,
@@ -821,14 +821,20 @@ class OutlookMailProvider(MailProvider):
             received_at = int(datetime.fromisoformat(str(item.get("receivedDateTime") or "").replace("Z", "+00:00")).timestamp())
         except Exception:
             pass
-        body = (item.get("body") or {}).get("content") or ""
+        body_obj = item.get("body") or {}
+        body = body_obj.get("content") or ""
+        content_type = str(body_obj.get("contentType") or "").strip().lower()
+        html = str(body) if content_type == "html" else ""
+        text = str(item.get("bodyPreview") or "")
+        if not text:
+            text = html_to_visible_text(html) if html else str(body)
         return OutlookMessage(
             id=str(item.get("id") or ""),
             subject=str(item.get("subject") or ""),
             sender=str(sender),
             recipients=[r for r in recipients if r],
-            text=str(item.get("bodyPreview") or body),
-            html="",
+            text=text,
+            html=html,
             received_at=received_at,
             raw=item,
         )

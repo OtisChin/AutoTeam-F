@@ -6367,12 +6367,15 @@ def get_quota_exhausted_info(quota_info, *, limit_reached=False):
 
     primary_pct = int(quota_info.get("primary_pct", 0) or 0)
     weekly_pct = int(quota_info.get("weekly_pct", 0) or 0)
+    monthly_pct = int(quota_info.get("monthly_pct", 0) or 0)
     primary_reset = int(quota_info.get("primary_resets_at", 0) or 0)
     weekly_reset = int(quota_info.get("weekly_resets_at", 0) or 0)
+    monthly_reset = int(quota_info.get("monthly_resets_at", 0) or 0)
 
     primary_exhausted = primary_pct >= 100
     weekly_exhausted = weekly_pct >= 100
-    if not (limit_reached or primary_exhausted or weekly_exhausted):
+    monthly_exhausted = monthly_pct >= 100
+    if not (limit_reached or primary_exhausted or weekly_exhausted or monthly_exhausted):
         return None
 
     reset_candidates = []
@@ -6380,12 +6383,16 @@ def get_quota_exhausted_info(quota_info, *, limit_reached=False):
         reset_candidates.append(primary_reset)
     if weekly_exhausted and weekly_reset:
         reset_candidates.append(weekly_reset)
+    if monthly_exhausted and monthly_reset:
+        reset_candidates.append(monthly_reset)
 
     if not reset_candidates:
         if primary_reset:
             reset_candidates.append(primary_reset)
         if weekly_reset:
             reset_candidates.append(weekly_reset)
+        if monthly_reset:
+            reset_candidates.append(monthly_reset)
 
     resets_at = max(reset_candidates) if reset_candidates else int(time.time() + 18000)
 
@@ -6395,6 +6402,8 @@ def get_quota_exhausted_info(quota_info, *, limit_reached=False):
         window = "weekly"
     elif primary_exhausted:
         window = "primary"
+    elif monthly_exhausted:
+        window = "monthly"
     else:
         window = "limit"
 
@@ -6404,6 +6413,78 @@ def get_quota_exhausted_info(quota_info, *, limit_reached=False):
         "quota_info": quota_info,
         "limit_reached": bool(limit_reached),
     }
+
+
+def _int_or_none(value):
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _quota_reset_at(window: dict, *, checked_at: int) -> int | None:
+    reset_at = _int_or_none((window or {}).get("reset_at"))
+    if reset_at:
+        return reset_at
+    reset_after = _int_or_none((window or {}).get("reset_after_seconds"))
+    if reset_after is not None:
+        return checked_at + max(0, reset_after)
+    return None
+
+
+def _quota_window_label(window: dict, fallback: str) -> str:
+    seconds = _int_or_none((window or {}).get("limit_window_seconds"))
+    if seconds == 18000:
+        return "primary"
+    if seconds == 604800:
+        return "weekly"
+    if seconds == 2592000:
+        return "monthly"
+    return fallback
+
+
+def _normalize_wham_usage_quota(data: dict, *, checked_at: int | None = None) -> dict:
+    checked_at = int(checked_at or time.time())
+    payload = data if isinstance(data, dict) else {}
+    rate_limit = payload.get("rate_limit") or {}
+    if not isinstance(rate_limit, dict):
+        rate_limit = {}
+
+    quota_info = {
+        "plan_type": str(payload.get("plan_type") or "").strip().lower(),
+        "allowed": bool(rate_limit.get("allowed")) if "allowed" in rate_limit else None,
+        "limit_reached": bool(rate_limit.get("limit_reached")),
+        "rate_limit_reached_type": payload.get("rate_limit_reached_type"),
+        "checked_at": checked_at,
+        "windows": {},
+    }
+
+    for source_key, fallback_label in (("primary_window", "primary"), ("secondary_window", "weekly")):
+        window = rate_limit.get(source_key) or {}
+        if not isinstance(window, dict) or not window:
+            continue
+        label = _quota_window_label(window, fallback_label)
+        used_percent = window.get("used_percent")
+        reset_at = _quota_reset_at(window, checked_at=checked_at)
+        limit_seconds = _int_or_none(window.get("limit_window_seconds"))
+        reset_after = _int_or_none(window.get("reset_after_seconds"))
+        normalized_window = {
+            "source": source_key,
+            "used_percent": used_percent,
+            "reset_at": reset_at,
+            "reset_after_seconds": reset_after,
+            "limit_window_seconds": limit_seconds,
+        }
+        quota_info["windows"][label] = normalized_window
+        if label in {"primary", "weekly", "monthly"}:
+            quota_info[f"{label}_pct"] = used_percent
+            quota_info[f"{label}_resets_at"] = reset_at
+            quota_info[f"{label}_window_seconds"] = limit_seconds
+            quota_info[f"{label}_reset_after_seconds"] = reset_after
+
+    return quota_info
 
 
 def check_codex_quota(access_token, account_id=None, *, timeout=30):
@@ -6417,7 +6498,7 @@ def check_codex_quota(access_token, account_id=None, *, timeout=30):
 
     auth_error 与 network_error 必须严格区分:auth_error 会触发"标记 AUTH_INVALID/重登"等
     破坏性流程,网络抖动绝不能落入该分支(否则一次网络故障可能批量误删账号)。
-    quota_info = {"primary_pct": int, "primary_resets_at": int, "weekly_pct": int, "weekly_resets_at": int}
+    quota_info 按 limit_window_seconds 归类：primary=5h(18000s)、weekly=7天(604800s)、monthly=30天(2592000s)，并保留 plan_type
     """
     import requests
 
@@ -6474,15 +6555,7 @@ def check_codex_quota(access_token, account_id=None, *, timeout=30):
         return "network_error", None
 
     rate_limit = data.get("rate_limit") or {}
-    primary = rate_limit.get("primary_window") or {}
-    secondary = rate_limit.get("secondary_window") or {}
-
-    quota_info = {
-        "primary_pct": primary.get("used_percent", 0),
-        "primary_resets_at": primary.get("reset_at", 0),
-        "weekly_pct": secondary.get("used_percent", 0),
-        "weekly_resets_at": secondary.get("reset_at", 0),
-    }
+    quota_info = _normalize_wham_usage_quota(data)
 
     exhausted_info = get_quota_exhausted_info(quota_info, limit_reached=bool(rate_limit.get("limit_reached")))
     if exhausted_info:

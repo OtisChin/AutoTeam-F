@@ -407,7 +407,10 @@
           </button>
         </div>
         <div class="text-xs text-gray-500">
-          显示 <span class="text-gray-300 font-mono">{{ filteredAccounts.length }}</span> / <span class="font-mono">{{ allAccounts.length }}</span>
+          显示
+          <span class="text-gray-300 font-mono">{{ accountPageStartDisplay }}-{{ accountPageEndDisplay }}</span>
+          / <span class="text-gray-300 font-mono">{{ accountFilteredTotal }}</span>
+          / <span class="font-mono">{{ accountPoolTotal }}</span>
           <span v-if="selectedEmails.length">，已选 <span class="text-blue-400 font-mono">{{ selectedEmails.length }}</span></span>
         </div>
       </div>
@@ -462,7 +465,7 @@
             <tr v-if="!filteredAccounts.length">
               <td class="px-4 py-8 text-center text-gray-500" colspan="14">没有匹配的账号</td>
             </tr>
-            <tr v-for="(acc, i) in filteredAccounts" :key="acc.email"
+            <tr v-for="(acc, i) in paginatedAccounts" :key="acc.email"
               class="border-b border-gray-800/50 hover:bg-gray-800/30 transition"
               :class="isSelected(acc.email) ? 'bg-rose-500/5' : ''">
               <td class="px-3 py-3">
@@ -473,7 +476,7 @@
                   @change="toggleSelect(acc.email)"
                   class="accent-rose-500 cursor-pointer" />
               </td>
-              <td class="px-4 py-3 text-gray-500">{{ i + 1 }}</td>
+              <td class="px-4 py-3 text-gray-500">{{ accountPageStartIndex + i + 1 }}</td>
               <td class="px-4 py-3">
                 <div class="font-mono text-xs text-gray-200">{{ displayEmail(acc) }}</div>
                 <div v-if="acc.hub_source_name" class="mt-1 text-[11px] text-violet-300">
@@ -512,10 +515,16 @@
                   {{ accountHubSyncLabel(acc) }}
                 </span>
               </td>
-              <td class="px-4 py-3 text-right font-mono" :class="pctColor(quota(acc, 'primary'))">
+              <td
+                class="px-4 py-3 text-right font-mono"
+                :class="pctColor(quota(acc, 'primary'))"
+                :title="quotaWindow(acc, 'primary') ? 'OpenAI 返回的 5h 限额窗口' : 'OpenAI 未返回 5h 限额窗口'">
                 {{ quotaPct(acc, 'primary') }}
               </td>
-              <td class="px-4 py-3 text-right font-mono" :class="pctColor(quota(acc, 'weekly'))">
+              <td
+                class="px-4 py-3 text-right font-mono"
+                :class="pctColor(quota(acc, 'weekly'))"
+                :title="quotaWindow(acc, 'weekly') ? 'OpenAI 返回的周限额窗口' : 'OpenAI 未返回周限额窗口'">
                 {{ quotaPct(acc, 'weekly') }}
               </td>
               <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'primary') }}</td>
@@ -573,13 +582,6 @@
                   类型
                 </button>
                 <button
-                  v-if="acc.status === 'active' || acc.is_main_account"
-                  @click="exportCodexAuth(acc.email)"
-                  :disabled="actionEmail === acc.email"
-                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition bg-cyan-600/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-600/20">
-                  导出
-                </button>
-                <button
                   v-if="!acc.is_main_account"
                   @click="removeAccount(acc.email)"
                   :disabled="deleteDisabled || actionEmail === acc.email"
@@ -594,52 +596,56 @@
           </tbody>
         </table>
       </div>
-
-      <!-- 注册失败明细 -->
-      <div class="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div class="flex items-center justify-between mb-3">
-          <div>
-            <h2 class="text-lg font-semibold text-white">注册失败明细</h2>
-            <div class="text-xs text-gray-500 mt-0.5">未能入池的注册尝试会写在这里（add-phone / duplicate / OAuth 失败等）</div>
-          </div>
-          <button @click="loadFailures" :disabled="failuresLoading"
-            class="px-3 py-1.5 rounded-lg text-xs border bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 transition">
-            {{ failuresLoading ? '加载中...' : '刷新' }}
+      <div
+        v-if="accountFilteredTotal > 0"
+        class="flex flex-col gap-3 border-t border-gray-800 px-4 py-3 text-xs text-gray-500 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex flex-wrap items-center gap-2">
+          <span>账号分页：每页</span>
+          <select
+            v-model.number="accountPageSize"
+            class="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500/60 focus:outline-none focus:ring-2 focus:ring-cyan-500/30">
+            <option v-for="option in ACCOUNT_PAGE_SIZE_OPTIONS" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <template v-if="accountPageSize > 0">
+            <span>条，第</span>
+            <span class="font-mono text-gray-300">{{ accountCurrentPage }}</span>
+            <span>/</span>
+            <span class="font-mono text-gray-300">{{ accountTotalPages }}</span>
+            <span>页</span>
+          </template>
+          <span v-else>当前显示全部</span>
+        </div>
+        <div v-if="accountPageSize > 0" class="flex items-center gap-2">
+          <button
+            type="button"
+            @click="setAccountPage(1)"
+            :disabled="accountCurrentPage <= 1"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
+            首页
           </button>
-        </div>
-        <div v-if="failuresCounts && Object.keys(failuresCounts).length" class="flex flex-wrap gap-2 mb-3 text-xs">
-          <span v-for="(cnt, cat) in failuresCounts" :key="cat"
-            class="px-2 py-1 rounded border bg-gray-800 border-gray-700 text-gray-300">
-            {{ cat }}: <span class="text-rose-400 font-mono">{{ cnt }}</span>
-          </span>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead class="text-xs text-gray-500 border-b border-gray-800">
-              <tr>
-                <th class="text-left px-3 py-2">时间</th>
-                <th class="text-left px-3 py-2">邮箱</th>
-                <th class="text-left px-3 py-2">类别</th>
-                <th class="text-left px-3 py-2">原因</th>
-                <th class="text-left px-3 py-2">附加</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-800/60 text-xs">
-              <tr v-if="!failuresItems.length">
-                <td class="px-3 py-4 text-gray-500" colspan="5">暂无失败记录</td>
-              </tr>
-              <tr v-for="(f, idx) in failuresItems" :key="idx">
-                <td class="px-3 py-2 text-gray-400 font-mono">{{ fmtTs(f.timestamp) }}</td>
-                <td class="px-3 py-2 text-gray-300 font-mono">{{ f.email || '-' }}</td>
-                <td class="px-3 py-2">
-                  <span class="px-2 py-0.5 rounded border text-[11px]"
-                    :class="failureCategoryClass(f.category)">{{ f.category }}</span>
-                </td>
-                <td class="px-3 py-2 text-gray-400">{{ f.reason }}</td>
-                <td class="px-3 py-2 text-gray-500 font-mono text-[11px]">{{ fmtFailureExtra(f) }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <button
+            type="button"
+            @click="setAccountPage(accountCurrentPage - 1)"
+            :disabled="accountCurrentPage <= 1"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
+            上一页
+          </button>
+          <button
+            type="button"
+            @click="setAccountPage(accountCurrentPage + 1)"
+            :disabled="accountCurrentPage >= accountTotalPages"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
+            下一页
+          </button>
+          <button
+            type="button"
+            @click="setAccountPage(accountTotalPages)"
+            :disabled="accountCurrentPage >= accountTotalPages"
+            class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-gray-300 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40">
+            末页
+          </button>
         </div>
       </div>
 
@@ -964,12 +970,12 @@
                 </div>
               </div>
               <iframe
-                v-if="activeLatestMail.html || activeLatestMail.content"
+                v-if="activeLatestMail.html"
                 :srcdoc="latestMailSrcdoc"
                 sandbox=""
                 class="h-[48vh] w-full rounded-xl border border-slate-800 bg-white"
               ></iframe>
-              <pre v-else class="max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs leading-5 text-slate-200">{{ activeLatestMail.text || '无正文' }}</pre>
+              <pre v-else class="max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs leading-5 text-slate-200">{{ activeLatestMail.text || activeLatestMail.content || '无正文' }}</pre>
             </div>
           </div>
         </div>
@@ -1132,8 +1138,19 @@ const dashboardTabs = [
 ]
 const ACCOUNT_HUB_SYNC_MAX_EMAILS = 1000
 const ACCOUNT_DELETE_BATCH_MAX_EMAILS = 1000
+const DEFAULT_ACCOUNT_PAGE_SIZE = 100
+const ACCOUNT_PAGE_SIZE_OPTIONS = [
+  { value: 50, label: '50' },
+  { value: 100, label: '100' },
+  { value: 200, label: '200' },
+  { value: 500, label: '500' },
+  { value: 0, label: '全部' },
+]
+const ACCOUNT_PAGE_SIZE_STORAGE_KEY = 'autotoken.dashboard.accountPageSize'
 const activeDashboardTab = ref('chatgpt')
 const accountDisplayOrder = ref('asc')
+const accountPage = ref(1)
+const accountPageSize = ref(loadAccountPageSize())
 const actionEmail = ref('')
 const actionType = ref('')
 const accountActionBusy = ref(false)
@@ -1233,11 +1250,6 @@ const oauthProxyApiProvider = ref('cliproxy')
 const selectedSet = ref(new Set())
 const batchDeleting = ref(false)
 const batchProgress = ref('')
-
-// 失败日志面板状态
-const failuresItems = ref([])
-const failuresCounts = ref({})
-const failuresLoading = ref(false)
 
 const OAUTH_PROXY_STORAGE_KEY = 'autotoken.dashboard.oauthProxy'
 const OAUTH_EMAIL_STORAGE_KEY = 'autotoken.dashboard.oauthEmailCfg'
@@ -1364,19 +1376,6 @@ const oauthProxySummary = computed(() => {
   return `补登录会通过 ${oauthProxyApiProvider.value} API 每个账号取一次代理。`
 })
 
-async function loadFailures() {
-  failuresLoading.value = true
-  try {
-    const r = await api.getRegisterFailures(50)
-    failuresItems.value = r.items || []
-    failuresCounts.value = r.counts || {}
-  } catch (e) {
-    console.error('loadFailures', e)
-  } finally {
-    failuresLoading.value = false
-  }
-}
-
 function fmtTs(ts) {
   if (!ts) return '-'
   const d = new Date(ts * 1000)
@@ -1384,40 +1383,14 @@ function fmtTs(ts) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-function failureCategoryClass(cat) {
-  const map = {
-    phone_blocked: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
-    duplicate_exhausted: 'bg-orange-500/10 text-orange-400 border-orange-500/30',
-    register_failed: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-    oauth_failed: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
-    kick_failed: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30',
-    exception: 'bg-red-500/10 text-red-400 border-red-500/30',
-  }
-  return map[cat] || 'bg-gray-500/10 text-gray-400 border-gray-500/30'
-}
-
-function fmtFailureExtra(f) {
-  const keys = ['step', 'register_attempts', 'duplicate_swaps', 'stage']
-  const parts = []
-  for (const k of keys) {
-    if (f[k] !== undefined && f[k] !== null && f[k] !== '') parts.push(`${k}=${f[k]}`)
-  }
-  return parts.join(' ') || '-'
-}
-
 onMounted(() => {
   loadOauthProxyConfig()
   watch(oauthConfigOpen, (open) => { if (open) loadOauthEmailConfig() })
-  loadFailures()
 })
 watch(
   [oauthProxyEnabled, oauthProxyMode, oauthProxyUrl, oauthProxyPoolText, oauthProxyApiProvider],
   saveOauthProxyConfig,
 )
-watch(() => props.runningTask, (cur, prev) => {
-  // 有任务完成（从有到无）时自动刷新一次失败日志
-  if (prev && !cur) loadFailures()
-})
 const adminReady = computed(() => !!props.adminStatus?.configured)
 const syncDisabled = computed(() => false)
 const loginDisabled = computed(() => false)
@@ -1462,6 +1435,27 @@ function dateKey(date) {
   if (Number.isNaN(d.getTime())) return ''
   const pad = n => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+function normalizeAccountPageSize(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_ACCOUNT_PAGE_SIZE
+  const allowed = new Set(ACCOUNT_PAGE_SIZE_OPTIONS.map(option => option.value))
+  return allowed.has(numeric) ? numeric : DEFAULT_ACCOUNT_PAGE_SIZE
+}
+
+function loadAccountPageSize() {
+  try {
+    return normalizeAccountPageSize(localStorage.getItem(ACCOUNT_PAGE_SIZE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_ACCOUNT_PAGE_SIZE
+  }
+}
+
+function saveAccountPageSize() {
+  try {
+    localStorage.setItem(ACCOUNT_PAGE_SIZE_STORAGE_KEY, String(accountPageSize.value))
+  } catch {}
 }
 
 function dateLabel(value) {
@@ -1546,6 +1540,32 @@ const exportTimeRange = computed(() => {
   }
 })
 
+function resetAccountPageAndEmit() {
+  accountPageSize.value = normalizeAccountPageSize(accountPageSize.value)
+  saveAccountPageSize()
+  accountPage.value = 1
+}
+
+watch(
+  [
+    emailFilter,
+    statusFilter,
+    accountTypeFilter,
+    credentialExportFilter,
+    exportDateFilter,
+    exportStartTimeFilter,
+    exportEndTimeFilter,
+    accountHubSyncFilter,
+    authCredentialFilter,
+    bindDateFilter,
+    bindStartTimeFilter,
+    bindEndTimeFilter,
+    accountDisplayOrder,
+    accountPageSize,
+  ],
+  resetAccountPageAndEmit,
+)
+
 const filteredAccounts = computed(() => {
   const emailNeedle = emailFilter.value.trim().toLowerCase()
   const statusNeedle = statusFilter.value
@@ -1558,32 +1578,32 @@ const filteredAccounts = computed(() => {
   const items = allAccounts.value
     .map((acc, index) => ({ acc, index }))
     .filter(({ acc }) => {
-    const email = `${acc?.email || ''} ${displayEmail(acc)}`.toLowerCase()
-    const status = normalizedStatus(acc?.status)
-    const accountType = String(acc?.account_type || 'unknown')
-    const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
-    const hubSyncStatus = acc?.account_hub_synced ? 'synced' : 'unsynced'
-    const authStatus = hasCodexAuthFile(acc) ? 'has_auth' : 'missing_auth'
-    if (emailNeedle && !email.includes(emailNeedle)) return false
-    if (statusNeedle && status !== statusNeedle) return false
-    if (typeNeedle && accountType !== typeNeedle) return false
-    if (exportNeedle && exportStatus !== exportNeedle) return false
-    if (exportRange.start || exportRange.end) {
-      const exportTs = accountExportTs(acc)
-      if (!exportTs) return false
-      if (exportRange.start && exportTs < exportRange.start) return false
-      if (exportRange.end && exportTs > exportRange.end) return false
-    }
-    if (hubSyncNeedle && hubSyncStatus !== hubSyncNeedle) return false
-    if (authNeedle && authStatus !== authNeedle) return false
-    if (bindRange.start || bindRange.end) {
-      const bindTs = accountBindTs(acc)
-      if (!bindTs) return false
-      if (bindRange.start && bindTs < bindRange.start) return false
-      if (bindRange.end && bindTs > bindRange.end) return false
-    }
-    return true
-  })
+      const email = `${acc?.email || ''} ${displayEmail(acc)}`.toLowerCase()
+      const status = normalizedStatus(acc?.status)
+      const accountType = String(acc?.account_type || 'unknown')
+      const exportStatus = acc?.credentials_exported ? 'exported' : 'unexported'
+      const hubSyncStatus = acc?.account_hub_synced ? 'synced' : 'unsynced'
+      const authStatus = hasCodexAuthFile(acc) ? 'has_auth' : 'missing_auth'
+      if (emailNeedle && !email.includes(emailNeedle)) return false
+      if (statusNeedle && status !== statusNeedle) return false
+      if (typeNeedle && accountType !== typeNeedle) return false
+      if (exportNeedle && exportStatus !== exportNeedle) return false
+      if (exportRange.start || exportRange.end) {
+        const exportTs = accountExportTs(acc)
+        if (!exportTs) return false
+        if (exportRange.start && exportTs < exportRange.start) return false
+        if (exportRange.end && exportTs > exportRange.end) return false
+      }
+      if (hubSyncNeedle && hubSyncStatus !== hubSyncNeedle) return false
+      if (authNeedle && authStatus !== authNeedle) return false
+      if (bindRange.start || bindRange.end) {
+        const bindTs = accountBindTs(acc)
+        if (!bindTs) return false
+        if (bindRange.start && bindTs < bindRange.start) return false
+        if (bindRange.end && bindTs > bindRange.end) return false
+      }
+      return true
+    })
     .sort((a, b) => {
       const aPlus = isPlusAccount(a.acc)
       const bPlus = isPlusAccount(b.acc)
@@ -1597,6 +1617,26 @@ const filteredAccounts = computed(() => {
     .map(({ acc }) => acc)
   return accountDisplayOrder.value === 'desc' ? items.reverse() : items
 })
+const accountFilteredTotal = computed(() => filteredAccounts.value.length)
+const accountPoolTotal = computed(() => allAccounts.value.length)
+const effectiveAccountPageSize = computed(() => Math.max(0, Number(accountPageSize.value) || 0))
+const accountTotalPages = computed(() => {
+  if (effectiveAccountPageSize.value <= 0) return 1
+  return Math.max(1, Math.ceil(accountFilteredTotal.value / effectiveAccountPageSize.value) || 1)
+})
+const accountCurrentPage = computed(() => Math.max(1, Math.min(Number(accountPage.value || 1), accountTotalPages.value)))
+const accountPageStartIndex = computed(() => {
+  if (effectiveAccountPageSize.value <= 0) return 0
+  return (accountCurrentPage.value - 1) * effectiveAccountPageSize.value
+})
+const paginatedAccounts = computed(() => {
+  if (effectiveAccountPageSize.value <= 0) return filteredAccounts.value
+  return filteredAccounts.value.slice(accountPageStartIndex.value, accountPageStartIndex.value + effectiveAccountPageSize.value)
+})
+const accountPageStartDisplay = computed(() => accountFilteredTotal.value && paginatedAccounts.value.length ? accountPageStartIndex.value + 1 : 0)
+const accountPageEndDisplay = computed(() =>
+  accountFilteredTotal.value && paginatedAccounts.value.length ? Math.min(accountFilteredTotal.value, accountPageStartIndex.value + paginatedAccounts.value.length) : 0
+)
 const accountStatusOptions = computed(() => {
   const counts = new Map()
   for (const acc of allAccounts.value) {
@@ -1723,8 +1763,8 @@ const refreshQuotaButtonLabel = computed(() => {
   }
   if (quotaRefreshing.value) return '提交中...'
   return selectedEmails.value.length
-    ? `刷新选中凭证 (${refreshableQuotaAccounts.value.length})`
-    : `刷新筛选凭证 (${refreshableQuotaAccounts.value.length})`
+    ? `刷新选中额度 (${refreshableQuotaAccounts.value.length})`
+    : `刷新筛选额度 (${refreshableQuotaAccounts.value.length})`
 })
 const allSelectableChecked = computed(() =>
   selectableEmails.value.length > 0 && selectedEmails.value.length === selectableEmails.value.length
@@ -1790,7 +1830,7 @@ const latestMailSrcdoc = computed(() => {
   const mail = activeLatestMail.value
   if (!mail) return ''
   const html = String(mail.html || mail.content || '').trim()
-  if (html) return html
+  if (String(mail.html || '').trim()) return html
   const text = String(mail.text || '').replace(/[&<>"']/g, char => ({
     '&': '&amp;',
     '<': '&lt;',
@@ -1820,6 +1860,11 @@ function toggleSelect(email) {
 
 function toggleAccountDisplayOrder() {
   accountDisplayOrder.value = accountDisplayOrder.value === 'desc' ? 'asc' : 'desc'
+}
+
+function setAccountPage(page) {
+  const next = Math.max(1, Math.min(Number(page) || 1, accountTotalPages.value))
+  accountPage.value = next
 }
 
 function toggleSelectAll() {
@@ -2233,11 +2278,54 @@ function accountHubSyncClass(acc) {
     : 'bg-gray-500/10 text-gray-400'
 }
 
-function quota(acc, type) {
-  const qi = props.status?.quota_cache?.[acc.email] || acc.last_quota
+const QUOTA_WINDOW_SECONDS = {
+  primary: 18000,
+  weekly: 604800,
+}
+
+function quotaInfo(acc) {
+  return props.status?.quota_cache?.[acc.email] || acc.last_quota || null
+}
+
+function numericOrNull(value) {
+  if (value === null || value === undefined || value === '') return null
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function quotaWindow(acc, type) {
+  const qi = quotaInfo(acc)
   if (!qi) return null
-  const pct = type === 'primary' ? qi.primary_pct : qi.weekly_pct
-  return 100 - (pct || 0)
+  const expectedWindowSeconds = QUOTA_WINDOW_SECONDS[type]
+  const direct = qi.windows?.[type]
+  const directWindowSeconds = numericOrNull(direct?.limit_window_seconds)
+  if (direct && (!expectedWindowSeconds || directWindowSeconds === expectedWindowSeconds)) {
+    return direct
+  }
+
+  const windowSeconds = numericOrNull(qi[`${type}_window_seconds`])
+  const usedPercent = numericOrNull(qi[`${type}_pct`])
+  const resetAt = numericOrNull(qi[`${type}_resets_at`])
+  const resetAfterSeconds = numericOrNull(qi[`${type}_reset_after_seconds`])
+  if (usedPercent === null) return null
+  if (expectedWindowSeconds && windowSeconds && windowSeconds !== expectedWindowSeconds) return null
+
+  const hasClassifiedWindowSeconds = ['primary_window_seconds', 'weekly_window_seconds', 'monthly_window_seconds']
+    .some(key => numericOrNull(qi[key]) !== null)
+  if (expectedWindowSeconds && !windowSeconds && hasClassifiedWindowSeconds) return null
+
+  return {
+    used_percent: usedPercent,
+    reset_at: resetAt,
+    reset_after_seconds: resetAfterSeconds,
+    limit_window_seconds: windowSeconds || expectedWindowSeconds || null,
+  }
+}
+
+function quota(acc, type) {
+  const slot = quotaWindow(acc, type)
+  const pct = numericOrNull(slot?.used_percent)
+  return pct !== null ? 100 - pct : null
 }
 
 function quotaPct(acc, type) {
@@ -2246,12 +2334,18 @@ function quotaPct(acc, type) {
 }
 
 function quotaReset(acc, type) {
-  const qi = props.status?.quota_cache?.[acc.email] || acc.last_quota
-  if (!qi) return '-'
-  const ts = type === 'primary' ? qi.primary_resets_at : qi.weekly_resets_at
+  const qi = quotaInfo(acc)
+  const slot = quotaWindow(acc, type)
+  if (!qi || !slot) return '-'
+  let ts = numericOrNull(slot.reset_at)
+  const resetAfterSeconds = numericOrNull(slot.reset_after_seconds)
+  const checkedAt = numericOrNull(qi.checked_at)
+  if (!ts && resetAfterSeconds !== null && checkedAt) {
+    ts = checkedAt + resetAfterSeconds
+  }
   if (!ts) return '-'
   const d = new Date(ts * 1000)
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 function pctColor(val) {
@@ -2712,7 +2806,7 @@ async function refreshAllQuota() {
   try {
     const result = await api.refreshAccountsQuota(emails)
     const scope = selectedEmails.value.length ? '选中' : '筛选'
-    message.value = `已提交刷新${scope}凭证任务: ${result.task_id}，账号 ${emails.length} 个；401/403 会标记 Fail/废弃`
+    message.value = `已提交刷新${scope}额度任务: ${result.task_id}，账号 ${emails.length} 个；401/403 会标记 Fail/废弃`
     messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
     emit('task-started')
     emit('refresh')
