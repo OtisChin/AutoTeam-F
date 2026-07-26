@@ -79,6 +79,7 @@ export const api = {
   refreshAccountsQuota: (emails) => request('POST', '/accounts/refresh-quota', { emails }),
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),
   getAccountAccessToken: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/access-token`),
+  exportAccountAccessTokens: (emails) => request('POST', '/accounts/export-access-tokens', { emails }),
   getAccountSubscription: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/subscription`),
   getAccountLatestMail: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/latest-mail`),
   kickAccount: (email) => request('POST', `/accounts/${encodeURIComponent(email)}/kick`),

@@ -214,6 +214,39 @@ def test_batch_account_preflights_proxy_before_upi_generation(monkeypatch):
     assert any("代理预检失败" in line for line in india_upi.JOBS[job_id]["logs"])
 
 
+def test_batch_account_uses_configured_proxy_preflight_attempts(monkeypatch):
+    email = "blocked-configured@example.com"
+    preflighted: list[str] = []
+    monkeypatch.setattr(india_upi, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (False, "ProxyError: ruleset blocked")
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(india_upi, "generate_upi_trial", lambda cfg, log: pytest.fail("should not generate when proxy preflight fails"))
+    job_id = "upi-configured-preflight-job"
+    india_upi.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-IN-sid-old-t-120:pass",
+        "region": "IN",
+        "maxAttempts": 5,
+        "proxyPreflightAttempts": 3,
+    })
+    result = india_upi._run_batch_account(job_id, req, {"email": email}, 1, 1, india_upi._parse_proxies(req.proxies))
+
+    assert result["ok"] is False
+    assert len(preflighted) == 3
+    assert any("目标国家代理预检开始：3/3" in line for line in india_upi.JOBS[job_id]["logs"])
+
+
 def test_batch_account_auth_preflight_blocks_upi_generation(monkeypatch):
     email = "auth-blocked@example.com"
     monkeypatch.setattr(india_upi, "_load_token_for_email", lambda value: "token-" + value)
@@ -295,6 +328,15 @@ def test_upi_proxy_preflight_has_separate_ten_attempt_budget(monkeypatch):
     assert "proxy4.example" in captured["cfg"].direct_proxies[0]
     assert india_upi.build_upi_dynamic_proxy(captured["cfg"], 0)[0] == preflighted[-1]
     assert any("proxy6.example" in proxy for proxy in preflighted)
+
+
+def test_upi_proxy_preflight_attempts_cap_at_one_hundred():
+    req = india_upi.IndiaUpiBatchStartRequest.model_validate({
+        "accountEmails": [],
+        "proxyPreflightAttempts": 200,
+    })
+
+    assert req.proxy_preflight_attempts == 100
 
 
 def test_link_record_includes_five_minute_upi_expiry(monkeypatch):

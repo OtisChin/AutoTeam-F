@@ -96,12 +96,14 @@ class MailAccountAuthSessionBatchParams(BaseModel):
 
 
 def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) -> dict[str, Any]:
+    bind_phone = bool(getattr(params, "bind_phone", False))
     kwargs: dict[str, Any] = {
         "headless": False,
         "protocol_only": bool(params.protocol_only),
-        "bind_email": bool(params.bind_email),
+        # 绑定邮箱/绑定手机号是互斥关系；旧前端或手工 API 同时传 true 时，手机号绑定优先。
+        "bind_email": bool(params.bind_email) and not bind_phone,
     }
-    if bool(getattr(params, "bind_phone", False)):
+    if bind_phone:
         kwargs["bind_phone"] = True
     text_fields = {
         "mail_provider": params.mail_provider,

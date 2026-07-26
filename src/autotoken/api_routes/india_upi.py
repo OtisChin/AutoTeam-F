@@ -32,6 +32,7 @@ TEMP_CDK_COOLDOWN_SECONDS = 3 * 60
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 PROXY_PREFLIGHT_MAX_ATTEMPTS = 10
+MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS = 100
 UPI_LINK_TTL_SECONDS = 5 * 60
 UPI_STATUS_PENDING = "pending"
 UPI_STATUS_RUNNING = "running"
@@ -109,6 +110,7 @@ class IndiaUpiStartRequest(BaseModel):
     region: str = "IN"
     promo_mode: str = Field("promo", alias="promoMode")
     max_attempts: int = Field(MAX_ACCOUNT_ATTEMPTS, alias="maxAttempts")
+    proxy_preflight_attempts: int = Field(PROXY_PREFLIGHT_MAX_ATTEMPTS, alias="proxyPreflightAttempts")
     model_config = {"populate_by_name": True}
 
     @field_validator("promo_mode", mode="before")
@@ -127,6 +129,15 @@ class IndiaUpiStartRequest(BaseModel):
         except Exception:
             attempts = MAX_ACCOUNT_ATTEMPTS
         return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+    @field_validator("proxy_preflight_attempts", mode="before")
+    @classmethod
+    def _clean_proxy_preflight_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or PROXY_PREFLIGHT_MAX_ATTEMPTS)
+        except Exception:
+            attempts = PROXY_PREFLIGHT_MAX_ATTEMPTS
+        return max(1, min(MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS, attempts))
 
 
 class IndiaUpiBatchStartRequest(IndiaUpiStartRequest):
@@ -413,16 +424,25 @@ def _account_attempt_limit(req: IndiaUpiBatchStartRequest) -> int:
     return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
 
 
-def _preflight_upi_proxy_or_raise(cfg: UpiJobConfig, log) -> UpiJobConfig:
+def _proxy_preflight_attempt_limit(value: Any, default: int = PROXY_PREFLIGHT_MAX_ATTEMPTS) -> int:
+    try:
+        attempts = int(value or default)
+    except Exception:
+        attempts = default
+    return max(1, min(MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS, attempts))
+
+
+def _preflight_upi_proxy_or_raise(cfg: UpiJobConfig, log, max_attempts: int | None = None) -> UpiJobConfig:
     region = str(cfg.region or "IN").strip().upper() or "IN"
     if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
         return cfg
     errors: list[str] = []
-    for stage_index in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
+    attempts = _proxy_preflight_attempt_limit(max_attempts)
+    for stage_index in range(attempts):
         proxy_url, sid_label = build_upi_dynamic_proxy(cfg, stage_index, region)
         if not proxy_url:
             continue
-        log(f"目标国家代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} region={region} {sid_label}")
+        log(f"目标国家代理预检开始：{stage_index + 1}/{attempts} region={region} {sid_label}")
         ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
         if ok:
             auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(proxy_url, cfg.access_token)
@@ -436,7 +456,7 @@ def _preflight_upi_proxy_or_raise(cfg: UpiJobConfig, log) -> UpiJobConfig:
             continue
         errors.append(str(message or "unknown"))
         log(f"目标国家代理预检失败：{message}")
-    raise RuntimeError(f"代理预检失败: {region} {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
+    raise RuntimeError(f"代理预检失败: {region} {'; '.join(errors[-attempts:])}")
 
 
 def _select_batch_accounts(req: IndiaUpiBatchStartRequest) -> list[dict[str, Any]]:
@@ -915,7 +935,7 @@ def _run_batch_account(
                 apply_promo=req.promo_mode == "promo",
             )
             try:
-                cfg = _preflight_upi_proxy_or_raise(cfg, account_log)
+                cfg = _preflight_upi_proxy_or_raise(cfg, account_log, req.proxy_preflight_attempts)
                 result = generate_upi_trial(cfg, log=account_log)
                 if attempt > 1:
                     _append_log(job_id, f"[{index}/{total}] 重试成功：{email} attempt={attempt}")

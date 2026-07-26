@@ -239,6 +239,55 @@ def test_account_overview_access_token_copies_from_auth_session(monkeypatch, tmp
     assert result == {"email": "user@example.com", "access_token": "session-access-token"}
 
 
+def test_account_overview_export_access_tokens_for_selected_accounts(monkeypatch, tmp_path):
+    auth_dir = tmp_path / "auths"
+    session_dir = tmp_path / "auth_session"
+    auth_dir.mkdir()
+    session_dir.mkdir()
+    first_session = session_dir / "first@example.com.json"
+    first_session.write_text(json.dumps({"accessToken": "first-session-token"}), encoding="utf-8")
+    second_auth = auth_dir / "codex-second.json"
+    second_auth.write_text(json.dumps({"access_token": "second-auth-token"}), encoding="utf-8")
+    app, _captured = _app()
+
+    monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
+    monkeypatch.setattr(
+        accounts,
+        "load_accounts",
+        lambda: [
+            {"email": "second@example.com", "auth_file": str(second_auth)},
+        ],
+    )
+    monkeypatch.setattr(
+        accounts,
+        "find_account",
+        lambda loaded, email: next((row for row in loaded if row["email"] == email), None),
+    )
+    monkeypatch.setattr(
+        auth_session_store,
+        "get_auth_session_file",
+        lambda email: str(first_session) if email == "first@example.com" else "",
+    )
+
+    result = _endpoint(app, "/api/accounts/export-access-tokens", "POST")(
+        account_overview.ExportAccessTokensParams(
+            emails=[" First@example.com ", "second@example.com", "missing@example.com", "first@example.com"]
+        )
+    )
+
+    assert result["count"] == 2
+    assert result["missing"] == [
+        {"email": "missing@example.com", "error": "该账号没有认证文件"},
+    ]
+    assert result["items"] == [
+        {"email": "first@example.com", "access_token": "first-session-token"},
+        {"email": "second@example.com", "access_token": "second-auth-token"},
+    ]
+    assert result["content"] == "first-session-token\nsecond-auth-token"
+    assert result["filename"].startswith("access-tokens-")
+
+
 def test_account_overview_latest_mail_fetches_only_newest_message(monkeypatch):
     app, _captured = _app()
     account = {

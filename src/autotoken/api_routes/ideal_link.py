@@ -78,6 +78,7 @@ class IdealBatchStartRequest(BaseModel):
     checkout_proxy_region: str = Field("JP", alias="checkoutProxyRegion")
     provider_proxy_region: str = Field("NL", alias="providerProxyRegion")
     approve_proxy_region: str = Field("", alias="approveProxyRegion")
+    proxy_preflight_attempts: int = Field(5, alias="proxyPreflightAttempts")
     model_config = {"populate_by_name": True}
 
     @field_validator("account_emails", mode="before")
@@ -105,6 +106,15 @@ class IdealBatchStartRequest(BaseModel):
         except Exception:
             attempts = MAX_ACCOUNT_ATTEMPTS
         return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+    @field_validator("proxy_preflight_attempts", mode="before")
+    @classmethod
+    def _clean_proxy_preflight_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or 5)
+        except Exception:
+            attempts = 5
+        return max(1, min(100, attempts))
 
 
 class IdealDeleteLinksRequest(BaseModel):
@@ -391,6 +401,7 @@ def _request_for_account(req: IdealBatchStartRequest, account_email: str, accoun
             "providerProxyRegion": req.provider_proxy_region,
             "proxyChainStrategy": req.proxy_chain_strategy,
             "approveProxyRegion": req.approve_proxy_region,
+            "proxyPreflightAttempts": req.proxy_preflight_attempts,
             "diagnostic_enabled": req.diagnostic_enabled,
             "client_fingerprint": req.client_fingerprint,
             "device_id": req.device_id,

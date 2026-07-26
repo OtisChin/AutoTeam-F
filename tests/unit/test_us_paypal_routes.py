@@ -119,6 +119,14 @@ def test_paypal_link_batch_concurrency_allows_twenty():
     assert us_paypal._batch_concurrency(req, total=30) == 20
 
 
+def test_paypal_proxy_preflight_attempts_cap_at_one_hundred():
+    link_req = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": [], "proxyPreflightAttempts": 200})
+    protocol_req = us_paypal.UsPaypalProtocolStartRequest.model_validate({"proxyPreflightAttempts": 200})
+
+    assert link_req.proxy_preflight_attempts == 100
+    assert protocol_req.proxy_preflight_attempts == 100
+
+
 def test_paypal_protocol_batch_concurrency_stays_capped_at_ten():
     req = us_paypal.UsPaypalProtocolBatchStartRequest.model_validate({"accountEmails": [], "concurrency": 25})
 
@@ -164,6 +172,39 @@ def test_batch_account_preflights_proxy_before_paypal_generation(monkeypatch):
     assert "代理预检失败" in result["error"]["error"]
     assert "ruleset blocked" in result["error"]["error"]
     assert any("代理预检失败" in line for line in us_paypal.JOBS[job_id]["logs"])
+
+
+def test_batch_account_uses_configured_proxy_preflight_attempts(monkeypatch):
+    email = "blocked-configured@example.com"
+    preflighted: list[str] = []
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (False, "ProxyError: ruleset blocked")
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", lambda cfg, log: pytest.fail("should not generate when proxy preflight fails"))
+    job_id = "paypal-configured-preflight-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-US-sid-old-t-120:pass",
+        "region": "GB",
+        "maxAttempts": 5,
+        "proxyPreflightAttempts": 3,
+    })
+    result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
+
+    assert result["ok"] is False
+    assert len(preflighted) == 3
+    assert any("目标国家代理预检开始：3/3" in line for line in us_paypal.JOBS[job_id]["logs"])
 
 
 def test_batch_account_auth_preflight_blocks_paypal_generation(monkeypatch):
@@ -888,6 +929,33 @@ def test_protocol_job_preflights_proxy_before_runner(monkeypatch):
     assert "代理预检失败" in job["error"]
     assert "ruleset blocked" in job["error"]
     assert any("代理预检失败" in line for line in job["logs"])
+
+
+def test_protocol_job_uses_configured_proxy_preflight_attempts(monkeypatch):
+    job_id = us_paypal._new_protocol_job("buyer@example.com")
+    preflighted: list[str] = []
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (False, "ProxyError: ruleset blocked")
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(us_paypal, "run_paypal_protocol_payment", lambda cfg, log, cancel_check: pytest.fail("should not run protocol engine when proxy preflight fails"))
+
+    req = us_paypal.UsPaypalProtocolStartRequest.model_validate({
+        "baToken": "BA-1PROXYFAIL123",
+        "smsProvider": "hero-sms",
+        "proxyUrl": "global.rotgb.711proxy.com:10000:USER-zone-custom-region-US-session-fixed-sessTime-120-sessAuto-1:pass",
+        "accountEmail": "buyer@example.com",
+        "country": "GB",
+        "proxyPreflightAttempts": 4,
+    })
+    us_paypal._run_protocol_payment_job(job_id, req)
+
+    job = us_paypal.JOBS[job_id]
+    assert job["status"] == "error"
+    assert len(preflighted) == 4
+    assert any("协议支付代理预检开始：4/4" in line for line in job["logs"])
 
 
 def test_protocol_proxy_preflight_has_separate_ten_attempt_budget(monkeypatch):

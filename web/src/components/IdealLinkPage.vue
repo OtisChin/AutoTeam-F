@@ -35,7 +35,7 @@
             <textarea v-model.trim="form.proxies" rows="8" spellcheck="false" placeholder="每行一个代理；支持 host:port:user:pass 或 socks5h://user:pass@host:port" class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" :disabled="busy"></textarea>
             <span class="mt-1 block text-xs text-gray-500">批量提链时按账号顺序轮换代理；留空使用备用出口代理或后台默认链路。</span>
           </label>
-          <div class="grid gap-4 md:grid-cols-2">
+          <div class="grid gap-4 md:grid-cols-3">
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
               <input v-model.number="form.concurrency" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
@@ -45,6 +45,11 @@
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
               <input v-model.number="form.maxAttempts" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
               <span class="mt-1 block text-xs text-gray-500">默认 5。</span>
+            </label>
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">代理预检次数</span>
+              <input v-model.number="form.proxyPreflightAttempts" type="number" min="1" max="100" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">代理出口/认证接口预检失败时的最大尝试次数，默认 5。</span>
             </label>
           </div>
           <details class="rounded-xl border border-gray-800 bg-gray-900/40 p-4">
@@ -141,6 +146,7 @@ const form = ref({
   proxies: '',
   concurrency: 1,
   maxAttempts: 5,
+  proxyPreflightAttempts: 5,
   checkoutUiMode: 'hosted',
   paymentLocale: 'auto',
   stripePublishableKey: '',
@@ -362,6 +368,7 @@ function requestPayload() {
     accessToken: readAccessTokenInput(),
     ...proxyPayload(),
     billing_country: 'NL',
+    proxyPreflightAttempts: Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5))),
     checkout_ui_mode: form.value.checkoutUiMode,
     payment_locale: form.value.paymentLocale,
     stripe_publishable_key: form.value.stripePublishableKey,
@@ -378,6 +385,7 @@ function batchPayload(accountEmails = selectedEmails.value) {
     proxy: form.value.proxy,
     concurrency: form.value.concurrency,
     maxAttempts: form.value.maxAttempts,
+    proxyPreflightAttempts: Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5))),
     ...proxyPayload(),
     checkoutUiMode: form.value.checkoutUiMode,
     paymentLocale: form.value.paymentLocale,
@@ -756,6 +764,9 @@ function loadForm() {
       ...savedWithoutChain
     } = saved
     form.value = { ...form.value, ...savedWithoutChain, accessToken: '' }
+    form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
+    form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
+    form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   } catch {}
   const savedProxy = localStorage.getItem(SAVED_PROXY_KEY)
   if (savedProxy) form.value.proxy = savedProxy

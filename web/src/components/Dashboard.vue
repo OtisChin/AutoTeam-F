@@ -48,6 +48,16 @@
             {{ selectedEmails.length ? `导出账密 (${selectedEmails.length})` : `导出账密 (${filteredAccounts.length})` }}
           </button>
           <button
+            v-if="selectedEmails.length"
+            @click="exportSelectedAccessTokens"
+            :disabled="accessTokenExporting"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="accessTokenExporting
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">
+            {{ accessTokenExporting ? '导出中...' : `导出ac (${selectedEmails.length})` }}
+          </button>
+          <button
             @click="openCpaImport"
             :disabled="cpaImporting"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -73,15 +83,6 @@
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-sky-600/10 text-sky-400 border-sky-500/30 hover:bg-sky-600/20'">
             {{ cpaExporting ? '导出中...' : `导出CPA认证 (${cpaExportableAccounts.length})` }}
-          </button>
-          <button
-            @click="convertSessionCpaAuths"
-            :disabled="!sessionCpaConvertibleAccounts.length || sessionCpaConverting"
-            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-            :class="!sessionCpaConvertibleAccounts.length || sessionCpaConverting
-              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-              : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
-            {{ sessionCpaConverting ? '转换中...' : `直接转换CPA认证 (${sessionCpaConvertibleAccounts.length})` }}
           </button>
           <button
             @click="exportSubAuths"
@@ -182,12 +183,12 @@
       </div>
       <!-- OAuth 配置弹窗 -->
       <div v-if="oauthConfigOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" @click.self="oauthConfigOpen = false">
-        <div class="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-gray-800 bg-gray-900 shadow-2xl">
+        <div class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-gray-800 bg-gray-900 shadow-2xl">
           <!-- Header -->
           <div class="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-4">
             <div>
               <h3 class="text-lg font-semibold text-white">OAuth 配置</h3>
-              <p class="mt-1 text-xs text-gray-500">配置补登录代理和邮箱绑定相关参数</p>
+              <p class="mt-1 text-xs text-gray-500">配置补登录代理和绑定方式；绑定邮箱/绑定手机号二选一。</p>
             </div>
             <button @click="oauthConfigOpen = false" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700">关闭</button>
           </div>
@@ -204,6 +205,18 @@
               class="px-4 py-2 text-sm font-medium border-b-2 transition"
               :class="oauthConfigTab === 'email' ? 'text-cyan-300 border-cyan-500' : 'text-gray-500 border-transparent hover:text-gray-300'">
               邮箱绑定
+            </button>
+            <button
+              @click="oauthConfigTab = 'phone'"
+              class="px-4 py-2 text-sm font-medium border-b-2 transition"
+              :class="oauthConfigTab === 'phone' ? 'text-cyan-300 border-cyan-500' : 'text-gray-500 border-transparent hover:text-gray-300'">
+              手机号绑定
+            </button>
+            <button
+              @click="oauthConfigTab = 'phone_sms'"
+              class="px-4 py-2 text-sm font-medium border-b-2 transition"
+              :class="oauthConfigTab === 'phone_sms' ? 'text-cyan-300 border-cyan-500' : 'text-gray-500 border-transparent hover:text-gray-300'">
+              手机号接码
             </button>
           </div>
           <!-- Body -->
@@ -259,7 +272,7 @@
             <!-- Email Binding Tab -->
             <div v-if="oauthConfigTab === 'email'">
               <div class="text-sm font-semibold text-amber-100">邮箱绑定配置</div>
-              <div class="mt-1 text-xs text-gray-500">配置注册后用于邮箱绑定的邮件供应商和域名参数，与注册模块对齐。</div>
+              <div class="mt-1 text-xs text-gray-500">选择邮箱绑定时使用这些邮件供应商和域名参数；如果启用手机号绑定，补登录请求不会同时绑定邮箱。</div>
               <div class="mt-4 space-y-4">
                 <div>
                   <label class="block text-xs text-gray-500 mb-1">邮件供应商</label>
@@ -294,13 +307,224 @@
                 </div>
               </div>
             </div>
+            <!-- Phone Binding Tab -->
+            <div v-if="oauthConfigTab === 'phone'">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div class="text-sm font-semibold text-emerald-100">手机号绑定</div>
+                  <div class="mt-1 text-xs text-gray-500">开启后，仪表盘单个/批量 OAuth 补登录遇到 add-phone 会自动绑定手机号。</div>
+                </div>
+                <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                  <input v-model="oauthBindPhone" type="checkbox" class="h-4 w-4 rounded border-gray-700 bg-gray-950 text-emerald-500 focus:ring-emerald-500/30" />
+                  启用手机号绑定（关闭则绑定邮箱）
+                </label>
+              </div>
+              <div class="mt-4 rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-xs text-gray-400">
+                <div>当前模式：<span :class="oauthBindPhone ? 'text-emerald-300' : 'text-amber-300'">{{ oauthBindPhone ? '绑定手机号' : '绑定邮箱' }}</span></div>
+                <div class="mt-1">二选一：启用手机号绑定时，会发送 bind_phone=true、bind_email=false；关闭时发送 bind_email=true、bind_phone=false。</div>
+                <div class="mt-1">接码来源使用“手机号接码”页签保存的配置，例如手机号池、hero-sms、smsbower 或 Oasis。</div>
+              </div>
+            </div>
+            <!-- Phone SMS Tab -->
+            <div v-if="oauthConfigTab === 'phone_sms'" class="space-y-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div class="text-sm font-semibold text-emerald-100">OAuth 手机号接码配置</div>
+                  <div class="mt-1 text-xs text-gray-500">用于补登录需要 add-phone 时取号和收验证码；保存后写入后端 OAuth 接码配置。</div>
+                </div>
+                <span
+                  class="min-w-[72px] rounded-full border px-3 py-1.5 text-center text-xs whitespace-nowrap"
+                  :class="oauthPhoneSmsConfigured
+                    ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                    : 'bg-gray-800 text-gray-400 border-gray-700'">
+                  {{ oauthPhoneSmsConfigured ? '已配置' : '未配置' }}
+                </span>
+              </div>
+
+              <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">手机号来源</label>
+                  <select
+                    v-model="oauthPhoneSmsForm.provider"
+                    :disabled="oauthPhoneSmsLoading || oauthPhoneSmsSaving"
+                    class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60">
+                    <option value="phone_pool">OAuth 手机号池</option>
+                    <option value="hero_sms">hero-sms</option>
+                    <option value="smsbower">smsbower</option>
+                    <option value="oasis">Oasis CDK</option>
+                  </select>
+                  <div class="mt-1 text-xs text-gray-500">手机号池适合固定号码；hero-sms / smsbower 按国家买号；Oasis 使用 CDK 池兑换号码。</div>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">固定参数</label>
+                  <div class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300">
+                    服务：OpenAI（service: dr）
+                  </div>
+                  <div class="mt-1 text-xs text-gray-500">国家 ID 会随补登录请求传给后端；留空时后端使用已保存默认值。</div>
+                </div>
+
+                <template v-if="oauthPhoneSmsForm.provider === 'hero_sms'">
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">
+                      hero-sms API Key
+                      <span v-if="oauthPhoneSmsStatus.hero_sms_api_key_present" class="ml-1 text-xs text-green-400">已保存</span>
+                    </label>
+                    <input
+                      v-model="oauthPhoneSmsForm.hero_sms_api_key"
+                      type="password"
+                      autocomplete="off"
+                      :placeholder="oauthPhoneSmsStatus.hero_sms_api_key_masked || '留空则保留现有配置'"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">hero-sms 国家 ID</label>
+                    <input
+                      v-model.trim="oauthPhoneSmsForm.hero_sms_country"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="187=美国，6=印尼，33=哥伦比亚，all=不限"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">hero-sms 最高价格</label>
+                    <input
+                      v-model.trim="oauthPhoneSmsForm.hero_sms_max_price"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      placeholder="例如 0.045，留空不限价"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                    <div class="mt-1 text-xs text-gray-500">保存后作为 maxPrice 传给 Hero-SMS getNumber。</div>
+                  </div>
+                </template>
+
+                <template v-if="oauthPhoneSmsForm.provider === 'smsbower'">
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">
+                      smsbower API Key
+                      <span v-if="oauthPhoneSmsStatus.smsbower_api_key_present" class="ml-1 text-xs text-green-400">已保存</span>
+                    </label>
+                    <input
+                      v-model="oauthPhoneSmsForm.smsbower_api_key"
+                      type="password"
+                      autocomplete="off"
+                      :placeholder="oauthPhoneSmsStatus.smsbower_api_key_masked || '留空则保留现有配置'"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">smsbower 国家 ID</label>
+                    <input
+                      v-model.trim="oauthPhoneSmsForm.smsbower_country"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="187=美国，6=印尼，33=哥伦比亚，all=不限"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">smsbower 最高价格</label>
+                    <input
+                      v-model.trim="oauthPhoneSmsForm.smsbower_max_price"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      placeholder="例如 0.045，留空不限价"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                    <div class="mt-1 text-xs text-gray-500">保存后作为 maxPrice 传给 smsbower getNumber。</div>
+                  </div>
+                </template>
+
+                <template v-if="oauthPhoneSmsForm.provider === 'oasis'">
+                  <div class="md:col-span-2">
+                    <label class="block text-xs text-gray-500 mb-1">
+                      Oasis CDK 池
+                      <span v-if="oauthPhoneSmsStatus.oasis_sms_cdk_count" class="ml-1 text-xs text-green-400">已保存 {{ oauthPhoneSmsStatus.oasis_sms_cdk_count }} 个</span>
+                    </label>
+                    <textarea
+                      v-model.trim="oauthPhoneSmsForm.oasis_sms_cdks"
+                      rows="5"
+                      spellcheck="false"
+                      autocomplete="off"
+                      placeholder="一行一个或粘贴多个 CDK，例如 SMS-6L2A-6TAH-Q7BA"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 font-mono text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"></textarea>
+                    <div class="mt-1 text-xs text-gray-500">每个 CDK 只对应一个号码和验证码，注册成功后会保存 CDK 与账号的映射。</div>
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">
+                      CDK 文件
+                      <span v-if="oauthPhoneSmsStatus.oasis_sms_cdk_file_present" class="ml-1 text-xs text-green-400">已配置</span>
+                    </label>
+                    <input
+                      v-model.trim="oauthPhoneSmsForm.oasis_sms_cdk_file"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="例如 data/oasis_cdks.txt"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">Oasis API 地址</label>
+                    <input
+                      v-model.trim="oauthPhoneSmsForm.oasis_sms_base_url"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="https://sms.oapi.vip"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">账号映射文件</label>
+                    <input
+                      v-model.trim="oauthPhoneSmsForm.oasis_sms_account_map_file"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="oasis-cdk-accounts.jsonl"
+                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                  </div>
+                  <div class="grid grid-cols-2 gap-3">
+                    <div>
+                      <label class="block text-xs text-gray-500 mb-1">轮询次数</label>
+                      <input
+                        v-model.trim="oauthPhoneSmsForm.oasis_sms_poll_attempts"
+                        type="number"
+                        min="1"
+                        autocomplete="off"
+                        placeholder="24"
+                        class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                    </div>
+                    <div>
+                      <label class="block text-xs text-gray-500 mb-1">轮询间隔 ms</label>
+                      <input
+                        v-model.trim="oauthPhoneSmsForm.oasis_sms_poll_interval_ms"
+                        type="number"
+                        min="500"
+                        autocomplete="off"
+                        placeholder="5000"
+                        class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <div class="flex justify-end gap-3">
+                <button
+                  @click="loadOauthPhoneSmsConfig"
+                  :disabled="oauthPhoneSmsLoading || oauthPhoneSmsSaving"
+                  class="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition hover:bg-gray-700 disabled:opacity-50">
+                  {{ oauthPhoneSmsLoading ? '刷新中...' : '刷新接码配置' }}
+                </button>
+                <button
+                  @click="saveOauthPhoneSmsConfig"
+                  :disabled="oauthPhoneSmsSaving"
+                  class="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white transition hover:bg-emerald-500 disabled:opacity-50">
+                  {{ oauthPhoneSmsSaving ? '保存中...' : '保存接码配置' }}
+                </button>
+              </div>
+            </div>
+          </div>
           <!-- Footer -->
           <div class="flex justify-end gap-3 border-t border-gray-800 px-5 py-4">
             <button @click="oauthConfigOpen = false" class="px-4 py-2 text-sm rounded-lg border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 transition">关闭</button>
-            <button @click="saveOauthEmailConfig" :disabled="oauthEmailSaving" class="px-4 py-2 text-sm rounded-lg bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50 transition">{{ oauthEmailSaving ? '保存中...' : '保存配置' }}</button>
+            <button @click="saveOauthConfig" :disabled="oauthEmailSaving || oauthPhoneSmsSaving" class="px-4 py-2 text-sm rounded-lg bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-50 transition">{{ oauthEmailSaving || oauthPhoneSmsSaving ? '保存中...' : '保存配置' }}</button>
           </div>
         </div>
-      </div>
       </div>
       <div class="dashboard-filter-bar">
         <div class="dashboard-filters">
@@ -1203,8 +1427,8 @@ const finishedMailboxesFile = ref(null)
 const finishedImporting = ref(false)
 const finishedImportResult = ref(null)
 const cpaExporting = ref(false)
-const sessionCpaConverting = ref(false)
 const subExporting = ref(false)
+const accessTokenExporting = ref(false)
 const exportStatusUpdating = ref(false)
 const batchLoggingIn = ref(false)
 const quotaRefreshing = ref(false)
@@ -1240,11 +1464,30 @@ const oauthEmailDomainOptions = ref([])
 const oauthEmailLoading = ref(false)
 const oauthEmailSaving = ref(false)
 const oauthEmailLoaded = ref(false)
+const oauthPhoneSmsLoading = ref(false)
+const oauthPhoneSmsSaving = ref(false)
+const oauthPhoneSmsStatus = ref({})
+const oauthPhoneSmsForm = ref({
+  provider: 'phone_pool',
+  hero_sms_api_key: '',
+  hero_sms_country: '187',
+  hero_sms_max_price: '',
+  smsbower_api_key: '',
+  smsbower_country: '187',
+  smsbower_max_price: '',
+  oasis_sms_cdks: '',
+  oasis_sms_cdk_file: 'oasis-cdk-accounts.jsonl',
+  oasis_sms_base_url: 'https://sms.oapi.vip',
+  oasis_sms_poll_attempts: '24',
+  oasis_sms_poll_interval_ms: '5000',
+  oasis_sms_account_map_file: 'oasis-cdk-accounts.jsonl',
+})
 const oauthProxyEnabled = ref(false)
 const oauthProxyMode = ref('single')
 const oauthProxyUrl = ref('')
 const oauthProxyPoolText = ref('')
 const oauthProxyApiProvider = ref('cliproxy')
+const oauthBindPhone = ref(false)
 
 // 批量删除选中态:按邮箱(小写)保存,便于跨刷新复用
 const selectedSet = ref(new Set())
@@ -1253,6 +1496,7 @@ const batchProgress = ref('')
 
 const OAUTH_PROXY_STORAGE_KEY = 'autotoken.dashboard.oauthProxy'
 const OAUTH_EMAIL_STORAGE_KEY = 'autotoken.dashboard.oauthEmailCfg'
+const OAUTH_PHONE_STORAGE_KEY = 'autotoken.dashboard.oauthPhoneCfg'
 const BRAZIL_PIX_PAYMENT_STATE_STORAGE_KEY = 'autotoken_brazil_pix_payment_state'
 
 function loadOauthEmailConfig() {
@@ -1293,6 +1537,69 @@ async function saveOauthEmailConfig() {
   } catch (e) { console.error(e) }
   oauthEmailSaving.value = false
 }
+
+async function loadOauthPhoneSmsConfig() {
+  oauthPhoneSmsLoading.value = true
+  try {
+    const cfg = await api.getOAuthPhoneSmsConfig()
+    oauthPhoneSmsStatus.value = cfg || {}
+    oauthPhoneSmsForm.value = {
+      provider: ['hero_sms', 'smsbower', 'oasis'].includes(cfg?.provider) ? cfg.provider : 'phone_pool',
+      hero_sms_api_key: '',
+      hero_sms_country: cfg?.hero_sms_country || '187',
+      hero_sms_max_price: cfg?.hero_sms_max_price || '',
+      smsbower_api_key: '',
+      smsbower_country: cfg?.smsbower_country || '187',
+      smsbower_max_price: cfg?.smsbower_max_price || '',
+      oasis_sms_cdks: '',
+      oasis_sms_cdk_file: cfg?.oasis_sms_cdk_file || 'oasis-cdk-accounts.jsonl',
+      oasis_sms_base_url: cfg?.oasis_sms_base_url || 'https://sms.oapi.vip',
+      oasis_sms_poll_attempts: cfg?.oasis_sms_poll_attempts || '24',
+      oasis_sms_poll_interval_ms: cfg?.oasis_sms_poll_interval_ms || '5000',
+      oasis_sms_account_map_file: cfg?.oasis_sms_account_map_file || 'oasis-cdk-accounts.jsonl',
+    }
+  } catch (e) {
+    setMessage(e.message || '加载 OAuth 接码配置失败', 'error')
+  } finally {
+    oauthPhoneSmsLoading.value = false
+  }
+}
+
+async function saveOauthPhoneSmsConfig() {
+  oauthPhoneSmsSaving.value = true
+  try {
+    const result = await api.saveOAuthPhoneSmsConfig(oauthPhoneSmsForm.value)
+    oauthPhoneSmsStatus.value = result || {}
+    oauthPhoneSmsForm.value.hero_sms_api_key = ''
+    oauthPhoneSmsForm.value.smsbower_api_key = ''
+    oauthPhoneSmsForm.value.oasis_sms_cdks = ''
+    setMessage(result.message || 'OAuth 接码配置已保存')
+    await loadOauthPhoneSmsConfig()
+  } catch (e) {
+    setMessage(e.message || '保存 OAuth 接码配置失败', 'error')
+  } finally {
+    oauthPhoneSmsSaving.value = false
+  }
+}
+
+async function saveOauthConfig() {
+  if (oauthConfigTab.value === 'phone_sms') {
+    await saveOauthPhoneSmsConfig()
+    return
+  }
+  if (oauthConfigTab.value === 'phone') {
+    saveOauthPhoneConfig()
+    setMessage(oauthBindPhone.value ? 'OAuth 手机号绑定已启用' : 'OAuth 已切换为邮箱绑定')
+    return
+  }
+  if (oauthConfigTab.value === 'proxy') {
+    saveOauthProxyConfig()
+    setMessage('OAuth 代理配置已保存')
+    return
+  }
+  await saveOauthEmailConfig()
+}
+
 function loadOauthProxyConfig() {
   try {
     const saved = JSON.parse(localStorage.getItem(OAUTH_PROXY_STORAGE_KEY) || '{}')
@@ -1303,6 +1610,25 @@ function loadOauthProxyConfig() {
     oauthProxyApiProvider.value = saved.proxyApiProvider === '1024proxy' ? '1024proxy' : 'cliproxy'
   } catch (_) {
     // ignore broken local storage
+  }
+}
+
+function loadOauthPhoneConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OAUTH_PHONE_STORAGE_KEY) || '{}')
+    oauthBindPhone.value = Boolean(saved.bind_phone)
+  } catch (_) {
+    // ignore broken local storage
+  }
+}
+
+function saveOauthPhoneConfig() {
+  try {
+    localStorage.setItem(OAUTH_PHONE_STORAGE_KEY, JSON.stringify({
+      bind_phone: oauthBindPhone.value,
+    }))
+  } catch (_) {
+    // ignore local storage write errors
   }
 }
 
@@ -1343,9 +1669,11 @@ function buildOauthProxyPayload() {
 }
 
 function buildOauthEmailPayload() {
+  const bindPhone = Boolean(oauthBindPhone.value)
   return {
     protocol_only: true,
-    bind_email: true,
+    bind_email: !bindPhone,
+    bind_phone: bindPhone,
     ...(oauthEmailMailProvider.value ? { mail_provider: oauthEmailMailProvider.value } : {}),
     ...(oauthEmailMailProvider.value === 'luckmail' && oauthEmailLuckmailEmailType.value
       ? { luckmail_email_type: oauthEmailLuckmailEmailType.value }
@@ -1359,10 +1687,34 @@ function buildOauthEmailPayload() {
   }
 }
 
+function buildOauthPhoneSmsPayload() {
+  if (!oauthBindPhone.value) return {}
+  const provider = oauthPhoneSmsForm.value.provider || 'phone_pool'
+  const country = provider === 'hero_sms'
+    ? oauthPhoneSmsForm.value.hero_sms_country
+    : provider === 'smsbower'
+      ? oauthPhoneSmsForm.value.smsbower_country
+      : ''
+  return {
+    oauth_phone_sms_provider: provider,
+    ...(country ? { oauth_phone_sms_country: country } : {}),
+    ...(provider === 'hero_sms' && oauthPhoneSmsForm.value.hero_sms_max_price
+      ? { oauth_phone_sms_max_price: oauthPhoneSmsForm.value.hero_sms_max_price }
+      : {}),
+    ...(provider === 'smsbower' && oauthPhoneSmsForm.value.smsbower_max_price
+      ? { oauth_phone_sms_max_price: oauthPhoneSmsForm.value.smsbower_max_price }
+      : {}),
+    ...(provider === 'oasis' && oauthPhoneSmsForm.value.oasis_sms_cdks
+      ? { oauth_oasis_sms_cdks: oauthPhoneSmsForm.value.oasis_sms_cdks }
+      : {}),
+  }
+}
+
 function buildDashboardOauthPayload() {
   return {
     ...buildOauthProxyPayload(),
     ...buildOauthEmailPayload(),
+    ...buildOauthPhoneSmsPayload(),
   }
 }
 
@@ -1376,6 +1728,25 @@ const oauthProxySummary = computed(() => {
   return `补登录会通过 ${oauthProxyApiProvider.value} API 每个账号取一次代理。`
 })
 
+const oauthPhoneSmsConfigured = computed(() => {
+  const provider = oauthPhoneSmsForm.value.provider
+  if (provider === 'phone_pool') return true
+  if (provider === 'smsbower') return Boolean(oauthPhoneSmsStatus.value.smsbower_api_key_present)
+  if (provider === 'oasis') return Number(oauthPhoneSmsStatus.value.oasis_sms_cdk_count || 0) > 0
+  return Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
+})
+
+function setMessage(text, type = 'success') {
+  message.value = text
+  messageClass.value = type === 'error'
+    ? 'bg-red-500/10 text-red-400 border-red-500/20'
+    : 'bg-green-500/10 text-green-400 border-green-500/20'
+  window.clearTimeout(setMessage._timer)
+  setMessage._timer = window.setTimeout(() => {
+    message.value = ''
+  }, 8000)
+}
+
 function fmtTs(ts) {
   if (!ts) return '-'
   const d = new Date(ts * 1000)
@@ -1385,12 +1756,19 @@ function fmtTs(ts) {
 
 onMounted(() => {
   loadOauthProxyConfig()
-  watch(oauthConfigOpen, (open) => { if (open) loadOauthEmailConfig() })
+  loadOauthPhoneConfig()
+  watch(oauthConfigOpen, (open) => {
+    if (open) {
+      loadOauthEmailConfig()
+      loadOauthPhoneSmsConfig()
+    }
+  })
 })
 watch(
   [oauthProxyEnabled, oauthProxyMode, oauthProxyUrl, oauthProxyPoolText, oauthProxyApiProvider],
   saveOauthProxyConfig,
 )
+watch(oauthBindPhone, saveOauthPhoneConfig)
 const adminReady = computed(() => !!props.adminStatus?.configured)
 const syncDisabled = computed(() => false)
 const loginDisabled = computed(() => false)
@@ -1719,13 +2097,6 @@ const batchLoginableAccounts = computed(() => {
 })
 const cpaExportableAccounts = computed(() => {
   return scopedAccounts.value.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
-})
-const sessionCpaConvertibleAccounts = computed(() => {
-  return scopedAccounts.value.filter(acc =>
-    !acc.is_main_account &&
-    !hasCodexAuthFile(acc) &&
-    Boolean(acc.auth_session_file)
-  )
 })
 const bindableFreeAccounts = computed(() =>
   allAccounts.value.filter(isBindableFreeAccount)
@@ -2691,6 +3062,33 @@ async function downloadCredentials() {
   }
 }
 
+async function exportSelectedAccessTokens() {
+  const emails = selectedEmails.value
+  if (!emails.length || accessTokenExporting.value) return
+
+  accessTokenExporting.value = true
+  message.value = ''
+  try {
+    const result = await api.exportAccountAccessTokens(emails)
+    const blob = new Blob([result.content || ''], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = result.filename || `access-tokens-${new Date().toISOString().slice(0, 10)}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
+    const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无可用 access_token 账号` : ''
+    message.value = `已导出 ${result.count || 0} 个账号的 access_token${missing}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    accessTokenExporting.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
 function downloadBase64File(contentBase64, filename, contentType) {
   const binary = atob(contentBase64 || '')
   const bytes = new Uint8Array(binary.length)
@@ -2724,28 +3122,6 @@ async function exportCpaAuths() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     cpaExporting.value = false
-    setTimeout(() => { message.value = '' }, 8000)
-  }
-}
-
-async function convertSessionCpaAuths() {
-  const emails = sessionCpaConvertibleAccounts.value.map(acc => acc.email).filter(Boolean)
-  if (!emails.length) return
-
-  sessionCpaConverting.value = true
-  message.value = ''
-  try {
-    const result = await api.convertSessionCpaAuths(emails)
-    const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个无 auth_session 账号` : ''
-    const invalid = Array.isArray(result.invalid) && result.invalid.length ? `，${result.invalid.length} 个无法转换` : ''
-    message.value = `已直接转换 ${result.converted || 0} 个 CPA 认证${missing}${invalid}`
-    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
-    emit('refresh')
-  } catch (e) {
-    message.value = e.message
-    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
-  } finally {
-    sessionCpaConverting.value = false
     setTimeout(() => { message.value = '' }, 8000)
   }
 }
@@ -2806,7 +3182,8 @@ async function batchLoginAccounts() {
     const result = await api.loginAccountsBatch(emails, oauthPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
     const bindText = batchLoginableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
-    message.value = `已提交批量协议补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}`
+    const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
+    message.value = `已提交批量协议补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}${phoneText}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
     emit('refresh')
@@ -2994,7 +3371,8 @@ async function loginAccount(email) {
     const result = await api.loginAccount(email, oauthPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
     const bindText = email.includes('@') ? '' : '，成功后会绑定邮箱并迁移账号'
-    message.value = `已提交 ${email} 的协议补登录任务: ${result.task_id}${proxyText}${bindText}`
+    const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
+    message.value = `已提交 ${email} 的协议补登录任务: ${result.task_id}${proxyText}${bindText}${phoneText}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
     emit('refresh')

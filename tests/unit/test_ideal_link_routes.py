@@ -4,6 +4,7 @@ import base64
 import io
 import json
 
+import pytest
 from fastapi import FastAPI, HTTPException
 
 from autotoken.api_routes.ideal_link import (
@@ -14,6 +15,7 @@ from autotoken.api_routes.ideal_link import (
     create_ideal_link_router,
 )
 from autotoken.integrations.gpthel_ideal import app as ideal_app
+from autotoken.services import proxy_runtime
 
 
 def _app():
@@ -168,6 +170,32 @@ def test_ideal_long_link_job_deletes_account_on_non_zero_amount(monkeypatch):
     assert disabled_legacy == [email]
 
 
+def test_ideal_prepare_request_proxy_uses_configured_preflight_attempts(monkeypatch):
+    preflighted: list[str] = []
+
+    def fake_payment_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (False, "ProxyError: ruleset blocked")
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_payment_preflight)
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth_api HTTP 200"))
+
+    req = ideal_app.LongLinkRequest.model_validate(
+        {
+            "accessToken": "token",
+            "proxy": "proxy.example:1000:user-region-US-sid-old-t-120:pass",
+            "link_type": "ideal",
+            "billing_country": "NL",
+            "proxyPreflightAttempts": 3,
+        }
+    )
+
+    with pytest.raises(HTTPException, match="代理预检失败"):
+        ideal_app.prepare_request_proxy(req)
+
+    assert len(preflighted) == 3
+
+
 def test_ideal_amount_policy_accepts_one_minor_unit():
     assert ideal_app.is_acceptable_low_amount("0") is True
     assert ideal_app.is_acceptable_low_amount(0) is True
@@ -242,6 +270,74 @@ def test_ideal_batch_start_runs_accounts_and_persists_link(monkeypatch, tmp_path
     assert job["successes"][0]["email"] == "ideal@example.com"
     assert links["links"][0]["ideal_link"] == "https://pay.openai.com/ideal"
     assert links["links"][0]["account_email"] == "ideal@example.com"
+
+
+def test_ideal_batch_propagates_proxy_preflight_attempts(monkeypatch, tmp_path):
+    app = _app()
+    from autotoken.api_routes import ideal_link
+
+    class ImmediateThread:
+        def __init__(self, target, daemon=False):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    class FakeResult:
+        def model_dump(self):
+            return {
+                "ok": True,
+                "cs_id": "cs_ideal",
+                "billing_country": "NL",
+                "currency": "EUR",
+                "link_type": "ideal",
+                "long_url": "https://pay.openai.com/ideal",
+                "amount": "0",
+                "amount_display": "€0.00",
+            }
+
+    captured: dict[str, int] = {}
+
+    def fake_prepare(req):
+        captured["attempts"] = req.proxy_preflight_attempts
+        return False
+
+    monkeypatch.setattr(ideal_link, "LINKS_FILE", tmp_path / "ideal_links.json")
+    monkeypatch.setattr(ideal_link, "ACCOUNT_STATUS_FILE", tmp_path / "ideal_account_status.json")
+    monkeypatch.setattr(ideal_link.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(ideal_link.pix_routes, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "ideal@example.com", "ttl_seconds": 3600, "updated_at": 1},
+    ])
+    monkeypatch.setattr(ideal_link.pix_routes, "_load_token_for_email", lambda email: "token-for-" + email)
+    monkeypatch.setattr(ideal_link.account_store, "load_accounts", lambda: [])
+    monkeypatch.setattr(ideal_link.legacy, "prepare_request_proxy", fake_prepare)
+    monkeypatch.setattr(ideal_link.legacy, "generate_long_link_once", lambda req, use_explicit_proxy, steps=None: FakeResult())
+    ideal_link.JOBS.clear()
+
+    result = _endpoint(app, "/api/ideal/batch/start", "POST")(
+        IdealBatchStartRequest.model_validate({
+            "accountEmails": ["ideal@example.com"],
+            "concurrency": 1,
+            "proxyPreflightAttempts": 4,
+        })
+    )
+
+    assert _endpoint(app, "/api/ideal/jobs/{job_id}", "GET")(result["job_id"])["status"] == "success"
+    assert captured["attempts"] == 4
+
+
+def test_ideal_proxy_preflight_attempts_cap_at_one_hundred():
+    batch_req = IdealBatchStartRequest.model_validate({
+        "accountEmails": [],
+        "proxyPreflightAttempts": 200,
+    })
+    long_req = ideal_app.LongLinkRequest.model_validate({
+        "accessToken": "token",
+        "proxyPreflightAttempts": 200,
+    })
+
+    assert batch_req.proxy_preflight_attempts == 100
+    assert long_req.proxy_preflight_attempts == 100
 
 
 def test_ideal_links_delete_and_clear_use_ideal_file(tmp_path, monkeypatch):

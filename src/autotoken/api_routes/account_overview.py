@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 CHATGPT_SUBSCRIPTIONS_PATH = "/backend-api/subscriptions"
 CHATGPT_SUBSCRIPTIONS_URL = f"https://chatgpt.com{CHATGPT_SUBSCRIPTIONS_PATH}"
@@ -14,6 +15,10 @@ CHATGPT_SUBSCRIPTIONS_FALLBACK_URL = f"https://chat.openai.com{CHATGPT_SUBSCRIPT
 CHATGPT_ACCOUNT_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
 CHATGPT_ACCOUNT_CHECK_URL = f"https://chatgpt.com{CHATGPT_ACCOUNT_CHECK_PATH}"
 CHATGPT_ACCOUNT_CHECK_FALLBACK_URL = f"https://chat.openai.com{CHATGPT_ACCOUNT_CHECK_PATH}"
+
+
+class ExportAccessTokensParams(BaseModel):
+    emails: list[str] = Field(default_factory=list)
 
 
 def _extract_access_token(auth_data: dict[str, Any]) -> str:
@@ -695,6 +700,41 @@ def create_account_overview_router(
         if not access_token:
             raise HTTPException(status_code=404, detail="该账号认证文件缺少 access_token")
         return {"email": email, "access_token": access_token}
+
+    @router.post("/api/accounts/export-access-tokens")
+    def export_account_access_tokens(params: ExportAccessTokensParams):
+        """批量导出所选账号的 ChatGPT access_token。"""
+        emails: list[str] = []
+        seen: set[str] = set()
+        for item in params.emails or []:
+            email = str(item or "").strip().lower()
+            if email and email not in seen:
+                seen.add(email)
+                emails.append(email)
+        if not emails:
+            raise HTTPException(status_code=400, detail="emails 不能为空")
+
+        items: list[dict[str, str]] = []
+        missing: list[dict[str, str]] = []
+        for email in emails:
+            try:
+                normalized, _auth_file, auth_data = _load_account_auth_data(email, prefer_auth_session=True)
+                access_token = _extract_access_token(auth_data)
+                if not access_token:
+                    raise HTTPException(status_code=404, detail="该账号认证文件缺少 access_token")
+                items.append({"email": normalized, "access_token": access_token})
+            except HTTPException as exc:
+                missing.append({"email": email, "error": str(exc.detail or f"HTTP {exc.status_code}")})
+
+        content = "\n".join(item["access_token"] for item in items)
+        return {
+            "count": len(items),
+            "total": len(emails),
+            "missing": missing,
+            "items": items,
+            "content": content,
+            "filename": f"access-tokens-{datetime.now(UTC).strftime('%Y-%m-%d')}.txt",
+        }
 
     @router.get("/api/accounts/{email}/subscription")
     def get_account_subscription(email: str):

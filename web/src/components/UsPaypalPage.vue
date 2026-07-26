@@ -60,7 +60,7 @@
             <span class="mt-1 block text-xs text-gray-500">填一条代理即可；后端会按目标国家/优惠区自动切换 region 和 sid。兼容 711、ArxLabs 等 host:port:user:pass 或 URL 格式。</span>
           </label>
 
-          <div class="grid gap-4 md:grid-cols-2">
+          <div class="grid gap-4 md:grid-cols-3">
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
               <input v-model.number="form.concurrency" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
@@ -70,6 +70,11 @@
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
               <input v-model.number="form.maxAttempts" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
               <span class="mt-1 block text-xs text-gray-500">单账号最多尝试次数，含首次；默认 5。</span>
+            </label>
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">代理预检次数</span>
+              <input v-model.number="form.proxyPreflightAttempts" type="number" min="1" max="100" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">代理出口/认证接口预检失败时的最大尝试次数，默认 5。</span>
             </label>
           </div>
 
@@ -409,6 +414,11 @@
                   <span class="mt-1 block text-xs text-gray-500">多选账号时生效，默认 1，最高 10。</span>
                 </label>
                 <label class="block">
+                  <span class="mb-1.5 block text-sm font-semibold text-gray-300">代理预检次数</span>
+                  <input v-model.number="protocolForm.proxyPreflightAttempts" type="number" min="1" max="100" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
+                  <span class="mt-1 block text-xs text-gray-500">代理出口/认证接口预检失败时的最大尝试次数，默认 5。</span>
+                </label>
+                <label class="block">
                   <span class="mb-1.5 block text-sm font-semibold text-gray-300">OTP 等待秒数</span>
                   <input v-model.number="protocolForm.smsRecordWaitSeconds" type="number" min="60" max="900" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none" :disabled="protocolBusy" />
                   <span class="mt-1 block text-xs text-gray-500">默认 300；PayPal 短信慢时可调到 600。</span>
@@ -522,6 +532,7 @@ const form = ref({
   proxies: '',
   concurrency: 1,
   maxAttempts: 5,
+  proxyPreflightAttempts: 5,
   region: 'US',
   promoRegion: 'JP',
   notificationSoundEnabled: true,
@@ -560,6 +571,7 @@ const protocolForm = ref({
   concurrency: 1,
   smsRecordWaitSeconds: 300,
   smsRecordPollSeconds: 3,
+  proxyPreflightAttempts: 5,
 })
 const protocolBusy = ref(false)
 const protocolCanceling = ref(false)
@@ -710,6 +722,7 @@ function validateStart(emails = selectedEmails.value) {
   }
   form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
   form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
+  form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   form.value.region = String(form.value.region || 'US').trim().toUpperCase()
   form.value.promoRegion = String(form.value.promoRegion || 'JP').trim().toUpperCase()
   if (!form.value.proxies.trim()) {
@@ -734,6 +747,7 @@ async function startWithEmails(emails, actionText = '提取') {
       proxies: form.value.proxies,
       concurrency: form.value.concurrency,
       maxAttempts: form.value.maxAttempts,
+      proxyPreflightAttempts: form.value.proxyPreflightAttempts,
       region: form.value.region,
       promoRegion: form.value.promoRegion,
     }
@@ -975,6 +989,7 @@ function validateProtocolPayment() {
     if (batchCount > 1 && phoneCount < batchCount) { setProtocolStatus('HeroSMS 长效号批量支付时，每个账号都需要一行长效号码。', true); return false }
   }
   protocolForm.value.concurrency = Math.max(1, Math.min(10, Number(protocolForm.value.concurrency || 1)))
+  protocolForm.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(protocolForm.value.proxyPreflightAttempts || 5)))
   protocolForm.value.smsRecordWaitSeconds = Math.max(60, Math.min(900, Number(protocolForm.value.smsRecordWaitSeconds || 300)))
   protocolForm.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(protocolForm.value.smsRecordPollSeconds || 3)))
   return true
@@ -1000,6 +1015,7 @@ async function startProtocolPayment() {
       country: protocolForm.value.country,
       accountEmail: protocolForm.value.accountEmail,
       concurrency: protocolForm.value.concurrency,
+      proxyPreflightAttempts: protocolForm.value.proxyPreflightAttempts,
       smsRecordWaitSeconds: protocolForm.value.smsRecordWaitSeconds,
       smsRecordPollSeconds: protocolForm.value.smsRecordPollSeconds,
     }
@@ -1072,12 +1088,19 @@ onMounted(async () => {
     for (const key of Object.keys(form.value)) {
       if (savedForm[key] !== undefined) form.value[key] = savedForm[key]
     }
+    form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
+    form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
+    form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   } catch { /* ignore malformed local state */ }
   try {
     const savedProtocolForm = JSON.parse(localStorage.getItem(PROTOCOL_FORM_STORAGE_KEY) || '{}')
     for (const key of Object.keys(protocolForm.value)) {
       if (savedProtocolForm[key] !== undefined) protocolForm.value[key] = savedProtocolForm[key]
     }
+    protocolForm.value.concurrency = Math.max(1, Math.min(10, Number(protocolForm.value.concurrency || 1)))
+    protocolForm.value.smsRecordWaitSeconds = Math.max(60, Math.min(900, Number(protocolForm.value.smsRecordWaitSeconds || 300)))
+    protocolForm.value.smsRecordPollSeconds = Math.max(1, Math.min(30, Number(protocolForm.value.smsRecordPollSeconds || 3)))
+    protocolForm.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(protocolForm.value.proxyPreflightAttempts || 5)))
   } catch { /* ignore malformed protocol state */ }
   await reloadAll()
   try {

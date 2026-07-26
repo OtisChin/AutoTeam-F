@@ -172,7 +172,7 @@
             <span class="mt-1 block text-xs text-gray-500">711/ArxLabs 的 host:port:user:pass 会自动按 socks5h 使用。</span>
           </label>
 
-          <div class="grid gap-4 md:grid-cols-2">
+          <div class="grid gap-4 md:grid-cols-3">
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
               <input v-model.number="form.concurrency" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
@@ -182,6 +182,11 @@
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
               <input v-model.number="form.maxAttempts" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
               <span class="mt-1 block text-xs text-gray-500">单账号最多尝试次数，含首次；默认 5。</span>
+            </label>
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">代理预检次数</span>
+              <input v-model.number="form.proxyPreflightAttempts" type="number" min="1" max="100" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">代理出口/认证接口预检失败时的最大尝试次数，默认 5。</span>
             </label>
           </div>
 
@@ -441,7 +446,7 @@ const PAYMENT_MAX_CONCURRENCY = 5
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
 const UPI_LINK_TTL_MS = 5 * 60 * 1000
 
-const form = ref({ proxies: '', concurrency: 1, maxAttempts: 5, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '', notificationSoundEnabled: true })
+const form = ref({ proxies: '', concurrency: 1, maxAttempts: 5, proxyPreflightAttempts: 5, localProxy: '', kookeeyEndpoint: 'gate.kookeey.info:1000', kookeeyUser: '', kookeeyPass: '', notificationSoundEnabled: true })
 const tempForm = ref({ cdk: '', concurrency: 5 })
 const tempCdkInput = ref('')
 const tempCdks = ref([])
@@ -1198,6 +1203,7 @@ function validateStart(emails = selectedEmails.value) {
   }
   form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
   form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
+  form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   if (!form.value.proxies.trim() && (!form.value.kookeeyUser || !form.value.kookeeyPass)) {
     setStatus('请填写 IN 代理列表，或在高级设置填写 Kookeey 用户名/密码。', true)
     return false
@@ -1226,6 +1232,7 @@ async function startWithEmails(emails, actionText = '提取') {
           proxies: form.value.proxies,
           concurrency: form.value.concurrency,
           maxAttempts: form.value.maxAttempts,
+          proxyPreflightAttempts: form.value.proxyPreflightAttempts,
           localProxy: form.value.localProxy,
           kookeeyEndpoint: form.value.kookeeyEndpoint,
           kookeeyUser: form.value.kookeeyUser,
@@ -1437,6 +1444,9 @@ onMounted(async () => {
     for (const key of Object.keys(form.value)) {
       if (savedForm[key] !== undefined) form.value[key] = savedForm[key]
     }
+    form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
+    form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
+    form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   } catch { /* ignore malformed local state */ }
   try {
     const savedTempForm = JSON.parse(localStorage.getItem(TEMP_FORM_STORAGE_KEY) || '{}')

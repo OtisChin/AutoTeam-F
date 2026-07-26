@@ -106,6 +106,9 @@ def test_batch_job_generates_kakao_link_and_records_status(monkeypatch):
     saved_link = json.loads(kakao_pay.LINKS_FILE.read_text(encoding="utf-8"))[0]
     assert saved_link["account_email"] == email
     assert saved_link["kakao_link"] == "https://pay.nicepay.co.kr/v1/checkout/pay/test"
+    assert saved_link["kakao_ttl_seconds"] == 600
+    assert saved_link["created_at_ts"] > 0
+    assert saved_link["kakao_expires_at_ts"] - saved_link["created_at_ts"] == 600
     statuses = json.loads(kakao_pay.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses[email]["status"] == "success"
 
@@ -283,6 +286,59 @@ def test_batch_account_stops_after_kakao_proxy_preflight_budget(monkeypatch):
     assert len(preflighted) == 10
     assert "Kakao 代理预检失败" in result["error"]["error"]
     assert any("代理预检已达到上限，停止真实提链" in line for line in kakao_pay.JOBS[job_id]["logs"])
+
+
+def test_batch_account_uses_configured_proxy_preflight_attempts(monkeypatch):
+    email = "blocked-kakao-configured@example.com"
+    preflighted = []
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_payment_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return False, "trace HTTP 200; chatgpt_home HTTP 403; html_challenge"
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_payment_preflight)
+    monkeypatch.setattr(kakao_pay, "generate_kakao_trial", lambda cfg, log: pytest.fail("should not generate when proxy preflight fails"))
+    job_id = "kakao-configured-preflight-job"
+    kakao_pay.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = kakao_pay.KakaoPayBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "\n".join([
+            "proxy1.example:1000:user-region-KR-sid-old1-t-120:pass",
+            "proxy2.example:1000:user-region-KR-sid-old2-t-120:pass",
+            "proxy3.example:1000:user-region-KR-sid-old3-t-120:pass",
+        ]),
+        "maxAttempts": 5,
+        "proxyPreflightAttempts": 2,
+    })
+
+    result = kakao_pay._run_batch_account(
+        job_id,
+        req,
+        {"email": email, "auth_file": "auth.json"},
+        1,
+        1,
+        kakao_pay._parse_proxies(req.proxies),
+    )
+
+    assert result["ok"] is False
+    assert len(preflighted) == 2
+    assert any("Kakao checkout 代理预检开始：2/2" in line for line in kakao_pay.JOBS[job_id]["logs"])
+
+
+def test_kakao_proxy_preflight_attempts_cap_at_one_hundred():
+    req = kakao_pay.KakaoPayBatchStartRequest.model_validate({
+        "accountEmails": [],
+        "proxyPreflightAttempts": 200,
+    })
+
+    assert req.proxy_preflight_attempts == 100
 
 
 def test_kakao_routes_expose_job_and_link_management(monkeypatch):

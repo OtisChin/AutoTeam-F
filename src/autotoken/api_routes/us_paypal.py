@@ -42,6 +42,7 @@ MAX_PROTOCOL_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 PROXY_PREFLIGHT_MAX_ATTEMPTS = 10
+MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS = 100
 PAYPAL_STATUS_PENDING = "pending"
 PAYPAL_STATUS_RUNNING = "running"
 PAYPAL_STATUS_SUCCESS = "success"
@@ -70,6 +71,7 @@ class UsPaypalStartRequest(BaseModel):
     promo_region: str = Field("JP", alias="promoRegion")
     promo_mode: str = Field("promo", alias="promoMode")
     max_attempts: int = Field(MAX_ACCOUNT_ATTEMPTS, alias="maxAttempts")
+    proxy_preflight_attempts: int = Field(PROXY_PREFLIGHT_MAX_ATTEMPTS, alias="proxyPreflightAttempts")
     model_config = {"populate_by_name": True}
 
     @field_validator("region", "promo_region", mode="before")
@@ -89,6 +91,15 @@ class UsPaypalStartRequest(BaseModel):
         except Exception:
             attempts = MAX_ACCOUNT_ATTEMPTS
         return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+    @field_validator("proxy_preflight_attempts", mode="before")
+    @classmethod
+    def _clean_proxy_preflight_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or PROXY_PREFLIGHT_MAX_ATTEMPTS)
+        except Exception:
+            attempts = PROXY_PREFLIGHT_MAX_ATTEMPTS
+        return max(1, min(MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS, attempts))
 
     @field_validator("promo_mode", mode="before")
     @classmethod
@@ -135,6 +146,7 @@ class UsPaypalProtocolStartRequest(BaseModel):
     timeout_seconds: int = Field(900, alias="timeoutSeconds")
     sms_record_wait_seconds: int = Field(300, alias="smsRecordWaitSeconds")
     sms_record_poll_seconds: float = Field(3.0, alias="smsRecordPollSeconds")
+    proxy_preflight_attempts: int = Field(PROXY_PREFLIGHT_MAX_ATTEMPTS, alias="proxyPreflightAttempts")
     debug: bool = False
     model_config = {"populate_by_name": True}
 
@@ -178,6 +190,15 @@ class UsPaypalProtocolStartRequest(BaseModel):
         except Exception:
             seconds = 3.0
         return max(1.0, min(30.0, seconds))
+
+    @field_validator("proxy_preflight_attempts", mode="before")
+    @classmethod
+    def _clean_proxy_preflight_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or PROXY_PREFLIGHT_MAX_ATTEMPTS)
+        except Exception:
+            attempts = PROXY_PREFLIGHT_MAX_ATTEMPTS
+        return max(1, min(MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS, attempts))
 
 
 class UsPaypalProtocolBatchStartRequest(UsPaypalProtocolStartRequest):
@@ -377,18 +398,27 @@ def _account_attempt_limit(req: UsPaypalBatchStartRequest) -> int:
     return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
 
 
-def _preflight_paypal_link_proxies_or_raise(cfg: PaypalJobConfig, log) -> PaypalJobConfig:
+def _proxy_preflight_attempt_limit(value: Any, default: int = PROXY_PREFLIGHT_MAX_ATTEMPTS) -> int:
+    try:
+        attempts = int(value or default)
+    except Exception:
+        attempts = default
+    return max(1, min(MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS, attempts))
+
+
+def _preflight_paypal_link_proxies_or_raise(cfg: PaypalJobConfig, log, max_attempts: int | None = None) -> PaypalJobConfig:
     region = str(cfg.region or "US").strip().upper() or "US"
     if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
         return cfg
+    attempts = _proxy_preflight_attempt_limit(max_attempts)
 
     def preflight_region(current_cfg: PaypalJobConfig, target_region: str, label: str) -> str:
         region_errors: list[str] = []
-        for stage_index in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
+        for stage_index in range(attempts):
             proxy_url, sid_label = build_paypal_dynamic_proxy(current_cfg, stage_index, target_region)
             if not proxy_url:
                 continue
-            log(f"{label}代理预检开始：{stage_index + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} region={target_region} {sid_label}")
+            log(f"{label}代理预检开始：{stage_index + 1}/{attempts} region={target_region} {sid_label}")
             ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
             if ok:
                 auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(proxy_url, current_cfg.access_token)
@@ -402,7 +432,7 @@ def _preflight_paypal_link_proxies_or_raise(cfg: PaypalJobConfig, log) -> Paypal
                 continue
             region_errors.append(str(message or "unknown"))
             log(f"{label}代理预检失败：{message}")
-        raise RuntimeError(f"代理预检失败: {target_region} {'; '.join(region_errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
+        raise RuntimeError(f"代理预检失败: {target_region} {'; '.join(region_errors[-attempts:])}")
 
     checkout_proxy = preflight_region(cfg, region, "目标国家")
     cfg = replace(cfg, direct_proxies=[checkout_proxy], preflighted_checkout_proxy_url=checkout_proxy)
@@ -629,7 +659,7 @@ def _run_batch_account(
                 apply_promo=req.promo_mode == "promo",
             )
             try:
-                cfg = _preflight_paypal_link_proxies_or_raise(cfg, account_log)
+                cfg = _preflight_paypal_link_proxies_or_raise(cfg, account_log, req.proxy_preflight_attempts)
                 result = generate_paypal_trial(cfg, log=account_log)
                 if attempt > 1:
                     _append_log(job_id, f"[{index}/{total}] 重试成功：{email} attempt={attempt}")
@@ -865,25 +895,26 @@ def _protocol_proxy_for_country(proxy_value: str, country: str) -> str:
     return proxy
 
 
-def _preflight_protocol_proxy_or_raise(proxy_values: str | list[str], country: str, log) -> str:
+def _preflight_protocol_proxy_or_raise(proxy_values: str | list[str], country: str, log, max_attempts: int | None = None) -> str:
     candidates = _parse_proxies(proxy_values)
     if not candidates:
         return ""
     target_country = str(country or "US").strip().upper() or "US"
     errors: list[str] = []
-    for attempt in range(PROXY_PREFLIGHT_MAX_ATTEMPTS):
+    attempts = _proxy_preflight_attempt_limit(max_attempts)
+    for attempt in range(attempts):
         raw_proxy = candidates[attempt % len(candidates)]
         proxy_url = _protocol_proxy_for_country(raw_proxy, target_country)
         if not proxy_url:
             continue
-        log(f"协议支付代理预检开始：{attempt + 1}/{PROXY_PREFLIGHT_MAX_ATTEMPTS} country={target_country}")
+        log(f"协议支付代理预检开始：{attempt + 1}/{attempts} country={target_country}")
         ok, message = proxy_runtime.preflight_payment_proxy_url(proxy_url)
         if ok:
             log(f"协议支付代理预检通过：{message}")
             return proxy_url
         errors.append(str(message or "unknown"))
         log(f"协议支付代理预检失败：{message}")
-    raise RuntimeError(f"代理预检失败: {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
+    raise RuntimeError(f"代理预检失败: {'; '.join(errors[-attempts:])}")
 
 
 def _protocol_proxy_for_index(proxies: list[str], index: int, country: str) -> str:
@@ -975,7 +1006,7 @@ def _run_protocol_payment_job(job_id: str, req: UsPaypalProtocolStartRequest) ->
             JOBS[job_id]["status"] = "running"
             JOBS[job_id]["running_count"] = 1
         log(f"PayPal 协议支付开始：country={req.country} ba_token={ba_token}")
-        proxy_url = _preflight_protocol_proxy_or_raise(proxy_candidates, req.country, log)
+        proxy_url = _preflight_protocol_proxy_or_raise(proxy_candidates, req.country, log, req.proxy_preflight_attempts)
         cfg = PaypalProtocolRunConfig(
             ba_token=ba_token,
             phone=phone,
@@ -1060,7 +1091,12 @@ def _run_protocol_batch_account(
         _append_log(job_id, f"[{index}/{total}] {message}")
 
     try:
-        proxy_url = _preflight_protocol_proxy_or_raise(proxy_candidates, str(task.get("country") or req.country), account_log)
+        proxy_url = _preflight_protocol_proxy_or_raise(
+            proxy_candidates,
+            str(task.get("country") or req.country),
+            account_log,
+            req.proxy_preflight_attempts,
+        )
         cfg = PaypalProtocolRunConfig(
             ba_token=str(task.get("ba_token") or ""),
             paypal_link=str(task.get("paypal_link") or ""),

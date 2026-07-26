@@ -391,6 +391,40 @@ def test_batch_account_preflights_proxy_before_pix_generation(monkeypatch, tmp_p
     assert any("代理预检失败" in line for line in brazil_pix.JOBS[job_id]["logs"])
 
 
+def test_batch_account_uses_configured_proxy_preflight_attempts(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    email = "blocked-configured@example.com"
+    preflighted: list[str] = []
+    monkeypatch.setattr(brazil_pix, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (False, "ProxyError: ruleset blocked")
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_preflight)
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", lambda cfg, log: pytest.fail("should not generate when proxy preflight fails"))
+    job_id = "pix-configured-preflight-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-BR-sid-old-t-120:pass",
+        "region": "BR",
+        "maxAttempts": 5,
+        "proxyPreflightAttempts": 2,
+    })
+    result = brazil_pix._run_batch_account(job_id, req, {"email": email, "auth_file": "auth.json"}, 1, 1, brazil_pix._parse_proxies(req.proxies))
+
+    assert result["ok"] is False
+    assert len(preflighted) == 2
+    assert any("代理预检开始：2/2" in line for line in brazil_pix.JOBS[job_id]["logs"])
+
+
 def test_batch_account_auth_preflight_blocks_pix_generation(monkeypatch, tmp_path):
     _isolate_files(monkeypatch, tmp_path)
     email = "auth-blocked@example.com"
@@ -469,6 +503,15 @@ def test_pix_proxy_preflight_has_separate_five_attempt_budget(monkeypatch, tmp_p
     assert "proxy5.example" in captured["cfg"].direct_proxies[0]
     assert brazil_pix.build_pix_dynamic_proxy(captured["cfg"], 0)[0] == preflighted[-1]
     assert not any("proxy6.example" in proxy for proxy in preflighted)
+
+
+def test_pix_proxy_preflight_attempts_cap_at_one_hundred():
+    req = brazil_pix.BrazilPixBatchStartRequest.model_validate({
+        "accountEmails": [],
+        "proxyPreflightAttempts": 200,
+    })
+
+    assert req.proxy_preflight_attempts == 100
 
 
 def test_single_job_deletes_token_revoked_account(monkeypatch, tmp_path):

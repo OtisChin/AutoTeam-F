@@ -2509,6 +2509,32 @@ def _run_account_codex_login_once(
     auth_session_data = load_auth_session(email)
     oauth_proxy_url = str(proxy_url or "").strip()
     oauth_proxy_bypass = str(proxy_bypass or "").strip() or None
+    effective_oauth_phone_sms_provider = str(oauth_phone_sms_provider or "").strip()
+    effective_oauth_phone_sms_country = str(oauth_phone_sms_country or "").strip()
+    effective_oauth_phone_sms_max_price = str(oauth_phone_sms_max_price or "").strip()
+    effective_oauth_oasis_sms_cdks = str(oauth_oasis_sms_cdks or "").strip()
+    if bind_phone and not effective_oauth_phone_sms_provider:
+        oauth_phone_cfg = _oauth_phone_sms_env()
+        effective_oauth_phone_sms_provider = str(oauth_phone_cfg.get("provider") or "phone_pool").strip()
+        if not effective_oauth_phone_sms_country:
+            provider_key = effective_oauth_phone_sms_provider.replace("-", "_")
+            if provider_key == "hero_sms":
+                effective_oauth_phone_sms_country = str(oauth_phone_cfg.get("hero_sms_country") or "").strip()
+                effective_oauth_phone_sms_max_price = (
+                    effective_oauth_phone_sms_max_price
+                    or str(oauth_phone_cfg.get("hero_sms_max_price") or "").strip()
+                )
+            elif provider_key == "smsbower":
+                effective_oauth_phone_sms_country = str(oauth_phone_cfg.get("smsbower_country") or "").strip()
+                effective_oauth_phone_sms_max_price = (
+                    effective_oauth_phone_sms_max_price
+                    or str(oauth_phone_cfg.get("smsbower_max_price") or "").strip()
+                )
+            elif provider_key == "oasis":
+                effective_oauth_oasis_sms_cdks = (
+                    effective_oauth_oasis_sms_cdks
+                    or str(oauth_phone_cfg.get("oasis_sms_cdks") or "").strip()
+                )
     phone_only_target = "@" not in str(email or "")
     session_payload: dict | None = None
 
@@ -2541,10 +2567,10 @@ def _run_account_codex_login_once(
                     account_id=acc.get("cloudmail_account_id"),
                     mailbox_factory=_create_bind_mailbox,
                     proxy=oauth_proxy_url or None,
-                    oauth_phone_sms_provider=oauth_phone_sms_provider,
-                    oauth_phone_sms_country=oauth_phone_sms_country,
-                    oauth_phone_sms_max_price=oauth_phone_sms_max_price,
-                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
+                    oauth_phone_sms_provider=effective_oauth_phone_sms_provider,
+                    oauth_phone_sms_country=effective_oauth_phone_sms_country,
+                    oauth_phone_sms_max_price=effective_oauth_phone_sms_max_price,
+                    oauth_oasis_sms_cdks=effective_oauth_oasis_sms_cdks,
                     progress_callback=progress_callback,
                 )
                 if session_payload.get("mailbox_account_id"):
@@ -2560,10 +2586,10 @@ def _run_account_codex_login_once(
                     password=acc.get("password", ""),
                     account_id=acc.get("cloudmail_account_id"),
                     proxy=oauth_proxy_url or None,
-                    oauth_phone_sms_provider=oauth_phone_sms_provider,
-                    oauth_phone_sms_country=oauth_phone_sms_country,
-                    oauth_phone_sms_max_price=oauth_phone_sms_max_price,
-                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks,
+                    oauth_phone_sms_provider=effective_oauth_phone_sms_provider,
+                    oauth_phone_sms_country=effective_oauth_phone_sms_country,
+                    oauth_phone_sms_max_price=effective_oauth_phone_sms_max_price,
+                    oauth_oasis_sms_cdks=effective_oauth_oasis_sms_cdks,
                     progress_callback=progress_callback,
                 )
             bundle = (session_payload or {}).get("codex_oauth_bundle")
@@ -2667,6 +2693,10 @@ def _run_account_codex_login_once(
                 browser_login_kwargs["proxy_bypass"] = oauth_proxy_bypass
         if refresh_auth_session:
             browser_login_kwargs["auth_session_callback"] = _capture_refreshed_auth_session
+        if bind_phone or effective_oauth_phone_sms_provider:
+            browser_login_kwargs["phone_sms_provider"] = effective_oauth_phone_sms_provider or None
+            browser_login_kwargs["phone_sms_country"] = effective_oauth_phone_sms_country or None
+            browser_login_kwargs["phone_sms_oasis_cdks"] = effective_oauth_oasis_sms_cdks or None
         bundle = login_codex_via_browser(
             email,
             acc.get("password", ""),

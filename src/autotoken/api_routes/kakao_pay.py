@@ -29,10 +29,12 @@ from autotoken.storage.auth_session_store import delete_auth_session
 
 LINKS_FILE = PROJECT_ROOT / "data" / "kakao_pay_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "kakao_pay_account_status.json"
+KAKAO_LINK_TTL_SECONDS = 10 * 60
 MAX_BATCH_CONCURRENCY = 20
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 PROXY_PREFLIGHT_MAX_ATTEMPTS = 10
+MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS = 100
 KAKAO_STATUS_PENDING = "pending"
 KAKAO_STATUS_RUNNING = "running"
 KAKAO_STATUS_SUCCESS = "success"
@@ -59,6 +61,7 @@ class KakaoPayStartRequest(BaseModel):
     kookeey_pass: str = Field("", alias="kookeeyPass")
     region: str = "KR"
     max_attempts: int = Field(MAX_ACCOUNT_ATTEMPTS, alias="maxAttempts")
+    proxy_preflight_attempts: int = Field(PROXY_PREFLIGHT_MAX_ATTEMPTS, alias="proxyPreflightAttempts")
     model_config = {"populate_by_name": True}
 
     @field_validator("region", mode="before")
@@ -77,6 +80,15 @@ class KakaoPayStartRequest(BaseModel):
         except Exception:
             attempts = MAX_ACCOUNT_ATTEMPTS
         return max(1, min(MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS, attempts))
+
+    @field_validator("proxy_preflight_attempts", mode="before")
+    @classmethod
+    def _clean_proxy_preflight_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or PROXY_PREFLIGHT_MAX_ATTEMPTS)
+        except Exception:
+            attempts = PROXY_PREFLIGHT_MAX_ATTEMPTS
+        return max(1, min(MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS, attempts))
 
 
 class KakaoPayBatchStartRequest(KakaoPayStartRequest):
@@ -228,6 +240,24 @@ def _normalize_link(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+def _timestamp_seconds(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        numeric = float(text)
+        if numeric > 0:
+            return int(numeric / 1000) if numeric > 1_000_000_000_000 else int(numeric)
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return int(time.mktime(time.strptime(text.split(".")[0], fmt)))
+        except Exception:
+            continue
+    return 0
+
+
 def _dedupe_link_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen_accounts: set[str] = set()
     seen_links: set[str] = set()
@@ -315,10 +345,14 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
     fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
     billing = fields.get("billing") if isinstance(fields.get("billing"), dict) else result.get("billing") or {}
     primary_link = str(fields.get("provider_redirect_url") or fields.get("kakao_link") or fields.get("stripe_redirect_url") or "")
+    created_at_ts = int(time.time())
+    explicit_expires_at_ts = _timestamp_seconds(fields.get("kakao_expires_at_ts") or fields.get("kakao_expires_at") or result.get("kakao_expires_at_ts") or result.get("kakao_expires_at"))
+    expires_at_ts = explicit_expires_at_ts or (created_at_ts + KAKAO_LINK_TTL_SECONDS)
     return _normalize_link_record({
         "id": uuid.uuid4().hex[:16],
         "job_id": job_id,
-        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at_ts)),
+        "created_at_ts": created_at_ts,
         "account_email": account_email,
         "country": "KR",
         "amount": str(fields.get("amount") or result.get("amount") or ""),
@@ -326,6 +360,9 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
         "kakao_link": primary_link,
         "provider_redirect_url": str(fields.get("provider_redirect_url") or ""),
         "stripe_redirect_url": str(fields.get("stripe_redirect_url") or ""),
+        "kakao_ttl_seconds": KAKAO_LINK_TTL_SECONDS,
+        "kakao_expires_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires_at_ts)),
+        "kakao_expires_at_ts": expires_at_ts,
         "link_source": str(fields.get("link_source") or ""),
         "link_binding": str(fields.get("link_binding") or ""),
         "chatgpt_checkout_url": str(fields.get("chatgpt_checkout_url") or ""),
@@ -416,6 +453,14 @@ def _token_preflight_error(message: str) -> bool:
     return "token_" in text or "authentication token" in text
 
 
+def _proxy_preflight_attempt_limit(value: Any, default: int = PROXY_PREFLIGHT_MAX_ATTEMPTS) -> int:
+    try:
+        attempts = int(value or default)
+    except Exception:
+        attempts = default
+    return max(1, min(MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS, attempts))
+
+
 def _preflight_kakao_proxy_role(
     cfg: KakaoPayJobConfig,
     *,
@@ -460,9 +505,10 @@ def _preflight_kakao_proxy_role(
     return True, proxy_url, ""
 
 
-def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log) -> KakaoPayJobConfig:
+def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log, max_attempts: int | None = None) -> KakaoPayJobConfig:
     if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
         return cfg
+    attempts = _proxy_preflight_attempt_limit(max_attempts)
     stage_specs = [
         ("checkout", 0, True),
         ("promotion", 1, False),
@@ -471,7 +517,7 @@ def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log) -> KakaoPayJo
     errors: list[str] = []
     candidate_cfg = replace(cfg, direct_proxies=(cfg.direct_proxies[:1] if cfg.direct_proxies else []))
 
-    for attempt in range(1, PROXY_PREFLIGHT_MAX_ATTEMPTS + 1):
+    for attempt in range(1, attempts + 1):
         preflighted: dict[str, str] = {}
         candidate_errors: list[str] = []
         for role, stage_index, require_auth in stage_specs:
@@ -481,7 +527,7 @@ def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log) -> KakaoPayJo
                 stage_index=stage_index,
                 require_auth=require_auth,
                 attempt=attempt,
-                total_attempts=PROXY_PREFLIGHT_MAX_ATTEMPTS,
+                total_attempts=attempts,
                 log=log,
             )
             if ok:
@@ -498,7 +544,7 @@ def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log) -> KakaoPayJo
             )
         errors.extend(candidate_errors)
 
-    raise RuntimeError(f"Kakao 代理预检失败: {'; '.join(errors[-PROXY_PREFLIGHT_MAX_ATTEMPTS:])}")
+    raise RuntimeError(f"Kakao 代理预检失败: {'; '.join(errors[-attempts:])}")
 
 
 def _select_batch_accounts(req: KakaoPayBatchStartRequest) -> list[dict[str, Any]]:
@@ -549,7 +595,7 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
                 direct_proxies=proxies,
             )
             try:
-                cfg = _preflight_kakao_proxies_or_raise(cfg, account_log)
+                cfg = _preflight_kakao_proxies_or_raise(cfg, account_log, req.proxy_preflight_attempts)
                 result = generate_kakao_trial(cfg, log=account_log)
                 break
             except Exception as exc:

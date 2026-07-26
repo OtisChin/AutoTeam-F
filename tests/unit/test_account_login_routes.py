@@ -199,6 +199,25 @@ def test_post_accounts_login_batch_passes_bind_phone(monkeypatch):
     assert captured[0][2]["oauth_phone_sms_max_price"] == "0.05"
 
 
+def test_post_account_login_bind_phone_disables_bind_email(monkeypatch):
+    started = []
+    account = {"email": "first@example.com"}
+    captured = {}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "first@example.com" else None)
+
+    def fake_run(email, acc, **kwargs):
+        captured.update({"email": email, "acc": acc, "kwargs": kwargs})
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_run)
+    routes["post_account_login"](LoginAccountParams(email="first@example.com", bind_phone=True))
+
+    started[0]["func"]("task-1")
+    assert captured["kwargs"]["bind_phone"] is True
+    assert captured["kwargs"]["bind_email"] is False
+
+
 def test_post_accounts_login_batch_rejects_too_many_raw_emails():
     routes, _accounts = _routes([])
 

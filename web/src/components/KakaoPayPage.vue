@@ -35,14 +35,14 @@
             <span class="mt-1 block text-xs text-gray-500">1024/ArxLabs 的 host:port:user:pass 会自动按 socks5h 使用；建议使用 KR 地区代理。</span>
           </label>
 
-          <div class="grid gap-4 md:grid-cols-2">
+          <div class="grid gap-4 md:grid-cols-3">
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
               <input
                 v-model.number="form.concurrency"
                 type="number"
                 min="1"
-                max="20"
+                max="100"
                 class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
                 :disabled="inputLocked"
               />
@@ -59,6 +59,18 @@
                 :disabled="inputLocked"
               />
               <span class="mt-1 block text-xs text-gray-500">单账号最多尝试次数，含首次；默认 5。</span>
+            </label>
+            <label class="block">
+              <span class="mb-1.5 block text-sm font-semibold text-gray-300">代理预检次数</span>
+              <input
+                v-model.number="form.proxyPreflightAttempts"
+                type="number"
+                min="1"
+                max="100"
+                class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
+                :disabled="inputLocked"
+              />
+              <span class="mt-1 block text-xs text-gray-500">代理出口/认证接口预检失败时的最大尝试次数，默认 5。</span>
             </label>
           </div>
 
@@ -233,7 +245,7 @@
       </div>
 
       <div class="mt-4 max-h-[520px] overflow-auto rounded-xl border border-gray-800">
-        <table class="min-w-[1180px] w-full text-left text-sm">
+        <table class="min-w-[1260px] w-full text-left text-sm">
           <thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500">
             <tr>
               <th class="w-10 px-3 py-2"></th>
@@ -241,13 +253,14 @@
               <th class="px-3 py-2">账号</th>
               <th class="px-3 py-2">金额</th>
               <th class="px-3 py-2">CS ID</th>
+              <th class="px-3 py-2">剩余时间</th>
               <th class="px-3 py-2">操作</th>
               <th class="px-3 py-2">Kakao 链接</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-900">
             <tr v-if="!links.length">
-              <td colspan="7" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
+              <td colspan="8" class="px-3 py-10 text-center text-gray-500">暂无链接</td>
             </tr>
             <tr v-for="link in links" :key="link.id" class="hover:bg-gray-900/50">
               <td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td>
@@ -255,10 +268,15 @@
               <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || '-' }}</td>
               <td class="px-3 py-2 text-xs text-gray-400">{{ link.amount || '-' }} KRW</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-400">{{ link.cs_id || '-' }}</td>
+              <td class="whitespace-nowrap px-3 py-2 text-xs">
+                <span class="rounded-full border px-2 py-1 font-semibold" :class="kakaoExpiryClass(link)">
+                  {{ kakaoExpiryText(link) }}
+                </span>
+              </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap gap-2">
-                  <a :href="kakaoLinkUrl(link) || '#'" target="_blank" rel="noopener" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-200" :class="!kakaoLinkUrl(link) ? 'pointer-events-none opacity-50' : ''">打开</a>
-                  <button @click="copy(kakaoLinkUrl(link))" :disabled="!kakaoLinkUrl(link)" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200 disabled:opacity-50">复制链</button>
+                  <a :href="kakaoLinkUrl(link) || '#'" target="_blank" rel="noopener" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-200" :class="!kakaoLinkActionable(link) ? 'pointer-events-none opacity-50' : ''">打开</a>
+                  <button @click="copy(kakaoLinkUrl(link))" :disabled="!kakaoLinkActionable(link)" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200 disabled:opacity-50">复制链</button>
                 </div>
               </td>
               <td class="max-w-[360px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ kakaoLinkUrl(link) || '-' }}</td>
@@ -280,6 +298,7 @@ const PROXY_STORAGE_KEY = 'autotoken_kakao_pay_proxies'
 const FORM_STORAGE_KEY = 'autotoken_kakao_pay_form'
 const JOB_STORAGE_KEY = 'autotoken_kakao_pay_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled'])
+const KAKAO_LINK_TTL_MS = 10 * 60 * 1000
 
 const accounts = ref([])
 const links = ref([])
@@ -301,8 +320,10 @@ const recentResultFilter = ref('all')
 const deletingKakaoAccounts = ref(new Set())
 const lastFailedEmails = ref([])
 const notifiedSuccessKeys = ref(new Set())
+const nowMs = ref(Date.now())
 const logRef = ref(null)
 let timer = null
+let expiryTimer = null
 let componentUnmounted = false
 
 const savedForm = loadForm()
@@ -310,6 +331,7 @@ const form = ref({
   proxies: localStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
   concurrency: savedForm.concurrency || 1,
   maxAttempts: savedForm.maxAttempts || 5,
+  proxyPreflightAttempts: savedForm.proxyPreflightAttempts || 5,
   notificationSoundEnabled: savedForm.notificationSoundEnabled !== false,
 })
 
@@ -540,6 +562,53 @@ function kakaoLinkUrl(link) {
   return String(link?.provider_redirect_url || link?.kakao_link || link?.stripe_redirect_url || '').trim()
 }
 
+function timestampMs(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return 0
+  const numeric = Number(raw)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric > 1e12 ? numeric : numeric * 1000
+  const parsed = Date.parse(raw.includes('T') ? raw : raw.replace(' ', 'T'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function kakaoExpiresAtMs(link) {
+  const explicit = timestampMs(link?.kakao_expires_at_ts ?? link?.kakaoExpiresAtTs ?? link?.kakao_expires_at ?? link?.kakaoExpiresAt)
+  if (explicit) return explicit
+  const created = timestampMs(link?.created_at_ts ?? link?.createdAtTs ?? link?.created_at ?? link?.createdAt)
+  return created ? created + KAKAO_LINK_TTL_MS : 0
+}
+
+function kakaoRemainingMs(link) {
+  const expiresAt = kakaoExpiresAtMs(link)
+  return expiresAt ? expiresAt - nowMs.value : 0
+}
+
+function kakaoLinkExpired(link) {
+  const expiresAt = kakaoExpiresAtMs(link)
+  return Boolean(expiresAt && expiresAt <= nowMs.value)
+}
+
+function kakaoLinkActionable(link) {
+  return Boolean(kakaoLinkUrl(link)) && !kakaoLinkExpired(link)
+}
+
+function kakaoExpiryText(link) {
+  if (!kakaoLinkUrl(link)) return '-'
+  const expiresAt = kakaoExpiresAtMs(link)
+  if (!expiresAt || expiresAt <= nowMs.value) return '链接失效'
+  const seconds = Math.max(0, Math.ceil((expiresAt - nowMs.value) / 1000))
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return minutes ? `剩余 ${minutes}:${String(rest).padStart(2, '0')}` : `剩余 ${rest}s`
+}
+
+function kakaoExpiryClass(link) {
+  if (!kakaoLinkUrl(link)) return 'border-gray-700 bg-gray-900 text-gray-400'
+  if (kakaoLinkExpired(link)) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+  if (kakaoRemainingMs(link) <= 60 * 1000) return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+}
+
 function scrollLogsToBottom() {
   if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight
 }
@@ -575,6 +644,9 @@ function validateStart(emails = selectedEmails.value) {
     setStatus('请在账号池中选择至少一个账号。', true)
     return false
   }
+  form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
+  form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
+  form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   if (!String(form.value.proxies || '').trim()) {
     setStatus('请填写 KR 代理。', true)
     return false
@@ -594,6 +666,7 @@ async function startWithEmails(emails, actionText = '提取') {
       proxies: form.value.proxies,
       concurrency: form.value.concurrency,
       maxAttempts: form.value.maxAttempts,
+      proxyPreflightAttempts: form.value.proxyPreflightAttempts,
       region: 'KR',
     })
     activeJobId.value = data.job_id || ''
@@ -800,11 +873,17 @@ async function restoreActiveJob() {
 
 onMounted(async () => {
   componentUnmounted = false
+  nowMs.value = Date.now()
+  expiryTimer = window.setInterval(() => {
+    nowMs.value = Date.now()
+  }, 1000)
   await reloadAll()
   await restoreActiveJob()
 })
 onUnmounted(() => {
   componentUnmounted = true
   stopPolling()
+  if (expiryTimer) window.clearInterval(expiryTimer)
+  expiryTimer = null
 })
 </script>

@@ -18,9 +18,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from autotoken.services.payment_error_classifier import is_non_zero_amount_error
+from autotoken.services import proxy_runtime
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
 
@@ -284,6 +285,7 @@ class LongLinkRequest(BaseModel):
     provider_proxy_region: str = Field("", alias="providerProxyRegion")
     proxy_chain_strategy: str = Field("", alias="proxyChainStrategy")
     approve_proxy_region: str = Field("", alias="approveProxyRegion")
+    proxy_preflight_attempts: int = Field(5, alias="proxyPreflightAttempts")
     diagnostic_enabled: bool = Field(False, alias="diagnosticEnabled")
     diagnostic_job_id: str = Field("", exclude=True)
     diagnostic_strategy: str = Field("", exclude=True)
@@ -291,6 +293,15 @@ class LongLinkRequest(BaseModel):
     client_fingerprint: str = Field("chrome", alias="clientFingerprint")
     device_id: str = ""
     user_agent: str = ""
+
+    @field_validator("proxy_preflight_attempts", mode="before")
+    @classmethod
+    def _clean_proxy_preflight_attempts(cls, value: Any) -> int:
+        try:
+            attempts = int(value or 5)
+        except Exception:
+            attempts = 5
+        return max(1, min(100, attempts))
 
 
 class ProxyChainTestRequest(BaseModel):
@@ -754,8 +765,37 @@ def prepare_attempt_proxy(req: LongLinkRequest, original_proxy: str) -> bool:
     return False
 
 
+def proxy_preflight_attempt_limit(req: Any) -> int:
+    try:
+        attempts = int(getattr(req, "proxy_preflight_attempts", 5) or 5)
+    except Exception:
+        attempts = 5
+    return max(1, min(100, attempts))
+
+
 def prepare_request_proxy(req: LongLinkRequest) -> bool:
-    return prepare_attempt_proxy(req, req.proxy)
+    original_proxy = str(req.proxy or "").strip()
+    if normalize_link_type(req.link_type) in {"paypal", "gopay", "ideal"} and is_loopback_proxy(original_proxy):
+        original_proxy = ""
+    if not original_proxy:
+        return prepare_attempt_proxy(req, "")
+
+    attempts = proxy_preflight_attempt_limit(req)
+    errors: list[str] = []
+    for _attempt in range(1, attempts + 1):
+        req.proxy = proxy_with_fresh_sid(proxy_with_region_override(original_proxy, req.checkout_proxy_region))
+        ok, message = proxy_runtime.preflight_payment_proxy_url(req.proxy)
+        if ok:
+            auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(req.proxy, req.access_token)
+            if auth_ok:
+                return True
+            auth_text = str(auth_message or "unknown")
+            if "token_" in auth_text.lower() or "authentication token" in auth_text.lower():
+                raise HTTPException(status_code=502, detail=f"认证接口预检失败: {auth_message}")
+            errors.append(auth_text)
+            continue
+        errors.append(str(message or "unknown"))
+    raise HTTPException(status_code=502, detail=f"代理预检失败: {'; '.join(errors[-attempts:])}")
 
 
 def effective_default_proxy(proxy: str = "") -> str:
