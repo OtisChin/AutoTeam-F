@@ -103,6 +103,11 @@ def _align_kakao_proxy_region(proxy_url: str, region: str) -> str:
     )
 
 
+def _ipweb_proxy_region(proxy_url: str) -> str:
+    match = re.search(r"B_\d+_([A-Z]{2})___[^_:@/?#]+_[A-Za-z0-9]+(?=[:@/?#])", str(proxy_url or ""), flags=re.I)
+    return match.group(1).upper() if match else ""
+
+
 def build_kakao_dynamic_proxy(cfg: KakaoPayJobConfig, stage_index: int) -> tuple[str, str]:
     region = _stage_region(cfg, stage_index)
     preflight_attr = (
@@ -115,7 +120,12 @@ def build_kakao_dynamic_proxy(cfg: KakaoPayJobConfig, stage_index: int) -> tuple
         return preflighted, f"preflighted region={region}"
     direct = [normalize_kakao_proxy_url(item) for item in (cfg.direct_proxies or []) if str(item or "").strip()]
     if direct:
-        candidate = direct[0]
+        ipweb_direct = [item for item in direct if _ipweb_proxy_region(item)]
+        if ipweb_direct:
+            region_matched = [item for item in ipweb_direct if _ipweb_proxy_region(item) == region]
+            candidate = random.choice(region_matched or ipweb_direct)
+        else:
+            candidate = direct[0]
         proxy, sid = kakao_proxy_with_fresh_sid(candidate, region)
         suffix = f" sid={sid}" if sid and sid != "static" else " static"
         return proxy, f"direct-1 region={region}{suffix}"

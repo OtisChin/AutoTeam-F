@@ -106,6 +106,40 @@ def test_kakao_region_selector_proxy_refreshes_sid_across_stages():
     assert len({checkout_proxy, promotion_proxy, provider_proxy}) == 3
 
 
+def test_kakao_ipweb_proxy_keeps_provider_sid_when_aligning_region():
+    proxy = "gate2.ipweb.cc:7778:B_91859_KR___45_91Q0vOGf:me2M30mCf9"
+
+    refreshed, sid = kakao_pay.kakao_proxy_with_fresh_sid(proxy, "JP")
+
+    assert sid == "static"
+    assert "B_91859_JP___45_" in refreshed
+    assert "B_91859_KR___45_" not in refreshed
+    assert "91Q0vOGf" in refreshed
+    assert refreshed.startswith("gate2.ipweb.cc:7778:")
+    assert refreshed.endswith(":me2M30mCf9")
+
+
+def test_kakao_dynamic_proxy_prefers_ipweb_entry_matching_stage_region():
+    cfg = kakao_pay.KakaoPayJobConfig(
+        access_token="token",
+        direct_proxies=[
+            "gate2.ipweb.cc:7778:B_91859_KR___45_checkout01:pass",
+            "gate2.ipweb.cc:7778:B_91859_VN___45_promo01:pass",
+        ],
+    )
+
+    checkout_proxy, checkout_label = kakao_pay.build_kakao_dynamic_proxy(cfg, 0)
+    promotion_proxy, promotion_label = kakao_pay.build_kakao_dynamic_proxy(cfg, 1)
+    provider_proxy, provider_label = kakao_pay.build_kakao_dynamic_proxy(cfg, 2)
+
+    assert "B_91859_KR___45_checkout01" in checkout_proxy
+    assert "B_91859_VN___45_promo01" in promotion_proxy
+    assert "B_91859_KR___45_checkout01" in provider_proxy
+    assert "static" in checkout_label
+    assert "static" in promotion_label
+    assert "static" in provider_label
+
+
 def test_kakao_dynamic_proxy_uses_first_proxy_template_and_ignores_extra_entries(monkeypatch):
     monkeypatch.setattr(
         kakao_pay,

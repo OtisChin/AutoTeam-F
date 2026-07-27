@@ -602,6 +602,33 @@ def test_protocol_phone_supplier_not_attached_without_provider():
     assert not hasattr(flow, "_openai_phone_otp_reader")
 
 
+def test_protocol_hero_sms_supplier_retries_no_numbers_five_times(monkeypatch):
+    from autotoken import codex_auth, protocol_register
+    from autotoken.protocol_register import _attach_oauth_phone_supplier
+
+    calls = {"count": 0}
+
+    def fake_get_number(**kwargs):
+        calls["count"] += 1
+        if calls["count"] < 5:
+            return None, "NO_NUMBERS"
+        return "act-hero", "+15551234567", ""
+
+    class DummyFlow:
+        pass
+
+    monkeypatch.setenv("OAUTH_HERO_SMS_API_KEY", "hero-key")
+    monkeypatch.setattr(codex_auth, "_acquire_oauth_hero_sms_phone", fake_get_number)
+    monkeypatch.setattr(protocol_register.time, "sleep", lambda *_args, **_kwargs: None)
+
+    flow = DummyFlow()
+    _attach_oauth_phone_supplier(flow, provider="hero_sms", email="hero@example.com")
+    item = flow._openai_phone_supplier()
+
+    assert item["phone_number"] == "+15551234567"
+    assert calls["count"] == 5
+
+
 def test_phone_first_register_defaults_to_phone_pool_supplier(monkeypatch):
     from autotoken import protocol_register
 

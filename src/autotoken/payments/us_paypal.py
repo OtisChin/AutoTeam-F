@@ -268,6 +268,16 @@ def paypal_proxy_with_fresh_sid(proxy_url: str, region: str = "US") -> tuple[str
     if kookeey_count:
         return refreshed_kookeey, fresh
 
+    refreshed_ipweb, ipweb_count = re.subn(
+        r"(B_\d+_)[A-Z]{2}(___[^_:@/?#]+_)([A-Za-z0-9]+)(?=[:@/?#])",
+        lambda m: f"{m.group(1)}{target_region}{m.group(2)}{m.group(3)}",
+        refreshed,
+        count=1,
+        flags=re.I,
+    )
+    if ipweb_count:
+        return refreshed_ipweb, "static"
+
     if region_count:
         return refreshed, "static"
 

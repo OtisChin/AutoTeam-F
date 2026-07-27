@@ -66,6 +66,7 @@ export const api = {
   deleteAccount: (email) => request('DELETE', `/accounts/${encodeURIComponent(email)}`),
   deleteAccountsBatch: (emails, continueOnError = true) => request('POST', '/accounts/delete-batch', { emails, continue_on_error: continueOnError }),
   updateAccountType: (email, accountType) => request('POST', `/accounts/${encodeURIComponent(email)}/type`, { account_type: accountType }),
+  updateAccountMetadata: (email, payload) => request('PATCH', `/accounts/${encodeURIComponent(email)}/metadata`, payload),
   exportAccountCredentials: (emails) => request('POST', '/accounts/export-credentials', { emails }),
   importAccountCpaAuths: (payload) => request('POST', '/accounts/import-cpa-auths', payload),
   importFinishedAccounts: (payload) => request('POST', '/accounts/import-finished', payload),

@@ -304,6 +304,69 @@ def _attach_oauth_phone_supplier(
 
     phone_state: dict[str, Any] = {"item": None, "finished": False}
     reservation_owner = str(email or f"protocol_register:{id(flow)}").strip()
+    setattr(flow, "_openai_phone_provider", provider)
+
+    def _is_retryable_supply_error(message: str) -> bool:
+        text = str(message or "").strip().lower()
+        if not text:
+            return True
+        retryable_hints = (
+            "no_numbers",
+            "no numbers",
+            "wrong_max_price",
+            "no available number",
+            "no available numbers",
+            "无可用号码",
+            "没有可用号码",
+            "号码不可用",
+            "号码已被使用",
+            "手机号已被使用",
+            "手机号已注册",
+            "phone_number_in_use",
+            "phone already registered",
+            "invalid number",
+            "unusable",
+        )
+        return any(hint in text for hint in retryable_hints)
+
+    def _retryable_acquire(label: str, acquire_fn):
+        last_error = ""
+        for attempt in range(1, 6):
+            result = acquire_fn()
+            item = None
+            error = ""
+            if isinstance(result, tuple):
+                if len(result) == 2:
+                    item, error = result
+                elif len(result) >= 3 and not isinstance(result[0], dict):
+                    activation_id, phone, raw_error = result[:3]
+                    if activation_id and phone:
+                        item = {
+                            "activation_id": activation_id,
+                            "phone_number": phone,
+                            "source": label.replace("-", "_"),
+                        }
+                    error = str(raw_error or "")
+                elif result and isinstance(result[0], dict):
+                    item = result[0]
+                    error = str(result[1] if len(result) > 1 else "")
+            elif isinstance(result, dict):
+                item = result
+            if item:
+                return item, ""
+            last_error = str(error or "").strip()
+            if attempt < 5 and _is_retryable_supply_error(last_error):
+                logger.warning(
+                    "[协议注册] add-phone %s 取号失败，准备重试(%s/5): email=%s error=%s",
+                    label,
+                    attempt,
+                    email,
+                    last_error or "无可用号码",
+                )
+                time.sleep(1)
+                continue
+            break
+        return None, last_error or f"{label} 未返回可用号码"
 
     def supplier() -> dict:
         if isinstance(phone_state.get("item"), dict) and not phone_state.get("finished"):
@@ -312,20 +375,26 @@ def _attach_oauth_phone_supplier(
 
         phone_state["finished"] = False
         if provider == "hero_sms":
-            item, error = _acquire_oauth_hero_sms_phone(
-                email=email,
-                country=country,
-                max_price=max_price,
-                reservation_owner=reservation_owner,
-                allow_reuse=allow_hero_reuse,
+            item, error = _retryable_acquire(
+                "hero-sms",
+                lambda: _acquire_oauth_hero_sms_phone(
+                    email=email,
+                    country=country,
+                    max_price=max_price,
+                    reservation_owner=reservation_owner,
+                    allow_reuse=allow_hero_reuse,
+                ),
             )
         elif provider == "smsbower":
-            item, error = _acquire_oauth_smsbower_phone(
-                email=email,
-                country=country,
-                max_price=max_price,
-                reservation_owner=reservation_owner,
-                allow_reuse=True,
+            item, error = _retryable_acquire(
+                "smsbower",
+                lambda: _acquire_oauth_smsbower_phone(
+                    email=email,
+                    country=country,
+                    max_price=max_price,
+                    reservation_owner=reservation_owner,
+                    allow_reuse=True,
+                ),
             )
         elif provider == "oasis":
             from autotoken.auth.oasis_sms import acquire_oasis_phone

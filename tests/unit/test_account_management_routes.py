@@ -5,6 +5,7 @@ from autotoken import account_ops, accounts, admin_state, auth_session_store, ch
 import autotoken.api_routes.account_management as account_management
 from autotoken.api_routes.account_management import (
     ACCOUNT_DELETE_BATCH_MAX_EMAILS,
+    AccountMetadataUpdateParams,
     AccountTypeUpdateParams,
     DeleteBatchParams,
     create_account_management_router,
@@ -311,6 +312,98 @@ def test_account_management_update_account_type_validates_and_sanitizes(monkeypa
         "message": "已将 user@example.com 账号类型更新为 plus",
         "account": {"email": "user@example.com", "account_type": "plus", "sanitized": True},
     }
+
+
+def test_account_management_update_account_metadata_validates_and_sanitizes(monkeypatch):
+    app = _app()
+    captured = {}
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com"}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+
+    def fake_update_account(email, **changes):
+        captured["updated"] = (email, changes)
+        return {"email": email, **changes}
+
+    monkeypatch.setattr(accounts, "update_account", fake_update_account)
+
+    result = _endpoint(app, "/api/accounts/{email}/metadata", "PATCH")(
+        " User@example.com ",
+        AccountMetadataUpdateParams(
+            account_type="PLUS",
+            status="ACTIVE",
+            last_bind_provider="PayPal",
+        ),
+    )
+
+    assert captured["updated"] == (
+        "user@example.com",
+        {"account_type": "plus", "status": "active", "last_bind_provider": "paypal"},
+    )
+    assert result == {
+        "message": "已更新 user@example.com 账号信息",
+        "account": {
+            "email": "user@example.com",
+            "account_type": "plus",
+            "status": "active",
+            "last_bind_provider": "paypal",
+            "sanitized": True,
+        },
+    }
+
+
+def test_account_management_update_account_metadata_can_clear_bind_provider(monkeypatch):
+    app = _app()
+    captured = {}
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com"}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    def fake_update_account(email, **changes):
+        captured["updated"] = (email, changes)
+        return {"email": email, **changes}
+
+    monkeypatch.setattr(accounts, "update_account", fake_update_account)
+
+    _endpoint(app, "/api/accounts/{email}/metadata", "PATCH")(
+        "user@example.com",
+        AccountMetadataUpdateParams(account_type="free", status="standby", last_bind_provider=""),
+    )
+
+    assert captured["updated"] == (
+        "user@example.com",
+        {"account_type": "free", "status": "standby", "last_bind_provider": ""},
+    )
+
+
+def test_account_management_update_account_metadata_reports_invalid_main_and_missing(monkeypatch):
+    app = _app()
+
+    with _raises_http(400, "不支持的账号状态: invalid"):
+        _endpoint(app, "/api/accounts/{email}/metadata", "PATCH")(
+            "user@example.com",
+            AccountMetadataUpdateParams(account_type="free", status="invalid", last_bind_provider="paypal"),
+        )
+
+    with _raises_http(400, "不支持的绑定渠道: crypto"):
+        _endpoint(app, "/api/accounts/{email}/metadata", "PATCH")(
+            "user@example.com",
+            AccountMetadataUpdateParams(account_type="free", status="active", last_bind_provider="crypto"),
+        )
+
+    main_app = _app(is_main_account_email=lambda email: email == "owner@example.com")
+    with _raises_http(400, "主号账号信息不允许手动修改"):
+        _endpoint(main_app, "/api/accounts/{email}/metadata", "PATCH")(
+            "owner@example.com",
+            AccountMetadataUpdateParams(account_type="team", status="active", last_bind_provider="card"),
+        )
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [])
+    monkeypatch.setattr(accounts, "find_account", lambda _loaded, _email: None)
+    with _raises_http(404, "账号不存在"):
+        _endpoint(app, "/api/accounts/{email}/metadata", "PATCH")(
+            "missing@example.com",
+            AccountMetadataUpdateParams(account_type="free", status="active", last_bind_provider=""),
+        )
 
 
 def test_account_management_update_account_type_reports_invalid_main_and_missing(monkeypatch):

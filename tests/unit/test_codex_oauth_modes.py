@@ -1087,6 +1087,56 @@ def test_account_login_uses_luckmail_provider_for_token_account_id(monkeypatch):
     assert captured["login"]["mail_account_id"] == "tok_luck"
 
 
+def test_account_login_keeps_account_mail_provider_over_request_provider(monkeypatch):
+    captured = {}
+    account = {
+        "email": "trentmelott5058@outlook.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": "outlook-mailbox-id",
+        "mail_provider": "outlook",
+    }
+
+    class FakeMailClient:
+        def __init__(self):
+            captured["mail_provider_env"] = os.environ.get("MAIL_PROVIDER")
+
+        def login(self):
+            pass
+
+    def fake_login(email, password, mail_client=None, *, use_personal=False, native_oauth=False, headless=False, mail_account_id=None):
+        captured["login"] = {
+            "email": email,
+            "native_oauth": native_oauth,
+            "mail_account_id": mail_account_id,
+        }
+        return {
+            "email": email,
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "id_token": "id",
+            "account_id": "acct-plus",
+            "plan_type": "plus",
+        }
+
+    monkeypatch.delenv("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL", raising=False)
+    monkeypatch.delenv("MAIL_PROVIDER", raising=False)
+    monkeypatch.setattr("autotoken.account_hub._restore_luckmail_tokens_for_accounts", lambda _rows: 0)
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr("autotoken.codex_auth.login_codex_via_browser", fake_login)
+    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: None)
+
+    result = api._run_account_codex_login_once(account["email"], account, mail_provider="luckmail")
+
+    assert result["email"] == "trentmelott5058@outlook.com"
+    assert captured["mail_provider_env"] == "outlook"
+    assert captured["login"]["mail_account_id"] == "outlook-mailbox-id"
+
+
 def test_protocol_account_login_bind_phone_uses_saved_oauth_phone_config(monkeypatch):
     captured = {}
     account = {
@@ -1162,6 +1212,65 @@ def test_protocol_account_login_bind_phone_uses_saved_oauth_phone_config(monkeyp
         "max_price": "0.05",
         "oasis_cdks": "",
     }
+
+
+def test_protocol_account_login_uses_saved_oauth_phone_config_without_bind_phone(monkeypatch):
+    captured = {}
+    account = {
+        "email": "plus@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": "mail-id",
+    }
+
+    class FakeMailClient:
+        def __init__(self):
+            pass
+
+        def login(self):
+            pass
+
+    def fake_protocol_login(mail_client, **kwargs):
+        captured["protocol_login"] = kwargs
+        return {
+            "email": kwargs["email"],
+            "account": {"id": "acct-session"},
+            "codex_oauth_bundle": {
+                "email": kwargs["email"],
+                "access_token": "token",
+                "refresh_token": "refresh",
+                "id_token": "id",
+                "account_id": "acct-plus",
+                "plan_type": "plus",
+            },
+        }
+
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr("autotoken.auth.protocol_register.login_once", fake_protocol_login)
+    monkeypatch.setattr(
+        api,
+        "_oauth_phone_sms_env",
+        lambda: {
+            "provider": "hero_sms",
+            "hero_sms_country": "187",
+            "hero_sms_max_price": "0.04",
+        },
+    )
+    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: None)
+
+    result = api._run_account_codex_login_once(account["email"], account, protocol_only=True)
+
+    assert result["email"] == "plus@example.com"
+    assert captured["protocol_login"]["email"] == "plus@example.com"
+    assert captured["protocol_login"]["account_id"] == "mail-id"
+    assert captured["protocol_login"]["oauth_phone_sms_provider"] == "hero_sms"
+    assert captured["protocol_login"]["oauth_phone_sms_country"] == "187"
+    assert captured["protocol_login"]["oauth_phone_sms_max_price"] == "0.04"
+    assert captured["protocol_login"]["oauth_oasis_sms_cdks"] == ""
 
 
 def test_account_login_restores_missing_luckmail_token_before_browser_oauth(monkeypatch):

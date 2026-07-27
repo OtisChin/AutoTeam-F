@@ -17,9 +17,83 @@ class AccountTypeUpdateParams(BaseModel):
     account_type: str
 
 
+class AccountMetadataUpdateParams(BaseModel):
+    account_type: str
+    status: str
+    last_bind_provider: str = ""
+
+
 class DeleteBatchParams(BaseModel):
     emails: list[str]
     continue_on_error: bool = True
+
+
+def _clean_account_type_or_raise(value: str) -> str:
+    from autotoken.storage.accounts import (
+        ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+        ACCOUNT_TYPE_TEAM,
+    )
+
+    next_type = (value or "").strip().lower()
+    allowed_types = {
+        ACCOUNT_TYPE_FREE,
+        ACCOUNT_TYPE_TEAM,
+        ACCOUNT_TYPE_PLUS,
+        ACCOUNT_TYPE_PRO,
+    }
+    if next_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"不支持的账号类型: {value}")
+    return next_type
+
+
+def _clean_account_status_or_raise(value: str) -> str:
+    from autotoken.storage.accounts import (
+        STATUS_ACTIVE,
+        STATUS_AUTH_INVALID,
+        STATUS_EXHAUSTED,
+        STATUS_FAIL,
+        STATUS_ORPHAN,
+        STATUS_PENDING,
+        STATUS_PERSONAL,
+        STATUS_PLUS,
+        STATUS_STANDBY,
+    )
+
+    next_status = (value or "").strip().lower()
+    allowed_statuses = {
+        STATUS_ACTIVE,
+        STATUS_EXHAUSTED,
+        STATUS_STANDBY,
+        STATUS_PENDING,
+        STATUS_PERSONAL,
+        STATUS_PLUS,
+        STATUS_AUTH_INVALID,
+        STATUS_ORPHAN,
+        STATUS_FAIL,
+    }
+    if next_status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail=f"不支持的账号状态: {value}")
+    return next_status
+
+
+def _clean_bind_provider_or_raise(value: str) -> str:
+    next_provider = (value or "").strip().lower()
+    allowed_providers = {
+        "",
+        "pix",
+        "paypal",
+        "upi",
+        "ideal",
+        "kakao_pay",
+        "gopay",
+        "card",
+        "external_import",
+    }
+    if next_provider not in allowed_providers:
+        raise HTTPException(status_code=400, detail=f"不支持的绑定渠道: {value}")
+    return next_provider
 
 
 def cleanup_brazil_pix_account_artifacts(email: str) -> dict[str, Any]:
@@ -86,25 +160,13 @@ def create_account_management_router(
     def update_account_type(email: str, params: AccountTypeUpdateParams):
         """手动更新账号类型。只改本地 accounts.json，不做 Team/CPA 侧操作。"""
         from autotoken.storage.accounts import (
-            ACCOUNT_TYPE_FREE,
-            ACCOUNT_TYPE_PLUS,
-            ACCOUNT_TYPE_PRO,
-            ACCOUNT_TYPE_TEAM,
             find_account,
             load_accounts,
             update_account,
         )
 
         normalized_email = email.strip().lower()
-        next_type = (params.account_type or "").strip().lower()
-        allowed_types = {
-            ACCOUNT_TYPE_FREE,
-            ACCOUNT_TYPE_TEAM,
-            ACCOUNT_TYPE_PLUS,
-            ACCOUNT_TYPE_PRO,
-        }
-        if next_type not in allowed_types:
-            raise HTTPException(status_code=400, detail=f"不支持的账号类型: {params.account_type}")
+        next_type = _clean_account_type_or_raise(params.account_type)
         if is_main_account_email(normalized_email):
             raise HTTPException(status_code=400, detail="主号账号类型不允许手动修改")
 
@@ -115,6 +177,33 @@ def create_account_management_router(
         updated = update_account(normalized_email, account_type=next_type)
         return {
             "message": f"已将 {normalized_email} 账号类型更新为 {next_type}",
+            "account": sanitize_account(updated),
+        }
+
+    @router.patch("/api/accounts/{email}/metadata")
+    def update_account_metadata(email: str, params: AccountMetadataUpdateParams):
+        """手动更新账号类型、账号状态和绑定渠道。只改本地账号池记录。"""
+        from autotoken.storage.accounts import find_account, load_accounts, update_account
+
+        normalized_email = email.strip().lower()
+        next_type = _clean_account_type_or_raise(params.account_type)
+        next_status = _clean_account_status_or_raise(params.status)
+        next_provider = _clean_bind_provider_or_raise(params.last_bind_provider)
+        if is_main_account_email(normalized_email):
+            raise HTTPException(status_code=400, detail="主号账号信息不允许手动修改")
+
+        account = find_account(load_accounts(), normalized_email)
+        if not account:
+            raise HTTPException(status_code=404, detail="账号不存在")
+
+        updated = update_account(
+            normalized_email,
+            account_type=next_type,
+            status=next_status,
+            last_bind_provider=next_provider,
+        )
+        return {
+            "message": f"已更新 {normalized_email} 账号信息",
             "account": sanitize_account(updated),
         }
 

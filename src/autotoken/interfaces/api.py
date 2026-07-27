@@ -2479,8 +2479,17 @@ def _run_account_codex_login_once(
         ACCOUNT_TYPE_PRO,
     }
 
+    phone_only_target = "@" not in str(email or "")
     requested_mail_provider = str(mail_provider or "").strip().lower()
-    effective_mail_provider = requested_mail_provider or str(acc.get("mail_provider") or "").strip().lower()
+    account_mail_provider = str(acc.get("mail_provider") or "").strip().lower()
+    # 已有邮箱账号必须优先使用账号自身保存的邮箱 provider；仪表盘 OAuth 配置里的
+    # mail_provider 只作为手机号账号绑邮箱/账号缺失 provider 时的兜底，避免把 Outlook
+    # 成品号误按全局 LuckMail 配置查询验证码。
+    effective_mail_provider = (
+        (requested_mail_provider or account_mail_provider)
+        if phone_only_target
+        else (account_mail_provider or requested_mail_provider)
+    )
     if not effective_mail_provider and str(acc.get("cloudmail_account_id") or "").strip().startswith("tok_"):
         effective_mail_provider = "luckmail"
     mail_provider_overrides = {}
@@ -2513,7 +2522,7 @@ def _run_account_codex_login_once(
     effective_oauth_phone_sms_country = str(oauth_phone_sms_country or "").strip()
     effective_oauth_phone_sms_max_price = str(oauth_phone_sms_max_price or "").strip()
     effective_oauth_oasis_sms_cdks = str(oauth_oasis_sms_cdks or "").strip()
-    if bind_phone and not effective_oauth_phone_sms_provider:
+    if (protocol_only or bind_phone) and not effective_oauth_phone_sms_provider:
         oauth_phone_cfg = _oauth_phone_sms_env()
         effective_oauth_phone_sms_provider = str(oauth_phone_cfg.get("provider") or "phone_pool").strip()
         if not effective_oauth_phone_sms_country:
@@ -2535,7 +2544,6 @@ def _run_account_codex_login_once(
                     effective_oauth_oasis_sms_cdks
                     or str(oauth_phone_cfg.get("oasis_sms_cdks") or "").strip()
                 )
-    phone_only_target = "@" not in str(email or "")
     session_payload: dict | None = None
 
     if protocol_only:

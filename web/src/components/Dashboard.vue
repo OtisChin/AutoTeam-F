@@ -360,7 +360,22 @@
                   <div class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300">
                     服务：OpenAI（service: dr）
                   </div>
-                  <div class="mt-1 text-xs text-gray-500">国家 ID 会随补登录请求传给后端；留空时后端使用已保存默认值。</div>
+                  <div class="mt-1 text-xs text-gray-500">国家会随补登录请求传给后端；列表来自所选接码供应商。</div>
+                </div>
+                <div v-if="['hero_sms', 'smsbower'].includes(oauthPhoneSmsForm.provider)">
+                  <label class="block text-xs text-gray-500 mb-1">手机号国家</label>
+                  <select
+                    :value="currentOauthPhoneSmsCountry"
+                    :disabled="oauthPhoneSmsLoading || oauthPhoneSmsSaving || oauthPhoneSmsCountriesLoading"
+                    class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60"
+                    @change="selectOauthPhoneSmsCountry($event.target.value)">
+                    <option v-if="oauthPhoneSmsCountriesLoading" value="">国家列表加载中...</option>
+                    <option v-for="option in oauthPhoneSmsCountryOptionsForSelect" :key="option.value" :value="option.value">
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <div class="mt-1 text-xs text-gray-500">不用手填国家 ID；可选择美国、印尼、哥伦比亚或供应商返回的其它国家。</div>
+                  <div v-if="oauthPhoneSmsCountryError" class="mt-1 text-xs text-amber-300">{{ oauthPhoneSmsCountryError }}</div>
                 </div>
 
                 <template v-if="oauthPhoneSmsForm.provider === 'hero_sms'">
@@ -374,15 +389,6 @@
                       type="password"
                       autocomplete="off"
                       :placeholder="oauthPhoneSmsStatus.hero_sms_api_key_masked || '留空则保留现有配置'"
-                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-gray-500 mb-1">hero-sms 国家 ID</label>
-                    <input
-                      v-model.trim="oauthPhoneSmsForm.hero_sms_country"
-                      type="text"
-                      autocomplete="off"
-                      placeholder="187=美国，6=印尼，33=哥伦比亚，all=不限"
                       class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
@@ -409,15 +415,6 @@
                       type="password"
                       autocomplete="off"
                       :placeholder="oauthPhoneSmsStatus.smsbower_api_key_masked || '留空则保留现有配置'"
-                      class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-gray-500 mb-1">smsbower 国家 ID</label>
-                    <input
-                      v-model.trim="oauthPhoneSmsForm.smsbower_country"
-                      type="text"
-                      autocomplete="off"
-                      placeholder="187=美国，6=印尼，33=哥伦比亚，all=不限"
                       class="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/60" />
                   </div>
                   <div>
@@ -803,7 +800,7 @@
                   @click="openAccountTypeEditor(acc)"
                   :disabled="actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700 disabled:opacity-50">
-                  类型
+                  操作
                 </button>
                 <button
                   v-if="!acc.is_main_account"
@@ -1205,12 +1202,12 @@
         </div>
       </div>
 
-      <!-- 账号类型编辑弹窗 -->
+      <!-- 账号操作编辑弹窗 -->
       <div v-if="accountTypeEditAccount" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeAccountTypeEditor">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
           <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
-              <h3 class="text-white font-semibold">编辑账号类型</h3>
+              <h3 class="text-white font-semibold">编辑账号操作</h3>
               <div class="text-xs text-gray-500 font-mono mt-0.5">{{ accountTypeEditAccount.email }}</div>
             </div>
             <button @click="closeAccountTypeEditor" class="text-gray-400 hover:text-white text-lg">&times;</button>
@@ -1226,8 +1223,28 @@
                 </option>
               </select>
             </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">账号状态</label>
+              <select
+                v-model="accountStatusEditValue"
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                <option v-for="option in editableAccountStatusOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">绑定渠道</label>
+              <select
+                v-model="accountBindProviderEditValue"
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                <option v-for="option in editableBindProviderOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
             <div class="text-xs text-gray-500 leading-relaxed">
-              这里只修改本地账号类型，不会自动移出 Team、同步 CPA 或刷新 auth 文件。
+              这里只修改本地账号池记录，不会自动移出 Team、同步 CPA 或刷新 auth 文件。
             </div>
           </div>
           <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
@@ -1238,9 +1255,9 @@
             </button>
             <button
               @click="saveAccountType"
-              :disabled="accountTypeSaving || !accountTypeEditValue || accountTypeEditValue === accountTypeEditAccount.account_type"
+              :disabled="accountTypeSaving || accountMetadataEditUnchanged"
               class="px-4 py-2 text-sm rounded-lg border transition"
-              :class="accountTypeSaving || !accountTypeEditValue || accountTypeEditValue === accountTypeEditAccount.account_type
+              :class="accountTypeSaving || accountMetadataEditUnchanged
                 ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
                 : 'bg-cyan-600 hover:bg-cyan-500 text-white border-cyan-500'">
               {{ accountTypeSaving ? '保存中...' : '保存' }}
@@ -1408,11 +1425,13 @@ const exportStartTimeFilter = ref('')
 const exportEndTimeFilter = ref('')
 const accountHubSyncFilter = ref('')
 const authCredentialFilter = ref('')
-const bindDateFilter = ref(dateKey(new Date()))
+const bindDateFilter = ref('')
 const bindStartTimeFilter = ref('')
 const bindEndTimeFilter = ref('')
 const accountTypeEditAccount = ref(null)
 const accountTypeEditValue = ref('')
+const accountStatusEditValue = ref('')
+const accountBindProviderEditValue = ref('')
 const accountTypeSaving = ref(false)
 const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
@@ -1466,6 +1485,8 @@ const oauthEmailSaving = ref(false)
 const oauthEmailLoaded = ref(false)
 const oauthPhoneSmsLoading = ref(false)
 const oauthPhoneSmsSaving = ref(false)
+const oauthPhoneSmsCountriesLoading = ref(false)
+const oauthPhoneSmsCountryError = ref('')
 const oauthPhoneSmsStatus = ref({})
 const oauthPhoneSmsForm = ref({
   provider: 'phone_pool',
@@ -1482,6 +1503,23 @@ const oauthPhoneSmsForm = ref({
   oasis_sms_poll_interval_ms: '5000',
   oasis_sms_account_map_file: 'oasis-cdk-accounts.jsonl',
 })
+const oauthPhoneSmsCountryFallbackOptions = {
+  phone_pool: [],
+  hero_sms: [
+    { value: 'all', label: '全部国家 / 不限制' },
+    { value: '187', label: '美国 / 187' },
+    { value: '6', label: '印度尼西亚 / 6' },
+    { value: '33', label: '哥伦比亚 / 33' },
+  ],
+  smsbower: [
+    { value: 'all', label: '全部国家 / 不限制' },
+    { value: '187', label: '美国 / 187' },
+    { value: '6', label: '印度尼西亚 / 6' },
+    { value: '33', label: '哥伦比亚 / 33' },
+  ],
+  oasis: [],
+}
+const oauthPhoneSmsCountryOptions = ref(oauthPhoneSmsCountryFallbackOptions.hero_sms)
 const oauthProxyEnabled = ref(false)
 const oauthProxyMode = ref('single')
 const oauthProxyUrl = ref('')
@@ -1538,7 +1576,7 @@ async function saveOauthEmailConfig() {
   oauthEmailSaving.value = false
 }
 
-async function loadOauthPhoneSmsConfig() {
+async function loadOauthPhoneSmsConfig({ silent = false } = {}) {
   oauthPhoneSmsLoading.value = true
   try {
     const cfg = await api.getOAuthPhoneSmsConfig()
@@ -1558,10 +1596,54 @@ async function loadOauthPhoneSmsConfig() {
       oasis_sms_poll_interval_ms: cfg?.oasis_sms_poll_interval_ms || '5000',
       oasis_sms_account_map_file: cfg?.oasis_sms_account_map_file || 'oasis-cdk-accounts.jsonl',
     }
+    await loadOauthPhoneSmsCountries(oauthPhoneSmsForm.value.provider)
   } catch (e) {
-    setMessage(e.message || '加载 OAuth 接码配置失败', 'error')
+    if (!silent) {
+      setMessage(e.message || '加载 OAuth 接码配置失败', 'error')
+    }
   } finally {
     oauthPhoneSmsLoading.value = false
+  }
+}
+
+function normalizeOauthPhoneSmsCountryOptions(options) {
+  return (Array.isArray(options) ? options : [])
+    .map(option => ({
+      value: String(option?.value || '').trim(),
+      label: String(option?.label || option?.value || '').trim(),
+    }))
+    .filter(option => option.value)
+}
+
+async function loadOauthPhoneSmsCountries(provider = oauthPhoneSmsForm.value.provider) {
+  const normalizedProvider = String(provider || 'phone_pool').trim()
+  oauthPhoneSmsCountryError.value = ''
+  if (['phone_pool', 'oasis'].includes(normalizedProvider)) {
+    oauthPhoneSmsCountryOptions.value = []
+    return
+  }
+  oauthPhoneSmsCountriesLoading.value = true
+  try {
+    const result = await api.getOAuthPhoneSmsCountries(normalizedProvider)
+    const options = Array.isArray(result.options) && result.options.length
+      ? result.options
+      : (oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || [])
+    oauthPhoneSmsCountryOptions.value = normalizeOauthPhoneSmsCountryOptions(options)
+    oauthPhoneSmsCountryError.value = result.fallback && result.error ? result.error : ''
+  } catch (e) {
+    oauthPhoneSmsCountryOptions.value = oauthPhoneSmsCountryFallbackOptions[normalizedProvider] || []
+    oauthPhoneSmsCountryError.value = e.message || '国家列表加载失败，已使用兜底列表'
+  } finally {
+    oauthPhoneSmsCountriesLoading.value = false
+  }
+}
+
+function selectOauthPhoneSmsCountry(value) {
+  const country = String(value || '').trim()
+  if (oauthPhoneSmsForm.value.provider === 'hero_sms') {
+    oauthPhoneSmsForm.value.hero_sms_country = country
+  } else if (oauthPhoneSmsForm.value.provider === 'smsbower') {
+    oauthPhoneSmsForm.value.smsbower_country = country
   }
 }
 
@@ -1696,7 +1778,7 @@ function buildOauthPhoneSmsPayload() {
       ? oauthPhoneSmsForm.value.smsbower_country
       : ''
   return {
-    oauth_phone_sms_provider: provider,
+    ...(provider !== 'phone_pool' ? { oauth_phone_sms_provider: provider } : {}),
     ...(country ? { oauth_phone_sms_country: country } : {}),
     ...(provider === 'hero_sms' && oauthPhoneSmsForm.value.hero_sms_max_price
       ? { oauth_phone_sms_max_price: oauthPhoneSmsForm.value.hero_sms_max_price }
@@ -1736,6 +1818,29 @@ const oauthPhoneSmsConfigured = computed(() => {
   return Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
 })
 
+const currentOauthPhoneSmsCountry = computed(() => {
+  if (oauthPhoneSmsForm.value.provider === 'smsbower') return String(oauthPhoneSmsForm.value.smsbower_country || '').trim()
+  if (oauthPhoneSmsForm.value.provider === 'hero_sms') return String(oauthPhoneSmsForm.value.hero_sms_country || '').trim()
+  return ''
+})
+
+const oauthPhoneSmsCountryOptionsForSelect = computed(() => {
+  const selected = currentOauthPhoneSmsCountry.value
+  const sourceOptions = oauthPhoneSmsCountryOptions.value || []
+  if (selected && !sourceOptions.some(option => option.value === selected)) {
+    return [{ value: selected, label: `当前配置 / ${selected}` }, ...sourceOptions]
+  }
+  return sourceOptions
+})
+
+const accountMetadataEditUnchanged = computed(() => {
+  const account = accountTypeEditAccount.value
+  if (!account) return true
+  return String(accountTypeEditValue.value || '').toLowerCase() === String(account.account_type || 'free').toLowerCase()
+    && String(accountStatusEditValue.value || '').toLowerCase() === String(account.status || 'pending').toLowerCase()
+    && String(accountBindProviderEditValue.value || '').toLowerCase() === String(account.last_bind_provider || '').toLowerCase()
+})
+
 function setMessage(text, type = 'success') {
   message.value = text
   messageClass.value = type === 'error'
@@ -1769,6 +1874,17 @@ watch(
   saveOauthProxyConfig,
 )
 watch(oauthBindPhone, saveOauthPhoneConfig)
+watch(
+  () => oauthPhoneSmsForm.value.provider,
+  async (provider) => {
+    await loadOauthPhoneSmsCountries(provider)
+    if (provider === 'hero_sms' && !oauthPhoneSmsForm.value.hero_sms_country) {
+      oauthPhoneSmsForm.value.hero_sms_country = oauthPhoneSmsCountryOptionsForSelect.value[0]?.value || '187'
+    } else if (provider === 'smsbower' && !oauthPhoneSmsForm.value.smsbower_country) {
+      oauthPhoneSmsForm.value.smsbower_country = oauthPhoneSmsCountryOptionsForSelect.value[0]?.value || '187'
+    }
+  },
+)
 const adminReady = computed(() => !!props.adminStatus?.configured)
 const syncDisabled = computed(() => false)
 const loginDisabled = computed(() => false)
@@ -1779,6 +1895,28 @@ const editableAccountTypeOptions = [
   { value: 'team', label: 'Team' },
   { value: 'plus', label: 'Plus' },
   { value: 'pro', label: 'Pro' },
+]
+const editableAccountStatusOptions = [
+  { value: 'active', label: 'Active' },
+  { value: 'exhausted', label: 'Used up' },
+  { value: 'standby', label: 'Standby' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'personal', label: 'Personal' },
+  { value: 'plus', label: 'Plus' },
+  { value: 'auth_invalid', label: '认证失效' },
+  { value: 'orphan', label: '孤立' },
+  { value: 'fail', label: 'Fail/废弃' },
+]
+const editableBindProviderOptions = [
+  { value: '', label: '未绑定' },
+  { value: 'pix', label: 'Pix' },
+  { value: 'paypal', label: 'PayPal' },
+  { value: 'upi', label: 'UPI' },
+  { value: 'ideal', label: 'iDEAL' },
+  { value: 'kakao_pay', label: 'Kakao Pay' },
+  { value: 'gopay', label: 'GoPay' },
+  { value: 'card', label: 'Card' },
+  { value: 'external_import', label: '外部导入' },
 ]
 
 const allAccounts = computed(() => props.status?.accounts || [])
@@ -2355,7 +2493,7 @@ function clearFilters() {
   exportEndTimeFilter.value = ''
   accountHubSyncFilter.value = ''
   authCredentialFilter.value = ''
-  bindDateFilter.value = dateKey(new Date())
+  bindDateFilter.value = ''
   bindStartTimeFilter.value = ''
   bindEndTimeFilter.value = ''
 }
@@ -2363,12 +2501,16 @@ function clearFilters() {
 function openAccountTypeEditor(acc) {
   accountTypeEditAccount.value = acc
   accountTypeEditValue.value = acc?.account_type || 'free'
+  accountStatusEditValue.value = acc?.status || 'pending'
+  accountBindProviderEditValue.value = acc?.last_bind_provider || ''
 }
 
 function closeAccountTypeEditor() {
   if (accountTypeSaving.value) return
   accountTypeEditAccount.value = null
   accountTypeEditValue.value = ''
+  accountStatusEditValue.value = ''
+  accountBindProviderEditValue.value = ''
 }
 
 function openCredentialExport() {
@@ -2612,10 +2754,10 @@ function bindProviderLabel(provider) {
 }
 
 function effectiveBindProvider(acc) {
-  const accountType = String(acc?.account_type || '').toLowerCase()
-  if (!['plus', 'pro', 'team'].includes(accountType)) return ''
   const provider = String(acc?.last_bind_provider || '').trim().toLowerCase()
   if (provider) return provider
+  const accountType = String(acc?.account_type || '').toLowerCase()
+  if (!['plus', 'pro', 'team'].includes(accountType)) return ''
   const rawStatus = String(acc?.raw_status || acc?.status || '').trim().toLowerCase()
   return ''
 }
@@ -3178,6 +3320,7 @@ async function batchLoginAccounts() {
   batchLoggingIn.value = true
   message.value = ''
   try {
+    await loadOauthPhoneSmsConfig({ silent: true })
     const oauthPayload = buildDashboardOauthPayload()
     const result = await api.loginAccountsBatch(emails, oauthPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
@@ -3308,17 +3451,25 @@ async function syncToAccountHub() {
 
 async function saveAccountType() {
   const account = accountTypeEditAccount.value
-  const nextType = accountTypeEditValue.value
-  if (!account?.email || !nextType || nextType === account.account_type) return
+  const nextType = String(accountTypeEditValue.value || '').trim().toLowerCase()
+  const nextStatus = String(accountStatusEditValue.value || '').trim().toLowerCase()
+  const nextProvider = String(accountBindProviderEditValue.value || '').trim().toLowerCase()
+  if (!account?.email || !nextType || !nextStatus || accountMetadataEditUnchanged.value) return
 
   accountTypeSaving.value = true
   message.value = ''
   try {
-    const result = await api.updateAccountType(account.email, nextType)
-    message.value = result.message || `已更新 ${account.email} 账号类型`
+    const result = await api.updateAccountMetadata(account.email, {
+      account_type: nextType,
+      status: nextStatus,
+      last_bind_provider: nextProvider,
+    })
+    message.value = result.message || `已更新 ${account.email} 账号信息`
     messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     accountTypeEditAccount.value = null
     accountTypeEditValue.value = ''
+    accountStatusEditValue.value = ''
+    accountBindProviderEditValue.value = ''
     emit('refresh')
   } catch (e) {
     message.value = e.message
@@ -3367,6 +3518,7 @@ async function loginAccount(email) {
   actionType.value = 'login'
   message.value = ''
   try {
+    await loadOauthPhoneSmsConfig({ silent: true })
     const oauthPayload = buildDashboardOauthPayload()
     const result = await api.loginAccount(email, oauthPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''

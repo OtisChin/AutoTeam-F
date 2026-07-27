@@ -1215,22 +1215,30 @@ class AuthFlow:
         """
         phone_items: list[dict] = []
         phone_supplier = getattr(self, "_openai_phone_supplier", None)
+        phone_provider = str(getattr(self, "_openai_phone_provider", "") or "").strip().lower()
 
-        def _load_dynamic_phone_items() -> list[dict]:
+        def _load_dynamic_phone_items() -> tuple[list[dict], str]:
             if not callable(phone_supplier):
-                return []
+                return [], ""
             try:
                 supplied = phone_supplier()
                 if isinstance(supplied, dict):
-                    return [supplied]
+                    return [supplied], ""
                 elif isinstance(supplied, (list, tuple)):
-                    return [item for item in supplied if isinstance(item, dict)]
+                    return [item for item in supplied if isinstance(item, dict)], ""
             except Exception as exc:
                 logger.warning("add-phone 动态取号失败: %s", exc)
-            return []
+                return [], str(exc)
+            return [], ""
 
         if callable(phone_supplier):
-            phone_items = _load_dynamic_phone_items()
+            phone_items, phone_supply_error = _load_dynamic_phone_items()
+            if not phone_items and phone_provider in {"hero_sms", "smsbower"}:
+                from autotoken.auth.codex_auth import CodexOAuthPhoneRequired
+
+                detail = phone_supply_error or f"{phone_provider.replace('_', '-')} 无可用号码"
+                logger.warning("命中 add-phone，但%s", detail)
+                raise CodexOAuthPhoneRequired(detail)
 
         phone_raw = (os.getenv("OPENAI_PHONE_NUMBER", "") or "").strip()
         phone_candidates = [x.strip() for x in phone_raw.split(",") if x.strip()]
@@ -1256,7 +1264,7 @@ class AuthFlow:
         while True:
             if idx >= len(phone_candidates):
                 if callable(phone_supplier) and dynamic_acquire_count < max_dynamic_attempts:
-                    phone_items = _load_dynamic_phone_items()
+                    phone_items, phone_supply_error = _load_dynamic_phone_items()
                     dynamic_acquire_count += 1
                     phone_candidates = [
                         str(item.get("phone_number") or item.get("phone") or "").strip()

@@ -175,6 +175,68 @@ def test_phone_first_failure_callback_receives_specific_error(monkeypatch):
     assert "PHONE_ALREADY_REGISTERED" in reasons[0]
 
 
+def test_add_phone_verification_hero_sms_no_numbers_does_not_fallback_to_env(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow._is_add_phone_page = lambda _page: True
+    flow._openai_phone_provider = "hero_sms"
+    flow._openai_phone_supplier = lambda: []
+
+    monkeypatch.setenv("OPENAI_PHONE_NUMBER", "+15550000000")
+
+    try:
+        flow._handle_add_phone_verification("https://auth.openai.com/add-phone")
+    except Exception as exc:
+        assert "hero-sms" in str(exc).lower()
+    else:
+        raise AssertionError("expected hero-sms no-number failure")
+
+
+def test_add_phone_verification_reacquire_path_handles_dynamic_phone_item_lists(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakePage:
+        url = "https://auth.openai.com/add-phone"
+
+        def reload(self, **_kwargs):
+            return None
+
+    state = {"calls": 0}
+
+    def fake_supplier():
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return [{"phone_number": "+15551234567", "source": "hero_sms", "activation_id": "act-1"}]
+        return []
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow._is_add_phone_page = lambda _page: True
+    flow._openai_phone_provider = "hero_sms"
+    flow._openai_phone_supplier = fake_supplier
+    flow._add_phone_send = lambda _phone: {"page": {"type": "phone_otp_verification"}, "continue_url": "https://auth.openai.com/add-phone"}
+    flow._extract_page_type = lambda _resp: "phone_otp_verification"
+    flow._extract_continue_url_from_step = lambda _resp: "https://auth.openai.com/add-phone"
+    flow._normalize_continue_url = lambda url: url
+    flow._phone_otp_input_locator = lambda: object()
+    flow._wait_phone_otp = lambda *_args, **_kwargs: "123456"
+    flow._phone_otp_validate = lambda _code: (_ for _ in ()).throw(RuntimeError("PHONE_NUMBER_IN_USE"))
+    flow._phone_otp_resend = lambda: None
+
+    monkeypatch.setattr(auth_flow.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = flow._handle_add_phone_verification("https://auth.openai.com/add-phone")
+
+    assert result == "https://auth.openai.com/add-phone"
+    assert state["calls"] >= 2
+
+
 def test_new_protocol_register_uses_unified_email_otp_delivery(monkeypatch):
     auth_flow = _load_auth_flow_module()
 
