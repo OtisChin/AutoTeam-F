@@ -25,8 +25,6 @@ from autotoken.payments.kakao_pay import (
     amount_info,
     currency_info,
     find_submission_attempt,
-    page_get,
-    stripe_init,
 )
 from autotoken.payments.us_paypal import (
     build_chatgpt_session,
@@ -181,13 +179,76 @@ def _sync_ctx_from_init(ctx: dict[str, str], payload: dict[str, Any]) -> None:
         ctx["elements_session_config_id"] = config_id
 
 
+def _momo_elements_params(ctx: dict[str, str], *, include_session: bool = False) -> dict[str, str]:
+    params = {
+        "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
+        "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
+        "elements_session_client[elements_init_source]": "custom_checkout",
+        "elements_session_client[referrer_host]": "chatgpt.com",
+        "elements_session_client[stripe_js_id]": ctx["stripe_js_id"],
+        "elements_session_client[locale]": "vi",
+        "elements_session_client[is_aggregation_expected]": "false",
+        "elements_options_client[saved_payment_method][enable_save]": "never",
+        "elements_options_client[saved_payment_method][enable_redisplay]": "never",
+    }
+    if include_session:
+        params["elements_session_client[session_id]"] = ctx["elements_session_id"]
+    return params
+
+
+def stripe_init(stripe: requests.Session, cs_id: str, stripe_pk: str, ctx: dict[str, str]) -> dict[str, Any]:
+    resp = stripe.post(
+        f"https://api.stripe.com/v1/payment_pages/{cs_id}/init",
+        data={
+            "key": stripe_pk,
+            "eid": "NA",
+            "browser_locale": "vi-VN",
+            "browser_timezone": "Asia/Ho_Chi_Minh",
+            "redirect_type": "url",
+            "_stripe_version": MOMO_STRIPE_VERSION,
+            **_momo_elements_params(ctx),
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"stripe init failed: HTTP {resp.status_code} {short(resp.text)}")
+    data = resp.json() or {}
+    _sync_ctx_from_init(ctx, data)
+    return data
+
+
+def page_get(stripe: requests.Session, cs_id: str, stripe_pk: str, ctx: dict[str, str]) -> dict[str, Any]:
+    resp = stripe.get(
+        f"https://api.stripe.com/v1/payment_pages/{cs_id}",
+        params={
+            "key": stripe_pk,
+            "_stripe_version": MOMO_STRIPE_VERSION,
+            **_momo_elements_params(ctx, include_session=True),
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"payment_pages get failed: HTTP {resp.status_code} {short(resp.text)}")
+    return resp.json() or {}
+
+
 def _redirect_url(payload: Any) -> tuple[str, str]:
-    if not isinstance(payload, dict):
-        return "", ""
-    action = payload.get("next_action") if isinstance(payload.get("next_action"), dict) else {}
-    action_type = str(action.get("type") or "")
-    redirect = action.get("redirect_to_url") if isinstance(action.get("redirect_to_url"), dict) else {}
-    return str(redirect.get("url") or ""), action_type
+    if isinstance(payload, dict):
+        action = payload.get("next_action")
+        if isinstance(action, dict):
+            redirect = action.get("redirect_to_url")
+            if isinstance(redirect, dict) and str(redirect.get("url") or "").strip():
+                return str(redirect.get("url") or "").strip(), str(action.get("type") or "")
+        for key in ("setup_intent", "payment_intent", "submission_attempt", "latest_attempt", "submission", "session"):
+            found, action_type = _redirect_url(payload.get(key))
+            if found:
+                return found, action_type
+    if isinstance(payload, list):
+        for item in payload:
+            found, action_type = _redirect_url(item)
+            if found:
+                return found, action_type
+    return "", ""
 
 
 def _is_stripe_pm_redirect_url(value: str) -> bool:
@@ -650,11 +711,12 @@ def generate_momo_vn_trial(cfg: MomoVnJobConfig, log: LogFn | None = None) -> di
             and finalize_momo_result(stripe, fields, link_source="stripe_payment_pages_confirm")
         ):
             fields["amount"] = amount
+            fields["currency"] = (currency or MOMO_CURRENCY).upper()
             fields["payment_method_types"] = pmt
             fields["ordered_payment_method_types"] = ordered
             fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
             fields["billing"] = billing
-            return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
+            return {"ok": True, "amount": amount, "currency": fields["currency"], "fields": fields, "billing": billing}
 
         log("VN approve + poll MoMo")
         chatgpt_approve(token, cs_id, processor, provider_proxy_url, device_id, log, country=MOMO_COUNTRY)
@@ -666,11 +728,12 @@ def generate_momo_vn_trial(cfg: MomoVnJobConfig, log: LogFn | None = None) -> di
             log(f"poll {i}/19 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
             if is_success(fields) and finalize_momo_result(stripe, fields, link_source="stripe_checkout_approve_poll"):
                 fields["amount"] = amount
+                fields["currency"] = (currency or MOMO_CURRENCY).upper()
                 fields["payment_method_types"] = pmt
                 fields["ordered_payment_method_types"] = ordered
                 fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
                 fields["billing"] = billing
-                return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
+                return {"ok": True, "amount": amount, "currency": fields["currency"], "fields": fields, "billing": billing}
             if sub.get("state") == "failed":
                 raise RuntimeError(f"approve 后失败: {err.get('code')}")
             time.sleep(1.0)

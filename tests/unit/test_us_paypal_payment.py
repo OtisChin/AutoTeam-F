@@ -84,25 +84,26 @@ def test_create_express_billing_agreement_returns_ba_url():
 
 
 @pytest.mark.parametrize(
-    ("country", "currency"),
+    ("country", "currency", "billing_country"),
     [
-        ("BR", "BRL"),
-        ("AU", "AUD"),
-        ("CA", "CAD"),
-        ("GB", "GBP"),
-        ("ID", "IDR"),
-        ("JP", "JPY"),
-        ("MX", "MXN"),
-        ("PH", "PHP"),
-        ("TH", "THB"),
-        ("NL", "EUR"),
+        ("BA", "EUR", "DE"),
+        ("BR", "BRL", "BR"),
+        ("AU", "AUD", "AU"),
+        ("CA", "CAD", "CA"),
+        ("GB", "GBP", "GB"),
+        ("ID", "IDR", "ID"),
+        ("JP", "JPY", "JP"),
+        ("MX", "MXN", "MX"),
+        ("PH", "PHP", "PH"),
+        ("TH", "THB", "TH"),
+        ("NL", "EUR", "NL"),
     ],
 )
-def test_paypal_billing_supports_requested_countries(country, currency):
+def test_paypal_billing_supports_requested_countries(country, currency, billing_country):
     billing = us_paypal.paypal_billing(account_email=f"user-{country.lower()}@example.test", country=country)
 
     assert us_paypal.paypal_currency_for_country(country) == currency
-    assert billing["country"] == country
+    assert billing["country"] == billing_country
     assert billing["email"] == f"user-{country.lower()}@example.test"
     assert billing["line1"]
     assert billing["city"]
@@ -383,7 +384,7 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
     assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
 
 
-def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_proxy(monkeypatch):
+def test_generate_paypal_trial_uses_target_proxy_country_and_mapped_checkout_billing(monkeypatch):
     calls = []
     proxy_stages = []
 
@@ -420,7 +421,7 @@ def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_prox
         us_paypal.PaypalJobConfig(
             access_token="token",
             direct_proxies=["socks5h://user-zone-custom-region-US-session-fixed:pass@proxy.example:10000"],
-            region="GB",
+            region="BA",
             promo_region="JP",
             apply_promo=True,
         )
@@ -428,14 +429,14 @@ def test_generate_paypal_trial_uses_target_country_for_checkout_billing_and_prox
 
     checkout_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout"))
     promo_payload = next(payload for kind, url, payload in calls if kind == "chatgpt_post" and url.endswith("/checkout/update"))
-    assert checkout_payload["billing_details"] == {"country": "GB", "currency": "GBP"}
+    assert checkout_payload["billing_details"] == {"country": "DE", "currency": "EUR"}
     assert promo_payload["billing_details"] == {"country": "JP", "currency": "JPY"}
-    assert "-custom-region-GB-session-" in proxy_stages[0]
-    assert "-custom-region-GB-session-" in proxy_stages[1]
+    assert "-custom-region-BA-session-" in proxy_stages[0]
+    assert "-custom-region-BA-session-" in proxy_stages[1]
     assert "-custom-region-JP-session-" in proxy_stages[2]
-    assert "-custom-region-GB-session-" in proxy_stages[3]
+    assert "-custom-region-BA-session-" in proxy_stages[3]
     assert proxy_stages[3] != proxy_stages[1]
-    assert result["fields"]["billing"]["country"] == "GB"
+    assert result["fields"]["billing"]["country"] == "DE"
     assert result["fields"]["amount"] == "0"
     assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
 

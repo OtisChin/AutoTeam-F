@@ -12,10 +12,10 @@ import random
 import re
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote
-
 
 from autotoken.payments.bind_executor import (
     _build_result,
@@ -36,12 +36,12 @@ from autotoken.payments.gopay_executor import (
     _new_http_session,
     _response_json,
     _stripe_js_checksum,
-    _stripe_rv_timestamp,
     _stripe_runtime_from_env,
+    _stripe_rv_timestamp,
     _verify_checkout_http,
 )
-from autotoken.services import payment_checkout_state as payment_checkout_state_service
 from autotoken.services import checkout_response as checkout_response_service
+from autotoken.services import payment_checkout_state as payment_checkout_state_service
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +264,26 @@ def _generate_openai_checkout_with_protocol_session(
         "hosted_checkout_url": hosted_checkout_url,
         "url": hosted_checkout_url or chatgpt_checkout_url,
     }
+
+
+def _is_plus_trial_checkout_payload(payload: dict[str, Any] | None) -> bool:
+    return str((payload or {}).get("checkout_flow") or "").strip().lower() == "plus_trial"
+
+
+def _generate_plus_trial_checkout_with_protocol_proxy(
+    access_token: str,
+    payload: dict[str, Any],
+    *,
+    proxy_url: str | None,
+) -> dict[str, Any]:
+    from autotoken.payments.plus_trial import generate_plus_trial_checkout_link
+
+    plus_trial_payload = dict(payload)
+    normalized_proxy_url = str(proxy_url or "").strip()
+    if normalized_proxy_url:
+        plus_trial_payload.setdefault("checkout_proxy", normalized_proxy_url)
+        plus_trial_payload.setdefault("update_proxy", normalized_proxy_url)
+    return generate_plus_trial_checkout_link(access_token, plus_trial_payload)
 
 
 def _parse_card_expiry(value: str) -> tuple[str, str]:
@@ -925,6 +945,22 @@ def _payment_intent_confirm_summary(confirm_payload: dict) -> dict[str, Any]:
     return summary
 
 
+def _openai_confirm_summary(confirm_payload: dict) -> dict[str, Any]:
+    payload = confirm_payload if isinstance(confirm_payload, dict) else {}
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    summary: dict[str, Any] = {
+        "status": str(payload.get("status") or payload.get("result") or "").strip(),
+        "client_secret_present": bool(str(payload.get("client_secret") or "").strip()),
+    }
+    if error:
+        summary["error"] = {
+            "code": str(error.get("code") or "").strip(),
+            "message": str(error.get("message") or "").strip(),
+            "type": str(error.get("type") or "").strip(),
+        }
+    return summary
+
+
 def _find_nested_string(payload: Any, key: str) -> str:
     target = str(key or "")
     if not target:
@@ -1093,12 +1129,24 @@ def run_protocol_card_bind_task(
 
         checkout_generated: dict[str, Any] = {}
         if not checkout_url and isinstance(checkout_payload, dict) and checkout_payload:
-            _emit(progress_callback, "protocol_openai_checkout_create", plan_name=str(checkout_payload.get("plan_name") or ""))
-            checkout_generated = _generate_openai_checkout_with_protocol_session(
-                chatgpt_http,
-                payload=checkout_payload,
-                profile=profile,
-            )
+            if _is_plus_trial_checkout_payload(checkout_payload):
+                _emit(
+                    progress_callback,
+                    "protocol_plus_trial_checkout_create",
+                    plan_name=str(checkout_payload.get("plan_name") or ""),
+                )
+                checkout_generated = _generate_plus_trial_checkout_with_protocol_proxy(
+                    access_token,
+                    checkout_payload,
+                    proxy_url=proxy_url,
+                )
+            else:
+                _emit(progress_callback, "protocol_openai_checkout_create", plan_name=str(checkout_payload.get("plan_name") or ""))
+                checkout_generated = _generate_openai_checkout_with_protocol_session(
+                    chatgpt_http,
+                    payload=checkout_payload,
+                    profile=profile,
+                )
             checkout_url = str(checkout_generated.get("chatgpt_checkout_url") or checkout_generated.get("url") or "").strip()
 
         checkout_session_id = _extract_protocol_checkout_id(checkout_url)

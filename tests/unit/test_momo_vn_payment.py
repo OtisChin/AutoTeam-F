@@ -27,6 +27,21 @@ class _ProxyContext:
         return False
 
 
+class _CaptureStripeSession:
+    def __init__(self, payload=None):
+        self.payload = payload or {}
+        self.last_post = None
+        self.last_get = None
+
+    def post(self, url, data=None, timeout=None, **kwargs):
+        self.last_post = {"url": url, "data": data or {}, "timeout": timeout, "kwargs": kwargs}
+        return _JsonResponse(self.payload)
+
+    def get(self, url, params=None, timeout=None, **kwargs):
+        self.last_get = {"url": url, "params": params or {}, "timeout": timeout, "kwargs": kwargs}
+        return _JsonResponse(self.payload)
+
+
 def _eligible_context() -> dict[str, object]:
     return {
         "ok": True,
@@ -62,6 +77,49 @@ def _eligible_context() -> dict[str, object]:
             "state": "HCM",
         },
     }
+
+
+def test_extract_momo_result_recurses_nested_redirect():
+    payload = {
+        "setup_intent": {
+            "next_action": {
+                "type": "redirect_to_url",
+                "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/acct/test_nested"},
+            }
+        },
+        "submission_attempt": {"state": "processing"},
+    }
+
+    fields = momo_vn.extract_momo_result(payload, "cs_test")
+
+    assert fields["stripe_redirect_url"] == "https://pm-redirects.stripe.com/authorize/acct/test_nested"
+    assert fields["submission_state"] == "processing"
+    assert fields["next_action_type"] == "redirect_to_url"
+
+
+def test_momo_stripe_init_uses_vn_locale_and_timezone():
+    stripe = _CaptureStripeSession({"config_id": "cfg_test", "init_checksum": "init_test"})
+    ctx = dict(_eligible_context()["ctx"])
+
+    momo_vn.stripe_init(stripe, "cs_test", "pk_test", ctx)
+
+    assert stripe.last_post["url"].endswith("/v1/payment_pages/cs_test/init")
+    assert stripe.last_post["data"]["browser_locale"] == "vi-VN"
+    assert stripe.last_post["data"]["browser_timezone"] == "Asia/Ho_Chi_Minh"
+    assert stripe.last_post["data"]["redirect_type"] == "url"
+    assert stripe.last_post["data"]["elements_session_client[locale]"] == "vi"
+
+
+def test_momo_page_get_uses_vn_locale_and_session_context():
+    stripe = _CaptureStripeSession({"submission_attempt": {"state": "processing"}})
+    ctx = dict(_eligible_context()["ctx"])
+
+    payload = momo_vn.page_get(stripe, "cs_test", "pk_test", ctx)
+
+    assert payload["submission_attempt"]["state"] == "processing"
+    assert stripe.last_get["url"].endswith("/v1/payment_pages/cs_test")
+    assert stripe.last_get["params"]["elements_session_client[session_id]"] == "elements_session_test"
+    assert stripe.last_get["params"]["elements_session_client[locale]"] == "vi"
 
 
 def test_detect_momo_eligibility_returns_eligible_when_methods_include_momo(monkeypatch):

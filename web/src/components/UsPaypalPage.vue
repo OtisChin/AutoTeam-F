@@ -502,6 +502,7 @@ const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'n
 const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
 const PROTOCOL_COUNTRIES = new Set(['AU', 'BR', 'CA', 'GB', 'ID', 'JP', 'MX', 'PH', 'TH', 'NL', 'US'])
 const paypalCountryOptions = [
+  { value: 'BA', label: 'BA · 波黑' },
   { value: 'US', label: 'US · 美国' },
   { value: 'GB', label: 'GB · 英国' },
   { value: 'CA', label: 'CA · 加拿大' },

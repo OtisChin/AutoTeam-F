@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 from fastapi import FastAPI
 
@@ -268,10 +269,38 @@ def test_batch_job_saves_momo_link_and_success_status(monkeypatch, tmp_path):
     saved_link = json.loads(momo_vn.LINKS_FILE.read_text(encoding="utf-8"))[0]
     statuses = json.loads(momo_vn.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert saved_link["account_email"] == "user@example.com"
+    assert saved_link["currency"] == "VND"
     assert saved_link["momo_link"] == "https://payment.momo.vn/pay/app?token=test"
     assert saved_link["provider_redirect_url"] == "https://payment.momo.vn/pay/app?token=test"
     assert statuses["user@example.com"]["status"] == "success"
     assert momo_vn.JOBS[job_id]["status"] == "success"
+
+
+def test_append_link_preserves_all_records_under_concurrent_writes(monkeypatch, tmp_path):
+    monkeypatch.setattr(momo_vn, "LINKS_FILE", tmp_path / "momo_vn_links.json")
+    original_load_links = momo_vn._load_links
+
+    def slow_load_links():
+        items = original_load_links()
+        momo_vn.time.sleep(0.05)
+        return items
+
+    monkeypatch.setattr(momo_vn, "_load_links", slow_load_links)
+
+    records = [
+        {"id": "id-1", "account_email": "a@example.com", "momo_link": "https://payment.momo.vn/pay/a"},
+        {"id": "id-2", "account_email": "b@example.com", "momo_link": "https://payment.momo.vn/pay/b"},
+        {"id": "id-3", "account_email": "c@example.com", "momo_link": "https://payment.momo.vn/pay/c"},
+    ]
+    threads = [threading.Thread(target=momo_vn._append_link, args=(record,)) for record in records]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    saved = json.loads(momo_vn.LINKS_FILE.read_text(encoding="utf-8"))
+    assert {item["account_email"] for item in saved} == {"a@example.com", "b@example.com", "c@example.com"}
+    assert len(saved) == 3
 
 
 def test_accounts_route_uses_canonical_status_text_even_if_stored_text_is_dirty(monkeypatch, tmp_path):

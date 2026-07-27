@@ -11,6 +11,7 @@ from pydantic import BaseModel
 class BindLinkParams(BaseModel):
     access_token: str
     plan_name: str
+    checkout_flow: str = ""
     promo_campaign: dict | None = None
     billing_details: dict
     checkout_ui_mode: str = "hosted"
@@ -24,6 +25,7 @@ class BindLinkOpenParams(BaseModel):
     email: str
     access_token: str = ""
     plan_name: str
+    checkout_flow: str = ""
     billing_details: dict
     checkout_ui_mode: str = "hosted"
     team_plan_data: dict | None = None
@@ -36,6 +38,8 @@ def _checkout_payload(params: BindLinkParams) -> dict[str, Any]:
         "billing_details": params.billing_details,
         "checkout_ui_mode": params.checkout_ui_mode,
     }
+    if params.checkout_flow:
+        payload["checkout_flow"] = params.checkout_flow
     if params.entry_point:
         payload["entry_point"] = params.entry_point
     if getattr(params, "promo_campaign", None):
@@ -47,6 +51,10 @@ def _checkout_payload(params: BindLinkParams) -> dict[str, Any]:
     if params.team_plan_data:
         payload["team_plan_data"] = params.team_plan_data
     return payload
+
+
+def _is_plus_trial_flow(payload: dict[str, Any]) -> bool:
+    return str(payload.get("checkout_flow") or "").strip().lower() == "plus_trial"
 
 
 def _prefer_chatgpt_checkout_url(result: dict[str, Any]) -> dict[str, Any]:
@@ -69,6 +77,7 @@ def create_bind_link_router(
     *,
     normalize_access_token: Callable[[str], str],
     generate_checkout_link: Callable[[str, dict[str, Any]], dict[str, Any]],
+    generate_plus_trial_checkout_link: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     get_account_access_token: Callable[[str], str] | None = None,
     open_checkout_url: Callable[[str, str], dict[str, Any]] | None = None,
     logger: logging.Logger | None = None,
@@ -84,7 +93,12 @@ def create_bind_link_router(
             raise HTTPException(status_code=400, detail="请提供 access_token")
 
         try:
-            return _prefer_chatgpt_checkout_url(generate_checkout_link(access_token, _checkout_payload(params)))
+            payload = _checkout_payload(params)
+            if _is_plus_trial_flow(payload):
+                if not generate_plus_trial_checkout_link:
+                    raise HTTPException(status_code=500, detail="当前服务未配置 Plus 试用提链器")
+                return _prefer_chatgpt_checkout_url(generate_plus_trial_checkout_link(access_token, payload))
+            return _prefer_chatgpt_checkout_url(generate_checkout_link(access_token, payload))
         except HTTPException:
             raise
         except Exception as exc:
@@ -107,7 +121,13 @@ def create_bind_link_router(
             raise HTTPException(status_code=400, detail=f"账号缺少可用 access_token: {email}")
 
         try:
-            generated = _prefer_chatgpt_checkout_url(generate_checkout_link(access_token, _checkout_payload(params)))
+            payload = _checkout_payload(params)
+            if _is_plus_trial_flow(payload):
+                if not generate_plus_trial_checkout_link:
+                    raise HTTPException(status_code=500, detail="当前服务未配置 Plus 试用提链器")
+                generated = _prefer_chatgpt_checkout_url(generate_plus_trial_checkout_link(access_token, payload))
+            else:
+                generated = _prefer_chatgpt_checkout_url(generate_checkout_link(access_token, payload))
             checkout_url = str(generated.get("url") or "").strip()
             if not checkout_url:
                 raise HTTPException(status_code=502, detail="生成 checkout 返回缺少 url")

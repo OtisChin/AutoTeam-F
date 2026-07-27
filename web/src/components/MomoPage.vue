@@ -154,7 +154,7 @@
               <tr v-if="!filteredAccounts.length">
                 <td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td>
               </tr>
-              <tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50">
+              <tr v-for="account in visibleAccounts" :key="account.email" class="hover:bg-gray-900/50">
                 <td class="px-3 py-2">
                   <input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="inputLocked || !accountSelectable(account)" @change="toggleAccount(account.email)" />
                 </td>
@@ -178,6 +178,10 @@
               </tr>
             </tbody>
           </table>
+          <div v-if="hiddenAccountCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+            <span>已显示 {{ visibleAccounts.length }} / {{ filteredAccounts.length }} 个账号</span>
+            <button @click="showMoreAccounts" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+          </div>
         </div>
       </section>
 
@@ -276,7 +280,7 @@
               <td class="px-3 py-2"><input :checked="selectedLinkIds.has(link.id)" type="checkbox" class="accent-emerald-500" @change="toggleLink(link.id)" /></td>
               <td class="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{{ link.created_at }}</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-300">{{ link.account_email || '-' }}</td>
-              <td class="px-3 py-2 text-xs text-gray-400">{{ link.amount || '-' }} KRW</td>
+              <td class="px-3 py-2 text-xs text-gray-400">{{ momoLinkAmountLabel(link) }}</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-400">{{ link.cs_id || '-' }}</td>
               <td class="whitespace-nowrap px-3 py-2 text-xs">
                 <span class="rounded-full border px-2 py-1 font-semibold" :class="momoExpiryClass(link)">
@@ -326,6 +330,7 @@ const statusText = ref('请选择账号并填写 VN 代理后开始提链。')
 const statusError = ref(false)
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
+const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
 const deletingMomoAccounts = ref(new Set())
 const lastFailedEmails = ref([])
@@ -376,6 +381,8 @@ const filteredAccounts = computed(() => {
     return (!query || email.includes(query)) && (status === 'all' || accountStatusValue === status)
   })
 })
+const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
+const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
 const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? currentResult.value.successes : [])
 const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? currentResult.value.errors : [])
 const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? currentResult.value.skipped : [])
@@ -566,6 +573,10 @@ function clearSelectedAccounts() {
   selectedAccounts.value = new Set()
 }
 
+function showMoreAccounts() {
+  accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100)
+}
+
 function toggleLink(id) {
   const next = new Set(selectedLinkIds.value)
   next.has(id) ? next.delete(id) : next.add(id)
@@ -574,6 +585,15 @@ function toggleLink(id) {
 
 function momoLinkUrl(link) {
   return String(link?.provider_redirect_url || link?.momo_link || link?.stripe_redirect_url || '').trim()
+}
+
+function momoLinkCurrency(link) {
+  return String(link?.currency || link?.billing?.currency || 'VND').trim().toUpperCase() || 'VND'
+}
+
+function momoLinkAmountLabel(link) {
+  const amount = String(link?.amount ?? '').trim()
+  return `${amount || '-'} ${momoLinkCurrency(link)}`
 }
 
 function timestampMs(value) {
@@ -899,6 +919,7 @@ onMounted(async () => {
   await reloadAll()
   await restoreActiveJob()
 })
+watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
 onUnmounted(() => {
   componentUnmounted = true
   stopPolling()

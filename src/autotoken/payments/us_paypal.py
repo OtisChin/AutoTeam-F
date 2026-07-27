@@ -142,6 +142,7 @@ US_ADDRESSES = [
 ]
 
 PAYPAL_COUNTRY_CURRENCIES = {
+    "BA": "EUR",
     "US": "USD",
     "GB": "GBP",
     "CA": "CAD",
@@ -191,6 +192,10 @@ PAYPAL_COUNTRY_BILLING_PRESETS = {
     "KR": ("Min Kim", "1 Sejong-daero", "Seoul", "", "04524"),
     "MX": ("Sofia Hernandez", "Avenida Reforma 1", "Ciudad de Mexico", "", "06000"),
     "NZ": ("Amelia Smith", "1 Queen Street", "Auckland", "", "1010"),
+}
+
+PAYPAL_COUNTRY_BILLING_ALIASES = {
+    "BA": "DE",
 }
 
 
@@ -435,17 +440,20 @@ def normalize_paypal_country(value: str, default: str = "US") -> str:
 
 
 def paypal_currency_for_country(country: str) -> str:
-    return PAYPAL_COUNTRY_CURRENCIES.get(normalize_paypal_country(country), "USD")
+    country_code = normalize_paypal_country(country)
+    billing_country = PAYPAL_COUNTRY_BILLING_ALIASES.get(country_code, country_code)
+    return PAYPAL_COUNTRY_CURRENCIES.get(billing_country, "USD")
 
 
 def paypal_billing(account_email: str = "", country: str = "US") -> dict[str, str]:
     country_code = normalize_paypal_country(country)
-    if country_code != "US" and country_code in PAYPAL_COUNTRY_BILLING_PRESETS:
-        name, line1, city, state, postal = PAYPAL_COUNTRY_BILLING_PRESETS[country_code]
+    billing_country = PAYPAL_COUNTRY_BILLING_ALIASES.get(country_code, country_code)
+    if billing_country != "US" and billing_country in PAYPAL_COUNTRY_BILLING_PRESETS:
+        name, line1, city, state, postal = PAYPAL_COUNTRY_BILLING_PRESETS[billing_country]
         return {
             "name": name,
             "email": account_email or f"paypal.{country_code.lower()}.{random.randint(1000, 9999)}@example.com",
-            "country": country_code,
+            "country": billing_country,
             "line1": line1,
             "city": city,
             "state": state,
@@ -1009,8 +1017,9 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
     device_id = str(uuid.uuid4())
     checkout_region = normalize_paypal_country(cfg.region, "US")
     promo_region = normalize_paypal_country(cfg.promo_region, "JP")
-    checkout_currency = paypal_currency_for_country(checkout_region)
     billing = paypal_billing(country=checkout_region)
+    checkout_billing_country = billing.get("country") or checkout_region
+    checkout_currency = paypal_currency_for_country(checkout_region)
     state_text = f"-{billing.get('state')}" if billing.get("state") else ""
     log(f"账单: {billing['name']} / {billing['city']}{state_text} / {billing['postal_code']} / {billing['country']}")
 
@@ -1025,7 +1034,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
             json={
                 "entry_point": "all_plans_pricing_modal",
                 "plan_name": "chatgptplusplan",
-                "billing_details": {"country": checkout_region, "currency": checkout_currency},
+                "billing_details": {"country": checkout_billing_country, "currency": checkout_currency},
                 "checkout_ui_mode": "custom",
             },
             headers={"x-openai-target-path": "/backend-api/payments/checkout", "x-openai-target-route": "/backend-api/payments/checkout"},

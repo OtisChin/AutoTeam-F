@@ -218,6 +218,81 @@ def test_bind_card_task_protocol_flow_allows_backend_checkout_generation(monkeyp
     assert [item["stage"] for item in progress] == ["binding", "completed"]
 
 
+def test_bind_card_task_protocol_plus_trial_uses_simon_us_tr_proxy_countries(monkeypatch):
+    started = []
+    progress = []
+    protocol_calls = []
+    account = {"email": "user@example.com", "auth_file": "auth.json"}
+    reserved = {"id": "card-1", "status": "binding"}
+
+    monkeypatch.setattr("autotoken.cancel_signal.is_cancelled", lambda: False)
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda _accounts, email: account if email == "user@example.com" else None,
+    )
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("autotoken.card_pool.find_item", lambda _pool_type, item_id: {"id": item_id, "status": "unused"})
+    monkeypatch.setattr("autotoken.card_pool.reserve_card_item", lambda *args, **kwargs: reserved)
+    monkeypatch.setattr("autotoken.card_pool.finalize_card_binding", lambda *args, **kwargs: {"id": "card-1", "status": "used"})
+    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _item: None)
+    fetched_regions = []
+
+    def fake_fetch(api_url, *, default_auth_scheme, provider):
+        region = "UNKNOWN"
+        if "region=PH" in api_url:
+            region = "PH"
+        elif "region=US" in api_url:
+            region = "US"
+        elif "region=TR" in api_url:
+            region = "TR"
+        fetched_regions.append(region)
+        return f"socks5h://user:pass@{region.lower()}.cliproxy.example:3010"
+
+    monkeypatch.setattr("autotoken.services.proxy_runtime.fetch_proxy_from_api_url", fake_fetch)
+    monkeypatch.setattr("autotoken.services.proxy_runtime.preflight_payment_proxy_url", lambda proxy_url: (True, "ok"))
+    monkeypatch.setattr(
+        "autotoken.protocol_card_executor.run_protocol_card_bind_task",
+        lambda **kwargs: protocol_calls.append(kwargs)
+        or {
+            "status": "success",
+            "message": "protocol ok",
+            "screenshot_paths": [],
+            "checkout_url": "https://chatgpt.com/checkout/openai_llc/oaics_trial",
+        },
+    )
+
+    routes = _routes(started, progress=progress)
+    routes["post_bind_card_task"](
+        BindCardTaskParams(
+            email="user@example.com",
+            card_item_id="card-1",
+            checkout_url="",
+            payment_flow="protocol",
+            bind_link_payload={
+                "checkout_flow": "plus_trial",
+                "billing_details": {"country": "PH", "currency": "PHP"},
+                "checkout_ui_mode": "hosted",
+                "plan_name": "chatgptplusplan",
+            },
+            proxy_api_provider="cliproxy",
+            proxy_api_country="PH",
+        )
+    )
+    result = started[0]["func"]()
+
+    assert result["status"] == "success"
+    checkout_payload = protocol_calls[0]["checkout_payload"]
+    assert protocol_calls[0]["proxy_url"] == "socks5h://user:pass@ph.cliproxy.example:3010"
+    assert checkout_payload["checkout_flow"] == "plus_trial"
+    assert checkout_payload["checkout_proxy"] == "socks5h://user:pass@us.cliproxy.example:3010"
+    assert checkout_payload["update_proxy"] == "socks5h://user:pass@tr.cliproxy.example:3010"
+    assert checkout_payload["checkout_proxy_country"] == "US"
+    assert checkout_payload["update_proxy_country"] == "TR"
+    assert checkout_payload["verify_proxy_country"] is True
+    assert fetched_regions == ["PH", "US", "TR"]
+
+
 def test_bind_card_task_fetches_cliproxy_proxy_per_task(monkeypatch):
     started = []
     progress = []

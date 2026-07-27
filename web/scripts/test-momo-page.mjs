@@ -25,3 +25,8 @@ assert.match(momoPage, /仅检测资格/, 'Momo page renders qualification-only 
 assert.match(momoPage, /startQualificationOnly\(/, 'Momo page exposes qualification-only action')
 assert.match(momoPage, /qualificationOnly:\s*qualificationOnly/, 'Qualification-only action sends qualificationOnly payload field')
 assert.match(momoPage, /api\.startMomoVnBatch\(\{[\s\S]*qualificationOnly:/, 'Momo page starts MoMo batch jobs through dedicated API')
+assert.match(momoPage, /accountVisibleCount\s*=\s*ref\(100\)/, 'Momo account pool initially renders only 100 accounts')
+assert.match(momoPage, /visibleAccounts\s*=\s*computed\(\(\)\s*=>\s*filteredAccounts\.value\.slice\(0,\s*accountVisibleCount\.value\)\)/, 'Momo account table renders visible account slice')
+assert.match(momoPage, /v-for="account in visibleAccounts"/, 'Momo account table uses visibleAccounts instead of full filteredAccounts')
+assert.match(momoPage, /hiddenAccountCount\s*>\s*0[\s\S]*加载更多/, 'Momo account table exposes load-more footer')
+assert.match(momoPage, /watch\(\[accountFilter,\s*accountStatusFilter\],[\s\S]*accountVisibleCount\.value\s*=\s*100/, 'Momo account filters reset visible account count')

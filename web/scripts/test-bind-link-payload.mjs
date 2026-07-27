@@ -9,7 +9,7 @@ import {
 } from '../src/bindLinkPayload.js'
 
 function testPlanAndCountryOptions() {
-  assert.deepEqual(bindPlanOptions.map((item) => item.value), ['plus', 'pro5x', 'pro20x', 'team'])
+  assert.deepEqual(bindPlanOptions.map((item) => item.value), ['plus_trial', 'plus', 'pro5x', 'pro20x', 'team'])
   assert.deepEqual(
     bindCountryOptions.map((item) => `${item.country}:${item.currency}`),
     ['PH:PHP', 'EG:EGP', 'US:USD', 'JP:JPY', 'KR:KRW', 'IN:INR'],
@@ -18,7 +18,25 @@ function testPlanAndCountryOptions() {
   assert.equal(countryCurrencyMap.EG, 'EGP')
   assert.equal(countryCurrencyMap.KR, 'KRW')
   assert.equal(countryCurrencyMap.IN, 'INR')
+  assert.equal(bindPlanLabel('plus_trial'), 'Plus 试用')
   assert.equal(bindPlanLabel('pro5x'), 'Pro 5x')
+}
+
+function testPlusTrialPayloadSelectsDedicatedExtractionFlow() {
+  const payload = buildBindLinkPayload({
+    accessToken: 'token-trial',
+    planType: 'plus_trial',
+    country: 'PH',
+  })
+  assert.deepEqual(payload, {
+    access_token: 'token-trial',
+    billing_details: { country: 'PH', currency: 'PHP' },
+    checkout_ui_mode: 'hosted',
+    entry_point: 'all_plans_pricing_modal',
+    plan_name: 'chatgptplusplan',
+    checkout_flow: 'plus_trial',
+  })
+  assert.equal(Object.hasOwn(payload, 'promo_campaign'), false)
 }
 
 function testPlusPayloadHasNoPromoAndUsesHostedPricingModal() {
@@ -105,6 +123,7 @@ function testCheckoutLinkResolutionMatchesChatgptRedirectShape() {
 }
 
 testPlanAndCountryOptions()
+testPlusTrialPayloadSelectsDedicatedExtractionFlow()
 testPlusPayloadHasNoPromoAndUsesHostedPricingModal()
 testProPayloadsUsePhilippinesCurrency()
 testTeamPayloadKeepsTeamDataOnly()

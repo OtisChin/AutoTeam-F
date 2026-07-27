@@ -3447,7 +3447,7 @@ function getRememberedChatGPTBindForm() {
     selectedAccountEmail: String(selectedAccountEmail.value || '').trim().toLowerCase(),
     accountSearchKeyword: String(accountSearchKeyword.value || '').trim(),
     linkForm: {
-      planType: ['plus', 'pro5x', 'pro20x', 'team'].includes(String(bindForm.value.planType || ''))
+      planType: ['plus_trial', 'plus', 'pro5x', 'pro20x', 'team'].includes(String(bindForm.value.planType || ''))
         ? bindForm.value.planType
         : 'plus',
       country: String(bindForm.value.country || 'PH').trim().toUpperCase() || 'PH',
@@ -3485,7 +3485,7 @@ function loadChatGPTBindFormState() {
     const savedPlanType = String(linkForm.planType || '')
     bindForm.value = {
       ...bindForm.value,
-      planType: ['plus', 'pro5x', 'pro20x', 'team'].includes(savedPlanType) ? savedPlanType : bindForm.value.planType,
+      planType: ['plus_trial', 'plus', 'pro5x', 'pro20x', 'team'].includes(savedPlanType) ? savedPlanType : bindForm.value.planType,
       country: String(linkForm.country || bindForm.value.country || 'PH').trim().toUpperCase(),
       currency: String(linkForm.currency || bindForm.value.currency || 'PHP').trim().toUpperCase(),
       teamWorkspaceName: String(linkForm.teamWorkspaceName || bindForm.value.teamWorkspaceName || 'MyWorkspace').trim() || 'MyWorkspace',

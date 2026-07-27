@@ -1873,6 +1873,22 @@ def _generate_checkout_link(access_token: str, payload: dict[str, Any], *, proxy
     return _generate_checkout_link_via_http(access_token, payload, proxy_url=proxy_url)
 
 
+def _generate_plus_trial_checkout_link(access_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from autotoken.payments.plus_trial import generate_plus_trial_checkout_link
+
+        return generate_plus_trial_checkout_link(
+            _normalize_access_token(access_token),
+            payload,
+            logger=lambda message: logger.info("[bind/link plus_trial] %s", message),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[bind/link plus_trial] extractor failed")
+        raise HTTPException(status_code=502, detail=f"Plus 试用提链失败: {exc}") from exc
+
+
 _bind_checkout_browser_sessions: list[Any] = []
 
 
@@ -2884,6 +2900,7 @@ app.include_router(
     create_bind_link_router(
         normalize_access_token=_normalize_access_token,
         generate_checkout_link=_generate_checkout_link,
+        generate_plus_trial_checkout_link=_generate_plus_trial_checkout_link,
         get_account_access_token=_extract_account_access_token,
         open_checkout_url=_open_bind_checkout_with_auth_session,
         logger=logger,

@@ -64,8 +64,8 @@ def create_bind_card_task_router(
         from autotoken.core.redaction import safe_proxy_summary
         from autotoken.payments.bind_audit import record_bind_audit
         from autotoken.payments.bind_executor import run_bind_task
-        from autotoken.payments.protocol_card_executor import run_protocol_card_bind_task
         from autotoken.payments.card_pool import finalize_card_binding, find_item, reserve_card_item
+        from autotoken.payments.protocol_card_executor import run_protocol_card_bind_task
         from autotoken.services import proxy_runtime
         from autotoken.settings.config import normalize_proxy_url
         from autotoken.storage.accounts import (
@@ -105,6 +105,9 @@ def create_bind_card_task_router(
             raise HTTPException(status_code=404, detail="卡记录不存在")
         if card_item.get("status") != "unused":
             raise HTTPException(status_code=400, detail=f"卡当前状态为 {card_item.get('status')}，不可用于绑卡")
+
+        def _is_plus_trial_checkout_payload(payload: dict[str, Any]) -> bool:
+            return str(payload.get("checkout_flow") or "").strip().lower() == "plus_trial"
 
         def _run():
             task_id = current_task_id_for_group() or ""
@@ -257,6 +260,31 @@ def create_bind_card_task_router(
                             },
                         )
 
+                protocol_checkout_payload = dict(checkout_payload)
+                if (
+                    payment_flow == "protocol"
+                    and _is_plus_trial_checkout_payload(protocol_checkout_payload)
+                ):
+                    if proxy_api_url:
+                        checkout_stage_proxy = proxy_runtime.fetch_proxy_from_api_url(
+                            proxy_runtime.proxy_api_url_with_region(proxy_api_url, "US"),
+                            default_auth_scheme="socks5h",
+                            provider=proxy_api_provider or "cliproxy",
+                        )
+                        update_stage_proxy = proxy_runtime.fetch_proxy_from_api_url(
+                            proxy_runtime.proxy_api_url_with_region(proxy_api_url, "TR"),
+                            default_auth_scheme="socks5h",
+                            provider=proxy_api_provider or "cliproxy",
+                        )
+                        protocol_checkout_payload.setdefault("checkout_proxy", checkout_stage_proxy)
+                        protocol_checkout_payload.setdefault("update_proxy", update_stage_proxy)
+                        protocol_checkout_payload.setdefault("checkout_proxy_country", "US")
+                        protocol_checkout_payload.setdefault("update_proxy_country", "TR")
+                        protocol_checkout_payload.setdefault("verify_proxy_country", True)
+                    elif effective_proxy_url:
+                        protocol_checkout_payload.setdefault("checkout_proxy", effective_proxy_url)
+                        protocol_checkout_payload.setdefault("update_proxy", effective_proxy_url)
+
                 reserved_item = reserve_card_item(
                     params.card_item_id,
                     account_email=email,
@@ -282,7 +310,7 @@ def create_bind_card_task_router(
                     result = run_protocol_card_bind_task(
                         email=email,
                         checkout_url=checkout_url,
-                        checkout_payload=checkout_payload,
+                        checkout_payload=protocol_checkout_payload,
                         card_item=reserved_item,
                         proxy_url=effective_proxy_url,
                         proxy_bypass=params.proxy_bypass,

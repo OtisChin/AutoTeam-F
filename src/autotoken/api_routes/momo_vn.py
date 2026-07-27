@@ -129,9 +129,10 @@ def _save_links(items: list[dict[str, Any]]) -> None:
 
 
 def _append_link(item: dict[str, Any]) -> None:
-    items = _load_links()
-    items.insert(0, item)
-    _save_links(items)
+    with LINKS_LOCK:
+        items = _load_links()
+        items.insert(0, item)
+        _save_links(items)
 
 
 def _load_account_statuses() -> dict[str, dict[str, Any]]:
@@ -328,6 +329,7 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
     fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
     billing = fields.get("billing") if isinstance(fields.get("billing"), dict) else result.get("billing") or {}
     primary_link = str(fields.get("provider_redirect_url") or fields.get("momo_link") or fields.get("stripe_redirect_url") or "")
+    currency = str(fields.get("currency") or result.get("currency") or "VND").strip().upper() or "VND"
     created_at_ts = int(time.time())
     explicit_expires_at_ts = _timestamp_seconds(fields.get("momo_expires_at_ts") or fields.get("momo_expires_at") or result.get("momo_expires_at_ts") or result.get("momo_expires_at"))
     expires_at_ts = explicit_expires_at_ts or (created_at_ts + MOMO_LINK_TTL_SECONDS)
@@ -339,6 +341,7 @@ def _link_record_from_result(job_id: str, account_email: str, result: dict[str, 
         "account_email": account_email,
         "country": "VN",
         "amount": str(fields.get("amount") or result.get("amount") or ""),
+        "currency": currency,
         "cs_id": str(fields.get("cs_id") or ""),
         "momo_link": primary_link,
         "provider_redirect_url": str(fields.get("provider_redirect_url") or primary_link),

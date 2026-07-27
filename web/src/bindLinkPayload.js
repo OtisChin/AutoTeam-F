@@ -1,4 +1,5 @@
 export const bindPlanOptions = [
+  { value: 'plus_trial', label: 'Plus 试用', planName: 'chatgptplusplan', checkoutFlow: 'plus_trial' },
   { value: 'plus', label: 'Plus', planName: 'chatgptplusplan' },
   { value: 'pro5x', label: 'Pro 5x', planName: 'chatgptprolite' },
   { value: 'pro20x', label: 'Pro 20x', planName: 'chatgptpro' },
@@ -43,6 +44,10 @@ export function buildBindLinkPayload({
     checkout_ui_mode: 'hosted',
     entry_point: selectedPlan.value === 'team' ? 'team_workspace_purchase_modal' : 'all_plans_pricing_modal',
     plan_name: selectedPlan.planName,
+  }
+
+  if (selectedPlan.checkoutFlow) {
+    payload.checkout_flow = selectedPlan.checkoutFlow
   }
 
   if (selectedPlan.value === 'team') {

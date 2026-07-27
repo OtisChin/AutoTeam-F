@@ -301,6 +301,122 @@ def test_protocol_card_bind_task_generates_checkout_with_same_proxy_and_profile(
     ]
 
 
+def test_protocol_card_bind_task_uses_plus_trial_extractor_with_protocol_proxy(monkeypatch):
+    sessions = []
+    progress = []
+    plus_trial_calls = []
+
+    class CheckoutHttp(FakeHttp):
+        def post(self, url, **kwargs):
+            self.calls.append(("post", url, kwargs))
+            if url.endswith("/backend-api/payments/checkout/taxes"):
+                return FakeResponse(payload={"checkout_session": {"currency": "php"}})
+            if url.endswith("/v1/confirmation_tokens"):
+                return FakeResponse(payload={"id": "ctoken_test_123"})
+            if url.endswith("/backend-api/payments/checkout/confirm"):
+                return FakeResponse(payload={"status": "success", "client_secret": "pi_test_123_secret_demo"})
+            return super().post(url, **kwargs)
+
+    def fake_new_http_session(proxy_url=None, **kwargs):
+        http = CheckoutHttp()
+        http.proxy_url = proxy_url
+        sessions.append(http)
+        return http
+
+    def fake_plus_trial_generate(access_token, payload, **kwargs):
+        plus_trial_calls.append({"access_token": access_token, "payload": payload, "kwargs": kwargs})
+        return {
+            "url": "https://chatgpt.com/checkout/openai_llc/oaics_trial",
+            "chatgpt_checkout_url": "https://chatgpt.com/checkout/openai_llc/oaics_trial",
+            "checkout_session_id": "oaics_trial",
+            "processor_entity": "openai_llc",
+            "amount_verification": "verified_zero",
+            "amount_minor": 0,
+        }
+
+    monkeypatch.setattr(protocol_card_executor, "_new_http_session", fake_new_http_session)
+    monkeypatch.setattr(
+        protocol_card_executor,
+        "_extract_auth_session_context",
+        lambda email: {
+            "access_token": f"token-{email}",
+            "session_token": "session-token",
+            "cookie_header": "__Secure-next-auth.session-token=session-token",
+            "account_id": "account-id",
+            "device_id": "device-id",
+        },
+    )
+    monkeypatch.setattr(
+        protocol_card_executor,
+        "generate_tax_free_billing_address",
+        lambda: {
+            "name": "Jane Buyer",
+            "country": "US",
+            "address1": "2 Eagle Square",
+            "city": "Concord",
+            "state": "NH",
+            "zip": "03301",
+        },
+    )
+    monkeypatch.setattr(
+        protocol_card_executor,
+        "_checkout_approval_sentinel_headers",
+        lambda *args, **kwargs: {"OpenAI-Sentinel-Token": "sentinel-token", "OAI-Telemetry": "[1,null]"},
+    )
+    monkeypatch.setattr(
+        "autotoken.payments.plus_trial.generate_plus_trial_checkout_link",
+        fake_plus_trial_generate,
+    )
+    monkeypatch.setattr(
+        protocol_card_executor,
+        "_generate_openai_checkout_with_protocol_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Plus 试用不应走普通 checkout 生成器")),
+    )
+
+    result = protocol_card_executor.run_protocol_card_bind_task(
+        email="user@example.com",
+        checkout_url="",
+        checkout_payload={
+            "checkout_flow": "plus_trial",
+            "billing_details": {"country": "PH", "currency": "PHP"},
+            "checkout_ui_mode": "hosted",
+            "plan_name": "chatgptplusplan",
+            "checkout_proxy": "socks5h://user:pass@cliproxy.example:3010",
+            "update_proxy": "socks5h://user:pass@cliproxy.example:3010",
+            "checkout_proxy_country": "PH",
+            "update_proxy_country": "PH",
+            "verify_proxy_country": True,
+        },
+        card_item={"value": "4242 4242 4242 4242", "meta": {"content": {"expiry_date": "12/30", "cvv": "123"}}},
+        proxy_url="socks5h://user:pass@cliproxy.example:3010",
+        progress_callback=progress.append,
+    )
+
+    assert result["status"] == "success"
+    assert result["checkout_url"] == "https://chatgpt.com/checkout/openai_llc/oaics_trial"
+    assert plus_trial_calls == [
+        {
+            "access_token": "token-user@example.com",
+            "payload": {
+                "checkout_flow": "plus_trial",
+                "billing_details": {"country": "PH", "currency": "PHP"},
+                "checkout_ui_mode": "hosted",
+                "plan_name": "chatgptplusplan",
+                "checkout_proxy": "socks5h://user:pass@cliproxy.example:3010",
+                "update_proxy": "socks5h://user:pass@cliproxy.example:3010",
+                "checkout_proxy_country": "PH",
+                "update_proxy_country": "PH",
+                "verify_proxy_country": True,
+            },
+            "kwargs": {},
+        }
+    ]
+    assert [event["stage"] for event in progress][:2] == [
+        "protocol_card_http_profile",
+        "protocol_plus_trial_checkout_create",
+    ]
+
+
 def test_protocol_card_bind_task_supports_openai_oaics_checkout(monkeypatch):
     fake_http = FakeHttp()
     progress = []

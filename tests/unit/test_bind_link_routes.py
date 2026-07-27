@@ -5,12 +5,13 @@ from fastapi import FastAPI, HTTPException
 from autotoken.api_routes.bind_link import BindLinkOpenParams, BindLinkParams, create_bind_link_router
 
 
-def _app(*, normalize_access_token=None, generate_checkout_link=None):
+def _app(*, normalize_access_token=None, generate_checkout_link=None, generate_plus_trial_checkout_link=None):
     app = FastAPI()
     app.include_router(
         create_bind_link_router(
             normalize_access_token=normalize_access_token or (lambda value: str(value or "").strip()),
             generate_checkout_link=generate_checkout_link or (lambda _token, _payload: {"url": "https://pay.example"}),
+            generate_plus_trial_checkout_link=generate_plus_trial_checkout_link,
             get_account_access_token=lambda email: f"token-for-{email}",
             open_checkout_url=lambda email, url: {"email": email, "url": url, "opened": True},
             logger=logging.getLogger("test.bind_link"),
@@ -71,6 +72,47 @@ def test_bind_link_route_normalizes_token_and_builds_checkout_payload():
         "promo_code": "PROMO",
         "cancel_url": "https://example.test/cancel",
         "team_plan_data": {"workspace_name": "Team"},
+    }
+
+
+def test_bind_link_route_uses_plus_trial_extractor_for_trial_flow():
+    captured = {}
+
+    def regular_generator(_token, _payload):
+        raise AssertionError("Plus 试用不应走普通 checkout 生成器")
+
+    def trial_generator(token, payload):
+        captured["token"] = token
+        captured["payload"] = payload
+        return {
+            "url": "https://chatgpt.com/checkout/openai_llc/oaics_trial",
+            "checkout_session_id": "oaics_trial",
+            "processor_entity": "openai_llc",
+            "amount_verification": "verified_zero",
+        }
+
+    app = _app(
+        normalize_access_token=lambda value: str(value).replace("Bearer ", "").strip(),
+        generate_checkout_link=regular_generator,
+        generate_plus_trial_checkout_link=trial_generator,
+    )
+
+    result = _endpoint(app, "/api/bind/link", "POST")(
+        _params(
+            checkout_flow="plus_trial",
+            plan_name="chatgptplusplan",
+            billing_details={"country": "PH", "currency": "PHP"},
+        )
+    )
+
+    assert result["url"] == "https://chatgpt.com/checkout/openai_llc/oaics_trial"
+    assert result["amount_verification"] == "verified_zero"
+    assert captured["token"] == "token-1"
+    assert captured["payload"] == {
+        "plan_name": "chatgptplusplan",
+        "billing_details": {"country": "PH", "currency": "PHP"},
+        "checkout_ui_mode": "hosted",
+        "checkout_flow": "plus_trial",
     }
 
 
