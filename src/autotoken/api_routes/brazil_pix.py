@@ -21,6 +21,7 @@ from autotoken.payments.brazil_pix import PixJobConfig, build_pix_dynamic_proxy,
 from autotoken.services.payment_error_classifier import is_non_zero_amount_error
 from autotoken.services import proxy_runtime
 from autotoken.storage import accounts as account_store
+from autotoken.storage import auth_session_store
 from autotoken.storage.auth_session_store import delete_auth_session
 
 AUTH_SESSION_DIR = PROJECT_ROOT / "data" / "auth_session"
@@ -234,17 +235,58 @@ def _pix_pool_excluded_emails() -> set[str]:
 def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
     now = time.time()
     accounts: list[dict[str, Any]] = []
-    if not AUTH_SESSION_DIR.exists():
-        return accounts
     dashboard_accounts = _dashboard_accounts_by_email()
     dashboard_emails = set(dashboard_accounts)
     excluded_emails = set() if include_paid else _pix_pool_excluded_emails()
+    default_auth_session_dir = PROJECT_ROOT / "data" / "auth_session"
+    included_emails: set[str] = set()
+
+    try:
+        use_sqlite_sessions = AUTH_SESSION_DIR.resolve() == default_auth_session_dir.resolve()
+    except Exception:
+        use_sqlite_sessions = False
+
+    if use_sqlite_sessions:
+        try:
+            session_records = auth_session_store.list_auth_session_records()
+        except Exception:
+            session_records = []
+        for record in session_records:
+            data = record.get("data") if isinstance(record.get("data"), dict) else {}
+            email = str(record.get("email") or "").strip()
+            if not email:
+                continue
+            if dashboard_emails and email.lower() not in dashboard_emails:
+                continue
+            if email.lower() in excluded_emails:
+                continue
+            token = _extract_token(data)
+            if not token or len(token) < 50:
+                continue
+            exp = _decode_jwt_exp(token)
+            if exp and exp <= now + 300:
+                continue
+            dashboard_account = dashboard_accounts.get(email.lower()) or {}
+            accounts.append(
+                {
+                    "email": email,
+                    "auth_file": str(record.get("file_path") or ""),
+                    "expires_at": exp,
+                    "ttl_seconds": max(0, int(exp - now)) if exp else 0,
+                    "updated_at": dashboard_account.get("updated_at") or record.get("updated_at") or 0,
+                }
+            )
+            included_emails.add(email.lower())
+    if not AUTH_SESSION_DIR.exists():
+        return accounts
     for path in sorted(AUTH_SESSION_DIR.glob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
         email = _auth_email_from_path(path, data)
+        if email.lower() in included_emails:
+            continue
         if dashboard_emails and email.lower() not in dashboard_emails:
             continue
         if email.lower() in excluded_emails:
@@ -265,6 +307,7 @@ def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
                 "updated_at": dashboard_account.get("updated_at") or path.stat().st_mtime,
             }
         )
+        included_emails.add(email.lower())
     accounts.sort(key=lambda item: (float(item.get("updated_at") or 0), item["email"].lower()), reverse=True)
     return accounts
 

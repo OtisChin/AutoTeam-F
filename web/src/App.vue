@@ -69,6 +69,8 @@
 
           <KakaoPayPage v-else-if="currentPage === 'kakaoPay'" />
 
+          <MomoPage v-else-if="currentPage === 'momoVn'" />
+
           <OAuthPhonePoolPage v-else-if="currentPage === 'oauthPhones'" />
 
           <OAuthPhoneRecordsPage v-else-if="currentPage === 'oauthPhoneRecords'" />
@@ -154,6 +156,7 @@ import IdealLinkPage from './components/IdealLinkPage.vue'
 import BrazilPixPage from './components/BrazilPixPage.vue'
 import IndiaUpiPage from './components/IndiaUpiPage.vue'
 import KakaoPayPage from './components/KakaoPayPage.vue'
+import MomoPage from './components/MomoPage.vue'
 import UsPaypalPage from './components/UsPaypalPage.vue'
 import OAuthPhonePoolPage from './components/OAuthPhonePoolPage.vue'
 import OAuthPhoneRecordsPage from './components/OAuthPhoneRecordsPage.vue'
@@ -172,7 +175,7 @@ const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
 const CURRENT_PAGE_KEY = 'autotoken_current_page'
-const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'paypal', 'ideal', 'brazilPix', 'indiaUpi', 'kakaoPay', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
+const PAGE_KEYS = new Set(['dashboard', 'register', 'cardpool', 'bindcard', 'gopay', 'paypal', 'ideal', 'brazilPix', 'indiaUpi', 'kakaoPay', 'momoVn', 'oauthPhones', 'oauthPhoneRecords', 'mailAccounts', 'trade', 'cpa2sub', 'oauth', 'tasks', 'logs', 'settings'])
 const IDLE_POLL_INTERVAL_MS = 600000
 const ACTIVE_POLL_INTERVAL_MS = 3000
 const ACTIVE_DASHBOARD_REFRESH_INTERVAL_MS = 10000

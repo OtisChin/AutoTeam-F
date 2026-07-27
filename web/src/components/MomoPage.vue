@@ -3,9 +3,9 @@
     <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5 md:p-6">
       <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Korea Wallet 任务</p>
-          <h2 class="mt-1 text-2xl font-bold text-white">韩国 Kakao Pay 提链</h2>
-          <p class="mt-2 text-sm text-gray-400">在账号池中勾选一个或多个账号执行 KRW checkout 提链，结果会进入下方链接管理表。</p>
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Vietnam Wallet 任务</p>
+          <h2 class="mt-1 text-2xl font-bold text-white">越南 MoMo 提链</h2>
+          <p class="mt-2 text-sm text-gray-400">在账号池中勾选一个或多个账号执行 VN/VND 的 MoMo 提链；可只检测资格，也可完整提链。</p>
         </div>
         <span class="inline-flex w-fit items-center gap-2 rounded-xl border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-300">
           <span class="h-2.5 w-2.5 rounded-full" :class="busy ? 'bg-blue-400' : 'bg-emerald-400'"></span>
@@ -18,21 +18,21 @@
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
         <div class="border-b border-gray-800 pb-4">
           <p class="text-xs font-semibold text-gray-500">任务输入</p>
-          <h3 class="mt-1 text-xl font-bold text-white">KR 代理</h3>
+          <h3 class="mt-1 text-xl font-bold text-white">VN 代理</h3>
         </div>
 
         <div class="mt-5 space-y-5">
           <label class="block">
-            <span class="mb-2 block text-sm font-semibold text-gray-300">KR 代理列表</span>
+            <span class="mb-2 block text-sm font-semibold text-gray-300">VN 代理列表</span>
             <textarea
               v-model.trim="form.proxies"
               rows="8"
               spellcheck="false"
-              placeholder="每行一个代理；支持 host:port:user-region-KR-sid-xxx-t-120:pass 或 socks5h://user:pass@host:port"
+              placeholder="每行一个代理；支持 host:port:user-region-VN-sid-xxx-t-120:pass 或 socks5h://user:pass@host:port"
               class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none"
               :disabled="inputLocked"
             ></textarea>
-            <span class="mt-1 block text-xs text-gray-500">1024/ArxLabs 的 host:port:user:pass 会自动按 socks5h 使用；建议使用 KR 地区代理。</span>
+            <span class="mt-1 block text-xs text-gray-500">1024/ArxLabs 的 host:port:user:pass 会自动按 socks5h 使用；建议全程使用 VN 地区代理。</span>
           </label>
 
           <div class="grid gap-4 md:grid-cols-3">
@@ -78,6 +78,13 @@
             <button @click="start" :disabled="inputLocked || !selectedEmails.length" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50">
               {{ inputLocked ? '提取中...' : `开始提链 (${selectedEmails.length})` }}
             </button>
+            <button
+              @click="startQualificationOnly"
+              :disabled="inputLocked || !selectedEmails.length"
+              class="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              仅检测资格{{ selectedEmails.length ? ` (${selectedEmails.length})` : '' }}
+            </button>
             <button v-if="activeJobId && inputLocked" @click="cancelJob" :disabled="cancelling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
               {{ cancelling ? '取消中...' : '取消提链' }}
             </button>
@@ -112,6 +119,9 @@
           <select v-model="accountStatusFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
             <option value="all">全部状态</option>
             <option value="pending">未提链</option>
+            <option value="eligible">有资格</option>
+            <option value="ineligible">无资格</option>
+            <option value="running">提链中</option>
             <option value="failed">提链失败</option>
             <option value="success">已提链</option>
             <option value="paid">已支付</option>
@@ -120,8 +130,8 @@
             <button @click="selectAllFiltered" :disabled="inputLocked" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button>
             <button @click="clearSelectedAccounts" :disabled="inputLocked" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
             <button
-              @click="deleteSelectedKakaoAccounts"
-              :disabled="inputLocked || deletingKakaoAccounts.size > 0 || !selectedEmails.length"
+              @click="deleteSelectedMomoAccounts"
+              :disabled="inputLocked || deletingMomoAccounts.size > 0 || !selectedEmails.length"
               class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
               删除选中{{ selectedEmails.length ? ` (${selectedEmails.length})` : '' }}
@@ -144,7 +154,7 @@
               <tr v-if="!filteredAccounts.length">
                 <td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td>
               </tr>
-              <tr v-for="account in visibleAccounts" :key="account.email" class="hover:bg-gray-900/50">
+              <tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50">
                 <td class="px-3 py-2">
                   <input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="inputLocked || !accountSelectable(account)" @change="toggleAccount(account.email)" />
                 </td>
@@ -157,21 +167,17 @@
                 </td>
                 <td class="px-3 py-2 text-right">
                   <button
-                    @click="deleteKakaoAccount(account.email)"
-                    :disabled="inputLocked || deletingKakaoAccounts.has(account.email)"
+                    @click="deleteMomoAccount(account.email)"
+                    :disabled="inputLocked || deletingMomoAccounts.has(account.email)"
                     class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                    title="从 Kakao 账号池和仪表盘账号池中删除该账号"
+                    title="从 Momo 账号池和仪表盘账号池中删除该账号"
                   >
-                    {{ deletingKakaoAccounts.has(account.email) ? '删除中' : '删除' }}
+                    {{ deletingMomoAccounts.has(account.email) ? '删除中' : '删除' }}
                   </button>
                 </td>
               </tr>
             </tbody>
           </table>
-          <div v-if="hiddenAccountCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
-            <span>已显示 {{ visibleAccounts.length }} / {{ filteredAccounts.length }} 个账号</span>
-            <button @click="showMoreAccounts" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
-          </div>
         </div>
       </section>
 
@@ -218,8 +224,8 @@
             <div v-if="recentResultFilter !== 'failed'" v-for="item in currentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="font-mono text-emerald-200">{{ item.email }}</div>
               <div class="mt-2 flex flex-wrap gap-2">
-                <a :href="kakaoLinkUrl(item.link) || '#'" target="_blank" rel="noopener" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!kakaoLinkUrl(item.link) ? 'pointer-events-none opacity-50' : ''">打开</a>
-                <button @click="copy(kakaoLinkUrl(item.link))" :disabled="!kakaoLinkUrl(item.link)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100 disabled:opacity-50">复制链</button>
+                <a :href="momoLinkUrl(item.link) || '#'" target="_blank" rel="noopener" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-100" :class="!momoLinkUrl(item.link) ? 'pointer-events-none opacity-50' : ''">打开</a>
+                <button @click="copy(momoLinkUrl(item.link))" :disabled="!momoLinkUrl(item.link)" class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-100 disabled:opacity-50">复制链</button>
               </div>
             </div>
             <div v-if="recentResultFilter !== 'success'" v-for="item in currentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
@@ -238,7 +244,7 @@
       <div class="flex flex-col gap-3 border-b border-gray-800 pb-4 md:flex-row md:items-end md:justify-between">
         <div>
           <p class="text-xs font-semibold text-gray-500">链接管理</p>
-          <h3 class="mt-1 text-xl font-bold text-white">已提取 Kakao 链接</h3>
+          <h3 class="mt-1 text-xl font-bold text-white">已提取 Momo 链接</h3>
         </div>
         <div class="flex flex-wrap gap-2">
           <button @click="refreshLinks" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800">刷新</button>
@@ -259,7 +265,7 @@
               <th class="px-3 py-2">CS ID</th>
               <th class="px-3 py-2">剩余时间</th>
               <th class="px-3 py-2">操作</th>
-              <th class="px-3 py-2">Kakao 链接</th>
+              <th class="px-3 py-2">Momo 链接</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-900">
@@ -273,17 +279,17 @@
               <td class="px-3 py-2 text-xs text-gray-400">{{ link.amount || '-' }} KRW</td>
               <td class="px-3 py-2 font-mono text-xs text-gray-400">{{ link.cs_id || '-' }}</td>
               <td class="whitespace-nowrap px-3 py-2 text-xs">
-                <span class="rounded-full border px-2 py-1 font-semibold" :class="kakaoExpiryClass(link)">
-                  {{ kakaoExpiryText(link) }}
+                <span class="rounded-full border px-2 py-1 font-semibold" :class="momoExpiryClass(link)">
+                  {{ momoExpiryText(link) }}
                 </span>
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap gap-2">
-                  <a :href="kakaoLinkUrl(link) || '#'" target="_blank" rel="noopener" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-200" :class="!kakaoLinkActionable(link) ? 'pointer-events-none opacity-50' : ''">打开</a>
-                  <button @click="copy(kakaoLinkUrl(link))" :disabled="!kakaoLinkActionable(link)" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200 disabled:opacity-50">复制链</button>
+                  <a :href="momoLinkUrl(link) || '#'" target="_blank" rel="noopener" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-xs text-blue-200" :class="!momoLinkActionable(link) ? 'pointer-events-none opacity-50' : ''">打开</a>
+                  <button @click="copy(momoLinkUrl(link))" :disabled="!momoLinkActionable(link)" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200 disabled:opacity-50">复制链</button>
                 </div>
               </td>
-              <td class="max-w-[360px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ kakaoLinkUrl(link) || '-' }}</td>
+              <td class="max-w-[360px] truncate px-3 py-2 font-mono text-xs text-gray-500">{{ momoLinkUrl(link) || '-' }}</td>
             </tr>
           </tbody>
         </table>
@@ -298,11 +304,11 @@ import { api } from '../api.js'
 import NotificationSoundControl from './NotificationSoundControl.vue'
 import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
-const PROXY_STORAGE_KEY = 'autotoken_kakao_pay_proxies'
-const FORM_STORAGE_KEY = 'autotoken_kakao_pay_form'
-const JOB_STORAGE_KEY = 'autotoken_kakao_pay_job'
+const PROXY_STORAGE_KEY = 'autotoken_momo_vn_proxies'
+const FORM_STORAGE_KEY = 'autotoken_momo_vn_form'
+const JOB_STORAGE_KEY = 'autotoken_momo_vn_job'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled'])
-const KAKAO_LINK_TTL_MS = 10 * 60 * 1000
+const MOMO_LINK_TTL_MS = 10 * 60 * 1000
 
 const accounts = ref([])
 const links = ref([])
@@ -316,13 +322,12 @@ const activeJobId = ref('')
 const activeJobStatus = ref('')
 const currentJob = ref(null)
 const currentResult = ref(null)
-const statusText = ref('请选择账号并填写 KR 代理后开始提链。')
+const statusText = ref('请选择账号并填写 VN 代理后开始提链。')
 const statusError = ref(false)
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
-const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
-const deletingKakaoAccounts = ref(new Set())
+const deletingMomoAccounts = ref(new Set())
 const lastFailedEmails = ref([])
 const notifiedSuccessKeys = ref(new Set())
 const nowMs = ref(Date.now())
@@ -371,8 +376,6 @@ const filteredAccounts = computed(() => {
     return (!query || email.includes(query)) && (status === 'all' || accountStatusValue === status)
   })
 })
-const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
-const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
 const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? currentResult.value.successes : [])
 const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? currentResult.value.errors : [])
 const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? currentResult.value.skipped : [])
@@ -405,7 +408,6 @@ const retryFailedEmails = computed(() => {
 })
 
 watch(form, () => saveForm(), { deep: true })
-watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
 watch(logs, () => nextTick(scrollLogsToBottom))
 
 function loadForm() {
@@ -476,7 +478,7 @@ function rememberFailedEmails(result) {
 
 function successNotificationKey(item, index) {
   const email = String(item?.email || item?.account_email || '').trim().toLowerCase()
-  const link = kakaoLinkUrl(item?.link || item)
+  const link = momoLinkUrl(item?.link || item)
   const id = String(item?.id || item?.link?.id || '').trim()
   return email || link || id || `success-${index}`
 }
@@ -509,7 +511,7 @@ function ttlText(value) {
 }
 
 function accountSelectable(account) {
-  return accountStatus(account) !== 'paid' && account?.kakao_selectable !== false
+  return accountStatus(account) !== 'paid' && account?.momo_selectable !== false
 }
 
 function accountJobStatus(account) {
@@ -519,12 +521,14 @@ function accountJobStatus(account) {
 }
 
 function accountStatus(account) {
-  return accountJobStatus(account)?.status || account?.kakao_status || 'pending'
+  return accountJobStatus(account)?.status || account?.momo_status || 'pending'
 }
 
 function accountStatusText(account) {
   const status = accountStatus(account)
   if (status === 'paid') return '已支付'
+  if (status === 'eligible') return '有资格'
+  if (status === 'ineligible') return '无资格'
   if (status === 'running') return '提链中'
   if (status === 'success') return '已提链'
   if (status === 'failed') return '提链失败'
@@ -532,12 +536,14 @@ function accountStatusText(account) {
 }
 
 function accountStatusError(account) {
-  return accountJobStatus(account)?.error || account?.kakao_error || ''
+  return accountJobStatus(account)?.error || account?.momo_error || ''
 }
 
 function accountStatusClass(account) {
   const status = accountStatus(account)
   if (status === 'paid') return 'border-violet-500/30 bg-violet-500/10 text-violet-300'
+  if (status === 'eligible') return 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
+  if (status === 'ineligible') return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
   if (status === 'running') return 'border-blue-500/30 bg-blue-500/10 text-blue-300'
   if (status === 'success') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
   if (status === 'failed') return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
@@ -560,18 +566,14 @@ function clearSelectedAccounts() {
   selectedAccounts.value = new Set()
 }
 
-function showMoreAccounts() {
-  accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100)
-}
-
 function toggleLink(id) {
   const next = new Set(selectedLinkIds.value)
   next.has(id) ? next.delete(id) : next.add(id)
   selectedLinkIds.value = next
 }
 
-function kakaoLinkUrl(link) {
-  return String(link?.provider_redirect_url || link?.kakao_link || link?.stripe_redirect_url || '').trim()
+function momoLinkUrl(link) {
+  return String(link?.provider_redirect_url || link?.momo_link || link?.stripe_redirect_url || '').trim()
 }
 
 function timestampMs(value) {
@@ -583,30 +585,30 @@ function timestampMs(value) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function kakaoExpiresAtMs(link) {
-  const explicit = timestampMs(link?.kakao_expires_at_ts ?? link?.kakaoExpiresAtTs ?? link?.kakao_expires_at ?? link?.kakaoExpiresAt)
+function momoExpiresAtMs(link) {
+  const explicit = timestampMs(link?.momo_expires_at_ts ?? link?.momoExpiresAtTs ?? link?.momo_expires_at ?? link?.momoExpiresAt)
   if (explicit) return explicit
   const created = timestampMs(link?.created_at_ts ?? link?.createdAtTs ?? link?.created_at ?? link?.createdAt)
-  return created ? created + KAKAO_LINK_TTL_MS : 0
+  return created ? created + MOMO_LINK_TTL_MS : 0
 }
 
-function kakaoRemainingMs(link) {
-  const expiresAt = kakaoExpiresAtMs(link)
+function momoRemainingMs(link) {
+  const expiresAt = momoExpiresAtMs(link)
   return expiresAt ? expiresAt - nowMs.value : 0
 }
 
-function kakaoLinkExpired(link) {
-  const expiresAt = kakaoExpiresAtMs(link)
+function momoLinkExpired(link) {
+  const expiresAt = momoExpiresAtMs(link)
   return Boolean(expiresAt && expiresAt <= nowMs.value)
 }
 
-function kakaoLinkActionable(link) {
-  return Boolean(kakaoLinkUrl(link)) && !kakaoLinkExpired(link)
+function momoLinkActionable(link) {
+  return Boolean(momoLinkUrl(link)) && !momoLinkExpired(link)
 }
 
-function kakaoExpiryText(link) {
-  if (!kakaoLinkUrl(link)) return '-'
-  const expiresAt = kakaoExpiresAtMs(link)
+function momoExpiryText(link) {
+  if (!momoLinkUrl(link)) return '-'
+  const expiresAt = momoExpiresAtMs(link)
   if (!expiresAt || expiresAt <= nowMs.value) return '链接失效'
   const seconds = Math.max(0, Math.ceil((expiresAt - nowMs.value) / 1000))
   const minutes = Math.floor(seconds / 60)
@@ -614,10 +616,10 @@ function kakaoExpiryText(link) {
   return minutes ? `剩余 ${minutes}:${String(rest).padStart(2, '0')}` : `剩余 ${rest}s`
 }
 
-function kakaoExpiryClass(link) {
-  if (!kakaoLinkUrl(link)) return 'border-gray-700 bg-gray-900 text-gray-400'
-  if (kakaoLinkExpired(link)) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
-  if (kakaoRemainingMs(link) <= 60 * 1000) return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+function momoExpiryClass(link) {
+  if (!momoLinkUrl(link)) return 'border-gray-700 bg-gray-900 text-gray-400'
+  if (momoLinkExpired(link)) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
+  if (momoRemainingMs(link) <= 60 * 1000) return 'border-amber-500/30 bg-amber-500/10 text-amber-300'
   return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
 }
 
@@ -626,14 +628,14 @@ function scrollLogsToBottom() {
 }
 
 async function refreshAccounts() {
-  const accountData = await api.getKakaoPayAccounts()
+  const accountData = await api.getMomoVnAccounts()
   accounts.value = Array.isArray(accountData.accounts) ? accountData.accounts : []
   const selectable = new Set(accounts.value.filter(accountSelectable).map(item => item.email))
   selectedAccounts.value = new Set(selectedEmails.value.filter(email => selectable.has(email)))
 }
 
 async function refreshLinks() {
-  const linkData = await api.getKakaoPayLinks()
+  const linkData = await api.getMomoVnLinks()
   links.value = Array.isArray(linkData.links) ? linkData.links : []
   const existing = new Set(links.value.map(item => item.id))
   selectedLinkIds.value = new Set(Array.from(selectedLinkIds.value).filter(id => existing.has(id)))
@@ -660,26 +662,27 @@ function validateStart(emails = selectedEmails.value) {
   form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   if (!String(form.value.proxies || '').trim()) {
-    setStatus('请填写 KR 代理。', true)
+    setStatus('请填写 VN 代理。', true)
     return false
   }
   return true
 }
 
-async function startWithEmails(emails, actionText = '提取') {
+async function startWithEmails(emails, actionText = '提取', qualificationOnly = false) {
   const accountEmails = Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
   if (!validateStart(accountEmails)) return
   starting.value = true
   statusError.value = false
   saveForm()
   try {
-    const data = await api.startKakaoPayBatch({
+    const data = await api.startMomoVnBatch({
       accountEmails,
       proxies: form.value.proxies,
       concurrency: form.value.concurrency,
       maxAttempts: form.value.maxAttempts,
       proxyPreflightAttempts: form.value.proxyPreflightAttempts,
-      region: 'KR',
+      region: 'VN',
+      qualificationOnly: qualificationOnly === true,
     })
     activeJobId.value = data.job_id || ''
     activeJobStatus.value = 'queued'
@@ -688,7 +691,7 @@ async function startWithEmails(emails, actionText = '提取') {
     notifiedSuccessKeys.value = new Set()
     logs.value = []
     saveActiveJobSnapshot(currentJob.value)
-    setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} Kakao，并发 ${form.value.concurrency || 1}。`)
+    setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} MoMo，并发 ${form.value.concurrency || 1}。`)
     startPolling()
   } catch (error) {
     setStatus(`启动失败：${cleanError(error)}`, true)
@@ -701,10 +704,14 @@ async function start() {
   await startWithEmails(selectedEmails.value, '提取')
 }
 
+async function startQualificationOnly() {
+  await startWithEmails(selectedEmails.value, '检测资格', true)
+}
+
 async function pollJob() {
   if (!activeJobId.value) return
   try {
-    const job = await api.getKakaoPayJob(activeJobId.value)
+    const job = await api.getMomoVnJob(activeJobId.value)
     if (componentUnmounted) return
     currentJob.value = job
     activeJobStatus.value = String(job.status || '')
@@ -761,7 +768,7 @@ async function cancelJob() {
   if (!activeJobId.value) return
   cancelling.value = true
   try {
-    await api.cancelKakaoPayJob(activeJobId.value)
+    await api.cancelMomoVnJob(activeJobId.value)
     await pollJob()
   } catch (error) {
     if (isJobNotFound(error)) {
@@ -778,49 +785,49 @@ async function cancelJob() {
 
 function saveProxy() {
   saveForm()
-  setStatus('Kakao 代理配置已保存到本地浏览器。')
+  setStatus('MoMo VN 代理配置已保存到本地浏览器。')
 }
 
-async function deleteKakaoAccount(email) {
+async function deleteMomoAccount(email) {
   const target = String(email || '').trim()
   if (!target) return
-  if (!window.confirm(`确认从 Kakao 账号池和仪表盘账号池中删除 ${target}？`)) return
-  const nextDeleting = new Set(deletingKakaoAccounts.value)
+  if (!window.confirm(`确认从 Momo 账号池和仪表盘账号池中删除 ${target}？`)) return
+  const nextDeleting = new Set(deletingMomoAccounts.value)
   nextDeleting.add(target)
-  deletingKakaoAccounts.value = nextDeleting
+  deletingMomoAccounts.value = nextDeleting
   try {
-    const data = await api.deleteKakaoPayAccount(target)
+    const data = await api.deleteMomoVnAccount(target)
     const next = new Set(selectedAccounts.value)
     next.delete(target)
     selectedAccounts.value = next
-    const kakao = data.kakao_pay || data.kakao || {}
-    setStatus(`已删除账号 ${target}：仪表盘账号 ${data.dashboard_account_deleted ? '已删除' : '未找到'}，认证 ${data.auth_session_deleted ? '已删除' : '未找到'}，Kakao 链接 ${kakao.links_deleted || 0} 条。`)
+    const momo = data.momo_vn || data.momo || {}
+    setStatus(`已删除账号 ${target}：仪表盘账号 ${data.dashboard_account_deleted ? '已删除' : '未找到'}，认证 ${data.auth_session_deleted ? '已删除' : '未找到'}，MoMo 链接 ${momo.links_deleted || 0} 条。`)
     await reloadAll()
   } catch (error) {
     setStatus(`删除账号失败：${cleanError(error)}`, true)
   } finally {
-    const done = new Set(deletingKakaoAccounts.value)
+    const done = new Set(deletingMomoAccounts.value)
     done.delete(target)
-    deletingKakaoAccounts.value = done
+    deletingMomoAccounts.value = done
   }
 }
 
-async function deleteSelectedKakaoAccounts() {
+async function deleteSelectedMomoAccounts() {
   const emails = selectedEmails.value.map(email => String(email || '').trim()).filter(Boolean)
   if (!emails.length) return
-  if (!window.confirm(`确认批量删除选中的 ${emails.length} 个账号？这些账号会同时从 Kakao 账号池和仪表盘账号池删除。`)) return
-  deletingKakaoAccounts.value = new Set(emails)
+  if (!window.confirm(`确认批量删除选中的 ${emails.length} 个账号？这些账号会同时从 MoMo 账号池和仪表盘账号池删除。`)) return
+  deletingMomoAccounts.value = new Set(emails)
   try {
-    const data = await api.deleteKakaoPayAccounts(emails)
+    const data = await api.deleteMomoVnAccounts(emails)
     const deleted = new Set((data.results || []).map(item => String(item.email || '').trim()).filter(Boolean))
     selectedAccounts.value = new Set(Array.from(selectedAccounts.value).filter(email => !deleted.has(email)))
-    const linkCount = (data.results || []).reduce((sum, item) => sum + Number((item.kakao_pay || item.kakao || {}).links_deleted || 0), 0)
-    setStatus(`已批量删除 ${data.deleted || deleted.size} 个账号，清理 Kakao 链接 ${linkCount} 条。`)
+    const linkCount = (data.results || []).reduce((sum, item) => sum + Number((item.momo_vn || item.momo || {}).links_deleted || 0), 0)
+    setStatus(`已批量删除 ${data.deleted || deleted.size} 个账号，清理 MoMo 链接 ${linkCount} 条。`)
     await reloadAll()
   } catch (error) {
     setStatus(`批量删除账号失败：${cleanError(error)}`, true)
   } finally {
-    deletingKakaoAccounts.value = new Set()
+    deletingMomoAccounts.value = new Set()
   }
 }
 
@@ -834,15 +841,15 @@ async function copy(value) {
 async function deleteSelectedLinks() {
   const ids = Array.from(selectedLinkIds.value)
   if (!ids.length) return
-  const data = await api.deleteKakaoPayLinks(ids)
+  const data = await api.deleteMomoVnLinks(ids)
   links.value = Array.isArray(data.links) ? data.links : []
   selectedLinkIds.value = new Set()
   setStatus(`已删除 ${data.deleted || ids.length} 条链接。`)
 }
 
 async function clearLinks() {
-  if (!links.value.length || !window.confirm('确认清空所有 Kakao 链接？')) return
-  const data = await api.clearKakaoPayLinks()
+  if (!links.value.length || !window.confirm('确认清空所有 MoMo 链接？')) return
+  const data = await api.clearMomoVnLinks()
   links.value = Array.isArray(data.links) ? data.links : []
   selectedLinkIds.value = new Set()
   setStatus(`已清空 ${data.deleted || 0} 条链接。`)
@@ -853,7 +860,7 @@ function exportLinks() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `kakao-pay-links-${new Date().toISOString().slice(0, 10)}.json`
+  a.download = `momo-vn-links-${new Date().toISOString().slice(0, 10)}.json`
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -873,7 +880,7 @@ async function restoreActiveJob() {
       concurrency: Number(saved.concurrency || form.value.concurrency || 1),
       running_count: 0,
     }
-    setStatus('已恢复 Kakao 提链任务，正在重新同步后端进度。')
+    setStatus('已恢复 MoMo 提链任务，正在重新同步后端进度。')
     await pollJob()
     if (!componentUnmounted && activeJobId.value && !TERMINAL_STATUSES.has(activeJobStatus.value)) startPolling()
   } catch (error) {
@@ -899,3 +906,4 @@ onUnmounted(() => {
   expiryTimer = null
 })
 </script>
+

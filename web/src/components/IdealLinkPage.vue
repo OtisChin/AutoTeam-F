@@ -91,7 +91,8 @@
           <div class="flex flex-wrap gap-2"><button @click="selectAllFiltered" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button><button @click="clearSelectedAccounts" :disabled="busy" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button><button @click="deleteSelectedIdealAccounts" :disabled="busy || deletingIdealAccounts.size > 0 || !selectedEmails.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">删除选中{{ selectedEmails.length ? ` (${selectedEmails.length})` : '' }}</button></div>
         </div>
         <div class="mt-4 max-h-[520px] overflow-y-auto rounded-xl border border-gray-800">
-          <table class="w-full text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-10 px-3 py-2"></th><th class="px-3 py-2">邮箱</th><th class="px-3 py-2">有效期</th><th class="px-3 py-2">提链状态</th><th class="px-3 py-2 text-right">操作</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!filteredAccounts.length"><td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td></tr><tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50"><td class="px-3 py-2"><input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="busy || !accountSelectable(account)" @change="toggleAccount(account.email)" /></td><td class="px-3 py-2 font-mono text-xs text-gray-300">{{ account.email }}</td><td class="px-3 py-2 text-xs text-gray-500">{{ ttlText(account.ttl_seconds) }}</td><td class="px-3 py-2 text-xs"><span class="inline-flex rounded-full border px-2 py-1 font-semibold" :class="accountStatusClass(account)" :title="accountStatusError(account)">{{ accountStatusText(account) }}</span></td><td class="px-3 py-2 text-right"><button @click="deleteIdealAccount(account.email)" :disabled="busy || deletingIdealAccounts.has(account.email)" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">{{ deletingIdealAccounts.has(account.email) ? '删除中' : '删除' }}</button></td></tr></tbody></table>
+          <table class="w-full text-left text-sm"><thead class="sticky top-0 bg-gray-900 text-xs uppercase tracking-wide text-gray-500"><tr><th class="w-10 px-3 py-2"></th><th class="px-3 py-2">邮箱</th><th class="px-3 py-2">有效期</th><th class="px-3 py-2">提链状态</th><th class="px-3 py-2 text-right">操作</th></tr></thead><tbody class="divide-y divide-gray-900"><tr v-if="!filteredAccounts.length"><td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td></tr><tr v-for="account in visibleAccounts" :key="account.email" class="hover:bg-gray-900/50"><td class="px-3 py-2"><input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="busy || !accountSelectable(account)" @change="toggleAccount(account.email)" /></td><td class="px-3 py-2 font-mono text-xs text-gray-300">{{ account.email }}</td><td class="px-3 py-2 text-xs text-gray-500">{{ ttlText(account.ttl_seconds) }}</td><td class="px-3 py-2 text-xs"><span class="inline-flex rounded-full border px-2 py-1 font-semibold" :class="accountStatusClass(account)" :title="accountStatusError(account)">{{ accountStatusText(account) }}</span></td><td class="px-3 py-2 text-right"><button @click="deleteIdealAccount(account.email)" :disabled="busy || deletingIdealAccounts.has(account.email)" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50">{{ deletingIdealAccounts.has(account.email) ? '删除中' : '删除' }}</button></td></tr></tbody></table>
+          <div v-if="hiddenAccountCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500"><span>已显示 {{ visibleAccounts.length }} / {{ filteredAccounts.length }} 个账号</span><button @click="showMoreAccounts" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button></div>
         </div>
       </section>
 
@@ -178,6 +179,7 @@ const links = ref([])
 const logs = ref([])
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
+const accountVisibleCount = ref(100)
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const deletingIdealAccounts = ref(new Set())
@@ -228,6 +230,8 @@ const filteredAccounts = computed(() => {
     return matchesKeyword && matchesStatus
   })
 })
+const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
+const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
 const retryFailedEmails = computed(() => accounts.value
   .filter(account => account.ideal_status === 'failed' && accountSelectable(account))
   .map(account => account.email)
@@ -439,6 +443,10 @@ function selectAllFiltered() {
 
 function clearSelectedAccounts() {
   selectedAccounts.value = new Set()
+}
+
+function showMoreAccounts() {
+  accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100)
 }
 
 function toggleLink(id) {
@@ -775,6 +783,7 @@ function loadForm() {
 }
 
 watch(() => form.value.proxyChainPreset, applyDefaultProxyChain)
+watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
 
 onMounted(() => {
   loadForm()

@@ -128,6 +128,33 @@ def list_auth_session_emails() -> list[str]:
     return sorted({normalized for email in emails if (normalized := _normalized_email(email))})
 
 
+def list_auth_session_records() -> list[dict]:
+    """Return all stored auth sessions without materializing every JSON file."""
+    sqlite_store.initialize(_db_path())
+    records: list[dict] = []
+    with sqlite_store.connect(_db_path()) as conn:
+        rows = conn.execute("SELECT email, file_path, data, updated_at FROM auth_sessions ORDER BY email").fetchall()
+    for row in rows:
+        email = _normalized_email(str(row["email"] or ""))
+        if not email:
+            continue
+        try:
+            data = json.loads(row["data"] or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        records.append(
+            {
+                "email": email,
+                "file_path": str(row["file_path"] or _target_path(email)),
+                "data": data,
+                "updated_at": float(row["updated_at"] or 0) if str(row["updated_at"] or "").strip() else 0.0,
+            }
+        )
+    return records
+
+
 def auth_session_files_by_email(emails: list[str] | set[str] | tuple[str, ...] | None = None) -> dict[str, str]:
     wanted = sorted({_normalized_email(email) for email in (emails or []) if _normalized_email(email)})
     sqlite_store.initialize(_db_path())

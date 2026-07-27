@@ -21,7 +21,7 @@ AutoToken-F 用来维护 ChatGPT Team 账号池、认证文件和 CPA 同步状�
 | `core/` | 路径、文本 IO、环境兼容、浏览器指纹、取消信号等基础能力 |
 | `settings/` | 静态配置、运行时配置、管理员状态、首次配置向导 |
 | `storage/` | 账号池、认证文件、SQLite、失败记录持久化 |
-| `payments/` | 绑卡、GoPay、WhatsApp OTP 等支付相关流程 |
+| `payments/` | 绑卡、GoPay、WhatsApp OTP，以及 PayPal / iDEAL / Pix / UPI / Kakao / MoMo 等支付页提链流程 |
 | `integrations/` | ChatGPT API、CPA、RoxyBrowser、代理桥、Rekberinaja、导入导出转换 |
 | `services/` | 可复用业务决策和任务运行时逻辑 |
 | `mail/` | 临时邮箱与账号池邮箱 provider |
@@ -70,6 +70,20 @@ AutoToken-F 用来维护 ChatGPT Team 账号池、认证文件和 CPA 同步状�
 | 同步 CPA | 本地 active → CPA | 上传可用认证文件 |
 | 从 CPA 同步 | CPA → 本地 | 恢复本地缺失认证文件 |
 | 对账 | Team API ↔ 本地状态 | 清理 ghost、orphan、错位席位 |
+
+## 支付页状态模型
+
+支付页路由会把账号资格与提链结果分开持久化到 JSON 状态文件。以越南 MoMo 为例：
+
+- `pending`：未提链
+- `eligible`：检测到 `momo` 支付方式
+- `ineligible`：未检测到 `momo`
+- `running`：提链中
+- `failed`：资格通过但后续提链失败
+- `success`：已提链
+- `paid`：账号已支付
+
+前端页面参考对应渠道的独立组件展示账号池、任务日志、最近任务结果和链接管理表；后端路由负责资格检测、批量任务编排、状态写回和链接去重持久化。
 
 ## 运行数据边界
 

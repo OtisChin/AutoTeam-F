@@ -58,6 +58,7 @@ def _clean_account_status_or_raise(value: str) -> str:
         STATUS_PENDING,
         STATUS_PERSONAL,
         STATUS_PLUS,
+        STATUS_SESSION_ONLY,
         STATUS_STANDBY,
     )
 
@@ -72,6 +73,7 @@ def _clean_account_status_or_raise(value: str) -> str:
         STATUS_AUTH_INVALID,
         STATUS_ORPHAN,
         STATUS_FAIL,
+        STATUS_SESSION_ONLY,
     }
     if next_status not in allowed_statuses:
         raise HTTPException(status_code=400, detail=f"不支持的账号状态: {value}")
@@ -87,6 +89,7 @@ def _clean_bind_provider_or_raise(value: str) -> str:
         "upi",
         "ideal",
         "kakao_pay",
+        "momo_vn",
         "gopay",
         "card",
         "external_import",
