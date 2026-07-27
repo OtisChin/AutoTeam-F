@@ -39,6 +39,24 @@ Authorization: Bearer <API_KEY>
 | POST | `/api/accounts/{email}/kick` | 将 active 账号移出 Team |
 | DELETE | `/api/accounts/{email}` | 删除本地管理账号及其资源 |
 
+## 支付页接口
+
+以下支付页接口用于账号资格检测、提链、链接管理与任务轮询：
+
+| 渠道 | 主要接口 |
+|------|----------|
+| 越南 MoMo | `/api/momo-vn/accounts`、`/api/momo-vn/start`、`/api/momo-vn/batch/start`、`/api/momo-vn/jobs/{job_id}`、`/api/momo-vn/links` |
+
+### 越南 MoMo
+
+- `qualificationOnly=true`：只检测账号是否存在 `momo` 支付方式，不提取链接。
+- 账号状态区分：`pending / eligible / ineligible / running / failed / success / paid`。
+- 完整提链模式会先做资格检测：
+  - 无 `momo` → 标记 `ineligible`
+  - 有 `momo` → 先标记 `eligible`，再继续 promo → 0 元 → tax → confirm → approve → poll
+  - 后续失败 → 标记 `failed`
+  - 成功拿到链接 → 标记 `success`
+
 ### Team 成员移除
 
 `POST /api/team/members/remove`

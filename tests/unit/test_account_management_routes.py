@@ -375,6 +375,30 @@ def test_account_management_update_account_metadata_can_clear_bind_provider(monk
     )
 
 
+def test_account_management_update_account_metadata_accepts_current_dashboard_options(monkeypatch):
+    app = _app()
+    captured = {}
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com"}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+
+    def fake_update_account(email, **changes):
+        captured["updated"] = (email, changes)
+        return {"email": email, **changes}
+
+    monkeypatch.setattr(accounts, "update_account", fake_update_account)
+
+    _endpoint(app, "/api/accounts/{email}/metadata", "PATCH")(
+        "user@example.com",
+        AccountMetadataUpdateParams(account_type="plus", status="session_only", last_bind_provider="momo_vn"),
+    )
+
+    assert captured["updated"] == (
+        "user@example.com",
+        {"account_type": "plus", "status": "session_only", "last_bind_provider": "momo_vn"},
+    )
+
+
 def test_account_management_update_account_metadata_reports_invalid_main_and_missing(monkeypatch):
     app = _app()
 

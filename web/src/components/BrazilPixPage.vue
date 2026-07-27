@@ -369,7 +369,7 @@
               <tr v-if="!filteredAccounts.length">
                 <td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td>
               </tr>
-              <tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50">
+              <tr v-for="account in visibleAccounts" :key="account.email" class="hover:bg-gray-900/50">
                 <td class="px-3 py-2">
                   <input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="busy || !accountSelectable(account)" @change="toggleAccount(account.email)" />
                 </td>
@@ -393,6 +393,10 @@
               </tr>
             </tbody>
           </table>
+          <div v-if="hiddenAccountCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+            <span>已显示 {{ visibleAccounts.length }} / {{ filteredAccounts.length }} 个账号</span>
+            <button @click="showMoreAccounts" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+          </div>
         </div>
       </section>
 
@@ -601,6 +605,7 @@ const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
+const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
 const logRef = ref(null)
 const lastFailedEmails = ref([])
@@ -691,6 +696,8 @@ const filteredAccounts = computed(() => {
     return matchesEmail && matchesStatus
   })
 })
+const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
+const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
 const progressText = computed(() => {
   const total = currentJob.value?.total || 0
   const completed = currentJob.value?.completed || 0
@@ -1418,6 +1425,10 @@ function clearSelectedAccounts() {
   selectedAccounts.value = new Set()
 }
 
+function showMoreAccounts() {
+  accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100)
+}
+
 function toggleLink(id) {
   const next = new Set(selectedLinkIds.value)
   if (next.has(id)) next.delete(id)
@@ -1864,6 +1875,8 @@ watch(() => tempForm.value.cdk, () => {
 })
 
 watch(form, saveExtractFormState, { deep: true })
+
+watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
 
 watch(tempForm, saveTempFormState, { deep: true })
 

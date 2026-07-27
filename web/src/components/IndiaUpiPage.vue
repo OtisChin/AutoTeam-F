@@ -274,7 +274,7 @@
               <tr v-if="!filteredAccounts.length">
                 <td colspan="5" class="px-3 py-10 text-center text-gray-500">暂无账号</td>
               </tr>
-              <tr v-for="account in filteredAccounts" :key="account.email" class="hover:bg-gray-900/50">
+              <tr v-for="account in visibleAccounts" :key="account.email" class="hover:bg-gray-900/50">
                 <td class="px-3 py-2">
                   <input :checked="selectedAccounts.has(account.email)" type="checkbox" class="accent-emerald-500" :disabled="busy || !accountSelectable(account)" @change="toggleAccount(account.email)" />
                 </td>
@@ -293,6 +293,10 @@
               </tr>
             </tbody>
           </table>
+          <div v-if="hiddenAccountCount > 0" class="sticky bottom-0 flex items-center justify-between border-t border-gray-800 bg-gray-950/95 px-3 py-2 text-xs text-gray-500">
+            <span>已显示 {{ visibleAccounts.length }} / {{ filteredAccounts.length }} 个账号</span>
+            <button @click="showMoreAccounts" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 font-semibold text-gray-200 hover:bg-gray-800">加载更多</button>
+          </div>
         </div>
       </section>
 
@@ -466,6 +470,7 @@ const logs = ref([])
 const currentResult = ref(null)
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
+const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
 const retryFailedEmailSet = ref(new Set())
 const deletingUpiAccounts = ref(new Set())
@@ -497,6 +502,8 @@ const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const status = accountStatus(account)
   return (!accountFilter.value || String(account.email || '').toLowerCase().includes(accountFilter.value.toLowerCase())) && (accountStatusFilter.value === 'all' || status === accountStatusFilter.value)
 }))
+const visibleAccounts = computed(() => filteredAccounts.value.slice(0, accountVisibleCount.value))
+const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.length - visibleAccounts.value.length))
 const progressText = computed(() => {
   const job = currentJob.value || {}
   const completed = Number(job.completed || 0)
@@ -735,6 +742,7 @@ function accountSelectable(account) { return account.upi_selectable !== false &&
 function toggleAccount(email) { const account = accounts.value.find(item => item.email === email); if (!account || !accountSelectable(account)) return; const next = new Set(selectedAccounts.value); next.has(email) ? next.delete(email) : next.add(email); selectedAccounts.value = next }
 function selectAllFiltered() { selectedAccounts.value = new Set(filteredAccounts.value.filter(accountSelectable).map(account => account.email)) }
 function clearSelectedAccounts() { selectedAccounts.value = new Set() }
+function showMoreAccounts() { accountVisibleCount.value = Math.min(filteredAccounts.value.length, accountVisibleCount.value + 100) }
 function toggleLink(id) { const next = new Set(selectedLinkIds.value); next.has(id) ? next.delete(id) : next.add(id); selectedLinkIds.value = next }
 function rememberFailedEmails(result) { retryFailedEmailSet.value = new Set((result?.errors || []).map(item => String(item.email || '').trim()).filter(Boolean)) }
 function upiLinkUrl(link) { return String(link?.hosted_instructions_url || link?.upi_link || '').trim() }
@@ -1482,6 +1490,7 @@ onMounted(async () => {
 
 watch(form, () => localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value)), { deep: true })
 watch(tempForm, () => localStorage.setItem(TEMP_FORM_STORAGE_KEY, JSON.stringify({ ...tempForm.value, cdk: tempCdks.value.map(item => item.value).join('\n') })), { deep: true })
+watch([accountFilter, accountStatusFilter], () => { accountVisibleCount.value = 100 })
 watch(tempCdks, saveTempCdkState, { deep: true })
 watch(activeUpiTab, (value) => {
   localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, value)
