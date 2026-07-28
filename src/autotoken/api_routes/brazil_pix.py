@@ -19,7 +19,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.brazil_pix import PixJobConfig, build_pix_dynamic_proxy, generate_pix_trial
 from autotoken.services.payment_error_classifier import is_non_zero_amount_error
-from autotoken.services import proxy_runtime
+from autotoken.services import chatgpt_session, proxy_runtime
 from autotoken.storage import accounts as account_store
 from autotoken.storage import auth_session_store
 from autotoken.storage.auth_session_store import delete_auth_session
@@ -422,6 +422,50 @@ def _load_token_for_email(email: str) -> str:
     return ""
 
 
+def _load_chatgpt_session_context_for_email(email: str) -> dict[str, str]:
+    target = email.strip().lower()
+    if not target:
+        return {}
+    for item in _iter_auth_accounts(include_paid=True):
+        if item["email"].lower() != target:
+            continue
+        try:
+            data = json.loads(Path(item["auth_file"]).read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            return {}
+        cookie_header = str(data.get("cookie_header") or "").strip()
+        cookies = data.get("cookies")
+        account = data.get("account") if isinstance(data.get("account"), dict) else {}
+        access_token = _extract_token(data)
+        session_token = (
+            str(data.get("sessionToken") or data.get("session_token") or "").strip()
+            or chatgpt_session.session_token_from_cookie_header(cookie_header)
+            or chatgpt_session.session_token_from_cookie_items(cookies)
+        )
+        account_id = str(
+            data.get("account_id")
+            or data.get("accountId")
+            or account.get("id")
+            or account.get("account_id")
+            or (chatgpt_session.account_id_from_access_token(access_token) if access_token else "")
+            or ""
+        ).strip()
+        return {
+            "session_token": session_token,
+            "cookie_header": cookie_header,
+            "account_id": account_id,
+            "device_id": str(data.get("device_id") or data.get("oai_device_id") or data.get("oaiDeviceId") or "").strip(),
+            "user_agent": str(data.get("user_agent") or data.get("userAgent") or "").strip(),
+            "oai_client_version": str(data.get("oai_client_version") or data.get("oaiClientVersion") or "").strip(),
+            "oai_client_build_number": str(
+                data.get("oai_client_build_number") or data.get("oaiClientBuildNumber") or ""
+            ).strip(),
+        }
+    return {}
+
+
 def _parse_proxies(value: str | list[str]) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -753,21 +797,54 @@ def _run_job(job_id: str, req: BrazilPixStartRequest) -> None:
             token = _load_token_for_email(account_email)
         if not token:
             raise RuntimeError("缺少 Access Token 或账号池账号")
+        auth_ctx = _load_chatgpt_session_context_for_email(account_email) if account_email else {}
         proxies = _parse_proxies(req.proxies)
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "running"
             JOBS[job_id]["account_email"] = account_email
-        cfg = PixJobConfig(
-            access_token=token,
-            local_proxy=str(req.local_proxy or "").strip(),
-            kookeey_user=str(req.kookeey_user or "").strip(),
-            kookeey_pass=str(req.kookeey_pass or ""),
-            kookeey_endpoint=str(req.kookeey_endpoint or "gate.kookeey.info:1000").strip(),
-            region=(req.region or "BR").strip().upper() or "BR",
-            direct_proxies=proxies,
-        )
-        cfg = _preflight_pix_proxy_or_raise(cfg, log)
-        result = generate_pix_trial(cfg, log=log)
+        result: dict[str, Any] | None = None
+        last_error = ""
+        max_attempts = _account_attempt_limit(req)
+        for attempt in range(1, max_attempts + 1):
+            if _is_job_cancel_requested(job_id) and attempt > 1:
+                raise RuntimeError(f"任务已取消，停止重试；最后错误: {last_error}")
+            log(f"第 {attempt}/{max_attempts} 次尝试")
+            cfg = PixJobConfig(
+                access_token=token,
+                session_token=str(auth_ctx.get("session_token") or ""),
+                cookie_header=str(auth_ctx.get("cookie_header") or ""),
+                account_id=str(auth_ctx.get("account_id") or ""),
+                device_id=str(auth_ctx.get("device_id") or ""),
+                user_agent=str(auth_ctx.get("user_agent") or ""),
+                oai_client_version=str(auth_ctx.get("oai_client_version") or ""),
+                oai_client_build_number=str(auth_ctx.get("oai_client_build_number") or ""),
+                local_proxy=str(req.local_proxy or "").strip(),
+                kookeey_user=str(req.kookeey_user or "").strip(),
+                kookeey_pass=str(req.kookeey_pass or ""),
+                kookeey_endpoint=str(req.kookeey_endpoint or "gate.kookeey.info:1000").strip(),
+                region=(req.region or "BR").strip().upper() or "BR",
+                direct_proxies=_rotate_proxies_for_account(proxies, attempt),
+            )
+            try:
+                cfg = _preflight_pix_proxy_or_raise(cfg, log, req.proxy_preflight_attempts)
+                result = generate_pix_trial(cfg, log=log)
+                if attempt > 1:
+                    log(f"重试成功：attempt={attempt}")
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                if _is_token_invalidated_error(last_error):
+                    raise
+                if last_error.startswith("代理预检失败"):
+                    raise
+                if _is_non_zero_after_promo_error(last_error):
+                    raise
+                log(f"第 {attempt}/{max_attempts} 次失败：{last_error}")
+                if attempt >= max_attempts:
+                    raise
+                time.sleep(min(2.0, 0.5 * attempt))
+        if result is None:
+            raise RuntimeError(last_error or "提链失败")
         result["account_email"] = account_email
         link_record = _link_record_from_result(job_id, account_email, result)
         _append_link(link_record)
@@ -923,6 +1000,7 @@ def _run_batch_account(
         token = _load_token_for_email(email)
         if not token:
             raise RuntimeError("账号缺少有效 accessToken")
+        auth_ctx = _load_chatgpt_session_context_for_email(email)
         last_error = ""
         result: dict[str, Any] | None = None
         max_attempts = _account_attempt_limit(req)
@@ -934,6 +1012,13 @@ def _run_batch_account(
             _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次尝试：{email}")
             cfg = PixJobConfig(
                 access_token=token,
+                session_token=str(auth_ctx.get("session_token") or ""),
+                cookie_header=str(auth_ctx.get("cookie_header") or ""),
+                account_id=str(auth_ctx.get("account_id") or ""),
+                device_id=str(auth_ctx.get("device_id") or ""),
+                user_agent=str(auth_ctx.get("user_agent") or ""),
+                oai_client_version=str(auth_ctx.get("oai_client_version") or ""),
+                oai_client_build_number=str(auth_ctx.get("oai_client_build_number") or ""),
                 local_proxy=str(req.local_proxy or "").strip(),
                 kookeey_user=str(req.kookeey_user or "").strip(),
                 kookeey_pass=str(req.kookeey_pass or ""),

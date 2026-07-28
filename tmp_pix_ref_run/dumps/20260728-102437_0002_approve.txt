@@ -1,0 +1,14 @@
+stage: approve
+request: POST https://chatgpt.com/backend-api/payments/checkout/approve
+
+request_body:
+{
+  "checkout_session_id": "cs_live_a1Qd2CUpIyJVfDn1KoctNpcVMUcj4rN6iCU5CGqvlPAhrAfs9JFqJRWJ6e",
+  "processor_entity": "openai_llc"
+}
+
+status: 200
+url: https://chatgpt.com/backend-api/payments/checkout/approve
+
+response:
+{"result":"approved"}

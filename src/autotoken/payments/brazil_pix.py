@@ -16,10 +16,12 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlsplit, urlunsplit
 
 import requests
 from curl_cffi.requests import Session as CurlCffiSession
+
+from autotoken.services import chatgpt_session
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -34,6 +36,7 @@ STRIPE_VERSION_FULL = (
 PAYPAL_STYLE_STRIPE_VERSION = "2020-08-27;custom_checkout_beta=v1; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
 DEFAULT_STRIPE_RUNTIME_VERSION = "52bec4df19"
 TIMEOUT = 60
+APPROVE_PROXY_MAX_ATTEMPTS = 5
 
 FIRST_M = [
     "Gabriel", "Lucas", "Matheus", "Pedro", "Rafael", "Bruno", "Felipe", "Thiago",
@@ -531,6 +534,22 @@ def to_openai_pay_url(stripe_hosted_url: str) -> str:
     return url
 
 
+def pix_confirm_return_url(cs_id: str, processor: str, stripe_hosted_url: str) -> str:
+    success = f"https://chatgpt.com/checkout/verify?stripe_session_id={cs_id}&processor_entity={processor}&plan_type=plus"
+    hosted = to_openai_pay_url(stripe_hosted_url)
+    if not hosted:
+        hosted = (
+            f"https://checkout.stripe.com/c/pay/{cs_id}"
+            f"?returned_from_redirect=true&ui_mode=custom&return_url={quote(success, safe='')}"
+        )
+    if "pay.openai.com/" in hosted or "checkout.stripe.com/" in hosted:
+        parsed = urlsplit(hosted)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.setdefault("success_return_url", success)
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+    return hosted
+
+
 def extract_qr(payload, cs_id: str = "") -> dict:
     text = json.dumps(payload, ensure_ascii=False) if not isinstance(payload, str) else payload
     out = {
@@ -631,11 +650,30 @@ def new_http_session(proxy_url: str = "") -> requests.Session:
     return session
 
 
-def build_chatgpt_session(access_token: str, proxy_url: str = "", device_id: str = "") -> requests.Session:
+def build_chatgpt_session(
+    access_token: str,
+    proxy_url: str = "",
+    device_id: str = "",
+    *,
+    session_token: str = "",
+    cookie_header: str = "",
+    account_id: str = "",
+    user_agent: str = "",
+    oai_client_version: str = "",
+    oai_client_build_number: str = "",
+) -> requests.Session:
     device_id = str(device_id or uuid.uuid4())
     session = new_http_session(proxy_url)
+    cookie = chatgpt_session.chatgpt_reference_cookie_header(
+        session_token=session_token,
+        account_id=account_id,
+        device_id=device_id,
+        cookie_header=cookie_header,
+    )
+    if not cookie:
+        cookie = f"oai-did={device_id}"
     session.headers.update({
-        "User-Agent": DEFAULT_USER_AGENT,
+        "User-Agent": str(user_agent or "").strip() or DEFAULT_USER_AGENT,
         "Accept": "*/*",
         "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
         "Authorization": f"Bearer {access_token}",
@@ -644,14 +682,19 @@ def build_chatgpt_session(access_token: str, proxy_url: str = "", device_id: str
         "Content-Type": "application/json",
         "oai-device-id": device_id,
         "oai-language": "pt-BR",
+        "oai-session-id": device_id,
         "sec-ch-ua": '"Google Chrome";v="146", "Chromium";v="146", "Not.A/Brand";v="24"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",
-        "Cookie": f"oai-did={device_id}",
+        "Cookie": cookie,
     })
+    if oai_client_version:
+        session.headers["oai-client-version"] = oai_client_version
+    if oai_client_build_number:
+        session.headers["oai-client-build-number"] = oai_client_build_number
     return session
 
 
@@ -806,8 +849,7 @@ def page_get(stripe: requests.Session, cs_id: str, stripe_pk: str, ctx: dict) ->
     return resp.json() or {}
 
 
-def chatgpt_approve(access_token: str, cs_id: str, processor: str, proxy_url: str, device_id: str, log: LogFn) -> None:
-    cg = build_chatgpt_session(access_token, proxy_url, device_id)
+def submit_chatgpt_approve(cg: requests.Session, cs_id: str, processor: str, log: LogFn) -> None:
     # lightweight ping
     try:
         cg.post(
@@ -822,33 +864,157 @@ def chatgpt_approve(access_token: str, cs_id: str, processor: str, proxy_url: st
         )
     except Exception:
         pass
+    try:
+        resp = cg.post(
+            "https://chatgpt.com/backend-api/payments/checkout/approve",
+            json={"checkout_session_id": cs_id, "processor_entity": processor},
+            headers={
+                "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
+                "x-openai-target-path": "/backend-api/payments/checkout/approve",
+                "x-openai-target-route": "/backend-api/payments/checkout/approve",
+            },
+            timeout=TIMEOUT,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"approve failed: {short(exc)}") from exc
+    log(f"approve HTTP {resp.status_code} {short(resp.text, 120)}")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"approve failed: {short(resp.text)}")
+    try:
+        result = str((resp.json() or {}).get("result") or "")
+    except Exception:
+        result = ""
+    if result and result != "approved":
+        raise RuntimeError(f"approve failed: unexpected result {result!r}")
+
+
+def chatgpt_approve(
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    proxy_url: str,
+    device_id: str,
+    log: LogFn,
+    *,
+    session_token: str = "",
+    cookie_header: str = "",
+    account_id: str = "",
+    user_agent: str = "",
+    oai_client_version: str = "",
+    oai_client_build_number: str = "",
+) -> None:
+    cg = build_chatgpt_session(
+        access_token,
+        proxy_url,
+        device_id,
+        session_token=session_token,
+        cookie_header=cookie_header,
+        account_id=account_id,
+        user_agent=user_agent,
+        oai_client_version=oai_client_version,
+        oai_client_build_number=oai_client_build_number,
+    )
+    submit_chatgpt_approve(cg, cs_id, processor, log)
+
+
+def approve_pix_with_proxy_rotation(
+    cfg: PixJobConfig,
+    *,
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    primary_proxy_url: str,
+    primary_chatgpt_session: requests.Session | None = None,
+    device_id: str,
+    log: LogFn,
+    start_stage_index: int = 2,
+    max_attempts: int = APPROVE_PROXY_MAX_ATTEMPTS,
+) -> str:
+    """Approve with fresh proxy/SID rotation.
+
+    The PIX provider step is probabilistic: a proxy that passed checkout/Stripe
+    can still hit ChatGPT HTML challenge at approve. Do not retry the same
+    challenged SID; switch to a fresh SID before giving up this checkout.
+    """
+
+    attempted: set[str] = set()
     last_err = ""
-    for attempt in range(1, 4):
+    for attempt in range(1, max(1, max_attempts) + 1):
+        label = "provider-current"
+        if attempt == 1 and primary_proxy_url:
+            approve_proxy = primary_proxy_url
+        else:
+            dyn, sid_label = build_pix_dynamic_proxy(cfg, start_stage_index + attempt - 2)
+            label = sid_label
+            with pix_proxy_context(cfg.local_proxy, dyn, log) as approve_chain:
+                approve_proxy = approve_chain.url
+                key = approve_proxy or dyn
+                if key in attempted:
+                    continue
+                attempted.add(key)
+                log(f"approve 代理预检/切换：{attempt}/{max_attempts} {label}")
+                try:
+                    chatgpt_approve(
+                        access_token,
+                        cs_id,
+                        processor,
+                        approve_proxy,
+                        device_id,
+                        log,
+                        session_token=cfg.session_token,
+                        cookie_header=cfg.cookie_header,
+                        account_id=cfg.account_id,
+                        user_agent=cfg.user_agent,
+                        oai_client_version=cfg.oai_client_version,
+                        oai_client_build_number=cfg.oai_client_build_number,
+                    )
+                    return approve_proxy
+                except Exception as exc:
+                    last_err = short(exc)
+                    log(f"approve 代理失败：{attempt}/{max_attempts} {last_err}")
+                    time.sleep(1.0)
+                    continue
+        key = approve_proxy
+        if key in attempted:
+            continue
+        attempted.add(key)
+        log(f"approve 代理预检/切换：{attempt}/{max_attempts} {label}")
         try:
-            resp = cg.post(
-                "https://chatgpt.com/backend-api/payments/checkout/approve",
-                json={"checkout_session_id": cs_id, "processor_entity": processor},
-                headers={
-                    "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
-                    "x-openai-target-path": "/backend-api/payments/checkout/approve",
-                    "x-openai-target-route": "/backend-api/payments/checkout/approve",
-                },
-                timeout=TIMEOUT,
-            )
-            log(f"approve attempt {attempt}: HTTP {resp.status_code} {short(resp.text, 120)}")
-            if resp.status_code < 400:
-                return
-            last_err = short(resp.text)
+            if attempt == 1 and primary_chatgpt_session is not None:
+                submit_chatgpt_approve(primary_chatgpt_session, cs_id, processor, log)
+            else:
+                chatgpt_approve(
+                    access_token,
+                    cs_id,
+                    processor,
+                    approve_proxy,
+                    device_id,
+                    log,
+                    session_token=cfg.session_token,
+                    cookie_header=cfg.cookie_header,
+                    account_id=cfg.account_id,
+                    user_agent=cfg.user_agent,
+                    oai_client_version=cfg.oai_client_version,
+                    oai_client_build_number=cfg.oai_client_build_number,
+                )
+            return approve_proxy
         except Exception as exc:
             last_err = short(exc)
-            log(f"approve attempt {attempt} error: {last_err}")
-        time.sleep(1.0)
+            log(f"approve 代理失败：{attempt}/{max_attempts} {last_err}")
+            time.sleep(1.0)
     raise RuntimeError(f"approve failed: {last_err}")
 
 
 @dataclass
 class PixJobConfig:
     access_token: str
+    session_token: str = ""
+    cookie_header: str = ""
+    account_id: str = ""
+    device_id: str = ""
+    user_agent: str = ""
+    oai_client_version: str = ""
+    oai_client_build_number: str = ""
     local_proxy: str = "http://127.0.0.1:7897"
     kookeey_user: str = ""
     kookeey_pass: str = ""
@@ -1002,7 +1168,7 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
     if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
         raise RuntimeError("缺少代理配置：direct_proxies 或 kookeey 用户名/密码")
 
-    device_id = str(uuid.uuid4())
+    device_id = str(cfg.device_id or uuid.uuid4())
     billing = br_billing()
     log(f"账单: {billing['name']} / {billing['city']}-{billing['state']} / CPF {billing['tax_id_formatted']}")
     log(f"手机: {billing['phone']}  邮箱: {billing['email']}")
@@ -1012,7 +1178,17 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
     log(f"[1/5] BR 创建 checkout（create 阶段带试用 promo） sid={sid1}")
     with pix_proxy_context(cfg.local_proxy, dyn1, log) as chain1:
         p1 = chain1.url
-        cg = build_chatgpt_session(token, p1, device_id)
+        cg = build_chatgpt_session(
+            token,
+            p1,
+            device_id,
+            session_token=cfg.session_token,
+            cookie_header=cfg.cookie_header,
+            account_id=cfg.account_id,
+            user_agent=cfg.user_agent,
+            oai_client_version=cfg.oai_client_version,
+            oai_client_build_number=cfg.oai_client_build_number,
+        )
         warm_chatgpt_checkout_context(cg, "BR", log)
         r = cg.post(
             "https://chatgpt.com/backend-api/payments/checkout",
@@ -1052,6 +1228,10 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
         stripe = build_stripe_session(p3)
         ctx = {
             "stripe_js_id": str(uuid.uuid4()),
+            "client_session_id": str(uuid.uuid4()),
+            "guid": uuid.uuid4().hex,
+            "muid": uuid.uuid4().hex,
+            "sid": uuid.uuid4().hex,
             "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
             "elements_session_config_id": str(uuid.uuid4()),
             "config_id": "",
@@ -1125,13 +1305,13 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
 
         log("[4/5] confirm PIX")
         time.sleep(0.7)
-        return_url = to_openai_pay_url(hosted) or hosted
+        return_url = pix_confirm_return_url(cs_id, processor, hosted)
         conf = stripe.post(
             f"https://api.stripe.com/v1/payment_pages/{cs_id}/confirm",
             data={
-                "guid": uuid.uuid4().hex,
-                "muid": uuid.uuid4().hex,
-                "sid": uuid.uuid4().hex,
+                "guid": ctx["guid"],
+                "muid": ctx["muid"],
+                "sid": ctx["sid"],
                 "payment_method": pm_id,
                 "init_checksum": init_checksum,
                 "version": runtime,
@@ -1148,7 +1328,7 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
                 "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
                 "elements_options_client[saved_payment_method][enable_save]": "never",
                 "elements_options_client[saved_payment_method][enable_redisplay]": "never",
-                "client_attribution_metadata[client_session_id]": ctx["stripe_js_id"],
+                "client_attribution_metadata[client_session_id]": ctx["client_session_id"],
                 "client_attribution_metadata[checkout_session_id]": cs_id,
                 "client_attribution_metadata[checkout_config_id]": config_id,
                 "client_attribution_metadata[elements_session_id]": ctx["elements_session_id"],
@@ -1181,7 +1361,17 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
             return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
         log("[5/5] approve + poll QR")
-        chatgpt_approve(token, cs_id, processor, p3, device_id, log)
+        approve_pix_with_proxy_rotation(
+            cfg,
+            access_token=token,
+            cs_id=cs_id,
+            processor=processor,
+            primary_proxy_url=p1,
+            primary_chatgpt_session=cg,
+            device_id=device_id,
+            log=log,
+            start_stage_index=2,
+        )
 
         last_err: dict = {}
         for i in range(1, 11):
@@ -1201,11 +1391,12 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
                 return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
             if sub.get("state") == "failed":
                 last_err = err or {}
-                pe = last_err.get("payment_error") if isinstance(last_err.get("payment_error"), dict) else {}
-                raise RuntimeError(
-                    f"approve 后失败: {last_err.get('code')} "
-                    f"payment_error={pe.get('code')}/{pe.get('decline_code')}"
-                )
             time.sleep(1.0)
 
+        if last_err.get("code"):
+            pe = last_err.get("payment_error") if isinstance(last_err.get("payment_error"), dict) else {}
+            raise RuntimeError(
+                f"轮询超时，未拿到二维码，最后错误: {last_err.get('code')} "
+                f"payment_error={pe.get('code')}/{pe.get('decline_code')}"
+            )
         raise RuntimeError("轮询超时，未拿到二维码")

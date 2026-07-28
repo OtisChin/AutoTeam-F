@@ -553,6 +553,127 @@ def test_single_job_deletes_token_revoked_account(monkeypatch, tmp_path):
     assert "账号已失效，已从账号池删除" in job["error"]
 
 
+def test_single_job_retries_retryable_pix_failure(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    email = "single-retry@example.com"
+    _write_session(auth_dir, email, "single-retry-token-" + "x" * 80)
+    brazil_pix.JOBS.clear()
+    job_id = "pix-single-retry-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "account_statuses": {},
+        "cancel_requested": False,
+        "running_count": 0,
+    }
+    calls = []
+
+    def fake_generate_pix_trial(cfg, log):
+        calls.append(cfg)
+        if len(calls) == 1:
+            raise RuntimeError(
+                "approve 后失败: checkout_approval_payment_failure_with_payment_error "
+                "payment_error=setup_attempt_failed/generic_decline"
+            )
+        return {
+            "ok": True,
+            "amount": "0",
+            "fields": {
+                "amount": "0",
+                "cs_id": "cs_test",
+                "pix_copy_paste": "pix-code",
+                "hosted_instructions_url": "https://pay.example/pix",
+            },
+        }
+
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+
+    req = brazil_pix.BrazilPixStartRequest.model_validate(
+        {
+            "accountEmail": email,
+            "proxies": "socks5h://proxy.example:1080",
+            "maxAttempts": 2,
+        }
+    )
+    brazil_pix._run_job(job_id, req)
+
+    job = brazil_pix.JOBS[job_id]
+    assert job["status"] == "success"
+    assert len(calls) == 2
+    assert any("第 1/2 次失败" in line for line in job["logs"])
+
+
+def test_single_job_passes_auth_session_cookie_context_to_pix_flow(monkeypatch, tmp_path):
+    auth_dir = _isolate_files(monkeypatch, tmp_path)
+    email = "cookie-context@example.com"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "cookie-context@example_com.json").write_text(
+        json.dumps(
+            {
+                "email": email,
+                "accessToken": "cookie-context-token-" + "x" * 80,
+                "sessionToken": "session-token-value",
+                "cookie_header": "_cfuvid=abc; other=keep",
+                "account": {"id": "acct_test"},
+                "device_id": "device-test",
+                "user_agent": "UA-test",
+                "oai_client_version": "client-version-test",
+                "oai_client_build_number": "build-number-test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    brazil_pix.JOBS.clear()
+    job_id = "pix-cookie-context-job"
+    brazil_pix.JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "error": None,
+        "created_at": 1,
+        "finished_at": None,
+        "account_email": "",
+        "account_statuses": {},
+        "cancel_requested": False,
+        "running_count": 0,
+    }
+    captured = {}
+
+    def fake_generate_pix_trial(cfg, log):
+        captured["cfg"] = cfg
+        return {
+            "ok": True,
+            "amount": "0",
+            "fields": {
+                "amount": "0",
+                "cs_id": "cs_test",
+                "pix_copy_paste": "pix-code",
+                "hosted_instructions_url": "https://pay.example/pix",
+            },
+        }
+
+    monkeypatch.setattr(brazil_pix, "generate_pix_trial", fake_generate_pix_trial)
+
+    req = brazil_pix.BrazilPixStartRequest.model_validate({"accountEmail": email, "proxies": "socks5h://proxy.example:1080"})
+    brazil_pix._run_job(job_id, req)
+
+    cfg = captured["cfg"]
+    assert cfg.session_token == "session-token-value"
+    assert cfg.cookie_header == "_cfuvid=abc; other=keep"
+    assert cfg.account_id == "acct_test"
+    assert cfg.device_id == "device-test"
+    assert cfg.user_agent == "UA-test"
+    assert cfg.oai_client_version == "client-version-test"
+    assert cfg.oai_client_build_number == "build-number-test"
+
+
 def test_batch_job_honors_concurrency(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     for index in range(3):
