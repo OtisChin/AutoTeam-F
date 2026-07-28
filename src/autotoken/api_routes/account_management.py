@@ -99,6 +99,14 @@ def _clean_bind_provider_or_raise(value: str) -> str:
     return next_provider
 
 
+def _account_type_update_fields(account: dict, next_type: str, **changes: Any) -> dict[str, Any]:
+    update_fields: dict[str, Any] = {"account_type": next_type, **changes}
+    last_quota = account.get("last_quota")
+    if isinstance(last_quota, dict) and "plan_type" in last_quota:
+        update_fields["last_quota"] = {**last_quota, "plan_type": next_type}
+    return update_fields
+
+
 def cleanup_brazil_pix_account_artifacts(email: str) -> dict[str, Any]:
     try:
         from autotoken.api_routes import brazil_pix
@@ -177,7 +185,7 @@ def create_account_management_router(
         if not account:
             raise HTTPException(status_code=404, detail="账号不存在")
 
-        updated = update_account(normalized_email, account_type=next_type)
+        updated = update_account(normalized_email, **_account_type_update_fields(account, next_type))
         return {
             "message": f"已将 {normalized_email} 账号类型更新为 {next_type}",
             "account": sanitize_account(updated),
@@ -201,9 +209,12 @@ def create_account_management_router(
 
         updated = update_account(
             normalized_email,
-            account_type=next_type,
-            status=next_status,
-            last_bind_provider=next_provider,
+            **_account_type_update_fields(
+                account,
+                next_type,
+                status=next_status,
+                last_bind_provider=next_provider,
+            ),
         )
         return {
             "message": f"已更新 {normalized_email} 账号信息",

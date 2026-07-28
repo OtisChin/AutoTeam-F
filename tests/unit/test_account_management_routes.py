@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException
 import pytest
+from fastapi import FastAPI, HTTPException
 
-from autotoken import account_ops, accounts, admin_state, auth_session_store, chatgpt_api, manager
 import autotoken.api_routes.account_management as account_management
+from autotoken import account_ops, accounts, admin_state, auth_session_store, chatgpt_api, manager
 from autotoken.api_routes.account_management import (
     ACCOUNT_DELETE_BATCH_MAX_EMAILS,
     AccountMetadataUpdateParams,
@@ -314,6 +314,36 @@ def test_account_management_update_account_type_validates_and_sanitizes(monkeypa
     }
 
 
+def test_account_management_update_account_type_syncs_cached_quota_plan(monkeypatch):
+    app = _app()
+    captured = {}
+    account = {
+        "email": "user@example.com",
+        "account_type": "plus",
+        "last_quota": {"plan_type": "plus", "weekly_pct": 10},
+    }
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [account])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+
+    def fake_update_account(email, **changes):
+        captured["updated"] = (email, changes)
+        return {**account, **changes}
+
+    monkeypatch.setattr(accounts, "update_account", fake_update_account)
+
+    result = _endpoint(app, "/api/accounts/{email}/type", "POST")(
+        "user@example.com",
+        AccountTypeUpdateParams(account_type="free"),
+    )
+
+    assert captured["updated"] == (
+        "user@example.com",
+        {"account_type": "free", "last_quota": {"plan_type": "free", "weekly_pct": 10}},
+    )
+    assert result["account"]["account_type"] == "free"
+
+
 def test_account_management_update_account_metadata_validates_and_sanitizes(monkeypatch):
     app = _app()
     captured = {}
@@ -350,6 +380,43 @@ def test_account_management_update_account_metadata_validates_and_sanitizes(monk
             "sanitized": True,
         },
     }
+
+
+def test_account_management_update_account_metadata_syncs_cached_quota_plan(monkeypatch):
+    app = _app()
+    captured = {}
+    account = {
+        "email": "user@example.com",
+        "account_type": "plus",
+        "status": "active",
+        "last_bind_provider": "paypal",
+        "last_quota": {"plan_type": "plus", "primary_pct": 0},
+    }
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [account])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+
+    def fake_update_account(email, **changes):
+        captured["updated"] = (email, changes)
+        return {**account, **changes}
+
+    monkeypatch.setattr(accounts, "update_account", fake_update_account)
+
+    result = _endpoint(app, "/api/accounts/{email}/metadata", "PATCH")(
+        "user@example.com",
+        AccountMetadataUpdateParams(account_type="free", status="standby", last_bind_provider=""),
+    )
+
+    assert captured["updated"] == (
+        "user@example.com",
+        {
+            "account_type": "free",
+            "status": "standby",
+            "last_bind_provider": "",
+            "last_quota": {"plan_type": "free", "primary_pct": 0},
+        },
+    )
+    assert result["account"]["account_type"] == "free"
 
 
 def test_account_management_update_account_metadata_can_clear_bind_provider(monkeypatch):
