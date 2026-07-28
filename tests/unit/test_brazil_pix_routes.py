@@ -1011,7 +1011,7 @@ def test_batch_job_deletes_no_organization_account(monkeypatch, tmp_path):
     assert "账号缺少 Platform organization，已从账号池删除" in job["result"]["errors"][0]["error"]
 
 
-def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch, tmp_path):
+def test_batch_job_keeps_non_zero_after_promo_account(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     email = "promo@example.com"
     _write_session(auth_dir, email, "promo-token-" + "x" * 80)
@@ -1048,12 +1048,14 @@ def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch, tmp_path):
     account = brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email)
     job = brazil_pix.JOBS[job_id]
     assert job["status"] == "error"
-    assert account is None
-    assert not (auth_dir / "promo@example_com.json").exists()
-    assert "金额非 0，已从账号池删除" in job["result"]["errors"][0]["error"]
+    assert account is not None
+    assert (auth_dir / "promo@example_com.json").exists()
+    assert "金额非 0" in job["result"]["errors"][0]["error"]
+    assert "已从账号池删除" not in job["result"]["errors"][0]["error"]
+    assert job["result"]["errors"][0]["account_deleted"] is False
 
 
-def test_batch_job_deletes_any_non_zero_amount_account(monkeypatch, tmp_path):
+def test_batch_job_keeps_any_non_zero_amount_account(monkeypatch, tmp_path):
     auth_dir = _isolate_files(monkeypatch, tmp_path)
     email = "nonzero@example.com"
     _write_session(auth_dir, email, "nonzero-token-" + "x" * 80)
@@ -1090,10 +1092,10 @@ def test_batch_job_deletes_any_non_zero_amount_account(monkeypatch, tmp_path):
     account = brazil_pix.account_store.find_account(brazil_pix.account_store.load_accounts(), email)
     job = brazil_pix.JOBS[job_id]
     assert job["status"] == "error"
-    assert account is None
-    assert not (auth_dir / "nonzero@example_com.json").exists()
-    assert job["result"]["errors"][0]["account_deleted"] is True
-    assert "已从账号池删除" in job["result"]["errors"][0]["error"]
+    assert account is not None
+    assert (auth_dir / "nonzero@example_com.json").exists()
+    assert job["result"]["errors"][0]["account_deleted"] is False
+    assert "已从账号池删除" not in job["result"]["errors"][0]["error"]
 
 
 def test_batch_job_cancel_skips_not_started_accounts(monkeypatch, tmp_path):

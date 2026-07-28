@@ -622,6 +622,22 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
                     cleanup = _delete_invalid_account(email)
                     status = _set_account_status(email, KAKAO_STATUS_FAILED, error=last_error, job_id=job_id)
                     return {"ok": False, "email": email, "error": {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "attempts": attempt, "error": f"账号不可用，已从账号池删除：{last_error}", "cleanup": cleanup}, "status": status}
+                if pix_routes._is_non_zero_after_promo_error(last_error):
+                    status = _set_account_status(email, KAKAO_STATUS_FAILED, error=last_error, job_id=job_id)
+                    _append_log(job_id, f"[{index}/{total}] Kakao Pay 金额非 0，账号保留：{email}")
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": f"Kakao Pay 金额非 0，账号保留：{last_error}",
+                            "account_deleted": False,
+                        },
+                        "status": status,
+                        "account_deleted": False,
+                    }
                 account_log(f"第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
                 if attempt >= max_attempts:
                     raise

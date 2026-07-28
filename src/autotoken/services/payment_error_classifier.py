@@ -25,5 +25,5 @@ def is_non_zero_amount_error(error: Any) -> bool:
         return True
     return bool(
         re.search(r"\bamount\s*[=:]\s*(?!0(?:\D|$))\d+", lower)
-        and ("amount policy failed" in lower or "金额校验" in text)
+        and ("amount policy failed" in lower or "金额校验" in text or ("checkout_not_" in lower and "_trial" in lower))
     )

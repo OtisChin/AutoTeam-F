@@ -454,6 +454,22 @@ def _run_batch_account(
                 break
             except Exception as exc:
                 last_error = str(exc)
+                if pix_routes._is_non_zero_after_promo_error(last_error):
+                    status = _set_account_status(email, MOMO_STATUS_FAILED, error=last_error, job_id=job_id)
+                    _append_log(job_id, f"[{index}/{total}] MoMo VN 金额非 0，账号保留：{email}")
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": f"MoMo VN 金额非 0，账号保留：{last_error}",
+                            "account_deleted": False,
+                        },
+                        "status": status,
+                        "account_deleted": False,
+                    }
                 account_log(f"第 {attempt}/{max_attempts} 次失败：{last_error}")
                 if attempt >= max_attempts or not _should_retry_momo_error(last_error):
                     raise

@@ -1223,19 +1223,14 @@ def cleanup_account_for_non_zero_amount(req: LongLinkRequest, reason: Any, steps
         "dashboard_account_deleted": False,
         "auth_session_deleted": False,
         "legacy_account_disabled": False,
+        "account_deleted": False,
     }
     if not email:
         if steps is not None:
-            add_step(steps, "账号池清理", "warn", "金额非 0，但 accessToken 中未解析到邮箱，无法删除账号池账号。")
+            add_step(steps, "账号池处理", "warn", "金额非 0，但 accessToken 中未解析到邮箱；按策略不删除账号。")
         return cleanup
-    cleanup["dashboard_account_deleted"] = bool(account_store.delete_account(email))
-    cleanup["auth_session_deleted"] = bool(delete_auth_session(email))
-    try:
-        cleanup["legacy_account_disabled"] = bool(account_pool_store.disable_account_by_email(email))
-    except Exception:
-        cleanup["legacy_account_disabled"] = False
     if steps is not None:
-        add_step(steps, "账号池清理", "ok", f"金额非 0，已从账号池删除：{masked_email(email)} cleanup={cleanup}")
+        add_step(steps, "账号池处理", "warn", f"金额非 0，账号保留：{masked_email(email)} cleanup={cleanup}")
     return cleanup
 
 
@@ -1244,8 +1239,8 @@ def apply_non_zero_amount_cleanup(req: LongLinkRequest, detail: str, steps: JobS
         return detail, None
     cleanup = cleanup_account_for_non_zero_amount(req, detail, steps)
     if cleanup.get("email"):
-        return f"金额非 0，已从账号池删除：{detail}", cleanup
-    return f"金额非 0，但未解析到邮箱，无法删除账号池账号：{detail}", cleanup
+        return f"金额非 0，账号保留：{detail}", cleanup
+    return f"金额非 0，账号保留（未解析到邮箱）：{detail}", cleanup
 
 
 def masked_email(email: str) -> str:

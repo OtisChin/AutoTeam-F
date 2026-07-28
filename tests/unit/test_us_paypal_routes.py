@@ -491,7 +491,7 @@ def test_batch_job_passes_target_region_and_configurable_attempts(monkeypatch):
     assert captured["regions"] == [("GB", "VN"), ("GB", "VN"), ("GB", "VN")]
 
 
-def test_batch_account_deletes_paypal_nonzero_amount_account(monkeypatch):
+def test_batch_account_keeps_paypal_nonzero_amount_account(monkeypatch):
     email = "AngelesGuttman0186@outlook.com"
     deleted_accounts: list[str] = []
     deleted_sessions: list[str] = []
@@ -517,11 +517,11 @@ def test_batch_account_deletes_paypal_nonzero_amount_account(monkeypatch):
     result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
 
     assert result["ok"] is False
-    assert result["account_deleted"] is True
-    assert result["error"]["cleanup"] == {"record_deleted": True, "auth_session_deleted": True}
-    assert "已从账号池删除" in result["error"]["error"]
-    assert deleted_accounts == [email]
-    assert deleted_sessions == [email]
+    assert result.get("account_deleted") is not True
+    assert "已从账号池删除" not in result["error"]["error"]
+    assert "金额非 0" in result["error"]["error"]
+    assert deleted_accounts == []
+    assert deleted_sessions == []
 
 
 def test_protocol_batch_job_assigns_account_link_phone_and_proxy(monkeypatch):

@@ -138,6 +138,51 @@ def test_batch_job_full_flow_marks_failed_when_extraction_fails_after_eligibilit
     assert statuses["user@example.com"]["status"] == "failed"
 
 
+def test_batch_account_keeps_non_zero_amount_account(monkeypatch, tmp_path):
+    email = "momo-nonzero@example.com"
+    deleted_accounts: list[str] = []
+    deleted_sessions: list[str] = []
+    monkeypatch.setattr(momo_vn, "LINKS_FILE", tmp_path / "momo_vn_links.json")
+    monkeypatch.setattr(momo_vn, "ACCOUNT_STATUS_FILE", tmp_path / "momo_vn_account_status.json")
+    monkeypatch.setattr(momo_vn, "_load_token_for_email", lambda value: f"token-{value}")
+    monkeypatch.setattr(momo_vn, "detect_momo_eligibility", lambda cfg, log=None: {"status": "eligible", "has_momo": True})
+    monkeypatch.setattr(
+        momo_vn,
+        "generate_momo_vn_trial",
+        lambda cfg, log=None: (_ for _ in ()).throw(RuntimeError("套 promo 后金额不是 0: 1667")),
+    )
+    monkeypatch.setattr(momo_vn.account_store, "delete_account", lambda value: deleted_accounts.append(value) or True)
+    monkeypatch.setattr(momo_vn, "delete_auth_session", lambda value: deleted_sessions.append(value) or True)
+
+    job_id = "momo-nonzero-job"
+    momo_vn.JOBS.clear()
+    momo_vn.JOBS[job_id] = _make_job(job_id)
+    req = momo_vn.MomoVnBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy",
+        "maxAttempts": 5,
+    })
+
+    result = momo_vn._run_batch_account(
+        job_id,
+        req,
+        {"email": email, "auth_file": "auth.json"},
+        1,
+        1,
+        momo_vn._parse_proxies(req.proxies),
+    )
+
+    statuses = json.loads(momo_vn.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert result["ok"] is False
+    assert result.get("account_deleted") is False
+    assert result["error"]["account_deleted"] is False
+    assert "金额非 0" in result["error"]["error"]
+    assert "已从账号池删除" not in result["error"]["error"]
+    assert statuses[email]["status"] == "failed"
+    assert deleted_accounts == []
+    assert deleted_sessions == []
+
+
 def test_batch_account_qualification_only_marks_failed_when_network_error_occurs(monkeypatch, tmp_path):
     monkeypatch.setattr(momo_vn, "LINKS_FILE", tmp_path / "momo_vn_links.json")
     monkeypatch.setattr(momo_vn, "ACCOUNT_STATUS_FILE", tmp_path / "momo_vn_account_status.json")

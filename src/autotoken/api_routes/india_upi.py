@@ -54,7 +54,7 @@ UPI_FAILURE_META: dict[str, dict[str, str]] = {
     "upi_promo_nonzero_account_ineligible": {
         "stage": "promo_amount",
         "label": "账号无 0 元试用资格",
-        "retry_hint": "金额非 0，直接删除账号，不要重试同账号。",
+        "retry_hint": "金额非 0，不删除账号；停止当前提链，换优惠区/账号资格或后续人工处理。",
     },
     "upi_approve_blocked": {
         "stage": "chatgpt_approve",
@@ -980,9 +980,8 @@ def _run_batch_account(
                         "status": status,
                     }
                 if pix_routes._is_non_zero_after_promo_error(last_error):
-                    cleanup = _delete_invalid_account(email)
                     status = _set_account_status(email, UPI_STATUS_FAILED, error=last_error, job_id=job_id, failure=failure)
-                    _append_log(job_id, f"[{index}/{total}] 账号金额非 0，已从账号池删除：{email} cleanup={cleanup}")
+                    _append_log(job_id, f"[{index}/{total}] 账号金额非 0，账号保留：{email}")
                     return {
                         "ok": False,
                         "email": email,
@@ -990,13 +989,12 @@ def _run_batch_account(
                             "email": email,
                             "elapsed_s": round(time.monotonic() - started, 1),
                             "attempts": attempt,
-                            "error": f"金额非 0，已从账号池删除：{last_error}",
-                            "cleanup": cleanup,
-                            "account_deleted": True,
+                            "error": f"金额非 0，账号保留：{last_error}",
+                            "account_deleted": False,
                             **failure,
                         },
                         "status": status,
-                        "account_deleted": True,
+                        "account_deleted": False,
                     }
                 _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} [{failure['failure_category']}] {last_error}")
                 if attempt >= max_attempts:

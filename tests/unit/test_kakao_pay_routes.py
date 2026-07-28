@@ -113,6 +113,51 @@ def test_batch_job_generates_kakao_link_and_records_status(monkeypatch):
     assert statuses[email]["status"] == "success"
 
 
+def test_batch_account_keeps_non_zero_amount_account(monkeypatch):
+    email = "kakao-nonzero@example.com"
+    deleted_accounts: list[str] = []
+    deleted_sessions: list[str] = []
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: "token-" + value)
+    monkeypatch.setattr(kakao_pay.account_store, "delete_account", lambda value: deleted_accounts.append(value) or True)
+    monkeypatch.setattr(kakao_pay, "delete_auth_session", lambda value: deleted_sessions.append(value) or True)
+    monkeypatch.setattr(
+        kakao_pay,
+        "generate_kakao_trial",
+        lambda cfg, log: (_ for _ in ()).throw(
+            RuntimeError("checkout_not_kakao_trial: stage=post_promo amount=29000 currency=krw methods=['card', 'kakao_pay']")
+        ),
+    )
+    job_id = "kakao-nonzero-job"
+    kakao_pay.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+    req = kakao_pay.KakaoPayBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "host:1000:user-region-KR-sid-old-t-120:pass",
+        "maxAttempts": 5,
+    })
+
+    result = kakao_pay._run_batch_account(
+        job_id,
+        req,
+        {"email": email, "auth_file": "auth.json"},
+        1,
+        1,
+        kakao_pay._parse_proxies(req.proxies),
+    )
+
+    assert result["ok"] is False
+    assert result.get("account_deleted") is False
+    assert result["error"]["account_deleted"] is False
+    assert "金额非 0" in result["error"]["error"]
+    assert "已从账号池删除" not in result["error"]["error"]
+    assert deleted_accounts == []
+    assert deleted_sessions == []
+
+
 def test_preflight_kakao_proxies_preflights_same_seed_checkout_promotion_and_provider(monkeypatch):
     payment_calls = []
     auth_calls = []

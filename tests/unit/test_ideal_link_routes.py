@@ -123,7 +123,7 @@ def test_create_ideal_qr_returns_png(monkeypatch):
     assert response.media_type == "image/png"
 
 
-def test_ideal_long_link_job_deletes_account_on_non_zero_amount(monkeypatch):
+def test_ideal_long_link_job_keeps_account_on_non_zero_amount(monkeypatch):
     email = "ideal-nonzero@example.com"
     payload = base64.urlsafe_b64encode(json.dumps({"email": email}).encode("utf-8")).decode("ascii").rstrip("=")
     access_token = f"eyJhbGciOiJub25lIn0.{payload}.sig"
@@ -164,10 +164,11 @@ def test_ideal_long_link_job_deletes_account_on_non_zero_amount(monkeypatch):
 
     job = ideal_app.job_snapshot(result["job_id"])
     assert job["status"] == "error"
-    assert "已从账号池删除" in job["error"]
-    assert deleted_accounts == [email]
-    assert deleted_sessions == [email]
-    assert disabled_legacy == [email]
+    assert "金额非 0" in job["error"]
+    assert "已从账号池删除" not in job["error"]
+    assert deleted_accounts == []
+    assert deleted_sessions == []
+    assert disabled_legacy == []
 
 
 def test_ideal_prepare_request_proxy_uses_configured_preflight_attempts(monkeypatch):

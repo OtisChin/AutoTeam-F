@@ -440,7 +440,7 @@ def test_batch_job_uses_requested_max_attempts(monkeypatch):
     assert job["result"]["errors"][0]["attempts"] == 2
 
 
-def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch):
+def test_batch_job_keeps_non_zero_after_promo_account(monkeypatch):
     email = "promo@example.com"
     deleted_accounts = []
     deleted_auth = []
@@ -465,16 +465,17 @@ def test_batch_job_deletes_non_zero_after_promo_account(monkeypatch):
     india_upi._run_batch_job(job_id, req)
 
     job = india_upi.JOBS[job_id]
-    assert deleted_accounts == [email]
-    assert deleted_auth == [email]
-    assert job["result"]["errors"][0]["account_deleted"] is True
+    assert deleted_accounts == []
+    assert deleted_auth == []
+    assert job["result"]["errors"][0]["account_deleted"] is False
     assert job["result"]["errors"][0]["failure_category"] == "upi_promo_nonzero_account_ineligible"
     assert job["result"]["errors"][0]["failure_stage"] == "promo_amount"
-    assert "删除账号" in job["result"]["errors"][0]["retry_hint"]
-    assert "金额非 0，已从账号池删除" in job["result"]["errors"][0]["error"]
+    assert "不删除账号" in job["result"]["errors"][0]["retry_hint"]
+    assert "金额非 0" in job["result"]["errors"][0]["error"]
+    assert "已从账号池删除" not in job["result"]["errors"][0]["error"]
 
 
-def test_batch_job_deletes_any_non_zero_amount_account(monkeypatch):
+def test_batch_job_keeps_any_non_zero_amount_account(monkeypatch):
     email = "nonzero@example.com"
     deleted_accounts = []
     deleted_auth = []
@@ -499,11 +500,11 @@ def test_batch_job_deletes_any_non_zero_amount_account(monkeypatch):
     india_upi._run_batch_job(job_id, req)
 
     job = india_upi.JOBS[job_id]
-    assert deleted_accounts == [email]
-    assert deleted_auth == [email]
-    assert job["result"]["errors"][0]["account_deleted"] is True
+    assert deleted_accounts == []
+    assert deleted_auth == []
+    assert job["result"]["errors"][0]["account_deleted"] is False
     assert job["result"]["errors"][0]["failure_category"] == "upi_promo_nonzero_account_ineligible"
-    assert "已从账号池删除" in job["result"]["errors"][0]["error"]
+    assert "已从账号池删除" not in job["result"]["errors"][0]["error"]
 
 
 def test_classify_upi_setup_generic_decline():

@@ -701,9 +701,8 @@ def _run_batch_account(
                         "status": status,
                     }
                 if _is_paypal_non_zero_amount_error(last_error):
-                    cleanup = _delete_invalid_account(email)
                     status = _set_account_status(email, PAYPAL_STATUS_FAILED, error=last_error, job_id=job_id)
-                    _append_log(job_id, f"[{index}/{total}] PayPal 金额非 0，已从账号池删除：{email} cleanup={cleanup}")
+                    _append_log(job_id, f"[{index}/{total}] PayPal 金额非 0，账号保留：{email}")
                     return {
                         "ok": False,
                         "email": email,
@@ -711,11 +710,10 @@ def _run_batch_account(
                             "email": email,
                             "elapsed_s": round(time.monotonic() - started, 1),
                             "attempts": attempt,
-                            "error": f"PayPal 金额非 0，已从账号池删除：{last_error}",
-                            "cleanup": cleanup,
+                            "error": f"PayPal 金额非 0，账号保留：{last_error}",
                         },
                         "status": status,
-                        "account_deleted": True,
+                        "account_deleted": False,
                     }
                 _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
                 if attempt >= max_attempts:

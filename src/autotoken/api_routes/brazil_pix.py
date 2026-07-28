@@ -1097,9 +1097,8 @@ def _run_batch_account(
                         "account_deleted": True,
                     }
                 if _is_non_zero_after_promo_error(last_error):
-                    cleanup = _delete_invalid_account(email)
                     status = _set_account_status(email, ACCOUNT_STATUS_FAILED, error=last_error, job_id=job_id)
-                    _append_log(job_id, f"[{index}/{total}] 账号金额非 0，已从账号池删除：{email} cleanup={cleanup}")
+                    _append_log(job_id, f"[{index}/{total}] 账号金额非 0，账号保留：{email}")
                     return {
                         "ok": False,
                         "email": email,
@@ -1107,12 +1106,11 @@ def _run_batch_account(
                             "email": email,
                             "elapsed_s": round(time.monotonic() - started, 1),
                             "attempts": attempt,
-                            "error": f"金额非 0，已从账号池删除：{last_error}",
-                            "cleanup": cleanup,
-                            "account_deleted": True,
+                            "error": f"金额非 0，账号保留：{last_error}",
+                            "account_deleted": False,
                         },
                         "status": status,
-                        "account_deleted": True,
+                        "account_deleted": False,
                     }
                 _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
                 if attempt >= max_attempts:
