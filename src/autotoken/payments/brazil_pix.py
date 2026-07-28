@@ -31,6 +31,7 @@ DEFAULT_STRIPE_PK = (
 STRIPE_VERSION_FULL = (
     "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
 )
+PAYPAL_STYLE_STRIPE_VERSION = "2020-08-27;custom_checkout_beta=v1; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
 DEFAULT_STRIPE_RUNTIME_VERSION = "52bec4df19"
 TIMEOUT = 60
 
@@ -751,6 +752,36 @@ def stripe_init(stripe: requests.Session, cs_id: str, stripe_pk: str, ctx: dict)
     return data
 
 
+def paypal_style_stripe_init(stripe: requests.Session, cs_id: str, stripe_pk: str, ctx: dict) -> dict:
+    """Retry init with the Stripe client profile that has shown PIX in PayPal-BR flows."""
+    resp = stripe.post(
+        f"https://api.stripe.com/v1/payment_pages/{cs_id}/init",
+        data={
+            "browser_locale": "en-US",
+            "browser_timezone": "America/Los_Angeles",
+            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
+            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
+            "elements_session_client[elements_init_source]": "custom_checkout",
+            "elements_session_client[referrer_host]": "chatgpt.com",
+            "elements_session_client[stripe_js_id]": ctx["stripe_js_id"],
+            "elements_session_client[locale]": "en-US",
+            "elements_session_client[is_aggregation_expected]": "false",
+            "elements_options_client[saved_payment_method][enable_save]": "never",
+            "elements_options_client[saved_payment_method][enable_redisplay]": "never",
+            "key": stripe_pk,
+            "_stripe_version": PAYPAL_STYLE_STRIPE_VERSION,
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"stripe init fallback failed: HTTP {resp.status_code} {short(resp.text)}")
+    data = resp.json() or {}
+    ctx["config_id"] = str(data.get("config_id") or ctx.get("config_id") or "")
+    ctx["init_checksum"] = str(data.get("init_checksum") or "")
+    ctx["elements_session_config_id"] = str(data.get("config_id") or ctx.get("elements_session_config_id") or uuid.uuid4())
+    return data
+
+
 def page_get(stripe: requests.Session, cs_id: str, stripe_pk: str, ctx: dict) -> dict:
     resp = stripe.get(
         f"https://api.stripe.com/v1/payment_pages/{cs_id}",
@@ -855,8 +886,42 @@ def pix_proxy_with_fresh_sid(proxy_url: str, region: str = "BR") -> tuple[str, s
     if not proxy:
         return "", ""
     sid = uuid.uuid4().hex[:8]
+    target_region = str(region or "BR").strip().upper() or "BR"
 
-    refreshed, count = re.subn(r"(sid-)[^-:@/?#]+(-t-)", rf"\g<1>{sid}\g<2>", proxy, count=1)
+    refreshed, region_count = re.subn(
+        r"([_-]region[-_])[A-Z]{2}([:@/?#&-])",
+        lambda m: f"{m.group(1)}{target_region}{m.group(2)}",
+        proxy,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    refreshed, count = re.subn(r"(sid-)[^-:@/?#]+(-t-)", rf"\g<1>{sid}\g<2>", refreshed, count=1, flags=re.IGNORECASE)
+    if count:
+        return refreshed, sid
+
+    refreshed, count = re.subn(
+        r"(-session-)[^-:@/?#]+",
+        rf"\g<1>{sid}",
+        refreshed,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if count:
+        return refreshed, sid
+
+    if "711proxy" in refreshed.lower() and "-session-" not in refreshed.lower():
+        refreshed_with_session, injected_count = re.subn(
+            r"([_-]region[-_][A-Z]{2})(?=[:@/?#&-])",
+            rf"\g<1>-session-{sid}-sessTime-180-sessAuto-1",
+            refreshed,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if injected_count:
+            return refreshed_with_session, sid
+
+    refreshed, count = re.subn(r"(sid-)[^-:@/?#]+(-t-)", rf"\g<1>{sid}\g<2>", proxy, count=1, flags=re.IGNORECASE)
     if count:
         return refreshed, sid
 
@@ -870,7 +935,7 @@ def pix_proxy_with_fresh_sid(proxy_url: str, region: str = "BR") -> tuple[str, s
     if count:
         return refreshed, sid
 
-    normalized_region = re.escape(str(region or "BR").strip().upper() or "BR")
+    normalized_region = re.escape(target_region)
     refreshed, count = re.subn(
         rf"(:[^:@/?#]*-{normalized_region}-)[A-Za-z0-9]{{4,32}}(@)",
         lambda m: f"{m.group(1)}{sid}{m.group(2)}",
@@ -880,6 +945,19 @@ def pix_proxy_with_fresh_sid(proxy_url: str, region: str = "BR") -> tuple[str, s
     )
     if count:
         return refreshed, sid
+
+    refreshed_ipweb, ipweb_count = re.subn(
+        r"(B_\d+_)[A-Z]{2}(___[^_:@/?#]+_)([A-Za-z0-9]+)(?=[:@/?#])",
+        lambda m: f"{m.group(1)}{target_region}{m.group(2)}{m.group(3)}",
+        refreshed,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if ipweb_count:
+        return refreshed_ipweb, "static"
+
+    if region_count:
+        return refreshed, "static"
 
     return proxy, "static"
 
@@ -929,9 +1007,9 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
     log(f"账单: {billing['name']} / {billing['city']}-{billing['state']} / CPF {billing['tax_id_formatted']}")
     log(f"手机: {billing['phone']}  邮箱: {billing['email']}")
 
-    # Stage 1: BR create no promo
+    # Stage 1: BR create with promo.
     dyn1, sid1 = build_pix_dynamic_proxy(cfg, 0)
-    log(f"[1/6] BR 创建 checkout（无 promo） sid={sid1}")
+    log(f"[1/5] BR 创建 checkout（create 阶段带试用 promo） sid={sid1}")
     with pix_proxy_context(cfg.local_proxy, dyn1, log) as chain1:
         p1 = chain1.url
         cg = build_chatgpt_session(token, p1, device_id)
@@ -943,6 +1021,10 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
                 "plan_name": "chatgptplusplan",
                 "billing_details": {"country": "BR", "currency": "BRL"},
                 "checkout_ui_mode": "custom",
+                "promo_campaign": {
+                    "promo_campaign_id": "plus-1-month-free",
+                    "is_coupon_from_query_param": False,
+                },
             },
             headers={
                 "x-openai-target-path": "/backend-api/payments/checkout",
@@ -961,55 +1043,9 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
         processor = str(data.get("processor_entity") or "openai_llc")
         log(f"cs_id={cs_id} processor={processor}")
 
-        time.sleep(0.8)
-        stripe = build_stripe_session(p1)
-        ctx = {
-            "stripe_js_id": str(uuid.uuid4()),
-            "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
-            "elements_session_config_id": str(uuid.uuid4()),
-            "config_id": "",
-            "init_checksum": "",
-        }
-        init0 = stripe_init(stripe, cs_id, pk, ctx)
-        amt0 = amount_info(init0)
-        pmt0, ordered0, has_pix0 = pmt_info(init0)
-        log(f"创建后金额={amt0} 支付方式={pmt0} ordered={ordered0} has_pix={has_pix0}")
-        if not has_pix0:
-            raise RuntimeError(f"创建后未出现 PIX，pmt={pmt0}")
-
-    # Stage 2: BR update free promo (new SID)
-    dyn2, sid2 = build_pix_dynamic_proxy(cfg, 1)
-    log(f"[2/6] BR update 套试用 promo sid={sid2}")
-    with pix_proxy_context(cfg.local_proxy, dyn2, log) as chain2:
-        p2 = chain2.url
-        cg2 = build_chatgpt_session(token, p2, device_id)
-        ur = cg2.post(
-            "https://chatgpt.com/backend-api/payments/checkout/update",
-            json={
-                "checkout_session_id": cs_id,
-                "processor_entity": processor,
-                "plan_name": "chatgptplusplan",
-                "price_interval": "month",
-                "seat_quantity": 1,
-                "billing_details": {"country": "BR", "currency": "BRL"},
-                "promo_campaign": {
-                    "promo_campaign_id": "plus-1-month-free",
-                    "is_coupon_from_query_param": False,
-                },
-            },
-            headers={
-                "x-openai-target-path": "/backend-api/payments/checkout/update",
-                "x-openai-target-route": "/backend-api/payments/checkout/update",
-            },
-            timeout=TIMEOUT,
-        )
-        log(f"update HTTP {ur.status_code} {short(ur.text, 120)}")
-        if ur.status_code >= 400:
-            raise RuntimeError(f"update failed: {short(ur.text)}")
-
-    # Stage 3+: stripe with new SID
-    dyn3, sid3 = build_pix_dynamic_proxy(cfg, 2)
-    log(f"[3/6] Stripe init（套 promo 后） sid={sid3}")
+    # Stage 2+: stripe with new SID
+    dyn3, sid3 = build_pix_dynamic_proxy(cfg, 1)
+    log(f"[2/5] Stripe init（验证 create promo 后 0 元 + PIX） sid={sid3}")
     with pix_proxy_context(cfg.local_proxy, dyn3, log) as chain3:
         p3 = chain3.url
         time.sleep(0.8)
@@ -1024,18 +1060,24 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
         init_payload = stripe_init(stripe, cs_id, pk, ctx)
         amount = amount_info(init_payload)
         pmt, ordered, has_pix = pmt_info(init_payload)
-        log(f"套 promo 后金额={amount} 支付方式={pmt} ordered={ordered} has_pix={has_pix}")
+        log(f"create promo 后金额={amount} 支付方式={pmt} ordered={ordered} has_pix={has_pix}")
         if not has_pix:
-            raise RuntimeError(f"套 promo 后 PIX 丢失，pmt={pmt}")
+            log(f"create promo 后 PIX 未出现，尝试 PayPal-BR Stripe init 指纹 fallback，pmt={pmt}")
+            init_payload = paypal_style_stripe_init(stripe, cs_id, pk, ctx)
+            amount = amount_info(init_payload)
+            pmt, ordered, has_pix = pmt_info(init_payload)
+            log(f"fallback init 后金额={amount} 支付方式={pmt} ordered={ordered} has_pix={has_pix}")
+        if not has_pix:
+            raise RuntimeError(f"create promo 后 PIX 丢失，pmt={pmt}")
         if amount not in ("0", "0.0"):
-            raise RuntimeError(f"套 promo 后金额不是 0: {amount}")
+            raise RuntimeError(f"create promo 后金额不是 0: {amount}")
 
         hosted = str(init_payload.get("stripe_hosted_url") or "")
         config_id = str(init_payload.get("config_id") or ctx.get("config_id") or "")
         init_checksum = str(init_payload.get("init_checksum") or ctx.get("init_checksum") or "")
         runtime = DEFAULT_STRIPE_RUNTIME_VERSION
 
-        log("[4/6] 创建 PIX payment_method")
+        log("[3/5] 创建 PIX payment_method")
         time.sleep(0.6)
         pm = stripe.post(
             "https://api.stripe.com/v1/payment_methods",
@@ -1081,7 +1123,7 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
             raise RuntimeError(f"bad pm id: {short(pm.text)}")
         log(f"pm_id={pm_id}")
 
-        log("[5/6] confirm PIX")
+        log("[4/5] confirm PIX")
         time.sleep(0.7)
         return_url = to_openai_pay_url(hosted) or hosted
         conf = stripe.post(
@@ -1138,17 +1180,17 @@ def generate_pix_trial(cfg: PixJobConfig, log: LogFn | None = None) -> dict:
             log("confirm 后已拿到二维码")
             return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
-        log("[6/6] approve + poll QR")
+        log("[5/5] approve + poll QR")
         chatgpt_approve(token, cs_id, processor, p3, device_id, log)
 
         last_err: dict = {}
-        for i in range(1, 16):
+        for i in range(1, 11):
             page_data = page_get(stripe, cs_id, pk, ctx)
             fields = extract_qr(page_data, cs_id)
             sub = find_submission_attempt(page_data)
             err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
             log(
-                f"poll {i}/15 sub={sub.get('state')} "
+                f"poll {i}/10 sub={sub.get('state')} "
                 f"err={err.get('code') if err else '-'} success={is_success(fields)}"
             )
             if is_success(fields):

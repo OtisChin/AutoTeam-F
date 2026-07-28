@@ -900,13 +900,13 @@ def generate_upi_trial(cfg: UpiJobConfig, log: LogFn | None = None) -> dict[str,
         log("[7/7] approve + poll UPI")
         chatgpt_approve(token, cs_id, processor, p3, device_id, log)
         last_err: dict[str, Any] = {}
-        for i in range(1, 16):
+        for i in range(1, 11):
             page_data = page_get(stripe, cs_id, pk, ctx)
             fields = extract_upi_result(page_data, cs_id)
             sub = find_submission_attempt(page_data)
             err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
             log(
-                f"poll {i}/15 sub={sub.get('state')} err={err.get('code') if err else '-'} "
+                f"poll {i}/10 sub={sub.get('state')} err={err.get('code') if err else '-'} "
                 f"success={is_success(fields)} {upi_fields_summary(fields)}"
             )
             if is_success(fields):

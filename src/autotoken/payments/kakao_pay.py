@@ -777,12 +777,12 @@ def generate_kakao_trial(cfg: KakaoPayJobConfig, log: LogFn | None = None) -> di
         log(f"{provider_region} approve + poll Kakao Pay")
         chatgpt_approve(token, cs_id, processor, provider_proxy_url, device_id, log, country=provider_region)
         last_err: dict[str, Any] = {}
-        for i in range(1, 20):
+        for i in range(1, 11):
             page_data = page_get(stripe, cs_id, pk, ctx)
             fields = extract_kakao_result(page_data, cs_id)
             sub = find_submission_attempt(page_data)
             err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
-            log(f"poll {i}/19 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
+            log(f"poll {i}/10 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
             if is_success(fields) and finalize_kakao_result(stripe, fields, link_source="stripe_checkout_approve_poll"):
                 fields["amount"] = amount
                 fields["post_promo_payment_method_types"] = pmt

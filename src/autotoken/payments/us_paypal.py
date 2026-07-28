@@ -196,6 +196,8 @@ PAYPAL_COUNTRY_BILLING_PRESETS = {
 
 PAYPAL_COUNTRY_BILLING_ALIASES = {
     "BA": "DE",
+    "BR": "DE",
+    "TH": "DE",
 }
 
 
@@ -1141,12 +1143,12 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
         log("[6/6] approve + poll PayPal")
         chatgpt_approve(token, cs_id, processor, p1, device_id, log, country=checkout_region)
         last_err: dict[str, Any] = {}
-        for i in range(1, 20):
+        for i in range(1, 11):
             page_data = page_get(stripe, cs_id, pk, ctx)
             fields = extract_paypal_result(page_data, cs_id)
             sub = find_submission_attempt(page_data)
             err = sub.get("error") if isinstance(sub.get("error"), dict) else {}
-            log(f"poll {i}/19 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
+            log(f"poll {i}/10 sub={sub.get('state')} err={err.get('code') if err else '-'} success={is_success(fields)}")
             if is_success(fields) and finalize_bound_paypal_result(stripe, fields, link_source="stripe_checkout_approve_poll"):
                 fields["amount"] = amount
                 fields["pre_promo_amount"] = pre_promo_amount
@@ -1159,6 +1161,7 @@ def generate_paypal_trial(cfg: PaypalJobConfig, log: LogFn | None = None) -> dic
                 return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
             if sub.get("state") == "failed":
                 last_err = err or {}
-                raise RuntimeError(f"approve 后失败: {last_err.get('code')}")
             time.sleep(1.0)
+        if last_err.get("code"):
+            raise RuntimeError(f"轮询超时，未拿到 PayPal 链接，最后错误: {last_err.get('code')}")
         raise RuntimeError("轮询超时，未拿到 PayPal 链接")

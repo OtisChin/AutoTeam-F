@@ -87,7 +87,7 @@ def test_create_express_billing_agreement_returns_ba_url():
     ("country", "currency", "billing_country"),
     [
         ("BA", "EUR", "DE"),
-        ("BR", "BRL", "BR"),
+        ("BR", "EUR", "DE"),
         ("AU", "AUD", "AU"),
         ("CA", "CAD", "CA"),
         ("GB", "GBP", "GB"),
@@ -95,7 +95,7 @@ def test_create_express_billing_agreement_returns_ba_url():
         ("JP", "JPY", "JP"),
         ("MX", "MXN", "MX"),
         ("PH", "PHP", "PH"),
-        ("TH", "THB", "TH"),
+        ("TH", "EUR", "DE"),
         ("NL", "EUR", "NL"),
     ],
 )
@@ -175,6 +175,54 @@ def test_generate_paypal_trial_approves_then_polls_redirect(monkeypatch):
     assert result["fields"]["amount"] == "0"
     assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
     assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
+
+
+def test_generate_paypal_trial_keeps_polling_after_failed_submission_attempt(monkeypatch):
+    page_get_calls = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            return _JsonResponse({
+                "checkout_session_id": "cs_test",
+                "processor_entity": "openai_llc",
+                "public_key": "pk_test",
+            })
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: {
+        "total_summary": {"due": 0},
+        "payment_method_types": ["card", "paypal"],
+    })
+    monkeypatch.setattr(us_paypal, "stripe_update_tax_region", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal, "create_express_billing_agreement", lambda *args, **kwargs: pytest.fail("unbound express BA must not be used"))
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {"submission_attempt": {"state": "requires_approval"}})
+    monkeypatch.setattr(us_paypal, "chatgpt_approve", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal.time, "sleep", lambda _seconds: None)
+
+    def fake_page_get(*args, **kwargs):
+        page_get_calls.append(1)
+        if len(page_get_calls) == 1:
+            return {
+                "submission_attempt": {
+                    "state": "failed",
+                    "error": {"code": "checkout_approval_payment_failure_with_payment_error"},
+                },
+            }
+        return {
+            "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/test"}},
+            "submission_attempt": {"state": "processing"},
+        }
+
+    monkeypatch.setattr(us_paypal, "page_get", fake_page_get)
+    monkeypatch.setattr(us_paypal, "resolve_external_redirect", lambda stripe, url: "https://www.paypal.com/agreements/approve?ba_token=BA-TEST")
+
+    result = us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"]))
+
+    assert len(page_get_calls) == 2
+    assert result["fields"]["ba_token"] == "BA-TEST"
+    assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
 
 
 def test_generate_paypal_trial_approve_reuses_preflighted_checkout_proxy(monkeypatch):
@@ -541,13 +589,13 @@ def test_promo_currency_for_region_supports_zero_trial_regions():
     assert us_paypal.promo_currency_for_region("US") == "USD"
 
 
-def test_thailand_checkout_country_uses_thb_and_th_billing_profile():
+def test_thailand_checkout_country_uses_germany_billing_profile():
     billing = us_paypal.paypal_billing(country="TH")
 
-    assert us_paypal.paypal_currency_for_country("TH") == "THB"
-    assert billing["country"] == "TH"
-    assert billing["city"] == "Bangkok"
-    assert billing["postal_code"] == "10110"
+    assert us_paypal.paypal_currency_for_country("TH") == "EUR"
+    assert billing["country"] == "DE"
+    assert billing["city"] == "Berlin"
+    assert billing["postal_code"] == "10117"
 
 
 def test_build_paypal_dynamic_proxy_aligns_711_region_to_us():
