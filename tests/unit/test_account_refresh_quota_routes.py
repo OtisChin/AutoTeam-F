@@ -231,6 +231,41 @@ def test_refresh_quota_accepts_auth_session_access_token_casing(tmp_path, monkey
     assert updated[0][1]["last_quota"] == {"plan_type": "free", "primary_pct": 1}
 
 
+def test_refresh_quota_passes_auth_session_context_to_wham_usage(tmp_path, monkeypatch):
+    started = []
+    quota_calls = []
+    updated = []
+    auth_payload = {
+        "accessToken": "session-token",
+        "account": {"id": "acct-session"},
+        "cookie_header": "oai-did=device; session=abc",
+        "openai_sentinel_token": "sentinel",
+        "oai_client_version": "prod-version",
+        "oai_client_build_number": "1234567",
+        "oai_device_id": "device-id",
+    }
+    session_file = tmp_path / "auth_session" / "user@example.com.json"
+    session_file.write_text(json.dumps(auth_payload), encoding="utf-8")
+    account = {"email": "user@example.com", "auth_file": str(session_file), "status": "active", "account_type": "free"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+
+    def fake_check(token, account_id=None, **kwargs):
+        quota_calls.append((token, account_id, kwargs))
+        return "ok", {"plan_type": "free", "primary_pct": 1}
+
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", fake_check)
+
+    routes = _routes(started, progress=[], main_email="owner@example.com")
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert quota_calls == [("session-token", "acct-session", {"timeout": 25, "auth_data": auth_payload})]
+    assert run_result["ok"][0]["email"] == "user@example.com"
+    assert updated[0][1]["last_quota"] == {"plan_type": "free", "primary_pct": 1}
+
+
 def test_refresh_quota_defaults_to_eight_concurrency_for_large_batches(tmp_path, monkeypatch):
     started = []
     rows = [

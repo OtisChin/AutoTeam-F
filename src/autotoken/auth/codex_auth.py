@@ -6509,7 +6509,68 @@ def _normalize_wham_usage_quota(data: dict, *, checked_at: int | None = None) ->
     return quota_info
 
 
-def check_codex_quota(access_token, account_id=None, *, timeout=30):
+def _wham_usage_auth_context_headers(auth_data: dict | None, account_id: str | None = None) -> dict[str, str]:
+    if not isinstance(auth_data, dict):
+        return {}
+
+    required_keys = (
+        "cookie_header",
+        "openai_sentinel_token",
+        "oai_client_version",
+        "oai_client_build_number",
+    )
+    if not all(str(auth_data.get(key) or "").strip() for key in required_keys):
+        return {}
+
+    headers: dict[str, str] = {}
+    if account_id:
+        headers["Chatgpt-Account-Id"] = str(account_id)
+    for source_key, header_key in (
+        ("cookie_header", "Cookie"),
+        ("openai_sentinel_token", "openai-sentinel-token"),
+        ("oai_client_version", "oai-client-version"),
+        ("oai_client_build_number", "oai-client-build-number"),
+        ("accept_language", "Accept-Language"),
+        ("user_agent", "User-Agent"),
+        ("oai_device_id", "oai-device-id"),
+        ("oai_language", "oai-language"),
+    ):
+        value = str(auth_data.get(source_key) or "").strip()
+        if value:
+            headers[header_key] = value
+    headers["x-openai-target-path"] = "/backend-api/wham/usage"
+    headers["x-openai-target-route"] = "/backend-api/wham/usage"
+    return headers
+
+
+def _get_wham_usage_response(access_token: str, headers: dict[str, str], *, timeout: int | float, auth_data: dict | None = None):
+    context_headers = _wham_usage_auth_context_headers(auth_data, headers.get("Chatgpt-Account-Id"))
+    if context_headers:
+        try:
+            from autotoken.payments.us_paypal import build_chatgpt_session
+
+            device_id = str((auth_data or {}).get("device_id") or (auth_data or {}).get("oai_device_id") or "").strip()
+            session = build_chatgpt_session(access_token, device_id=device_id)
+        except Exception as exc:
+            logger.debug("[Codex] auth_session 上下文 session 构建失败，回退旧请求: %s", exc)
+        else:
+            return session.get(
+                "https://chatgpt.com/backend-api/wham/usage",
+                headers=context_headers,
+                timeout=timeout,
+                allow_redirects=False,
+            )
+
+    import requests
+
+    return requests.get(
+        "https://chatgpt.com/backend-api/wham/usage",
+        headers=headers,
+        timeout=timeout,
+    )
+
+
+def check_codex_quota(access_token, account_id=None, *, timeout=30, auth_data: dict | None = None):
     """
     通过 /backend-api/wham/usage 查询 Codex 额度状态，不消耗额度。
     返回:
@@ -6535,10 +6596,11 @@ def check_codex_quota(access_token, account_id=None, *, timeout=30):
         headers["Chatgpt-Account-Id"] = account_id
 
     try:
-        resp = requests.get(
-            "https://chatgpt.com/backend-api/wham/usage",
+        resp = _get_wham_usage_response(
+            str(access_token or ""),
             headers=headers,
             timeout=timeout,
+            auth_data=auth_data,
         )
     except (
         requests.exceptions.ConnectionError,

@@ -226,6 +226,7 @@ def create_account_refresh_quota_router(
                         access_token,
                         account_id=_account_id_from_auth_data(auth_data) or None,
                         timeout=account_timeout,
+                        auth_data=auth_data,
                     )
                     if status != "network_error" or attempt >= retry_count:
                         break

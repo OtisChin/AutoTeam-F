@@ -385,6 +385,68 @@ def test_probe_auth_error_only_for_401_403(monkeypatch):
     assert info["primary_pct"] == 10
 
 
+def test_check_codex_quota_uses_auth_session_context_for_wham_usage(monkeypatch):
+    from autotoken import codex_auth
+
+    monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: None)
+    captured = {}
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 10, "limit_window_seconds": 18000},
+                    "limit_reached": False,
+                },
+            }
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return FakeResp()
+
+    def fake_build_chatgpt_session(access_token, proxy_url="", device_id=""):
+        captured["session_args"] = {
+            "access_token": access_token,
+            "proxy_url": proxy_url,
+            "device_id": device_id,
+        }
+        return FakeSession()
+
+    monkeypatch.setattr("autotoken.payments.us_paypal.build_chatgpt_session", fake_build_chatgpt_session)
+    auth_data = {
+        "cookie_header": "oai-did=device; session=abc",
+        "openai_sentinel_token": "sentinel",
+        "oai_client_version": "prod-version",
+        "oai_client_build_number": "1234567",
+        "oai_device_id": "device-id",
+        "user_agent": "Mozilla/5.0 test",
+        "accept_language": "zh-CN",
+    }
+
+    status, info = codex_auth.check_codex_quota("tok", account_id="acct-1", timeout=11, auth_data=auth_data)
+
+    assert status == "ok"
+    assert info["plan_type"] == "plus"
+    assert captured["session_args"] == {"access_token": "tok", "proxy_url": "", "device_id": "device-id"}
+    assert captured["url"] == "https://chatgpt.com/backend-api/wham/usage"
+    headers = captured["kwargs"]["headers"]
+    assert headers["Chatgpt-Account-Id"] == "acct-1"
+    assert headers["Cookie"] == "oai-did=device; session=abc"
+    assert headers["openai-sentinel-token"] == "sentinel"
+    assert headers["oai-client-version"] == "prod-version"
+    assert headers["oai-client-build-number"] == "1234567"
+    assert headers["x-openai-target-path"] == "/backend-api/wham/usage"
+    assert headers["x-openai-target-route"] == "/backend-api/wham/usage"
+    assert captured["kwargs"]["timeout"] == 11
+    assert captured["kwargs"]["allow_redirects"] is False
+
+
 def test_check_codex_quota_classifies_windows_by_limit_seconds_and_keeps_plan(monkeypatch):
     import requests
 

@@ -10,6 +10,7 @@ from autotoken import api, gopay_auto_register, gopay_executor
 from autotoken.api_routes.roxybrowser_config import build_roxybrowser_config_response
 from autotoken.api_routes.trade import TradeHistoryDownloadParams, TradeQueryParams
 
+
 @pytest.fixture(autouse=True)
 def _clear_gopay_reusable_wallet_pool(monkeypatch):
     monkeypatch.setattr(api, "_gopay_auto_signup_no_transfer_bind_wait_seconds", lambda: 0)
@@ -3119,7 +3120,8 @@ def test_post_accounts_refresh_quota_does_not_mark_free_account_exhausted(tmp_pa
         "autotoken.accounts.update_account", lambda email, **kwargs: updates.setdefault(email, {}).update(kwargs)
     )
     monkeypatch.setattr(
-        "autotoken.codex_auth.check_codex_quota", lambda token, account_id=None, timeout=25: ("exhausted", quota_info)
+        "autotoken.codex_auth.check_codex_quota",
+        lambda token, account_id=None, timeout=25, **_kwargs: ("exhausted", quota_info),
     )
 
     def fake_start_task(command, func, params, *args, **kwargs):
