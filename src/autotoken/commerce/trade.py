@@ -441,11 +441,34 @@ def outlook_mailapi_urls_by_email() -> dict[str, str]:
     }
 
 
+def icloud_accounts_by_email() -> dict[str, dict[str, str]]:
+    """Return imported iCloud receive-code links keyed by mailbox email."""
+    try:
+        from autotoken.mail.icloud import ICloudMailProvider
+    except Exception:
+        return {}
+    try:
+        provider = ICloudMailProvider()
+    except Exception:
+        return {}
+    rows: dict[str, dict[str, str]] = {}
+    for account in getattr(provider, "accounts", []) or []:
+        email = _normalized_email(getattr(account, "email", ""))
+        if not email:
+            continue
+        rows[email] = {
+            "email": str(getattr(account, "email", "") or "").strip() or email,
+            "receive_code_url": str(getattr(account, "receive_code_url", "") or "").strip(),
+        }
+    return rows
+
+
 def credential_export_line_for_account(
     account: dict,
     *,
     outlook_mailapi_urls: dict[str, str] | None = None,
     outlook_accounts: dict[str, dict[str, str]] | None = None,
+    icloud_accounts: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Render account credentials as: email-----secret-----mail access URL."""
     email = _normalized_email(account.get("email"))
@@ -466,7 +489,19 @@ def credential_export_line_for_account(
     outlook_password = str(outlook_source.get("password") or "").strip()
     outlook_client_id = str(outlook_source.get("client_id") or "").strip()
     outlook_refresh_token = str(outlook_source.get("refresh_token") or "").strip()
+    icloud_rows = icloud_accounts if icloud_accounts is not None else icloud_accounts_by_email()
+    icloud_source = icloud_rows.get(email, {}) if isinstance(icloud_rows, dict) else {}
+    is_icloud_account = mail_provider == "icloud" or bool(icloud_source)
+    icloud_export_email = str(icloud_source.get("email") or account.get("original_email") or email).strip()
+    icloud_receive_code_url = str(
+        account.get("receive_code_url")
+        or account.get("mail_url")
+        or icloud_source.get("receive_code_url")
+        or ""
+    ).strip()
 
+    if is_icloud_account:
+        return f"{icloud_export_email}----{icloud_receive_code_url}"
     if mailapi_url:
         return f"{export_email}-----{password}-----{mailapi_url}"
     if is_outlook_account:

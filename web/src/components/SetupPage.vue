@@ -92,6 +92,7 @@ const commonFields = computed(() =>
     !field.key.startsWith('CLOUDFLARE_TEMP_EMAIL_') &&
     !field.key.startsWith('CLOUD_MAIL_') &&
     !field.key.startsWith('OUTLOOK_') &&
+    !field.key.startsWith('ICLOUD_') &&
     !field.key.startsWith('LUCKMAIL_') &&
     field.key !== 'MAIL_PROVIDER'
   )
@@ -102,9 +103,11 @@ const providerFieldTitle = computed(() =>
     ? 'cloud-mail 配置'
     : provider.value === 'outlook'
       ? 'Outlook 配置'
-      : provider.value === 'luckmail'
-        ? 'LuckMail 配置'
-        : 'cloudflare_temp_email 配置'
+      : provider.value === 'icloud'
+        ? 'iCloud 配置'
+        : provider.value === 'luckmail'
+          ? 'LuckMail 配置'
+          : 'cloudflare_temp_email 配置'
 )
 
 onMounted(async () => {

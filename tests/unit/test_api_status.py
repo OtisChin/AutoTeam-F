@@ -19,6 +19,8 @@ from autotoken.api_routes.account_cpa_auths import (
 )
 from autotoken.api_routes.config_io import (
     OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES,
+    ICloudAccountsDeleteParams,
+    ICloudAccountsImportParams,
     OutlookAccountsDeleteParams,
     OutlookAccountsImportParams,
     create_config_io_router,
@@ -909,6 +911,100 @@ def test_post_delete_outlook_accounts_removes_selected_lines_and_redacts_secrets
     serialized = json.dumps(result)
     assert "secret-password" not in serialized
     assert "secret-order" not in serialized
+
+
+def test_post_import_icloud_accounts_appends_valid_unique_lines(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "icloud_accounts.txt"
+    accounts_file.write_text(
+        "used@icloud.com----https://icloud-api.top/show/token/used@icloud.com\n",
+        encoding="utf-8",
+    )
+    written_env = {}
+
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"ICLOUD_ACCOUNTS_FILE": str(accounts_file)})
+    monkeypatch.setattr("autotoken.setup_wizard._write_env", lambda key, value: written_env.update({key: value}))
+
+    result = _config_io_routes()["post_import_icloud_accounts"](
+        ICloudAccountsImportParams(
+            filename="icloud.txt",
+            content=(
+                "NewUser@icloud.com----https://icloud-api.top/show/token/NewUser@icloud.com\n"
+                "used@icloud.com----https://icloud-api.top/show/token/used@icloud.com\n"
+                "bad-line\n"
+            ),
+        )
+    )
+
+    saved = accounts_file.read_text(encoding="utf-8")
+    assert result["imported"] == 1
+    assert result["duplicates"] == 1
+    assert result["invalid"] == 1
+    assert result["first_imported_email"] == "newuser@icloud.com"
+    assert saved.startswith("NewUser@icloud.com----https://icloud-api.top/show/token/NewUser@icloud.com\n")
+    assert written_env == {}
+
+
+def test_get_icloud_accounts_status_marks_registered_and_redacts_links(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "icloud_accounts.txt"
+    accounts_file.write_text(
+        "\n".join(
+            [
+                "registered@icloud.com----https://icloud-api.top/show/secret/registered@icloud.com",
+                "Ready@icloud.com----https://icloud-api.top/show/secret/Ready@icloud.com",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"ICLOUD_ACCOUNTS_FILE": str(accounts_file)})
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [{"email": "registered@icloud.com"}])
+
+    result = _config_io_routes()["get_icloud_accounts_status"]()
+
+    assert result["total"] == 2
+    assert result["available"] == 1
+    assert result["registered"] == 1
+    assert result["next_available_email"] == "ready@icloud.com"
+    assert {item["email"]: item["status"] for item in result["accounts"]} == {
+        "registered@icloud.com": "registered",
+        "ready@icloud.com": "available",
+    }
+    serialized = json.dumps(result)
+    assert "https://icloud-api.top/show/secret" not in serialized
+
+
+def test_post_delete_icloud_accounts_removes_selected_lines_and_redacts_links(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "icloud_accounts.txt"
+    accounts_file.write_text(
+        "\n".join(
+            [
+                "# keep comments",
+                "delete1@icloud.com----https://icloud-api.top/show/secret/delete1@icloud.com",
+                "keep@icloud.com----https://icloud-api.top/show/secret/keep@icloud.com",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"ICLOUD_ACCOUNTS_FILE": str(accounts_file)})
+
+    result = _config_io_routes()["post_delete_icloud_accounts"](
+        ICloudAccountsDeleteParams(emails=["DELETE1@icloud.com", "missing@icloud.com"])
+    )
+
+    saved = accounts_file.read_text(encoding="utf-8")
+    assert result["requested"] == 2
+    assert result["deleted"] == 1
+    assert result["deleted_emails"] == ["delete1@icloud.com"]
+    assert result["missing_emails"] == ["missing@icloud.com"]
+    assert "# keep comments" in saved
+    assert "keep@icloud.com----https://icloud-api.top/show/secret/keep@icloud.com" in saved
+    assert "delete1@icloud.com" not in saved
+    assert "secret/delete1" not in json.dumps(result)
 
 
 def test_post_import_outlook_accounts_rejects_relative_path_outside_project(tmp_path, monkeypatch):

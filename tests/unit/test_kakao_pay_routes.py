@@ -31,8 +31,10 @@ def isolated_files(monkeypatch, tmp_path):
     monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth_api HTTP 200"))
     monkeypatch.setattr(kakao_pay, "_preflight_kakao_checkout_backend_proxy_url", lambda proxy_url, access_token, region: (True, "checkout_backend HTTP 200"))
     kakao_pay.JOBS.clear()
+    kakao_pay.KK_PAYMENT_JOBS.clear()
     yield
     kakao_pay.JOBS.clear()
+    kakao_pay.KK_PAYMENT_JOBS.clear()
 
 
 def test_accounts_default_to_pending_kakao_status(monkeypatch):
@@ -215,13 +217,42 @@ def test_preflight_kakao_single_region_seed_derives_three_stage_chain(monkeypatc
 
     assert payment_calls == [
         f"{seed}|KR|sid1",
-        f"{seed}|VN|sid2",
+        f"{seed}|JP|sid2",
         f"{seed}|KR|sid3",
     ]
     assert auth_calls == [payment_calls[0], payment_calls[2]]
     assert result.preflighted_checkout_proxy_url == payment_calls[0]
     assert result.preflighted_promotion_proxy_url == payment_calls[1]
     assert result.preflighted_provider_proxy_url == payment_calls[2]
+
+
+def test_preflight_kakao_proxy_role_uses_configured_promotion_backend_region(monkeypatch):
+    backend_calls = []
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "payment ok"))
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth ok"))
+    monkeypatch.setattr(
+        kakao_pay,
+        "_preflight_kakao_checkout_backend_proxy_url",
+        lambda proxy_url, access_token, region: backend_calls.append(region) or (True, "checkout_backend ok"),
+    )
+    cfg = kakao_pay.KakaoPayJobConfig(
+        access_token="token",
+        promotion_region="JP",
+        direct_proxies=["socks5h://user-region-KR-session-fixed-sessTime-180-sessAuto-1:pass@example.com:3000"],
+    )
+
+    ok, _proxy_url, _message = kakao_pay._preflight_kakao_proxy_role(
+        cfg,
+        role="promotion",
+        stage_index=1,
+        require_auth=True,
+        attempt=1,
+        total_attempts=1,
+        log=lambda _message: None,
+    )
+
+    assert ok is True
+    assert backend_calls == ["JP"]
 
 
 def test_preflight_kakao_single_seed_retries_with_fresh_sid(monkeypatch):
@@ -377,6 +408,53 @@ def test_batch_account_uses_configured_proxy_preflight_attempts(monkeypatch):
     assert any("Kakao checkout 代理预检开始：2/2" in line for line in kakao_pay.JOBS[job_id]["logs"])
 
 
+def test_batch_account_preserves_deep_approval_error_when_later_preflight_fails(monkeypatch):
+    email = "approve-blocked-kakao@example.com"
+    calls = {"preflight": 0, "generate": 0}
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_preflight(cfg, log, max_attempts=None):
+        calls["preflight"] += 1
+        if calls["preflight"] == 1:
+            return cfg
+        raise RuntimeError("Kakao 代理预检失败: promotion: trace HTTP 200; chatgpt_home HTTP 403; html_challenge")
+
+    def fake_generate(cfg, log):
+        calls["generate"] += 1
+        raise RuntimeError("approve failed: unexpected result: 'blocked'")
+
+    monkeypatch.setattr(kakao_pay, "_preflight_kakao_proxies_or_raise", fake_preflight)
+    monkeypatch.setattr(kakao_pay, "generate_kakao_trial", fake_generate)
+    job_id = "kakao-approval-masked-job"
+    kakao_pay.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+    req = kakao_pay.KakaoPayBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "host:1000:user-region-KR-sid-old-t-120:pass",
+        "maxAttempts": 5,
+    })
+
+    result = kakao_pay._run_batch_account(
+        job_id,
+        req,
+        {"email": email, "auth_file": "auth.json"},
+        1,
+        1,
+        kakao_pay._parse_proxies(req.proxies),
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["failure_stage"] == "approve_blocked"
+    assert "approve failed: unexpected result: 'blocked'" in result["error"]["error"]
+    assert "后续代理预检失败" in result["error"]["error"]
+    statuses = json.loads(kakao_pay.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert statuses[email]["failure_stage"] == "approve_blocked"
+
+
 def test_kakao_proxy_preflight_attempts_cap_at_one_hundred():
     req = kakao_pay.KakaoPayBatchStartRequest.model_validate({
         "accountEmails": [],
@@ -397,6 +475,245 @@ def test_kakao_routes_expose_job_and_link_management(monkeypatch):
 
     assert job["status"] == "queued"
     assert _endpoint(app, "/api/kakao-pay/links", "GET")() == {"links": [], "pruned_deleted_accounts": 0}
+
+
+def test_kakao_temp_extract_order_routes_proxy_masi_api(monkeypatch):
+    app = _app()
+    calls = []
+
+    class Resp:
+        ok = True
+        status_code = 201
+        text = '{"ok": true}'
+
+        def json(self):
+            return {"ok": True, "job": {"job_id": "job_1", "status": "queued"}}
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        return Resp()
+
+    monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
+
+    data = _endpoint(app, "/api/kakao-pay/temp/orders", "POST")(
+        kakao_pay.KakaoPayTempOrderRequest.model_validate({"cdk": "KSCAN-1", "accessToken": "at-test"})
+    )
+
+    assert data["job"]["job_id"] == "job_1"
+    assert calls[0][1] == "https://masi.cc.cd/v1/kakao/jobs"
+    assert calls[0][2]["headers"]["X-CDK"] == "KSCAN-1"
+    assert calls[0][2]["json"] == {"access_token": "at-test"}
+
+
+def test_kakao_temp_extract_ticket_status_uses_extract_cdk_endpoint(monkeypatch):
+    app = _app()
+    calls = []
+
+    class Resp:
+        ok = True
+        status_code = 200
+        text = '{"ok": true}'
+
+        def json(self):
+            return {"ok": True, "cdk": {"total_uses": 5, "available_uses": 4, "pending_uses": 1}}
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        return Resp()
+
+    monkeypatch.setattr(kakao_pay.requests, "get", fake_get)
+
+    data = _endpoint(app, "/api/kakao-pay/temp/tickets/status", "POST")(
+        kakao_pay.KakaoPayTempTicketRequest.model_validate({"cdk": "KSCAN-1"})
+    )
+
+    assert data["cdk"]["available_uses"] == 4
+    assert calls[0][1] == "https://masi.cc.cd/v1/cdk/status"
+    assert calls[0][2]["headers"]["X-CDK"] == "KSCAN-1"
+
+
+def test_kakao_temp_extract_ticket_status_supports_get_for_compatibility(monkeypatch):
+    app = _app()
+    calls = []
+
+    class Resp:
+        ok = True
+        status_code = 200
+        text = '{"ok": true}'
+
+        def json(self):
+            return {"ok": True, "cdk": {"total_uses": 5, "available_uses": 3}}
+
+    monkeypatch.setattr(kakao_pay.requests, "get", lambda url, **kwargs: calls.append((url, kwargs)) or Resp())
+
+    data = _endpoint(app, "/api/kakao-pay/temp/tickets/status", "GET")(cdk="KSCAN-GET")
+
+    assert data["cdk"]["available_uses"] == 3
+    assert calls[0][0] == "https://masi.cc.cd/v1/cdk/status"
+    assert calls[0][1]["headers"]["X-CDK"] == "KSCAN-GET"
+
+
+def test_kakao_temp_batch_uses_selected_accounts_and_cdks(monkeypatch):
+    emails = ["one@example.com", "two@example.com"]
+    created_calls = []
+    polled_calls = []
+    monkeypatch.setattr(kakao_pay, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "one@example.com", "auth_file": "auth-one.json"},
+        {"email": "two@example.com", "auth_file": "auth-two.json"},
+        {"email": "unused@example.com", "auth_file": "auth-unused.json"},
+    ])
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda email: f"token:{email}")
+
+    def fake_create(access_token, cdk):
+        created_calls.append((access_token, cdk))
+        index = len(created_calls)
+        return {"ok": True, "job": {"job_id": f"job_{index}", "status": "queued"}}
+
+    def fake_poll(order_id, cdk, cancel_check, progress_callback=None):
+        polled_calls.append((order_id, cdk, cancel_check()))
+        if progress_callback:
+            progress_callback({"job_id": order_id, "status": "extracting", "code": "FETCH_CHECKOUT", "message": "正在提取支付链接"})
+        return {"ok": True, "job": {"job_id": order_id, "status": "completed", "output": {"long_url": f"https://pay.nicepay.co.kr/{order_id}"}}}
+
+    monkeypatch.setattr(kakao_pay, "_create_kakao_temp_external_order", fake_create)
+    monkeypatch.setattr(kakao_pay, "_poll_kakao_temp_external_order", fake_poll)
+    job_id = "kakao-temp-job"
+    kakao_pay.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {}, "temp": True,
+        "external_jobs": {},
+    }
+    req = kakao_pay.KakaoPayTempBatchStartRequest.model_validate({
+        "accountEmails": emails,
+        "cdks": ["KSCAN-ONE", "KSCAN-TWO"],
+        "concurrency": 1,
+    })
+
+    kakao_pay._run_temp_batch_job(job_id, req)
+
+    job = kakao_pay.JOBS[job_id]
+    assert job["status"] == "success"
+    assert job["temp"] is True
+    assert job["completed"] == 2
+    assert created_calls == [("token:one@example.com", "KSCAN-ONE"), ("token:two@example.com", "KSCAN-TWO")]
+    assert polled_calls == [("job_1", "KSCAN-ONE", False), ("job_2", "KSCAN-TWO", False)]
+    assert [item["cdk"] for item in job["result"]["successes"]] == ["KSCAN-ONE", "KSCAN-TWO"]
+    assert any("FETCH_CHECKOUT" in line for line in job["logs"])
+    saved_links = json.loads(kakao_pay.LINKS_FILE.read_text(encoding="utf-8"))
+    assert [item["account_email"] for item in saved_links] == ["two@example.com", "one@example.com"]
+    assert saved_links[0]["kakao_ttl_seconds"] == 600
+
+
+def test_kakao_kk_payment_order_routes_use_customer_api_headers(monkeypatch):
+    app = _app()
+    calls = []
+
+    class SubmitResp:
+        ok = True
+        status_code = 201
+        text = '{"ok": true}'
+
+        def json(self):
+            return {
+                "ok": True,
+                "data": {
+                    "order": {"id": "order_kk", "status": "PENDING"},
+                    "customerToken": "customer-token",
+                    "pollUrl": "/api/v1/customer/orders/order_kk",
+                },
+            }
+
+    class PollResp:
+        ok = True
+        status_code = 200
+        text = '{"ok": true}'
+
+        def json(self):
+            return {"ok": True, "data": {"order": {"id": "order_kk", "status": "SUCCESS"}}}
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        return SubmitResp()
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        return PollResp()
+
+    monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
+    monkeypatch.setattr(kakao_pay.requests, "get", fake_get)
+
+    created = _endpoint(app, "/api/kakao-pay/kk-payment/orders", "POST")(
+        kakao_pay.KakaoPayCustomerOrderRequest.model_validate({
+            "cdk": "PAY-CDK",
+            "accessToken": "at-test",
+            "paymentUrl": "https://pay.nicepay.co.kr/v1/checkout/pay/abc",
+            "paymentMethod": "kakao_pay",
+            "mode": "READY_LINK",
+        })
+    )
+    polled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}", "GET")("order_kk", token="customer-token", cdk="")
+
+    assert created["data"]["order"]["id"] == "order_kk"
+    assert calls[0][1] == "https://upi.i7wap.xyz/api/v1/customer/orders"
+    assert calls[0][2]["headers"]["X-CDK-Key"] == "PAY-CDK"
+    assert calls[0][2]["json"]["channel"] == "KAKAO_KK"
+    assert calls[0][2]["json"]["mode"] == "READY_LINK"
+    assert calls[0][2]["json"]["productType"] == "KAKAO_AT"
+    assert calls[0][2]["json"]["payment_url"].startswith("https://pay.nicepay.co.kr/")
+    assert polled["data"]["order"]["status"] == "SUCCESS"
+    assert calls[1][2]["headers"]["Authorization"] == "Bearer customer-token"
+
+
+def test_kakao_kk_payment_submit_uses_account_token_and_extracted_link(monkeypatch):
+    app = _app()
+    email = "pay@example.com"
+    link_id = "link-1"
+    calls = []
+    kakao_pay._append_link({
+        "id": link_id,
+        "account_email": email,
+        "provider_redirect_url": "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1",
+        "kakao_link": "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1",
+        "created_at": "2026-07-30 10:00:00",
+        "created_at_ts": 1785386400,
+        "kakao_expires_at_ts": 1785387000,
+        "country": "KR",
+    })
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: f"token-for:{value}")
+
+    class SubmitResp:
+        ok = True
+        status_code = 201
+        text = '{"ok": true}'
+
+        def json(self):
+            return {"ok": True, "data": {"order": {"id": "kk-order-1", "status": "PENDING"}, "customerToken": "customer-token"}}
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return SubmitResp()
+
+    monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
+
+    data = _endpoint(app, "/api/kakao-pay/kk-payment/submit", "POST")(
+        kakao_pay.KakaoPayKkPaymentSubmitRequest.model_validate({
+            "cdk": "KK-CDK-1",
+            "linkId": link_id,
+            "paymentMethod": "kakao_pay",
+        })
+    )
+
+    assert data["account_email"] == email
+    assert data["link_id"] == link_id
+    assert data["payment_url"] == "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"
+    assert calls[0][0] == "https://upi.i7wap.xyz/api/v1/customer/orders"
+    assert calls[0][1]["headers"]["X-CDK-Key"] == "KK-CDK-1"
+    assert calls[0][1]["json"]["access_token"] == f"token-for:{email}"
+    assert calls[0][1]["json"]["payment_url"] == "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"
+    assert calls[0][1]["json"]["productType"] == "KAKAO_AT"
+    assert kakao_pay.KK_PAYMENT_JOBS["kk-order-1"]["account_email"] == email
 
 
 def test_mark_account_plus_kakao_sets_dashboard_plus_snapshot(monkeypatch):

@@ -26,6 +26,7 @@ API_KEY=change-me
 | `cloudflare_temp_email` | 默认推荐，适合 Cloudflare Workers 临时邮箱服务 |
 | `cloud-mail` | 社区 cloud-mail 服务 |
 | `outlook` | 使用已有 Outlook/Hotmail 账号池读取验证码 |
+| `icloud` | 使用已有 iCloud 账号池和收码链接读取验证码 |
 | `luckmail` | 使用 LuckMail 已购邮箱 token 池 |
 
 ### cloudflare_temp_email
@@ -62,6 +63,19 @@ OUTLOOK_REGISTER_CODE_TIMEOUT=30
 email@outlook.com----mail_password
 email@outlook.com----mail_password----client_id----refresh_token
 email@outlook.com----https://mailapi.icu/key?type=html&orderNo=xxxx
+```
+
+### icloud
+
+```env
+MAIL_PROVIDER=icloud
+ICLOUD_ACCOUNTS_FILE=data/icloud_accounts.txt
+```
+
+账号池格式：
+
+```text
+email@icloud.com----https://icloud-api.top/show/xxx/email@icloud.com
 ```
 
 ### luckmail

@@ -26,6 +26,10 @@ def mail_provider_field_keys(provider: str) -> set[str]:
             "OUTLOOK_PROVIDER_PRIORITY",
             "OUTLOOK_PROXY_URL",
         },
+        "icloud": {
+            "ICLOUD_ACCOUNTS_FILE",
+            "ICLOUD_ACCOUNTS",
+        },
         "luckmail": {
             "LUCKMAIL_BASE_URL",
             "LUCKMAIL_API_KEY",

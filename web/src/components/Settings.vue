@@ -1174,9 +1174,11 @@ const mailProviderFieldTitle = computed(() =>
     ? 'cloud-mail 配置'
     : mailProvider.value === 'outlook'
       ? 'Outlook 配置'
-      : mailProvider.value === 'luckmail'
-        ? 'LuckMail 配置'
-        : 'cloudflare_temp_email 配置'
+      : mailProvider.value === 'icloud'
+        ? 'iCloud 配置'
+        : mailProvider.value === 'luckmail'
+          ? 'LuckMail 配置'
+          : 'cloudflare_temp_email 配置'
 )
 
 const parsedRegisterDomains = computed(() =>

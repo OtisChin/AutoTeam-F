@@ -167,7 +167,7 @@ def create_account_register_task_router(
             raise HTTPException(status_code=400, detail="随机抖动区间必须满足 min <= max")
 
         configured_domains = get_register_domains()
-        domain_required = mail_provider not in {"luckmail", "outlook", "mail.com"} and not phone_only
+        domain_required = mail_provider not in {"luckmail", "outlook", "icloud", "mail.com"} and not phone_only
 
         def _clean_domain(value) -> str:
             return str(value or "").strip().lstrip("@").strip()

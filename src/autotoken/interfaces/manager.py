@@ -4655,7 +4655,7 @@ def cmd_register_accounts(
             provider_label = _mail_client_provider_name(mail_client) or str(mail_provider or "").strip().lower() or "default"
             register_target = (
                 f"provider={provider_label}"
-                if provider_label in {"luckmail", "outlook", "mail.com"}
+                if provider_label in {"luckmail", "outlook", "icloud", "mail.com"}
                 else f"domain=@{job_domain or ''}"
             )
             logger.info(

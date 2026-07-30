@@ -24,6 +24,8 @@ class SetupConfig(BaseModel):
     OUTLOOK_DEFAULT_CLIENT_ID: str = ""
     OUTLOOK_PROVIDER_PRIORITY: str = ""
     OUTLOOK_PROXY_URL: str = ""
+    ICLOUD_ACCOUNTS_FILE: str = ""
+    ICLOUD_ACCOUNTS: str = ""
     LUCKMAIL_BASE_URL: str = ""
     LUCKMAIL_API_KEY: str = ""
     LUCKMAIL_PROJECT_CODE: str = ""
@@ -106,6 +108,10 @@ def create_setup_router(
                 "OUTLOOK_DEFAULT_CLIENT_ID",
                 "OUTLOOK_PROVIDER_PRIORITY",
                 "OUTLOOK_PROXY_URL",
+            },
+            "icloud": {
+                "ICLOUD_ACCOUNTS_FILE",
+                "ICLOUD_ACCOUNTS",
             },
             "luckmail": {
                 "LUCKMAIL_BASE_URL",

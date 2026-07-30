@@ -38,6 +38,8 @@ def normalize_mail_provider(raw: str | None) -> str:
         return "cloud-mail"
     if provider in ("outlook", "microsoft_outlook", "hotmail"):
         return "outlook"
+    if provider in ("icloud", "icloud.com", "apple_icloud", "apple-icloud"):
+        return "icloud"
     if provider in ("luckmail", "lucky_mail", "lucky-mail"):
         return "luckmail"
     return provider
@@ -65,6 +67,10 @@ OUTLOOK_ACCOUNTS = _first_env("OUTLOOK_ACCOUNTS", default="")
 OUTLOOK_DEFAULT_CLIENT_ID = _first_env("OUTLOOK_DEFAULT_CLIENT_ID", default="24d9a0ed-8787-4584-883c-2fd79308940a")
 OUTLOOK_PROVIDER_PRIORITY = _first_env("OUTLOOK_PROVIDER_PRIORITY", default="imap_old,imap_new,graph_api")
 OUTLOOK_PROXY_URL = _first_env("OUTLOOK_PROXY_URL", default="")
+
+# iCloud receive-code-link account-pool registration provider
+ICLOUD_ACCOUNTS_FILE = _first_env("ICLOUD_ACCOUNTS_FILE", default="")
+ICLOUD_ACCOUNTS = _first_env("ICLOUD_ACCOUNTS", default="")
 
 # LuckMail purchased-token registration provider
 LUCKMAIL_BASE_URL = _first_env("LUCKMAIL_BASE_URL", default="https://mail.luckyous.com")

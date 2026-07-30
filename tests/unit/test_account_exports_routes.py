@@ -108,6 +108,33 @@ def test_export_account_credentials_keeps_mailapi_outlook_legacy_line(monkeypatc
     assert result["content"] == "Mailapi@Outlook.com-----chatgpt-password-----https://mailapi.icu/key?type=html&orderNo=secret"
 
 
+def test_export_account_credentials_uses_icloud_pool_line(monkeypatch):
+    app = _app()
+    account = {
+        "email": "User@icloud.com",
+        "password": "chatgpt-password",
+        "mail_provider": "icloud",
+        "account_source": "managed",
+    }
+    icloud_source = {
+        "user@icloud.com": {
+            "email": "User@icloud.com",
+            "receive_code_url": "https://icloud-api.top/show/secret/User@icloud.com",
+        }
+    }
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {**account, **kwargs})
+    monkeypatch.setattr("autotoken.commerce.trade.outlook_accounts_by_email", lambda: {})
+    monkeypatch.setattr("autotoken.commerce.trade.icloud_accounts_by_email", lambda: icloud_source)
+
+    result = _endpoint(app, "/api/accounts/export-credentials", "POST")(
+        AccountCredentialExportParams(emails=["user@icloud.com"])
+    )
+
+    assert result["content"] == "User@icloud.com----https://icloud-api.top/show/secret/User@icloud.com"
+
+
 def test_update_accounts_export_status_rejects_too_many_raw_emails():
     app = _app()
 

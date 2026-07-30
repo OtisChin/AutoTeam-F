@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+const page = readFileSync(new URL('../src/components/KakaoPayPage.vue', import.meta.url), 'utf8')
+const api = readFileSync(new URL('../src/api.js', import.meta.url), 'utf8')
+
+assert.match(page, /activeKakaoTab = 'tempExtract'/, 'Kakao page exposes temp extraction tab')
+assert.match(page, /activeKakaoTab = 'payment'/, 'Kakao page exposes payment tab')
+assert.match(page.slice(0, 1200), /activeKakaoTab === 'tempExtract' \? 'bg-yellow-400 text-slate-950/, 'Kakao temp tab uses bright yellow top theme')
+assert.match(page, /临时提链 CDK 池/, 'Kakao temp extraction page has CDK pool')
+assert.match(page, /查询额度/, 'Kakao temp extraction page has CDK quota query button')
+assert.match(page, /queryTempCdkQuota/, 'Kakao temp page implements CDK quota query')
+assert.match(page, /payload\.ticket \|\| payload\.cdk \|\| payload/, 'Kakao temp quota query accepts cdk payload shape')
+assert.match(page, /function tempCdkUsable/, 'Kakao temp CDK pool treats known remaining quota as usable')
+assert.match(page, /filter\(tempCdkUsable\)/, 'Kakao temp start uses effective usable CDK status')
+assert.match(page, /账号池选择/, 'Kakao temp extraction keeps account pool selection')
+assert.match(page, /api\.startKakaoPayTempBatch/, 'Kakao temp page starts account-pool temp batch')
+assert.doesNotMatch(page, /api\.createKakaoPayTempOrder/, 'Kakao temp page no longer submits standalone AT orders')
+assert.match(page, /KK 客户支付 API/, 'Kakao payment page labels KK customer payment API')
+assert.match(page, /账号管理池（已提取链接）/, 'Kakao payment page manages extracted-link accounts')
+assert.match(page, /KK CDK 管理池/, 'Kakao payment page has KK CDK pool')
+assert.match(page, /api\.submitKakaoPayKkPayment/, 'Kakao payment page submits account token plus link through backend')
+assert.doesNotMatch(page, /AT \/ access_token 列表/, 'Kakao payment page no longer asks for manual AT list')
+assert.match(api, /startKakaoPayTempBatch/, 'api.js exposes Kakao temp batch start')
+assert.match(api, /submitKakaoPayKkPayment/, 'api.js exposes KK account-link payment submit')
+assert.match(api, /createKakaoPayTempOrder/, 'api.js exposes Kakao temp order create')
+assert.match(api, /getKakaoPayTempOrder/, 'api.js exposes Kakao temp order polling')
+assert.match(api, /createKakaoPayKkPaymentOrder/, 'api.js exposes KK payment order create')
+assert.match(api, /getKakaoPayKkPaymentOrder/, 'api.js exposes KK payment order polling')
+
+console.log('kakao external pages tests passed')

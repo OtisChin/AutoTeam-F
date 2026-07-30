@@ -347,12 +347,12 @@
             </div>
           </div>
 
-          <div v-if="isOutlookProvider" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 space-y-3">
+          <div v-if="isOutlookLikePoolProvider" class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 space-y-3">
             <div class="flex items-start justify-between gap-3">
               <div>
-                <div class="text-sm font-medium text-white">Outlook 邮箱池</div>
+                <div class="text-sm font-medium text-white">{{ accountPoolProviderLabel }} 邮箱池</div>
                 <div class="mt-1 text-xs text-gray-500">
-                  邮箱池会持久化保存；再次打开页面时将从首个可用邮箱继续注册。
+                  {{ accountPoolProviderDescription }}
                 </div>
               </div>
               <div class="flex shrink-0 items-center gap-2">
@@ -707,7 +707,7 @@
       >
         <header class="flex shrink-0 items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
           <div>
-            <h3 id="outlook-pool-title" class="text-base font-semibold text-white">管理 Outlook 邮箱池</h3>
+            <h3 id="outlook-pool-title" class="text-base font-semibold text-white">管理 {{ accountPoolProviderLabel }} 邮箱池</h3>
             <p class="mt-1 text-xs text-gray-500">查看邮箱可用状态，批量删除不再使用的邮箱池记录。</p>
           </div>
           <div class="flex items-center gap-2">
@@ -1026,8 +1026,8 @@
       >
         <header class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
           <div>
-            <h3 id="outlook-import-title" class="text-base font-semibold text-white">导入 Outlook 邮箱</h3>
-            <p class="mt-1 text-xs text-gray-500">支持 txt 文件或直接粘贴，一行一个邮箱账号。</p>
+            <h3 id="outlook-import-title" class="text-base font-semibold text-white">导入 {{ accountPoolProviderLabel }} 邮箱</h3>
+            <p class="mt-1 text-xs text-gray-500">{{ accountPoolImportHelp }}</p>
           </div>
           <button
             type="button"
@@ -1059,7 +1059,7 @@
             :disabled="outlookImporting"
             rows="10"
             spellcheck="false"
-            placeholder="例如：&#10;user@hotmail.com----https://mailapi.icu/key?type=html&orderNo=xxxx&#10;user@outlook.com----password----client_id----refresh_token"
+            :placeholder="accountPoolImportPlaceholder"
             class="w-full resize-y rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-gray-100 outline-none placeholder:text-gray-600 focus:border-blue-500 disabled:opacity-60"
           ></textarea>
 
@@ -1287,9 +1287,11 @@ const registerAllDomainsSelected = computed(() => {
 })
 const isLuckMailProvider = computed(() => registerForm.value.mailProvider === 'luckmail')
 const isOutlookProvider = computed(() => registerForm.value.mailProvider === 'outlook')
+const isICloudProvider = computed(() => registerForm.value.mailProvider === 'icloud')
+const isOutlookLikePoolProvider = computed(() => isOutlookProvider.value || isICloudProvider.value)
 const isMailComProvider = computed(() => String(registerForm.value.mailProvider || '').trim().toLowerCase() === 'mail.com')
 const isPhoneCpaFlow = computed(() => registerForm.value.registrationFlow === 'phone_cpa')
-const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookProvider.value || isMailComProvider.value)
+const registerProviderUsesPool = computed(() => isLuckMailProvider.value || isOutlookLikePoolProvider.value || isMailComProvider.value)
 const registerProviderUsesDomains = computed(() => !registerProviderUsesPool.value && !isPhoneCpaFlow.value)
 function normalizeRegisterProxyCountry(value) {
   return String(value || 'JP').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2) || 'JP'
@@ -1308,12 +1310,30 @@ const registerProxyCountryOptions = computed(() => {
 const registerProviderPoolMessage = computed(() => {
   if (isLuckMailProvider.value) return 'LuckMail 使用已购邮箱池或 API 购买邮箱，注册域名选择不参与本次任务。'
   if (isOutlookProvider.value) return 'Outlook 使用已配置的微软邮箱账号池，注册域名选择不参与本次任务。'
+  if (isICloudProvider.value) return 'iCloud 使用已配置的 iCloud 邮箱池和收码链接，注册域名选择不参与本次任务。'
   if (isMailComProvider.value) return 'mail.com 邮箱池中选择'
   return ''
 })
+const accountPoolProviderLabel = computed(() => isICloudProvider.value ? 'iCloud' : 'Outlook')
+const accountPoolProviderDescription = computed(() =>
+  isICloudProvider.value
+    ? '导入 iCloud 邮箱和收码链接；再次打开页面时将从首个可用邮箱继续注册。'
+    : '邮箱池会持久化保存；再次打开页面时将从首个可用邮箱继续注册。'
+)
+const accountPoolImportHelp = computed(() =>
+  isICloudProvider.value
+    ? '支持 txt 文件或直接粘贴，一行一个 iCloud 邮箱和收码链接。'
+    : '支持 txt 文件或直接粘贴，一行一个邮箱账号。'
+)
+const accountPoolImportPlaceholder = computed(() =>
+  isICloudProvider.value
+    ? '例如：\nuser@icloud.com----https://icloud-api.top/show/xxx/user@icloud.com'
+    : '例如：\nuser@hotmail.com----https://mailapi.icu/key?type=html&orderNo=xxxx\nuser@outlook.com----password----client_id----refresh_token'
+)
 const registerDomainSuffixLabel = computed(() => {
   if (isLuckMailProvider.value) return '@LuckMail'
   if (isOutlookProvider.value) return '@Outlook账号池'
+  if (isICloudProvider.value) return '@iCloud账号池'
   if (registerForm.value.mode === 'batch') {
     return selectedRegisterDomains.value.length
       ? `@随机域名(${selectedRegisterDomains.value.length})`
@@ -1328,6 +1348,7 @@ const registerPreviewEmail = computed(() => {
     : (registerForm.value.domain || 'domain.com')
   if (isLuckMailProvider.value) return 'LuckMail邮箱池中选择'
   if (isOutlookProvider.value) return 'Outlook邮箱池中选择'
+  if (isICloudProvider.value) return 'iCloud邮箱池中选择'
   if (isMailComProvider.value) return 'mail.com邮箱池中选择'
   return `${prefix}@${domain}`
 })
@@ -1755,7 +1776,9 @@ async function importOutlookAccounts() {
   outlookImporting.value = true
   outlookImportResult.value = ''
   try {
-    const result = await api.importOutlookAccounts(content, outlookImportFilename.value || 'pasted.txt')
+    const result = isICloudProvider.value
+      ? await api.importICloudAccounts(content, outlookImportFilename.value || 'pasted.txt')
+      : await api.importOutlookAccounts(content, outlookImportFilename.value || 'pasted.txt')
     const firstHint = result.first_imported_email
       ? `，单次注册将优先使用 ${result.first_imported_email}`
       : ''
@@ -1778,15 +1801,17 @@ async function importOutlookAccounts() {
 }
 
 async function loadOutlookPoolStatus() {
-  if (!isOutlookProvider.value || outlookPoolLoading.value) return
+  if (!isOutlookLikePoolProvider.value || outlookPoolLoading.value) return
   outlookPoolLoading.value = true
   outlookPoolError.value = ''
   try {
-    outlookPoolStatus.value = await api.getOutlookAccountsStatus()
+    outlookPoolStatus.value = isICloudProvider.value
+      ? await api.getICloudAccountsStatus()
+      : await api.getOutlookAccountsStatus()
     pruneOutlookPoolSelectionToVisible()
   } catch (e) {
     outlookPoolStatus.value = null
-    outlookPoolError.value = `读取 Outlook 邮箱池失败: ${e.message}`
+    outlookPoolError.value = `读取 ${accountPoolProviderLabel.value} 邮箱池失败: ${e.message}`
   } finally {
     outlookPoolLoading.value = false
   }
@@ -1824,16 +1849,18 @@ function toggleOutlookPoolVisible(checked) {
 async function deleteSelectedOutlookPoolEmails() {
   if (outlookPoolDeleting.value || outlookPoolSelectedCount.value === 0) return
   const emails = [...outlookPoolSelectedEmails.value]
-  const ok = window.confirm(`确认从 Outlook 邮箱池删除 ${emails.length} 个邮箱?\n\n只会删除邮箱池文件中的记录，不会删除本地已注册账号。`)
+  const ok = window.confirm(`确认从 ${accountPoolProviderLabel.value} 邮箱池删除 ${emails.length} 个邮箱?\n\n只会删除邮箱池中的记录，不会删除本地已注册账号。`)
   if (!ok) return
   outlookPoolDeleting.value = true
   try {
-    const result = await api.deleteOutlookAccounts(emails)
+    const result = isICloudProvider.value
+      ? await api.deleteICloudAccounts(emails)
+      : await api.deleteOutlookAccounts(emails)
     outlookPoolSelectedEmails.value = []
     await loadOutlookPoolStatus()
-    setMessage(`已从 Outlook 邮箱池删除 ${result.deleted || 0} 个邮箱`, true)
+    setMessage(`已从 ${accountPoolProviderLabel.value} 邮箱池删除 ${result.deleted || 0} 个邮箱`, true)
   } catch (e) {
-    setMessage(`删除 Outlook 邮箱失败: ${e.message}`, false)
+    setMessage(`删除 ${accountPoolProviderLabel.value} 邮箱失败: ${e.message}`, false)
   } finally {
     outlookPoolDeleting.value = false
   }
@@ -2341,9 +2368,14 @@ watch(
 )
 
 watch(
-  isOutlookProvider,
-  enabled => {
-    if (enabled) loadOutlookPoolStatus()
+  () => registerForm.value.mailProvider,
+  () => {
+    outlookPoolStatus.value = null
+    outlookPoolError.value = ''
+    outlookPoolSelectedEmails.value = []
+    outlookPoolStatusFilter.value = 'all'
+    if (isOutlookLikePoolProvider.value) loadOutlookPoolStatus()
+    if (isMailComProvider.value) loadMailComPoolStatus()
   }
 )
 
@@ -2403,7 +2435,7 @@ onMounted(() => {
   loadSavedRegisterForm()
   loadMailProviderOptions()
   loadOAuthPhoneSmsConfig()
-  if (isOutlookProvider.value) loadOutlookPoolStatus()
+  if (isOutlookLikePoolProvider.value) loadOutlookPoolStatus()
   if (isMailComProvider.value) loadMailComPoolStatus()
   loadRegisterLogs()
   loadRegisterStats()
@@ -2428,7 +2460,7 @@ watch(() => props.runningTask?.task_id, (newId, oldId) => {
   }
   if (oldId && !newId) {
     reloadRegisterDomains()
-    if (isOutlookProvider.value) loadOutlookPoolStatus()
+    if (isOutlookLikePoolProvider.value) loadOutlookPoolStatus()
     if (isMailComProvider.value) loadMailComPoolStatus()
     loadRegisterLogs()
     loadRegisterStats()

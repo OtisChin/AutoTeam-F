@@ -1,4 +1,4 @@
-"""Configuration import/export and Outlook account-pool routes."""
+"""Configuration import/export and account-pool routes."""
 
 import json
 import logging
@@ -16,6 +16,7 @@ from autotoken.core.textio import parse_env_line, read_text
 
 CONFIG_IMPORT_MAX_BYTES = 2 * 1024 * 1024
 OUTLOOK_ACCOUNTS_IMPORT_MAX_BYTES = 2 * 1024 * 1024
+ICLOUD_ACCOUNTS_IMPORT_MAX_BYTES = 2 * 1024 * 1024
 
 
 class OutlookAccountsImportParams(BaseModel):
@@ -24,6 +25,15 @@ class OutlookAccountsImportParams(BaseModel):
 
 
 class OutlookAccountsDeleteParams(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+
+
+class ICloudAccountsImportParams(BaseModel):
+    filename: str = ""
+    content: str
+
+
+class ICloudAccountsDeleteParams(BaseModel):
     emails: list[str] = Field(default_factory=list)
 
 
@@ -152,7 +162,34 @@ def _resolve_outlook_accounts_file() -> Path:
     return path
 
 
+def _resolve_icloud_accounts_file() -> Path:
+    from autotoken.core.paths import PROJECT_ROOT
+    from autotoken.settings.setup_wizard import _read_env, _write_env
+
+    env = _read_env()
+    raw = str(env.get("ICLOUD_ACCOUNTS_FILE") or os.environ.get("ICLOUD_ACCOUNTS_FILE") or "").strip()
+    if not raw:
+        raw = "data/icloud_accounts.txt"
+        _write_env("ICLOUD_ACCOUNTS_FILE", raw)
+        os.environ["ICLOUD_ACCOUNTS_FILE"] = raw
+    path = resolve_project_config_path(raw, project_root=PROJECT_ROOT)
+    if path is None:
+        raise HTTPException(status_code=400, detail="ICLOUD_ACCOUNTS_FILE 不能指向项目目录外")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _split_outlook_account_lines(content: str) -> list[str]:
+    lines: list[str] = []
+    for line in str(content or "").replace("\ufeff", "").replace(";", "\n").splitlines():
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+        lines.append(value)
+    return lines
+
+
+def _split_icloud_account_lines(content: str) -> list[str]:
     lines: list[str] = []
     for line in str(content or "").replace("\ufeff", "").replace(";", "\n").splitlines():
         value = line.strip()
@@ -214,6 +251,55 @@ def _load_outlook_pool_status(target: Path) -> dict[str, Any]:
     }
 
 
+def _load_icloud_pool_status(target: Path) -> dict[str, Any]:
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.icloud import ICloudMailProvider
+    from autotoken.storage.accounts import load_accounts
+
+    content = read_text(target) if target.exists() else ""
+    registered_emails = {normalize_email_addr(account.get("email")) for account in load_accounts() if account.get("email")}
+    skipped_emails = ICloudMailProvider._registered_emails()
+
+    entries: list[dict[str, Any]] = []
+    invalid = 0
+    seen: set[str] = set()
+    for line in _split_icloud_account_lines(content):
+        account = ICloudMailProvider._parse_account_line(line)
+        if not account or not account.validate():
+            invalid += 1
+            continue
+        email = account.email.lower()
+        if email in seen:
+            continue
+        seen.add(email)
+        registered = email in registered_emails
+        unavailable = email in skipped_emails and not registered
+        status = "registered" if registered else ("unavailable" if unavailable else "available")
+        entries.append(
+            {
+                "email": account.email,
+                "status": status,
+                "registered": registered,
+                "available": status == "available",
+                "has_receive_code_url": bool(account.receive_code_url),
+            }
+        )
+
+    registered_count = sum(1 for item in entries if item["status"] == "registered")
+    unavailable_count = sum(1 for item in entries if item["status"] == "unavailable")
+    available_count = sum(1 for item in entries if item["status"] == "available")
+    return {
+        "file": str(target),
+        "total": len(entries),
+        "available": available_count,
+        "registered": registered_count,
+        "unavailable": unavailable_count,
+        "invalid": invalid,
+        "accounts": entries[:500],
+        "next_available_email": next((item["email"] for item in entries if item["status"] == "available"), ""),
+    }
+
+
 def _delete_outlook_pool_accounts(target: Path, emails: list[str]) -> dict[str, Any]:
     from autotoken.mail.base import normalize_email_addr
     from autotoken.mail.outlook import OutlookMailProvider
@@ -230,6 +316,45 @@ def _delete_outlook_pool_accounts(target: Path, emails: list[str]) -> dict[str, 
     for raw_line in content.replace("\ufeff", "").replace(";", "\n").splitlines():
         line = raw_line.strip()
         account = OutlookMailProvider._parse_account_line(line)
+        email = account.email.lower() if account and account.validate() else ""
+        if email and email in targets:
+            if email not in deleted_seen:
+                deleted_seen.add(email)
+                deleted_emails.append(email)
+            continue
+        kept_lines.append(raw_line)
+
+    next_content = "\n".join(kept_lines)
+    if next_content:
+        next_content += "\n"
+    target.write_text(next_content, encoding="utf-8")
+
+    missing = sorted(targets - deleted_seen)
+    return {
+        "file": str(target),
+        "requested": len(targets),
+        "deleted": len(deleted_seen),
+        "deleted_emails": deleted_emails[:50],
+        "missing_emails": missing[:50],
+    }
+
+
+def _delete_icloud_pool_accounts(target: Path, emails: list[str]) -> dict[str, Any]:
+    from autotoken.mail.base import normalize_email_addr
+    from autotoken.mail.icloud import ICloudMailProvider
+
+    requested = [normalize_email_addr(email) for email in emails or []]
+    targets = {email for email in requested if email}
+    if not targets:
+        raise HTTPException(status_code=400, detail="请选择要删除的 iCloud 邮箱")
+
+    content = read_text(target) if target.exists() else ""
+    kept_lines: list[str] = []
+    deleted_emails: list[str] = []
+    deleted_seen: set[str] = set()
+    for raw_line in content.replace("\ufeff", "").replace(";", "\n").splitlines():
+        line = raw_line.strip()
+        account = ICloudMailProvider._parse_account_line(line)
         email = account.email.lower() if account and account.validate() else ""
         if email and email in targets:
             if email not in deleted_seen:
@@ -447,6 +572,92 @@ def create_config_io_router(
         result = _delete_outlook_pool_accounts(target, params.emails)
         route_logger.info(
             "[outlook] 删除账号池邮箱: file=%s requested=%d deleted=%d",
+            target,
+            result["requested"],
+            result["deleted"],
+        )
+        return result
+
+    @router.post("/api/config/icloud-accounts/import")
+    def post_import_icloud_accounts(params: ICloudAccountsImportParams):
+        """导入 iCloud 账号池内容，格式 email@icloud.com----收码链接。"""
+        content = str(params.content or "")
+        if not content.strip():
+            raise HTTPException(status_code=400, detail="上传文件为空")
+        if len(content.encode("utf-8", errors="ignore")) > ICLOUD_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="上传文件过大，最多支持 2MB txt")
+
+        from autotoken.mail.icloud import ICloudMailProvider
+
+        target = _resolve_icloud_accounts_file()
+        if target.exists() and target.stat().st_size > ICLOUD_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有 iCloud 账号池文件过大，最多支持 2MB txt")
+        existing_content = read_text(target) if target.exists() else ""
+        existing_accounts: dict[str, str] = {}
+        for line in _split_icloud_account_lines(existing_content):
+            account = ICloudMailProvider._parse_account_line(line)
+            if account and account.validate():
+                existing_accounts[account.email.lower()] = line
+
+        imported: list[str] = []
+        imported_emails: list[str] = []
+        duplicates: list[str] = []
+        invalid: list[dict[str, Any]] = []
+        seen_upload: set[str] = set()
+        for line_no, line in enumerate(_split_icloud_account_lines(content), start=1):
+            account = ICloudMailProvider._parse_account_line(line)
+            if not account or not account.validate():
+                invalid.append({"line": line_no, "preview": line[:120]})
+                continue
+            email_key = account.email.lower()
+            if email_key in existing_accounts or email_key in seen_upload:
+                duplicates.append(account.email)
+                continue
+            seen_upload.add(email_key)
+            imported.append(line)
+            imported_emails.append(account.email)
+
+        if imported:
+            suffix = "\n" if existing_content and not existing_content.startswith(("\n", "\r")) else ""
+            target.write_text("\n".join(imported) + suffix + existing_content, encoding="utf-8")
+
+        route_logger.info(
+            "[icloud] 导入账号池: file=%s imported=%d duplicate=%d invalid=%d source=%s",
+            target,
+            len(imported),
+            len(duplicates),
+            len(invalid),
+            params.filename or "<inline>",
+        )
+        return {
+            "file": str(target),
+            "imported": len(imported),
+            "duplicates": len(duplicates),
+            "invalid": len(invalid),
+            "total": len(_split_icloud_account_lines(content)),
+            "duplicate_emails": duplicates[:20],
+            "imported_emails": imported_emails[:20],
+            "first_imported_email": imported_emails[0] if imported_emails else "",
+            "invalid_lines": invalid[:20],
+        }
+
+    @router.get("/api/config/icloud-accounts/status")
+    def get_icloud_accounts_status():
+        """读取 iCloud 邮箱池状态。只返回邮箱和能力标记，不返回收码链接。"""
+        target = _resolve_icloud_accounts_file()
+        if target.exists() and target.stat().st_size > ICLOUD_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有 iCloud 账号池文件过大，最多支持 2MB txt")
+        return _load_icloud_pool_status(target)
+
+    @router.post("/api/config/icloud-accounts/delete")
+    def post_delete_icloud_accounts(params: ICloudAccountsDeleteParams):
+        """从 iCloud 邮箱池删除指定邮箱行，不删除本地已注册账号。"""
+        target = _resolve_icloud_accounts_file()
+        if target.exists() and target.stat().st_size > ICLOUD_ACCOUNTS_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="现有 iCloud 账号池文件过大，最多支持 2MB txt")
+        result = _delete_icloud_pool_accounts(target, params.emails)
+        route_logger.info(
+            "[icloud] 删除账号池邮箱: file=%s requested=%d deleted=%d",
             target,
             result["requested"],
             result["deleted"],

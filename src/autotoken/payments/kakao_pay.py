@@ -31,7 +31,7 @@ from autotoken.payments.us_paypal import (
 
 LogFn = Callable[[str], None]
 KAKAO_CHECKOUT_COUNTRY = "KR"
-KAKAO_PROMOTION_COUNTRY = "VN"
+KAKAO_PROMOTION_COUNTRY = "JP"
 KAKAO_PROVIDER_COUNTRY = "KR"
 KAKAO_PROMO_ID = "plus-1-month-free"
 KAKAO_STRIPE_VERSION = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
