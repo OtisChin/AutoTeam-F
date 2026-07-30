@@ -269,6 +269,9 @@ def _sync_provider_registered_email(
         return
     if provider == "icloud":
         try:
+            from autotoken.storage.icloud_pool import mark_unavailable_email
+
+            mark_unavailable_email(email, source=source or "account_deactivated")
             add_account(email, password, cloudmail_account_id=email, seat_type=SEAT_CODEX, mail_provider="icloud")
             update_account(
                 email,

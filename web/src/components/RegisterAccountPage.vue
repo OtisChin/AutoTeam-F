@@ -1431,8 +1431,13 @@ const outlookPoolStatusFilterOptions = computed(() => [
   { value: 'registered', label: '已注册', count: Number(outlookPoolStatus.value?.registered || 0) },
   { value: 'unavailable', label: '暂不可用', count: Number(outlookPoolStatus.value?.unavailable || 0) },
 ])
+const outlookPoolAllAccounts = computed(() => (
+  Array.isArray(outlookPoolStatus.value?.all_accounts)
+    ? outlookPoolStatus.value.all_accounts
+    : (outlookPoolStatus.value?.accounts || [])
+))
 const outlookPoolVisibleAccounts = computed(() => {
-  const accounts = outlookPoolStatus.value?.accounts || []
+  const accounts = outlookPoolAllAccounts.value
   const filter = outlookPoolStatusFilter.value
   if (filter === 'all') return accounts
   return accounts.filter(account => account.status === filter)
@@ -1579,6 +1584,9 @@ function closeOutlookImportDialog() {
 }
 
 async function openOutlookPoolDialog() {
+  if (isICloudProvider.value) {
+    outlookPoolStatusFilter.value = 'available'
+  }
   outlookPoolDialogOpen.value = true
   await loadOutlookPoolStatus()
 }
@@ -2373,7 +2381,7 @@ watch(
     outlookPoolStatus.value = null
     outlookPoolError.value = ''
     outlookPoolSelectedEmails.value = []
-    outlookPoolStatusFilter.value = 'all'
+    outlookPoolStatusFilter.value = isICloudProvider.value ? 'available' : 'all'
     if (isOutlookLikePoolProvider.value) loadOutlookPoolStatus()
     if (isMailComProvider.value) loadMailComPoolStatus()
   }

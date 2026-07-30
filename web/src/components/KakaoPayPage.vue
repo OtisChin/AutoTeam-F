@@ -73,11 +73,11 @@
               v-model.trim="form.proxies"
               rows="8"
               spellcheck="false"
-              placeholder="每行一个代理；支持 host:port:user-region-KR-sid-xxx-t-120:pass 或 socks5h://user:pass@host:port"
+              placeholder="每行一个代理；支持 host:port:user-region-KR-sid-xxx-t-120:pass、gate2.ipweb.cc:7778:B_91859_KR_2528__90_xxx:pass 或 socks5h://user:pass@host:port"
               class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none"
               :disabled="inputLocked"
             ></textarea>
-            <span class="mt-1 block text-xs text-gray-500">1024/ArxLabs 的 host:port:user:pass 会自动按 socks5h 使用；建议使用 KR 地区代理。</span>
+            <span class="mt-1 block text-xs text-gray-500">1024/ArxLabs/ipweb 的 host:port:user:pass 会自动按 socks5h 使用；建议使用 KR 地区代理。</span>
           </label>
 
           <div class="grid gap-4 md:grid-cols-3">
@@ -436,7 +436,7 @@
                     <div class="flex flex-wrap items-center gap-2">
                       <span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="kkPaymentStatusClass(item.status)">{{ kkPaymentLinkStatusText(item.status) }}</span>
                       <span class="truncate font-mono text-sm font-semibold text-slate-200">{{ item.accountEmail || '-' }}</span>
-                      <span class="rounded-full border px-2 py-1 text-xs font-semibold" :class="kakaoExpiryClass(item)">{{ kakaoExpiryText(item) }}</span>
+                      <span v-if="item.status !== 'success'" class="rounded-full border px-2 py-1 text-xs font-semibold" :class="kakaoExpiryClass(item)">{{ kakaoExpiryText(item) }}</span>
                     </div>
                     <div v-if="item.message" class="mt-2 max-w-3xl truncate text-xs text-slate-500" :title="item.message">{{ item.message }}</div>
                   </div>
@@ -445,25 +445,32 @@
                     <button v-if="kkPaymentCanCancel(item)" @click="cancelKkPaymentOrder(item)" class="rounded-lg border border-orange-400/40 bg-orange-400/10 px-3 py-1.5 text-xs font-bold text-orange-100 hover:bg-orange-400/20">取消订单</button>
                     <button v-if="kkPaymentCanResubmit(item)" @click="resubmitKkPaymentOrder(item)" class="rounded-lg border border-cyan-400/40 bg-cyan-400/10 px-3 py-1.5 text-xs font-bold text-cyan-100 hover:bg-cyan-400/20">重投订单</button>
                     <button v-if="kkPaymentNeedsRelink(item)" @click="reExtractKkPaymentLink(item)" :disabled="starting || cancelling" class="rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-3 py-1.5 text-xs font-bold text-yellow-100 hover:bg-yellow-400/20 disabled:opacity-50">重新提链</button>
+                    <button @click="toggleKkPaymentDetails(item.id)" :aria-expanded="kkPaymentDetailsExpanded(item.id)" class="rounded-lg border border-slate-600 bg-slate-800/70 px-3 py-1.5 text-xs font-bold text-slate-100 hover:bg-slate-700">{{ kkPaymentDetailsExpanded(item.id) ? '收起' : '详情' }}</button>
                     <a :href="item.paymentUrl || '#'" target="_blank" class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-200 hover:bg-sky-500/20" :class="!item.paymentUrl ? 'pointer-events-none opacity-50' : ''">打开</a>
                     <button @click="copy(item.paymentUrl || item.orderId)" class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-slate-800">复制</button>
                     <button @click="removeKkPaymentLink(item.id)" :disabled="kkPaymentBusy" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">移除</button>
                   </div>
                 </div>
-                <div class="mt-4 grid gap-3 xl:grid-cols-[1fr_0.9fr_auto]">
-                  <div class="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
-                    <div class="text-[10px] font-bold uppercase tracking-wide text-slate-600">Order</div>
-                    <div class="mt-1 truncate font-mono text-xs text-slate-400" :title="item.orderId || '-'">{{ item.orderId || '-' }}</div>
+                <Transition enter-active-class="transition duration-200 ease-out overflow-hidden" enter-from-class="max-h-0 opacity-0 -translate-y-1" enter-to-class="max-h-40 opacity-100 translate-y-0" leave-active-class="transition duration-150 ease-in overflow-hidden" leave-from-class="max-h-40 opacity-100 translate-y-0" leave-to-class="max-h-0 opacity-0 -translate-y-1">
+                  <div v-if="kkPaymentDetailsExpanded(item.id)" class="mt-4 grid gap-3 xl:grid-cols-4">
+                    <div class="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                      <div class="text-[10px] font-bold uppercase tracking-wide text-slate-600">Order</div>
+                      <div class="mt-1 truncate font-mono text-xs text-slate-400" :title="item.orderId || '-'">{{ item.orderId || '-' }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                      <div class="text-[10px] font-bold uppercase tracking-wide text-slate-600">Worker</div>
+                      <div class="mt-1 truncate font-mono text-xs text-slate-400" :title="kkPaymentWorkerText(item)">{{ kkPaymentWorkerText(item) }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                      <div class="text-[10px] font-bold uppercase tracking-wide text-slate-600">CDK</div>
+                      <div class="mt-1 truncate font-mono text-xs text-slate-400" :title="item.cdk || '-'">{{ maskExternalSecret(item.cdk || '') || '-' }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                      <div class="text-[10px] font-bold uppercase tracking-wide text-slate-600">链接</div>
+                      <div class="mt-1 text-xs font-semibold" :class="item.status === 'success' ? 'text-emerald-300' : (kakaoLinkActionable(item) ? 'text-sky-300' : 'text-rose-300')">{{ kakaoPaymentLinkSummary(item) }}</div>
+                    </div>
                   </div>
-                  <div class="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
-                    <div class="text-[10px] font-bold uppercase tracking-wide text-slate-600">CDK</div>
-                    <div class="mt-1 truncate font-mono text-xs text-slate-400" :title="item.cdk || '-'">{{ maskExternalSecret(item.cdk || '') || '-' }}</div>
-                  </div>
-                  <div class="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
-                    <div class="text-[10px] font-bold uppercase tracking-wide text-slate-600">链接</div>
-                    <div class="mt-1 text-xs font-semibold" :class="kakaoLinkActionable(item) ? 'text-sky-300' : 'text-rose-300'">{{ kakaoPaymentLinkSummary(item) }}</div>
-                  </div>
-                </div>
+                </Transition>
               </article>
             </div>
           </div>
@@ -485,36 +492,64 @@ const TEMP_FORM_STORAGE_KEY = 'autotoken_kakao_pay_temp_form'
 const TEMP_CDK_STATE_STORAGE_KEY = 'autotoken_kakao_pay_temp_cdks'
 const KK_PAYMENT_STATE_STORAGE_KEY = 'autotoken_kakao_pay_kk_payment_state'
 const JOB_STORAGE_KEY = 'autotoken_kakao_pay_job'
+const TEMP_JOB_STORAGE_KEY = 'autotoken_kakao_pay_temp_job'
 const ACTIVE_TAB_STORAGE_KEY = 'autotoken_kakao_pay_active_tab'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled'])
-const KK_PAYMENT_TERMINAL_STATUSES = new Set(['success', 'succeeded', 'paid', 'completed', 'failed', 'stopped', 'cancelled', 'canceled', 'error', 'rejected', 'expired', 'timeout', 'qr_timeout', 'paused'])
+const KK_PAYMENT_TERMINAL_STATUSES = new Set(['success', 'succeeded', 'paid', 'completed', 'failed', 'stopped', 'cancelled', 'canceled', 'error', 'rejected', 'expired', 'timeout', 'qr_timeout'])
 const KK_PAYMENT_RETRYABLE_STATUSES = new Set(['pending', 'imported', 'failed', 'needs_action', 'stopped'])
 const KAKAO_LINK_TTL_MS = 15 * 60 * 1000
 
 const savedKakaoTab = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)
 const activeKakaoTab = ref(['extract', 'tempExtract', 'payment'].includes(savedKakaoTab) ? savedKakaoTab : 'extract')
+const isTempExtract = computed(() => activeKakaoTab.value === 'tempExtract')
+function makeExtractTaskState(defaultStatusText) {
+  return {
+    logs: [],
+    activeJobId: '',
+    activeJobIds: [],
+    activeJobStatus: '',
+    currentJob: null,
+    currentResult: null,
+    statusText: defaultStatusText,
+    statusError: false,
+    lastFailedEmails: [],
+    notifiedSuccessKeys: new Set(),
+  }
+}
+const extractTaskState = ref(makeExtractTaskState('请选择账号并填写 KR 代理后开始提链。'))
+const tempExtractTaskState = ref(makeExtractTaskState('请选择账号并填写 KSCAN 临时提链 CDK 后开始临时提链。'))
+function taskStateForMode(mode) {
+  return mode === 'tempExtract' ? tempExtractTaskState.value : extractTaskState.value
+}
+const activeExtractTaskState = computed(() => taskStateForMode(isTempExtract.value ? 'tempExtract' : 'extract'))
+function taskFieldRef(field) {
+  return computed({
+    get: () => activeExtractTaskState.value[field],
+    set: value => { activeExtractTaskState.value[field] = value },
+  })
+}
 const accounts = ref([])
 const links = ref([])
 const selectedAccounts = ref(new Set())
 const selectedLinkIds = ref(new Set())
-const logs = ref([])
+const logs = taskFieldRef('logs')
 const loading = ref(false)
 const starting = ref(false)
 const cancelling = ref(false)
-const activeJobId = ref('')
-const activeJobIds = ref([])
-const activeJobStatus = ref('')
-const currentJob = ref(null)
-const currentResult = ref(null)
-const statusText = ref('请选择账号并填写 KR 代理后开始提链。')
-const statusError = ref(false)
+const activeJobId = taskFieldRef('activeJobId')
+const activeJobIds = taskFieldRef('activeJobIds')
+const activeJobStatus = taskFieldRef('activeJobStatus')
+const currentJob = taskFieldRef('currentJob')
+const currentResult = taskFieldRef('currentResult')
+const statusText = taskFieldRef('statusText')
+const statusError = taskFieldRef('statusError')
 const accountFilter = ref('')
 const accountStatusFilter = ref('all')
 const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
 const deletingKakaoAccounts = ref(new Set())
-const lastFailedEmails = ref([])
-const notifiedSuccessKeys = ref(new Set())
+const lastFailedEmails = taskFieldRef('lastFailedEmails')
+const notifiedSuccessKeys = taskFieldRef('notifiedSuccessKeys')
 const nowMs = ref(Date.now())
 const logRef = ref(null)
 const tempForm = ref({ concurrency: 5 })
@@ -536,7 +571,8 @@ const kkPaymentConcurrency = ref(5)
 const kkPaymentMethod = ref('kakao_pay')
 const kkPaymentStatusText = ref('等待同步已提取 Kakao 链接并加入 KK 支付 CDK。')
 const kkPaymentStatusFilter = ref('all')
-let timer = null
+const expandedKkPaymentDetailIds = ref(new Set())
+const pollTimers = { extract: null, tempExtract: null }
 let expiryTimer = null
 let componentUnmounted = false
 
@@ -550,7 +586,6 @@ const form = ref({
 })
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
-const isTempExtract = computed(() => activeKakaoTab.value === 'tempExtract')
 const jobRunning = computed(() => Boolean((activeJobIds.value.length || activeJobId.value) && !TERMINAL_STATUSES.has(activeJobStatus.value)))
 const inputLocked = computed(() => starting.value || cancelling.value)
 const busy = computed(() => loading.value || inputLocked.value)
@@ -1073,34 +1108,55 @@ function isJobNotFound(error) {
   return Number(error?.status || 0) === 404 && String(error?.message || '').toLowerCase().includes('job not found')
 }
 
-function saveActiveJobSnapshot(job = currentJob.value) {
-  const ids = activeJobIds.value.length ? activeJobIds.value : [String(job?.id || activeJobId.value || '').trim()].filter(Boolean)
+function extractJobStorageKey(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
+  return mode === 'tempExtract' ? TEMP_JOB_STORAGE_KEY : JOB_STORAGE_KEY
+}
+
+function isExtractTaskRunning(state) {
+  return Boolean((state?.activeJobIds?.length || state?.activeJobId) && !TERMINAL_STATUSES.has(String(state?.activeJobStatus || '')))
+}
+
+function saveActiveJobSnapshot(job = currentJob.value, mode = isTempExtract.value ? 'tempExtract' : 'extract') {
+  const state = taskStateForMode(mode)
+  const ids = state.activeJobIds.length
+    ? state.activeJobIds
+    : (Array.isArray(job?.jobIds) ? job.jobIds : String(job?.id || state.activeJobId || '').split(',')).map(item => String(item || '').trim()).filter(Boolean)
   if (!ids.length) return
-  const mode = job?.temp ? 'tempExtract' : 'extract'
-  localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify({
+  const snapshotMode = job?.temp ? 'tempExtract' : mode
+  localStorage.setItem(extractJobStorageKey(snapshotMode), JSON.stringify({
     jobId: ids[0],
     jobIds: ids,
     accountCount: Number(job?.total || 0),
-    concurrency: Number(job?.concurrency || (mode === 'tempExtract' ? tempForm.value.concurrency : form.value.concurrency) || 1),
-    status: String(job?.status || activeJobStatus.value || ''),
-    mode,
+    completed: Number(job?.completed || 0),
+    runningCount: Number(job?.running_count || 0),
+    concurrency: Number(job?.concurrency || (snapshotMode === 'tempExtract' ? tempForm.value.concurrency : form.value.concurrency) || 1),
+    status: String(job?.status || state.activeJobStatus || ''),
+    logs: Array.isArray(state.logs) ? state.logs.slice(-500) : [],
+    result: state.currentResult || null,
+    accountStatuses: job?.account_statuses || {},
+    statusText: String(state.statusText || ''),
+    statusError: Boolean(state.statusError),
+    lastFailedEmails: Array.isArray(state.lastFailedEmails) ? state.lastFailedEmails : [],
+    mode: snapshotMode,
     startedAt: Date.now(),
   }))
 }
 
-function clearActiveJob({ removeStored = true } = {}) {
-  stopPolling()
-  activeJobId.value = ''
-  activeJobIds.value = []
-  activeJobStatus.value = ''
-  currentJob.value = null
-  notifiedSuccessKeys.value = new Set()
+function clearActiveJob({ removeStored = true, mode = isTempExtract.value ? 'tempExtract' : 'extract' } = {}) {
+  const state = taskStateForMode(mode)
+  stopPolling(mode)
+  state.activeJobId = ''
+  state.activeJobIds = []
+  state.activeJobStatus = ''
+  state.currentJob = null
+  state.notifiedSuccessKeys = new Set()
   cancelling.value = false
   starting.value = false
-  if (removeStored) localStorage.removeItem(JOB_STORAGE_KEY)
+  if (removeStored) localStorage.removeItem(extractJobStorageKey(mode))
 }
 
-function rememberFailedEmails(result) {
+function rememberFailedEmails(result, mode = isTempExtract.value ? 'tempExtract' : 'extract') {
+  const state = taskStateForMode(mode)
   const errors = Array.isArray(result?.errors) ? result.errors : []
   const seen = new Set()
   const emails = []
@@ -1113,7 +1169,7 @@ function rememberFailedEmails(result) {
     seen.add(key)
     emails.push(email)
   }
-  lastFailedEmails.value = emails
+  state.lastFailedEmails = emails
 }
 
 function successNotificationKey(item, index) {
@@ -1123,10 +1179,11 @@ function successNotificationKey(item, index) {
   return email || link || id || `success-${index}`
 }
 
-function notifyNewSuccesses(result) {
+function notifyNewSuccesses(result, mode = isTempExtract.value ? 'tempExtract' : 'extract') {
+  const state = taskStateForMode(mode)
   const successes = Array.isArray(result?.successes) ? result.successes : []
   if (!successes.length) return
-  const seen = new Set(notifiedSuccessKeys.value)
+  const seen = new Set(state.notifiedSuccessKeys)
   let delay = 0
   let changed = false
   successes.forEach((item, index) => {
@@ -1139,7 +1196,7 @@ function notifyNewSuccesses(result) {
     }, delay)
     delay += 450
   })
-  if (changed) notifiedSuccessKeys.value = seen
+  if (changed) state.notifiedSuccessKeys = seen
 }
 
 function ttlText(value) {
@@ -1331,11 +1388,13 @@ async function startWithEmails(emails, actionText = '提取') {
   const accountEmails = Array.from(new Set((emails || []).map(email => String(email || '').trim()).filter(Boolean)))
   if (!validateStart(accountEmails)) return
   const tempMode = isTempExtract.value
-  const appendMode = jobRunning.value
+  const mode = tempMode ? 'tempExtract' : 'extract'
+  const state = taskStateForMode(mode)
+  const appendMode = isExtractTaskRunning(state)
   const concurrency = tempMode ? tempForm.value.concurrency : form.value.concurrency
   const tempCdksForRun = tempMode ? tempCdkLines().slice(0, accountEmails.length) : []
   starting.value = true
-  statusError.value = false
+  state.statusError = false
   saveForm()
   saveTempForm({ silent: true })
   try {
@@ -1353,24 +1412,24 @@ async function startWithEmails(emails, actionText = '提取') {
           maxAttempts: form.value.maxAttempts,
           proxyPreflightAttempts: form.value.proxyPreflightAttempts,
           region: 'KR',
-        })
+    })
     const newJobId = data.job_id || ''
     if (!newJobId) throw new Error('后端没有返回任务 ID')
-    const nextIds = activeJobIds.value.length ? [...activeJobIds.value] : [activeJobId.value].filter(Boolean)
+    const nextIds = appendMode ? (state.activeJobIds.length ? [...state.activeJobIds] : [state.activeJobId].filter(Boolean)) : []
     if (!nextIds.includes(newJobId)) nextIds.push(newJobId)
-    activeJobIds.value = nextIds
-    activeJobId.value = nextIds[0] || newJobId
+    state.activeJobIds = nextIds
+    state.activeJobId = nextIds[0] || newJobId
     if (tempMode) reserveTempCdksForAccounts(accountEmails, newJobId)
-    activeJobStatus.value = 'queued'
+    state.activeJobStatus = 'queued'
     if (!appendMode) {
-      currentResult.value = null
-      notifiedSuccessKeys.value = new Set()
-      logs.value = []
+      state.currentResult = null
+      state.notifiedSuccessKeys = new Set()
+      state.logs = []
     }
-    currentJob.value = { id: activeJobIds.value.join(','), status: 'queued', total: (Number(currentJob.value?.total || 0) + accountEmails.length), completed: Number(currentJob.value?.completed || 0), concurrency, running_count: Number(currentJob.value?.running_count || 0), temp: tempMode }
-    saveActiveJobSnapshot(currentJob.value)
+    state.currentJob = { id: state.activeJobIds.join(','), status: 'queued', total: (Number(state.currentJob?.total || 0) + accountEmails.length), completed: Number(state.currentJob?.completed || 0), concurrency, running_count: Number(state.currentJob?.running_count || 0), temp: tempMode }
+    saveActiveJobSnapshot(state.currentJob, mode)
     setStatus(`${appendMode ? '追加任务' : '任务'}已提交，正在为 ${accountEmails.length} 个账号${actionText} Kakao${tempMode ? ' 临时' : ''}，并发 ${concurrency || 1}。`)
-    startPolling()
+    startPolling(mode)
   } catch (error) {
     if (tempMode) releaseReservedTempCdks('', '任务启动失败，CDK 已释放。')
     setStatus(`启动失败：${cleanError(error)}`, true)
@@ -1383,8 +1442,9 @@ async function start() {
   await startWithEmails(selectedEmails.value, '提取')
 }
 
-async function pollJob() {
-  const ids = activeJobIds.value.length ? [...activeJobIds.value] : [activeJobId.value].filter(Boolean)
+async function pollJob(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
+  const state = taskStateForMode(mode)
+  const ids = state.activeJobIds.length ? [...state.activeJobIds] : [state.activeJobId].filter(Boolean)
   if (!ids.length) return
   try {
     const jobs = []
@@ -1399,14 +1459,14 @@ async function pollJob() {
     }
     if (componentUnmounted) return
     if (!jobs.length && missingIds.size) {
-      clearActiveJob()
+      clearActiveJob({ mode })
       await Promise.all([refreshAccounts(), refreshLinks()])
-      setStatus('任务已不存在或后端已重启，已停止轮询并刷新账号/链接。', true)
+      if (activeExtractTaskState.value === state) setStatus('任务已不存在或后端已重启，已停止轮询并刷新账号/链接。', true)
       return
     }
     const activeJobs = jobs.filter(job => !TERMINAL_STATUSES.has(String(job.status || '')))
-    activeJobIds.value = activeJobs.map(job => String(job.id || '')).filter(Boolean)
-    activeJobId.value = activeJobIds.value[0] || ''
+    state.activeJobIds = activeJobs.map(job => String(job.id || '')).filter(Boolean)
+    state.activeJobId = state.activeJobIds[0] || ''
     const successes = []
     const errors = []
     const skipped = []
@@ -1426,29 +1486,32 @@ async function pollJob() {
     const completed = jobs.reduce((sum, job) => sum + Number(job.completed || 0), 0)
     const running = jobs.reduce((sum, job) => sum + Number(job.running_count || 0), 0)
     const aggregateStatus = activeJobs.length ? 'running' : (jobs.some(job => String(job.status || '') === 'error') ? 'error' : (jobs.some(job => String(job.status || '') === 'cancelled') ? 'cancelled' : 'success'))
-    currentResult.value = { batch: true, successes, errors, skipped }
-    currentJob.value = { id: ids.join(','), status: aggregateStatus, total, completed, running_count: running, concurrency: jobs.reduce((sum, job) => sum + Number(job.concurrency || 0), 0), account_statuses: accountStatuses, temp: jobs.some(job => job.temp) }
-    activeJobStatus.value = aggregateStatus
-    logs.value = mergedLogs.slice(-500)
-    saveActiveJobSnapshot(currentJob.value)
-    notifyNewSuccesses(currentResult.value)
-    setStatus(`状态：${activeJobStatus.value || '-'}，任务 ${activeJobs.length}/${jobs.length} 运行中，完成 ${completed}/${total}，运行中 ${running}`)
+    state.currentResult = { batch: true, successes, errors, skipped }
+    state.currentJob = { id: ids.join(','), status: aggregateStatus, total, completed, running_count: running, concurrency: jobs.reduce((sum, job) => sum + Number(job.concurrency || 0), 0), account_statuses: accountStatuses, temp: jobs.some(job => job.temp) }
+    state.activeJobStatus = aggregateStatus
+    state.logs = mergedLogs.slice(-500)
+    saveActiveJobSnapshot(state.currentJob, mode)
+    notifyNewSuccesses(state.currentResult, mode)
+    state.statusText = `状态：${state.activeJobStatus || '-'}，任务 ${activeJobs.length}/${jobs.length} 运行中，完成 ${completed}/${total}，运行中 ${running}`
+    state.statusError = false
     if (!activeJobs.length) {
-      stopPolling()
-      rememberFailedEmails(currentResult.value)
+      stopPolling(mode)
+      rememberFailedEmails(state.currentResult, mode)
       for (const job of jobs) {
         if (job.temp) releaseReservedTempCdks(String(job.id || ''), '任务已结束，未使用 CDK 已释放。')
       }
-      activeJobIds.value = []
-      activeJobId.value = ''
-      localStorage.removeItem(JOB_STORAGE_KEY)
-      if (activeJobStatus.value === 'success') {
-        setStatus('提链任务已完成，链接已写入管理表。')
+      state.activeJobIds = []
+      state.activeJobId = ids[0] || ''
+      if (state.activeJobStatus === 'success') {
+        state.statusText = mode === 'tempExtract' ? '临时提链任务已完成，链接已写入管理表。' : '提链任务已完成，链接已写入管理表。'
+        state.statusError = false
       }
+      saveActiveJobSnapshot(state.currentJob, mode)
       await Promise.all([refreshAccounts(), refreshLinks()])
     }
   } catch (error) {
-    setStatus(`轮询失败：${cleanError(error)}`, true)
+    state.statusText = `轮询失败：${cleanError(error)}`
+    state.statusError = true
   }
 }
 
@@ -1463,19 +1526,24 @@ async function retryFailedAccounts() {
   await startWithEmails(emails, '重试提取')
 }
 
-function startPolling() {
-  stopPolling()
-  pollJob()
-  timer = window.setInterval(pollJob, 3000)
+function startPolling(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
+  stopPolling(mode)
+  pollJob(mode)
+  pollTimers[mode] = window.setInterval(() => pollJob(mode), 3000)
 }
 
-function stopPolling() {
-  if (timer) window.clearInterval(timer)
-  timer = null
+function stopPolling(mode = null) {
+  const modes = mode ? [mode] : Object.keys(pollTimers)
+  for (const item of modes) {
+    if (pollTimers[item]) window.clearInterval(pollTimers[item])
+    pollTimers[item] = null
+  }
 }
 
 async function cancelJob() {
-  const ids = activeJobIds.value.length ? [...activeJobIds.value] : [activeJobId.value].filter(Boolean)
+  const mode = isTempExtract.value ? 'tempExtract' : 'extract'
+  const state = taskStateForMode(mode)
+  const ids = state.activeJobIds.length ? [...state.activeJobIds] : [state.activeJobId].filter(Boolean)
   if (!ids.length) return
   cancelling.value = true
   try {
@@ -1483,10 +1551,10 @@ async function cancelJob() {
       if (!isJobNotFound(error)) throw error
       return null
     })))
-    await pollJob()
+    await pollJob(mode)
   } catch (error) {
     if (isJobNotFound(error)) {
-      clearActiveJob()
+      clearActiveJob({ mode })
       await Promise.all([refreshAccounts(), refreshLinks()])
       setStatus('任务已不存在或后端已重启，已清理当前任务状态。', true)
       return
@@ -1656,6 +1724,27 @@ function makeKkPaymentId(prefix = 'kk-pay') {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+function kkPaymentDetailsExpanded(id) {
+  return expandedKkPaymentDetailIds.value.has(String(id || ''))
+}
+
+function toggleKkPaymentDetails(id) {
+  const key = String(id || '').trim()
+  if (!key) return
+  const next = new Set(expandedKkPaymentDetailIds.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedKkPaymentDetailIds.value = next
+}
+
+function collapseKkPaymentDetails(ids) {
+  const removeIds = new Set((Array.isArray(ids) ? ids : [ids]).map(item => String(item || '').trim()).filter(Boolean))
+  if (!removeIds.size) return
+  const next = new Set(expandedKkPaymentDetailIds.value)
+  for (const id of removeIds) next.delete(id)
+  expandedKkPaymentDetailIds.value = next
+}
+
 function normalizeKkPaymentUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '')
 }
@@ -1665,6 +1754,7 @@ function kakaoLinkImportable(link) {
 }
 
 function kkPaymentLinkInvalid(item) {
+  if (String(item?.status || '').toLowerCase() === 'success') return false
   return !normalizeKkPaymentUrl(item?.paymentUrl || item?.value) || kakaoLinkExpired(item)
 }
 
@@ -1675,6 +1765,7 @@ function kkPaymentTaskFilterStatus(item) {
 }
 
 function kakaoPaymentLinkSummary(item) {
+  if (String(item?.status || '').toLowerCase() === 'success') return '支付成功'
   if (!normalizeKkPaymentUrl(item?.paymentUrl || item?.value)) return '无链接'
   return kakaoLinkExpired(item) ? '链接已失效' : 'NicePay 链接已保存'
 }
@@ -1781,7 +1872,7 @@ function normalizeKkPaymentItem(raw) {
   const orderId = String(raw.orderId || raw.order_id || raw.id || '').trim()
   const customerToken = String(raw.customerToken || raw.customer_token || raw.token || '').trim()
   const rawStatus = String(raw.status || (paymentUrl ? 'pending' : 'failed')).toLowerCase()
-  const pausedByReload = rawStatus === 'running' && orderId && customerToken
+  const resumableOrder = rawStatus === 'running' && orderId && (customerToken || raw.cdk)
   return {
     id: String(raw.queueId || raw.queue_id || raw.id || makeKkPaymentId('link')),
     linkId,
@@ -1793,8 +1884,11 @@ function normalizeKkPaymentItem(raw) {
     orderId,
     orderNo: String(raw.orderNo || raw.order_no || '').trim(),
     customerToken,
-    status: pausedByReload ? 'needs_action' : rawStatus,
-    message: pausedByReload ? '页面刷新导致轮询暂停，可点击“提交/查询”继续查询。' : String(raw.message || raw.error || raw.problemReason || raw.problem_reason || '').trim(),
+    workerId: String(raw.workerId || raw.worker_id || raw.scannerId || raw.scanner_id || '').trim(),
+    workerName: String(raw.workerName || raw.worker_name || raw.scannerName || raw.scanner_name || '').trim(),
+    workerLabel: String(raw.workerLabel || raw.worker_label || '').trim(),
+    status: resumableOrder ? 'needs_action' : rawStatus,
+    message: resumableOrder ? '已有订单，可点击“提交/查询”继续查询。' : String(raw.message || raw.error || raw.problemReason || raw.problem_reason || '').trim(),
     created_at: raw.created_at || raw.createdAt || '',
     created_at_ts: raw.created_at_ts || raw.createdAtTs || 0,
     kakao_expires_at_ts: raw.kakao_expires_at_ts || raw.kakaoExpiresAtTs || raw.kakaoExpiresAt || 0,
@@ -1968,6 +2062,7 @@ function releaseKkPaymentCdkForLink(id, message = '') {
 function removeKkPaymentLink(id) {
   releaseKkPaymentCdkForLink(id, '关联账号已移除，CDK 已释放。')
   kkPaymentLinks.value = kkPaymentLinks.value.filter(item => item.id !== id)
+  collapseKkPaymentDetails(id)
   kkPaymentStatusText.value = '已移除支付账号。'
   saveKkPaymentState()
 }
@@ -1975,6 +2070,7 @@ function removeKkPaymentLink(id) {
 function clearKkPaymentLinks() {
   for (const item of kkPaymentLinks.value) releaseKkPaymentCdkForLink(item.id, '账号池已清空，CDK 已释放。')
   kkPaymentLinks.value = []
+  expandedKkPaymentDetailIds.value = new Set()
   kkPaymentStatusText.value = '已清空支付账号池。'
   saveKkPaymentState()
 }
@@ -1997,6 +2093,7 @@ function clearInvalidKkPaymentLinks() {
   const invalidIds = new Set(kkPaymentLinks.value.filter(kkPaymentLinkInvalid).map(item => item.id))
   for (const id of invalidIds) releaseKkPaymentCdkForLink(id, '关联链接已失效并清理，CDK 已释放。')
   kkPaymentLinks.value = kkPaymentLinks.value.filter(item => !invalidIds.has(item.id))
+  collapseKkPaymentDetails(Array.from(invalidIds))
   kkPaymentStatusText.value = invalidIds.size ? `已清理 ${before - kkPaymentLinks.value.length} 条失效账号链接。` : '没有可清理的失效链接。'
   saveKkPaymentState()
 }
@@ -2008,6 +2105,7 @@ function clearFinishedKkPayments() {
   const removableIds = new Set(kkPaymentLinks.value.filter(item => kkPaymentLinkInvalid(item) || removableStatuses.includes(item.status)).map(item => item.id))
   for (const id of removableIds) releaseKkPaymentCdkForLink(id, '关联任务已结束或失效，CDK 已释放。')
   kkPaymentLinks.value = kkPaymentLinks.value.filter(item => !removableIds.has(item.id))
+  collapseKkPaymentDetails(Array.from(removableIds))
   kkPaymentCdks.value = kkPaymentCdks.value.filter(item => !['used', 'failed'].includes(item.status))
   kkPaymentStatusText.value = `已清理 ${beforeLinks - kkPaymentLinks.value.length} 个账号、${beforeCdks - kkPaymentCdks.value.length} 枚 CDK。`
   saveKkPaymentState()
@@ -2066,6 +2164,46 @@ function kkCustomerOrderPayload(data) {
   return { payload, order }
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    const text = String(value ?? '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function kkOrderWorkerInfo(data) {
+  const { payload, order } = kkCustomerOrderPayload(data)
+  const objects = [order.worker, order.scanner, order.assignee, order.operator, order.assignment, payload.worker, payload.scanner, payload.assignee, payload.operator, payload.assignment]
+    .filter(item => item && typeof item === 'object')
+  const id = firstText(
+    order.workerId, order.worker_id, order.currentWorkerId, order.current_worker_id, order.assignedWorkerId, order.assigned_worker_id,
+    order.scannerId, order.scanner_id, order.operatorId, order.operator_id, order.assigneeId, order.assignee_id,
+    payload.workerId, payload.worker_id, payload.currentWorkerId, payload.current_worker_id, payload.assignedWorkerId, payload.assigned_worker_id,
+    payload.scannerId, payload.scanner_id, payload.operatorId, payload.operator_id, payload.assigneeId, payload.assignee_id,
+    ...objects.flatMap(item => [item.id, item.workerId, item.worker_id, item.scannerId, item.scanner_id, item.operatorId, item.operator_id, item.userId, item.user_id, item.uid, item.email]),
+  )
+  const name = firstText(
+    order.workerName, order.worker_name, order.scannerName, order.scanner_name, order.operatorName, order.operator_name,
+    payload.workerName, payload.worker_name, payload.scannerName, payload.scanner_name, payload.operatorName, payload.operator_name,
+    ...objects.flatMap(item => [item.name, item.nickname, item.username, item.displayName, item.display_name, item.label]),
+  )
+  return { id, name, label: [id, name].filter(Boolean).join(' / ') }
+}
+
+function applyKkOrderWorkerInfo(item, data) {
+  const info = kkOrderWorkerInfo(data)
+  if (!item || (!info.id && !info.name)) return false
+  item.workerId = info.id || item.workerId || ''
+  item.workerName = info.name || item.workerName || ''
+  item.workerLabel = info.label || [item.workerId, item.workerName].filter(Boolean).join(' / ')
+  return true
+}
+
+function kkPaymentWorkerText(item) {
+  return firstText(item?.workerLabel, [item?.workerId, item?.workerName].filter(Boolean).join(' / '), item?.workerId, item?.workerName, '-')
+}
+
 function kkOrderProblemReason(data, fallback = '') {
   const { payload, order } = kkCustomerOrderPayload(data)
   const error = payload.error || data?.error || {}
@@ -2122,10 +2260,11 @@ function applyKkPaymentCdkSnapshot(cdk, data, prefix = '已同步订单额度') 
 
 async function waitKkPaymentOrder(link) {
   for (;;) {
-    if (componentUnmounted) return { status: 'paused', message: '页面刷新或切换导致轮询暂停，可重新进入后继续查询。' }
+    if (componentUnmounted) return { status: 'needs_action', message: '已有订单，可点击“提交/查询”继续查询。' }
     const data = await api.getKakaoPayKkPaymentOrder(link.orderId, link.customerToken, link.cdk, link.accountEmail)
     const { payload, order } = kkCustomerOrderPayload(data)
     const status = String(order.status || payload.status || data.status || '').toLowerCase()
+    applyKkOrderWorkerInfo(link, data)
     link.message = kkOrderProblemReason(data, externalOrderStatusText(status))
     if (KK_PAYMENT_TERMINAL_STATUSES.has(status)) return { ...order, status, account_email: order.account_email || data.account_email || link.accountEmail }
     await new Promise(resolve => window.setTimeout(resolve, 2000))
@@ -2165,18 +2304,17 @@ async function runKkPaymentTask(item) {
       item.orderId = String(order.id || order.order_id || order.orderId || '').trim()
       item.orderNo = String(order.orderNo || order.order_no || '').trim()
       item.customerToken = String(payload.customerToken || payload.customer_token || payload.token || '').trim()
+      applyKkOrderWorkerInfo(item, submitted)
       if (!item.orderId) throw new Error('KK 客户支付 API 未返回 order id')
       if (!applyKkPaymentCdkSnapshot(cdk, submitted, '订单创建后额度')) markKkPaymentCdkSubmitted(cdk, item)
     }
     const job = await waitKkPaymentOrder(item)
+    applyKkOrderWorkerInfo(item, job)
     if (['success', 'succeeded', 'paid', 'completed'].includes(job.status)) {
       item.status = 'success'
       item.message = kkOrderProblemReason(job, '支付成功，账号已标记 Plus / Kakao。')
       removeAccountFromKakaoPool(job.account_email || item.accountEmail)
       await Promise.all([refreshAccounts(), refreshLinks()])
-    } else if (job.status === 'paused') {
-      item.status = 'needs_action'
-      item.message = job.message || '页面刷新或切换导致轮询暂停，可点击“提交/查询”继续查询。'
     } else {
       item.status = kkPaymentStatusFromOrderStatus(job.status)
       item.message = kkOrderProblemReason(job, `任务结束：${externalOrderStatusText(job.status)}`)
@@ -2226,6 +2364,7 @@ async function cancelKkPaymentOrder(item) {
     const data = await api.cancelKakaoPayKkPaymentOrder(item.orderId, item.customerToken, item.cdk)
     const { payload, order } = kkCustomerOrderPayload(data)
     const status = String(order.status || payload.status || 'cancelled').toLowerCase()
+    applyKkOrderWorkerInfo(item, data)
     item.status = kkPaymentStatusFromOrderStatus(status)
     item.message = kkOrderProblemReason(data, `订单${externalOrderStatusText(status)}。`)
     const cdk = kkPaymentCdks.value.find(row => row.id === item.cdkId || row.value === item.cdk)
@@ -2247,6 +2386,7 @@ async function resubmitKkPaymentOrder(item) {
     const data = await api.resubmitKakaoPayKkPaymentOrder(item.orderId, item.customerToken, item.cdk)
     const { payload, order } = kkCustomerOrderPayload(data)
     const status = String(order.status || payload.status || 'resubmitted').toLowerCase()
+    applyKkOrderWorkerInfo(item, data)
     item.status = kkPaymentStatusFromOrderStatus(status)
     item.message = kkOrderProblemReason(data, `订单${externalOrderStatusText(status)}，正在继续查询。`)
     const cdk = kkPaymentCdks.value.find(row => row.id === item.cdkId || row.value === item.cdk)
@@ -2300,6 +2440,7 @@ function applyKkOrder(item, data) {
   item.qualification = order.qualification || item.qualification || null
   item.payment = order.payment || item.payment || null
   item.subscription = order.subscription || item.subscription || null
+  applyKkOrderWorkerInfo(item, data)
   item.problemReason = kkOrderProblemReason(data, item.problemReason || '')
 }
 
@@ -2366,32 +2507,51 @@ function clearKkOrders() {
   kkStatusText.value = 'KK 支付订单已清空。'
 }
 
-async function restoreActiveJob() {
+async function restoreActiveJob(mode = 'extract') {
+  const state = taskStateForMode(mode)
   try {
-    const saved = JSON.parse(localStorage.getItem(JOB_STORAGE_KEY) || '{}')
+    let saved = JSON.parse(localStorage.getItem(extractJobStorageKey(mode)) || '{}')
+    if (mode === 'extract' && saved?.mode === 'tempExtract') return
+    if (mode === 'tempExtract' && !saved?.jobId && !saved?.jobIds?.length) {
+      const legacy = JSON.parse(localStorage.getItem(JOB_STORAGE_KEY) || '{}')
+      if (legacy?.mode === 'tempExtract') saved = legacy
+    }
     const jobIds = Array.isArray(saved?.jobIds)
       ? saved.jobIds.map(item => String(item || '').trim()).filter(Boolean)
       : [String(saved?.jobId || '').trim()].filter(Boolean)
     if (!jobIds.length) return
-    activeJobIds.value = jobIds
-    activeJobId.value = jobIds[0] || ''
-    activeJobStatus.value = String(saved.status || 'queued')
-    currentJob.value = {
+    const restoredStatus = String(saved.status || 'queued')
+    const terminal = TERMINAL_STATUSES.has(restoredStatus)
+    state.activeJobIds = terminal ? [] : jobIds
+    state.activeJobId = jobIds[0] || ''
+    state.activeJobStatus = restoredStatus
+    state.logs = Array.isArray(saved.logs) ? saved.logs : []
+    state.currentResult = saved.result && typeof saved.result === 'object' ? saved.result : null
+    state.lastFailedEmails = Array.isArray(saved.lastFailedEmails) ? saved.lastFailedEmails : []
+    state.currentJob = {
       id: jobIds.join(','),
-      status: activeJobStatus.value || 'queued',
+      jobIds,
+      status: state.activeJobStatus || 'queued',
       total: Number(saved.accountCount || 0),
-      completed: 0,
-      concurrency: Number(saved.concurrency || (saved.mode === 'tempExtract' ? tempForm.value.concurrency : form.value.concurrency) || 1),
-      running_count: 0,
-      temp: saved.mode === 'tempExtract',
+      completed: Number(saved.completed || 0),
+      concurrency: Number(saved.concurrency || (mode === 'tempExtract' ? tempForm.value.concurrency : form.value.concurrency) || 1),
+      running_count: Number(saved.runningCount || 0),
+      account_statuses: saved.accountStatuses && typeof saved.accountStatuses === 'object' ? saved.accountStatuses : {},
+      temp: mode === 'tempExtract',
     }
-    setStatus('已恢复 Kakao 提链任务，正在重新同步后端进度。')
-    await pollJob()
-    if (!componentUnmounted && activeJobIds.value.length && !TERMINAL_STATUSES.has(activeJobStatus.value)) startPolling()
+    state.statusText = String(saved.statusText || '') || (terminal
+      ? (mode === 'tempExtract' ? '已恢复 Kakao 临时提链任务状态。' : '已恢复 Kakao 提链任务状态。')
+      : (mode === 'tempExtract' ? '已恢复 Kakao 临时提链任务，正在重新同步后端进度。' : '已恢复 Kakao 提链任务，正在重新同步后端进度。'))
+    state.statusError = Boolean(saved.statusError)
+    if (terminal) return
+    await pollJob(mode)
+    if (!componentUnmounted && state.activeJobIds.length && !TERMINAL_STATUSES.has(state.activeJobStatus)) startPolling(mode)
   } catch (error) {
-    localStorage.removeItem(JOB_STORAGE_KEY)
-    clearActiveJob({ removeStored: false })
-    setStatus(`恢复任务失败：${cleanError(error)}`, true)
+    localStorage.removeItem(extractJobStorageKey(mode))
+    clearActiveJob({ removeStored: false, mode })
+    const stateAfterClear = taskStateForMode(mode)
+    stateAfterClear.statusText = `恢复任务失败：${cleanError(error)}`
+    stateAfterClear.statusError = true
   }
 }
 
@@ -2406,7 +2566,7 @@ onMounted(async () => {
   loadKkPaymentState()
   releaseExpiredTempCdkCooldowns()
   await reloadAll()
-  await restoreActiveJob()
+  await Promise.all([restoreActiveJob('extract'), restoreActiveJob('tempExtract')])
 })
 onUnmounted(() => {
   componentUnmounted = true

@@ -12,6 +12,8 @@ assert.match(page, /isICloudProvider\s*=\s*computed\(\(\)\s*=>\s*registerForm\.v
 assert.match(page, /api\.getICloudAccountsStatus\(\)/, 'register page loads iCloud pool status')
 assert.match(page, /api\.importICloudAccounts\(/, 'register page imports iCloud pool accounts')
 assert.match(page, /api\.deleteICloudAccounts\(/, 'register page deletes iCloud pool accounts')
+assert.match(page, /outlookPoolStatusFilter\.value\s*=\s*isICloudProvider\.value\s*\?\s*'available'\s*:\s*'all'/, 'iCloud pool defaults to available filter')
+assert.match(page, /outlookPoolStatus\.value\?\.all_accounts/, 'register page can render full iCloud status list from all_accounts')
 assert.match(
   page,
   /watch\(\s*\(\)\s*=>\s*registerForm\.value\.mailProvider[\s\S]*?loadOutlookPoolStatus\(\)/,

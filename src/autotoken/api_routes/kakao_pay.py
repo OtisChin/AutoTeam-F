@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -339,6 +340,11 @@ def _kakao_failure_stage(error: str) -> str:
     if "access token" in text or "token_" in text or "认证接口预检失败" in text:
         return "auth"
     return ""
+
+
+def _is_kakao_already_paid_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    return "user is already paid" in text or "user is already pai" in text
 
 
 def _set_account_status(email: str, status: str, *, error: str = "", job_id: str = "", failure_stage: str = "") -> dict[str, Any]:
@@ -856,6 +862,108 @@ def _set_job_running_delta(job_id: str, delta: int) -> None:
             job["running_count"] = max(0, int(job.get("running_count") or 0) + delta)
 
 
+def _job_proxy_pool(job_id: str) -> list[str] | None:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id) or {}
+        if "proxy_pool" not in job:
+            return None
+        pool = job.get("proxy_pool")
+        return [str(item or "").strip() for item in pool if str(item or "").strip()] if isinstance(pool, list) else []
+
+
+def _remove_job_proxy_from_pool(job_id: str, proxy: str, reason: str, *, email: str = "") -> None:
+    clean_proxy = str(proxy or "").strip()
+    if not clean_proxy:
+        return
+    removed = False
+    remaining = 0
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job or "proxy_pool" not in job:
+            return
+        pool = [str(item or "").strip() for item in (job.get("proxy_pool") or []) if str(item or "").strip()]
+        next_pool = [item for item in pool if item != clean_proxy]
+        removed = len(next_pool) != len(pool)
+        if removed:
+            job["proxy_pool"] = next_pool
+            bad = list(job.get("bad_proxies") or [])
+            if clean_proxy not in {str(item.get("proxy") if isinstance(item, dict) else item) for item in bad}:
+                bad.append({"proxy": clean_proxy, "reason": str(reason or ""), "email": str(email or ""), "removed_at": time.time()})
+            job["bad_proxies"] = bad[-200:]
+            remaining = len(next_pool)
+    if removed:
+        masked = _mask_proxy_for_log(clean_proxy)
+        suffix = f"，剩余 {remaining} 条"
+        _append_log(job_id, f"代理预检失败，已从代理池移除：{masked}{suffix}，原因：{reason}")
+
+
+def _proxy_fingerprint(proxy: str) -> str:
+    text = str(proxy or "").strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:8]
+
+
+def _mask_proxy_user(user: str) -> str:
+    text = str(user or "").strip()
+    if len(text) <= 12:
+        return text[:4] + "***" if text else ""
+    return f"{text[:8]}…{text[-6:]}"
+
+
+def _mask_proxy_for_log(proxy: str) -> str:
+    text = str(proxy or "").strip()
+    if not text:
+        return ""
+    fp = _proxy_fingerprint(text)
+    fp_suffix = f" fp={fp}" if fp else ""
+    if "@" in text:
+        prefix, suffix = text.rsplit("@", 1)
+        scheme = prefix.split("://", 1)[0] + "://" if "://" in prefix else ""
+        return f"{scheme}***@{suffix}{fp_suffix}"
+    parts = text.split(":")
+    if len(parts) >= 4:
+        return f"{parts[0]}:{parts[1]}:{_mask_proxy_user(parts[2])}:***{fp_suffix}"
+    return (text[:16] + "***" if len(text) > 20 else text) + fp_suffix
+
+
+def _proxy_label_from_pool(pool: list[str], proxy: str) -> str:
+    clean_proxy = str(proxy or "").strip()
+    fp = _proxy_fingerprint(clean_proxy)
+    try:
+        slot = [str(item or "").strip() for item in pool].index(clean_proxy) + 1
+    except ValueError:
+        slot = 0
+    total = len([item for item in pool if str(item or "").strip()])
+    if slot and total:
+        return f"proxy#{slot}/{total} fp={fp}"
+    return f"proxy fp={fp}" if fp else "proxy"
+
+
+def _job_proxy_label(job_id: str, proxy: str) -> str:
+    pool = _job_proxy_pool(job_id)
+    return _proxy_label_from_pool(pool or [], proxy)
+
+
+def _safe_bad_proxy_items(items: Any) -> list[dict[str, Any]]:
+    safe: list[dict[str, Any]] = []
+    source = items if isinstance(items, list) else []
+    for item in source:
+        if isinstance(item, dict):
+            proxy = str(item.get("proxy") or "").strip()
+            entry = {k: v for k, v in item.items() if k != "proxy"}
+        else:
+            proxy = str(item or "").strip()
+            entry = {}
+        if proxy:
+            masked = _mask_proxy_for_log(proxy)
+            entry["proxy"] = masked
+            entry["proxy_masked"] = masked
+            entry["proxy_fp"] = _proxy_fingerprint(proxy)
+        safe.append(entry)
+    return safe
+
+
 def _preflight_kakao_checkout_backend_proxy_url(proxy_url: str, access_token: str, region: str) -> tuple[bool, str]:
     token = str(access_token or "").strip()
     if not token:
@@ -962,7 +1070,13 @@ def _preflight_kakao_proxy_role(
     return True, proxy_url, ""
 
 
-def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log, max_attempts: int | None = None) -> KakaoPayJobConfig:
+def _preflight_kakao_proxies_or_raise(
+    cfg: KakaoPayJobConfig,
+    log,
+    max_attempts: int | None = None,
+    on_proxy_failed=None,
+    proxy_label_fn=None,
+) -> KakaoPayJobConfig:
     if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
         return cfg
     attempts = _proxy_preflight_attempt_limit(max_attempts)
@@ -972,9 +1086,18 @@ def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log, max_attempts:
         ("provider", 2, True),
     ]
     errors: list[str] = []
-    candidate_cfg = replace(cfg, direct_proxies=(cfg.direct_proxies[:1] if cfg.direct_proxies else []))
-
+    remaining_direct_proxies = [str(item or "").strip() for item in (cfg.direct_proxies or []) if str(item or "").strip()]
     for attempt in range(1, attempts + 1):
+        if cfg.direct_proxies and not remaining_direct_proxies:
+            break
+        candidate_proxies = remaining_direct_proxies[:] if remaining_direct_proxies else []
+        candidate_proxy = candidate_proxies[0] if candidate_proxies else ""
+        candidate_label = proxy_label_fn(candidate_proxy) if candidate_proxy and callable(proxy_label_fn) else ""
+        candidate_cfg = replace(
+            cfg,
+            direct_proxies=(candidate_proxies[:1] if candidate_proxies else []),
+            direct_proxy_label=candidate_label,
+        )
         preflighted: dict[str, str] = {}
         candidate_errors: list[str] = []
         for role, stage_index, require_auth in stage_specs:
@@ -991,6 +1114,10 @@ def _preflight_kakao_proxies_or_raise(cfg: KakaoPayJobConfig, log, max_attempts:
                 preflighted[role] = proxy_url
                 continue
             candidate_errors.append(f"{role}: {message}")
+            if candidate_proxy:
+                if callable(on_proxy_failed):
+                    on_proxy_failed(candidate_proxy, f"{role}: {message}")
+                remaining_direct_proxies = [item for item in remaining_direct_proxies if item != candidate_proxy]
             break
         if len(preflighted) == len(stage_specs):
             return replace(
@@ -1209,7 +1336,14 @@ def _kakao_temp_result_for_link(email: str, order_id: str, data: dict[str, Any])
 
 def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dict[str, Any], index: int, total: int, proxies: list[str]) -> dict[str, Any]:
     email = str(account.get("email") or "").strip()
-    proxies = proxies[:1] if proxies else []
+    initial_proxies = [str(item or "").strip() for item in (proxies or []) if str(item or "").strip()]
+    if initial_proxies and _job_proxy_pool(job_id) is None:
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            if job is not None and "proxy_pool" not in job:
+                job["proxy_pool"] = list(initial_proxies)
+                job["bad_proxies"] = list(job.get("bad_proxies") or [])
+    proxies = _rotate_proxies_for_account((_job_proxy_pool(job_id) if _job_proxy_pool(job_id) is not None else initial_proxies), index)
     started = time.monotonic()
     if _is_job_cancel_requested(job_id):
         _append_log(job_id, f"[{index}/{total}] 跳过账号：{email}（任务已取消）")
@@ -1235,6 +1369,11 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
             attempts = attempt
             if _is_job_cancel_requested(job_id) and attempt > 1:
                 raise RuntimeError(f"任务已取消，停止重试；最后错误: {last_error}")
+            pool_snapshot = _job_proxy_pool(job_id)
+            active_proxies = pool_snapshot if pool_snapshot is not None else initial_proxies
+            if initial_proxies and not active_proxies and not (req.kookeey_user and req.kookeey_pass):
+                raise RuntimeError("代理池已无可用代理（预检失败代理已移除）")
+            rotated_proxies = _rotate_proxies_for_account(active_proxies, index + attempt - 1)
             account_log(f"第 {attempt}/{max_attempts} 次尝试：{email}")
             cfg = KakaoPayJobConfig(
                 access_token=token,
@@ -1243,10 +1382,16 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
                 kookeey_pass=str(req.kookeey_pass or ""),
                 kookeey_endpoint=str(req.kookeey_endpoint or "gate.kookeey.info:1000").strip(),
                 region=(req.region or "KR").strip().upper() or "KR",
-                direct_proxies=proxies,
+                direct_proxies=rotated_proxies,
             )
             try:
-                cfg = _preflight_kakao_proxies_or_raise(cfg, account_log, req.proxy_preflight_attempts)
+                cfg = _preflight_kakao_proxies_or_raise(
+                    cfg,
+                    account_log,
+                    req.proxy_preflight_attempts,
+                    on_proxy_failed=lambda proxy, reason: _remove_job_proxy_from_pool(job_id, proxy, reason, email=email),
+                    proxy_label_fn=lambda proxy: _job_proxy_label(job_id, proxy),
+                )
                 result = generate_kakao_trial(cfg, log=account_log)
                 break
             except Exception as exc:
@@ -1279,9 +1424,9 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
                         "error": error_item,
                         "status": status,
                     }
-                if pix_routes._is_already_paid_error(last_error):
+                if _is_kakao_already_paid_error(last_error) or pix_routes._is_already_paid_error(last_error):
                     _mark_account_plus_kakao(email, last_error)
-                    status = _set_account_status(email, KAKAO_STATUS_SUCCESS, error=last_error, job_id=job_id)
+                    status = _set_account_status(email, KAKAO_STATUS_PAID, error=last_error, job_id=job_id)
                     return {"skipped": True, "email": email, "reason": "账号已是 Plus，已标记绑定渠道 Kakao Pay", "status": status}
                 if pix_routes._is_token_invalidated_error(last_error) or pix_routes._is_no_organization_error(last_error):
                     cleanup = _delete_invalid_account(email)
@@ -1304,6 +1449,21 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
                         "status": status,
                         "account_deleted": False,
                     }
+                if _kakao_failure_stage(last_error) == "approve_blocked":
+                    status = _set_account_status(email, KAKAO_STATUS_FAILED, error=last_error, job_id=job_id, failure_stage="approve_blocked")
+                    _append_log(job_id, f"[{index}/{total}] Kakao approve 被拦截，停止重试避免继续消耗代理：{email}")
+                    return {
+                        "ok": False,
+                        "email": email,
+                        "error": {
+                            "email": email,
+                            "elapsed_s": round(time.monotonic() - started, 1),
+                            "attempts": attempt,
+                            "error": last_error,
+                            "failure_stage": "approve_blocked",
+                        },
+                        "status": status,
+                    }
                 account_log(f"第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
                 if attempt >= max_attempts:
                     raise
@@ -1319,6 +1479,11 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
         return {"ok": True, "email": email, "success": compact, "status": status}
     except Exception as exc:
         error = str(exc)
+        if _is_kakao_already_paid_error(error) or pix_routes._is_already_paid_error(error):
+            _mark_account_plus_kakao(email, error)
+            status = _set_account_status(email, KAKAO_STATUS_PAID, error=error, job_id=job_id)
+            _append_log(job_id, f"[{index}/{total}] 提链发现账号已支付，已标记 Kakao Pay：{email}")
+            return {"skipped": True, "email": email, "reason": "账号已是 Plus，已标记绑定渠道 Kakao Pay", "status": status}
         failure_stage = _kakao_failure_stage(error)
         item = {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "attempts": attempts or 1, "error": error, "failure_stage": failure_stage}
         status = _set_account_status(email, KAKAO_STATUS_FAILED, error=error, job_id=job_id, failure_stage=failure_stage)
@@ -1383,6 +1548,11 @@ def _run_temp_batch_account(job_id: str, account: dict[str, Any], cdk: str, inde
         return {"ok": True, "email": email, "success": compact, "status": status}
     except Exception as exc:
         error = str(exc) or type(exc).__name__
+        if _is_kakao_already_paid_error(error) or pix_routes._is_already_paid_error(error):
+            _mark_account_plus_kakao(email, error)
+            status = _set_account_status(email, KAKAO_STATUS_PAID, error=error, job_id=job_id, failure_stage="")
+            _append_log(job_id, f"[{index}/{total}] 临时提链发现账号已支付，已标记 Kakao Pay：{email}")
+            return {"skipped": True, "email": email, "reason": "账号已是 Plus，已标记绑定渠道 Kakao Pay", "status": status}
         failure_stage = _kakao_failure_stage(error) or "temp_extract"
         item = {
             "email": email,
@@ -1521,7 +1691,7 @@ def _run_batch_job(job_id: str, req: KakaoPayBatchStartRequest) -> None:
         if not proxies and (not req.kookeey_user or not req.kookeey_pass):
             raise RuntimeError("请填写代理")
         if len(proxies) > 1:
-            log(f"Kakao Pay 仅使用首条代理模板，其余 {len(proxies) - 1} 条已忽略")
+            log(f"Kakao Pay 代理池轮换已启用：{len(proxies)} 条，按账号与预检尝试自动切换")
         concurrency = _batch_concurrency(req, len(accounts))
         successes: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
@@ -1537,6 +1707,8 @@ def _run_batch_job(job_id: str, req: KakaoPayBatchStartRequest) -> None:
             JOBS[job_id]["concurrency"] = concurrency
             JOBS[job_id]["running_count"] = 0
             JOBS[job_id]["account_statuses"] = account_statuses
+            JOBS[job_id]["proxy_pool"] = list(proxies)
+            JOBS[job_id]["bad_proxies"] = []
         proxy_pool = f"，代理池={len(proxies)}" if proxies else ""
         log(f"Kakao Pay 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，目标国家={req.region}{proxy_pool}")
         completed = 0
@@ -1600,7 +1772,7 @@ def _job_snapshot(job_id: str) -> dict[str, Any]:
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
-        return {"id": job["id"], "status": job["status"], "logs": list(job["logs"]), "result": job["result"], "error": job["error"], "created_at": job["created_at"], "finished_at": job["finished_at"], "account_email": job.get("account_email") or "", "total": job.get("total") or 0, "completed": job.get("completed") or 0, "concurrency": job.get("concurrency") or 1, "running_count": job.get("running_count") or 0, "cancel_requested": bool(job.get("cancel_requested")), "skipped": job.get("skipped") or [], "account_statuses": job.get("account_statuses") or {}, "temp": bool(job.get("temp")), "external_jobs": job.get("external_jobs") or {}}
+        return {"id": job["id"], "status": job["status"], "logs": list(job["logs"]), "result": job["result"], "error": job["error"], "created_at": job["created_at"], "finished_at": job["finished_at"], "account_email": job.get("account_email") or "", "total": job.get("total") or 0, "completed": job.get("completed") or 0, "concurrency": job.get("concurrency") or 1, "running_count": job.get("running_count") or 0, "cancel_requested": bool(job.get("cancel_requested")), "skipped": job.get("skipped") or [], "account_statuses": job.get("account_statuses") or {}, "temp": bool(job.get("temp")), "external_jobs": job.get("external_jobs") or {}, "proxy_pool_count": len(job.get("proxy_pool") or []), "bad_proxies": _safe_bad_proxy_items(job.get("bad_proxies") or [])}
 
 
 def create_kakao_pay_router() -> APIRouter:

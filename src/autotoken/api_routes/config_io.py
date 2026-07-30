@@ -255,9 +255,15 @@ def _load_icloud_pool_status(target: Path) -> dict[str, Any]:
     from autotoken.mail.base import normalize_email_addr
     from autotoken.mail.icloud import ICloudMailProvider
     from autotoken.storage.accounts import load_accounts
+    from autotoken.storage.icloud_pool import unavailable_email_records
 
     content = read_text(target) if target.exists() else ""
-    registered_emails = {normalize_email_addr(account.get("email")) for account in load_accounts() if account.get("email")}
+    local_accounts = {
+        normalize_email_addr(account.get("email")): account
+        for account in load_accounts()
+        if account.get("email")
+    }
+    unavailable_records = unavailable_email_records()
     skipped_emails = ICloudMailProvider._registered_emails()
 
     entries: list[dict[str, Any]] = []
@@ -272,15 +278,28 @@ def _load_icloud_pool_status(target: Path) -> dict[str, Any]:
         if email in seen:
             continue
         seen.add(email)
-        registered = email in registered_emails
-        unavailable = email in skipped_emails and not registered
+        local_account = local_accounts.get(email) or {}
+        local_status = str(local_account.get("status") or "").strip().lower()
+        last_error = str(local_account.get("last_error") or "").strip().lower()
+        unavailable_record = unavailable_records.get(email) or {}
+        unavailable_source = str(unavailable_record.get("source") or "").strip().lower()
+        local_unavailable = (
+            email in unavailable_records
+            or local_status == "fail"
+            or "account_deactivated" in last_error
+        )
+        registered = bool(local_account) and not local_unavailable
+        unavailable = local_unavailable or (email in skipped_emails and not registered)
         status = "registered" if registered else ("unavailable" if unavailable else "available")
+        unavailable_reason = last_error or unavailable_source
         entries.append(
             {
                 "email": account.email,
                 "status": status,
                 "registered": registered,
                 "available": status == "available",
+                "unavailable": status == "unavailable",
+                "unavailable_reason": unavailable_reason if status == "unavailable" else "",
                 "has_receive_code_url": bool(account.receive_code_url),
             }
         )
@@ -288,6 +307,7 @@ def _load_icloud_pool_status(target: Path) -> dict[str, Any]:
     registered_count = sum(1 for item in entries if item["status"] == "registered")
     unavailable_count = sum(1 for item in entries if item["status"] == "unavailable")
     available_count = sum(1 for item in entries if item["status"] == "available")
+    available_entries = [item for item in entries if item["status"] == "available"]
     return {
         "file": str(target),
         "total": len(entries),
@@ -295,7 +315,10 @@ def _load_icloud_pool_status(target: Path) -> dict[str, Any]:
         "registered": registered_count,
         "unavailable": unavailable_count,
         "invalid": invalid,
-        "accounts": entries[:500],
+        "accounts": available_entries[:500],
+        "all_accounts": entries[:500],
+        "registered_accounts": [item for item in entries if item["status"] == "registered"][:500],
+        "unavailable_accounts": [item for item in entries if item["status"] == "unavailable"][:500],
         "next_available_email": next((item["email"] for item in entries if item["status"] == "available"), ""),
     }
 

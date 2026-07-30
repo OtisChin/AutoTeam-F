@@ -180,8 +180,11 @@ class ICloudMailProvider(MailProvider):
     def _registered_emails() -> set[str]:
         try:
             from autotoken.storage.accounts import load_accounts
+            from autotoken.storage.icloud_pool import list_unavailable_emails
 
-            return {normalize_email_addr(a.get("email")) for a in load_accounts() if a.get("email")}
+            emails = {normalize_email_addr(a.get("email")) for a in load_accounts() if a.get("email")}
+            emails.update(list_unavailable_emails())
+            return emails
         except Exception:
             logger.debug("[icloud] 读取本地账号池失败，跳过已注册过滤", exc_info=True)
             return set()

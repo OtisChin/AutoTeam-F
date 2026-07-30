@@ -51,6 +51,32 @@ def test_extract_kakao_result_accepts_stripe_and_nicepay_redirects():
     assert kakao_pay.is_success(nicepay_fields) is True
 
 
+def test_extract_kakao_result_finds_nested_or_text_redirects():
+    nested = {
+        "setup_intent": {
+            "last_setup_error": None,
+            "payment_method_options": {
+                "kakao_pay": {
+                    "hosted_url": "https:\\/\\/pay.nicepay.co.kr\\/v1\\/checkout\\/pay\\/nested"
+                }
+            },
+        }
+    }
+
+    fields = kakao_pay.extract_kakao_result(nested, "cs_test")
+
+    assert fields["kakao_link"] == "https://pay.nicepay.co.kr/v1/checkout/pay/nested"
+    assert fields["provider_redirect_url"] == fields["kakao_link"]
+
+    text_fields = kakao_pay.extract_kakao_result(
+        {"_raw_text": 'window.location="https://pm-redirects.stripe.com/authorize/acct/test_nonce"'},
+        "cs_test",
+    )
+
+    assert text_fields["stripe_redirect_url"] == "https://pm-redirects.stripe.com/authorize/acct/test_nonce"
+    assert kakao_pay.is_success(text_fields) is True
+
+
 def test_sync_kakao_tax_region_posts_chatgpt_and_stripe_payloads():
     calls = []
 
@@ -115,6 +141,19 @@ def test_kakao_ipweb_proxy_keeps_provider_sid_when_aligning_region():
     assert "B_91859_JP___45_" in refreshed
     assert "B_91859_KR___45_" not in refreshed
     assert "91Q0vOGf" in refreshed
+    assert refreshed.startswith("gate2.ipweb.cc:7778:")
+    assert refreshed.endswith(":me2M30mCf9")
+
+
+def test_kakao_ipweb_proxy_supports_extended_segment_format():
+    proxy = "gate2.ipweb.cc:7778:B_91859_KR_2528__90_E9aeHKHX:me2M30mCf9"
+
+    refreshed, sid = kakao_pay.kakao_proxy_with_fresh_sid(proxy, "JP")
+
+    assert sid == "static"
+    assert kakao_pay._ipweb_proxy_region(proxy) == "KR"
+    assert "B_91859_JP_2528__90_E9aeHKHX" in refreshed
+    assert "B_91859_KR_2528__90_E9aeHKHX" not in refreshed
     assert refreshed.startswith("gate2.ipweb.cc:7778:")
     assert refreshed.endswith(":me2M30mCf9")
 
@@ -232,17 +271,23 @@ def test_generate_kakao_trial_syncs_tax_then_approves_and_polls_redirect(monkeyp
         return {"submission_attempt": {"state": "requires_approval"}}
 
     monkeypatch.setattr(kakao_pay, "_confirm_kakao_inline", fake_confirm)
-    monkeypatch.setattr(kakao_pay, "chatgpt_approve", lambda *args, **kwargs: calls.append(("approve", args[1], kwargs.get("country"))))
+    monkeypatch.setattr(kakao_pay, "chatgpt_approve", lambda *args, **kwargs: calls.append(("approve", args[1], args[3], kwargs.get("country"))))
     monkeypatch.setattr(kakao_pay, "resolve_kakao_redirect", lambda stripe, redirect_url, max_hops=3: "https://pay.nicepay.co.kr/v1/checkout/pay/test")
     monkeypatch.setattr(kakao_pay, "page_get", lambda *args, **kwargs: {
         "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/acct/test_nonce"}},
         "submission_attempt": {"state": "processing"},
     })
 
-    result = kakao_pay.generate_kakao_trial(kakao_pay.KakaoPayJobConfig(access_token="token", direct_proxies=["proxy"]))
+    result = kakao_pay.generate_kakao_trial(kakao_pay.KakaoPayJobConfig(
+        access_token="token",
+        direct_proxies=["seed"],
+        preflighted_checkout_proxy_url="checkout-proxy",
+        preflighted_promotion_proxy_url="promotion-proxy",
+        preflighted_provider_proxy_url="provider-proxy",
+    ))
 
     assert ("tax_sync", "cs_test", "KR") in calls
-    assert ("approve", "cs_test", "KR") in calls
+    assert ("approve", "cs_test", "http://checkout-proxy", "KR") in calls
     assert captured["return_url"].startswith("https://checkout.stripe.com/c/pay/cs_test?")
     assert "returned_from_redirect=true" in captured["return_url"]
     assert captured["billing"]["country"] == "KR"
@@ -362,3 +407,46 @@ def test_generate_kakao_trial_matches_open_source_kakao_flow(monkeypatch):
     assert result["fields"]["provider_redirect_url"] == "https://pay.nicepay.co.kr/v1/checkout/pay/test"
     assert result["fields"]["stripe_redirect_url"] == "https://pm-redirects.stripe.com/authorize/acct/test_nonce"
     assert result["fields"]["link_source"] == "stripe_checkout_approve_poll"
+
+
+def test_kakao_approve_refreshes_dynamic_sid_after_blocked_attempt(monkeypatch):
+    proxies = []
+    posts = []
+
+    class FakeSession:
+        def __init__(self, proxy_url):
+            self.proxy_url = proxy_url
+
+        def post(self, url, **kwargs):
+            posts.append((self.proxy_url, url))
+            if url.endswith("/approve") and len([item for item in posts if item[1].endswith("/approve")]) == 1:
+                return _JsonResponse({"result": "blocked"})
+            return _JsonResponse({"result": "approved"})
+
+    def fake_session(token, proxy_url, device_id):
+        proxies.append(proxy_url)
+        return FakeSession(proxy_url)
+
+    monkeypatch.setattr(kakao_pay, "build_kakao_chatgpt_session", fake_session)
+    monkeypatch.setattr(kakao_pay, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        kakao_pay,
+        "kakao_proxy_with_fresh_sid",
+        lambda proxy_url, region: (f"{proxy_url}|fresh-{region}", f"fresh-{region}"),
+    )
+
+    kakao_pay.chatgpt_approve(
+        "token",
+        "cs_test",
+        "openai_llc",
+        "socks5h://user-region-KR-sid-old-t-120:pass@example.com:3000",
+        "device",
+        lambda _message: None,
+        country="KR",
+    )
+
+    approve_proxies = [proxy for proxy, url in posts if url.endswith("/approve")]
+    assert approve_proxies == [
+        "socks5h://user-region-KR-sid-old-t-120:pass@example.com:3000",
+        "socks5h://user-region-KR-sid-old-t-120:pass@example.com:3000|fresh-KR",
+    ]

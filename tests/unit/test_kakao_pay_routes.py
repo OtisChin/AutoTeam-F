@@ -161,6 +161,81 @@ def test_batch_account_keeps_non_zero_amount_account(monkeypatch):
     assert deleted_sessions == []
 
 
+def test_batch_account_marks_already_paid_as_paid_status(monkeypatch):
+    email = "kakao-paid@example.com"
+    captured_updates = []
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: "token-" + value)
+    monkeypatch.setattr(kakao_pay.account_store, "ensure_session_only_account", lambda value: None)
+    monkeypatch.setattr(kakao_pay.account_store, "update_account", lambda email, **kwargs: captured_updates.append((email, kwargs)) or {"email": email, **kwargs})
+    monkeypatch.setattr(
+        kakao_pay,
+        "generate_kakao_trial",
+        lambda cfg, log: (_ for _ in ()).throw(RuntimeError("checkout failed: User is already pai")),
+    )
+    job_id = "kakao-paid-job"
+    kakao_pay.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+    req = kakao_pay.KakaoPayBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "host:1000:user-region-KR-sid-old-t-120:pass",
+    })
+
+    result = kakao_pay._run_batch_account(
+        job_id,
+        req,
+        {"email": email, "auth_file": "auth.json"},
+        1,
+        1,
+        kakao_pay._parse_proxies(req.proxies),
+    )
+
+    statuses = json.loads(kakao_pay.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert result["skipped"] is True
+    assert result["status"]["status"] == "paid"
+    assert statuses[email]["status"] == "paid"
+    assert captured_updates[0][0] == email
+    assert captured_updates[0][1]["account_type"] == "plus"
+    assert captured_updates[0][1]["last_bind_provider"] == "kakao_pay"
+    assert captured_updates[0][1]["last_bind_status"] == "success"
+
+
+def test_temp_batch_account_marks_already_paid_as_paid_status(monkeypatch):
+    email = "kakao-temp-paid@example.com"
+    captured_updates = []
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: "token-" + value)
+    monkeypatch.setattr(kakao_pay.account_store, "ensure_session_only_account", lambda value: None)
+    monkeypatch.setattr(kakao_pay.account_store, "update_account", lambda email, **kwargs: captured_updates.append((email, kwargs)) or {"email": email, **kwargs})
+    monkeypatch.setattr(kakao_pay, "_create_kakao_temp_external_order", lambda access_token, cdk: {"ok": True, "job": {"job_id": "kscan-paid", "status": "queued"}})
+    monkeypatch.setattr(
+        kakao_pay,
+        "_poll_kakao_temp_external_order",
+        lambda order_id, cdk, cancel_check, progress_callback=None, poll_error_callback=None: (_ for _ in ()).throw(RuntimeError("User is already paid")),
+    )
+    job_id = "kakao-temp-paid-job"
+    kakao_pay.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {}, "temp": True,
+        "external_jobs": {},
+    }
+
+    result = kakao_pay._run_temp_batch_account(job_id, {"email": email, "auth_file": "auth.json"}, "KSCAN-1", 1, 1)
+
+    statuses = json.loads(kakao_pay.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert result["skipped"] is True
+    assert result["status"]["status"] == "paid"
+    assert statuses[email]["status"] == "paid"
+    assert captured_updates[0][0] == email
+    assert captured_updates[0][1]["account_type"] == "plus"
+    assert captured_updates[0][1]["last_bind_provider"] == "kakao_pay"
+    assert captured_updates[0][1]["last_bind_status"] == "success"
+
+
 def test_preflight_kakao_proxies_preflights_same_seed_checkout_promotion_and_provider(monkeypatch):
     payment_calls = []
     auth_calls = []
@@ -256,7 +331,7 @@ def test_preflight_kakao_proxy_role_uses_configured_promotion_backend_region(mon
     assert backend_calls == ["JP"]
 
 
-def test_preflight_kakao_single_seed_retries_with_fresh_sid(monkeypatch):
+def test_preflight_kakao_single_seed_removes_failed_proxy_without_reusing_it(monkeypatch):
     payment_calls = []
     seed = "socks5h://user-region-KR-session-fixed-sessTime-180-sessAuto-1:pass@example.com:3000"
     counter = {"value": 0}
@@ -275,7 +350,7 @@ def test_preflight_kakao_single_seed_retries_with_fresh_sid(monkeypatch):
     with pytest.raises(RuntimeError, match="Kakao 代理预检失败"):
         kakao_pay._preflight_kakao_proxies_or_raise(cfg, lambda _message: None)
 
-    assert payment_calls == [f"{seed}|KR|sid{i}" for i in range(1, 11)]
+    assert payment_calls == [f"{seed}|KR|sid1"]
 
 
 def test_preflight_kakao_rejects_auth_ok_but_checkout_backend_challenged(monkeypatch):
@@ -293,7 +368,7 @@ def test_preflight_kakao_rejects_auth_ok_but_checkout_backend_challenged(monkeyp
         kakao_pay._preflight_kakao_proxies_or_raise(cfg, lambda _message: None)
 
 
-def test_preflight_kakao_ignores_extra_proxy_entries_when_first_template_is_challenged(monkeypatch):
+def test_preflight_kakao_rotates_extra_proxy_entries_when_template_is_challenged(monkeypatch):
     seed1 = "socks5h://user-region-KR-session-seed1-sessTime-180-sessAuto-1:pass@example.com:3000"
     seed2 = "socks5h://user-region-KR-session-seed2-sessTime-180-sessAuto-1:pass@example.com:3000"
     payment_calls = []
@@ -313,8 +388,57 @@ def test_preflight_kakao_ignores_extra_proxy_entries_when_first_template_is_chal
     with pytest.raises(RuntimeError, match="Kakao 代理预检失败"):
         kakao_pay._preflight_kakao_proxies_or_raise(cfg, lambda _message: None)
 
-    assert payment_calls == [f"{seed1}|KR|sid{i}" for i in range(1, 11)]
-    assert all(seed2 not in proxy_url for proxy_url in payment_calls)
+    assert len(payment_calls) == 2
+    assert seed1 in payment_calls[0]
+    assert seed2 in payment_calls[1]
+
+
+def test_preflight_kakao_logs_proxy_slot_label(monkeypatch):
+    logs: list[str] = []
+    seed1 = "proxy1.example:1000:user-region-KR-sid-old1-t-120:pass"
+    seed2 = "proxy2.example:1000:user-region-KR-sid-old2-t-120:pass"
+
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "payment ok"))
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth ok"))
+    monkeypatch.setattr(kakao_pay, "_preflight_kakao_checkout_backend_proxy_url", lambda proxy_url, access_token, region: (True, "checkout_backend ok"))
+
+    cfg = kakao_pay.KakaoPayJobConfig(access_token="token", direct_proxies=[seed2])
+
+    kakao_pay._preflight_kakao_proxies_or_raise(
+        cfg,
+        logs.append,
+        proxy_label_fn=lambda proxy: kakao_pay._proxy_label_from_pool([seed1, seed2], proxy),
+    )
+
+    assert any("proxy#2/2 fp=" in line and "direct-1" not in line for line in logs)
+
+
+def test_batch_account_rotates_proxy_pool_by_account_index(monkeypatch):
+    email = "rotate-kakao@example.com"
+    seen_direct_proxies = []
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: "token-" + value)
+
+    def fake_preflight(cfg, log, max_attempts=None, on_proxy_failed=None, proxy_label_fn=None):
+        seen_direct_proxies.append(list(cfg.direct_proxies))
+        return cfg
+
+    monkeypatch.setattr(kakao_pay, "_preflight_kakao_proxies_or_raise", fake_preflight)
+    monkeypatch.setattr(kakao_pay, "generate_kakao_trial", lambda cfg, log: {"ok": True, "fields": {"provider_redirect_url": "https://pay.nicepay.co.kr/rotated", "billing": {"country": "KR"}}})
+    job_id = "kakao-rotate-proxy-job"
+    kakao_pay.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 2,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+            "running_count": 0, "skipped": [], "account_statuses": {}, "proxy_pool": kakao_pay._parse_proxies("proxy-one:1000:user:pass\nproxy-two:1000:user:pass\nproxy-three:1000:user:pass"),
+    }
+    req = kakao_pay.KakaoPayBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy-one:1000:user:pass\nproxy-two:1000:user:pass\nproxy-three:1000:user:pass",
+    })
+
+    kakao_pay._run_batch_account(job_id, req, {"email": email, "auth_file": "auth.json"}, 2, 3, kakao_pay._parse_proxies(req.proxies))
+
+    assert seen_direct_proxies[0] == ["proxy-two:1000:user:pass", "proxy-three:1000:user:pass", "proxy-one:1000:user:pass"]
 
 
 def test_batch_account_stops_after_kakao_proxy_preflight_budget(monkeypatch):
@@ -360,7 +484,9 @@ def test_batch_account_stops_after_kakao_proxy_preflight_budget(monkeypatch):
 
     assert result["ok"] is False
     assert result["error"]["attempts"] == 1
-    assert len(preflighted) == 10
+    assert len(preflighted) == 6
+    assert kakao_pay.JOBS[job_id]["proxy_pool"] == []
+    assert len(kakao_pay.JOBS[job_id]["bad_proxies"]) == 6
     assert "Kakao 代理预检失败" in result["error"]["error"]
     assert any("代理预检已达到上限，停止真实提链" in line for line in kakao_pay.JOBS[job_id]["logs"])
 
@@ -409,16 +535,14 @@ def test_batch_account_uses_configured_proxy_preflight_attempts(monkeypatch):
     assert any("Kakao checkout 代理预检开始：2/2" in line for line in kakao_pay.JOBS[job_id]["logs"])
 
 
-def test_batch_account_preserves_deep_approval_error_when_later_preflight_fails(monkeypatch):
+def test_batch_account_stops_immediately_on_approve_blocked_without_burning_more_proxies(monkeypatch):
     email = "approve-blocked-kakao@example.com"
     calls = {"preflight": 0, "generate": 0}
     monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: "token-" + value)
 
-    def fake_preflight(cfg, log, max_attempts=None):
+    def fake_preflight(cfg, log, max_attempts=None, on_proxy_failed=None, proxy_label_fn=None):
         calls["preflight"] += 1
-        if calls["preflight"] == 1:
-            return cfg
-        raise RuntimeError("Kakao 代理预检失败: promotion: trace HTTP 200; chatgpt_home HTTP 403; html_challenge")
+        return cfg
 
     def fake_generate(cfg, log):
         calls["generate"] += 1
@@ -451,7 +575,9 @@ def test_batch_account_preserves_deep_approval_error_when_later_preflight_fails(
     assert result["ok"] is False
     assert result["error"]["failure_stage"] == "approve_blocked"
     assert "approve failed: unexpected result: 'blocked'" in result["error"]["error"]
-    assert "后续代理预检失败" in result["error"]["error"]
+    assert "后续代理预检失败" not in result["error"]["error"]
+    assert calls == {"preflight": 1, "generate": 1}
+    assert any("Kakao approve 被拦截，停止重试避免继续消耗代理" in line for line in kakao_pay.JOBS[job_id]["logs"])
     statuses = json.loads(kakao_pay.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses[email]["failure_stage"] == "approve_blocked"
 
@@ -463,6 +589,25 @@ def test_kakao_proxy_preflight_attempts_cap_at_one_hundred():
     })
 
     assert req.proxy_preflight_attempts == 100
+
+
+def test_job_snapshot_masks_bad_proxy_credentials():
+    job_id = "kakao-bad-proxy-snapshot"
+    raw_proxy = "gate2.ipweb.cc:7778:B_91859_KR_2528__90_E9aeHKHX:secret-pass"
+    kakao_pay.JOBS[job_id] = {
+        "id": job_id, "status": "running", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {}, "proxy_pool": [],
+        "bad_proxies": [{"proxy": raw_proxy, "reason": "checkout: html_challenge"}],
+    }
+
+    snapshot = kakao_pay._job_snapshot(job_id)
+
+    bad_proxy = snapshot["bad_proxies"][0]["proxy"]
+    assert "secret-pass" not in bad_proxy
+    assert "fp=" in bad_proxy
+    assert snapshot["bad_proxies"][0]["proxy_fp"]
 
 
 def test_kakao_routes_expose_job_and_link_management(monkeypatch):

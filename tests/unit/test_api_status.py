@@ -946,11 +946,14 @@ def test_post_import_icloud_accounts_appends_valid_unique_lines(tmp_path, monkey
 
 
 def test_get_icloud_accounts_status_marks_registered_and_redacts_links(tmp_path, monkeypatch):
+    from autotoken.storage import icloud_pool
+
     accounts_file = tmp_path / "icloud_accounts.txt"
     accounts_file.write_text(
         "\n".join(
             [
                 "registered@icloud.com----https://icloud-api.top/show/secret/registered@icloud.com",
+                "dead@icloud.com----https://icloud-api.top/show/secret/dead@icloud.com",
                 "Ready@icloud.com----https://icloud-api.top/show/secret/Ready@icloud.com",
             ]
         ),
@@ -959,16 +962,29 @@ def test_get_icloud_accounts_status_marks_registered_and_redacts_links(tmp_path,
 
     monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
     monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"ICLOUD_ACCOUNTS_FILE": str(accounts_file)})
-    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [{"email": "registered@icloud.com"}])
+    monkeypatch.setattr(icloud_pool, "STATE_FILE", tmp_path / "icloud_pool.json")
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.load_accounts",
+        lambda: [
+            {"email": "registered@icloud.com", "status": "active"},
+            {"email": "dead@icloud.com", "status": "fail", "last_error": "account_deactivated"},
+        ],
+    )
+    icloud_pool.mark_unavailable_email("dead@icloud.com", source="account_deactivated")
 
     result = _config_io_routes()["get_icloud_accounts_status"]()
 
-    assert result["total"] == 2
+    assert result["total"] == 3
     assert result["available"] == 1
     assert result["registered"] == 1
+    assert result["unavailable"] == 1
     assert result["next_available_email"] == "ready@icloud.com"
     assert {item["email"]: item["status"] for item in result["accounts"]} == {
+        "ready@icloud.com": "available",
+    }
+    assert {item["email"]: item["status"] for item in result["all_accounts"]} == {
         "registered@icloud.com": "registered",
+        "dead@icloud.com": "unavailable",
         "ready@icloud.com": "available",
     }
     serialized = json.dumps(result)

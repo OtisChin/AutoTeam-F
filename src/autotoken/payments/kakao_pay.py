@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import requests
 
@@ -59,6 +59,7 @@ class KakaoPayJobConfig:
     promotion_region: str = KAKAO_PROMOTION_COUNTRY
     provider_region: str = KAKAO_PROVIDER_COUNTRY
     direct_proxies: list[str] = field(default_factory=list)
+    direct_proxy_label: str = ""
     preflighted_checkout_proxy_url: str = ""
     preflighted_promotion_proxy_url: str = ""
     preflighted_provider_proxy_url: str = ""
@@ -104,7 +105,7 @@ def _align_kakao_proxy_region(proxy_url: str, region: str) -> str:
 
 
 def _ipweb_proxy_region(proxy_url: str) -> str:
-    match = re.search(r"B_\d+_([A-Z]{2})___[^_:@/?#]+_[A-Za-z0-9]+(?=[:@/?#])", str(proxy_url or ""), flags=re.I)
+    match = re.search(r"B_\d+_([A-Z]{2})_(?:[^:@/?#]*_)*[A-Za-z0-9]+(?=[:@/?#])", str(proxy_url or ""), flags=re.I)
     return match.group(1).upper() if match else ""
 
 
@@ -128,7 +129,8 @@ def build_kakao_dynamic_proxy(cfg: KakaoPayJobConfig, stage_index: int) -> tuple
             candidate = direct[0]
         proxy, sid = kakao_proxy_with_fresh_sid(candidate, region)
         suffix = f" sid={sid}" if sid and sid != "static" else " static"
-        return proxy, f"direct-1 region={region}{suffix}"
+        direct_label = str(getattr(cfg, "direct_proxy_label", "") or "").strip() or "direct-1"
+        return proxy, f"{direct_label} region={region}{suffix}"
     return build_kookeey_proxy(cfg.kookeey_user, cfg.kookeey_pass, cfg.kookeey_endpoint, region)
 
 
@@ -336,8 +338,56 @@ def _is_final_kakao_provider_url(url: str) -> bool:
     return host == "pay.nicepay.co.kr" or host.endswith(".nicepay.co.kr") or ("kakao" in host and not _is_stripe_pm_redirect_url(url))
 
 
+def find_kakao_redirect_url_string(payload: Any) -> str:
+    def normalize_text(value: Any) -> str:
+        text = str(value or "").strip().replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&")
+        try:
+            return unquote(text)
+        except Exception:
+            return text
+
+    def good_url(value: str) -> str:
+        text = normalize_text(value)
+        candidates = [text]
+        candidates.extend(re.findall(r"https?://[^\s\"'<>\\\\]+", text))
+        for candidate in candidates:
+            candidate = candidate.strip().rstrip("),.;")
+            if not candidate.startswith(("http://", "https://")):
+                continue
+            host = (urlsplit(candidate).netloc or "").lower()
+            if (
+                host == "pm-redirects.stripe.com"
+                or host.endswith(".pm-redirects.stripe.com")
+                or host == "pay.nicepay.co.kr"
+                or host.endswith(".nicepay.co.kr")
+                or "kakao" in host
+            ):
+                return candidate
+        return ""
+
+    if isinstance(payload, str):
+        return good_url(payload)
+    if isinstance(payload, dict):
+        for key in ("url", "redirect_url", "return_url", "hosted_url"):
+            found = find_kakao_redirect_url_string(payload.get(key))
+            if found:
+                return found
+        for value in payload.values():
+            found = find_kakao_redirect_url_string(value)
+            if found:
+                return found
+    if isinstance(payload, list):
+        for value in payload:
+            found = find_kakao_redirect_url_string(value)
+            if found:
+                return found
+    return ""
+
+
 def extract_kakao_result(payload: Any, cs_id: str = "") -> dict[str, str]:
     redirect_url, action_type = _redirect_url(payload)
+    if not redirect_url:
+        redirect_url = find_kakao_redirect_url_string(payload)
     fields = {
         "kakao_link": "",
         "provider_redirect_url": "",
@@ -370,7 +420,7 @@ def is_success(fields: dict[str, Any]) -> bool:
     return _is_kakao_provider_url(str(fields.get("kakao_link") or fields.get("provider_redirect_url") or fields.get("stripe_redirect_url") or ""))
 
 
-def resolve_kakao_redirect(stripe: requests.Session, redirect_url: str, max_hops: int = 3) -> str:
+def resolve_kakao_redirect(stripe: requests.Session, redirect_url: str, max_hops: int = 5) -> str:
     current = str(redirect_url or "").strip()
     for _ in range(max(1, int(max_hops or 1))):
         if not current:
@@ -519,10 +569,15 @@ def chatgpt_approve(
     *,
     country: str = "KR",
 ) -> None:
-    cg = build_kakao_chatgpt_session(access_token, proxy_url, device_id)
-    warm_chatgpt_checkout_context(cg, country, log)
     last_err = ""
     for attempt in range(1, 4):
+        approve_proxy = proxy_url
+        if attempt > 1 and proxy_url:
+            approve_proxy, sid = kakao_proxy_with_fresh_sid(proxy_url, country)
+            if sid and sid != "static":
+                log(f"approve attempt {attempt}: refresh proxy sid={sid}")
+        cg = build_kakao_chatgpt_session(access_token, approve_proxy, device_id)
+        warm_chatgpt_checkout_context(cg, country, log)
         try:
             resp = cg.post(
                 "https://chatgpt.com/backend-api/payments/checkout/approve",
@@ -774,8 +829,8 @@ def generate_kakao_trial(cfg: KakaoPayJobConfig, log: LogFn | None = None) -> di
             fields["billing"] = billing
             return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
-        log(f"{provider_region} approve + poll Kakao Pay")
-        chatgpt_approve(token, cs_id, processor, provider_proxy_url, device_id, log, country=provider_region)
+        log(f"{checkout_region} approve + {provider_region} poll Kakao Pay")
+        chatgpt_approve(token, cs_id, processor, checkout_proxy_url, device_id, log, country=checkout_region)
         last_err: dict[str, Any] = {}
         for i in range(1, 11):
             page_data = page_get(stripe, cs_id, pk, ctx)
