@@ -233,7 +233,7 @@
               </div>
             </div>
             <div v-if="recentResultFilter !== 'success'" v-for="item in currentResultErrors" :key="item.email" class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-              {{ item.email }}：{{ item.error }}
+              {{ item.email }}：{{ recentResultErrorText(item) }}
             </div>
             <div v-if="recentResultFilter === 'all'" v-for="item in currentResultSkipped" :key="item.email" class="rounded-lg border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-300">
               {{ item.email }}：{{ item.reason || '已跳过' }}
@@ -531,6 +531,12 @@ function accountStatus(account) {
   return accountJobStatus(account)?.status || account?.momo_status || 'pending'
 }
 
+function isOaicsUnsupportedMomoError(message) {
+  const text = String(message || '').trim().toLowerCase()
+  return text.includes('openai_custom_checkout_unsupported')
+    || text.includes('oaics checkout cannot use stripe payment_pages momo flow')
+}
+
 function accountStatusText(account) {
   const status = accountStatus(account)
   if (status === 'paid') return '已支付'
@@ -538,12 +544,19 @@ function accountStatusText(account) {
   if (status === 'ineligible') return '无资格'
   if (status === 'running') return '提链中'
   if (status === 'success') return '已提链'
+  if (status === 'failed' && isOaicsUnsupportedMomoError(accountStatusError(account))) return '提链失败（oaics 当前不支持）'
   if (status === 'failed') return '提链失败'
   return '未提链'
 }
 
 function accountStatusError(account) {
   return accountJobStatus(account)?.error || account?.momo_error || ''
+}
+
+function recentResultErrorText(item) {
+  const error = String(item?.error || '').trim()
+  if (isOaicsUnsupportedMomoError(error)) return '提链失败（oaics 当前不支持）'
+  return error || '提链失败'
 }
 
 function accountStatusClass(account) {

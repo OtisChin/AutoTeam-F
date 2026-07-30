@@ -387,6 +387,8 @@ def _should_retry_momo_error(message: str) -> bool:
         "缺少代理",
         "无 momo 资格",
         "无资格",
+        "openai_custom_checkout_unsupported",
+        "oaics checkout cannot use stripe payment_pages momo flow",
     )
     return not any(marker in text for marker in non_retry_markers)
 

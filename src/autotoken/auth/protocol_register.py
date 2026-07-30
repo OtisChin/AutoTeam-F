@@ -304,7 +304,7 @@ def _attach_oauth_phone_supplier(
 
     phone_state: dict[str, Any] = {"item": None, "finished": False}
     reservation_owner = str(email or f"protocol_register:{id(flow)}").strip()
-    setattr(flow, "_openai_phone_provider", provider)
+    flow._openai_phone_provider = provider
 
     def _is_retryable_supply_error(message: str) -> bool:
         text = str(message or "").strip().lower()
@@ -614,6 +614,46 @@ def _session_data_from_auth_result(result) -> dict:
         except Exception as exc:
             logger.warning("[协议注册] 构建协议 OAuth bundle 失败，仍保留 auth_session: %s", exc)
     return payload
+
+
+def check_email_registered(email: str, *, proxy: str | None = None) -> dict:
+    """Probe OpenAI auth to determine whether an email already has an account.
+
+    Returns a best-effort payload. ``known=False`` means the probe failed or
+    returned an unrecognized shape; callers should continue the normal
+    registration flow in that case.
+    """
+    target = str(email or "").strip()
+    if not target:
+        return {"known": False, "registered": False, "reason": "empty_email"}
+
+    AuthFlow, Config = _load_protocol_classes()
+    cfg = Config()
+    cfg.proxy = proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None
+    flow = AuthFlow(cfg)
+    _attach_flow_stage_logs(flow)
+    logger.info("[注册预检] 检测邮箱是否已注册: %s", target)
+    try:
+        csrf_token = flow.get_csrf_token()
+        auth_url = flow.get_auth_url(csrf_token)
+        device_id = flow.auth_oauth_init(auth_url)
+        sentinel = flow.get_sentinel_token(device_id)
+        is_new = flow.signup(target, sentinel)
+    except Exception as exc:
+        logger.warning("[注册预检] 邮箱检测失败，继续正常注册: %s: %s", target, exc)
+        return {"known": False, "registered": False, "reason": str(exc)}
+
+    page_type = str(getattr(flow, "_existing_page_type", "") or "")
+    verification_mode = str(getattr(flow, "_existing_email_verification_mode", "") or "")
+    registered = (not is_new) and bool(getattr(flow, "_is_existing_account", False))
+    reason = "email_already_registered" if registered else "email_available"
+    return {
+        "known": True,
+        "registered": registered,
+        "reason": reason,
+        "page_type": page_type,
+        "email_verification_mode": verification_mode,
+    }
 
 
 def register_once(

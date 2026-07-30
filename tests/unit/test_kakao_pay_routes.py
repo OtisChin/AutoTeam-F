@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from autotoken.api_routes import kakao_pay
 from autotoken.payments import kakao_pay as kakao_payment
@@ -108,9 +108,10 @@ def test_batch_job_generates_kakao_link_and_records_status(monkeypatch):
     saved_link = json.loads(kakao_pay.LINKS_FILE.read_text(encoding="utf-8"))[0]
     assert saved_link["account_email"] == email
     assert saved_link["kakao_link"] == "https://pay.nicepay.co.kr/v1/checkout/pay/test"
-    assert saved_link["kakao_ttl_seconds"] == 600
+    assert kakao_pay.KAKAO_LINK_TTL_SECONDS == 900
+    assert saved_link["kakao_ttl_seconds"] == kakao_pay.KAKAO_LINK_TTL_SECONDS
     assert saved_link["created_at_ts"] > 0
-    assert saved_link["kakao_expires_at_ts"] - saved_link["created_at_ts"] == 600
+    assert saved_link["kakao_expires_at_ts"] - saved_link["created_at_ts"] == kakao_pay.KAKAO_LINK_TTL_SECONDS
     statuses = json.loads(kakao_pay.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses[email]["status"] == "success"
 
@@ -569,7 +570,7 @@ def test_kakao_temp_batch_uses_selected_accounts_and_cdks(monkeypatch):
         index = len(created_calls)
         return {"ok": True, "job": {"job_id": f"job_{index}", "status": "queued"}}
 
-    def fake_poll(order_id, cdk, cancel_check, progress_callback=None):
+    def fake_poll(order_id, cdk, cancel_check, progress_callback=None, poll_error_callback=None):
         polled_calls.append((order_id, cdk, cancel_check()))
         if progress_callback:
             progress_callback({"job_id": order_id, "status": "extracting", "code": "FETCH_CHECKOUT", "message": "正在提取支付链接"})
@@ -603,7 +604,35 @@ def test_kakao_temp_batch_uses_selected_accounts_and_cdks(monkeypatch):
     assert any("FETCH_CHECKOUT" in line for line in job["logs"])
     saved_links = json.loads(kakao_pay.LINKS_FILE.read_text(encoding="utf-8"))
     assert [item["account_email"] for item in saved_links] == ["two@example.com", "one@example.com"]
-    assert saved_links[0]["kakao_ttl_seconds"] == 600
+    assert saved_links[0]["kakao_ttl_seconds"] == kakao_pay.KAKAO_LINK_TTL_SECONDS
+
+
+def test_kakao_temp_poll_retries_transient_read_timeout(monkeypatch):
+    calls = []
+    errors = []
+    sleeps = []
+
+    def fake_get(order_id, cdk):
+        calls.append((order_id, cdk))
+        if len(calls) == 1:
+            raise RuntimeError("Kakao 临时提链服务轮询失败：HTTPSConnectionPool(host='masi.cc.cd', port=443): Read timed out. (read timeout=20)")
+        return {"ok": True, "job": {"job_id": order_id, "status": "completed", "output": {"long_url": "https://pay.nicepay.co.kr/ok"}}}
+
+    monkeypatch.setattr(kakao_pay, "_get_kakao_temp_external_order", fake_get)
+    monkeypatch.setattr(kakao_pay.time, "sleep", lambda value: sleeps.append(value))
+
+    data = kakao_pay._poll_kakao_temp_external_order(
+        "job-timeout",
+        "KSCAN-1",
+        lambda: False,
+        poll_error_callback=lambda message, count: errors.append((message, count)),
+    )
+
+    assert data["job"]["status"] == "completed"
+    assert len(calls) == 2
+    assert sleeps == [2.0]
+    assert errors and errors[0][1] == 1
+    assert "继续等待" in errors[0][0]
 
 
 def test_kakao_kk_payment_order_routes_use_customer_api_headers(monkeypatch):
@@ -656,7 +685,7 @@ def test_kakao_kk_payment_order_routes_use_customer_api_headers(monkeypatch):
     polled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}", "GET")("order_kk", token="customer-token", cdk="")
 
     assert created["data"]["order"]["id"] == "order_kk"
-    assert calls[0][1] == "https://upi.i7wap.xyz/api/v1/customer/orders"
+    assert calls[0][1] == "https://customer.i7wap.xyz/api/v1/customer/orders"
     assert calls[0][2]["headers"]["X-CDK-Key"] == "PAY-CDK"
     assert calls[0][2]["json"]["channel"] == "KAKAO_KK"
     assert calls[0][2]["json"]["mode"] == "READY_LINK"
@@ -666,7 +695,52 @@ def test_kakao_kk_payment_order_routes_use_customer_api_headers(monkeypatch):
     assert calls[1][2]["headers"]["Authorization"] == "Bearer customer-token"
 
 
-def test_kakao_kk_payment_submit_uses_account_token_and_extracted_link(monkeypatch):
+def test_kakao_kk_payment_cdk_status_uses_customer_check_api(monkeypatch):
+    app = _app()
+    calls = []
+
+    class Resp:
+        ok = True
+        status_code = 200
+        text = '{"ok": true}'
+
+        def json(self):
+            return {
+                "ok": True,
+                "data": {
+                    "orders": [
+                        {
+                            "id": "order-1",
+                            "cdk": {
+                                "productType": "KAKAO_AT",
+                                "totalCount": 10,
+                                "usedCount": 2,
+                                "frozenCount": 1,
+                                "availableCount": 7,
+                            },
+                        }
+                    ]
+                },
+            }
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return Resp()
+
+    monkeypatch.setattr(kakao_pay.requests, "get", fake_get)
+
+    data = _endpoint(app, "/api/kakao-pay/kk-payment/cdk/status", "POST")(
+        kakao_pay.KakaoPayTempTicketRequest.model_validate({"cdk": "PAY-CDK"})
+    )
+
+    assert data["data"]["productType"] == "KAKAO_AT"
+    assert data["data"]["availableCount"] == 7
+    assert calls[0][0] == "https://customer.i7wap.xyz/api/v1/customer/orders"
+    assert calls[0][1]["headers"]["X-CDK-Key"] == "PAY-CDK"
+    assert calls[0][1]["params"] == {"page": 1, "pageSize": 100}
+
+
+def test_kakao_kk_payment_submit_uses_account_session_cookie_and_extracted_link(monkeypatch):
     app = _app()
     email = "pay@example.com"
     link_id = "link-1"
@@ -682,6 +756,7 @@ def test_kakao_kk_payment_submit_uses_account_token_and_extracted_link(monkeypat
         "country": "KR",
     })
     monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: f"token-for:{value}")
+    monkeypatch.setattr(kakao_pay, "load_auth_session", lambda value: {"cookie_header": "__Secure-next-auth.session-token=session-for-pay", "accessToken": f"access-for:{value}"})
 
     class SubmitResp:
         ok = True
@@ -708,12 +783,86 @@ def test_kakao_kk_payment_submit_uses_account_token_and_extracted_link(monkeypat
     assert data["account_email"] == email
     assert data["link_id"] == link_id
     assert data["payment_url"] == "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"
-    assert calls[0][0] == "https://upi.i7wap.xyz/api/v1/customer/orders"
+    assert calls[0][0] == "https://customer.i7wap.xyz/api/v1/customer/orders"
     assert calls[0][1]["headers"]["X-CDK-Key"] == "KK-CDK-1"
-    assert calls[0][1]["json"]["access_token"] == f"token-for:{email}"
+    assert calls[0][1]["json"]["session_cookie"] == "__Secure-next-auth.session-token=session-for-pay"
+    assert calls[0][1]["json"]["credential"] == "__Secure-next-auth.session-token=session-for-pay"
+    assert calls[0][1]["json"]["access_token"] == f"access-for:{email}"
     assert calls[0][1]["json"]["payment_url"] == "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"
     assert calls[0][1]["json"]["productType"] == "KAKAO_AT"
     assert kakao_pay.KK_PAYMENT_JOBS["kk-order-1"]["account_email"] == email
+
+
+def test_kakao_kk_payment_submit_preserves_new_channel_disabled_error(monkeypatch):
+    app = _app()
+    email = "channel-disabled@example.com"
+    link_id = "link-channel-disabled"
+    calls = []
+    kakao_pay._append_link({
+        "id": link_id,
+        "account_email": email,
+        "provider_redirect_url": "https://pay.nicepay.co.kr/v1/checkout/pay/channel-disabled",
+        "created_at_ts": 1785386400,
+        "kakao_expires_at_ts": 1785387300,
+        "country": "KR",
+    })
+    monkeypatch.setattr(kakao_pay, "_load_kakao_customer_credentials_for_email", lambda value: ("cookie-channel-disabled", f"token-for:{value}"))
+
+    class DisabledResp:
+        ok = False
+        status_code = 422
+        text = '{"error":{"code":"kakao_provider_error","message":"韩国 KK 渠道当前未开放 / Korea KK channel is disabled"}}'
+
+        def json(self):
+            return {"error": {"code": "kakao_provider_error", "message": "韩国 KK 渠道当前未开放 / Korea KK channel is disabled"}}
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return DisabledResp()
+
+    monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
+
+    with pytest.raises(HTTPException) as exc:
+        _endpoint(app, "/api/kakao-pay/kk-payment/submit", "POST")(
+            kakao_pay.KakaoPayKkPaymentSubmitRequest.model_validate({
+                "cdk": "KK-CDK-CHANNEL-DISABLED",
+                "linkId": link_id,
+                "paymentMethod": "kakao_pay",
+            })
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail["error"]["code"] == "kakao_provider_error"
+    assert len(calls) == 1
+    assert calls[0][0] == "https://customer.i7wap.xyz/api/v1/customer/orders"
+
+
+def test_kakao_kk_payment_cancel_and_resubmit_routes_call_customer_api(monkeypatch):
+    app = _app()
+    calls = []
+
+    class Resp:
+        ok = True
+        status_code = 200
+        text = '{"ok": true}'
+
+        def json(self):
+            return {"ok": True, "data": {"order": {"id": "order-cancel", "status": "CANCELLED", "problemReason": "customer_cancelled"}}}
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return Resp()
+
+    monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
+
+    cancelled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}/cancel", "POST")("order-cancel", token="customer-token", cdk="")
+    resubmitted = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}/resubmit", "POST")("order-cancel", token="", cdk="PAY-CDK")
+
+    assert cancelled["data"]["order"]["status"] == "CANCELLED"
+    assert calls[0][0] == "https://customer.i7wap.xyz/api/v1/customer/orders/order-cancel/cancel"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer customer-token"
+    assert calls[1][0] == "https://customer.i7wap.xyz/api/v1/customer/orders/order-cancel/resubmit"
+    assert calls[1][1]["headers"]["X-CDK-Key"] == "PAY-CDK"
 
 
 def test_mark_account_plus_kakao_sets_dashboard_plus_snapshot(monkeypatch):
@@ -734,3 +883,35 @@ def test_mark_account_plus_kakao_sets_dashboard_plus_snapshot(monkeypatch):
     assert updated["last_bind_provider"] == "kakao_pay"
     assert updated["last_bind_status"] == "success"
     assert updated["last_quota"]["plan_type"] == "plus"
+
+
+def test_kk_payment_success_ignores_fastapi_query_default_email(monkeypatch):
+    from fastapi import Query
+
+    captured = {}
+
+    def fake_mark_account_plus(email, message):
+        captured["email"] = email
+        captured["message"] = message
+        return {"email": email, "account_type": "plus", "last_bind_provider": "kakao_pay"}
+
+    monkeypatch.setattr(kakao_pay, "_mark_account_plus_kakao", fake_mark_account_plus)
+    monkeypatch.setattr(kakao_pay, "_set_account_status", lambda email, status, job_id="": captured.setdefault("status_email", email))
+
+    with kakao_pay.KK_PAYMENT_JOBS_LOCK:
+        kakao_pay.KK_PAYMENT_JOBS.clear()
+        kakao_pay.KK_PAYMENT_JOBS["kk-order-query-default"] = {
+            "account_email": "real@example.com",
+            "account_marked": False,
+            "account_update": {},
+        }
+
+    result = kakao_pay._mark_kk_payment_success_account(
+        "kk-order-query-default",
+        Query("", alias="accountEmail"),
+        "paid ok",
+    )
+
+    assert captured["email"] == "real@example.com"
+    assert captured["status_email"] == "real@example.com"
+    assert result["email"] == "real@example.com"

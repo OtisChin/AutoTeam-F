@@ -36,6 +36,7 @@ from autotoken.payments.us_paypal import (
 
 LogFn = Callable[[str], None]
 MOMO_COUNTRY = "VN"
+MOMO_PROMOTION_COUNTRY = "JP"
 MOMO_CURRENCY = "VND"
 MOMO_PROMO_ID = "plus-1-month-free"
 MOMO_STRIPE_VERSION = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
@@ -59,7 +60,7 @@ class MomoVnJobConfig:
     kookeey_endpoint: str = "gate.kookeey.info:1000"
     region: str = MOMO_COUNTRY
     checkout_region: str = MOMO_COUNTRY
-    promotion_region: str = MOMO_COUNTRY
+    promotion_region: str = MOMO_PROMOTION_COUNTRY
     provider_region: str = MOMO_COUNTRY
     direct_proxies: list[str] = field(default_factory=list)
     preflighted_checkout_proxy_url: str = ""
@@ -86,7 +87,7 @@ def _normalize_country(value: str, default: str = MOMO_COUNTRY) -> str:
 
 def _stage_region(cfg: MomoVnJobConfig, stage_index: int) -> str:
     if stage_index == 1:
-        return _normalize_country(cfg.promotion_region, MOMO_COUNTRY)
+        return _normalize_country(cfg.promotion_region, MOMO_PROMOTION_COUNTRY)
     if stage_index >= 2:
         return _normalize_country(cfg.provider_region, MOMO_COUNTRY)
     return _normalize_country(cfg.checkout_region or cfg.region, MOMO_COUNTRY)
@@ -152,6 +153,10 @@ def is_zero_amount(value: Any) -> bool:
 
 def is_momo_checkout_session_id(value: Any) -> bool:
     return str(value or "").startswith(MOMO_CHECKOUT_SESSION_PREFIXES)
+
+
+def is_openai_custom_checkout_session_id(value: Any) -> bool:
+    return str(value or "").startswith("oaics_")
 
 
 def _ctx() -> dict[str, str]:
@@ -591,6 +596,8 @@ def detect_momo_eligibility(cfg: MomoVnJobConfig, log: LogFn | None = None) -> d
         cs_id = str(data.get("checkout_session_id") or data.get("session_id") or data.get("id") or "")
         if not is_momo_checkout_session_id(cs_id):
             raise RuntimeError(f"checkout missing cs_id: {short(data)}")
+        if is_openai_custom_checkout_session_id(cs_id):
+            raise RuntimeError("openai_custom_checkout_unsupported: oaics checkout cannot use Stripe payment_pages MoMo flow")
         pk = str(data.get("publishable_key") or data.get("public_key") or extract_pk(data) or DEFAULT_STRIPE_PK)
         processor = str(data.get("processor_entity") or "openai_llc")
         ctx = _ctx()
@@ -634,22 +641,26 @@ def generate_momo_vn_trial(cfg: MomoVnJobConfig, log: LogFn | None = None) -> di
     cs_id = str(eligibility.get("cs_id") or "")
     if not is_momo_checkout_session_id(cs_id):
         raise RuntimeError("资格检测缺少 checkout session")
+    if is_openai_custom_checkout_session_id(cs_id):
+        raise RuntimeError("openai_custom_checkout_unsupported: oaics checkout cannot use Stripe payment_pages MoMo flow")
     processor = str(eligibility.get("processor") or "openai_llc")
     stripe_pk = str(eligibility.get("stripe_pk") or DEFAULT_STRIPE_PK)
     device_id = str(eligibility.get("device_id") or uuid.uuid4())
     billing = dict(eligibility.get("billing") or momo_billing())
     ctx = dict(eligibility.get("ctx") or _ctx())
+    promotion_region = _stage_region(cfg, 1)
+    provider_region = _stage_region(cfg, 2)
 
     dyn2, sid2 = build_momo_dynamic_proxy(cfg, 1)
-    log(f"[1/4] VN checkout/update 注入 promo sid={sid2}")
+    log(f"[1/4] {promotion_region} checkout/update 注入 promo sid={sid2}")
     with pix_proxy_context(cfg.local_proxy, dyn2, log) as chain2:
         promotion_proxy_url = chain2.url
         promotion_cg = build_momo_chatgpt_session(token, promotion_proxy_url, device_id)
-        warm_chatgpt_checkout_context(promotion_cg, MOMO_COUNTRY, log)
+        warm_chatgpt_checkout_context(promotion_cg, promotion_region, log)
         update_momo_checkout_promotion(promotion_cg, cs_id=cs_id, processor=processor)
 
     dyn3, sid3 = build_momo_dynamic_proxy(cfg, 2)
-    log(f"[2/4] VN Stripe refresh 验证 0 VND + MoMo sid={sid3}")
+    log(f"[2/4] {provider_region} Stripe refresh 验证 0 VND + MoMo sid={sid3}")
     with pix_proxy_context(cfg.local_proxy, dyn3, log) as chain3:
         provider_proxy_url = chain3.url
         provider_cg = build_momo_chatgpt_session(token, provider_proxy_url, device_id)

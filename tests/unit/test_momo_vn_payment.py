@@ -79,6 +79,13 @@ def _eligible_context() -> dict[str, object]:
     }
 
 
+def test_momo_job_config_defaults_to_jp_promotion_region():
+    cfg = momo_vn.MomoVnJobConfig(access_token="token", direct_proxies=["proxy"])
+
+    assert cfg.promotion_region == "JP"
+    assert momo_vn._stage_region(cfg, 1) == "JP"
+
+
 def test_extract_momo_result_recurses_nested_redirect():
     payload = {
         "setup_intent": {
@@ -192,8 +199,8 @@ def test_detect_momo_eligibility_returns_ineligible_when_momo_missing(monkeypatc
     assert result["payment_method_types"] == ["card"]
 
 
-def test_detect_momo_eligibility_accepts_oaics_checkout_session_id(monkeypatch):
-    seen = {}
+def test_detect_momo_eligibility_rejects_oaics_checkout_session_id(monkeypatch):
+    stripe_init_called = {"value": False}
 
     class FakeChatgptSession:
         def post(self, url, **kwargs):
@@ -204,13 +211,8 @@ def test_detect_momo_eligibility_accepts_oaics_checkout_session_id(monkeypatch):
             })
 
     def fake_stripe_init(stripe, cs_id, stripe_pk, ctx):
-        seen["cs_id"] = cs_id
-        return {
-            "total_summary": {"due": 0},
-            "currency": "vnd",
-            "payment_method_types": ["card", "momo"],
-            "ordered_payment_method_types": ["card", "momo"],
-        }
+        stripe_init_called["value"] = True
+        raise AssertionError("oaics flow should fail before stripe_init")
 
     monkeypatch.setattr(momo_vn, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
     monkeypatch.setattr(momo_vn, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
@@ -218,12 +220,10 @@ def test_detect_momo_eligibility_accepts_oaics_checkout_session_id(monkeypatch):
     monkeypatch.setattr(momo_vn, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
     monkeypatch.setattr(momo_vn, "stripe_init", fake_stripe_init)
 
-    result = momo_vn.detect_momo_eligibility(momo_vn.MomoVnJobConfig(access_token="token", direct_proxies=["proxy"]))
+    with pytest.raises(RuntimeError, match="oaics checkout cannot use Stripe payment_pages MoMo flow"):
+        momo_vn.detect_momo_eligibility(momo_vn.MomoVnJobConfig(access_token="token", direct_proxies=["proxy"]))
 
-    assert seen["cs_id"] == "oaics_test_custom"
-    assert result["cs_id"] == "oaics_test_custom"
-    assert result["status"] == "eligible"
-    assert result["has_momo"] is True
+    assert stripe_init_called["value"] is False
 
 
 def test_generate_momo_vn_trial_requires_eligibility_before_extract(monkeypatch):
@@ -274,33 +274,9 @@ def test_generate_momo_vn_trial_rejects_nonzero_after_promo(monkeypatch):
     assert init_calls
 
 
-def test_generate_momo_vn_trial_accepts_oaics_preflight_result(monkeypatch):
+def test_generate_momo_vn_trial_rejects_oaics_preflight_result(monkeypatch):
     eligibility = _eligible_context() | {"cs_id": "oaics_test_custom"}
-    init_calls = []
-
-    monkeypatch.setattr(momo_vn, "build_chatgpt_session", lambda *args, **kwargs: object())
-    monkeypatch.setattr(momo_vn, "build_stripe_session", lambda *args, **kwargs: object())
-    monkeypatch.setattr(momo_vn, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
-    monkeypatch.setattr(momo_vn, "update_momo_checkout_promotion", lambda *args, **kwargs: None)
-    monkeypatch.setattr(momo_vn, "sync_momo_tax_region", lambda *args, **kwargs: None)
-    monkeypatch.setattr(momo_vn, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
-
-    def fake_stripe_init(stripe, cs_id, stripe_pk, ctx):
-        init_calls.append(cs_id)
-        return {
-            "total_summary": {"due": 1000},
-            "currency": "vnd",
-            "payment_method_types": ["card", "momo"],
-            "ordered_payment_method_types": ["card", "momo"],
-            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/oaics_test_custom",
-            "config_id": "cfg_test",
-            "init_checksum": "init_test",
-            "customer": {"email": "buyer@example.com"},
-        }
-
-    monkeypatch.setattr(momo_vn, "stripe_init", fake_stripe_init)
-
-    with pytest.raises(RuntimeError, match="金额不是 0"):
+    with pytest.raises(RuntimeError, match="oaics checkout cannot use Stripe payment_pages MoMo flow"):
         momo_vn.generate_momo_vn_trial(
             momo_vn.MomoVnJobConfig(
                 access_token="token",
@@ -308,8 +284,6 @@ def test_generate_momo_vn_trial_accepts_oaics_preflight_result(monkeypatch):
                 preflight_result=eligibility,
             )
         )
-
-    assert init_calls == ["oaics_test_custom"]
 
 
 def test_generate_momo_vn_trial_approve_poll_resolves_provider_redirect(monkeypatch):

@@ -106,6 +106,25 @@ def _raise_team_invite_register_disabled():
     raise RuntimeError(TEAM_INVITE_REGISTER_DISABLED_MESSAGE)
 
 
+def _check_registration_email_registered(email, *, proxy_url=None, register_mode=None):
+    """Best-effort non-mutating precheck before attempting ChatGPT signup."""
+    target = str(email or "").strip()
+    if not target:
+        return {"known": False, "registered": False, "reason": "empty_email"}
+    try:
+        from autotoken.storage.auth_session_store import list_auth_session_emails
+
+        normalized = _core_normalized_email(target)
+        local_emails = {_core_normalized_email(acc.get("email")) for acc in load_accounts()}
+        session_emails = {_core_normalized_email(item) for item in list_auth_session_emails()}
+        if normalized and normalized in (local_emails | session_emails):
+            return {"known": True, "registered": True, "reason": "local_account_already_exists"}
+    except Exception as exc:
+        logger.debug("[注册预检] 本地邮箱检测异常，继续正常注册: %s: %s", target, exc, exc_info=True)
+        return {"known": False, "registered": False, "reason": str(exc)}
+    return {"known": False, "registered": False, "reason": "not_found_locally"}
+
+
 def sync_to_cpa():
     from autotoken.integrations.cpa_sync import sync_to_cpa as _sync_to_cpa
 
@@ -247,6 +266,19 @@ def _sync_provider_registered_email(
             )
         except Exception as exc:
             logger.debug("[mail.com] 标记已注册邮箱失败: %s", exc, exc_info=True)
+        return
+    if provider == "icloud":
+        try:
+            add_account(email, password, cloudmail_account_id=email, seat_type=SEAT_CODEX, mail_provider="icloud")
+            update_account(
+                email,
+                status=STATUS_FAIL,
+                account_type=ACCOUNT_TYPE_FREE,
+                seat_type=SEAT_CODEX,
+                last_error=source or "registered",
+            )
+        except Exception as exc:
+            logger.debug("[icloud] 标记不可复用邮箱失败: %s", exc, exc_info=True)
         return
 
 
@@ -3206,6 +3238,7 @@ def create_account_direct(
                      + 统计信息（register_attempts / duplicate_swaps / last_email / reason）写入，供上游汇总。
 
     捕获 RegisterBlocked：
+    - is_account_deactivated=True: OpenAI 返回 account_deactivated，标记邮箱不可复用后放弃
     - is_phone=True:     当前邮箱已暴露给 OpenAI，立即删邮箱、整个账号放弃（return None）
     - is_duplicate=True: 换个临时邮箱继续尝试，独立计数不消耗 register_attempts
     - 其他异常:          归入现有 retry 计数
@@ -3419,6 +3452,45 @@ def create_account_direct(
     MAX_REGISTER_ATTEMPTS = 3
     MAX_DUPLICATE_SWAPS = 5
     while register_attempts < MAX_REGISTER_ATTEMPTS:
+        precheck = _check_registration_email_registered(email, proxy_url=proxy_url, register_mode=register_mode)
+        if precheck.get("registered"):
+            _sync_provider_registered_email(
+                email,
+                mail_client,
+                password=password,
+                source="precheck_email_already_registered",
+            )
+            duplicate_swaps += 1
+            reason = str(precheck.get("reason") or "email_already_registered")
+            logger.warning("[直接注册] 预检发现邮箱已注册，切换邮箱: %s | %s", email, reason)
+            if duplicate_swaps > MAX_DUPLICATE_SWAPS:
+                logger.error("[直接注册] 预检已注册换邮箱已达上限 %d，放弃", MAX_DUPLICATE_SWAPS)
+                _discard_email("precheck_duplicate_exhausted")
+                record_failure(
+                    email,
+                    "duplicate_exhausted",
+                    f"预检已注册换邮箱已达上限 {MAX_DUPLICATE_SWAPS}",
+                    duplicate_swaps=duplicate_swaps,
+                )
+                _record_outcome(
+                    "duplicate_exhausted",
+                    reason=f"预检已注册换邮箱 {duplicate_swaps} 次仍失败",
+                )
+                return None
+            _progress(
+                "register_precheck_duplicate_swap",
+                f"邮箱已注册，切换临时邮箱后重试: {email}",
+                email=email,
+                level="warn",
+                reason=reason,
+                duplicate_swaps=duplicate_swaps,
+            )
+            _discard_email("precheck_duplicate")
+            account_id, email = _create_registration_mailbox(_with_random_suffix_prefix(email_prefix))
+            password = chosen_password
+            logger.info("[直接注册] 预检后已换新临时邮箱: %s", email)
+            _progress("register_email_created", f"已换新临时邮箱: {email}", email=email)
+            continue
         logger.info(
             "[直接注册] 开始注册尝试: %s（已试 %d/%d，duplicate 换邮箱 %d/%d）",
             email,
@@ -3478,6 +3550,36 @@ def create_account_direct(
                 level="warn",
                 register_blocked_reason=str(blocked),
             )
+            if blocked.is_account_deactivated:
+                _sync_provider_registered_email(
+                    email,
+                    mail_client,
+                    password=password,
+                    source="account_deactivated",
+                )
+                _discard_email("account_deactivated")
+                record_failure(
+                    email,
+                    "account_deactivated",
+                    f"OpenAI 返回 account_deactivated（step={blocked.step}）",
+                    step=blocked.step,
+                    register_attempts=register_attempts,
+                    duplicate_swaps=duplicate_swaps,
+                )
+                _record_outcome(
+                    "account_deactivated",
+                    reason=f"OpenAI 返回 account_deactivated step={blocked.step}",
+                    step=blocked.step,
+                )
+                _progress(
+                    "register_account_deactivated",
+                    f"OpenAI 返回 account_deactivated，跳过当前邮箱: {email}",
+                    email=email,
+                    level="error",
+                    reason="account_deactivated",
+                    step=blocked.step,
+                )
+                return None
             if blocked.is_phone:
                 # 用户明确要求：不绕 add-phone，直接放弃本账号
                 _discard_email("phone_block")

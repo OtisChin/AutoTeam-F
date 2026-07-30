@@ -48,12 +48,13 @@ class RegisterBlocked(Exception):
     - 其他: 单步逻辑错误，按现有 retry 流程处理
     """
 
-    def __init__(self, step, reason, *, is_phone=False, is_duplicate=False):
+    def __init__(self, step, reason, *, is_phone=False, is_duplicate=False, is_account_deactivated=False):
         super().__init__(f"[{step}] {reason}")
         self.step = step
         self.reason = reason
         self.is_phone = is_phone
         self.is_duplicate = is_duplicate
+        self.is_account_deactivated = is_account_deactivated
 
 
 # 手机验证页面的识别特征（URL 片段 + 页面文本）
@@ -92,6 +93,21 @@ _DUPLICATE_TEXT_HINTS = (
     "电子邮件已被使用",
 )
 
+# 账号已删除/停用页。验证码提交后 OpenAI 可能停留在 email-verification，
+# 仅靠 URL 会被误判成仍在等待验证码，所以需要单独识别页面正文。
+_ACCOUNT_DEACTIVATED_TEXT_HINTS = (
+    "account_deactivated",
+    "account deactivated",
+    "account is deactivated",
+    "deleted or deactivated",
+    "deleted or disabled",
+    "账户已被删除或停用",
+    "账号已被删除或停用",
+    "已被删除或停用",
+    "账户已停用",
+    "账号已停用",
+)
+
 
 def detect_phone_verification(page):
     """若当前页面要求手机验证返回 True。URL 命中优先；文本命中需配合电话输入框。"""
@@ -125,8 +141,24 @@ def detect_duplicate_email(page):
         return False
 
 
+def detect_account_deactivated(page):
+    """若当前页面提示账号已删除/停用返回 True。"""
+    try:
+        url = (page.url or "").lower()
+        if "account_deactivated" in url:
+            return True
+        body = page.inner_text("body")[:1500].lower()
+        return any(hint in body for hint in _ACCOUNT_DEACTIVATED_TEXT_HINTS)
+    except Exception as exc:
+        logger.debug("[注册] detect_account_deactivated 异常（当作无 deactivated 处理）: %s", exc)
+        return False
+
+
 def assert_not_blocked(page, step):
     """任何步骤后调用，检测到阻断项立刻 raise。"""
+    if detect_account_deactivated(page):
+        logger.error("[注册] [%s] OpenAI 返回 account_deactivated，放弃当前账号 | URL=%s", step, page.url)
+        raise RegisterBlocked(step, "account_deactivated", is_account_deactivated=True)
     if detect_phone_verification(page):
         logger.error("[注册] [%s] 触发 add-phone 手机验证，放弃当前账号 | URL=%s", step, page.url)
         raise RegisterBlocked(step, "add-phone 手机验证", is_phone=True)

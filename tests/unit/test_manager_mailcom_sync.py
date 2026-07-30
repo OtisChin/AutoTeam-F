@@ -120,3 +120,124 @@ def test_duplicate_email_path_uses_generic_sync_helper(monkeypatch):
     assert sync_calls[0][0][0] == "first@mail.com"
     assert sync_calls[0][0][1].provider_name == "mail.com"
     assert sync_calls[0][1] == {"password": "pw-2", "source": "email_already_in_use"}
+
+
+def test_register_blocked_detects_account_deactivated_page():
+    from autotoken.auth.invite import RegisterBlocked, assert_not_blocked
+
+    class FakeLocator:
+        def inner_text(self, timeout=1000):
+            return (
+                "身份验证错误\n"
+                "你没有账户，因为该账户已被删除或停用。\n"
+                "错误代码：account_deactivated"
+            )
+
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+        def locator(self, selector):
+            assert selector == "body"
+            return FakeLocator()
+
+        def inner_text(self, selector):
+            assert selector == "body"
+            return FakeLocator().inner_text()
+
+    try:
+        assert_not_blocked(FakePage(), "code_submit")
+    except RegisterBlocked as exc:
+        assert exc.is_account_deactivated is True
+        assert exc.reason == "account_deactivated"
+        assert exc.step == "code_submit"
+    else:
+        raise AssertionError("account_deactivated page should block registration")
+
+
+def test_account_deactivated_stops_direct_registration_without_retry(monkeypatch):
+    from autotoken.auth.invite import RegisterBlocked
+
+    calls = {"register": 0}
+    failures = []
+    outcomes = []
+    sync_calls = []
+
+    class FakeMailClient:
+        provider_name = "icloud"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return "mail-1", "dead@icloud.com"
+
+    def fake_register_once(*_args, **_kwargs):
+        calls["register"] += 1
+        raise RegisterBlocked("code_submit", "account_deactivated", is_account_deactivated=True)
+
+    monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
+    monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: sync_calls.append((args, kwargs)))
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: failures.append((args, kwargs)))
+    monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: outcomes.append((args, kwargs)))
+
+    result = manager.create_account_direct(FakeMailClient(), password="pw-2", check_team_membership=False)
+
+    assert result is None
+    assert calls["register"] == 1
+    assert failures[0][0][:3] == (
+        "dead@icloud.com",
+        "account_deactivated",
+        "OpenAI 返回 account_deactivated（step=code_submit）",
+    )
+    assert sync_calls[0][0][0] == "dead@icloud.com"
+    assert sync_calls[0][1] == {"password": "pw-2", "source": "account_deactivated"}
+    assert outcomes[-1][1]["status"] == "account_deactivated"
+
+
+def test_registration_precheck_skips_already_registered_email(monkeypatch):
+    sync_calls = []
+    register_calls = []
+    precheck_calls = []
+
+    class FakeMailClient:
+        provider_name = "mail.com"
+
+        def create_registration_email(self, prefix=None, domain=None):
+            return ("mail-1", "used@mail.com") if not precheck_calls else ("mail-2", "fresh@mail.com")
+
+    def fake_precheck(email, **kwargs):
+        precheck_calls.append((email, kwargs))
+        return {"registered": email == "used@mail.com", "reason": "email already exists"}
+
+    def fake_register_once(_mail_client, email, *_args, **_kwargs):
+        register_calls.append(email)
+        return True, {"data": {"sessionToken": "session-1"}}
+
+    monkeypatch.setattr(manager, "_check_registration_email_registered", fake_precheck)
+    monkeypatch.setattr(manager, "_sync_provider_registered_email", lambda *args, **kwargs: sync_calls.append((args, kwargs)))
+    monkeypatch.setattr(manager, "_register_direct_once", fake_register_once)
+    monkeypatch.setattr(manager, "_save_auth_from_session_page", lambda email, *args, **kwargs: {"email": email})
+    monkeypatch.setattr(manager, "record_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(manager.registration, "replace_direct_registration_outcome", lambda *args, **kwargs: None)
+
+    result = manager.create_account_direct(FakeMailClient(), password="pw-3", check_team_membership=False)
+
+    assert result == {"email": "fresh@mail.com"}
+    assert [call[0] for call in precheck_calls] == ["used@mail.com", "fresh@mail.com"]
+    assert register_calls == ["fresh@mail.com"]
+    assert sync_calls[0][0][0] == "used@mail.com"
+    assert sync_calls[0][1] == {"password": "pw-3", "source": "precheck_email_already_registered"}
+
+
+def test_registration_precheck_does_not_submit_email_to_openai(monkeypatch):
+    calls = []
+
+    def fail_remote_precheck(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("remote OpenAI precheck must not run before browser registration")
+
+    monkeypatch.setattr("autotoken.auth.protocol_register.check_email_registered", fail_remote_precheck)
+    monkeypatch.setattr(manager, "load_accounts", lambda: [])
+
+    result = manager._check_registration_email_registered("fresh@mail.com", register_mode="browser")
+
+    assert result["registered"] is False
+    assert result["known"] is False
+    assert calls == []

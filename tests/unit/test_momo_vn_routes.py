@@ -219,6 +219,49 @@ def test_batch_account_qualification_only_marks_failed_when_network_error_occurs
     assert "proxy closed" in statuses["user@example.com"]["error"]
 
 
+def test_batch_account_oaics_unsupported_stops_after_first_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(momo_vn, "LINKS_FILE", tmp_path / "momo_vn_links.json")
+    monkeypatch.setattr(momo_vn, "ACCOUNT_STATUS_FILE", tmp_path / "momo_vn_account_status.json")
+    monkeypatch.setattr(momo_vn, "_load_token_for_email", lambda email: f"token-{email}")
+    monkeypatch.setattr(
+        momo_vn,
+        "detect_momo_eligibility",
+        lambda cfg, log=None: {"status": "eligible", "has_momo": True, "cs_id": "oaics_test_custom"},
+    )
+    attempts = {"count": 0}
+
+    def fail_oaics(cfg, log=None):
+        attempts["count"] += 1
+        raise RuntimeError("openai_custom_checkout_unsupported: oaics checkout cannot use Stripe payment_pages MoMo flow")
+
+    monkeypatch.setattr(momo_vn, "generate_momo_vn_trial", fail_oaics)
+
+    job_id = "momo-oaics-unsupported-job"
+    momo_vn.JOBS.clear()
+    momo_vn.JOBS[job_id] = _make_job(job_id)
+    req = momo_vn.MomoVnBatchStartRequest.model_validate({
+        "accountEmails": ["user@example.com"],
+        "proxies": "proxy",
+        "maxAttempts": 5,
+    })
+
+    result = momo_vn._run_batch_account(
+        job_id,
+        req,
+        {"email": "user@example.com", "auth_file": "auth.json"},
+        1,
+        1,
+        momo_vn._parse_proxies(req.proxies),
+    )
+
+    statuses = json.loads(momo_vn.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert result["ok"] is False
+    assert result["error"]["attempts"] == 1
+    assert attempts["count"] == 1
+    assert statuses["user@example.com"]["status"] == "failed"
+    assert "openai_custom_checkout_unsupported" in statuses["user@example.com"]["error"]
+
+
 def test_batch_account_retries_after_proxy_failure_before_success(monkeypatch, tmp_path):
     monkeypatch.setattr(momo_vn, "LINKS_FILE", tmp_path / "momo_vn_links.json")
     monkeypatch.setattr(momo_vn, "ACCOUNT_STATUS_FILE", tmp_path / "momo_vn_account_status.json")

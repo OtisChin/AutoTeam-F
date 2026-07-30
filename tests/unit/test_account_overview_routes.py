@@ -329,6 +329,44 @@ def test_account_overview_latest_mail_fetches_only_newest_message(monkeypatch):
     assert result["message"]["text"] == "latest body"
 
 
+def test_account_overview_latest_mail_fetches_icloud_provider(monkeypatch):
+    app, _captured = _app()
+    account = {
+        "email": "user@icloud.com",
+        "original_email": "user@icloud.com",
+        "mail_provider": "icloud",
+    }
+    captured = {}
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+
+    def fake_search(self, recipient, size=10, account_id=None):
+        captured["recipient"] = recipient
+        captured["size"] = size
+        captured["account_id"] = account_id
+        return [
+            {
+                "id": "icloud-1",
+                "subject": "iCloud latest",
+                "sendEmail": "sender@example.com",
+                "toEmail": "user@icloud.com",
+                "html": "<p>icloud body</p>",
+                "createTime": 1700000000,
+            }
+        ]
+
+    monkeypatch.setattr("autotoken.mail.icloud.ICloudMailProvider.search_emails_by_recipient", fake_search)
+
+    result = _endpoint(app, "/api/accounts/{email}/latest-mail", "GET")("User@icloud.com")
+
+    assert captured == {"recipient": "user@icloud.com", "size": 1, "account_id": "user@icloud.com"}
+    assert result["email"] == "user@icloud.com"
+    assert result["mail_email"] == "user@icloud.com"
+    assert result["provider"] == "icloud"
+    assert result["message"]["subject"] == "iCloud latest"
+    assert result["message"]["html"] == "<p>icloud body</p>"
+
+
 def test_account_overview_subscription_queries_chatgpt_with_access_token(monkeypatch, tmp_path):
     auth_dir = tmp_path / "auths"
     auth_dir.mkdir()

@@ -538,6 +538,10 @@ def _fetch_latest_mail_with_provider(provider: str, recipient: str, account: dic
         from autotoken.mail.luckmail import LuckMailProvider
 
         return LuckMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
+    if provider == "icloud":
+        from autotoken.mail.icloud import ICloudMailProvider
+
+        return ICloudMailProvider().search_emails_by_recipient(recipient, size=1, account_id=recipient)
     if provider == "cloud-mail":
         from autotoken.mail.cloud_mail import CloudMailProviderClient
 
