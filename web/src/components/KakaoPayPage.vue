@@ -387,18 +387,20 @@
             <button @click="addKkPaymentCdks" :disabled="kkPaymentCdkQuotaBusy" class="rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-500 disabled:opacity-50">加入 CDK 池</button>
             <button @click="queryKkPaymentCdkQuota" :disabled="kkPaymentCdkQuotaBusy || (!kkPaymentCdks.length && !kkPaymentCdkInput.trim())" class="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-50">{{ kkPaymentCdkQuotaBusy ? '查询中...' : '查询额度' }}</button>
             <button @click="clearKkPaymentLinks" :disabled="kkPaymentBusy || !kkPaymentLinks.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">清空账号池</button>
+            <button @click="clearUsedKkPaymentCdks" :disabled="kkPaymentBusy || !kkPaymentUsedCdkCount" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 disabled:opacity-50">清理已使用 CDK</button>
             <button @click="clearKkPaymentCdks" :disabled="kkPaymentBusy || !kkPaymentCdks.length" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">清空 CDK</button>
           </div>
           <div class="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-slate-400">{{ kkPaymentStatusText }}</div>
           <div class="mt-4 max-h-56 overflow-auto rounded-xl border border-slate-800">
             <table class="w-full text-left text-sm">
-              <thead class="sticky top-0 bg-slate-900 text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-2">CDK</th><th class="px-3 py-2">状态</th><th class="px-3 py-2">账号</th></tr></thead>
+              <thead class="sticky top-0 bg-slate-900 text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-2">CDK</th><th class="px-3 py-2">状态</th><th class="px-3 py-2">账号</th><th class="px-3 py-2 text-right">操作</th></tr></thead>
               <tbody class="divide-y divide-slate-900">
-                <tr v-if="!kkPaymentCdks.length"><td colspan="3" class="px-3 py-6 text-center text-slate-500">暂无 KK 支付 CDK</td></tr>
+                <tr v-if="!kkPaymentCdks.length"><td colspan="4" class="px-3 py-6 text-center text-slate-500">暂无 KK 支付 CDK</td></tr>
                 <tr v-for="cdk in visibleKkPaymentCdks" :key="cdk.id" class="hover:bg-slate-900/50">
                   <td class="px-3 py-2 font-mono text-xs text-slate-400">{{ maskExternalSecret(cdk.value) }}</td>
                   <td class="px-3 py-2"><span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="kkPaymentCdkStatusClass(kkPaymentCdkDisplayStatus(cdk))">{{ kkPaymentCdkStatusText(kkPaymentCdkDisplayStatus(cdk)) }}</span><div v-if="cdk.message" class="mt-1 text-xs text-slate-500">{{ cdk.message }}</div></td>
                   <td class="max-w-[180px] truncate px-3 py-2 font-mono text-xs text-slate-500">{{ cdk.accountEmail || '-' }}</td>
+                  <td class="px-3 py-2 text-right"><button @click="removeKkPaymentCdk(cdk.id)" :disabled="kkPaymentBusy" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">移除CDK</button></td>
                 </tr>
               </tbody>
             </table>
@@ -631,6 +633,7 @@ const coolingTempCdkCount = computed(() => tempCdks.value.filter(item => item.st
 const usedTempCdkCount = computed(() => tempCdks.value.filter(item => item.status === 'used' && !tempCdkUsable(item)).length)
 const availableTempCdkCapacity = computed(() => tempCdks.value.filter(tempCdkUsable).reduce((sum, item) => sum + tempCdkCapacity(item), 0))
 const kkPaymentAvailableCdkCount = computed(() => kkPaymentCdks.value.filter(kkPaymentCdkUsable).length)
+const kkPaymentUsedCdkCount = computed(() => kkPaymentCdks.value.filter(item => kkPaymentCdkDisplayStatus(item) === 'used').length)
 const kkPaymentAvailableCdkCapacity = computed(() => kkPaymentCdks.value.reduce((sum, item) => sum + kkPaymentCdkCapacity(item), 0))
 const kkPaymentRunnableCount = computed(() => kkPaymentLinks.value.filter(kkPaymentTaskRunnable).length)
 const kkPaymentInvalidCount = computed(() => kkPaymentLinks.value.filter(kkPaymentLinkInvalid).length)
@@ -1887,8 +1890,8 @@ function normalizeKkPaymentItem(raw) {
     workerId: String(raw.workerId || raw.worker_id || raw.scannerId || raw.scanner_id || '').trim(),
     workerName: String(raw.workerName || raw.worker_name || raw.scannerName || raw.scanner_name || '').trim(),
     workerLabel: String(raw.workerLabel || raw.worker_label || '').trim(),
-    status: resumableOrder ? 'needs_action' : rawStatus,
-    message: resumableOrder ? '已有订单，可点击“提交/查询”继续查询。' : String(raw.message || raw.error || raw.problemReason || raw.problem_reason || '').trim(),
+    status: rawStatus,
+    message: resumableOrder ? String(raw.message || '正在恢复订单进度...').trim() : String(raw.message || raw.error || raw.problemReason || raw.problem_reason || '').trim(),
     created_at: raw.created_at || raw.createdAt || '',
     created_at_ts: raw.created_at_ts || raw.createdAtTs || 0,
     kakao_expires_at_ts: raw.kakao_expires_at_ts || raw.kakaoExpiresAtTs || raw.kakaoExpiresAt || 0,
@@ -2075,14 +2078,44 @@ function clearKkPaymentLinks() {
   saveKkPaymentState()
 }
 
-function clearKkPaymentCdks() {
+function detachKkPaymentCdkFromLinks(cdk) {
+  if (!cdk) return
+  const cdkId = String(cdk.id || '')
+  const cdkValue = String(cdk.value || '')
   for (const link of kkPaymentLinks.value) {
-    if (link.cdkId && link.status !== 'success') {
+    if (link.status === 'success') continue
+    if ((cdkId && link.cdkId === cdkId) || (cdkValue && link.cdk === cdkValue)) {
       link.cdk = ''
       link.cdkId = ''
       if (link.status === 'running') link.status = 'pending'
     }
   }
+}
+
+function removeKkPaymentCdk(id) {
+  const target = kkPaymentCdks.value.find(item => item.id === id)
+  detachKkPaymentCdkFromLinks(target)
+  kkPaymentCdks.value = kkPaymentCdks.value.filter(item => item.id !== id)
+  kkPaymentStatusText.value = target ? '已移除 1 枚 KK 支付 CDK。' : '未找到要移除的 KK 支付 CDK。'
+  saveKkPaymentState()
+}
+
+function clearUsedKkPaymentCdks() {
+  const usedIds = new Set(kkPaymentCdks.value.filter(item => kkPaymentCdkDisplayStatus(item) === 'used').map(item => item.id))
+  if (!usedIds.size) {
+    kkPaymentStatusText.value = '没有已使用的 KK 支付 CDK 可清理。'
+    return
+  }
+  for (const cdk of kkPaymentCdks.value) {
+    if (usedIds.has(cdk.id)) detachKkPaymentCdkFromLinks(cdk)
+  }
+  kkPaymentCdks.value = kkPaymentCdks.value.filter(item => !usedIds.has(item.id))
+  kkPaymentStatusText.value = `已清理 ${usedIds.size} 枚已使用 KK 支付 CDK。`
+  saveKkPaymentState()
+}
+
+function clearKkPaymentCdks() {
+  for (const cdk of kkPaymentCdks.value) detachKkPaymentCdkFromLinks(cdk)
   kkPaymentCdks.value = []
   kkPaymentStatusText.value = '已清空 KK 支付 CDK 池。'
   saveKkPaymentState()
@@ -2115,6 +2148,14 @@ function kkPaymentTaskRunnable(item) {
   if (!item?.paymentUrl || kkPaymentLinkInvalid(item)) return false
   if (item.orderId && (item.customerToken || item.cdk)) return !['success', 'running'].includes(String(item.status || 'pending'))
   return KK_PAYMENT_RETRYABLE_STATUSES.has(String(item.status || 'pending')) && kkPaymentCdks.value.some(kkPaymentCdkUsable)
+}
+
+function kkPaymentOrderRestorable(item) {
+  if (!item?.paymentUrl || kkPaymentLinkInvalid(item)) return false
+  if (!item.orderId || !(item.customerToken || item.cdk)) return false
+  const status = String(item.status || '').toLowerCase()
+  const message = String(item.message || '')
+  return status === 'running' || (status === 'needs_action' && message.includes('已有订单，可点击'))
 }
 
 function kkPaymentUnavailableMessage() {
@@ -2272,7 +2313,7 @@ async function waitKkPaymentOrder(link) {
 }
 
 async function runKkPaymentTask(item) {
-  if (!item || !kkPaymentTaskRunnable(item)) return
+  if (!item || (!kkPaymentTaskRunnable(item) && !kkPaymentOrderRestorable(item))) return
   const hasExistingOrder = Boolean(item.orderId && (item.customerToken || item.cdk))
   let pair = null
   let cdk = kkPaymentCdks.value.find(row => row.id === item.cdkId) || null
@@ -2428,6 +2469,15 @@ async function runAllKkPayments() {
   }
 }
 
+async function restoreRunningKkPaymentOrders() {
+  const restorable = kkPaymentLinks.value.filter(kkPaymentOrderRestorable)
+  if (!restorable.length) return
+  kkPaymentBusy.value = true
+  kkPaymentStatusText.value = `已恢复 ${restorable.length} 个进行中的 KK 支付订单，正在自动刷新任务进度。`
+  await Promise.all(restorable.map(item => runKkPaymentTask(item)))
+  kkPaymentBusy.value = kkPaymentActiveRuns.value > 0 || kkPaymentRunningCount.value > 0
+}
+
 function applyKkOrder(item, data) {
   const payload = data?.data || data || {}
   const order = payload.order || payload
@@ -2566,7 +2616,7 @@ onMounted(async () => {
   loadKkPaymentState()
   releaseExpiredTempCdkCooldowns()
   await reloadAll()
-  await Promise.all([restoreActiveJob('extract'), restoreActiveJob('tempExtract')])
+  await Promise.all([restoreActiveJob('extract'), restoreActiveJob('tempExtract'), restoreRunningKkPaymentOrders()])
 })
 onUnmounted(() => {
   componentUnmounted = true

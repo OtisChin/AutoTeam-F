@@ -885,6 +885,80 @@ def test_kakao_kk_payment_cdk_status_uses_customer_check_api(monkeypatch):
     assert calls[0][1]["params"] == {"page": 1, "pageSize": 100}
 
 
+def test_kakao_kk_payment_cdk_status_uses_customer_cdk_orders_when_no_orders(monkeypatch):
+    app = _app()
+    calls = []
+
+    class LegacyOrdersResp:
+        ok = True
+        status_code = 200
+        text = '{"ok": true, "data": {"orders": []}}'
+
+        def json(self):
+            return {"ok": True, "data": {"orders": []}}
+
+    class CdkOrdersResp:
+        ok = True
+        status_code = 200
+        text = '{"ok": true}'
+
+        def json(self):
+            return {
+                "ok": True,
+                "data": {
+                    "cdk": {
+                        "code": "PAY-CDK",
+                        "productType": "KAKAO_AT",
+                        "totalCount": 20,
+                        "usedCount": 0,
+                        "frozenCount": 0,
+                        "availableCount": 20,
+                        "status": "ACTIVE",
+                    },
+                    "orders": [],
+                },
+            }
+
+    def fake_get(url, **kwargs):
+        calls.append(("GET", url, kwargs))
+        return LegacyOrdersResp()
+
+    def fake_post(url, **kwargs):
+        calls.append(("POST", url, kwargs))
+        return CdkOrdersResp()
+
+    monkeypatch.setattr(kakao_pay.requests, "get", fake_get)
+    monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
+
+    data = _endpoint(app, "/api/kakao-pay/kk-payment/cdk/status", "POST")(
+        kakao_pay.KakaoPayTempTicketRequest.model_validate({"cdk": "PAY-CDK"})
+    )
+
+    assert data["data"]["availableCount"] == 20
+    assert data["data"]["totalCount"] == 20
+    assert data["orders"] == []
+    assert calls == [
+        (
+            "GET",
+            "https://customer.i7wap.xyz/api/v1/customer/orders",
+            {
+                "params": {"page": 1, "pageSize": 100},
+                "headers": {"Accept": "application/json", "X-CDK-Key": "PAY-CDK"},
+                "timeout": 20,
+            },
+        ),
+        (
+            "POST",
+            "https://customer.i7wap.xyz/api/customer/cdk/orders",
+            {
+                "json": {"code": "PAY-CDK"},
+                "headers": {"Accept": "application/json", "Content-Type": "application/json"},
+                "timeout": 20,
+            },
+        ),
+    ]
+
+
 def test_kakao_kk_payment_submit_uses_account_session_cookie_and_extracted_link(monkeypatch):
     app = _app()
     email = "pay@example.com"

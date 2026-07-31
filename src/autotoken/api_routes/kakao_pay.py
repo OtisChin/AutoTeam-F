@@ -34,6 +34,7 @@ ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "kakao_pay_account_status.json"
 KAKAO_TEMP_EXTRACT_API_BASE = "https://masi.cc.cd"
 KAKAO_TEMP_SCAN_API_BASE = "https://masi.cc.cd/kakao/scan/api/integration"
 KAKAO_KK_CUSTOMER_API_BASE = "https://customer.i7wap.xyz/api/v1/customer"
+KAKAO_KK_CUSTOMER_WEB_API_BASE = "https://customer.i7wap.xyz/api/customer"
 KAKAO_LINK_TTL_SECONDS = 15 * 60
 MAX_BATCH_CONCURRENCY = 20
 MAX_ACCOUNT_ATTEMPTS = 5
@@ -556,9 +557,23 @@ def _kk_payment_cdk_status(cdk: str) -> dict[str, Any]:
         raise _remote_unreachable(exc, "KK 支付 CDK 额度查询 API") from exc
     data = _remote_json(resp, "KK 支付 CDK 额度查询 API 返回非 JSON 响应")
     snapshot = _cdk_snapshot_from_customer_orders(data)
+    orders = _customer_orders_from_payload(data)
+    if snapshot:
+        return {"ok": True, "data": snapshot, "orders": orders}
+    try:
+        resp = requests.post(
+            f"{KAKAO_KK_CUSTOMER_WEB_API_BASE}/cdk/orders",
+            json={"code": clean_cdk},
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise _remote_unreachable(exc, "KK 支付 CDK 额度查询 API") from exc
+    data = _remote_json(resp, "KK 支付 CDK 额度查询 API 返回非 JSON 响应")
+    snapshot = _cdk_snapshot_from_customer_orders(data)
     if snapshot:
         return {"ok": True, "data": snapshot, "orders": _customer_orders_from_payload(data)}
-    return {"ok": True, "data": {"totalCount": "-", "usedCount": "-", "frozenCount": "-", "availableCount": "-"}, "orders": _customer_orders_from_payload(data)}
+    return {"ok": True, "data": {"totalCount": "-", "usedCount": "-", "frozenCount": "-", "availableCount": "-"}, "orders": orders}
 
 
 def _customer_orders_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
