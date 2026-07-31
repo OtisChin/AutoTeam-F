@@ -32,6 +32,7 @@ from autotoken.storage.auth_session_store import delete_auth_session, load_auth_
 LINKS_FILE = PROJECT_ROOT / "data" / "kakao_pay_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "kakao_pay_account_status.json"
 KAKAO_TEMP_EXTRACT_API_BASE = "https://masi.cc.cd"
+KAKAO_TEMP_SHZYHQN_API_BASE = "https://kakao.shzyhqn.online"
 KAKAO_TEMP_SCAN_API_BASE = "https://masi.cc.cd/kakao/scan/api/integration"
 KAKAO_KK_CUSTOMER_API_BASE = "https://customer.i7wap.xyz/api/v1/customer"
 KAKAO_KK_CUSTOMER_WEB_API_BASE = "https://customer.i7wap.xyz/api/customer"
@@ -57,11 +58,42 @@ KK_PAYMENT_JOBS_LOCK = threading.RLock()
 LINKS_LOCK = threading.RLock()
 ACCOUNT_STATUS_LOCK = threading.RLock()
 TERMINAL_STATUSES = {"success", "error", "failed", "cancelled"}
+KAKAO_TEMP_SHZYHQN_CLIENT_SESSIONS: dict[str, requests.Session] = {}
+KAKAO_TEMP_SHZYHQN_CLIENT_SESSIONS_LOCK = threading.RLock()
+
+
+def _clean_temp_channel(value: Any = "") -> str:
+    if not isinstance(value, str) and hasattr(value, "default"):
+        value = getattr(value, "default", "")
+    text = str(value or "masi").strip().lower()
+    text = re.sub(r"^https?://", "", text).strip().strip("/")
+    aliases = {
+        "": "masi",
+        "masi": "masi",
+        "masi.cc.cd": "masi",
+        "kscan": "masi",
+        "shzyhqn": "shzyhqn",
+        "kakao.shzyhqn.online": "shzyhqn",
+        "kakao-shzyhqn": "shzyhqn",
+    }
+    return aliases.get(text, text)
+
+
+def _temp_channel_label(channel: str) -> str:
+    return "shzyhqn 普通提链" if _clean_temp_channel(channel) == "shzyhqn" else "KSCAN"
 
 
 class KakaoPayStartRequest(BaseModel):
     account_email: str = Field("", alias="accountEmail")
     proxies: str = ""
+    kr_proxies: str = Field(
+        "",
+        validation_alias=AliasChoices("krProxies", "kr_proxies", "krProxyPool", "kr_proxy_pool", "krProxyPoolText", "kr_proxy_pool_text"),
+    )
+    vn_proxies: str = Field(
+        "",
+        validation_alias=AliasChoices("vnProxies", "vn_proxies", "vnProxyPool", "vn_proxy_pool", "vnProxyPoolText", "vn_proxy_pool_text"),
+    )
     concurrency: int = 1
     local_proxy: str = Field("", alias="localProxy")
     kookeey_endpoint: str = Field("gate.kookeey.info:1000", alias="kookeeyEndpoint")
@@ -79,6 +111,13 @@ class KakaoPayStartRequest(BaseModel):
         if not re.fullmatch(r"[A-Z]{2}", text):
             return "KR"
         return text
+
+    @field_validator("proxies", "kr_proxies", "vn_proxies", mode="before")
+    @classmethod
+    def _clean_proxy_text(cls, value: Any) -> str:
+        if isinstance(value, list):
+            return "\n".join(str(item or "").strip() for item in value if str(item or "").strip())
+        return str(value or "").strip()
 
     @field_validator("max_attempts", mode="before")
     @classmethod
@@ -134,22 +173,35 @@ class KakaoPayTempOrderRequest(BaseModel):
 
     cdk: str = Field("", validation_alias=AliasChoices("cdk", "CDK", "code", "xCdk"))
     access_token: str = Field("", alias="accessToken", validation_alias=AliasChoices("accessToken", "access_token", "at", "token"))
+    channel: str = Field("masi", validation_alias=AliasChoices("channel", "tempChannel", "temp_channel", "provider"))
+    session_token: str = Field("", alias="sessionToken", validation_alias=AliasChoices("sessionToken", "session_token"))
 
-    @field_validator("cdk", "access_token", mode="before")
+    @field_validator("cdk", "access_token", "session_token", mode="before")
     @classmethod
     def _clean_text(cls, value: Any) -> str:
         return str(value or "").strip()
+
+    @field_validator("channel", mode="before")
+    @classmethod
+    def _clean_channel(cls, value: Any) -> str:
+        return _clean_temp_channel(value)
 
 
 class KakaoPayTempTicketRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     cdk: str = Field("", validation_alias=AliasChoices("cdk", "CDK", "code", "xCdk"))
+    channel: str = Field("masi", validation_alias=AliasChoices("channel", "tempChannel", "temp_channel", "provider"))
 
     @field_validator("cdk", mode="before")
     @classmethod
     def _clean_cdk(cls, value: Any) -> str:
         return str(value or "").strip()
+
+    @field_validator("channel", mode="before")
+    @classmethod
+    def _clean_channel(cls, value: Any) -> str:
+        return _clean_temp_channel(value)
 
 
 class KakaoPayTempBatchStartRequest(BaseModel):
@@ -158,6 +210,7 @@ class KakaoPayTempBatchStartRequest(BaseModel):
     account_emails: list[str] = Field(default_factory=list, alias="accountEmails")
     cdk: str = ""
     cdks: list[str] = Field(default_factory=list)
+    channel: str = Field("masi", validation_alias=AliasChoices("channel", "tempChannel", "temp_channel", "provider"))
     max_accounts: int | None = Field(None, alias="maxAccounts")
     concurrency: int = 5
 
@@ -200,6 +253,11 @@ class KakaoPayTempBatchStartRequest(BaseModel):
             if cdk:
                 items.append(cdk)
         return items
+
+    @field_validator("channel", mode="before")
+    @classmethod
+    def _clean_channel(cls, value: Any) -> str:
+        return _clean_temp_channel(value)
 
 
 class KakaoPayCustomerOrderRequest(BaseModel):
@@ -395,6 +453,27 @@ def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
 
 def _load_token_for_email(email: str) -> str:
     return pix_routes._load_token_for_email(email)
+
+
+def _load_kakao_session_context_for_email(email: str) -> dict[str, str]:
+    try:
+        session_data = load_auth_session(email)
+    except Exception:
+        session_data = {}
+    if not isinstance(session_data, dict):
+        session_data = {}
+    account = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
+    return {
+        "session_token": str(session_data.get("sessionToken") or session_data.get("session_token") or "").strip(),
+        "cookie_header": str(session_data.get("cookie_header") or session_data.get("cookieHeader") or "").strip(),
+        "account_id": str(session_data.get("account_id") or session_data.get("accountId") or account.get("id") or "").strip(),
+        "device_id": str(session_data.get("device_id") or session_data.get("oai_device_id") or session_data.get("oaiDeviceId") or "").strip(),
+        "user_agent": str(session_data.get("user_agent") or session_data.get("userAgent") or "").strip(),
+        "accept_language": str(session_data.get("accept_language") or session_data.get("acceptLanguage") or "ko-KR,ko;q=0.9,en-US;q=0.8").strip(),
+        "openai_sentinel_token": str(session_data.get("openai_sentinel_token") or session_data.get("openaiSentinelToken") or "").strip(),
+        "oai_client_version": str(session_data.get("oai_client_version") or session_data.get("oaiClientVersion") or "").strip(),
+        "oai_client_build_number": str(session_data.get("oai_client_build_number") or session_data.get("oaiClientBuildNumber") or "").strip(),
+    }
 
 
 def _load_kakao_customer_credentials_for_email(email: str) -> tuple[str, str]:
@@ -622,10 +701,42 @@ def _kk_payment_order_action(order_id: str, action: str, *, token: str = "", cdk
     return _customer_api_post_action(f"/orders/{clean_order_id}/{clean_action}", headers=headers, timeout=20)
 
 
-def _kakao_temp_ticket_status(cdk: str) -> dict[str, Any]:
+def _kakao_temp_ticket_status(cdk: str, channel: str = "masi") -> dict[str, Any]:
     clean_cdk = str(cdk or "").strip()
     if not clean_cdk:
-        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "KSCAN CDK 不能为空"})
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "临时提链 Key/CDK 不能为空"})
+    clean_channel = _clean_temp_channel(channel)
+    if clean_channel == "shzyhqn":
+        if clean_cdk.lower().startswith("kls_"):
+            try:
+                resp = requests.post(
+                    f"{KAKAO_TEMP_SHZYHQN_API_BASE}/api/cdk/status",
+                    json={"cdk": clean_cdk},
+                    headers={"Content-Type": "application/json"},
+                    timeout=20,
+                )
+            except requests.RequestException as exc:
+                raise _remote_unreachable(exc, "Kakao shzyhqn 普通提链 CDK 服务") from exc
+            data = _remote_json(resp, "Kakao shzyhqn 普通提链 CDK 服务返回非 JSON 响应")
+            if isinstance(data, dict) and "reserved_uses" not in data and "active_jobs" in data:
+                data = dict(data)
+                data["reserved_uses"] = data.get("active_jobs")
+            return data
+        try:
+            resp = requests.get(
+                f"{KAKAO_TEMP_SHZYHQN_API_BASE}/api/v1/key/status",
+                headers={"Authorization": f"Bearer {clean_cdk}"},
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise _remote_unreachable(exc, "Kakao shzyhqn 普通提链服务") from exc
+        data = _remote_json(resp, "Kakao shzyhqn 普通提链服务返回非 JSON 响应")
+        if isinstance(data, dict) and "reserved_uses" not in data and "active_jobs" in data:
+            data = dict(data)
+            data["reserved_uses"] = data.get("active_jobs")
+        return data
+    if clean_channel != "masi":
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": f"不支持的临时提链渠道：{channel}"})
     try:
         resp = requests.get(
             f"{KAKAO_TEMP_EXTRACT_API_BASE}/v1/cdk/status",
@@ -886,7 +997,16 @@ def _job_proxy_pool(job_id: str) -> list[str] | None:
         return [str(item or "").strip() for item in pool if str(item or "").strip()] if isinstance(pool, list) else []
 
 
-def _remove_job_proxy_from_pool(job_id: str, proxy: str, reason: str, *, email: str = "") -> None:
+def _job_named_proxy_pool(job_id: str, key: str) -> list[str] | None:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id) or {}
+        if key not in job:
+            return None
+        pool = job.get(key)
+        return [str(item or "").strip() for item in pool if str(item or "").strip()] if isinstance(pool, list) else []
+
+
+def _remove_job_proxy_from_pool(job_id: str, proxy: str, reason: str, *, email: str = "", pool_key: str = "proxy_pool", pool_label: str = "代理池") -> None:
     clean_proxy = str(proxy or "").strip()
     if not clean_proxy:
         return
@@ -894,22 +1014,24 @@ def _remove_job_proxy_from_pool(job_id: str, proxy: str, reason: str, *, email: 
     remaining = 0
     with JOBS_LOCK:
         job = JOBS.get(job_id)
-        if not job or "proxy_pool" not in job:
+        if not job or pool_key not in job:
             return
-        pool = [str(item or "").strip() for item in (job.get("proxy_pool") or []) if str(item or "").strip()]
+        pool = [str(item or "").strip() for item in (job.get(pool_key) or []) if str(item or "").strip()]
         next_pool = [item for item in pool if item != clean_proxy]
         removed = len(next_pool) != len(pool)
         if removed:
-            job["proxy_pool"] = next_pool
+            job[pool_key] = next_pool
+            if pool_key == "kr_proxy_pool":
+                job["proxy_pool"] = next_pool
             bad = list(job.get("bad_proxies") or [])
             if clean_proxy not in {str(item.get("proxy") if isinstance(item, dict) else item) for item in bad}:
-                bad.append({"proxy": clean_proxy, "reason": str(reason or ""), "email": str(email or ""), "removed_at": time.time()})
+                bad.append({"proxy": clean_proxy, "reason": str(reason or ""), "email": str(email or ""), "pool": pool_label, "removed_at": time.time()})
             job["bad_proxies"] = bad[-200:]
             remaining = len(next_pool)
     if removed:
         masked = _mask_proxy_for_log(clean_proxy)
         suffix = f"，剩余 {remaining} 条"
-        _append_log(job_id, f"代理预检失败，已从代理池移除：{masked}{suffix}，原因：{reason}")
+        _append_log(job_id, f"代理预检失败，已从{pool_label}移除：{masked}{suffix}，原因：{reason}")
 
 
 def _proxy_fingerprint(proxy: str) -> str:
@@ -958,6 +1080,12 @@ def _proxy_label_from_pool(pool: list[str], proxy: str) -> str:
 def _job_proxy_label(job_id: str, proxy: str) -> str:
     pool = _job_proxy_pool(job_id)
     return _proxy_label_from_pool(pool or [], proxy)
+
+
+def _job_named_proxy_label(job_id: str, proxy: str, pool_key: str, label: str) -> str:
+    pool = _job_named_proxy_pool(job_id, pool_key)
+    base = _proxy_label_from_pool(pool or [], proxy)
+    return f"{label} {base}"
 
 
 def _safe_bad_proxy_items(items: Any) -> list[dict[str, Any]]:
@@ -1091,8 +1219,13 @@ def _preflight_kakao_proxies_or_raise(
     max_attempts: int | None = None,
     on_proxy_failed=None,
     proxy_label_fn=None,
+    on_kr_proxy_failed=None,
+    on_vn_proxy_failed=None,
+    kr_proxy_label_fn=None,
+    vn_proxy_label_fn=None,
 ) -> KakaoPayJobConfig:
-    if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
+    has_direct_pool = bool(cfg.direct_proxies or cfg.kr_proxies or cfg.vn_proxies)
+    if not has_direct_pool and (not cfg.kookeey_user or not cfg.kookeey_pass):
         return cfg
     attempts = _proxy_preflight_attempt_limit(max_attempts)
     stage_specs = [
@@ -1101,17 +1234,32 @@ def _preflight_kakao_proxies_or_raise(
         ("provider", 2, True),
     ]
     errors: list[str] = []
-    remaining_direct_proxies = [str(item or "").strip() for item in (cfg.direct_proxies or []) if str(item or "").strip()]
+    legacy_pool = [str(item or "").strip() for item in (cfg.direct_proxies or []) if str(item or "").strip()]
+    remaining_kr_proxies = [str(item or "").strip() for item in (cfg.kr_proxies or legacy_pool) if str(item or "").strip()]
+    remaining_vn_proxies = [str(item or "").strip() for item in (cfg.vn_proxies or legacy_pool) if str(item or "").strip()]
     for attempt in range(1, attempts + 1):
-        if cfg.direct_proxies and not remaining_direct_proxies:
+        if has_direct_pool and (not remaining_kr_proxies or not remaining_vn_proxies):
             break
-        candidate_proxies = remaining_direct_proxies[:] if remaining_direct_proxies else []
-        candidate_proxy = candidate_proxies[0] if candidate_proxies else ""
-        candidate_label = proxy_label_fn(candidate_proxy) if candidate_proxy and callable(proxy_label_fn) else ""
+        candidate_kr = remaining_kr_proxies[0] if remaining_kr_proxies else ""
+        candidate_vn = remaining_vn_proxies[0] if remaining_vn_proxies else ""
+        kr_label = (
+            kr_proxy_label_fn(candidate_kr)
+            if candidate_kr and callable(kr_proxy_label_fn)
+            else (proxy_label_fn(candidate_kr) if candidate_kr and callable(proxy_label_fn) else "")
+        )
+        vn_label = (
+            vn_proxy_label_fn(candidate_vn)
+            if candidate_vn and callable(vn_proxy_label_fn)
+            else (proxy_label_fn(candidate_vn) if candidate_vn and callable(proxy_label_fn) else "")
+        )
         candidate_cfg = replace(
             cfg,
-            direct_proxies=(candidate_proxies[:1] if candidate_proxies else []),
-            direct_proxy_label=candidate_label,
+            direct_proxies=[],
+            kr_proxies=([candidate_kr] if candidate_kr else []),
+            vn_proxies=([candidate_vn] if candidate_vn else []),
+            kr_proxy_label=kr_label,
+            vn_proxy_label=vn_label,
+            direct_proxy_label=kr_label or vn_label,
         )
         preflighted: dict[str, str] = {}
         candidate_errors: list[str] = []
@@ -1129,10 +1277,22 @@ def _preflight_kakao_proxies_or_raise(
                 preflighted[role] = proxy_url
                 continue
             candidate_errors.append(f"{role}: {message}")
-            if candidate_proxy:
-                if callable(on_proxy_failed):
-                    on_proxy_failed(candidate_proxy, f"{role}: {message}")
-                remaining_direct_proxies = [item for item in remaining_direct_proxies if item != candidate_proxy]
+            if stage_index == 1:
+                failed_proxy = candidate_vn
+                if failed_proxy:
+                    if callable(on_vn_proxy_failed):
+                        on_vn_proxy_failed(failed_proxy, f"{role}: {message}")
+                    elif callable(on_proxy_failed):
+                        on_proxy_failed(failed_proxy, f"{role}: {message}")
+                    remaining_vn_proxies = [item for item in remaining_vn_proxies if item != failed_proxy]
+            else:
+                failed_proxy = candidate_kr
+                if failed_proxy:
+                    if callable(on_kr_proxy_failed):
+                        on_kr_proxy_failed(failed_proxy, f"{role}: {message}")
+                    elif callable(on_proxy_failed):
+                        on_proxy_failed(failed_proxy, f"{role}: {message}")
+                    remaining_kr_proxies = [item for item in remaining_kr_proxies if item != failed_proxy]
             break
         if len(preflighted) == len(stage_specs):
             return replace(
@@ -1166,7 +1326,46 @@ def _select_temp_batch_accounts(req: KakaoPayTempBatchStartRequest) -> list[dict
     return selected
 
 
-def _create_kakao_temp_external_order(access_token: str, cdk: str) -> dict[str, Any]:
+def _create_kakao_temp_external_order(access_token: str, cdk: str, channel: str = "masi", session_token: str = "") -> dict[str, Any]:
+    clean_channel = _clean_temp_channel(channel)
+    if clean_channel == "shzyhqn":
+        if str(cdk or "").strip().lower().startswith("kls_"):
+            client = requests.Session()
+            try:
+                client.get(f"{KAKAO_TEMP_SHZYHQN_API_BASE}/", timeout=20)
+                resp = client.post(
+                    f"{KAKAO_TEMP_SHZYHQN_API_BASE}/api/jobs/batch",
+                    json={"cdk": cdk, "accounts": [{"at": access_token, "sessionToken": str(session_token or "").strip(), "cdk": ""}]},
+                    headers={"Content-Type": "application/json"},
+                    timeout=90,
+                )
+            except requests.RequestException as exc:
+                raise RuntimeError(f"Kakao shzyhqn 普通提链 CDK 服务请求失败：{exc}") from exc
+            data = _remote_json(resp, "Kakao shzyhqn 普通提链 CDK 服务返回非 JSON 响应")
+            job_id = _temp_order_id(data)
+            if job_id:
+                with KAKAO_TEMP_SHZYHQN_CLIENT_SESSIONS_LOCK:
+                    KAKAO_TEMP_SHZYHQN_CLIENT_SESSIONS[job_id] = client
+                if "job" not in data:
+                    data = dict(data)
+                    data["job"] = {"job_id": job_id, "status": "queued", "service_mode": "link"}
+            return data
+        try:
+            resp = requests.post(
+                f"{KAKAO_TEMP_SHZYHQN_API_BASE}/api/v1/link/jobs",
+                json={"at": access_token, "session_token": str(session_token or "").strip()},
+                headers={
+                    "Authorization": f"Bearer {cdk}",
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": f"autoteam-kakao-temp-{uuid.uuid4()}",
+                },
+                timeout=70,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Kakao shzyhqn 普通提链服务请求失败：{exc}") from exc
+        return _remote_json(resp, "Kakao shzyhqn 普通提链服务返回非 JSON 响应")
+    if clean_channel != "masi":
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": f"不支持的临时提链渠道：{channel}"})
     try:
         resp = requests.post(
             f"{KAKAO_TEMP_EXTRACT_API_BASE}/v1/kakao/jobs",
@@ -1179,7 +1378,33 @@ def _create_kakao_temp_external_order(access_token: str, cdk: str) -> dict[str, 
     return _remote_json(resp, "Kakao 临时提链服务返回非 JSON 响应")
 
 
-def _get_kakao_temp_external_order(order_id: str, cdk: str) -> dict[str, Any]:
+def _get_kakao_temp_external_order(order_id: str, cdk: str, channel: str = "masi") -> dict[str, Any]:
+    clean_channel = _clean_temp_channel(channel)
+    if clean_channel == "shzyhqn":
+        if str(cdk or "").strip().lower().startswith("kls_"):
+            with KAKAO_TEMP_SHZYHQN_CLIENT_SESSIONS_LOCK:
+                client = KAKAO_TEMP_SHZYHQN_CLIENT_SESSIONS.get(str(order_id or "").strip())
+            if client is None:
+                raise RuntimeError("Kakao shzyhqn CDK 任务缺少客户端会话，无法继续轮询；请在同一次任务内提交并轮询")
+            try:
+                resp = client.get(
+                    f"{KAKAO_TEMP_SHZYHQN_API_BASE}/api/client/jobs/{order_id}",
+                    timeout=20,
+                )
+            except requests.RequestException as exc:
+                raise RuntimeError(f"Kakao shzyhqn 普通提链 CDK 服务轮询失败：{exc}") from exc
+            return _remote_json(resp, "Kakao shzyhqn 普通提链 CDK 服务返回非 JSON 响应")
+        try:
+            resp = requests.get(
+                f"{KAKAO_TEMP_SHZYHQN_API_BASE}/api/v1/jobs/{order_id}",
+                headers={"Authorization": f"Bearer {cdk}"},
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Kakao shzyhqn 普通提链服务轮询失败：{exc}") from exc
+        return _remote_json(resp, "Kakao shzyhqn 普通提链服务返回非 JSON 响应")
+    if clean_channel != "masi":
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": f"不支持的临时提链渠道：{channel}"})
     try:
         resp = requests.get(
             f"{KAKAO_TEMP_EXTRACT_API_BASE}/v1/kakao/jobs/{order_id}",
@@ -1199,7 +1424,19 @@ def _temp_order_payload(data: dict[str, Any]) -> dict[str, Any]:
 
 def _temp_order_id(data: dict[str, Any]) -> str:
     order = _temp_order_payload(data)
-    return str(order.get("job_id") or order.get("jobId") or order.get("order_id") or order.get("orderId") or order.get("id") or "").strip()
+    jobs = data.get("jobs") if isinstance(data.get("jobs"), list) else []
+    first_job = jobs[0] if jobs and isinstance(jobs[0], dict) else {}
+    return str(
+        order.get("job_id")
+        or order.get("jobId")
+        or order.get("order_id")
+        or order.get("orderId")
+        or order.get("id")
+        or first_job.get("job_id")
+        or first_job.get("jobId")
+        or first_job.get("id")
+        or ""
+    ).strip()
 
 
 def _temp_order_link(order: dict[str, Any]) -> str:
@@ -1292,7 +1529,7 @@ def _update_temp_external_progress(job_id: str, email: str, order_id: str, order
             job["logs"] = job["logs"][-500:]
 
 
-def _poll_kakao_temp_external_order(order_id: str, cdk: str, cancel_check, progress_callback=None, poll_error_callback=None) -> dict[str, Any]:
+def _poll_kakao_temp_external_order(order_id: str, cdk: str, cancel_check, progress_callback=None, poll_error_callback=None, *, channel: str = "masi") -> dict[str, Any]:
     deadline = time.monotonic() + KAKAO_LINK_TTL_SECONDS + 90
     last_order: dict[str, Any] = {"order_id": order_id, "status": "pending"}
     transient_errors = 0
@@ -1300,7 +1537,7 @@ def _poll_kakao_temp_external_order(order_id: str, cdk: str, cancel_check, progr
         if cancel_check():
             raise RuntimeError("任务已取消")
         try:
-            data = _get_kakao_temp_external_order(order_id, cdk)
+            data = _get_kakao_temp_external_order(order_id, cdk) if _clean_temp_channel(channel) == "masi" else _get_kakao_temp_external_order(order_id, cdk, channel)
             transient_errors = 0
         except RuntimeError as exc:
             transient_errors += 1
@@ -1329,7 +1566,10 @@ def _kakao_temp_result_for_link(email: str, order_id: str, data: dict[str, Any])
     if not link:
         raise RuntimeError("临时提链完成但未返回 Kakao 链接")
     now_ts = int(time.time())
-    expires_at_ts = _timestamp_seconds(order.get("expires_at") or order.get("expired_at") or order.get("qr_expires_at")) or (now_ts + KAKAO_LINK_TTL_SECONDS)
+    expires_at_ts = (
+        _timestamp_seconds(order.get("expires_at") or order.get("expired_at") or order.get("qr_expires_at"))
+        or (now_ts + KAKAO_LINK_TTL_SECONDS)
+    )
     return {
         "ok": True,
         "amount": str(order.get("amount") or ""),
@@ -1349,21 +1589,39 @@ def _kakao_temp_result_for_link(email: str, order_id: str, data: dict[str, Any])
     }
 
 
-def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dict[str, Any], index: int, total: int, proxies: list[str]) -> dict[str, Any]:
+def _run_batch_account(
+    job_id: str,
+    req: KakaoPayBatchStartRequest,
+    account: dict[str, Any],
+    index: int,
+    total: int,
+    proxies: list[str],
+    vn_proxies: list[str] | None = None,
+) -> dict[str, Any]:
     email = str(account.get("email") or "").strip()
-    initial_proxies = [str(item or "").strip() for item in (proxies or []) if str(item or "").strip()]
-    if initial_proxies and _job_proxy_pool(job_id) is None:
+    initial_kr_proxies = [str(item or "").strip() for item in (proxies or []) if str(item or "").strip()]
+    initial_vn_proxies = [str(item or "").strip() for item in (vn_proxies or proxies or []) if str(item or "").strip()]
+    if (initial_kr_proxies or initial_vn_proxies) and _job_proxy_pool(job_id) is None:
         with JOBS_LOCK:
             job = JOBS.get(job_id)
             if job is not None and "proxy_pool" not in job:
-                job["proxy_pool"] = list(initial_proxies)
+                job["proxy_pool"] = list(initial_kr_proxies)
+                job["kr_proxy_pool"] = list(initial_kr_proxies)
+                job["vn_proxy_pool"] = list(initial_vn_proxies)
                 job["bad_proxies"] = list(job.get("bad_proxies") or [])
-    proxies = _rotate_proxies_for_account((_job_proxy_pool(job_id) if _job_proxy_pool(job_id) is not None else initial_proxies), index)
+    kr_pool = _job_named_proxy_pool(job_id, "kr_proxy_pool")
+    vn_pool = _job_named_proxy_pool(job_id, "vn_proxy_pool")
+    if kr_pool is None:
+        kr_pool = _job_proxy_pool(job_id)
+    rotated_kr_proxies = _rotate_proxies_for_account((kr_pool if kr_pool is not None else initial_kr_proxies), index)
+    rotated_vn_proxies = _rotate_proxies_for_account((vn_pool if vn_pool is not None else initial_vn_proxies), index)
     started = time.monotonic()
     if _is_job_cancel_requested(job_id):
         _append_log(job_id, f"[{index}/{total}] 跳过账号：{email}（任务已取消）")
         return {"skipped": True, "email": email, "status": _set_account_status(email, KAKAO_STATUS_PENDING, job_id=job_id)}
-    proxy_slot = f" proxy槽={(index - 1) % len(proxies) + 1}/{len(proxies)}" if proxies else ""
+    proxy_slot = f" KR代理槽={(index - 1) % len(rotated_kr_proxies) + 1}/{len(rotated_kr_proxies)}" if rotated_kr_proxies else ""
+    if rotated_vn_proxies:
+        proxy_slot += f" VN代理槽={(index - 1) % len(rotated_vn_proxies) + 1}/{len(rotated_vn_proxies)}"
     _set_job_running_delta(job_id, 1)
     _append_log(job_id, f"[{index}/{total}] 开始账号：{email}{proxy_slot}")
 
@@ -1376,6 +1634,7 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
         token = _load_token_for_email(email)
         if not token:
             raise RuntimeError("账号缺少有效 accessToken")
+        session_context = _load_kakao_session_context_for_email(email)
         result: dict[str, Any] | None = None
         last_error = ""
         last_deep_error = ""
@@ -1384,29 +1643,58 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
             attempts = attempt
             if _is_job_cancel_requested(job_id) and attempt > 1:
                 raise RuntimeError(f"任务已取消，停止重试；最后错误: {last_error}")
-            pool_snapshot = _job_proxy_pool(job_id)
-            active_proxies = pool_snapshot if pool_snapshot is not None else initial_proxies
-            if initial_proxies and not active_proxies and not (req.kookeey_user and req.kookeey_pass):
-                raise RuntimeError("代理池已无可用代理（预检失败代理已移除）")
-            rotated_proxies = _rotate_proxies_for_account(active_proxies, index + attempt - 1)
+            kr_pool_snapshot = _job_named_proxy_pool(job_id, "kr_proxy_pool")
+            if kr_pool_snapshot is None:
+                kr_pool_snapshot = _job_proxy_pool(job_id)
+            vn_pool_snapshot = _job_named_proxy_pool(job_id, "vn_proxy_pool")
+            active_kr_proxies = kr_pool_snapshot if kr_pool_snapshot is not None else initial_kr_proxies
+            active_vn_proxies = vn_pool_snapshot if vn_pool_snapshot is not None else initial_vn_proxies
+            if initial_kr_proxies and not active_kr_proxies and not (req.kookeey_user and req.kookeey_pass):
+                raise RuntimeError("KR 代理池已无可用代理（预检失败代理已移除）")
+            if initial_vn_proxies and not active_vn_proxies and not (req.kookeey_user and req.kookeey_pass):
+                raise RuntimeError("VN 代理池已无可用代理（预检失败代理已移除）")
+            rotated_kr_proxies = _rotate_proxies_for_account(active_kr_proxies, index + attempt - 1)
+            rotated_vn_proxies = _rotate_proxies_for_account(active_vn_proxies, index + attempt - 1)
             account_log(f"第 {attempt}/{max_attempts} 次尝试：{email}")
             cfg = KakaoPayJobConfig(
                 access_token=token,
+                account_email=email,
                 local_proxy=str(req.local_proxy or "").strip(),
                 kookeey_user=str(req.kookeey_user or "").strip(),
                 kookeey_pass=str(req.kookeey_pass or ""),
                 kookeey_endpoint=str(req.kookeey_endpoint or "gate.kookeey.info:1000").strip(),
                 region=(req.region or "KR").strip().upper() or "KR",
-                direct_proxies=rotated_proxies,
+                checkout_region="KR",
+                promotion_region="VN",
+                provider_region="KR",
+                direct_proxies=rotated_kr_proxies,
+                kr_proxies=rotated_kr_proxies,
+                vn_proxies=rotated_vn_proxies,
+                **session_context,
             )
             try:
-                cfg = _preflight_kakao_proxies_or_raise(
-                    cfg,
-                    account_log,
-                    req.proxy_preflight_attempts,
-                    on_proxy_failed=lambda proxy, reason: _remove_job_proxy_from_pool(job_id, proxy, reason, email=email),
-                    proxy_label_fn=lambda proxy: _job_proxy_label(job_id, proxy),
-                )
+                try:
+                    cfg = _preflight_kakao_proxies_or_raise(
+                        cfg,
+                        account_log,
+                        req.proxy_preflight_attempts,
+                        on_proxy_failed=lambda proxy, reason: _remove_job_proxy_from_pool(job_id, proxy, reason, email=email),
+                        proxy_label_fn=lambda proxy: _job_proxy_label(job_id, proxy),
+                        on_kr_proxy_failed=lambda proxy, reason: _remove_job_proxy_from_pool(job_id, proxy, reason, email=email, pool_key="kr_proxy_pool", pool_label="KR 代理池"),
+                        on_vn_proxy_failed=lambda proxy, reason: _remove_job_proxy_from_pool(job_id, proxy, reason, email=email, pool_key="vn_proxy_pool", pool_label="VN 代理池"),
+                        kr_proxy_label_fn=lambda proxy: _job_named_proxy_label(job_id, proxy, "kr_proxy_pool", "KR"),
+                        vn_proxy_label_fn=lambda proxy: _job_named_proxy_label(job_id, proxy, "vn_proxy_pool", "VN"),
+                    )
+                except TypeError as exc:
+                    if "unexpected keyword argument" not in str(exc):
+                        raise
+                    cfg = _preflight_kakao_proxies_or_raise(
+                        cfg,
+                        account_log,
+                        req.proxy_preflight_attempts,
+                        on_proxy_failed=lambda proxy, reason: _remove_job_proxy_from_pool(job_id, proxy, reason, email=email),
+                        proxy_label_fn=lambda proxy: _job_proxy_label(job_id, proxy),
+                    )
                 result = generate_kakao_trial(cfg, log=account_log)
                 break
             except Exception as exc:
@@ -1508,8 +1796,10 @@ def _run_batch_account(job_id: str, req: KakaoPayBatchStartRequest, account: dic
         _set_job_running_delta(job_id, -1)
 
 
-def _run_temp_batch_account(job_id: str, account: dict[str, Any], cdk: str, index: int, total: int) -> dict[str, Any]:
+def _run_temp_batch_account(job_id: str, account: dict[str, Any], cdk: str, index: int, total: int, channel: str = "masi") -> dict[str, Any]:
     email = str(account.get("email") or "").strip()
+    clean_channel = _clean_temp_channel(channel)
+    channel_label = _temp_channel_label(clean_channel)
     started = time.monotonic()
     if _is_job_cancel_requested(job_id):
         _append_log(job_id, f"[{index}/{total}] 临时提链跳过账号：{email}（任务已取消）")
@@ -1521,23 +1811,32 @@ def _run_temp_batch_account(job_id: str, account: dict[str, Any], cdk: str, inde
         token = _load_token_for_email(email)
         if not token:
             raise RuntimeError("账号缺少有效 accessToken")
-        created = _create_kakao_temp_external_order(token, cdk)
+        session_context = _load_kakao_session_context_for_email(email) if clean_channel == "shzyhqn" else {}
+        if clean_channel == "shzyhqn":
+            created = _create_kakao_temp_external_order(token, cdk, clean_channel, str(session_context.get("session_token") or ""))
+        else:
+            created = _create_kakao_temp_external_order(token, cdk)
         order_id = _temp_order_id(created)
         if not order_id:
             raise RuntimeError("临时提链服务未返回 order_id")
         created_order = _temp_order_payload(created)
         if created_order:
-            _update_temp_external_progress(job_id, email, order_id, created_order, log_prefix=f"[{index}/{total}] KSCAN 初始状态", force_log=True)
-        _append_log(job_id, f"[{index}/{total}] KSCAN 直提任务已创建：{email} job_id={order_id}")
-        polled = _poll_kakao_temp_external_order(
+            _update_temp_external_progress(job_id, email, order_id, created_order, log_prefix=f"[{index}/{total}] {channel_label} 初始状态", force_log=True)
+        _append_log(job_id, f"[{index}/{total}] {channel_label} 直提任务已创建：{email} job_id={order_id}")
+        poll_args = (
             order_id,
             cdk,
             lambda: _is_job_cancel_requested(job_id),
-            lambda order: _update_temp_external_progress(job_id, email, order_id, order, log_prefix=f"[{index}/{total}] KSCAN 轮询状态"),
+            lambda order: _update_temp_external_progress(job_id, email, order_id, order, log_prefix=f"[{index}/{total}] {channel_label} 轮询状态"),
             lambda message, count: (
                 _set_account_status(email, KAKAO_STATUS_RUNNING, error=message, job_id=job_id, failure_stage="temp_extract"),
                 _append_log(job_id, f"[{index}/{total}] {message}"),
             ),
+        )
+        polled = (
+            _poll_kakao_temp_external_order(*poll_args, channel=clean_channel)
+            if clean_channel == "shzyhqn"
+            else _poll_kakao_temp_external_order(*poll_args)
         )
         result = _kakao_temp_result_for_link(email, order_id, polled)
         record = _link_record_from_result(job_id, email, result)
@@ -1548,6 +1847,7 @@ def _run_temp_batch_account(job_id: str, account: dict[str, Any], cdk: str, inde
             "elapsed_s": round(time.monotonic() - started, 1),
             "attempts": 1,
             "cdk": cdk,
+            "channel": clean_channel,
             "job_id": order_id,
             "link": record,
         }
@@ -1576,6 +1876,7 @@ def _run_temp_batch_account(job_id: str, account: dict[str, Any], cdk: str, inde
             "error": error,
             "failure_stage": failure_stage,
             "cdk": cdk,
+            "channel": clean_channel,
         }
         status = _set_account_status(email, KAKAO_STATUS_FAILED, error=error, job_id=job_id, failure_stage=failure_stage)
         _append_log(job_id, f"[{index}/{total}] 临时提链失败：{email} {error}")
@@ -1592,6 +1893,10 @@ def _run_temp_batch_job(job_id: str, req: KakaoPayTempBatchStartRequest) -> None
         accounts = _select_temp_batch_accounts(req)
         if not accounts:
             raise RuntimeError("没有可用账号，请先选择账号池账号或刷新账号池")
+        channel = _clean_temp_channel(req.channel)
+        channel_label = _temp_channel_label(channel)
+        if channel not in {"masi", "shzyhqn"}:
+            raise RuntimeError(f"不支持的临时提链渠道：{req.channel}")
         cdks = _temp_cdk_assignments(_temp_cdks(req), len(accounts))
         concurrency = _requested_temp_concurrency(req, len(accounts))
         successes: list[dict[str, Any]] = []
@@ -1608,13 +1913,14 @@ def _run_temp_batch_job(job_id: str, req: KakaoPayTempBatchStartRequest) -> None
             JOBS[job_id]["completed"] = 0
             JOBS[job_id]["concurrency"] = concurrency
             JOBS[job_id]["running_count"] = 0
+            JOBS[job_id]["channel"] = channel
             JOBS[job_id]["account_statuses"] = account_statuses
             JOBS[job_id]["external_jobs"] = {}
-        log(f"Kakao Pay 临时提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，KSCAN CDK={len(cdks)}")
+        log(f"Kakao Pay 临时提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，{channel_label} Key/CDK={len(cdks)}")
         completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = [
-                executor.submit(_run_temp_batch_account, job_id, account, cdks[index - 1], index, len(accounts))
+                executor.submit(_run_temp_batch_account, job_id, account, cdks[index - 1], index, len(accounts), channel)
                 for index, account in enumerate(accounts, start=1)
             ]
             for future in as_completed(futures):
@@ -1702,11 +2008,16 @@ def _run_batch_job(job_id: str, req: KakaoPayBatchStartRequest) -> None:
         accounts = _select_batch_accounts(req)
         if not accounts:
             raise RuntimeError("没有可用账号，请先选择账号池账号或刷新账号池")
-        proxies = _parse_proxies(req.proxies)
-        if not proxies and (not req.kookeey_user or not req.kookeey_pass):
-            raise RuntimeError("请填写代理")
-        if len(proxies) > 1:
-            log(f"Kakao Pay 代理池轮换已启用：{len(proxies)} 条，按账号与预检尝试自动切换")
+        kr_proxies = _parse_proxies(req.kr_proxies or req.proxies)
+        vn_proxies = _parse_proxies(req.vn_proxies)
+        if not vn_proxies and kr_proxies:
+            vn_proxies = list(kr_proxies)
+        if not kr_proxies and (not req.kookeey_user or not req.kookeey_pass):
+            raise RuntimeError("请填写 KR 代理池")
+        if not vn_proxies and (not req.kookeey_user or not req.kookeey_pass):
+            raise RuntimeError("请填写 VN 代理池")
+        if len(kr_proxies) > 1 or len(vn_proxies) > 1:
+            log(f"Kakao Pay 代理池轮换已启用（KR/VN）：KR {len(kr_proxies)} 条，VN {len(vn_proxies)} 条，按账号与预检尝试自动切换")
         concurrency = _batch_concurrency(req, len(accounts))
         successes: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
@@ -1722,14 +2033,16 @@ def _run_batch_job(job_id: str, req: KakaoPayBatchStartRequest) -> None:
             JOBS[job_id]["concurrency"] = concurrency
             JOBS[job_id]["running_count"] = 0
             JOBS[job_id]["account_statuses"] = account_statuses
-            JOBS[job_id]["proxy_pool"] = list(proxies)
+            JOBS[job_id]["proxy_pool"] = list(kr_proxies)
+            JOBS[job_id]["kr_proxy_pool"] = list(kr_proxies)
+            JOBS[job_id]["vn_proxy_pool"] = list(vn_proxies)
             JOBS[job_id]["bad_proxies"] = []
-        proxy_pool = f"，代理池={len(proxies)}" if proxies else ""
-        log(f"Kakao Pay 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，目标国家={req.region}{proxy_pool}")
+        proxy_pool = f"，KR代理池={len(kr_proxies)}，VN代理池={len(vn_proxies)}" if kr_proxies or vn_proxies else ""
+        log(f"Kakao Pay 提链任务开始：{len(accounts)} 个账号，并发 {concurrency}，目标国家=KR，promo=VN{proxy_pool}")
         completed = 0
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = [
-                executor.submit(_run_batch_account, job_id, req, account, index, len(accounts), proxies)
+                executor.submit(_run_batch_account, job_id, req, account, index, len(accounts), kr_proxies, vn_proxies)
                 for index, account in enumerate(accounts, start=1)
             ]
             for future in as_completed(futures):
@@ -1787,7 +2100,7 @@ def _job_snapshot(job_id: str) -> dict[str, Any]:
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
-        return {"id": job["id"], "status": job["status"], "logs": list(job["logs"]), "result": job["result"], "error": job["error"], "created_at": job["created_at"], "finished_at": job["finished_at"], "account_email": job.get("account_email") or "", "total": job.get("total") or 0, "completed": job.get("completed") or 0, "concurrency": job.get("concurrency") or 1, "running_count": job.get("running_count") or 0, "cancel_requested": bool(job.get("cancel_requested")), "skipped": job.get("skipped") or [], "account_statuses": job.get("account_statuses") or {}, "temp": bool(job.get("temp")), "external_jobs": job.get("external_jobs") or {}, "proxy_pool_count": len(job.get("proxy_pool") or []), "bad_proxies": _safe_bad_proxy_items(job.get("bad_proxies") or [])}
+        return {"id": job["id"], "status": job["status"], "logs": list(job["logs"]), "result": job["result"], "error": job["error"], "created_at": job["created_at"], "finished_at": job["finished_at"], "account_email": job.get("account_email") or "", "total": job.get("total") or 0, "completed": job.get("completed") or 0, "concurrency": job.get("concurrency") or 1, "running_count": job.get("running_count") or 0, "cancel_requested": bool(job.get("cancel_requested")), "skipped": job.get("skipped") or [], "account_statuses": job.get("account_statuses") or {}, "temp": bool(job.get("temp")), "external_jobs": job.get("external_jobs") or {}, "proxy_pool_count": len(job.get("proxy_pool") or []), "kr_proxy_pool_count": len(job.get("kr_proxy_pool") or job.get("proxy_pool") or []), "vn_proxy_pool_count": len(job.get("vn_proxy_pool") or []), "bad_proxies": _safe_bad_proxy_items(job.get("bad_proxies") or [])}
 
 
 def create_kakao_pay_router() -> APIRouter:
@@ -1875,22 +2188,22 @@ def create_kakao_pay_router() -> APIRouter:
         cdk = str(req.cdk or "").strip()
         access_token = str(req.access_token or "").strip()
         if not cdk or not access_token:
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "KSCAN CDK 和 AT 不能为空"})
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "临时提链 Key/CDK 和 AT 不能为空"})
         try:
-            return _create_kakao_temp_external_order(access_token, cdk)
+            return _create_kakao_temp_external_order(access_token, cdk, req.channel, req.session_token)
         except HTTPException:
             raise
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail={"ok": False, "code": "remote_api_unreachable", "message": str(exc)}) from exc
 
     @router.get("/api/kakao-pay/temp/orders/{order_id}")
-    def get_kakao_pay_temp_order(order_id: str, cdk: str = Query("")) -> dict[str, Any]:
+    def get_kakao_pay_temp_order(order_id: str, cdk: str = Query(""), channel: str = Query("masi")) -> dict[str, Any]:
         clean_order_id = str(order_id or "").strip()
         clean_cdk = str(cdk or "").strip()
         if not clean_order_id or not clean_cdk:
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "order_id 和 KSCAN CDK 不能为空"})
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "order_id 和临时提链 Key/CDK 不能为空"})
         try:
-            return _get_kakao_temp_external_order(clean_order_id, clean_cdk)
+            return _get_kakao_temp_external_order(clean_order_id, clean_cdk, channel)
         except HTTPException:
             raise
         except RuntimeError as exc:
@@ -1898,11 +2211,11 @@ def create_kakao_pay_router() -> APIRouter:
 
     @router.post("/api/kakao-pay/temp/tickets/status")
     def get_kakao_pay_temp_ticket_status(req: KakaoPayTempTicketRequest) -> dict[str, Any]:
-        return _kakao_temp_ticket_status(req.cdk)
+        return _kakao_temp_ticket_status(req.cdk, req.channel)
 
     @router.get("/api/kakao-pay/temp/tickets/status")
-    def get_kakao_pay_temp_ticket_status_get(cdk: str = Query("")) -> dict[str, Any]:
-        return _kakao_temp_ticket_status(cdk)
+    def get_kakao_pay_temp_ticket_status_get(cdk: str = Query(""), channel: str = Query("masi")) -> dict[str, Any]:
+        return _kakao_temp_ticket_status(cdk, channel)
 
     @router.post("/api/kakao-pay/kk-payment/orders")
     def create_kakao_pay_customer_order(req: KakaoPayCustomerOrderRequest) -> dict[str, Any]:

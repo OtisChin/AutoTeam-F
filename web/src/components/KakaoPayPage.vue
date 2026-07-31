@@ -22,22 +22,30 @@
       <section class="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
         <div class="border-b border-gray-800 pb-4">
           <p class="text-xs font-semibold text-gray-500">任务输入</p>
-          <h3 class="mt-1 text-xl font-bold text-white">{{ isTempExtract ? '临时提链 CDK 池' : 'KR 代理' }}</h3>
+          <h3 class="mt-1 text-xl font-bold text-white">{{ isTempExtract ? '临时提链 CDK 池' : 'KR / VN 代理池' }}</h3>
         </div>
 
         <div class="mt-5 space-y-5">
           <template v-if="isTempExtract">
             <label class="block">
-              <span class="mb-2 block text-sm font-semibold text-gray-300">临时提链 CDK 池</span>
+              <span class="mb-2 block text-sm font-semibold text-gray-300">临时提链渠道</span>
+              <select v-model="tempForm.channel" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-yellow-300 focus:outline-none" :disabled="inputLocked">
+                <option value="masi">masi.cc.cd / KSCAN</option>
+                <option value="shzyhqn">kakao.shzyhqn.online / 普通提链</option>
+              </select>
+              <span class="mt-1 block text-xs text-gray-500">新增渠道只对接普通提链，不调用支付一条龙。</span>
+            </label>
+            <label class="block">
+              <span class="mb-2 block text-sm font-semibold text-gray-300">{{ tempCdkPoolTitle }}</span>
               <textarea
                 v-model.trim="tempCdkInput"
                 rows="5"
                 spellcheck="false"
-                placeholder="一行一个 KSCAN 临时提链 CDK"
+                :placeholder="tempCdkPlaceholder"
                 class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-yellow-300 focus:outline-none"
                 :disabled="inputLocked"
               ></textarea>
-              <span class="mt-1 block text-xs text-gray-500">一行一个 CDK；可用 {{ availableTempCdkCount }} 枚 / 可提交 {{ availableTempCdkCapacity }} 个账号 / 冷却 {{ coolingTempCdkCount }} / 已使用 {{ usedTempCdkCount }} / 总计 {{ tempCdks.length }}。临时提链 CDK 会按额度重复分配。</span>
+              <span class="mt-1 block text-xs text-gray-500">一行一个 {{ tempCdkName }}；可用 {{ availableTempCdkCount }} 枚 / 可提交 {{ availableTempCdkCapacity }} 个账号 / 冷却 {{ coolingTempCdkCount }} / 已使用 {{ usedTempCdkCount }} / 总计 {{ tempCdks.length }}。临时提链 Key/CDK 会按额度重复分配。</span>
             </label>
             <div class="flex flex-wrap gap-2">
               <button @click="addTempCdks" :disabled="inputLocked" class="rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-3 py-2 text-xs font-bold text-yellow-100 hover:bg-yellow-400/20 disabled:opacity-50">加入 CDK 池</button>
@@ -67,18 +75,33 @@
           </template>
 
           <template v-else>
-          <label class="block">
-            <span class="mb-2 block text-sm font-semibold text-gray-300">KR 代理列表</span>
-            <textarea
-              v-model.trim="form.proxies"
-              rows="8"
-              spellcheck="false"
-              placeholder="每行一个代理；支持 host:port:user-region-KR-sid-xxx-t-120:pass、gate2.ipweb.cc:7778:B_91859_KR_2528__90_xxx:pass 或 socks5h://user:pass@host:port"
-              class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none"
-              :disabled="inputLocked"
-            ></textarea>
-            <span class="mt-1 block text-xs text-gray-500">1024/ArxLabs/ipweb 的 host:port:user:pass 会自动按 socks5h 使用；建议使用 KR 地区代理。</span>
-          </label>
+          <div class="grid gap-4 xl:grid-cols-2">
+            <label class="block">
+              <span class="mb-2 block text-sm font-semibold text-gray-300">KR 代理池（checkout/provider/approve）</span>
+              <textarea
+                v-model.trim="form.krProxies"
+                rows="8"
+                spellcheck="false"
+                placeholder="每行一个 KR 代理；支持 host:port:user-region-KR-sid-xxx-t-120:pass、gate2.ipweb.cc:7778:B_91859_KR_2528__90_xxx:pass 或 socks5h://user:pass@host:port"
+                class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-emerald-500 focus:outline-none"
+                :disabled="inputLocked"
+              ></textarea>
+              <span class="mt-1 block text-xs text-gray-500">用于创建 checkout、最终 provider、approve/poll；预检失败会从 KR 池移除。</span>
+            </label>
+
+            <label class="block">
+              <span class="mb-2 block text-sm font-semibold text-gray-300">VN 代理池（promotion）</span>
+              <textarea
+                v-model.trim="form.vnProxies"
+                rows="8"
+                spellcheck="false"
+                placeholder="每行一个 VN 代理；支持 host:port:user-region-VN-sid-xxx-t-120:pass 或 socks5h://user:pass@host:port"
+                class="w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-sm text-white placeholder:text-gray-600 focus:border-yellow-300 focus:outline-none"
+                :disabled="inputLocked"
+              ></textarea>
+              <span class="mt-1 block text-xs text-gray-500">用于 checkout/update 注入 promo；不要填写本地测试文件路径，直接粘贴代理条目。</span>
+            </label>
+          </div>
 
           <div class="grid gap-4 md:grid-cols-3">
             <label class="block">
@@ -128,7 +151,7 @@
               {{ cancelling ? '取消中...' : `取消提链${activeJobIds.length > 1 ? ` (${activeJobIds.length})` : ''}` }}
             </button>
             <button @click="reloadAll" :disabled="inputLocked" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">刷新账号/链接</button>
-            <button v-if="!isTempExtract" @click="saveProxy" :disabled="inputLocked" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存代理</button>
+            <button v-if="!isTempExtract" @click="saveProxy" :disabled="inputLocked" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存代理池</button>
             <button v-else @click="saveTempForm" :disabled="inputLocked" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存 CDK</button>
             <button
               @click="retryFailedAccounts"
@@ -353,7 +376,7 @@
         </div>
       </div>
 
-      <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
         <div v-for="card in kkPaymentSummaryCards" :key="card.label" class="rounded-2xl border bg-slate-950/70 p-4" :class="card.class">
           <div class="text-xs font-bold uppercase tracking-wide text-slate-500">{{ card.label }}</div>
           <div class="mt-2 text-3xl font-black text-white">{{ card.value }}</div>
@@ -393,13 +416,12 @@
           <div class="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-slate-400">{{ kkPaymentStatusText }}</div>
           <div class="mt-4 max-h-56 overflow-auto rounded-xl border border-slate-800">
             <table class="w-full text-left text-sm">
-              <thead class="sticky top-0 bg-slate-900 text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-2">CDK</th><th class="px-3 py-2">状态</th><th class="px-3 py-2">账号</th><th class="px-3 py-2 text-right">操作</th></tr></thead>
+              <thead class="sticky top-0 bg-slate-900 text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-2">CDK</th><th class="px-3 py-2">状态</th><th class="px-3 py-2 text-right">操作</th></tr></thead>
               <tbody class="divide-y divide-slate-900">
-                <tr v-if="!kkPaymentCdks.length"><td colspan="4" class="px-3 py-6 text-center text-slate-500">暂无 KK 支付 CDK</td></tr>
+                <tr v-if="!kkPaymentCdks.length"><td colspan="3" class="px-3 py-6 text-center text-slate-500">暂无 KK 支付 CDK</td></tr>
                 <tr v-for="cdk in visibleKkPaymentCdks" :key="cdk.id" class="hover:bg-slate-900/50">
                   <td class="px-3 py-2 font-mono text-xs text-slate-400">{{ maskExternalSecret(cdk.value) }}</td>
                   <td class="px-3 py-2"><span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="kkPaymentCdkStatusClass(kkPaymentCdkDisplayStatus(cdk))">{{ kkPaymentCdkStatusText(kkPaymentCdkDisplayStatus(cdk)) }}</span><div v-if="cdk.message" class="mt-1 text-xs text-slate-500">{{ cdk.message }}</div></td>
-                  <td class="max-w-[180px] truncate px-3 py-2 font-mono text-xs text-slate-500">{{ cdk.accountEmail || '-' }}</td>
                   <td class="px-3 py-2 text-right"><button @click="removeKkPaymentCdk(cdk.id)" :disabled="kkPaymentBusy" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">移除CDK</button></td>
                 </tr>
               </tbody>
@@ -443,14 +465,14 @@
                     <div v-if="item.message" class="mt-2 max-w-3xl truncate text-xs text-slate-500" :title="item.message">{{ item.message }}</div>
                   </div>
                   <div class="flex shrink-0 flex-wrap justify-end gap-2">
-                    <button @click="runKkPaymentTask(item)" :disabled="!kkPaymentTaskRunnable(item)" class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-bold text-blue-200 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50">提交/查询</button>
+                    <button @click="runKkPaymentTask(item)" :disabled="!(kkPaymentTaskRunnable(item) || kkPaymentOrderRestorable(item))" class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-bold text-blue-200 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50">提交/查询</button>
                     <button v-if="kkPaymentCanCancel(item)" @click="cancelKkPaymentOrder(item)" class="rounded-lg border border-orange-400/40 bg-orange-400/10 px-3 py-1.5 text-xs font-bold text-orange-100 hover:bg-orange-400/20">取消订单</button>
                     <button v-if="kkPaymentCanResubmit(item)" @click="resubmitKkPaymentOrder(item)" class="rounded-lg border border-cyan-400/40 bg-cyan-400/10 px-3 py-1.5 text-xs font-bold text-cyan-100 hover:bg-cyan-400/20">重投订单</button>
                     <button v-if="kkPaymentNeedsRelink(item)" @click="reExtractKkPaymentLink(item)" :disabled="starting || cancelling" class="rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-3 py-1.5 text-xs font-bold text-yellow-100 hover:bg-yellow-400/20 disabled:opacity-50">重新提链</button>
                     <button @click="toggleKkPaymentDetails(item.id)" :aria-expanded="kkPaymentDetailsExpanded(item.id)" class="rounded-lg border border-slate-600 bg-slate-800/70 px-3 py-1.5 text-xs font-bold text-slate-100 hover:bg-slate-700">{{ kkPaymentDetailsExpanded(item.id) ? '收起' : '详情' }}</button>
                     <a :href="item.paymentUrl || '#'" target="_blank" class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-200 hover:bg-sky-500/20" :class="!item.paymentUrl ? 'pointer-events-none opacity-50' : ''">打开</a>
                     <button @click="copy(item.paymentUrl || item.orderId)" class="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-slate-800">复制</button>
-                    <button @click="removeKkPaymentLink(item.id)" :disabled="kkPaymentBusy" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">移除</button>
+                    <button @click="removeKkPaymentLink(item.id)" :disabled="!kkPaymentCanRemove(item)" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50">移除</button>
                   </div>
                 </div>
                 <Transition enter-active-class="transition duration-200 ease-out overflow-hidden" enter-from-class="max-h-0 opacity-0 -translate-y-1" enter-to-class="max-h-40 opacity-100 translate-y-0" leave-active-class="transition duration-150 ease-in overflow-hidden" leave-from-class="max-h-40 opacity-100 translate-y-0" leave-to-class="max-h-0 opacity-0 -translate-y-1">
@@ -489,6 +511,8 @@ import NotificationSoundControl from './NotificationSoundControl.vue'
 import { LINK_SUCCESS_SOUND_URL, playNotificationSound } from '../notificationSounds.js'
 
 const PROXY_STORAGE_KEY = 'autotoken_kakao_pay_proxies'
+const KR_PROXY_STORAGE_KEY = 'autotoken_kakao_pay_kr_proxies'
+const VN_PROXY_STORAGE_KEY = 'autotoken_kakao_pay_vn_proxies'
 const FORM_STORAGE_KEY = 'autotoken_kakao_pay_form'
 const TEMP_FORM_STORAGE_KEY = 'autotoken_kakao_pay_temp_form'
 const TEMP_CDK_STATE_STORAGE_KEY = 'autotoken_kakao_pay_temp_cdks'
@@ -497,8 +521,8 @@ const JOB_STORAGE_KEY = 'autotoken_kakao_pay_job'
 const TEMP_JOB_STORAGE_KEY = 'autotoken_kakao_pay_temp_job'
 const ACTIVE_TAB_STORAGE_KEY = 'autotoken_kakao_pay_active_tab'
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled'])
-const KK_PAYMENT_TERMINAL_STATUSES = new Set(['success', 'succeeded', 'paid', 'completed', 'failed', 'stopped', 'cancelled', 'canceled', 'error', 'rejected', 'expired', 'timeout', 'qr_timeout'])
-const KK_PAYMENT_RETRYABLE_STATUSES = new Set(['pending', 'imported', 'failed', 'needs_action', 'stopped'])
+const KK_PAYMENT_TERMINAL_STATUSES = new Set(['success', 'succeeded', 'paid', 'completed', 'failed', 'stopped', 'cancelled', 'canceled', 'error', 'rejected', 'expired', 'timeout', 'qr_timeout', 'not_found', 'order_not_found'])
+const KK_PAYMENT_RETRYABLE_STATUSES = new Set(['pending', 'imported', 'failed', 'needs_action', 'stopped', 'not_found', 'order_not_found'])
 const KAKAO_LINK_TTL_MS = 15 * 60 * 1000
 
 const savedKakaoTab = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)
@@ -518,7 +542,7 @@ function makeExtractTaskState(defaultStatusText) {
     notifiedSuccessKeys: new Set(),
   }
 }
-const extractTaskState = ref(makeExtractTaskState('请选择账号并填写 KR 代理后开始提链。'))
+const extractTaskState = ref(makeExtractTaskState('请选择账号并填写 KR / VN 代理池后开始提链。'))
 const tempExtractTaskState = ref(makeExtractTaskState('请选择账号并填写 KSCAN 临时提链 CDK 后开始临时提链。'))
 function taskStateForMode(mode) {
   return mode === 'tempExtract' ? tempExtractTaskState.value : extractTaskState.value
@@ -554,9 +578,23 @@ const lastFailedEmails = taskFieldRef('lastFailedEmails')
 const notifiedSuccessKeys = taskFieldRef('notifiedSuccessKeys')
 const nowMs = ref(Date.now())
 const logRef = ref(null)
-const tempForm = ref({ concurrency: 5 })
-const tempCdkInput = ref('')
-const tempCdks = ref([])
+const tempForm = ref({ concurrency: 5, channel: 'masi' })
+const tempCdkInputs = ref({ masi: '', shzyhqn: '' })
+const tempCdkPools = ref({ masi: [], shzyhqn: [] })
+const tempCdkInput = computed({
+  get: () => tempCdkInputs.value[cleanTempChannel(tempForm.value.channel)] || '',
+  set: value => {
+    const channel = cleanTempChannel(tempForm.value.channel)
+    tempCdkInputs.value = { ...tempCdkInputs.value, [channel]: String(value || '') }
+  },
+})
+const tempCdks = computed({
+  get: () => tempCdkPools.value[cleanTempChannel(tempForm.value.channel)] || [],
+  set: value => {
+    const channel = cleanTempChannel(tempForm.value.channel)
+    tempCdkPools.value = { ...tempCdkPools.value, [channel]: Array.isArray(value) ? value : [] }
+  },
+})
 const tempCdkQuotaBusy = ref(false)
 const kkForm = ref({ cdk: '', accessTokens: '', paymentUrl: '', paymentMethod: 'kakao_pay', mode: 'READY_LINK' })
 const kkOrders = ref([])
@@ -581,6 +619,8 @@ let componentUnmounted = false
 const savedForm = loadForm()
 const form = ref({
   proxies: localStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
+  krProxies: localStorage.getItem(KR_PROXY_STORAGE_KEY) || savedForm.krProxies || localStorage.getItem(PROXY_STORAGE_KEY) || savedForm.proxies || '',
+  vnProxies: localStorage.getItem(VN_PROXY_STORAGE_KEY) || savedForm.vnProxies || '',
   concurrency: savedForm.concurrency || 1,
   maxAttempts: savedForm.maxAttempts || 5,
   proxyPreflightAttempts: savedForm.proxyPreflightAttempts || 5,
@@ -635,6 +675,11 @@ const availableTempCdkCapacity = computed(() => tempCdks.value.filter(tempCdkUsa
 const kkPaymentAvailableCdkCount = computed(() => kkPaymentCdks.value.filter(kkPaymentCdkUsable).length)
 const kkPaymentUsedCdkCount = computed(() => kkPaymentCdks.value.filter(item => kkPaymentCdkDisplayStatus(item) === 'used').length)
 const kkPaymentAvailableCdkCapacity = computed(() => kkPaymentCdks.value.reduce((sum, item) => sum + kkPaymentCdkCapacity(item), 0))
+const kkPaymentFrozenCdkCapacity = computed(() => kkPaymentCdks.value.reduce((sum, item) => {
+  const frozen = Number(item.frozenUses || 0)
+  const reserved = Number(item.reservedUses || 0)
+  return sum + (Number.isFinite(frozen) ? Math.max(0, frozen) : 0) + (Number.isFinite(reserved) ? Math.max(0, reserved) : 0)
+}, 0))
 const kkPaymentRunnableCount = computed(() => kkPaymentLinks.value.filter(kkPaymentTaskRunnable).length)
 const kkPaymentInvalidCount = computed(() => kkPaymentLinks.value.filter(kkPaymentLinkInvalid).length)
 const kkPaymentStartable = computed(() => kkPaymentRunnableCount.value || (kakaoImportablePaymentLinks.value.length && kkPaymentAvailableCdkCount.value))
@@ -650,12 +695,35 @@ const visibleKkPaymentLinks = computed(() => {
     return kkPaymentTaskFilterStatus(item) === filter
   })
 })
+
+const tempChannelOptions = [
+  { value: 'masi', label: 'masi.cc.cd / KSCAN', keyName: 'KSCAN CDK', placeholder: '一行一个 KSCAN 临时提链 CDK' },
+  { value: 'shzyhqn', label: 'kakao.shzyhqn.online / 普通提链', keyName: '普通提链 API Key', placeholder: '一行一个 kakao.shzyhqn.online 普通提链 API Key' },
+]
+
+function cleanTempChannel(value) {
+  return tempChannelOptions.some(item => item.value === value) ? value : 'masi'
+}
+
+function tempCdkArrayForChannel(channel = tempForm.value.channel) {
+  return tempCdkPools.value[cleanTempChannel(channel)] || []
+}
+
+function setTempCdkArrayForChannel(channel, items) {
+  tempCdkPools.value = { ...tempCdkPools.value, [cleanTempChannel(channel)]: Array.isArray(items) ? items : [] }
+}
+
+const tempChannelConfig = computed(() => tempChannelOptions.find(item => item.value === cleanTempChannel(tempForm.value.channel)) || tempChannelOptions[0])
+const tempCdkName = computed(() => tempChannelConfig.value.keyName)
+const tempCdkPoolTitle = computed(() => `临时提链 CDK 池（${tempCdkName.value}）`)
+const tempCdkPlaceholder = computed(() => tempChannelConfig.value.placeholder)
 const kkPaymentSummaryCards = computed(() => [
   { label: '待提交', value: kkPaymentLinks.value.filter(kkPaymentTaskRunnable).length, class: 'border-blue-500/30' },
   { label: '正在运行', value: kkPaymentRunningCount.value, class: 'border-sky-500/30' },
   { label: '已成功', value: kkPaymentLinks.value.filter(item => item.status === 'success').length, class: 'border-emerald-500/30' },
   { label: '失效/需处理', value: kkPaymentLinks.value.filter(item => kkPaymentLinkInvalid(item) || ['failed', 'stopped', 'needs_action'].includes(item.status)).length, class: 'border-rose-500/30' },
   { label: '可用 CDK', value: kkPaymentAvailableCdkCount.value, class: 'border-cyan-500/30' },
+  { label: '冻结中', value: kkPaymentFrozenCdkCapacity.value, class: 'border-indigo-500/30' },
   { label: '可用次数', value: kkPaymentAvailableCdkCapacity.value, class: 'border-cyan-400/30' },
 ])
 const accountEmailByLower = computed(() => {
@@ -683,7 +751,8 @@ const retryFailedEmails = computed(() => {
 
 watch(form, () => saveForm(), { deep: true })
 watch(tempForm, () => saveTempForm({ silent: true }), { deep: true })
-watch(tempCdks, saveTempCdkState, { deep: true })
+watch(tempCdkPools, saveTempCdkState, { deep: true })
+watch(tempCdkInputs, saveTempCdkState, { deep: true })
 watch(kkPaymentLinks, saveKkPaymentState, { deep: true })
 watch(kkPaymentCdks, saveKkPaymentState, { deep: true })
 watch([kkPaymentConcurrency, kkPaymentMethod], saveKkPaymentState)
@@ -701,8 +770,11 @@ function loadForm() {
 }
 
 function saveForm() {
+  form.value.proxies = form.value.krProxies || form.value.proxies || ''
   localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.value))
   localStorage.setItem(PROXY_STORAGE_KEY, form.value.proxies || '')
+  localStorage.setItem(KR_PROXY_STORAGE_KEY, form.value.krProxies || '')
+  localStorage.setItem(VN_PROXY_STORAGE_KEY, form.value.vnProxies || '')
 }
 
 function setStatus(message, error = false) {
@@ -824,9 +896,9 @@ function tempCdkCapacity(item) {
   return Number.isFinite(remaining) && remaining > 0 ? Math.max(0, Math.floor(remaining - reserved)) : 1
 }
 
-function tempCdkLines() {
+function tempCdkLines(channel = tempForm.value.channel) {
   const lines = []
-  for (const item of tempCdks.value.filter(tempCdkUsable)) {
+  for (const item of tempCdkArrayForChannel(channel).filter(tempCdkUsable)) {
     for (let index = 0; index < tempCdkCapacity(item); index += 1) lines.push(item.value)
   }
   return lines
@@ -843,7 +915,7 @@ function addTempCdks(options = {}) {
   }
   if (items.length) tempCdks.value = [...tempCdks.value, ...items]
   tempCdkInput.value = ''
-  if (!options.silent) setStatus(items.length ? `已加入 ${items.length} 枚 KSCAN 临时提链 CDK。` : '没有新增 CDK，可能为空或重复。')
+  if (!options.silent) setStatus(items.length ? `已加入 ${items.length} 枚 ${tempCdkName.value}。` : '没有新增 Key/CDK，可能为空或重复。')
   saveTempCdkState()
   return items.length
 }
@@ -875,7 +947,7 @@ function tempCdkQuotaPayload(data) {
 
 function tempCdkQuotaValues(ticket) {
   const rawTotal = ticket.total_uses ?? ticket.totalUses ?? ticket.total
-  const rawReserved = ticket.reserved_uses ?? ticket.reservedUses ?? ticket.pending_uses ?? ticket.pendingUses
+  const rawReserved = ticket.reserved_uses ?? ticket.reservedUses ?? ticket.pending_uses ?? ticket.pendingUses ?? ticket.active_jobs ?? ticket.activeJobs
   const rawRemaining = ticket.available_uses ?? ticket.availableUses ?? ticket.remaining_uses ?? ticket.remainingUses ?? ticket.remaining
   const totalNumber = Number(rawTotal)
   const reservedNumber = Number(rawReserved ?? 0)
@@ -912,7 +984,7 @@ async function queryTempCdkQuota() {
   if (tempCdkInput.value.trim()) addTempCdks({ silent: true })
   const targets = tempCdks.value.filter(item => String(item.value || '').trim())
   if (!targets.length) {
-    setStatus('请先加入要查询额度的 KSCAN CDK。', true)
+    setStatus(`请先加入要查询额度的 ${tempCdkName.value}。`, true)
     return
   }
   tempCdkQuotaBusy.value = true
@@ -922,7 +994,7 @@ async function queryTempCdkQuota() {
     for (const item of targets) {
       try {
         item.message = '正在查询额度...'
-        const data = await api.getKakaoPayTempTicketStatus(item.value)
+        const data = await api.getKakaoPayTempTicketStatus(item.value, tempForm.value.channel)
         const ticket = tempCdkQuotaPayload(data)
         const quota = tempCdkQuotaValues(ticket)
         item.totalUses = Number(quota.total === '-' ? 0 : quota.total)
@@ -945,22 +1017,44 @@ async function queryTempCdkQuota() {
       }
     }
     saveTempCdkState()
-    setStatus(`KSCAN CDK 额度查询完成：成功 ${ok}，失败 ${failed}。`, failed > 0)
+    setStatus(`${tempCdkName.value} 额度查询完成：成功 ${ok}，失败 ${failed}。`, failed > 0)
   } finally {
     tempCdkQuotaBusy.value = false
   }
 }
 
 function saveTempCdkState() {
-  localStorage.setItem(TEMP_CDK_STATE_STORAGE_KEY, JSON.stringify({ cdks: tempCdks.value }))
+  localStorage.setItem(TEMP_CDK_STATE_STORAGE_KEY, JSON.stringify({
+    channel: tempForm.value.channel,
+    channels: tempCdkPools.value,
+    inputs: tempCdkInputs.value,
+    cdks: tempCdkPools.value.masi || [],
+  }))
 }
 
 function loadTempCdkState(legacyText = '') {
   try {
     const raw = JSON.parse(localStorage.getItem(TEMP_CDK_STATE_STORAGE_KEY) || '{}')
-    tempCdks.value = Array.isArray(raw.cdks) ? raw.cdks.map(normalizeTempCdkItem).filter(Boolean) : []
+    const nextPools = { masi: [], shzyhqn: [] }
+    if (raw.channels && typeof raw.channels === 'object') {
+      for (const option of tempChannelOptions) {
+        const source = Array.isArray(raw.channels[option.value]) ? raw.channels[option.value] : []
+        nextPools[option.value] = source.map(normalizeTempCdkItem).filter(Boolean)
+      }
+    } else if (Array.isArray(raw.cdks)) {
+      const legacyChannel = cleanTempChannel(raw.channel || tempForm.value.channel)
+      nextPools[legacyChannel] = raw.cdks.map(normalizeTempCdkItem).filter(Boolean)
+    }
+    tempCdkPools.value = nextPools
+    if (raw.inputs && typeof raw.inputs === 'object') {
+      tempCdkInputs.value = {
+        masi: String(raw.inputs.masi || ''),
+        shzyhqn: String(raw.inputs.shzyhqn || ''),
+      }
+    }
   } catch {
-    tempCdks.value = []
+    tempCdkPools.value = { masi: [], shzyhqn: [] }
+    tempCdkInputs.value = { masi: '', shzyhqn: '' }
   }
   if (!tempCdks.value.length && legacyText) {
     tempCdkInput.value = legacyText
@@ -972,6 +1066,10 @@ function saveTempForm(options = {}) {
   localStorage.setItem(TEMP_FORM_STORAGE_KEY, JSON.stringify({
     ...tempForm.value,
     cdk: tempCdks.value.map(item => item.value).join('\n'),
+    cdkByChannel: {
+      masi: tempCdkArrayForChannel('masi').map(item => item.value).join('\n'),
+      shzyhqn: tempCdkArrayForChannel('shzyhqn').map(item => item.value).join('\n'),
+    },
   }))
   saveTempCdkState()
   if (!options.silent && !inputLocked.value) setStatus('临时提链 CDK 已保存。')
@@ -980,18 +1078,20 @@ function saveTempForm(options = {}) {
 function loadTempForm() {
   try {
     const data = JSON.parse(localStorage.getItem(TEMP_FORM_STORAGE_KEY) || '{}')
+    tempForm.value.channel = cleanTempChannel(data.channel || data.tempChannel || data.temp_channel || 'masi')
     if (data.concurrency !== undefined) tempForm.value.concurrency = Math.max(1, Math.min(20, Number(data.concurrency || 5)))
     loadTempCdkState(String(data.cdk || ''))
   } catch {
+    tempForm.value.channel = 'masi'
     loadTempCdkState('')
   }
 }
 
-function reserveTempCdksForAccounts(emails, jobId = '') {
+function reserveTempCdksForAccounts(emails, jobId = '', channel = tempForm.value.channel) {
   const targets = Array.from(emails || [])
   let assigned = 0
   const usedCdks = []
-  for (const item of tempCdks.value.filter(tempCdkUsable)) {
+  for (const item of tempCdkArrayForChannel(channel).filter(tempCdkUsable)) {
     if (assigned >= targets.length) break
     const capacity = Math.min(tempCdkCapacity(item), targets.length - assigned)
     const accounts = targets.slice(assigned, assigned + capacity)
@@ -1009,8 +1109,8 @@ function reserveTempCdksForAccounts(emails, jobId = '') {
   return usedCdks
 }
 
-function releaseReservedTempCdks(jobId = '', message = '任务未完成，CDK 已释放。') {
-  for (const item of tempCdks.value) {
+function releaseReservedTempCdks(jobId = '', message = '任务未完成，CDK 已释放。', channel = tempForm.value.channel) {
+  for (const item of tempCdkArrayForChannel(channel)) {
     const reservations = item.reservations && typeof item.reservations === 'object' ? item.reservations : {}
     const releaseCount = jobId ? Number(reservations[jobId] || 0) : Number(item.reservedUses || 0)
     if (releaseCount > 0 || (item.status === 'reserved' && (!jobId || item.jobId === jobId))) {
@@ -1030,9 +1130,9 @@ function releaseReservedTempCdks(jobId = '', message = '任务未完成，CDK �
   saveTempCdkState()
 }
 
-function findTempCdkByValue(value) {
+function findTempCdkByValue(value, channel = tempForm.value.channel) {
   const key = String(value || '').trim().toLowerCase()
-  return key ? (tempCdks.value.find(item => item.value.toLowerCase() === key) || null) : null
+  return key ? (tempCdkArrayForChannel(channel).find(item => item.value.toLowerCase() === key) || null) : null
 }
 
 function tempCdkAlreadyUsedError(error) {
@@ -1040,7 +1140,7 @@ function tempCdkAlreadyUsedError(error) {
   return Boolean(error?.cdk_used) || text.includes('cdk') && (text.includes('used') || text.includes('已使用'))
 }
 
-function applyTempCdkResult(result, jobId = '') {
+function applyTempCdkResult(result, jobId = '', channel = tempForm.value.channel) {
   const successes = Array.isArray(result?.successes) ? result.successes : []
   const errors = Array.isArray(result?.errors) ? result.errors : []
   const successCountByCdk = new Map()
@@ -1054,7 +1154,7 @@ function applyTempCdkResult(result, jobId = '') {
     if (key) errorCountByCdk.set(key, (errorCountByCdk.get(key) || 0) + 1)
   }
   for (const [key, count] of successCountByCdk.entries()) {
-    const item = findTempCdkByValue(key)
+    const item = findTempCdkByValue(key, channel)
     if (!item) continue
     const remaining = Number(item.remainingUses)
     item.remainingUses = Number.isFinite(remaining) ? Math.max(0, remaining - count) : 0
@@ -1071,7 +1171,7 @@ function applyTempCdkResult(result, jobId = '') {
     item.message = item.status === 'used' ? '临时提链成功，CDK 额度已用完。' : `临时提链成功 ${count} 个，剩余额度 ${item.remainingUses}。`
   }
   for (const error of errors) {
-    const item = findTempCdkByValue(error?.cdk)
+    const item = findTempCdkByValue(error?.cdk, channel)
     if (!item) continue
     if (tempCdkAlreadyUsedError(error)) {
       item.status = 'used'
@@ -1096,12 +1196,14 @@ function applyTempCdkResult(result, jobId = '') {
 
 function releaseExpiredTempCdkCooldowns() {
   let changed = false
-  for (const item of tempCdks.value) {
-    if (item.status === 'cooling' && Number(item.cooldownUntilMs || 0) <= nowMs.value) {
-      item.status = 'available'
-      item.cooldownUntilMs = 0
-      item.message = '冷却结束，CDK 已恢复可用。'
-      changed = true
+  for (const pool of Object.values(tempCdkPools.value)) {
+    for (const item of (Array.isArray(pool) ? pool : [])) {
+      if (item.status === 'cooling' && Number(item.cooldownUntilMs || 0) <= nowMs.value) {
+        item.status = 'available'
+        item.cooldownUntilMs = 0
+        item.message = '冷却结束，CDK 已恢复可用。'
+        changed = true
+      }
     }
   }
   if (changed) saveTempCdkState()
@@ -1137,6 +1239,7 @@ function saveActiveJobSnapshot(job = currentJob.value, mode = isTempExtract.valu
     logs: Array.isArray(state.logs) ? state.logs.slice(-500) : [],
     result: state.currentResult || null,
     accountStatuses: job?.account_statuses || {},
+    channel: job?.channel || (snapshotMode === 'tempExtract' ? tempForm.value.channel : ''),
     statusText: String(state.statusText || ''),
     statusError: Boolean(state.statusError),
     lastFailedEmails: Array.isArray(state.lastFailedEmails) ? state.lastFailedEmails : [],
@@ -1368,11 +1471,11 @@ function validateStart(emails = selectedEmails.value) {
     tempForm.value.concurrency = Math.max(1, Math.min(20, Number(tempForm.value.concurrency || 5)))
     const availableCdks = tempCdkLines()
     if (!availableCdks.length) {
-      setStatus('请填写 KSCAN 临时提链 CDK。', true)
+      setStatus(`请填写 ${tempCdkName.value}。`, true)
       return false
     }
     if (availableCdks.length < emails.length) {
-      setStatus(`可用 KSCAN CDK 额度不足：已选 ${emails.length} 个账号，但当前额度只能提交 ${availableCdks.length} 个账号。`, true)
+      setStatus(`可用 ${tempCdkName.value} 额度不足：已选 ${emails.length} 个账号，但当前额度只能提交 ${availableCdks.length} 个账号。`, true)
       return false
     }
     return true
@@ -1380,8 +1483,12 @@ function validateStart(emails = selectedEmails.value) {
   form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
   form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
-  if (!String(form.value.proxies || '').trim()) {
-    setStatus('请填写 KR 代理。', true)
+  if (!String(form.value.krProxies || form.value.proxies || '').trim()) {
+    setStatus('请填写 KR 代理池。', true)
+    return false
+  }
+  if (!String(form.value.vnProxies || '').trim()) {
+    setStatus('请填写 VN 代理池。', true)
     return false
   }
   return true
@@ -1395,7 +1502,8 @@ async function startWithEmails(emails, actionText = '提取') {
   const state = taskStateForMode(mode)
   const appendMode = isExtractTaskRunning(state)
   const concurrency = tempMode ? tempForm.value.concurrency : form.value.concurrency
-  const tempCdksForRun = tempMode ? tempCdkLines().slice(0, accountEmails.length) : []
+  const tempChannel = cleanTempChannel(tempForm.value.channel)
+  const tempCdksForRun = tempMode ? tempCdkLines(tempChannel).slice(0, accountEmails.length) : []
   starting.value = true
   state.statusError = false
   saveForm()
@@ -1406,11 +1514,14 @@ async function startWithEmails(emails, actionText = '提取') {
           accountEmails,
           cdk: tempCdksForRun.join('\n'),
           cdks: tempCdksForRun,
+          channel: tempChannel,
           concurrency,
         })
       : await api.startKakaoPayBatch({
           accountEmails,
-          proxies: form.value.proxies,
+          proxies: form.value.krProxies || form.value.proxies,
+          krProxies: form.value.krProxies || form.value.proxies,
+          vnProxies: form.value.vnProxies,
           concurrency,
           maxAttempts: form.value.maxAttempts,
           proxyPreflightAttempts: form.value.proxyPreflightAttempts,
@@ -1422,19 +1533,20 @@ async function startWithEmails(emails, actionText = '提取') {
     if (!nextIds.includes(newJobId)) nextIds.push(newJobId)
     state.activeJobIds = nextIds
     state.activeJobId = nextIds[0] || newJobId
-    if (tempMode) reserveTempCdksForAccounts(accountEmails, newJobId)
+    if (tempMode) reserveTempCdksForAccounts(accountEmails, newJobId, tempChannel)
     state.activeJobStatus = 'queued'
     if (!appendMode) {
       state.currentResult = null
       state.notifiedSuccessKeys = new Set()
       state.logs = []
     }
-    state.currentJob = { id: state.activeJobIds.join(','), status: 'queued', total: (Number(state.currentJob?.total || 0) + accountEmails.length), completed: Number(state.currentJob?.completed || 0), concurrency, running_count: Number(state.currentJob?.running_count || 0), temp: tempMode }
+    state.currentJob = { id: state.activeJobIds.join(','), status: 'queued', total: (Number(state.currentJob?.total || 0) + accountEmails.length), completed: Number(state.currentJob?.completed || 0), concurrency, running_count: Number(state.currentJob?.running_count || 0), temp: tempMode, channel: tempMode ? tempChannel : '' }
+    selectedAccounts.value = new Set()
     saveActiveJobSnapshot(state.currentJob, mode)
     setStatus(`${appendMode ? '追加任务' : '任务'}已提交，正在为 ${accountEmails.length} 个账号${actionText} Kakao${tempMode ? ' 临时' : ''}，并发 ${concurrency || 1}。`)
     startPolling(mode)
   } catch (error) {
-    if (tempMode) releaseReservedTempCdks('', '任务启动失败，CDK 已释放。')
+    if (tempMode) releaseReservedTempCdks('', '任务启动失败，CDK 已释放。', tempChannel)
     setStatus(`启动失败：${cleanError(error)}`, true)
   } finally {
     starting.value = false
@@ -1478,7 +1590,7 @@ async function pollJob(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
     for (const job of jobs) {
       const jid = String(job.id || '').trim()
       const result = job.result || {}
-      if (job.temp && result && TERMINAL_STATUSES.has(String(job.status || ''))) applyTempCdkResult(result, jid)
+      if (job.temp && result && TERMINAL_STATUSES.has(String(job.status || ''))) applyTempCdkResult(result, jid, job.channel || state.currentJob?.channel || tempForm.value.channel)
       for (const item of Array.isArray(result.successes) ? result.successes : []) successes.push(item)
       for (const item of Array.isArray(result.errors) ? result.errors : []) errors.push(item)
       for (const item of Array.isArray(result.skipped) ? result.skipped : []) skipped.push(item)
@@ -1490,7 +1602,7 @@ async function pollJob(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
     const running = jobs.reduce((sum, job) => sum + Number(job.running_count || 0), 0)
     const aggregateStatus = activeJobs.length ? 'running' : (jobs.some(job => String(job.status || '') === 'error') ? 'error' : (jobs.some(job => String(job.status || '') === 'cancelled') ? 'cancelled' : 'success'))
     state.currentResult = { batch: true, successes, errors, skipped }
-    state.currentJob = { id: ids.join(','), status: aggregateStatus, total, completed, running_count: running, concurrency: jobs.reduce((sum, job) => sum + Number(job.concurrency || 0), 0), account_statuses: accountStatuses, temp: jobs.some(job => job.temp) }
+    state.currentJob = { id: ids.join(','), status: aggregateStatus, total, completed, running_count: running, concurrency: jobs.reduce((sum, job) => sum + Number(job.concurrency || 0), 0), account_statuses: accountStatuses, temp: jobs.some(job => job.temp), channel: jobs.find(job => job.temp && job.channel)?.channel || state.currentJob?.channel || '' }
     state.activeJobStatus = aggregateStatus
     state.logs = mergedLogs.slice(-500)
     saveActiveJobSnapshot(state.currentJob, mode)
@@ -1501,7 +1613,7 @@ async function pollJob(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
       stopPolling(mode)
       rememberFailedEmails(state.currentResult, mode)
       for (const job of jobs) {
-        if (job.temp) releaseReservedTempCdks(String(job.id || ''), '任务已结束，未使用 CDK 已释放。')
+        if (job.temp) releaseReservedTempCdks(String(job.id || ''), '任务已结束，未使用 CDK 已释放。', job.channel || state.currentJob?.channel || tempForm.value.channel)
       }
       state.activeJobIds = []
       state.activeJobId = ids[0] || ''
@@ -1511,6 +1623,7 @@ async function pollJob(mode = isTempExtract.value ? 'tempExtract' : 'extract') {
       }
       saveActiveJobSnapshot(state.currentJob, mode)
       await Promise.all([refreshAccounts(), refreshLinks()])
+      if (mode === 'tempExtract' && kkPaymentLinks.value.length) syncKkPaymentLinks({ silent: true })
     }
   } catch (error) {
     state.statusText = `轮询失败：${cleanError(error)}`
@@ -1570,7 +1683,7 @@ async function cancelJob() {
 
 function saveProxy() {
   saveForm()
-  setStatus('Kakao 代理配置已保存到本地浏览器。')
+  setStatus('Kakao KR / VN 代理池已保存到本地浏览器。')
 }
 
 async function deleteKakaoAccount(email) {
@@ -1811,6 +1924,13 @@ function kkPaymentCanResubmit(item) {
   )
 }
 
+function kkPaymentCanRemove(item) {
+  const status = String(item?.status || '').toLowerCase()
+  if (status === 'running') return false
+  if (kkPaymentLinkInvalid(item) || ['success', 'failed', 'stopped', 'needs_action'].includes(status)) return true
+  return !kkPaymentBusy.value
+}
+
 function kkPaymentCdkStatusClass(status) {
   const text = String(status || 'available')
   if (text === 'available') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
@@ -1875,6 +1995,7 @@ function normalizeKkPaymentItem(raw) {
   const orderId = String(raw.orderId || raw.order_id || raw.id || '').trim()
   const customerToken = String(raw.customerToken || raw.customer_token || raw.token || '').trim()
   const rawStatus = String(raw.status || (paymentUrl ? 'pending' : 'failed')).toLowerCase()
+  const normalizedStatus = kkPaymentOrderMissing(rawStatus) ? 'needs_action' : rawStatus
   const resumableOrder = rawStatus === 'running' && orderId && (customerToken || raw.cdk)
   return {
     id: String(raw.queueId || raw.queue_id || raw.id || makeKkPaymentId('link')),
@@ -1890,7 +2011,7 @@ function normalizeKkPaymentItem(raw) {
     workerId: String(raw.workerId || raw.worker_id || raw.scannerId || raw.scanner_id || '').trim(),
     workerName: String(raw.workerName || raw.worker_name || raw.scannerName || raw.scanner_name || '').trim(),
     workerLabel: String(raw.workerLabel || raw.worker_label || '').trim(),
-    status: rawStatus,
+    status: normalizedStatus,
     message: resumableOrder ? String(raw.message || '正在恢复订单进度...').trim() : String(raw.message || raw.error || raw.problemReason || raw.problem_reason || '').trim(),
     created_at: raw.created_at || raw.createdAt || '',
     created_at_ts: raw.created_at_ts || raw.createdAtTs || 0,
@@ -1953,6 +2074,20 @@ function addOrUpdateKkPaymentLink(raw) {
     if (!['running', 'success'].includes(existing.status)) Object.assign(existing, item, { id: existing.id, cdk: existing.cdk, cdkId: existing.cdkId, orderId: existing.orderId, customerToken: existing.customerToken, status: existing.status })
     return false
   }
+  const accountKey = String(item.accountEmail || '').toLowerCase()
+  const staleSameAccount = accountKey
+    ? kkPaymentLinks.value.find(row => {
+        const status = String(row.status || '').toLowerCase()
+        return String(row.accountEmail || '').toLowerCase() === accountKey
+          && !['running', 'success'].includes(status)
+          && (kkPaymentLinkInvalid(row) || ['failed', 'stopped', 'needs_action'].includes(status))
+      })
+    : null
+  if (staleSameAccount) {
+    releaseKkPaymentCdkForLink(staleSameAccount.id, '账号已重新提链，旧支付任务预留已释放。')
+    Object.assign(staleSameAccount, item, { id: staleSameAccount.id, cdk: '', cdkId: '', orderId: '', customerToken: '', orderNo: '', status: 'pending', message: '已同步重新提链后的新链接，可重新提交支付。' })
+    return false
+  }
   kkPaymentLinks.value = [...kkPaymentLinks.value, item]
   return true
 }
@@ -1994,6 +2129,10 @@ async function queryKkPaymentCdkQuota() {
         cdk.frozenUses = Number(quota.frozen === '-' ? 0 : quota.frozen)
         cdk.remainingUses = Number(quota.available === '-' ? Math.max(0, cdk.totalUses - cdk.usedUses - cdk.frozenUses) : quota.available)
         cdk.reservedUses = 0
+        cdk.accountEmails = []
+        cdk.accountEmail = ''
+        cdk.linkIds = []
+        cdk.linkId = ''
         cdk.status = Number(cdk.remainingUses) > 0 ? 'available' : 'used'
         cdk.message = kkPaymentCdkQuotaMessage(payload)
         ok += 1
@@ -2053,9 +2192,12 @@ function releaseKkPaymentCdkForLink(id, message = '') {
     if (cdk.linkId === id || (Array.isArray(cdk.linkIds) && cdk.linkIds.includes(id))) {
       cdk.reservedUses = Math.max(0, Number(cdk.reservedUses || 0) - 1)
       cdk.linkIds = Array.isArray(cdk.linkIds) ? cdk.linkIds.filter(item => item !== id) : []
-      cdk.accountEmails = Array.isArray(cdk.accountEmails) ? cdk.accountEmails : []
+      cdk.accountEmails = Array.isArray(cdk.accountEmails) ? cdk.accountEmails.filter(email => {
+        const link = kkPaymentLinks.value.find(item => item.id === id)
+        return !link || email !== link.accountEmail
+      }) : []
       cdk.linkId = cdk.linkIds[0] || ''
-      cdk.accountEmail = cdk.accountEmails.length ? `${cdk.accountEmails.length} 个账号` : ''
+      cdk.accountEmail = cdk.accountEmails[0] || ''
       if (kkPaymentCdkUsable(cdk)) cdk.status = 'available'
       cdk.message = message
     }
@@ -2063,6 +2205,11 @@ function releaseKkPaymentCdkForLink(id, message = '') {
 }
 
 function removeKkPaymentLink(id) {
+  const item = kkPaymentLinks.value.find(row => row.id === id)
+  if (item && !kkPaymentCanRemove(item)) {
+    kkPaymentStatusText.value = '运行中的支付订单不能直接移除，请先取消订单。'
+    return
+  }
   releaseKkPaymentCdkForLink(id, '关联账号已移除，CDK 已释放。')
   kkPaymentLinks.value = kkPaymentLinks.value.filter(item => item.id !== id)
   collapseKkPaymentDetails(id)
@@ -2151,7 +2298,6 @@ function kkPaymentTaskRunnable(item) {
 }
 
 function kkPaymentOrderRestorable(item) {
-  if (!item?.paymentUrl || kkPaymentLinkInvalid(item)) return false
   if (!item.orderId || !(item.customerToken || item.cdk)) return false
   const status = String(item.status || '').toLowerCase()
   const message = String(item.message || '')
@@ -2165,20 +2311,21 @@ function kkPaymentUnavailableMessage() {
 }
 
 function nextKkPaymentPair(preferredLink = null) {
-  const link = preferredLink && kkPaymentTaskRunnable(preferredLink) && !preferredLink.orderId
+  const link = preferredLink && kkPaymentTaskRunnable(preferredLink)
     ? preferredLink
     : kkPaymentLinks.value.find(item => kkPaymentTaskRunnable(item) && !item.orderId)
   const cdk = kkPaymentCdks.value.find(kkPaymentCdkUsable)
   if (!link || !cdk) return null
   link.orderId = ''
   link.customerToken = ''
+  link.orderNo = ''
   link.cdk = cdk.value
   link.cdkId = cdk.id
   cdk.reservedUses = Number(cdk.reservedUses || 0) + 1
   cdk.linkIds = [...(Array.isArray(cdk.linkIds) ? cdk.linkIds : []), link.id]
-  cdk.accountEmails = [...(Array.isArray(cdk.accountEmails) ? cdk.accountEmails : []), link.accountEmail]
+  cdk.accountEmails = Array.from(new Set([...(Array.isArray(cdk.accountEmails) ? cdk.accountEmails : []), link.accountEmail].map(email => String(email || '').trim()).filter(Boolean)))
   cdk.linkId = cdk.linkIds[0] || link.id
-  cdk.accountEmail = `${cdk.accountEmails.length} 个账号`
+  cdk.accountEmail = cdk.accountEmails[0] || ''
   cdk.status = kkPaymentCdkCapacity(cdk) > 0 ? 'available' : 'reserved'
   cdk.message = `已分配 ${cdk.reservedUses} 个账号，剩余可提交 ${kkPaymentCdkCapacity(cdk)} 个。`
   return { link, cdk }
@@ -2193,10 +2340,22 @@ function markKkPaymentCdkSubmitted(cdk, link) {
   cdk.linkIds = Array.isArray(cdk.linkIds) ? cdk.linkIds.filter(id => id !== link.id) : []
   cdk.accountEmails = Array.isArray(cdk.accountEmails) ? cdk.accountEmails.filter(email => email !== link.accountEmail) : []
   cdk.linkId = cdk.linkIds[0] || ''
-  cdk.accountEmail = cdk.accountEmails.length ? `${cdk.accountEmails.length} 个账号` : ''
+  cdk.accountEmail = cdk.accountEmails[0] || ''
   cdk.orderId = link.orderId
   cdk.status = kkPaymentCdkCapacity(cdk) > 0 ? 'available' : 'used'
   cdk.message = `已提交 1 个账号，本地剩余可提交 ${kkPaymentCdkCapacity(cdk)} 个；可点“查询额度”刷新真实余额。`
+}
+
+function releaseSubmittedKkPaymentCdk(link, message = '') {
+  const cdk = kkPaymentCdks.value.find(row => row.id === link?.cdkId || row.value === link?.cdk || row.orderId === link?.orderId)
+  if (!cdk) return
+  cdk.usedUses = Math.max(0, Number(cdk.usedUses || 0) - 1)
+  cdk.remainingUses = Math.max(0, Number(cdk.remainingUses || 0) + 1)
+  cdk.orderId = ''
+  cdk.status = kkPaymentCdkCapacity(cdk) > 0 ? 'available' : 'used'
+  cdk.message = message || '订单不存在，本地已释放该次提交占用；可点“查询额度”刷新真实余额。'
+  link.cdk = ''
+  link.cdkId = ''
 }
 
 function kkCustomerOrderPayload(data) {
@@ -2277,8 +2436,20 @@ function kkPaymentStatusFromOrderStatus(status) {
   if (['cancelled', 'canceled', 'stopped'].includes(key)) return 'stopped'
   if (['failed', 'error', 'rejected'].includes(key)) return 'failed'
   if (['expired', 'timeout', 'qr_timeout'].includes(key)) return 'needs_action'
+  if (kkPaymentOrderMissing(key)) return 'needs_action'
   if (['pending', 'queued', 'waiting', 'awaiting_scanner', 'waiting_scanner', 'awaiting_worker', 'claimed', 'assigned', 'scanner_assigned', 'checking', 'processing', 'extracting', 'resubmitted'].includes(key)) return 'running'
   return key ? 'needs_action' : 'pending'
+}
+
+function kkPaymentOrderMissing(status) {
+  const key = String(status || '').toLowerCase()
+  return key === 'not_found' || key === 'order_not_found'
+}
+
+function kkPaymentOrderMissingError(error) {
+  const code = String(error?.code || error?.data?.detail?.code || error?.data?.code || '').toLowerCase()
+  const message = cleanError(error).toLowerCase()
+  return kkPaymentOrderMissing(code) || message.includes('not_found') || message.includes('order not found') || message.includes('订单不存在')
 }
 
 function kkOrderCdkSnapshot(data) {
@@ -2359,12 +2530,24 @@ async function runKkPaymentTask(item) {
     } else {
       item.status = kkPaymentStatusFromOrderStatus(job.status)
       item.message = kkOrderProblemReason(job, `任务结束：${externalOrderStatusText(job.status)}`)
+      if (kkPaymentOrderMissing(job.status)) {
+        releaseSubmittedKkPaymentCdk(item, '订单不存在，本地已释放该次提交占用；链接未过期时可重新提交。')
+        item.orderId = ''
+        item.customerToken = ''
+        item.orderNo = ''
+      }
     }
     kkPaymentStatusText.value = item.status === 'success' ? `任务 ${item.orderId} 已成功。` : `任务 ${item.orderId || '-'} 状态：${kkPaymentLinkStatusText(item.status)}。`
   } catch (error) {
     const message = cleanError(error)
     item.status = 'needs_action'
     item.message = message
+    if (kkPaymentOrderMissingError(error)) {
+      releaseSubmittedKkPaymentCdk(item, '订单不存在，本地已释放该次提交占用；链接未过期时可重新提交。')
+      item.orderId = ''
+      item.customerToken = ''
+      item.orderNo = ''
+    }
     if (cdk && (cdk.linkId === item.id || (Array.isArray(cdk.linkIds) && cdk.linkIds.includes(item.id)))) {
       releaseKkPaymentCdkForLink(item.id, `提交失败，已释放本地预留：${message}`)
     }
@@ -2446,17 +2629,26 @@ async function resubmitKkPaymentOrder(item) {
 
 async function runAllKkPayments() {
   await importKkPaymentLinks({ silent: true })
-  if (!kkPaymentRunnableCount.value) {
+  const queuedKkPaymentIds = new Set(kkPaymentLinks.value.filter(kkPaymentTaskRunnable).map(item => item.id))
+  if (!queuedKkPaymentIds.size) {
     kkPaymentStatusText.value = kkPaymentUnavailableMessage()
     return
   }
   kkPaymentActiveRuns.value += 1
   kkPaymentBusy.value = true
-  const concurrency = Math.max(1, Math.min(20, Number(kkPaymentConcurrency.value || 5), kkPaymentRunnableCount.value))
+  const concurrency = Math.max(1, Math.min(20, Number(kkPaymentConcurrency.value || 5), queuedKkPaymentIds.size))
   kkPaymentStatusText.value = `${kkPaymentActiveRuns.value > 1 ? '追加' : '开始'}提交 KK 支付队列，新增 worker ${concurrency} 个。`
+  const nextQueuedKkPaymentItem = () => {
+    for (const id of queuedKkPaymentIds) {
+      queuedKkPaymentIds.delete(id)
+      const item = kkPaymentLinks.value.find(item => item.id === id && kkPaymentTaskRunnable(item)) || null
+      if (item) return item
+    }
+    return null
+  }
   const workers = Array.from({ length: concurrency }, async () => {
     for (;;) {
-      const item = kkPaymentLinks.value.find(kkPaymentTaskRunnable)
+      const item = nextQueuedKkPaymentItem()
       if (!item) return
       await runKkPaymentTask(item)
     }
@@ -2588,6 +2780,7 @@ async function restoreActiveJob(mode = 'extract') {
       running_count: Number(saved.runningCount || 0),
       account_statuses: saved.accountStatuses && typeof saved.accountStatuses === 'object' ? saved.accountStatuses : {},
       temp: mode === 'tempExtract',
+      channel: cleanTempChannel(saved.channel || tempForm.value.channel),
     }
     state.statusText = String(saved.statusText || '') || (terminal
       ? (mode === 'tempExtract' ? '已恢复 Kakao 临时提链任务状态。' : '已恢复 Kakao 提链任务状态。')

@@ -972,7 +972,7 @@ def test_get_icloud_accounts_status_marks_registered_and_redacts_links(tmp_path,
     )
     icloud_pool.mark_unavailable_email("dead@icloud.com", source="account_deactivated")
 
-    result = _config_io_routes()["get_icloud_accounts_status"]()
+    result = _config_io_routes()["get_icloud_accounts_status"](include_all=True)
 
     assert result["total"] == 3
     assert result["available"] == 1
@@ -989,6 +989,38 @@ def test_get_icloud_accounts_status_marks_registered_and_redacts_links(tmp_path,
     }
     serialized = json.dumps(result)
     assert "https://icloud-api.top/show/secret" not in serialized
+
+
+def test_get_icloud_accounts_status_only_includes_full_list_when_requested(tmp_path, monkeypatch):
+    from autotoken.storage import icloud_pool
+
+    accounts_file = tmp_path / "icloud_accounts.txt"
+    accounts_file.write_text(
+        "\n".join(
+            [
+                "dead@icloud.com----https://icloud-api.top/show/secret/dead@icloud.com",
+                "ready@icloud.com----https://icloud-api.top/show/secret/ready@icloud.com",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("autotoken.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("autotoken.setup_wizard._read_env", lambda: {"ICLOUD_ACCOUNTS_FILE": str(accounts_file)})
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [])
+    monkeypatch.setattr(icloud_pool, "STATE_FILE", tmp_path / "icloud_pool.json")
+    icloud_pool.mark_unavailable_email("dead@icloud.com", source="account_deactivated")
+
+    routes = _config_io_routes()
+
+    light = routes["get_icloud_accounts_status"]()
+    full = routes["get_icloud_accounts_status"](include_all=True)
+
+    assert "all_accounts" not in light
+    assert [item["email"] for item in light["accounts"]] == ["ready@icloud.com"]
+    assert {item["email"]: item["status"] for item in full["all_accounts"]} == {
+        "dead@icloud.com": "unavailable",
+        "ready@icloud.com": "available",
+    }
 
 
 def test_post_delete_icloud_accounts_removes_selected_lines_and_redacts_links(tmp_path, monkeypatch):

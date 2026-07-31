@@ -124,12 +124,39 @@ def test_kakao_region_selector_proxy_refreshes_sid_across_stages():
     provider_proxy, _ = kakao_pay.build_kakao_dynamic_proxy(cfg, 2)
 
     assert "region-KR" in checkout_proxy
-    assert "region-JP" in promotion_proxy
+    assert "region-VN" in promotion_proxy
     assert "region-KR" in provider_proxy
     assert "sid-fixed" not in checkout_proxy
     assert "sid-fixed" not in promotion_proxy
     assert "sid-fixed" not in provider_proxy
     assert len({checkout_proxy, promotion_proxy, provider_proxy}) == 3
+
+
+def test_kakao_dynamic_proxy_uses_kr_pool_for_checkout_provider_and_vn_pool_for_promotion(monkeypatch):
+    monkeypatch.setattr(
+        kakao_pay,
+        "kakao_proxy_with_fresh_sid",
+        lambda proxy_url, region: (f"{proxy_url}|{region}|fresh", f"{region.lower()}-fresh"),
+    )
+    cfg = kakao_pay.KakaoPayJobConfig(
+        access_token="token",
+        direct_proxies=["legacy-proxy"],
+        kr_proxies=["kr-proxy"],
+        vn_proxies=["vn-proxy"],
+        kr_proxy_label="KR proxy#1/1",
+        vn_proxy_label="VN proxy#1/1",
+    )
+
+    checkout_proxy, checkout_label = kakao_pay.build_kakao_dynamic_proxy(cfg, 0)
+    promotion_proxy, promotion_label = kakao_pay.build_kakao_dynamic_proxy(cfg, 1)
+    provider_proxy, provider_label = kakao_pay.build_kakao_dynamic_proxy(cfg, 2)
+
+    assert checkout_proxy == "http://kr-proxy|KR|fresh"
+    assert promotion_proxy == "http://vn-proxy|VN|fresh"
+    assert provider_proxy == "http://kr-proxy|KR|fresh"
+    assert checkout_label.startswith("KR proxy#1/1")
+    assert promotion_label.startswith("VN proxy#1/1")
+    assert provider_label.startswith("KR proxy#1/1")
 
 
 def test_kakao_ipweb_proxy_keeps_provider_sid_when_aligning_region():
@@ -205,7 +232,7 @@ def test_kakao_dynamic_proxy_uses_first_proxy_template_and_ignores_extra_entries
     assert "session-seed2-" not in checkout_proxy + promotion_proxy + provider_proxy
     assert "session-seed3-" not in checkout_proxy + promotion_proxy + provider_proxy
     assert checkout_proxy.endswith("|KR|fresh")
-    assert promotion_proxy.endswith("|JP|fresh")
+    assert promotion_proxy.endswith("|VN|fresh")
     assert provider_proxy.endswith("|KR|fresh")
     assert checkout_label.startswith("direct-1 ")
     assert promotion_label.startswith("direct-1 ")
@@ -287,7 +314,7 @@ def test_generate_kakao_trial_syncs_tax_then_approves_and_polls_redirect(monkeyp
     ))
 
     assert ("tax_sync", "cs_test", "KR") in calls
-    assert ("approve", "cs_test", "http://checkout-proxy", "KR") in calls
+    assert ("approve", "cs_test", "http://provider-proxy", "KR") in calls
     assert captured["return_url"].startswith("https://checkout.stripe.com/c/pay/cs_test?")
     assert "returned_from_redirect=true" in captured["return_url"]
     assert captured["billing"]["country"] == "KR"
@@ -394,7 +421,7 @@ def test_generate_kakao_trial_matches_open_source_kakao_flow(monkeypatch):
     confirm_proxy, confirm_payload = next((proxy, payload) for kind, proxy, url, payload in calls if kind == "stripe_post" and url.endswith("/confirm"))
 
     assert checkout_payload["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
-    assert update_proxy == f"{seed}|JP|fresh"
+    assert update_proxy == f"{seed}|VN|fresh"
     assert update_payload["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
     assert stripe_inits == [f"{seed}|KR|fresh", f"{seed}|KR|fresh", f"{seed}|KR|fresh"]
     assert payment_method_proxy == f"{seed}|KR|fresh"

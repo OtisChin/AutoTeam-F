@@ -251,7 +251,7 @@ def _load_outlook_pool_status(target: Path) -> dict[str, Any]:
     }
 
 
-def _load_icloud_pool_status(target: Path) -> dict[str, Any]:
+def _load_icloud_pool_status(target: Path, *, include_all: bool = False) -> dict[str, Any]:
     from autotoken.mail.base import normalize_email_addr
     from autotoken.mail.icloud import ICloudMailProvider
     from autotoken.storage.accounts import load_accounts
@@ -308,7 +308,7 @@ def _load_icloud_pool_status(target: Path) -> dict[str, Any]:
     unavailable_count = sum(1 for item in entries if item["status"] == "unavailable")
     available_count = sum(1 for item in entries if item["status"] == "available")
     available_entries = [item for item in entries if item["status"] == "available"]
-    return {
+    payload = {
         "file": str(target),
         "total": len(entries),
         "available": available_count,
@@ -316,11 +316,17 @@ def _load_icloud_pool_status(target: Path) -> dict[str, Any]:
         "unavailable": unavailable_count,
         "invalid": invalid,
         "accounts": available_entries[:500],
-        "all_accounts": entries[:500],
-        "registered_accounts": [item for item in entries if item["status"] == "registered"][:500],
-        "unavailable_accounts": [item for item in entries if item["status"] == "unavailable"][:500],
         "next_available_email": next((item["email"] for item in entries if item["status"] == "available"), ""),
     }
+    if include_all:
+        payload.update(
+            {
+                "all_accounts": entries[:500],
+                "registered_accounts": [item for item in entries if item["status"] == "registered"][:500],
+                "unavailable_accounts": [item for item in entries if item["status"] == "unavailable"][:500],
+            }
+        )
+    return payload
 
 
 def _delete_outlook_pool_accounts(target: Path, emails: list[str]) -> dict[str, Any]:
@@ -665,12 +671,12 @@ def create_config_io_router(
         }
 
     @router.get("/api/config/icloud-accounts/status")
-    def get_icloud_accounts_status():
+    def get_icloud_accounts_status(include_all: bool = False):
         """读取 iCloud 邮箱池状态。只返回邮箱和能力标记，不返回收码链接。"""
         target = _resolve_icloud_accounts_file()
         if target.exists() and target.stat().st_size > ICLOUD_ACCOUNTS_IMPORT_MAX_BYTES:
             raise HTTPException(status_code=400, detail="现有 iCloud 账号池文件过大，最多支持 2MB txt")
-        return _load_icloud_pool_status(target)
+        return _load_icloud_pool_status(target, include_all=include_all)
 
     @router.post("/api/config/icloud-accounts/delete")
     def post_delete_icloud_accounts(params: ICloudAccountsDeleteParams):

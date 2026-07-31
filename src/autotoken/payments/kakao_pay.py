@@ -24,14 +24,21 @@ from autotoken.payments.brazil_pix import (
 from autotoken.payments.us_paypal import (
     build_chatgpt_session,
     build_stripe_session,
+    new_http_session,
     normalize_paypal_proxy_url,
     paypal_proxy_with_fresh_sid,
     warm_chatgpt_checkout_context,
 )
+from autotoken.services.chatgpt_session import chatgpt_checkout_headers, configure_chatgpt_http_session
+
+try:
+    from autotoken.payments.gopay_executor import _checkout_approval_sentinel_headers
+except Exception:  # pragma: no cover - optional checkout hardening helper
+    _checkout_approval_sentinel_headers = None
 
 LogFn = Callable[[str], None]
 KAKAO_CHECKOUT_COUNTRY = "KR"
-KAKAO_PROMOTION_COUNTRY = "JP"
+KAKAO_PROMOTION_COUNTRY = "VN"
 KAKAO_PROVIDER_COUNTRY = "KR"
 KAKAO_PROMO_ID = "plus-1-month-free"
 KAKAO_STRIPE_VERSION = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
@@ -50,6 +57,7 @@ KR_BILLING_PRESETS = [
 @dataclass
 class KakaoPayJobConfig:
     access_token: str
+    account_email: str = ""
     local_proxy: str = ""
     kookeey_user: str = ""
     kookeey_pass: str = ""
@@ -59,10 +67,23 @@ class KakaoPayJobConfig:
     promotion_region: str = KAKAO_PROMOTION_COUNTRY
     provider_region: str = KAKAO_PROVIDER_COUNTRY
     direct_proxies: list[str] = field(default_factory=list)
+    kr_proxies: list[str] = field(default_factory=list)
+    vn_proxies: list[str] = field(default_factory=list)
     direct_proxy_label: str = ""
+    kr_proxy_label: str = ""
+    vn_proxy_label: str = ""
     preflighted_checkout_proxy_url: str = ""
     preflighted_promotion_proxy_url: str = ""
     preflighted_provider_proxy_url: str = ""
+    session_token: str = ""
+    cookie_header: str = ""
+    account_id: str = ""
+    device_id: str = ""
+    user_agent: str = ""
+    accept_language: str = ""
+    openai_sentinel_token: str = ""
+    oai_client_version: str = ""
+    oai_client_build_number: str = ""
 
 
 def normalize_kakao_proxy_url(value: str) -> str:
@@ -109,6 +130,21 @@ def _ipweb_proxy_region(proxy_url: str) -> str:
     return match.group(1).upper() if match else ""
 
 
+def _stage_direct_proxy_items(cfg: KakaoPayJobConfig, stage_index: int, region: str) -> tuple[list[str], str]:
+    if stage_index == 1:
+        raw = cfg.vn_proxies or cfg.direct_proxies
+        label = str(cfg.vn_proxy_label or cfg.direct_proxy_label or "").strip()
+    else:
+        raw = cfg.kr_proxies or cfg.direct_proxies
+        label = str(cfg.kr_proxy_label or cfg.direct_proxy_label or "").strip()
+    direct = [normalize_kakao_proxy_url(item) for item in (raw or []) if str(item or "").strip()]
+    return direct, label or "direct-1"
+
+
+def _has_direct_proxy_config(cfg: KakaoPayJobConfig) -> bool:
+    return bool(cfg.direct_proxies or cfg.kr_proxies or cfg.vn_proxies)
+
+
 def build_kakao_dynamic_proxy(cfg: KakaoPayJobConfig, stage_index: int) -> tuple[str, str]:
     region = _stage_region(cfg, stage_index)
     preflight_attr = (
@@ -119,7 +155,7 @@ def build_kakao_dynamic_proxy(cfg: KakaoPayJobConfig, stage_index: int) -> tuple
     preflighted = normalize_kakao_proxy_url(getattr(cfg, preflight_attr, ""))
     if preflighted:
         return preflighted, f"preflighted region={region}"
-    direct = [normalize_kakao_proxy_url(item) for item in (cfg.direct_proxies or []) if str(item or "").strip()]
+    direct, direct_label = _stage_direct_proxy_items(cfg, stage_index, region)
     if direct:
         ipweb_direct = [item for item in direct if _ipweb_proxy_region(item)]
         if ipweb_direct:
@@ -129,13 +165,51 @@ def build_kakao_dynamic_proxy(cfg: KakaoPayJobConfig, stage_index: int) -> tuple
             candidate = direct[0]
         proxy, sid = kakao_proxy_with_fresh_sid(candidate, region)
         suffix = f" sid={sid}" if sid and sid != "static" else " static"
-        direct_label = str(getattr(cfg, "direct_proxy_label", "") or "").strip() or "direct-1"
         return proxy, f"{direct_label} region={region}{suffix}"
     return build_kookeey_proxy(cfg.kookeey_user, cfg.kookeey_pass, cfg.kookeey_endpoint, region)
 
 
-def build_kakao_chatgpt_session(access_token: str, proxy_url: str = "", device_id: str = "") -> requests.Session:
+def build_kakao_chatgpt_session(
+    access_token: str,
+    proxy_url: str = "",
+    device_id: str = "",
+    *,
+    session_token: str = "",
+    cookie_header: str = "",
+    account_id: str = "",
+    user_agent: str = "",
+    accept_language: str = "",
+    openai_sentinel_token: str = "",
+    oai_client_version: str = "",
+    oai_client_build_number: str = "",
+) -> requests.Session:
     session = build_chatgpt_session(access_token, proxy_url, device_id)
+    if any(
+        str(value or "").strip()
+        for value in (
+            session_token,
+            cookie_header,
+            account_id,
+            user_agent,
+            accept_language,
+            openai_sentinel_token,
+            oai_client_version,
+            oai_client_build_number,
+        )
+    ):
+        configure_chatgpt_http_session(
+            session,
+            access_token=access_token,
+            session_token=session_token,
+            cookie_header=cookie_header,
+            account_id=account_id,
+            device_id=device_id,
+            user_agent=user_agent,
+            openai_sentinel_token=openai_sentinel_token,
+            oai_client_version=oai_client_version,
+            oai_client_build_number=oai_client_build_number,
+            accept_language=accept_language or "ko-KR,ko;q=0.9,en-US;q=0.8",
+        )
     try:
         session.headers.update(
             {
@@ -149,6 +223,44 @@ def build_kakao_chatgpt_session(access_token: str, proxy_url: str = "", device_i
     return session
 
 
+def _build_kakao_cfg_chatgpt_session(cfg: KakaoPayJobConfig, proxy_url: str, device_id: str) -> requests.Session:
+    return build_kakao_chatgpt_session(
+        cfg.access_token,
+        proxy_url,
+        device_id,
+        session_token=cfg.session_token,
+        cookie_header=cfg.cookie_header,
+        account_id=cfg.account_id,
+        user_agent=cfg.user_agent,
+        accept_language=cfg.accept_language or "ko-KR,ko;q=0.9,en-US;q=0.8",
+        openai_sentinel_token=cfg.openai_sentinel_token,
+        oai_client_version=cfg.oai_client_version,
+        oai_client_build_number=cfg.oai_client_build_number,
+    )
+
+
+def _build_kakao_reference_chatgpt_session(cfg: KakaoPayJobConfig, proxy_url: str, device_id: str) -> requests.Session:
+    session = new_http_session(proxy_url)
+    configure_chatgpt_http_session(
+        session,
+        access_token=cfg.access_token,
+        session_token=cfg.session_token,
+        cookie_header=cfg.cookie_header,
+        account_id=cfg.account_id,
+        device_id=device_id or cfg.device_id,
+        user_agent=cfg.user_agent,
+        openai_sentinel_token=cfg.openai_sentinel_token,
+        oai_client_version=cfg.oai_client_version,
+        oai_client_build_number=cfg.oai_client_build_number,
+        accept_language=cfg.accept_language or "ko-KR,ko;q=0.9,en-US;q=0.8",
+    )
+    try:
+        session.headers.update({"oai-language": "ko-KR", "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8"})
+    except Exception:
+        pass
+    return session
+
+
 def kakao_billing(account_email: str = "") -> dict[str, str]:
     name, line1, city, postal = random.choice(KR_BILLING_PRESETS)
     return {
@@ -157,6 +269,7 @@ def kakao_billing(account_email: str = "") -> dict[str, str]:
         "country": "KR",
         "line1": line1,
         "city": city,
+        "state": "Seoul",
         "postal_code": postal,
     }
 
@@ -518,7 +631,9 @@ def sync_kakao_tax_region(
     processor: str,
     checkout_email: str,
     billing: dict[str, str],
+    ctx: dict[str, str] | None = None,
 ) -> None:
+    state = str(billing.get("state") or "Seoul").strip() or "Seoul"
     chatgpt.post(
         "https://chatgpt.com/backend-api/payments/checkout/taxes",
         json={
@@ -534,6 +649,7 @@ def sync_kakao_tax_region(
                 "city": billing["city"],
                 "country": "KR",
                 "postal_code": billing["postal_code"],
+                "state": state,
             },
         },
         headers={
@@ -546,12 +662,14 @@ def sync_kakao_tax_region(
     resp = stripe.post(
         f"https://api.stripe.com/v1/payment_pages/{cs_id}",
         data={
-            "eid": "NA",
+            "key": stripe_pk,
+            "_stripe_version": KAKAO_STRIPE_VERSION,
+            **(_kakao_elements_params(ctx, include_session=True) if ctx else {"eid": "NA"}),
             "tax_region[country]": "KR",
             "tax_region[postal_code]": billing["postal_code"],
             "tax_region[line1]": billing["line1"],
             "tax_region[city]": billing["city"],
-            "key": stripe_pk,
+            "tax_region[state]": state,
         },
         timeout=TIMEOUT,
     )
@@ -568,6 +686,7 @@ def chatgpt_approve(
     log: LogFn,
     *,
     country: str = "KR",
+    cfg: KakaoPayJobConfig | None = None,
 ) -> None:
     last_err = ""
     for attempt in range(1, 4):
@@ -576,17 +695,64 @@ def chatgpt_approve(
             approve_proxy, sid = kakao_proxy_with_fresh_sid(proxy_url, country)
             if sid and sid != "static":
                 log(f"approve attempt {attempt}: refresh proxy sid={sid}")
-        cg = build_kakao_chatgpt_session(access_token, approve_proxy, device_id)
-        warm_chatgpt_checkout_context(cg, country, log)
+        use_reference_context = bool(cfg and (cfg.cookie_header or cfg.session_token or cfg.account_id or cfg.user_agent))
+        cg = (
+            _build_kakao_reference_chatgpt_session(cfg, approve_proxy, device_id)
+            if use_reference_context and cfg
+            else (_build_kakao_cfg_chatgpt_session(cfg, approve_proxy, device_id) if cfg else build_kakao_chatgpt_session(access_token, approve_proxy, device_id))
+        )
+        if not use_reference_context:
+            warm_chatgpt_checkout_context(cg, country, log)
         try:
+            checkout_url = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
+            for url, label in (
+                (checkout_url, "chatgpt_checkout"),
+                (f"https://pay.openai.com/c/pay/{cs_id}", "pay_openai"),
+                (f"https://checkout.stripe.com/c/pay/{cs_id}", "stripe_checkout"),
+            ):
+                try:
+                    hosted_resp = cg.get(url, timeout=12, allow_redirects=False)
+                    log(f"hosted_side_effect {label}=HTTP{getattr(hosted_resp, 'status_code', 0)}")
+                except Exception as hosted_exc:
+                    log(f"hosted_side_effect {label}={type(hosted_exc).__name__}")
+            session_headers = getattr(cg, "headers", {}) or {}
+            cookie_header = str(session_headers.get("Cookie") or session_headers.get("cookie") or "")
+            headers = chatgpt_checkout_headers(
+                access_token=access_token,
+                checkout_session_id=cs_id,
+                processor_entity=processor,
+                cookie_header=cookie_header,
+                account_id=str((cfg.account_id if cfg else "") or ""),
+                device_id=device_id,
+                target_path="/backend-api/payments/checkout/approve",
+                openai_sentinel_token="",
+                sec_ch_ua=str(session_headers.get("sec-ch-ua") or ""),
+                sec_ch_ua_platform='"Windows"',
+            )
+            if cfg and cfg.user_agent:
+                headers["user-agent"] = cfg.user_agent
+            if callable(_checkout_approval_sentinel_headers):
+                try:
+                    sentinel_headers = _checkout_approval_sentinel_headers(
+                        cookie_header=cookie_header,
+                        user_agent=str(headers.get("user-agent") or session_headers.get("User-Agent") or session_headers.get("user-agent") or ""),
+                        checkout_url=checkout_url,
+                    )
+                    headers.update(sentinel_headers)
+                    if sentinel_headers.get("OpenAI-Sentinel-Token"):
+                        log("approve sentinel_headers=present")
+                except Exception as sentinel_exc:
+                    log(f"approve sentinel_headers={type(sentinel_exc).__name__}")
+            headers.pop("openai-sentinel-token", None)
+            try:
+                ping = cg.post("https://chatgpt.com/backend-api/sentinel/ping", json={}, timeout=10)
+                log(f"approve sentinel_ping=HTTP{getattr(ping, 'status_code', 0)}")
+            except Exception as sentinel_ping_exc:
+                log(f"approve sentinel_ping={type(sentinel_ping_exc).__name__}")
             resp = cg.post(
                 "https://chatgpt.com/backend-api/payments/checkout/approve",
                 json={"checkout_session_id": cs_id, "processor_entity": processor},
-                headers={
-                    "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
-                    "x-openai-target-path": "/backend-api/payments/checkout/approve",
-                    "x-openai-target-route": "/backend-api/payments/checkout/approve",
-                },
+                headers=headers,
                 timeout=TIMEOUT,
             )
             log(f"approve attempt {attempt}: HTTP {resp.status_code} {short(resp.text, 120)}")
@@ -701,21 +867,21 @@ def generate_kakao_trial(cfg: KakaoPayJobConfig, log: LogFn | None = None) -> di
     token = str(cfg.access_token or "").strip()
     if not token:
         raise RuntimeError("缺少 Access Token")
-    if not cfg.direct_proxies and (not cfg.kookeey_user or not cfg.kookeey_pass):
-        raise RuntimeError("缺少代理配置：direct_proxies 或 Kookeey 用户名/密码")
+    if not _has_direct_proxy_config(cfg) and (not cfg.kookeey_user or not cfg.kookeey_pass):
+        raise RuntimeError("缺少代理配置：KR/VN 代理池、direct_proxies 或 Kookeey 用户名/密码")
 
-    device_id = str(uuid.uuid4())
+    device_id = str(cfg.device_id or "").strip() or str(uuid.uuid4())
     checkout_region = _stage_region(cfg, 0)
     promotion_region = _stage_region(cfg, 1)
     provider_region = _stage_region(cfg, 2)
-    billing = kakao_billing()
+    billing = kakao_billing(cfg.account_email)
     log(f"账单: {billing['name']} / {billing['city']} / {billing['postal_code']} / KR")
 
     dyn1, sid1 = build_kakao_dynamic_proxy(cfg, 0)
     log(f"[1/6] {checkout_region} 创建 KRW Kakao trial checkout sid={sid1}")
     with pix_proxy_context(cfg.local_proxy, dyn1, log) as chain1:
         checkout_proxy_url = chain1.url
-        cg = build_kakao_chatgpt_session(token, checkout_proxy_url, device_id)
+        cg = _build_kakao_cfg_chatgpt_session(cfg, checkout_proxy_url, device_id)
         warm_chatgpt_checkout_context(cg, checkout_region, log)
         resp = cg.post(
             "https://chatgpt.com/backend-api/payments/checkout",
@@ -741,7 +907,7 @@ def generate_kakao_trial(cfg: KakaoPayJobConfig, log: LogFn | None = None) -> di
             raise RuntimeError(f"checkout failed: {short(resp.text)}")
         data = resp.json() or {}
         cs_id = str(data.get("checkout_session_id") or data.get("session_id") or data.get("id") or "")
-        if not cs_id.startswith("cs_"):
+        if not cs_id.startswith(("cs_", "oaics_")):
             raise RuntimeError(f"checkout missing cs_id: {short(data)}")
         pk = str(data.get("publishable_key") or data.get("public_key") or extract_pk(data) or DEFAULT_STRIPE_PK)
         processor = str(data.get("processor_entity") or "openai_llc")
@@ -761,7 +927,7 @@ def generate_kakao_trial(cfg: KakaoPayJobConfig, log: LogFn | None = None) -> di
     log(f"[3/6] {promotion_region} checkout/update 注入 promo sid={sid2}")
     with pix_proxy_context(cfg.local_proxy, dyn2, log) as chain2:
         promotion_proxy_url = chain2.url
-        promotion_cg = build_kakao_chatgpt_session(token, promotion_proxy_url, device_id)
+        promotion_cg = _build_kakao_cfg_chatgpt_session(cfg, promotion_proxy_url, device_id)
         warm_chatgpt_checkout_context(promotion_cg, promotion_region, log)
         update_kakao_checkout_promotion(
             promotion_cg,
@@ -774,7 +940,7 @@ def generate_kakao_trial(cfg: KakaoPayJobConfig, log: LogFn | None = None) -> di
     log(f"[4/6] {provider_region} Stripe refresh 验证 0 KRW + Kakao sid={sid3}")
     with pix_proxy_context(cfg.local_proxy, dyn3, log) as chain3:
         provider_proxy_url = chain3.url
-        provider_cg = build_kakao_chatgpt_session(token, provider_proxy_url, device_id)
+        provider_cg = _build_kakao_cfg_chatgpt_session(cfg, provider_proxy_url, device_id)
         warm_chatgpt_checkout_context(provider_cg, provider_region, log)
         stripe = build_stripe_session(provider_proxy_url)
         init_payload = stripe_init(stripe, cs_id, pk, ctx)
@@ -795,6 +961,7 @@ def generate_kakao_trial(cfg: KakaoPayJobConfig, log: LogFn | None = None) -> di
             processor=processor,
             checkout_email=_checkout_email(init_payload, billing),
             billing=billing,
+            ctx=ctx,
         )
         init_payload = stripe_init(stripe, cs_id, pk, ctx)
         _sync_ctx_from_init(ctx, init_payload)
@@ -829,8 +996,8 @@ def generate_kakao_trial(cfg: KakaoPayJobConfig, log: LogFn | None = None) -> di
             fields["billing"] = billing
             return {"ok": True, "amount": amount, "fields": fields, "billing": billing}
 
-        log(f"{checkout_region} approve + {provider_region} poll Kakao Pay")
-        chatgpt_approve(token, cs_id, processor, checkout_proxy_url, device_id, log, country=checkout_region)
+        log(f"{provider_region} approve + {provider_region} poll Kakao Pay")
+        chatgpt_approve(token, cs_id, processor, provider_proxy_url, device_id, log, country=provider_region, cfg=cfg)
         last_err: dict[str, Any] = {}
         for i in range(1, 11):
             page_data = page_get(stripe, cs_id, pk, ctx)

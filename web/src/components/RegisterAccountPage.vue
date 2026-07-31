@@ -1471,8 +1471,14 @@ const canSubmitRegister = computed(() => {
 })
 let logsTimer = null
 let statsTimer = null
+let statsLoading = false
+let mailProviderWatchReady = false
+let registerPageMounted = false
+let registerInitTimers = []
+const REGISTER_LOG_FETCH_LIMIT = 300
+const REGISTER_POLL_INTERVAL_MS = 5000
 const statCards = computed(() => {
-  const scope = statsMode.value === 'today' ? registerStats.value.today : registerStats.value.task
+  const scope = statsMode.value === 'today' ? registerStats.value.today : currentTaskStats.value
   const prefix = statsMode.value === 'today' ? '今日' : '本次'
   return [
     { label: `${prefix}注册`, value: scope.total, color: 'text-blue-400' },
@@ -1480,6 +1486,21 @@ const statCards = computed(() => {
     { label: `${prefix}失败`, value: scope.failed, color: 'text-rose-400' },
     { label: `${prefix}成功率`, value: `${scope.successRate.toFixed(1)}%`, color: 'text-amber-300' },
   ]
+})
+const currentTaskStats = computed(() => {
+  const task = props.runningTask
+  if (!task) return registerStats.value.task
+  const progress = task.progress || {}
+  const result = task.result || {}
+  const total = Number(progress.total ?? result.count ?? task.params?.count ?? registerStats.value.task.total ?? 0)
+  const ok = Number(progress.ok ?? result.ok ?? registerStats.value.task.ok ?? 0)
+  const failed = Number(progress.failed ?? result.failed ?? registerStats.value.task.failed ?? 0)
+  return {
+    total,
+    ok,
+    failed,
+    successRate: total > 0 ? (ok / total) * 100 : 0,
+  }
 })
 const currentTaskMeta = computed(() => ({
   taskId: props.runningTask?.task_id || registerStats.value.taskMeta?.taskId || '',
@@ -1588,7 +1609,7 @@ async function openOutlookPoolDialog() {
     outlookPoolStatusFilter.value = 'available'
   }
   outlookPoolDialogOpen.value = true
-  await loadOutlookPoolStatus()
+  await loadOutlookPoolStatus({ includeAll: true })
 }
 
 function closeOutlookPoolDialog() {
@@ -1799,7 +1820,7 @@ async function importOutlookAccounts() {
       outlookImportContent.value = ''
       outlookImportFilename.value = ''
     }
-    await loadOutlookPoolStatus()
+    await loadOutlookPoolStatus({ includeAll: outlookPoolDialogOpen.value })
   } catch (e) {
     outlookImportResult.value = `导入失败: ${e.message}`
     outlookImportResultOk.value = false
@@ -1808,13 +1829,14 @@ async function importOutlookAccounts() {
   }
 }
 
-async function loadOutlookPoolStatus() {
+async function loadOutlookPoolStatus(options = {}) {
   if (!isOutlookLikePoolProvider.value || outlookPoolLoading.value) return
+  const includeAll = Boolean(options.includeAll || outlookPoolDialogOpen.value)
   outlookPoolLoading.value = true
   outlookPoolError.value = ''
   try {
     outlookPoolStatus.value = isICloudProvider.value
-      ? await api.getICloudAccountsStatus()
+      ? await api.getICloudAccountsStatus(includeAll)
       : await api.getOutlookAccountsStatus()
     pruneOutlookPoolSelectionToVisible()
   } catch (e) {
@@ -2205,9 +2227,10 @@ async function loadOAuthPhoneSmsCountries(provider = registerForm.value.oauthPho
 }
 
 async function loadRegisterLogs() {
+  if (logsLoading.value) return
   logsLoading.value = true
   try {
-    const result = await api.getLogs(1000)
+    const result = await api.getLogs(REGISTER_LOG_FETCH_LIMIT)
     registerLogs.value = (result.logs || []).filter(entry => {
       const msg = String(entry.message || '')
       return msg.includes('[注册账号]') || msg.includes('[直接注册]') || msg.includes('[注册]') || msg.includes('[协议注册]') || msg.includes('[phone-first]') || msg.includes('[Codex]')
@@ -2224,6 +2247,8 @@ async function loadRegisterLogs() {
 }
 
 async function loadRegisterStats() {
+  if (statsLoading) return
+  statsLoading = true
   try {
     const tasks = await api.getTasks()
     const registerTasks = (tasks || []).filter(task => task.command === 'register')
@@ -2283,6 +2308,8 @@ async function loadRegisterStats() {
     }
   } catch (e) {
     console.error('loadRegisterStats', e)
+  } finally {
+    statsLoading = false
   }
 }
 
@@ -2382,6 +2409,7 @@ watch(
     outlookPoolError.value = ''
     outlookPoolSelectedEmails.value = []
     outlookPoolStatusFilter.value = isICloudProvider.value ? 'available' : 'all'
+    if (!mailProviderWatchReady) return
     if (isOutlookLikePoolProvider.value) loadOutlookPoolStatus()
     if (isMailComProvider.value) loadMailComPoolStatus()
   }
@@ -2397,6 +2425,7 @@ watch(
 watch(
   isMailComProvider,
   enabled => {
+    if (!mailProviderWatchReady) return
     if (enabled) loadMailComPoolStatus()
   }
 )
@@ -2437,21 +2466,25 @@ watch(
   { flush: 'sync' }
 )
 
-onMounted(reloadRegisterDomains)
-onMounted(() => {
-  window.addEventListener('keydown', handleGlobalKeydown)
-  loadSavedRegisterForm()
-  loadMailProviderOptions()
-  loadOAuthPhoneSmsConfig()
-  if (isOutlookLikePoolProvider.value) loadOutlookPoolStatus()
-  if (isMailComProvider.value) loadMailComPoolStatus()
-  loadRegisterLogs()
-  loadRegisterStats()
-  logsTimer = window.setInterval(loadRegisterLogs, 3000)
-  statsTimer = window.setInterval(loadRegisterStats, 3000)
-})
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleGlobalKeydown)
+function scheduleRegisterInit(fn, delayMs) {
+  const timer = window.setTimeout(() => {
+    registerInitTimers = registerInitTimers.filter(item => item !== timer)
+    if (!registerPageMounted) return
+    fn()
+  }, delayMs)
+  registerInitTimers.push(timer)
+}
+
+function startRegisterPolling() {
+  if (!statsTimer) {
+    statsTimer = window.setInterval(loadRegisterStats, REGISTER_POLL_INTERVAL_MS)
+  }
+  if (!logsTimer) {
+    logsTimer = window.setInterval(loadRegisterLogs, REGISTER_POLL_INTERVAL_MS)
+  }
+}
+
+function stopRegisterPolling() {
   if (logsTimer) {
     window.clearInterval(logsTimer)
     logsTimer = null
@@ -2460,13 +2493,53 @@ onUnmounted(() => {
     window.clearInterval(statsTimer)
     statsTimer = null
   }
+}
+
+onMounted(() => {
+  registerPageMounted = true
+  window.addEventListener('keydown', handleGlobalKeydown)
+  loadSavedRegisterForm()
+  scheduleRegisterInit(() => {
+    reloadRegisterDomains()
+  }, 50)
+  scheduleRegisterInit(async () => {
+    await loadMailProviderOptions()
+    if (!registerPageMounted) return
+    mailProviderWatchReady = true
+  }, 100)
+  scheduleRegisterInit(() => {
+    loadOAuthPhoneSmsConfig()
+  }, 150)
+  scheduleRegisterInit(() => {
+    loadRegisterStats()
+  }, 300)
+  scheduleRegisterInit(() => {
+    loadRegisterLogs()
+    if (props.runningTask) startRegisterPolling()
+  }, 600)
+})
+onUnmounted(() => {
+  registerPageMounted = false
+  window.removeEventListener('keydown', handleGlobalKeydown)
+  mailProviderWatchReady = false
+  for (const timer of registerInitTimers) {
+    window.clearTimeout(timer)
+  }
+  registerInitTimers = []
+  stopRegisterPolling()
 })
 watch(() => props.runningTask?.task_id, (newId, oldId) => {
   if (newId !== oldId) {
     registerCancelBusy.value = false
     registerCancelRequested.value = false
   }
+  if (newId) {
+    loadRegisterLogs()
+    loadRegisterStats()
+    startRegisterPolling()
+  }
   if (oldId && !newId) {
+    stopRegisterPolling()
     reloadRegisterDomains()
     if (isOutlookLikePoolProvider.value) loadOutlookPoolStatus()
     if (isMailComProvider.value) loadMailComPoolStatus()
