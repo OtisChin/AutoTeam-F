@@ -1258,7 +1258,7 @@ class AuthFlow:
             otp_timeout = 60
 
         last_err = ""
-        max_dynamic_attempts = max(1, int(os.getenv("OPENAI_PHONE_DYNAMIC_MAX_ATTEMPTS", "5") or "5"))
+        max_dynamic_attempts = min(3, max(1, int(os.getenv("OPENAI_PHONE_DYNAMIC_MAX_ATTEMPTS", "3") or "3")))
         dynamic_acquire_count = 1 if callable(phone_supplier) and phone_items else 0
         idx = 0
         while True:

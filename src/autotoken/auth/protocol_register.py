@@ -350,7 +350,8 @@ def _attach_oauth_phone_supplier(
 
     def _retryable_acquire(label: str, acquire_fn):
         last_error = ""
-        for attempt in range(1, 6):
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
             result = acquire_fn()
             item = None
             error = ""
@@ -374,11 +375,12 @@ def _attach_oauth_phone_supplier(
             if item:
                 return item, ""
             last_error = str(error or "").strip()
-            if attempt < 5 and _is_retryable_supply_error(last_error):
+            if attempt < max_attempts and _is_retryable_supply_error(last_error):
                 logger.warning(
-                    "[协议注册] add-phone %s 取号失败，准备重试(%s/5): email=%s error=%s",
+                    "[协议注册] add-phone %s 取号失败，准备重试(%s/%s): email=%s error=%s",
                     label,
                     attempt,
+                    max_attempts,
                     email,
                     last_error or "无可用号码",
                 )

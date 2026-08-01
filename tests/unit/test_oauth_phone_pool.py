@@ -560,6 +560,43 @@ def test_protocol_hero_sms_phone_in_use_cancels_and_acquires_new_phone(monkeypat
     codex_auth._OAUTH_HERO_SMS_REUSE.clear()
 
 
+def test_protocol_hero_sms_acquire_retries_default_to_three_attempts(monkeypatch, tmp_path):
+    from autotoken import gopay_auto_register
+    from autotoken.protocol_register import _attach_oauth_phone_supplier
+
+    calls = {"get_number": 0}
+
+    def fake_get_number(**kwargs):
+        calls["get_number"] += 1
+        return "", "", "no_numbers"
+
+    class DummyActivation:
+        pass
+
+    class DummyFlow:
+        pass
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setenv("OAUTH_HERO_SMS_API_KEY", "hero-key")
+    monkeypatch.setattr(gopay_auto_register, "_hero_get_number", fake_get_number)
+    monkeypatch.setattr(gopay_auto_register, "SmsActivation", DummyActivation)
+    monkeypatch.setattr(protocol_register.time, "sleep", lambda *_args, **_kwargs: None)
+    codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+
+    flow = DummyFlow()
+    _attach_oauth_phone_supplier(flow, provider="hero_sms", email="no-number@example.com")
+
+    try:
+        flow._openai_phone_supplier()
+    except RuntimeError as exc:
+        assert "no_numbers" in str(exc)
+    else:
+        raise AssertionError("expected no_numbers failure")
+
+    assert calls["get_number"] == 3
+    codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+
+
 def test_protocol_smsbower_phone_in_use_cancels_and_acquires_new_phone(monkeypatch, tmp_path):
     from autotoken import gopay_auto_register
     from autotoken.protocol_register import _attach_oauth_phone_supplier
@@ -806,7 +843,7 @@ def test_protocol_phone_supplier_not_attached_without_provider():
     assert not hasattr(flow, "_openai_phone_otp_reader")
 
 
-def test_protocol_hero_sms_supplier_retries_no_numbers_five_times(monkeypatch):
+def test_protocol_hero_sms_supplier_retries_no_numbers_three_times(monkeypatch):
     from autotoken import codex_auth, protocol_register
     from autotoken.protocol_register import _attach_oauth_phone_supplier
 
@@ -814,7 +851,7 @@ def test_protocol_hero_sms_supplier_retries_no_numbers_five_times(monkeypatch):
 
     def fake_get_number(**kwargs):
         calls["count"] += 1
-        if calls["count"] < 5:
+        if calls["count"] < 3:
             return None, "NO_NUMBERS"
         return "act-hero", "+15551234567", ""
 
@@ -830,7 +867,7 @@ def test_protocol_hero_sms_supplier_retries_no_numbers_five_times(monkeypatch):
     item = flow._openai_phone_supplier()
 
     assert item["phone_number"] == "+15551234567"
-    assert calls["count"] == 5
+    assert calls["count"] == 3
 
 
 def test_phone_first_register_defaults_to_phone_pool_supplier(monkeypatch):
