@@ -6570,14 +6570,55 @@ def _get_wham_usage_response(access_token: str, headers: dict[str, str], *, time
     )
 
 
+def _wham_error_info(resp) -> dict[str, Any]:
+    status_code = int(getattr(resp, "status_code", 0) or 0)
+    text = str(getattr(resp, "text", "") or "")
+    payload = None
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    if payload is None:
+        try:
+            payload = json.loads(text) if text else None
+        except Exception:
+            payload = None
+
+    code = ""
+    message = ""
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            code = str(error.get("code") or error.get("type") or "").strip()
+            message = str(error.get("message") or error.get("detail") or "").strip()
+        elif error is not None:
+            message = str(error or "").strip()
+        if not message:
+            message = str(payload.get("message") or payload.get("detail") or "").strip()
+        if not code:
+            code = str(payload.get("code") or payload.get("type") or "").strip()
+
+    if code and message:
+        summary = f"{code}: {message}"
+    else:
+        summary = message or code or _compact_log_text(text, limit=200) or f"HTTP {status_code}"
+    summary = _compact_log_text(summary, limit=240)
+    return {
+        "status_code": status_code,
+        "code": code,
+        "message": summary,
+        "response_excerpt": _compact_log_text(text, limit=240),
+    }
+
+
 def check_codex_quota(access_token, account_id=None, *, timeout=30, auth_data: dict | None = None):
     """
     通过 /backend-api/wham/usage 查询 Codex 额度状态，不消耗额度。
     返回:
         ("ok", quota_info)         — HTTP 200 + 成功解析,额度未触发上限
         ("exhausted", info)        — HTTP 200 + quota 用尽(get_quota_exhausted_info 命中)
-        ("auth_error", None)       — **仅** HTTP 401/403,token/seat 真失效
-        ("network_error", None)    — DNS/timeout/SSL/连接异常 / 5xx / 429 / json 解析失败 / 其他临时错误
+        ("auth_error", None)       — **仅** HTTP 401,token 真失效
+        ("network_error", None)    — DNS/timeout/SSL/连接异常 / 403 / 5xx / 429 / json 解析失败 / 其他临时错误
 
     auth_error 与 network_error 必须严格区分:auth_error 会触发"标记 AUTH_INVALID/重登"等
     破坏性流程,网络抖动绝不能落入该分支(否则一次网络故障可能批量误删账号)。
@@ -6618,8 +6659,13 @@ def check_codex_quota(access_token, account_id=None, *, timeout=30, auth_data: d
         logger.warning("[Codex] 未知异常(归类 network_error,保守处理): %s", e)
         return "network_error", None
 
-    if resp.status_code in (401, 403):
-        return "auth_error", None
+    if resp.status_code == 401:
+        return "auth_error", _wham_error_info(resp)
+
+    # 403 可能是临时风控/上下文缺失；429 限流 / 5xx 服务端错误 → 临时性故障,归为 network_error,不动账号 status
+    if resp.status_code == 403:
+        logger.warning("[Codex] wham/usage 403(归类 network_error，不废弃账号): %s", resp.text[:200])
+        return "network_error", None
 
     # 429 限流 / 5xx 服务端错误 → 临时性故障,归为 network_error,不动账号 status
     if resp.status_code == 429 or 500 <= resp.status_code < 600:
@@ -6627,7 +6673,7 @@ def check_codex_quota(access_token, account_id=None, *, timeout=30, auth_data: d
         return "network_error", None
 
     if resp.status_code != 200:
-        # 4xx(非 401/403/429) 也归为 network_error:可能是 OpenAI 接口在调整,
+        # 4xx(非 401/429) 也归为 network_error:可能是 OpenAI 接口在调整,
         # 不能因为一次接口变更把全部账号误判 token 失效
         logger.warning("[Codex] wham/usage 非预期状态 %d(归类 network_error): %s", resp.status_code, resp.text[:200])
         return "network_error", None

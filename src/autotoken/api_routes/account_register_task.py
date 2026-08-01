@@ -34,6 +34,7 @@ class ManualRegisterParams(BaseModel):
     post_register_oauth: bool = False
     phone_only: bool = False
     protocol_register: bool = Field(False, validation_alias=AliasChoices("protocol_register", "protocolRegister"))
+    use_roxybrowser: bool = Field(False, validation_alias=AliasChoices("use_roxybrowser", "useRoxyBrowser"))
     oauth_phone_sms_provider: str = Field(
         "",
         validation_alias=AliasChoices("oauth_phone_sms_provider", "oauthPhoneSmsProvider"),
@@ -107,7 +108,12 @@ def create_account_register_task_router(
         registration_flow = str(params.registration_flow or "standard").strip().lower()
         if registration_flow not in {"standard", "phone_cpa"}:
             raise HTTPException(status_code=400, detail="registration_flow 只支持 standard 或 phone_cpa")
-        register_mode = "protocol" if registration_flow == "phone_cpa" or bool(params.protocol_register) else "browser"
+        use_roxybrowser = registration_flow == "standard" and bool(params.use_roxybrowser)
+        register_mode = (
+            "protocol"
+            if registration_flow == "phone_cpa" or (bool(params.protocol_register) and not use_roxybrowser)
+            else "browser"
+        )
         phone_only = bool(params.phone_only)
         post_register_oauth = (registration_flow == "phone_cpa" and not phone_only) or bool(params.post_register_oauth)
         oauth_phone_sms_provider = (
@@ -258,6 +264,7 @@ def create_account_register_task_router(
                 [item for item in oauth_oasis_sms_cdks.replace(",", "\n").replace(";", "\n").splitlines() if item.strip()]
             ),
             "register_mode": register_mode,
+            "use_roxybrowser": use_roxybrowser,
             "proxy_url_present": bool(normalized_proxy_url),
             "proxy_api_provider": proxy_api_provider,
             "proxy_api_country": proxy_api_country if (proxy_api_provider or proxy_api_url) else "",
@@ -288,6 +295,7 @@ def create_account_register_task_router(
                 registration_flow=registration_flow,
                 register_mode=register_mode,
                 proxy_url=normalized_proxy_url,
+                use_roxybrowser=use_roxybrowser,
                 register_proxy_selector=register_proxy_selector,
                 register_proxy_meta=register_proxy_meta,
                 oauth_phone_sms_provider=oauth_phone_sms_provider or None,

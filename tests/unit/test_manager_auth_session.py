@@ -436,6 +436,154 @@ def test_standard_registration_uses_registration_specific_mailbox_creation(monke
     assert calls[0][2] == "outlook.com"
 
 
+def test_browser_register_uses_default_playwright_context_without_randomized_fingerprint(monkeypatch):
+    calls = {"contexts": []}
+
+    class FakePage:
+        url = "about:blank"
+
+        def on(self, *_args, **_kwargs):
+            return None
+
+        def goto(self, *_args, **_kwargs):
+            raise RuntimeError("Timeout while opening signup")
+
+    class FakeContext:
+        def __init__(self, kwargs):
+            self.kwargs = kwargs
+
+        def new_page(self):
+            return FakePage()
+
+    class FakeBrowser:
+        def new_context(self, **kwargs):
+            calls["contexts"].append(kwargs)
+            return FakeContext(kwargs)
+
+        def close(self):
+            return None
+
+    class FakeChromium:
+        def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(manager, "get_playwright_launch_options", lambda **_kwargs: {})
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "autotoken.browser_fingerprint.generate_fingerprint",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("direct register should not randomize fingerprint")),
+    )
+
+    try:
+        manager._register_direct_once(None, "new@example.com", "pw")
+    except RuntimeError as exc:
+        assert "打开 ChatGPT 登录页失败" in str(exc)
+    else:
+        raise AssertionError("expected signup goto failure")
+
+    assert calls["contexts"] == [
+        {
+            "viewport": {"width": 1280, "height": 800},
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        }
+    ]
+
+
+def test_browser_register_uses_roxybrowser_cdp_and_reuses_idle_profiles(monkeypatch):
+    calls = {"launches": [], "cdp": [], "closed": [], "deleted": []}
+
+    class FakePage:
+        url = "about:blank"
+
+        def on(self, *_args, **_kwargs):
+            return None
+
+        def goto(self, *_args, **_kwargs):
+            raise RuntimeError("Timeout while opening signup")
+
+    class FakeContext:
+        pages = []
+
+        def new_page(self):
+            return FakePage()
+
+    class FakeBrowser:
+        contexts = [FakeContext()]
+
+        def close(self):
+            calls["closed"].append("browser")
+
+    class FakeChromium:
+        def launch(self, **_kwargs):
+            raise AssertionError("RoxyBrowser 注册不应启动本地 Playwright Chromium")
+
+        def connect_over_cdp(self, endpoint_url):
+            calls["cdp"].append(endpoint_url)
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def start(self):
+            return self
+
+        def stop(self):
+            calls["closed"].append("playwright")
+
+    class FakeRoxyClient:
+        def __init__(self, api_host, api_token):
+            calls["client"] = (api_host, api_token)
+
+        def launch(self, **kwargs):
+            calls["launches"].append(kwargs)
+            return type(
+                "Launch",
+                (),
+                {
+                    "workspace_id": "workspace-1",
+                    "dir_id": "dir-1",
+                    "connection": {"http": "127.0.0.1:9222"},
+                    "created_profile": True,
+                },
+            )()
+
+        def browser_close(self, dir_id):
+            calls["closed"].append(dir_id)
+
+        def browser_delete(self, workspace_id, dir_ids):
+            calls["deleted"].append((workspace_id, dir_ids))
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://roxy", "api_token": "token"})
+    monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", FakeRoxyClient)
+    monkeypatch.setattr(manager.time, "sleep", lambda _seconds: None)
+
+    try:
+        manager._register_direct_once(None, "roxy@example.com", "pw", proxy_url="http://proxy", use_roxybrowser=True)
+    except RuntimeError as exc:
+        assert "打开 ChatGPT 登录页失败" in str(exc)
+    else:
+        raise AssertionError("expected signup goto failure")
+
+    assert calls["client"] == ("http://roxy", "token")
+    assert calls["launches"][0]["proxy_url"] == "http://proxy"
+    assert calls["launches"][0]["clear_profile_data"] is True
+    assert calls["launches"][0]["force_new_profile"] is False
+    assert calls["cdp"] == ["http://127.0.0.1:9222"]
+    assert "dir-1" in calls["closed"]
+    assert calls["deleted"] == [("workspace-1", ["dir-1"])]
+
+
 def test_session_data_keeps_chatgpt_access_separate_from_codex_bundle(monkeypatch):
     from autotoken.auth import protocol_register as protocol_register_module
 

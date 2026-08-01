@@ -279,11 +279,16 @@
               <div>
                 本次完成：成功 <span class="font-semibold text-emerald-300">{{ currentResult.successes?.length || 0 }}</span>，失败 <span class="font-semibold text-rose-300">{{ currentResult.errors?.length || 0 }}</span>，跳过 <span class="font-semibold text-gray-300">{{ currentResult.skipped?.length || 0 }}</span>
               </div>
-              <select v-model="recentResultFilter" class="w-fit rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-200 focus:border-blue-500 focus:outline-none">
-                <option value="all">全部</option>
-                <option value="success">已提链</option>
-                <option value="failed">提链失败</option>
-              </select>
+              <div class="flex flex-wrap items-center gap-2">
+                <button @click="exportCurrentSuccessfulLinksTxt" :disabled="!currentSuccessfulLinkLines.length" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-50">
+                  导出本次成功 TXT{{ currentSuccessfulLinkLines.length ? ` (${currentSuccessfulLinkLines.length})` : '' }}
+                </button>
+                <select v-model="recentResultFilter" class="w-fit rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-200 focus:border-blue-500 focus:outline-none">
+                  <option value="all">全部</option>
+                  <option value="success">已提链</option>
+                  <option value="failed">提链失败</option>
+                </select>
+              </div>
             </div>
             <div v-if="recentResultFilter !== 'failed'" v-for="item in currentResultSuccesses" :key="item.email" class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
               <div class="font-mono text-emerald-200">{{ item.email }}</div>
@@ -461,6 +466,7 @@
                       <span class="inline-flex rounded-full border px-2 py-1 text-xs font-bold" :class="kkPaymentStatusClass(item.status)">{{ kkPaymentLinkStatusText(item.status) }}</span>
                       <span class="truncate font-mono text-sm font-semibold text-slate-200">{{ item.accountEmail || '-' }}</span>
                       <span v-if="item.status !== 'success'" class="rounded-full border px-2 py-1 text-xs font-semibold" :class="kakaoExpiryClass(item)">{{ kakaoExpiryText(item) }}</span>
+                      <span v-if="item.status === 'success' && kkPaymentSuccessTimeText(item)" class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs font-semibold text-emerald-200">成功 {{ kkPaymentSuccessTimeText(item) }}</span>
                     </div>
                     <div v-if="item.message" class="mt-2 max-w-3xl truncate text-xs text-slate-500" :title="item.message">{{ item.message }}</div>
                   </div>
@@ -663,6 +669,9 @@ const hiddenAccountCount = computed(() => Math.max(0, filteredAccounts.value.len
 const currentResultSuccesses = computed(() => Array.isArray(currentResult.value?.successes) ? currentResult.value.successes : [])
 const currentResultErrors = computed(() => Array.isArray(currentResult.value?.errors) ? currentResult.value.errors : [])
 const currentResultSkipped = computed(() => Array.isArray(currentResult.value?.skipped) ? currentResult.value.skipped : [])
+const currentSuccessfulLinkLines = computed(() => currentResultSuccesses.value
+  .map(item => kakaoLinkUrl(item?.link || item))
+  .filter(Boolean))
 const filteredRecentResultCount = computed(() => {
   if (recentResultFilter.value === 'success') return currentResultSuccesses.value.length
   if (recentResultFilter.value === 'failed') return currentResultErrors.value.length
@@ -1754,12 +1763,30 @@ async function clearLinks() {
 }
 
 function exportLinks() {
-  const blob = new Blob([JSON.stringify(links.value, null, 2)], { type: 'application/json' })
+  downloadTextFile(`kakao-pay-links-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(links.value, null, 2), 'application/json;charset=utf-8')
+}
+
+function exportCurrentSuccessfulLinksTxt() {
+  const lines = currentSuccessfulLinkLines.value
+  if (!lines.length) {
+    setStatus('本次任务没有可导出的成功链接。', true)
+    return
+  }
+  const mode = isTempExtract.value ? 'temp-extract' : 'extract'
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  downloadTextFile(`kakao-${mode}-success-links-${timestamp}.txt`, `${lines.join('\n')}\n`)
+  setStatus(`已导出本次成功提取的 ${lines.length} 条链接。`)
+}
+
+function downloadTextFile(filename, content, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob([String(content || '')], { type })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `kakao-pay-links-${new Date().toISOString().slice(0, 10)}.json`
+  a.download = filename
+  document.body?.appendChild(a)
   a.click()
+  a.remove()
   URL.revokeObjectURL(url)
 }
 
@@ -2016,6 +2043,8 @@ function normalizeKkPaymentItem(raw) {
     created_at: raw.created_at || raw.createdAt || '',
     created_at_ts: raw.created_at_ts || raw.createdAtTs || 0,
     kakao_expires_at_ts: raw.kakao_expires_at_ts || raw.kakaoExpiresAtTs || raw.kakaoExpiresAt || 0,
+    success_at: raw.success_at || raw.successAt || '',
+    success_at_ts: raw.success_at_ts || raw.successAtTs || 0,
   }
 }
 
@@ -2404,6 +2433,13 @@ function kkPaymentWorkerText(item) {
   return firstText(item?.workerLabel, [item?.workerId, item?.workerName].filter(Boolean).join(' / '), item?.workerId, item?.workerName, '-')
 }
 
+function kkPaymentSuccessTimeText(item) {
+  const explicit = String(item?.success_at || item?.successAt || '').trim()
+  if (explicit) return explicit
+  const ts = timestampMs(item?.success_at_ts ?? item?.successAtTs)
+  return ts ? new Date(ts).toLocaleString() : ''
+}
+
 function kkOrderProblemReason(data, fallback = '') {
   const { payload, order } = kkCustomerOrderPayload(data)
   const error = payload.error || data?.error || {}
@@ -2524,6 +2560,8 @@ async function runKkPaymentTask(item) {
     applyKkOrderWorkerInfo(item, job)
     if (['success', 'succeeded', 'paid', 'completed'].includes(job.status)) {
       item.status = 'success'
+      item.success_at = job.success_at || job.successAt || new Date().toLocaleString()
+      item.success_at_ts = Date.now()
       item.message = kkOrderProblemReason(job, '支付成功，账号已标记 Plus / Kakao。')
       removeAccountFromKakaoPool(job.account_email || item.accountEmail)
       await Promise.all([refreshAccounts(), refreshLinks()])

@@ -973,7 +973,7 @@ def cmd_check(include_standby: bool = False):
 
     参数:
         include_standby: True 时额外探测 standby 池每个账号的 quota(限速 + 24h 去重),
-                         401/403 的标记为 STATUS_AUTH_INVALID。默认 False 保持向后兼容。
+                         401 标记为 STATUS_AUTH_INVALID；403 作为临时错误。默认 False 保持向后兼容。
     """
     from autotoken.settings.config import AUTO_CHECK_THRESHOLD, CLOUD_MAIL_DOMAIN, CLOUDFLARE_TEMP_EMAIL_DOMAIN
 
@@ -1301,7 +1301,7 @@ def cmd_check(include_standby: bool = False):
         logger.warning("[检查] personal 分支异常(不影响 active 结果): %s", exc)
 
     # Standby 池额度探测(可选):修复"standby 永远无 quota 数据 → _quota_recovered 失真
-    # → fill 时盲选踩雷"的问题。限速 + 24h 去重,探到 401/403 标 STATUS_AUTH_INVALID。
+    # → fill 时盲选踩雷"的问题。限速 + 24h 去重,探到 401 标 STATUS_AUTH_INVALID。
     if include_standby:
         try:
             _probe_standby_quota()
@@ -1316,8 +1316,8 @@ def _probe_standby_quota():
 
     - 限速:每账号之间 sleep STANDBY_PROBE_INTERVAL_SEC,避免群访 OpenAI wham/usage 触发风控
     - 去重:last_quota_check_at 在 STANDBY_PROBE_DEDUP_SEC 秒内的跳过
-    - auth_error(**仅** 401/403):标 STATUS_AUTH_INVALID,等 reconcile 处置
-    - network_error(DNS/timeout/SSL/5xx/429/JSON 解析失败/其他临时错误):
+    - auth_error(**仅** 401):标 STATUS_AUTH_INVALID,等 reconcile 处置
+    - network_error(DNS/timeout/SSL/403/5xx/429/JSON 解析失败/其他临时错误):
       **不写 last_quota_check_at**(允许下一轮立刻重试),**不改 status**,只 log warning。
       这条修复的就是"网络抖动一次,18 个号一起被误标 AUTH_INVALID 然后被 reconcile 全删"事故。
     - exhausted:刷新 quota_exhausted_at / quota_resets_at(修正过期快照),维持 standby
@@ -1396,7 +1396,7 @@ def _probe_standby_quota():
             )
         elif status_str == "auth_error":
             update_account(email, status=STATUS_AUTH_INVALID, last_quota_check_at=probe_ts)
-            logger.warning("[%s] (standby) auth_file 已失效(401/403),标记 %s", email, STATUS_AUTH_INVALID)
+            logger.warning("[%s] (standby) auth_file 已失效(401),标记 %s", email, STATUS_AUTH_INVALID)
         elif status_str == "network_error":
             # 网络抖动 / 5xx / 429 / JSON 解析失败 — 临时性故障。
             # 关键约束:不写 last_quota_check_at(允许下一轮立刻重试)、不改 status,只 log。
@@ -2844,7 +2844,15 @@ def _complete_direct_about_you(page):
     return False
 
 
-def _register_direct_once(mail_client, email, password, cloudmail_account_id=None, return_session=False, proxy_url=None):
+def _register_direct_once(
+    mail_client,
+    email,
+    password,
+    cloudmail_account_id=None,
+    return_session=False,
+    proxy_url=None,
+    use_roxybrowser=False,
+):
     """执行一次直接注册，返回是否完成注册并进入 Team。
 
     在邮箱/密码/验证码/about-you 四个提交节点调用 assert_not_blocked，
@@ -2867,16 +2875,70 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             return "打开 ChatGPT 登录页失败：网络连接被重置，可能是代理/IP/风控问题"
         return f"打开 ChatGPT 登录页失败：{text}"
 
-    with sync_playwright() as p:
-        launch_kwargs = get_playwright_launch_options(proxy_url=proxy_url)
-        if sys.platform.startswith("win"):
-            launch_kwargs["slow_mo"] = 100
-        browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
-        page = context.new_page()
+    with contextlib.ExitStack() as stack:
+        browser = None
+        roxy_client = None
+        roxy_launch = None
+
+        def _safe_close_browser():
+            if browser is None:
+                return
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+        def _cleanup_roxybrowser():
+            if not roxy_client or not roxy_launch:
+                return
+            try:
+                roxy_client.browser_close(roxy_launch.dir_id)
+            except Exception:
+                pass
+            if getattr(roxy_launch, "created_profile", False):
+                try:
+                    roxy_client.browser_delete(roxy_launch.workspace_id, [roxy_launch.dir_id])
+                except Exception:
+                    pass
+
+        if use_roxybrowser:
+            from autotoken.roxybrowser_client import RoxyBrowserClient, pick_roxybrowser_endpoint
+            from autotoken.settings.config import get_roxybrowser_config
+
+            cfg = get_roxybrowser_config()
+            roxy_client = RoxyBrowserClient(cfg["api_host"], cfg["api_token"])
+            roxy_launch = roxy_client.launch(
+                window_name=f"autotoken-register-{random.randint(100000, 999999)}",
+                proxy_url=proxy_url,
+                clear_profile_data=True,
+                force_new_profile=False,
+            )
+            stack.callback(_cleanup_roxybrowser)
+            p = sync_playwright().start()
+            stack.callback(lambda: p.stop())
+            endpoint = pick_roxybrowser_endpoint(roxy_launch.connection)
+            browser = p.chromium.connect_over_cdp(endpoint_url=endpoint)
+            stack.callback(_safe_close_browser)
+            context = browser.contexts[0] if getattr(browser, "contexts", None) else browser.new_context()
+            page = context.pages[-1] if getattr(context, "pages", None) else context.new_page()
+            logger.info(
+                "[直接注册] 使用 RoxyBrowser 窗口: workspace_id=%s dir_id=%s endpoint=%s",
+                roxy_launch.workspace_id,
+                roxy_launch.dir_id,
+                endpoint,
+            )
+        else:
+            p = stack.enter_context(sync_playwright())
+            launch_kwargs = get_playwright_launch_options(proxy_url=proxy_url)
+            if sys.platform.startswith("win"):
+                launch_kwargs["slow_mo"] = 100
+            browser = p.chromium.launch(**launch_kwargs)
+            stack.callback(_safe_close_browser)
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            )
+            page = context.new_page()
         auth_context_state = _new_auth_context_capture_state()
         page.on("request", lambda request: _capture_auth_context_request(request, auth_context_state))
         page.on("response", lambda response: _capture_auth_context_response(response, auth_context_state))
@@ -3226,6 +3288,7 @@ def create_account_direct(
     register_mode="browser",
     registration_flow="standard",
     proxy_url=None,
+    use_roxybrowser=False,
     oauth_phone_sms_provider=None,
     oauth_phone_sms_country=None,
     oauth_phone_sms_max_price=None,
@@ -3539,6 +3602,7 @@ def create_account_direct(
                     cloudmail_account_id=account_id,
                     return_session=not check_team_membership,
                     proxy_url=proxy_url,
+                    use_roxybrowser=use_roxybrowser,
                 )
             if not check_team_membership:
                 success, session_data = result
@@ -3784,21 +3848,21 @@ def create_account_direct(
 
         if register_attempts < MAX_REGISTER_ATTEMPTS:
             if check_team_membership:
-                logger.warning("[直接注册] 注册失败且账号不在 Team 中，60 秒后重试: %s", email)
+                logger.warning("[直接注册] 注册失败且账号不在 Team 中，30 秒后重试: %s", email)
             else:
                 logger.warning(
-                    "[直接注册] 注册失败，60 秒后重试: %s | reason=%s",
+                    "[直接注册] 注册失败，30 秒后重试: %s | reason=%s",
                     email,
                     last_failure_reason or "未知错误",
                 )
             _progress(
                 "register_retry_wait",
-                f"注册未完成，60 秒后重试: {email}",
+                f"注册未完成，30 秒后重试: {email}",
                 email=email,
                 level="warn",
                 reason=last_failure_reason or "未知错误",
             )
-            time.sleep(60)
+            time.sleep(30)
 
     if not success:
         logger.error(
@@ -4558,6 +4622,7 @@ def cmd_register_accounts(
     register_mode="browser",
     registration_flow="standard",
     proxy_url=None,
+    use_roxybrowser=False,
     register_proxy_selector=None,
     register_proxy_meta=None,
     oauth_phone_sms_provider=None,
@@ -4784,6 +4849,7 @@ def cmd_register_accounts(
                     register_mode=register_mode,
                     registration_flow=registration_flow,
                     proxy_url=selected_proxy_url,
+                    use_roxybrowser=use_roxybrowser,
                     oauth_phone_sms_provider=oauth_phone_sms_provider,
                     oauth_phone_sms_country=oauth_phone_sms_country,
                     oauth_phone_sms_max_price=oauth_max_price if oauth_provider in {"hero_sms", "smsbower"} else "",

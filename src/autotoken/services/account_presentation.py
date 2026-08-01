@@ -28,6 +28,16 @@ def normalize_display_status(status: object) -> str:
     return normalized
 
 
+def token_expired_quota_failure_display_status(acc: dict, status: str) -> str:
+    if str(status or "").strip().lower() != "fail":
+        return status
+    if str(acc.get("discarded_reason") or "").strip().lower() != "quota_refresh_401":
+        return status
+    if "token_expired" not in str(acc.get("last_bind_message") or "").strip().lower():
+        return status
+    return "auth_invalid"
+
+
 def resolve_status_auth_file(acc: dict, *, is_main_account_email: Callable[[str | None], bool]) -> str:
     auth_file = (acc.get("auth_file") or "").strip()
     if auth_file:
@@ -124,6 +134,7 @@ def display_account_status(
     resolve_status_auth_file_func: Callable[[dict], str],
 ) -> str:
     status = normalize_display_status(acc.get("status"))
+    status = token_expired_quota_failure_display_status(acc, status)
     if not is_main_account_email(acc.get("email")):
         return status
 
@@ -137,11 +148,16 @@ def display_account_status(
 def display_account_type(acc: dict) -> str:
     last_quota = acc.get("last_quota") if isinstance(acc.get("last_quota"), dict) else {}
     quota_plan = str((last_quota or {}).get("plan_type") or "").strip().lower()
-    if quota_plan in {"free", "plus", "pro", "team"}:
+    paid_plans = {"plus", "pro", "team"}
+    if quota_plan in paid_plans:
         return quota_plan
     if quota_plan in {"business", "enterprise", "edu"}:
         return "team"
     account_type = (acc.get("account_type") or "").strip().lower()
+    if account_type in paid_plans:
+        return account_type
+    if quota_plan == "free":
+        return "free"
     if account_type in {"free", "team", "plus", "pro"}:
         return account_type
     status = (acc.get("status") or "").strip().lower()
@@ -267,6 +283,7 @@ def sanitize_account_with_indexes(
     sanitized["display_email"] = display_email or email
     raw_status = str(acc.get("status") or "").strip().lower()
     status = normalize_display_status(raw_status)
+    status = token_expired_quota_failure_display_status(acc, status)
     if is_main:
         quota_status = quota_snapshot_status(quota_snapshot) or quota_snapshot_status(acc.get("last_quota"))
         status = quota_status or ("active" if resolve_status_auth_file_func(acc) else status)

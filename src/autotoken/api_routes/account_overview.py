@@ -15,6 +15,7 @@ CHATGPT_SUBSCRIPTIONS_FALLBACK_URL = f"https://chat.openai.com{CHATGPT_SUBSCRIPT
 CHATGPT_ACCOUNT_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
 CHATGPT_ACCOUNT_CHECK_URL = f"https://chatgpt.com{CHATGPT_ACCOUNT_CHECK_PATH}"
 CHATGPT_ACCOUNT_CHECK_FALLBACK_URL = f"https://chat.openai.com{CHATGPT_ACCOUNT_CHECK_PATH}"
+CHATGPT_SUBSCRIPTION_MAX_ATTEMPTS = 3
 
 
 class ExportAccessTokensParams(BaseModel):
@@ -352,6 +353,24 @@ def _new_chatgpt_subscription_session(access_token: str):
         return session
 
 
+def _warmup_chatgpt_subscription_session(session: Any) -> None:
+    """Best-effort warmup after temporary subscription 401/403 responses."""
+    for url, headers in (
+        ("https://chatgpt.com/api/auth/session", {}),
+        (
+            f"{CHATGPT_ACCOUNT_CHECK_URL}?timezone_offset_min={_browser_timezone_offset_min()}",
+            {
+                "x-openai-target-path": CHATGPT_ACCOUNT_CHECK_PATH,
+                "x-openai-target-route": CHATGPT_ACCOUNT_CHECK_PATH,
+            },
+        ),
+    ):
+        try:
+            session.get(url, headers=headers, timeout=10)
+        except Exception:
+            continue
+
+
 def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[str, Any]:
     account_id = str(account_id or "").strip()
     if not account_id:
@@ -374,29 +393,38 @@ def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[
 
     raw: dict[str, Any] | None = None
     queried_url = ""
-    for url in urls:
-        try:
-            resp = session.get(url, headers=extra_headers, timeout=30)
-            last_status = int(getattr(resp, "status_code", 0) or 0)
-            if last_status in {401, 403}:
-                auth_errors.append(last_status)
+    for attempt in range(CHATGPT_SUBSCRIPTION_MAX_ATTEMPTS):
+        attempt_auth_error = False
+        for url in urls:
+            try:
+                resp = session.get(url, headers=extra_headers, timeout=30)
+                last_status = int(getattr(resp, "status_code", 0) or 0)
+                if last_status in {401, 403}:
+                    attempt_auth_error = True
+                    auth_errors.append(last_status)
+                    continue
+                if last_status == 404:
+                    no_subscription_404 = True
+                    last_error = RuntimeError("HTTP 404")
+                    continue
+                resp.raise_for_status()
+                raw = resp.json()
+            except Exception as exc:
+                last_error = exc
                 continue
-            if last_status == 404:
-                no_subscription_404 = True
-                last_error = RuntimeError("HTTP 404")
-                continue
-            resp.raise_for_status()
-            raw = resp.json()
-        except Exception as exc:
-            last_error = exc
-            continue
-        if not isinstance(raw, dict):
-            raise HTTPException(status_code=502, detail="ChatGPT 订阅接口返回格式异常")
-        queried_url = url
-        break
+            if not isinstance(raw, dict):
+                raise HTTPException(status_code=502, detail="ChatGPT 订阅接口返回格式异常")
+            queried_url = url
+            break
+        if raw is not None:
+            break
+        if no_subscription_404 and not attempt_auth_error:
+            break
+        if attempt_auth_error and attempt < CHATGPT_SUBSCRIPTION_MAX_ATTEMPTS - 1:
+            _warmup_chatgpt_subscription_session(session)
 
-    if raw is None and auth_errors and len(auth_errors) == len(urls):
-        raise HTTPException(status_code=403, detail="ChatGPT 订阅接口拒绝请求：请刷新该账号 auth_session 后重试")
+    if raw is None and auth_errors:
+        raise HTTPException(status_code=403, detail="ChatGPT 订阅接口临时拒绝，请稍后重试；如果持续失败再刷新该账号 auth_session")
     if raw is None:
         if not no_subscription_404:
             detail = f"ChatGPT 订阅接口请求失败: {last_error or f'HTTP {last_status}'}"

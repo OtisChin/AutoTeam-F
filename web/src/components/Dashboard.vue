@@ -1904,7 +1904,7 @@ const editableAccountStatusOptions = [
   { value: 'personal', label: 'Personal' },
   { value: 'plus', label: 'Plus' },
   { value: 'session_only', label: 'Session Only/Active' },
-  { value: 'auth_invalid', label: '认证失效' },
+  { value: 'auth_invalid', label: 'token失效' },
   { value: 'orphan', label: '孤立' },
   { value: 'fail', label: 'Fail/废弃' },
 ]
@@ -2157,6 +2157,7 @@ const accountPageEndDisplay = computed(() =>
 )
 const accountStatusOptions = computed(() => {
   const counts = new Map()
+  counts.set('auth_invalid', 0)
   for (const acc of allAccounts.value) {
     const status = normalizedStatus(acc?.status)
     if (!status) continue
@@ -2248,7 +2249,7 @@ const refreshableQuotaAccounts = computed(() =>
 )
 const invalidCredentialAccounts = computed(() =>
   allAccounts.value.filter(acc =>
-    !acc.is_main_account && ['fail', 'auth_invalid'].includes(String(acc.status || '').toLowerCase())
+    !acc.is_main_account && String(acc.status || '').toLowerCase() === 'fail'
   )
 )
 const refreshQuotaTask = computed(() => {
@@ -2712,7 +2713,7 @@ function statusLabel(s) {
     standby: 'Standby',
     pending: 'Pending',
     session_only: 'Active',
-    auth_invalid: '认证失效',
+    auth_invalid: 'token失效',
     orphan: '孤立',
     fail: 'Fail/废弃',
   }[s] || s
@@ -3352,7 +3353,7 @@ async function refreshAllQuota() {
   try {
     const result = await api.refreshAccountsQuota(emails)
     const scope = selectedEmails.value.length ? '选中' : '筛选'
-    message.value = `已提交刷新${scope}额度任务: ${result.task_id}，账号 ${emails.length} 个；401/403 会标记 Fail/废弃`
+    message.value = `已提交刷新${scope}额度任务: ${result.task_id}，账号 ${emails.length} 个`
     messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
     emit('task-started')
     emit('refresh')

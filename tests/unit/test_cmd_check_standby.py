@@ -3,12 +3,12 @@
 原 task #2:
 - include_standby=False(默认) 不探测 standby 池,保持向后兼容
 - include_standby=True 调用 _probe_standby_quota,遍历 standby + 限速 + 24h 去重
-- 401/403 类 auth_error → STATUS_AUTH_INVALID
+- 401 类 auth_error → STATUS_AUTH_INVALID；403 作为 network_error 不改状态
 
 task #3 修复回归:
 - network_error 不写 last_quota_check_at(允许下一轮重试),不改 status,只 log
 - 未知 status 防御分支不写时间戳,避免去重逻辑卡住未来探测
-- check_codex_quota 仅 401/403 才返回 auth_error;5xx/429/超时/SSL 错误归 network_error
+- check_codex_quota 仅 401 才返回 auth_error;403/5xx/429/超时/SSL 错误归 network_error
 """
 
 from __future__ import annotations
@@ -220,7 +220,7 @@ def test_check_skips_recently_probed(tmp_path, monkeypatch):
 
 
 def test_check_marks_auth_invalid_on_401(tmp_path, monkeypatch):
-    """_check_and_refresh 返回 auth_error(401/403/token 刷新失败) → 标 STATUS_AUTH_INVALID。"""
+    """_check_and_refresh 返回 auth_error(401/token 刷新失败) → 标 STATUS_AUTH_INVALID。"""
     stby = {
         "email": "dead@example.com",
         "status": STATUS_STANDBY,
@@ -290,10 +290,10 @@ def test_probe_unknown_status_does_not_write_timestamp(tmp_path, monkeypatch):
     assert updates == [], f"未知 status 不应触发 update_account,但收到: {updates}"
 
 
-def test_probe_auth_error_only_for_401_403(monkeypatch):
+def test_probe_auth_error_only_for_401_not_403(monkeypatch):
     """check_codex_quota 必须严格区分:
-    - 401/403            → auth_error
-    - 5xx / 429 / 4xx其他 → network_error
+    - 401                → auth_error
+    - 403 / 5xx / 429 / 4xx其他 → network_error
     - timeout / SSL / Connection 异常 → network_error
     - 200 但 JSON 解析失败 → network_error
     - 200 + 正常 payload  → ok
@@ -329,13 +329,21 @@ def test_probe_auth_error_only_for_401_403(monkeypatch):
     # 函数内的 import 会查 sys.modules['requests'],因此在 requests 模块上 monkeypatch.get
     # 即可拦截调用。
 
-    # --- 401 → auth_error
-    monkeypatch.setattr(requests, "get", make_get(FakeResp(401)))
-    assert codex_auth.check_codex_quota("tok")[0] == "auth_error"
+    # --- 401 → auth_error，并保留 OpenAI 返回的错误摘要
+    monkeypatch.setattr(
+        requests,
+        "get",
+        make_get(FakeResp(401, text='{"error":{"code":"invalid_token","message":"token expired"}}')),
+    )
+    status, info = codex_auth.check_codex_quota("tok")
+    assert status == "auth_error"
+    assert info["status_code"] == 401
+    assert info["code"] == "invalid_token"
+    assert info["message"] == "invalid_token: token expired"
 
-    # --- 403 → auth_error
+    # --- 403 → network_error，不废弃账号
     monkeypatch.setattr(requests, "get", make_get(FakeResp(403)))
-    assert codex_auth.check_codex_quota("tok")[0] == "auth_error"
+    assert codex_auth.check_codex_quota("tok")[0] == "network_error"
 
     # --- 500 → network_error(关键回归:以前会被误判 auth_error)
     monkeypatch.setattr(requests, "get", make_get(FakeResp(500, text="upstream down")))
@@ -350,7 +358,7 @@ def test_probe_auth_error_only_for_401_403(monkeypatch):
     monkeypatch.setattr(requests, "get", make_get(FakeResp(429)))
     assert codex_auth.check_codex_quota("tok")[0] == "network_error"
 
-    # --- 418 (其他 4xx,非 401/403/429) → network_error(保守归类)
+    # --- 418 (其他 4xx,非 401/429) → network_error(保守归类)
     monkeypatch.setattr(requests, "get", make_get(FakeResp(418)))
     assert codex_auth.check_codex_quota("tok")[0] == "network_error"
 

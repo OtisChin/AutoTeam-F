@@ -80,6 +80,11 @@ assert.match(dashboard, /resetAfterSeconds > 0/, 'dashboard does not render curr
 assert.match(dashboard, /resetAfterSeconds <= 0 && ts <= checkedAt/, 'dashboard suppresses historical reset_at values created from zero reset_after_seconds')
 assert.match(dashboard, /suppressFullUnusedWindowReset/, 'dashboard hides full-window reset times for unused quota windows')
 assert.doesNotMatch(dashboard, /@click="exportCodexAuth\(acc\.email\)"/, 'per-account row 导出 button has been removed')
+assert.doesNotMatch(
+  dashboard,
+  /const invalidCredentialAccounts = computed\(\(\) =>[\s\S]*auth_invalid[\s\S]*?\n\)/,
+  'token失效账号不计入删除无效凭证数量，也不会被删除无效凭证按钮选中'
+)
 
 assert.match(app, /refreshTaskStateOnly/, 'App has lightweight task-only polling while background tasks run')
 assert.match(app, /await refreshTaskStateOnly\(\)/, 'active polling avoids reloading dashboard accounts every tick')

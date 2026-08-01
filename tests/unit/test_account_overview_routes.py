@@ -725,3 +725,79 @@ def test_query_chatgpt_subscription_falls_back_to_chat_openai_when_chatgpt_forbi
     assert calls[1] == "https://chat.openai.com/backend-api/subscriptions?account_id=acc-1"
     assert calls[2].startswith("https://chat.openai.com/backend-api/accounts/check/")
     assert result["raw"]["plan_type"] == "plus"
+
+
+def test_query_chatgpt_subscription_retries_temporary_forbidden(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload if payload is not None else {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+            self.subscription_calls = 0
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            if "/backend-api/subscriptions?" in url:
+                self.subscription_calls += 1
+                if self.subscription_calls <= 2:
+                    return FakeResponse(403, {"detail": "temporary forbidden"})
+                return FakeResponse(200, {"plan_type": "plus"})
+            return FakeResponse(200, {"accounts": {}})
+
+    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(account_overview, "_browser_timezone_offset_min", lambda: 480, raising=False)
+
+    result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
+
+    subscription_calls = [url for url in calls if "/backend-api/subscriptions?" in url]
+    warmup_calls = [url for url in calls if "/api/auth/session" in url or "/backend-api/accounts/check/" in url]
+    assert len(subscription_calls) == 3
+    assert any("/api/auth/session" in url for url in warmup_calls)
+    assert result["raw"]["subscription"]["plan_type"] == "plus"
+
+
+def test_query_chatgpt_subscription_reports_persistent_forbidden_as_temporary(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 403
+
+        def raise_for_status(self):
+            raise RuntimeError("HTTP 403")
+
+        def json(self):
+            return {"detail": "forbidden"}
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return FakeResponse()
+
+    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+
+    try:
+        account_overview.query_chatgpt_subscription("valid-token", account_id="acc-1")
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        assert "临时拒绝" in exc.detail
+        assert "auth_session 已失效" not in exc.detail
+    else:
+        raise AssertionError("persistent 403 should fail with a temporary refusal message")
+
+    subscription_calls = [url for url in calls if "/backend-api/subscriptions?" in url]
+    assert len(subscription_calls) == 6

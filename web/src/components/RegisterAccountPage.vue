@@ -154,6 +154,7 @@
           <label v-if="!isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
             <input
               v-model="registerForm.protocolRegister"
+              @change="registerForm.protocolRegister && (registerForm.useRoxyBrowser = false)"
               type="checkbox"
               :disabled="registeringBusy"
               class="mt-1 rounded border-gray-600 bg-gray-800"
@@ -161,6 +162,20 @@
             <span>
               <span class="text-gray-100">协议注册</span>
               <span class="block text-xs text-gray-500">默认使用浏览器注册；勾选后使用协议注册流程。</span>
+            </span>
+          </label>
+
+          <label v-if="!isPhoneCpaFlow" class="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-sm text-gray-300">
+            <input
+              v-model="registerForm.useRoxyBrowser"
+              @change="registerForm.useRoxyBrowser && (registerForm.protocolRegister = false)"
+              type="checkbox"
+              :disabled="registeringBusy"
+              class="mt-1 rounded border-gray-600 bg-gray-800"
+            />
+            <span>
+              <span class="text-gray-100">使用Roxy Browser</span>
+              <span class="block text-xs text-gray-500">勾选后浏览器注册使用 RoxyBrowser 窗口，不启动本地 Playwright Chromium。</span>
             </span>
           </label>
 
@@ -1180,6 +1195,7 @@ const registerForm = ref({
   prefix: '',
   password: '',
   protocolRegister: false,
+  useRoxyBrowser: false,
   postRegisterOauth: false,
   phoneOnly: false,
   oauthPhoneSmsProvider: 'phone_pool',
@@ -1360,7 +1376,9 @@ const luckmailPurchaseLabel = computed(() => {
 })
 const registerBehaviorLabel = computed(() => {
   if (isPhoneCpaFlow.value) return '先用手机号注册 ChatGPT，再绑定当前邮件供应商邮箱并生成 OAuth 凭证'
-  const registerMode = registerForm.value.protocolRegister ? '协议注册' : '浏览器注册'
+  const registerMode = registerForm.value.useRoxyBrowser
+    ? 'Roxy Browser注册'
+    : registerForm.value.protocolRegister ? '协议注册' : '浏览器注册'
   const flowDesc = registerForm.value.phoneOnly && isPhoneCpaFlow.value
     ? '仅手机注册，不绑定邮箱、不 OAuth'
     : registerForm.value.postRegisterOauth
@@ -1968,7 +1986,8 @@ function loadSavedRegisterForm() {
       prefix: String(saved.prefix || ''),
       // 密码不持久化，避免明文留在本地存储
       password: '',
-      protocolRegister: Boolean(saved.protocolRegister),
+      useRoxyBrowser: Boolean(saved.useRoxyBrowser),
+      protocolRegister: Boolean(saved.protocolRegister) && !Boolean(saved.useRoxyBrowser),
       postRegisterOauth: Boolean(saved.postRegisterOauth),
       phoneOnly: Boolean(saved.phoneOnly),
       oauthPhoneSmsProvider: savedOauthPhoneSmsProvider,
@@ -2020,6 +2039,7 @@ function saveRegisterForm() {
       luckmailPreferredDomains: registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
       prefix: registerForm.value.prefix,
       protocolRegister: Boolean(registerForm.value.protocolRegister),
+      useRoxyBrowser: Boolean(registerForm.value.useRoxyBrowser),
       postRegisterOauth: Boolean(registerForm.value.postRegisterOauth),
       phoneOnly: Boolean(registerForm.value.phoneOnly),
       oauthPhoneSmsProvider: oauthProvider,
@@ -2335,7 +2355,8 @@ async function submitManualRegister() {
       luckmail_preferred_domains: isLuckMailProvider.value && registerForm.value.luckmailPreferredDomain ? [registerForm.value.luckmailPreferredDomain] : [],
       prefix: registerForm.value.prefix || null,
       password: registerForm.value.password || null,
-      protocol_register: isPhoneCpaFlow.value || Boolean(registerForm.value.protocolRegister),
+      protocol_register: isPhoneCpaFlow.value || (!Boolean(registerForm.value.useRoxyBrowser) && Boolean(registerForm.value.protocolRegister)),
+      use_roxybrowser: !isPhoneCpaFlow.value && Boolean(registerForm.value.useRoxyBrowser),
       phone_only: isPhoneCpaFlow.value && Boolean(registerForm.value.phoneOnly),
       post_register_oauth: (isPhoneCpaFlow.value && !Boolean(registerForm.value.phoneOnly)) || Boolean(registerForm.value.postRegisterOauth),
       oauth_phone_sms_provider: oauthUsesProvider ? oauthProvider : '',

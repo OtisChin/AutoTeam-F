@@ -24,6 +24,7 @@ def _logger():
         "Logger",
         (),
         {
+            "debug": lambda *_args, **_kwargs: None,
             "exception": lambda *_args, **_kwargs: None,
         },
     )()
@@ -108,16 +109,119 @@ def test_refresh_quota_marks_auth_error_accounts_fail(tmp_path, monkeypatch):
     monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
     monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
     monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
-    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda *_args, **_kwargs: ("auth_error", {}))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.check_codex_quota",
+        lambda *_args, **_kwargs: ("auth_error", {"message": "invalid_token: token expired"}),
+    )
 
     routes = _routes(started)
     routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
     run_result = started[0]["func"]("task-refresh")
 
-    assert run_result["failed"] == [{"email": "user@example.com", "reason": "auth_error"}]
+    assert run_result["failed"] == [
+        {"email": "user@example.com", "reason": "auth_error", "error_detail": "invalid_token: token expired"}
+    ]
     assert updated[0][0] == "user@example.com"
     assert updated[0][1]["status"] == "fail"
     assert updated[0][1]["discarded_reason"] == "quota_refresh_401"
+    assert updated[0][1]["last_bind_message"] == "刷新额度返回 401: invalid_token: token expired，账号已标记为 Fail/废弃"
+
+
+def test_refresh_quota_does_not_discard_token_expired_accounts(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {"email": "user@example.com", "auth_file": _auth_file(tmp_path, "expired"), "status": "active"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.check_codex_quota",
+        lambda *_args, **_kwargs: (
+            "auth_error",
+            {
+                "status_code": 401,
+                "code": "token_expired",
+                "message": "token_expired: Provided authentication token is expired.",
+            },
+        ),
+    )
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert run_result["failed"] == []
+    assert run_result["network_error"] == [{"email": "user@example.com", "reason": "token_expired"}]
+    assert updated == [
+        (
+            "user@example.com",
+            {
+                "status": "auth_invalid",
+                "last_quota_check_at": updated[0][1]["last_quota_check_at"],
+                "last_bind_status": "failed",
+                "last_bind_failure_stage": "auth_token_expired",
+                "last_bind_message": "刷新额度返回 token_expired: Provided authentication token is expired.，账号需刷新 auth_session，未标记废弃",
+            },
+        )
+    ]
+
+
+def test_refresh_quota_rechecks_legacy_token_expired_fail_accounts(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    quota_calls = []
+    account = {
+        "email": "user@example.com",
+        "auth_file": _auth_file(tmp_path, "expired"),
+        "status": "fail",
+        "discarded_reason": "quota_refresh_401",
+        "last_bind_message": "刷新额度返回 401: token_expired: Provided authentication token is expired.，账号已标记为 Fail/废弃",
+    }
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+
+    def fake_check(*_args, **_kwargs):
+        quota_calls.append(True)
+        return (
+            "auth_error",
+            {
+                "status_code": 401,
+                "code": "token_expired",
+                "message": "token_expired: Provided authentication token is expired.",
+            },
+        )
+
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", fake_check)
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert quota_calls == [True]
+    assert run_result["skipped"] == []
+    assert run_result["failed"] == []
+    assert run_result["network_error"] == [{"email": "user@example.com", "reason": "token_expired"}]
+    assert updated[0][1]["status"] == "auth_invalid"
+    assert updated[0][1]["last_bind_failure_stage"] == "auth_token_expired"
+
+
+def test_refresh_quota_does_not_discard_network_error_accounts(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {"email": "user@example.com", "auth_file": _auth_file(tmp_path, "temporary-forbidden"), "status": "active"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda *_args, **_kwargs: ("network_error", None))
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert run_result["network_error"] == [{"email": "user@example.com", "reason": "network_error"}]
+    assert run_result["failed"] == []
+    assert updated == []
 
 
 def test_refresh_quota_skips_resolver_path_outside_auth_boundaries(tmp_path, monkeypatch):
@@ -203,6 +307,198 @@ def test_refresh_quota_aligns_account_type_from_wham_plan_type(tmp_path, monkeyp
     assert updated[0][0] == "user@example.com"
     assert updated[0][1]["account_type"] == "plus"
     assert updated[0][1]["last_quota"]["weekly_window_seconds"] == 604800
+
+
+def test_refresh_quota_uses_subscription_plan_when_wham_returns_free_monthly_for_plus(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {"email": "user@example.com", "auth_file": _auth_file(tmp_path, "tok", "acct_1"), "status": "active", "account_type": "free"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+
+    wham_free_monthly = {
+        "plan_type": "free",
+        "checked_at": 1785526420,
+        "windows": {
+            "monthly": {
+                "source": "primary_window",
+                "used_percent": 0,
+                "reset_at": None,
+                "reset_after_seconds": None,
+                "limit_window_seconds": 2592000,
+            }
+        },
+        "monthly_pct": 0,
+        "monthly_resets_at": None,
+        "monthly_window_seconds": 2592000,
+        "monthly_reset_after_seconds": None,
+    }
+    quota_calls = []
+
+    def fake_check(token, account_id=None, **kwargs):
+        quota_calls.append((token, account_id, kwargs))
+        return "ok", wham_free_monthly.copy()
+
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", fake_check)
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_overview.query_chatgpt_subscription",
+        lambda access_token, account_id="": {
+            "raw": {
+                "subscription": {"plan_type": "plus", "active": True, "paid": True},
+                "account_check": {
+                    "accounts": {
+                        "acct_1": {
+                            "account": {"plan_type": "plus"},
+                            "entitlement": {"has_active_subscription": True, "subscription_plan": "chatgptplusplan"},
+                        }
+                    }
+                },
+            }
+        },
+    )
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert len(quota_calls) == 2
+    assert run_result["ok"][0]["quota"]["plan_type"] == "plus"
+    assert updated[0][1]["account_type"] == "plus"
+    assert updated[0][1]["last_quota"]["plan_type"] == "plus"
+    assert updated[0][1]["last_quota"]["weekly_pct"] == 0
+    assert updated[0][1]["last_quota"]["weekly_window_seconds"] == 604800
+    assert "monthly" in updated[0][1]["last_quota"]["windows"]
+
+
+def test_refresh_quota_uses_second_wham_response_after_subscription_warmup(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {"email": "user@example.com", "auth_file": _auth_file(tmp_path, "tok", "acct_1"), "status": "active", "account_type": "free"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+
+    responses = [
+        {
+            "plan_type": "free",
+            "checked_at": 1785526420,
+            "windows": {"monthly": {"used_percent": 0, "limit_window_seconds": 2592000}},
+            "monthly_pct": 0,
+            "monthly_window_seconds": 2592000,
+        },
+        {
+            "plan_type": "plus",
+            "checked_at": 1785526422,
+            "windows": {"weekly": {"used_percent": 12, "limit_window_seconds": 604800}},
+            "weekly_pct": 12,
+            "weekly_window_seconds": 604800,
+        },
+    ]
+
+    def fake_check(*_args, **_kwargs):
+        return "ok", responses.pop(0)
+
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", fake_check)
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_overview.query_chatgpt_subscription",
+        lambda *_args, **_kwargs: {"raw": {"subscription": {"plan_type": "plus", "active": True, "paid": True}}},
+    )
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert run_result["ok"][0]["quota"]["plan_type"] == "plus"
+    assert updated[0][1]["account_type"] == "plus"
+    assert updated[0][1]["last_quota"]["weekly_pct"] == 12
+    assert updated[0][1]["last_quota"]["weekly_window_seconds"] == 604800
+
+
+def test_refresh_quota_does_not_downgrade_existing_plus_when_subscription_check_temporarily_fails(
+    tmp_path, monkeypatch
+):
+    started = []
+    updated = []
+    account = {
+        "email": "user@example.com",
+        "auth_file": _auth_file(tmp_path, "tok", "acct_1"),
+        "status": "active",
+        "account_type": "plus",
+        "last_quota": {"plan_type": "plus", "weekly_pct": 0, "weekly_window_seconds": 604800},
+    }
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.check_codex_quota",
+        lambda *_args, **_kwargs: (
+            "ok",
+            {
+                "plan_type": "free",
+                "checked_at": 1785526420,
+                "windows": {"monthly": {"used_percent": 0, "limit_window_seconds": 2592000}},
+                "monthly_pct": 0,
+                "monthly_window_seconds": 2592000,
+            },
+        ),
+    )
+
+    def fail_subscription(*_args, **_kwargs):
+        raise RuntimeError("temporary 403")
+
+    monkeypatch.setattr("autotoken.api_routes.account_overview.query_chatgpt_subscription", fail_subscription)
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert run_result["ok"][0]["quota"]["plan_type"] == "plus"
+    assert updated[0][1]["account_type"] == "plus"
+    assert updated[0][1]["status"] == "active"
+    assert updated[0][1]["last_quota"]["plan_type"] == "plus"
+    assert updated[0][1]["last_quota"]["monthly_pct"] == 0
+
+
+def test_refresh_quota_downgrades_existing_plus_when_subscription_confirms_free(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {
+        "email": "user@example.com",
+        "auth_file": _auth_file(tmp_path, "tok", "acct_1"),
+        "status": "active",
+        "account_type": "plus",
+        "last_quota": {"plan_type": "plus", "weekly_pct": 0, "weekly_window_seconds": 604800},
+    }
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.check_codex_quota",
+        lambda *_args, **_kwargs: (
+            "ok",
+            {
+                "plan_type": "free",
+                "checked_at": 1785526420,
+                "windows": {"monthly": {"used_percent": 0, "limit_window_seconds": 2592000}},
+                "monthly_pct": 0,
+                "monthly_window_seconds": 2592000,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_overview.query_chatgpt_subscription",
+        lambda *_args, **_kwargs: {"raw": {"subscription": {"plan_type": "free", "active": True, "paid": False}}},
+    )
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert run_result["ok"][0]["quota"]["plan_type"] == "free"
+    assert updated[0][1]["account_type"] == "free"
+    assert updated[0][1]["status"] == "personal"
+    assert updated[0][1]["last_quota"]["plan_type"] == "free"
 
 
 def test_refresh_quota_accepts_auth_session_access_token_casing(tmp_path, monkeypatch):

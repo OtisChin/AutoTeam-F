@@ -3,8 +3,10 @@ import json
 from autotoken.services import account_presentation
 from autotoken.storage.auth_files import AUTH_JSON_FILE_MAX_BYTES
 
+
 def _normalize_email(value):
     return str(value or "").strip().lower()
+
 
 def test_quota_snapshot_status_uses_classified_window_percentages():
     assert account_presentation.quota_snapshot_status(None) == ""
@@ -19,6 +21,28 @@ def test_display_account_type_preserves_explicit_type_and_falls_back_from_status
     assert account_presentation.display_account_type({"status": "personal"}) == "free"
     assert account_presentation.display_account_type({"status": "active"}) == "team"
     assert account_presentation.display_account_type({"status": "unknown"}) == "free"
+
+
+def test_sanitize_account_displays_token_expired_quota_failure_as_auth_invalid():
+    sanitized = account_presentation.sanitize_account_with_indexes(
+        {
+            "email": "user@example.com",
+            "status": "fail",
+            "discarded_reason": "quota_refresh_401",
+            "last_bind_message": "刷新额度返回 401: token_expired: Provided authentication token is expired.，账号已标记为 Fail/废弃",
+        },
+        None,
+        {},
+        {},
+        "",
+        normalize_email=lambda value: str(value or "").strip().lower(),
+        resolve_status_auth_file_func=lambda _account: "",
+        resolve_codex_auth_file_func=lambda _account: "",
+    )
+
+    assert sanitized["raw_status"] == "fail"
+    assert sanitized["status"] == "auth_invalid"
+
 
 def test_sanitize_account_exposes_display_email_from_original_email():
     sanitized = account_presentation.sanitize_account_with_indexes(
@@ -200,5 +224,5 @@ def test_sanitize_account_with_indexes_uses_main_fallback_auth_file():
 
 def test_display_account_type_prefers_wham_plan_type_snapshot():
     assert account_presentation.display_account_type({"account_type": "free", "last_quota": {"plan_type": "plus"}}) == "plus"
-    assert account_presentation.display_account_type({"account_type": "plus", "last_quota": {"plan_type": "free"}}) == "free"
+    assert account_presentation.display_account_type({"account_type": "plus", "last_quota": {"plan_type": "free"}}) == "plus"
     assert account_presentation.display_account_type({"account_type": "free", "last_quota": {"plan_type": "business"}}) == "team"

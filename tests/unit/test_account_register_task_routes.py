@@ -107,6 +107,23 @@ def test_post_add_proxy_api_country_is_passed_to_selector(monkeypatch):
     assert proxy_selector_calls[0]["proxy_api_country"] == "US"
 
 
+def test_post_add_passes_use_roxybrowser_to_register_worker(monkeypatch):
+    started = []
+    calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+
+    routes = _routes(started)
+    result = routes["post_add"](ManualRegisterParams(use_roxybrowser=True))
+
+    assert result["params"]["use_roxybrowser"] is True
+    assert started[0]["func"]("task-register") == {"created": 1}
+    assert calls[0]["use_roxybrowser"] is True
+
+
 def test_post_add_rejects_invalid_registration_flow(monkeypatch):
     monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
     monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
