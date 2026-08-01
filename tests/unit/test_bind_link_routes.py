@@ -13,7 +13,7 @@ def _app(*, normalize_access_token=None, generate_checkout_link=None, generate_p
             generate_checkout_link=generate_checkout_link or (lambda _token, _payload: {"url": "https://pay.example"}),
             generate_plus_trial_checkout_link=generate_plus_trial_checkout_link,
             get_account_access_token=lambda email: f"token-for-{email}",
-            open_checkout_url=lambda email, url: {"email": email, "url": url, "opened": True},
+            open_checkout_url=lambda email, url, **kwargs: {"email": email, "url": url, "opened": True, **kwargs},
             logger=logging.getLogger("test.bind_link"),
         )
     )
@@ -146,7 +146,7 @@ def test_bind_link_open_route_generates_and_opens_with_account_auth_session():
             "url": "",
         }
 
-    def fake_open_checkout_url(email, url):
+    def fake_open_checkout_url(email, url, **_kwargs):
         captured["open"] = {"email": email, "url": url}
         return {"opened": True, "current_url": url}
 
@@ -184,6 +184,48 @@ def test_bind_link_open_route_generates_and_opens_with_account_auth_session():
     }
     assert result["opened"] is True
     assert result["url"] == "https://chatgpt.com/checkout/openai_llc/oaics_demo"
+
+
+def test_bind_link_open_route_uses_roxybrowser_open_mode():
+    captured = {}
+
+    def fake_generate_checkout_link(_token, _payload):
+        return {
+            "checkout_session_id": "oaics_demo",
+            "processor_entity": "openai_llc",
+            "url": "",
+        }
+
+    def fake_open_checkout_url(email, url, *, open_mode=""):
+        captured["open"] = {"email": email, "url": url, "open_mode": open_mode}
+        return {"opened": True, "current_url": url, "open_mode": open_mode}
+
+    app = FastAPI()
+    app.include_router(
+        create_bind_link_router(
+            normalize_access_token=lambda value: str(value or "").strip(),
+            generate_checkout_link=fake_generate_checkout_link,
+            get_account_access_token=lambda email: f"token-for-{email}",
+            open_checkout_url=fake_open_checkout_url,
+            logger=logging.getLogger("test.bind_link"),
+        )
+    )
+
+    result = _endpoint(app, "/api/bind/link/open", "POST")(
+        BindLinkOpenParams(
+            email="user@example.com",
+            plan_name="chatgptplusplan",
+            billing_details={"country": "PH", "currency": "PHP"},
+            checkout_ui_mode="hosted",
+        )
+    )
+
+    assert captured["open"] == {
+        "email": "user@example.com",
+        "url": "https://chatgpt.com/checkout/openai_llc/oaics_demo",
+        "open_mode": "roxybrowser",
+    }
+    assert result["open_mode"] == "roxybrowser"
 
 
 def test_bind_link_route_rejects_empty_token():

@@ -1892,7 +1892,12 @@ def _generate_plus_trial_checkout_link(access_token: str, payload: dict[str, Any
 _bind_checkout_browser_sessions: list[Any] = []
 
 
-def _open_bind_checkout_with_auth_session(email: str, checkout_url: str) -> dict[str, Any]:
+def _open_bind_checkout_with_auth_session(
+    email: str,
+    checkout_url: str,
+    *,
+    open_mode: str = "roxybrowser",
+) -> dict[str, Any]:
     from autotoken.integrations.chatgpt_api import ChatGPTTeamAPI
     from autotoken.storage.auth_session_store import load_auth_session
 
@@ -1919,10 +1924,17 @@ def _open_bind_checkout_with_auth_session(email: str, checkout_url: str) -> dict
         or ""
     ).strip()
     device_id = str(session_data.get("device_id") or session_data.get("oai_device_id") or "").strip()
+    normalized_open_mode = str(open_mode or "roxybrowser").strip().lower()
+    use_roxybrowser = normalized_open_mode in {"roxy", "roxybrowser", "roxy-browser"}
 
     api = ChatGPTTeamAPI()
     api.oai_device_id = device_id or getattr(api, "oai_device_id", "")
-    api._launch_browser(background=False, headless=False, randomize_fingerprint=False)
+    api._launch_browser(
+        background=False,
+        headless=False,
+        randomize_fingerprint=False,
+        use_roxybrowser=use_roxybrowser,
+    )
     chatgpt_session_service.inject_chatgpt_browser_cookies(
         api,
         session_token=session_token,
@@ -1942,7 +1954,11 @@ def _open_bind_checkout_with_auth_session(email: str, checkout_url: str) -> dict
             old_api.stop()
         except Exception:
             pass
-    return {"opened": True, "current_url": str(getattr(api.page, "url", "") or checkout_url)}
+    return {
+        "opened": True,
+        "current_url": str(getattr(api.page, "url", "") or checkout_url),
+        "open_mode": "roxybrowser" if use_roxybrowser else "playwright",
+    }
 
 
 def _generate_checkout_link_via_browser(

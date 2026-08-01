@@ -25,6 +25,8 @@ def _phone_pool_failure_action(reason: str) -> str:
     text = str(reason or "").strip().lower()
     if not text:
         return "release"
+    if _is_phone_otp_timeout_reason(text):
+        return "cooldown"
     if "429" in text or "too many requests" in text or "rate_limit" in text or "rate limit" in text:
         return "cooldown"
     if (
@@ -35,6 +37,23 @@ def _phone_pool_failure_action(reason: str) -> str:
     ):
         return "invalid"
     return "release"
+
+
+def _is_phone_otp_timeout_reason(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return (
+        ("otp" in text and ("timeout" in text or "超时" in text or "未收到" in text))
+        or "等待手机 otp 超时" in text
+        or "内未收到第一个验证码" in text
+        or "内未收到验证码" in text
+        or "first_code_timeout" in text
+    )
+
+
+def _is_phone_unusable_reason(reason: str) -> bool:
+    return _phone_pool_failure_action(reason) == "invalid"
 
 
 def _phone_otp_timeout_remaining(phone_item: dict, timeout: int) -> int:
@@ -492,10 +511,15 @@ def _attach_oauth_phone_supplier(
             from autotoken.auth.codex_auth import _release_oauth_hero_sms_phone
 
             phone_first_used = bool(phone_item.get("phone_first_openai_used") or phone_item.get("phone_first_signup"))
+            should_cancel = (
+                phone_first_used
+                or _is_phone_otp_timeout_reason(reason)
+                or _is_phone_unusable_reason(reason)
+            )
             _release_oauth_hero_sms_phone(
                 phone_item,
                 email=email,
-                cancel=phone_first_used,
+                cancel=should_cancel,
                 reason=reason or "protocol_oauth_failed",
                 reservation_owner=reservation_owner,
             )
@@ -503,10 +527,15 @@ def _attach_oauth_phone_supplier(
             from autotoken.auth.codex_auth import _release_oauth_sms_activation_phone
 
             phone_first_used = bool(phone_item.get("phone_first_openai_used") or phone_item.get("phone_first_signup"))
+            should_cancel = (
+                phone_first_used
+                or _is_phone_otp_timeout_reason(reason)
+                or _is_phone_unusable_reason(reason)
+            )
             _release_oauth_sms_activation_phone(
                 phone_item,
                 email=email,
-                cancel=phone_first_used,
+                cancel=should_cancel,
                 reason=reason or "protocol_oauth_failed",
                 reservation_owner=reservation_owner,
             )
