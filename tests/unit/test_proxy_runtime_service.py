@@ -1,7 +1,7 @@
 import pytest
 
-from autotoken.services import payment_http
-from autotoken.services import proxy_runtime
+from autotoken.services import payment_http, proxy_runtime
+
 
 def test_parse_proxy_pool_values_dedupes_comments_and_text_lines():
     values = ["1.1.1.1:8080:user:pass", " # ignored"]
@@ -27,6 +27,25 @@ def test_proxy_api_url_with_region_replaces_existing_region():
         "https://api.example.test/white/api?region=US&num=1"
     )
 
+def test_normalize_proxy_api_provider_accepts_711proxy_aliases():
+    assert proxy_runtime.normalize_proxy_api_provider("711Proxy") == "711proxy"
+    assert proxy_runtime.normalize_proxy_api_provider("711") == "711proxy"
+
+def test_default_proxy_api_url_builds_711proxy_residential_url():
+    assert proxy_runtime.default_proxy_api_url("711proxy", country="US") == (
+        "http://global.rotgbapi.711proxy.com:8089/gen?"
+        "zone=custom&ptype=1&region=US&count=1&proto=http&stype=text&split=%5Cr%5Cn&"
+        "sessType=sticky&sessTime=30&sessAuto=1"
+    )
+
+def test_infer_proxy_api_provider_detects_711proxy_url():
+    assert (
+        proxy_runtime.infer_proxy_api_provider_from_url(
+            "http://global.rotgbapi.711proxy.com:8089/gen?zone=custom&region=US"
+        )
+        == "711proxy"
+    )
+
 def test_fetch_proxy_from_api_url_normalizes_1024proxy_to_default_scheme(monkeypatch):
     class FakeResponse:
         status_code = 200
@@ -42,6 +61,23 @@ def test_fetch_proxy_from_api_url_normalizes_1024proxy_to_default_scheme(monkeyp
             provider="1024proxy",
         )
         == "socks5h://user-a:pass-a@1.1.1.1:8080"
+    )
+
+def test_fetch_proxy_from_api_url_normalizes_711proxy_to_http(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = "5.5.5.5:8080"
+
+    monkeypatch.setattr(proxy_runtime.requests, "get", lambda url, timeout: FakeResponse())
+
+    assert (
+        proxy_runtime.fetch_proxy_from_api_url(
+            "http://global.rotgbapi.711proxy.com:8089/gen?zone=custom&region=US",
+            default_auth_scheme=proxy_runtime.default_proxy_auth_scheme("711proxy"),
+            provider="711proxy",
+        )
+        == "http://5.5.5.5:8080"
     )
 
 def test_fetch_proxy_from_api_url_rejects_html_response(monkeypatch):
@@ -108,6 +144,29 @@ def test_build_oauth_proxy_selector_uses_proxy_api_country(monkeypatch):
     assert requested_urls == [
         "https://api.cliproxy.io/white/api?region=US&num=1&time=30&format=n&type=json"
     ]
+
+
+def test_build_oauth_proxy_selector_infers_711proxy_api_url(monkeypatch):
+    requested = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = "6.6.6.6:8080"
+
+    def fake_get(url, timeout):
+        requested.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr(proxy_runtime.requests, "get", fake_get)
+
+    selector, meta = proxy_runtime.build_oauth_proxy_selector(
+        proxy_api_url="http://global.rotgbapi.711proxy.com:8089/gen?zone=custom&region=US",
+    )
+
+    assert meta["proxy_api_provider"] == "711proxy"
+    assert selector() == "http://6.6.6.6:8080"
+    assert requested == ["http://global.rotgbapi.711proxy.com:8089/gen?zone=custom&region=US"]
 
 
 def test_preflight_payment_proxy_rejects_chatgpt_homepage_403(monkeypatch):

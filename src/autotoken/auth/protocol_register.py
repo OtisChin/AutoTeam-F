@@ -25,9 +25,11 @@ def _phone_pool_failure_action(reason: str) -> str:
     text = str(reason or "").strip().lower()
     if not text:
         return "release"
+    if _is_phone_whatsapp_fallback_reason(text):
+        return "invalid"
     if _is_phone_otp_timeout_reason(text):
         return "cooldown"
-    if "429" in text or "too many requests" in text or "rate_limit" in text or "rate limit" in text:
+    if _is_phone_rate_limited_reason(text):
         return "cooldown"
     if (
         "phone_already_registered" in text
@@ -49,6 +51,50 @@ def _is_phone_otp_timeout_reason(reason: str) -> bool:
         or "内未收到第一个验证码" in text
         or "内未收到验证码" in text
         or "first_code_timeout" in text
+    )
+
+
+def _is_phone_whatsapp_fallback_reason(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    if not text or "whatsapp" not in text:
+        return False
+    return (
+        "whatsapp_fallback" in text
+        or "switched to whatsapp" in text
+        or "switch to whatsapp" in text
+        or "continue via whatsapp" in text
+        or "continue with whatsapp" in text
+        or "已切换为 whatsapp" in text
+        or "切换为 whatsapp" in text
+        or "通过 whatsapp" in text
+        or (
+            ("sms" in text or "短信" in text)
+            and (
+                "unable to send" in text
+                or "can't send" in text
+                or "cannot send" in text
+                or "无法" in text
+                or "不能" in text
+            )
+        )
+    )
+
+
+def _is_phone_rate_limited_reason(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "429" in text
+        or "too many requests" in text
+        or "rate_limit" in text
+        or "rate limit" in text
+        or "too many phone verification requests" in text
+        or "too many verification requests" in text
+        or "phone verification requests" in text
+        or ("phone verification" in text and "try again later" in text)
+        or "请求手机验证的次数过多" in text
+        or ("手机验证" in text and "请稍后重试" in text)
     )
 
 
@@ -307,7 +353,7 @@ def _attach_oauth_phone_supplier(
     max_price: str | None = None,
     oasis_cdks: str | None = None,
     email: str = "",
-    allow_hero_reuse: bool = True,
+    allow_hero_reuse: bool = False,
 ) -> None:
     provider = str(provider or "").strip().lower().replace("-", "_")
     if provider in {"herosms", "hero"}:
@@ -403,7 +449,7 @@ def _attach_oauth_phone_supplier(
                     country=country,
                     max_price=max_price,
                     reservation_owner=reservation_owner,
-                    allow_reuse=allow_hero_reuse,
+                    allow_reuse=False,
                 ),
             )
         elif provider == "smsbower":
@@ -414,7 +460,7 @@ def _attach_oauth_phone_supplier(
                     country=country,
                     max_price=max_price,
                     reservation_owner=reservation_owner,
-                    allow_reuse=True,
+                    allow_reuse=False,
                 ),
             )
         elif provider == "oasis":
@@ -469,31 +515,25 @@ def _attach_oauth_phone_supplier(
         ).strip()
         source = str(phone_item.get("source") or provider).lower()
         if source == "hero_sms":
-            from autotoken.auth.codex_auth import _mark_oauth_hero_sms_bound, _release_oauth_hero_sms_phone
+            from autotoken.auth.codex_auth import _release_oauth_hero_sms_phone
 
-            if phone_item.get("phone_first_signup"):
-                _release_oauth_hero_sms_phone(
-                    phone_item,
-                    email=bound_email,
-                    finish=True,
-                    reason="phone_first_signup_success",
-                    reservation_owner=reservation_owner,
-                )
-            else:
-                _mark_oauth_hero_sms_bound(phone_item, email=bound_email)
+            _release_oauth_hero_sms_phone(
+                phone_item,
+                email=bound_email,
+                finish=True,
+                reason="oauth_phone_success_no_reuse",
+                reservation_owner=reservation_owner,
+            )
         elif source == "smsbower":
-            from autotoken.auth.codex_auth import _mark_oauth_smsbower_bound, _release_oauth_sms_activation_phone
+            from autotoken.auth.codex_auth import _release_oauth_sms_activation_phone
 
-            if phone_item.get("phone_first_signup"):
-                _release_oauth_sms_activation_phone(
-                    phone_item,
-                    email=bound_email,
-                    finish=True,
-                    reason="phone_first_signup_success",
-                    reservation_owner=reservation_owner,
-                )
-            else:
-                _mark_oauth_smsbower_bound(phone_item, email=bound_email)
+            _release_oauth_sms_activation_phone(
+                phone_item,
+                email=bound_email,
+                finish=True,
+                reason="oauth_phone_success_no_reuse",
+                reservation_owner=reservation_owner,
+            )
         elif source == "oasis":
             from autotoken.auth.oasis_sms import record_oasis_account_mapping
 
@@ -516,6 +556,7 @@ def _attach_oauth_phone_supplier(
             should_cancel = (
                 phone_first_used
                 or _is_phone_otp_timeout_reason(reason)
+                or _is_phone_rate_limited_reason(reason)
                 or _is_phone_unusable_reason(reason)
             )
             _release_oauth_hero_sms_phone(
@@ -532,6 +573,7 @@ def _attach_oauth_phone_supplier(
             should_cancel = (
                 phone_first_used
                 or _is_phone_otp_timeout_reason(reason)
+                or _is_phone_rate_limited_reason(reason)
                 or _is_phone_unusable_reason(reason)
             )
             _release_oauth_sms_activation_phone(

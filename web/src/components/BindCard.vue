@@ -428,9 +428,21 @@
                 :disabled="bindSubmitting || bindTaskRunning"
                 class="accent-blue-500"
               />
-              启用 Cliproxy API 轮换
+              启用代理 API 轮换
             </label>
-            <div v-if="bindTaskForm.proxyApiEnabled" class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div v-if="bindTaskForm.proxyApiEnabled" class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">供应商</label>
+                <select
+                  v-model="bindTaskForm.proxyApiProvider"
+                  :disabled="bindSubmitting || bindTaskRunning"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="cliproxy">Cliproxy</option>
+                  <option value="1024proxy">1024proxy</option>
+                  <option value="711proxy">711Proxy</option>
+                </select>
+              </div>
               <div>
                 <label class="block text-sm text-gray-400 mb-1">代理国家</label>
                 <select
@@ -444,12 +456,12 @@
                 </select>
               </div>
               <div>
-                <label class="block text-sm text-gray-400 mb-1">Cliproxy API URL（可选）</label>
+                <label class="block text-sm text-gray-400 mb-1">代理 API URL（可选）</label>
                 <input
                   v-model.trim="bindTaskForm.proxyApiUrl"
                   type="text"
                   :disabled="bindSubmitting || bindTaskRunning"
-                  placeholder="留空使用默认 Cliproxy 白名单 API"
+                  placeholder="留空使用所选供应商默认 API"
                   class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -469,7 +481,7 @@
             <div>支付流程：<span class="text-gray-200">{{ bindTaskForm.paymentFlow === 'protocol' ? '协议支付' : 'Playwright' }}</span></div>
             <div>链接模式：<span class="text-gray-200">{{ bindTaskForm.checkoutMode === 'auto' ? '自动生成' : '手动添加' }}</span></div>
             <div>链接：<span class="text-gray-200 break-all">{{ effectiveCheckoutUrl || '-' }}</span></div>
-            <div>代理 API：<span class="text-gray-200">{{ bindTaskForm.proxyApiEnabled ? `Cliproxy / ${bindTaskForm.proxyApiCountry}` : '未启用' }}</span></div>
+            <div>代理 API：<span class="text-gray-200">{{ bindTaskForm.proxyApiEnabled ? `${bindTaskForm.proxyApiProvider} / ${bindTaskForm.proxyApiCountry}` : '未启用' }}</span></div>
             <div>模式：<span class="text-gray-200">自动提交</span></div>
           </div>
 
@@ -1380,6 +1392,7 @@
                 >
                   <option value="cliproxy">Cliproxy</option>
                   <option value="1024proxy">1024proxy</option>
+                  <option value="711proxy">711Proxy</option>
                 </select>
                 <div class="mt-2 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-100">
                   {{ gopayProxyApiHelp }}
@@ -1997,6 +2010,7 @@ const gopaySuccessNoticeVisible = ref(false)
 const gopaySuccessNoticeEmail = ref('')
 const whatsappOtpStatus = ref(null)
 const whatsappOtpStarting = ref(false)
+const proxyApiProviderOptions = ['1024proxy', 'cliproxy', '711proxy']
 const whatsappAdbPortOptions = [
   { value: '', label: '自动检测' },
   { value: '5554', label: 'emulator-5554' },
@@ -2415,6 +2429,9 @@ const gopayProxyApiHelp = computed(() => {
   if (gopayForm.value.proxyApiProvider === '1024proxy') {
     return '运行时使用 1024proxy 印尼代理 API，每次注册 GoPay 钱包前提取一条。'
   }
+  if (gopayForm.value.proxyApiProvider === '711proxy') {
+    return '运行时使用 711Proxy 印尼住宅代理 API：region=ID&proto=http&stype=text。'
+  }
   return '运行时使用 Cliproxy 印尼代理 API：region=ID&num=1&time=30&format=n&type=txt。'
 })
 const gopayProxySummary = computed(() => {
@@ -2805,7 +2822,7 @@ watch(
   enabled => {
     if (enabled) {
       gopayForm.value.proxyPoolEnabled = false
-      gopayForm.value.proxyApiProvider = ['1024proxy', 'cliproxy'].includes(String(gopayForm.value.proxyApiProvider || ''))
+      gopayForm.value.proxyApiProvider = proxyApiProviderOptions.includes(String(gopayForm.value.proxyApiProvider || ''))
         ? gopayForm.value.proxyApiProvider
         : 'cliproxy'
     }
@@ -2842,10 +2859,14 @@ const effectiveCheckoutUrl = computed(() => {
 
 const bindProxyApiHelp = computed(() => {
   if (!bindTaskForm.value.proxyApiEnabled) {
-    return '未启用时不使用动态代理；启用后每次绑卡任务启动前调用一次 Cliproxy API 获取/轮换代理。'
+    return '未启用时不使用动态代理；启用后每次绑卡任务启动前调用一次所选供应商 API 获取/轮换代理。'
   }
   const country = String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US'
-  return `每次绑卡任务启动前调用 Cliproxy API，region=${country}。`
+  const provider = String(bindTaskForm.value.proxyApiProvider || 'cliproxy')
+  if (provider === '711proxy') {
+    return `每次绑卡任务启动前调用 711Proxy 住宅代理 API，region=${country}&proto=http。`
+  }
+  return `每次绑卡任务启动前调用 ${provider} API，region=${country}。`
 })
 
 const bindResult = computed(() => bindTask.value?.result || null)
@@ -3462,7 +3483,7 @@ function getRememberedChatGPTBindForm() {
       cardItemId: String(bindTaskForm.value.cardItemId || '').trim(),
       checkoutUrl: String(bindTaskForm.value.checkoutUrl || '').trim(),
       proxyApiEnabled: Boolean(bindTaskForm.value.proxyApiEnabled),
-      proxyApiProvider: 'cliproxy',
+      proxyApiProvider: proxyApiProviderOptions.includes(String(bindTaskForm.value.proxyApiProvider || '')) ? bindTaskForm.value.proxyApiProvider : 'cliproxy',
       proxyApiCountry: String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US',
       proxyApiUrl: String(bindTaskForm.value.proxyApiUrl || '').trim(),
     },
@@ -3500,7 +3521,7 @@ function loadChatGPTBindFormState() {
       cardItemId: String(taskForm.cardItemId || '').trim(),
       checkoutUrl: String(taskForm.checkoutUrl || '').trim(),
       proxyApiEnabled: Boolean(taskForm.proxyApiEnabled),
-      proxyApiProvider: 'cliproxy',
+      proxyApiProvider: proxyApiProviderOptions.includes(String(saved.proxyApiProvider || '')) ? saved.proxyApiProvider : 'cliproxy',
       proxyApiCountry: String(taskForm.proxyApiCountry || 'US').trim().toUpperCase() || 'US',
       proxyApiUrl: String(taskForm.proxyApiUrl || '').trim(),
       manualConfirm: false,
@@ -3563,7 +3584,7 @@ function getRememberedGoPayForm() {
     proxyPoolEnabled: Boolean(gopayForm.value.proxyPoolEnabled),
     proxyPoolText: String(gopayForm.value.proxyPoolText || '').trim(),
     proxyApiEnabled: Boolean(gopayForm.value.proxyApiEnabled),
-    proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(gopayForm.value.proxyApiProvider || '')) ? gopayForm.value.proxyApiProvider : 'cliproxy',
+    proxyApiProvider: proxyApiProviderOptions.includes(String(gopayForm.value.proxyApiProvider || '')) ? gopayForm.value.proxyApiProvider : 'cliproxy',
     checkoutUiMode: gopayForm.value.checkoutUiMode === 'hosted' ? 'hosted' : 'custom',
     deleteRejectedAccounts: Boolean(gopayForm.value.deleteRejectedAccounts),
     autoOauthAfterSuccess: Boolean(gopayForm.value.autoOauthAfterSuccess),
@@ -3645,7 +3666,7 @@ function loadGoPayFormState() {
       proxyPoolEnabled: Boolean(saved.proxyPoolEnabled),
       proxyPoolText: String(saved.proxyPoolText || '').trim(),
       proxyApiEnabled: Boolean(saved.proxyApiEnabled),
-      proxyApiProvider: ['1024proxy', 'cliproxy'].includes(String(saved.proxyApiProvider || '')) ? saved.proxyApiProvider : 'cliproxy',
+      proxyApiProvider: proxyApiProviderOptions.includes(String(saved.proxyApiProvider || '')) ? saved.proxyApiProvider : 'cliproxy',
       checkoutUiMode: saved.checkoutUiMode === 'custom' ? 'custom' : 'hosted',
       deleteRejectedAccounts: Boolean(saved.deleteRejectedAccounts),
       autoOauthAfterSuccess: Boolean(saved.autoOauthAfterSuccess),
@@ -4327,7 +4348,7 @@ async function startBindCard() {
       card_item_id: bindTaskForm.value.cardItemId,
       checkout_url: checkoutUrl,
       bind_link_payload: checkoutPayload,
-      proxy_api_provider: bindTaskForm.value.proxyApiEnabled ? 'cliproxy' : '',
+      proxy_api_provider: bindTaskForm.value.proxyApiEnabled ? bindTaskForm.value.proxyApiProvider : '',
       proxy_api_country: bindTaskForm.value.proxyApiEnabled
         ? (String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US')
         : '',
@@ -4408,8 +4429,8 @@ async function startGoPayBind() {
     if (gopayForm.value.proxyPoolEnabled && !gopayProxyPoolEntries.value.length) {
       throw new Error('启用动态代理池后需要先配置代理')
     }
-    if (gopayForm.value.proxyApiEnabled && !['1024proxy', 'cliproxy'].includes(String(gopayForm.value.proxyApiProvider || ''))) {
-      throw new Error('代理 API 供应商暂只支持 1024proxy 或 Cliproxy')
+    if (gopayForm.value.proxyApiEnabled && !proxyApiProviderOptions.includes(String(gopayForm.value.proxyApiProvider || ''))) {
+      throw new Error('代理 API 供应商暂只支持 1024proxy、Cliproxy 或 711Proxy')
     }
     const autoSignupCfg = gopayAutoSignupConfig.value || {}
     const autoSignupMode = useAutoSignup

@@ -345,6 +345,63 @@ def test_bind_card_task_fetches_cliproxy_proxy_per_task(monkeypatch):
     assert [item["stage"] for item in progress] == ["bind_proxy_api_selected", "binding", "completed"]
 
 
+def test_bind_card_task_fetches_711proxy_proxy_per_task(monkeypatch):
+    started = []
+    progress = []
+    bind_calls = []
+    fetched = []
+    account = {"email": "user@example.com", "auth_file": "auth.json"}
+    reserved = {"id": "card-1", "status": "binding"}
+
+    monkeypatch.setattr("autotoken.cancel_signal.is_cancelled", lambda: False)
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda _accounts, email: account if email == "user@example.com" else None,
+    )
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("autotoken.card_pool.find_item", lambda _pool_type, item_id: {"id": item_id, "status": "unused"})
+    monkeypatch.setattr("autotoken.card_pool.reserve_card_item", lambda *args, **kwargs: reserved)
+    monkeypatch.setattr("autotoken.card_pool.finalize_card_binding", lambda *args, **kwargs: {"id": "card-1", "status": "used"})
+    monkeypatch.setattr("autotoken.bind_audit.record_bind_audit", lambda _item: None)
+
+    def fake_fetch(api_url, *, default_auth_scheme, provider):
+        fetched.append((api_url, default_auth_scheme, provider))
+        return "http://user:pass@711proxy.example:8080"
+
+    monkeypatch.setattr("autotoken.services.proxy_runtime.fetch_proxy_from_api_url", fake_fetch)
+    monkeypatch.setattr("autotoken.services.proxy_runtime.preflight_payment_proxy_url", lambda proxy_url: (True, "ok"))
+    monkeypatch.setattr(
+        "autotoken.bind_executor.run_bind_task",
+        lambda **kwargs: bind_calls.append(kwargs) or {"status": "success", "message": "ok", "screenshot_paths": []},
+    )
+
+    routes = _routes(started, progress=progress)
+    routes["post_bind_card_task"](
+        BindCardTaskParams(
+            email="user@example.com",
+            card_item_id="card-1",
+            checkout_url="https://chatgpt.com/checkout/demo",
+            proxy_api_provider="711proxy",
+            proxy_api_country="US",
+        )
+    )
+    result = started[0]["func"]()
+
+    assert result["status"] == "success"
+    assert fetched == [
+        (
+            "http://global.rotgbapi.711proxy.com:8089/gen?"
+            "zone=custom&ptype=1&region=US&count=1&proto=http&stype=text&split=%5Cr%5Cn&"
+            "sessType=sticky&sessTime=30&sessAuto=1",
+            "http",
+            "711proxy",
+        )
+    ]
+    assert bind_calls[0]["proxy_url"] == "http://user:pass@711proxy.example:8080"
+    assert [item["stage"] for item in progress] == ["bind_proxy_api_selected", "binding", "completed"]
+
+
 def test_bind_card_task_retries_proxy_api_until_preflight_passes(monkeypatch):
     started = []
     progress = []

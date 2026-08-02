@@ -71,9 +71,6 @@ from autotoken.api_routes.gopay_auto_signup_config import (
 )
 from autotoken.api_routes.ideal_link import create_ideal_link_router
 from autotoken.api_routes.india_upi import create_india_upi_router
-from autotoken.api_routes.kakao_pay import create_kakao_pay_router
-from autotoken.api_routes.momo_vn import create_momo_vn_router
-from autotoken.api_routes.us_paypal import create_us_paypal_router
 from autotoken.api_routes.interactive_login import (
     AdminCodeParams as _AdminCodeParams,
 )
@@ -101,8 +98,10 @@ from autotoken.api_routes.interactive_login import (
 from autotoken.api_routes.interactive_login import (
     create_interactive_login_router,
 )
+from autotoken.api_routes.kakao_pay import create_kakao_pay_router
 from autotoken.api_routes.mail_accounts import create_mail_accounts_router
 from autotoken.api_routes.mail_provider_config import create_mail_provider_config_router
+from autotoken.api_routes.momo_vn import create_momo_vn_router
 from autotoken.api_routes.oauth_phone_pool import create_oauth_phone_pool_router
 from autotoken.api_routes.oauth_phone_sms_config import (
     create_oauth_phone_sms_config_router,
@@ -157,6 +156,7 @@ from autotoken.api_routes.task_control import (
 )
 from autotoken.api_routes.team_members import create_team_members_router
 from autotoken.api_routes.trade import create_trade_router
+from autotoken.api_routes.us_paypal import create_us_paypal_router
 from autotoken.api_routes.whatsapp_otp import create_whatsapp_otp_router
 from autotoken.core.normalization import normalize_access_token as _core_normalize_access_token
 from autotoken.core.normalization import normalized_email as _core_normalized_email
@@ -925,6 +925,108 @@ def _gopay_runtime_control(task_id: str, *, create: bool = False) -> dict[str, A
     return runtime_control(_task_runtime_controls, _task_runtime_controls_lock, task_id, create=create)
 
 
+def _init_oauth_batch_control(task_id: str, account_emails: list[str]) -> dict[str, Any]:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return {}
+    normalized = []
+    seen = set()
+    for raw_email in account_emails or []:
+        email = _normalized_email(raw_email)
+        if email and email not in seen:
+            seen.add(email)
+            normalized.append(email)
+    with _task_runtime_controls_lock:
+        control = _task_runtime_controls.setdefault(normalized_task_id, {})
+        control.setdefault("pending_account_emails", [])
+        existing = control.get("all_account_emails") if isinstance(control.get("all_account_emails"), list) else []
+        merged = []
+        merged_seen = set()
+        for email in [*normalized, *existing]:
+            cleaned = _normalized_email(email)
+            if cleaned and cleaned not in merged_seen:
+                merged_seen.add(cleaned)
+                merged.append(cleaned)
+        control["all_account_emails"] = merged
+        control["version"] = int(control.get("version") or 0)
+        return dict(control)
+
+
+def _append_oauth_batch_emails(task_id: str, account_emails: list[str]) -> dict[str, Any]:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return {"added_emails": [], "duplicates": []}
+    with _task_runtime_controls_lock:
+        control = _task_runtime_controls.setdefault(normalized_task_id, {})
+        all_emails = control.get("all_account_emails") if isinstance(control.get("all_account_emails"), list) else []
+        pending = control.get("pending_account_emails") if isinstance(control.get("pending_account_emails"), list) else []
+        task = _tasks.get(normalized_task_id)
+        if task:
+            params = task.get("params") if isinstance(task.get("params"), dict) else {}
+            public_emails = params.get("emails") if isinstance(params.get("emails"), list) else []
+            all_seen = {_normalized_email(item) for item in all_emails}
+            for raw_email in public_emails:
+                email = _normalized_email(raw_email)
+                if email and email not in all_seen:
+                    all_seen.add(email)
+                    all_emails.append(email)
+        seen = {_normalized_email(email) for email in all_emails}
+        pending_seen = {_normalized_email(email) for email in pending}
+        added: list[str] = []
+        duplicates: list[str] = []
+        for raw_email in account_emails or []:
+            email = _normalized_email(raw_email)
+            if not email:
+                continue
+            if email in seen or email in pending_seen:
+                duplicates.append(email)
+                continue
+            seen.add(email)
+            pending_seen.add(email)
+            all_emails.append(email)
+            pending.append(email)
+            added.append(email)
+        control["all_account_emails"] = all_emails
+        control["pending_account_emails"] = pending
+        control["version"] = int(control.get("version") or 0) + 1
+
+        if task:
+            params = task.get("params") if isinstance(task.get("params"), dict) else {}
+            public_emails = params.get("emails") if isinstance(params.get("emails"), list) else []
+            public_seen = {_normalized_email(email) for email in public_emails}
+            for email in added:
+                if email not in public_seen:
+                    public_seen.add(email)
+                    public_emails.append(email)
+            params["emails"] = public_emails
+            if duplicates:
+                params["duplicate_append_emails"] = duplicates
+            task["params"] = params
+        return {"added_emails": added, "duplicates": duplicates, "version": control["version"]}
+
+
+def _drain_oauth_batch_emails(task_id: str, existing_emails: set[str]) -> list[str]:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return []
+    with _task_runtime_controls_lock:
+        control = _task_runtime_controls.get(normalized_task_id)
+        if not isinstance(control, dict):
+            return []
+        pending = control.get("pending_account_emails")
+        if not isinstance(pending, list) or not pending:
+            return []
+        control["pending_account_emails"] = []
+    existing = {_normalized_email(email) for email in existing_emails or set()}
+    drained = []
+    for raw_email in pending:
+        email = _normalized_email(raw_email)
+        if email and email not in existing:
+            existing.add(email)
+            drained.append(email)
+    return drained
+
+
 def _init_gopay_runtime_control(
     task_id: str,
     *,
@@ -1267,6 +1369,18 @@ def _fetch_proxy_from_api_url(api_url: str, *, default_auth_scheme: str, provide
         default_auth_scheme=default_auth_scheme,
         provider=provider,
     )
+
+
+def _select_bind_link_open_proxy_url() -> str:
+    api_url = proxy_runtime_service.default_proxy_api_url("cliproxy", country="US")
+    proxy_url = proxy_runtime_service.fetch_proxy_from_api_url(
+        api_url,
+        default_auth_scheme="socks5h",
+        provider="cliproxy",
+    )
+    if not proxy_url:
+        raise RuntimeError("Cliproxy US 代理 API 未返回可用代理")
+    return proxy_url
 
 
 def _build_oauth_proxy_selector(
@@ -1897,6 +2011,7 @@ def _open_bind_checkout_with_auth_session(
     checkout_url: str,
     *,
     open_mode: str = "roxybrowser",
+    proxy_url: str | None = None,
 ) -> dict[str, Any]:
     from autotoken.integrations.chatgpt_api import ChatGPTTeamAPI
     from autotoken.storage.auth_session_store import load_auth_session
@@ -1930,6 +2045,7 @@ def _open_bind_checkout_with_auth_session(
     api = ChatGPTTeamAPI()
     api.oai_device_id = device_id or getattr(api, "oai_device_id", "")
     api._launch_browser(
+        proxy_url=proxy_url,
         background=False,
         headless=False,
         randomize_fingerprint=False,
@@ -1958,6 +2074,7 @@ def _open_bind_checkout_with_auth_session(
         "opened": True,
         "current_url": str(getattr(api.page, "url", "") or checkout_url),
         "open_mode": "roxybrowser" if use_roxybrowser else "playwright",
+        "open_proxy_url_present": bool(proxy_url),
     }
 
 
@@ -2866,12 +2983,17 @@ _account_login_router = create_account_login_router(
     oauth_login_required_result=_oauth_login_required_result,
     oauth_account_deactivated_result=lambda email, exc: _oauth_account_deactivated_result(email, exc),
     task_result_error=TaskResultError,
+    current_oauth_task=lambda: _running_task_for_group(TASK_GROUP_OAUTH),
+    init_oauth_batch_control=lambda task_id, emails: _init_oauth_batch_control(task_id, emails),
+    append_oauth_batch_emails=lambda task_id, emails: _append_oauth_batch_emails(task_id, emails),
+    drain_oauth_batch_emails=lambda task_id, existing: _drain_oauth_batch_emails(task_id, existing),
     logger=logger,
 )
 app.include_router(_account_login_router)
 _account_login_endpoints = {route.endpoint.__name__: route.endpoint for route in _account_login_router.routes}
 post_account_login = _account_login_endpoints["post_account_login"]
 post_accounts_login_batch = _account_login_endpoints["post_accounts_login_batch"]
+post_accounts_login_batch_append = _account_login_endpoints["post_accounts_login_batch_append"]
 
 
 _account_refresh_quota_router = create_account_refresh_quota_router(
@@ -2919,6 +3041,7 @@ app.include_router(
         generate_plus_trial_checkout_link=_generate_plus_trial_checkout_link,
         get_account_access_token=_extract_account_access_token,
         open_checkout_url=_open_bind_checkout_with_auth_session,
+        select_open_proxy_url=_select_bind_link_open_proxy_url,
         logger=logger,
     )
 )
@@ -3656,7 +3779,9 @@ def post_gopay_bind_task(params: GoPayBindTaskParams, request: Request = None):
             if proxy_api_url:
                 selected = _fetch_proxy_from_api_url(
                     proxy_api_url,
-                    default_auth_scheme=PROXY_DEFAULT_AUTH_SCHEME,
+                    default_auth_scheme=proxy_runtime_service.default_proxy_auth_scheme(
+                        proxy_api_provider or "cliproxy"
+                    ),
                     provider=proxy_api_provider or "cliproxy",
                 )
                 if not selected:

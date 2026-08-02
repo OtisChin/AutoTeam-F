@@ -36,6 +36,51 @@ logger = logging.getLogger(__name__)
 AUTH_FLOW_B64URL_SEGMENT_MAX_CHARS = 16 * 1024
 
 
+def _is_add_phone_rate_limited_error(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "too many phone verification requests" in text
+        or "too many verification requests" in text
+        or "requested phone verification too many" in text
+        or "phone verification requests" in text
+        or ("phone verification" in text and "try again later" in text)
+        or "请求手机验证的次数过多" in text
+        or ("手机验证" in text and "请稍后重试" in text)
+    )
+
+
+def _is_add_phone_whatsapp_fallback_payload(payload: Any) -> bool:
+    try:
+        text = json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        text = str(payload or "")
+    text = str(text or "").strip().lower()
+    if not text or "whatsapp" not in text:
+        return False
+    return (
+        "whatsapp_fallback" in text
+        or "switched to whatsapp" in text
+        or "switch to whatsapp" in text
+        or "continue via whatsapp" in text
+        or "continue with whatsapp" in text
+        or "已切换为 whatsapp" in text
+        or "切换为 whatsapp" in text
+        or "通过 whatsapp" in text
+        or (
+            ("sms" in text or "短信" in text)
+            and (
+                "unable to send" in text
+                or "can't send" in text
+                or "cannot send" in text
+                or "无法" in text
+                or "不能" in text
+            )
+        )
+    )
+
+
 class AuthResult:
     """认证结果"""
 
@@ -1284,6 +1329,10 @@ class AuthFlow:
                 normalized_phone = self._normalize_add_phone_number_for_api(phone, phone_item)
                 logger.info("add-phone 尝试号码 %s/%s: %s -> %s", idx, len(phone_candidates), phone, normalized_phone)
                 send_resp = self._add_phone_send(normalized_phone)
+                if _is_add_phone_whatsapp_fallback_payload(send_resp):
+                    raise RuntimeError(
+                        "WHATSAPP_FALLBACK: OpenAI 无法向该号码发送短信，已切换 WhatsApp；更换手机号重试"
+                    )
                 send_page_type = self._extract_page_type(send_resp)
                 send_continue = self._normalize_continue_url(self._extract_continue_url_from_step(send_resp))
                 if send_page_type not in ("phone_otp_verification", "external_url") and "phone-verification" not in (
@@ -1321,6 +1370,10 @@ class AuthFlow:
                         phone_failure(phone_item, last_err)
                     except Exception as callback_exc:
                         logger.warning("add-phone 失败回调失败: %s", callback_exc)
+                if _is_add_phone_rate_limited_error(last_err):
+                    from autotoken.auth.codex_auth import CodexOAuthPhoneRateLimited
+
+                    raise CodexOAuthPhoneRateLimited(last_err)
                 try:
                     self._phone_otp_resend()
                 except Exception:

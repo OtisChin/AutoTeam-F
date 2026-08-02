@@ -76,6 +76,7 @@ export const api = {
   updateAccountsExportStatus: (emails, exported) => request('POST', '/accounts/export-status', { emails, exported }),
   loginAccount: (email, payload = {}) => request('POST', '/accounts/login', { ...payload, email }),
   loginAccountsBatch: (emails, payload = {}) => request('POST', '/accounts/login-batch', { ...payload, emails }),
+  appendLoginAccountsBatch: (emails, taskId = '') => request('POST', '/accounts/login-batch/append', { emails, task_id: taskId }),
   loginMailAccountsAuthSession: (emails) => request('POST', '/mail-accounts/login-auth-session', { emails }),
   refreshAccountsQuota: (emails) => request('POST', '/accounts/refresh-quota', { emails }),
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),

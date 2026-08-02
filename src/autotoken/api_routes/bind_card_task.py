@@ -143,9 +143,12 @@ def create_bind_card_task_router(
                     selected_proxy_url = ""
                     for attempt in range(1, max_proxy_attempts + 1):
                         try:
+                            default_proxy_scheme = proxy_runtime.default_proxy_auth_scheme(
+                                proxy_api_provider or "cliproxy"
+                            )
                             fetched_proxy = proxy_runtime.fetch_proxy_from_api_url(
                                 proxy_api_url,
-                                default_auth_scheme="socks5h",
+                                default_auth_scheme=default_proxy_scheme,
                                 provider=proxy_api_provider or "cliproxy",
                             )
                         except Exception as exc:
@@ -266,14 +269,15 @@ def create_bind_card_task_router(
                     and _is_plus_trial_checkout_payload(protocol_checkout_payload)
                 ):
                     if proxy_api_url:
+                        default_proxy_scheme = proxy_runtime.default_proxy_auth_scheme(proxy_api_provider or "cliproxy")
                         checkout_stage_proxy = proxy_runtime.fetch_proxy_from_api_url(
                             proxy_runtime.proxy_api_url_with_region(proxy_api_url, "US"),
-                            default_auth_scheme="socks5h",
+                            default_auth_scheme=default_proxy_scheme,
                             provider=proxy_api_provider or "cliproxy",
                         )
                         update_stage_proxy = proxy_runtime.fetch_proxy_from_api_url(
                             proxy_runtime.proxy_api_url_with_region(proxy_api_url, "TR"),
-                            default_auth_scheme="socks5h",
+                            default_auth_scheme=default_proxy_scheme,
                             provider=proxy_api_provider or "cliproxy",
                         )
                         protocol_checkout_payload.setdefault("checkout_proxy", checkout_stage_proxy)

@@ -909,6 +909,34 @@ _PHONE_COOLDOWN_HINTS = (
     "请稍后重试",
     "稍后再试",
 )
+_PHONE_WHATSAPP_FALLBACK_HINTS = (
+    "switched to whatsapp",
+    "switch to whatsapp",
+    "continue via whatsapp",
+    "continue with whatsapp",
+    "whatsapp instead",
+    "whatsapp. please continue",
+    "已切换为 whatsapp",
+    "切换为 whatsapp",
+    "通过 whatsapp",
+    "继续通过 whatsapp",
+)
+
+
+def _is_phone_whatsapp_fallback_text(text: str) -> bool:
+    body = str(text or "").strip().lower()
+    if not body or "whatsapp" not in body:
+        return False
+    return any(hint in body for hint in _PHONE_WHATSAPP_FALLBACK_HINTS) or (
+        ("sms" in body or "短信" in body)
+        and (
+            "unable to send" in body
+            or "can't send" in body
+            or "cannot send" in body
+            or "无法" in body
+            or "不能" in body
+        )
+    )
 
 
 def _is_email_verification_page(page) -> bool:
@@ -1390,6 +1418,16 @@ def _detect_phone_rejected(page) -> str:
     for hint in _PHONE_REJECT_HINTS:
         if hint in lower:
             return _compact_log_text(text, limit=260)
+    return ""
+
+
+def _detect_phone_whatsapp_fallback(page) -> str:
+    try:
+        text = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return ""
+    if _is_phone_whatsapp_fallback_text(text):
+        return _compact_log_text(text, limit=260)
     return ""
 
 
@@ -3053,6 +3091,9 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         rate_limited = _detect_phone_rate_limited(page)
         if rate_limited:
             raise CodexOAuthPhoneRateLimited(rate_limited)
+        whatsapp_fallback = _detect_phone_whatsapp_fallback(page)
+        if whatsapp_fallback:
+            return False, f"WHATSAPP_FALLBACK:{whatsapp_fallback}"
         rejected = _detect_phone_rejected(page)
         if rejected:
             return False, rejected
@@ -3068,6 +3109,9 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         rate_limited = _detect_phone_rate_limited(page)
         if rate_limited:
             raise CodexOAuthPhoneRateLimited(rate_limited)
+        whatsapp_fallback = _detect_phone_whatsapp_fallback(page)
+        if whatsapp_fallback:
+            return False, f"WHATSAPP_FALLBACK:{whatsapp_fallback}"
         rejected = _detect_phone_rejected(page)
         return (
             False,
@@ -3081,6 +3125,9 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         rate_limited = _detect_phone_rate_limited(page)
         if rate_limited:
             raise CodexOAuthPhoneRateLimited(rate_limited)
+        whatsapp_fallback = _detect_phone_whatsapp_fallback(page)
+        if whatsapp_fallback:
+            return False, f"WHATSAPP_FALLBACK:{whatsapp_fallback}"
         try:
             provider._gopay_ignored_otps = ignored_codes
             code = provider()
@@ -3100,6 +3147,9 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         rate_limited = _detect_phone_rate_limited(page)
         if rate_limited:
             raise CodexOAuthPhoneRateLimited(rate_limited)
+        whatsapp_fallback = _detect_phone_whatsapp_fallback(page)
+        if whatsapp_fallback:
+            return False, f"WHATSAPP_FALLBACK:{whatsapp_fallback}"
         if submit_status != "invalid":
             if submit_status == "pending" and _phone_otp_input_locator(page):
                 return False, "手机验证码提交后页面未前进"
@@ -3148,6 +3198,8 @@ def _classify_oauth_phone_failure(error: str) -> str:
     text = str(error or "").lower()
     if not text:
         return ""
+    if "whatsapp_fallback" in text or _is_phone_whatsapp_fallback_text(text):
+        return "invalid"
     if "hero_sms_first_code_timeout" in text:
         return "hero_release"
     if any(hint in text for hint in _PHONE_FULL_HINTS):
@@ -3218,9 +3270,9 @@ def _handle_oauth_add_phone_if_present(
             phone_item: dict | None = None
             error = ""
             if candidate == "hero_sms":
-                phone_item, error = _acquire_oauth_hero_sms_phone(email, country=country_override)
+                phone_item, error = _acquire_oauth_hero_sms_phone(email, country=country_override, allow_reuse=False)
             elif candidate == "smsbower":
-                phone_item, error = _acquire_oauth_smsbower_phone(email, country=country_override)
+                phone_item, error = _acquire_oauth_smsbower_phone(email, country=country_override, allow_reuse=False)
             elif candidate == "oasis":
                 from autotoken.auth.oasis_sms import acquire_oasis_phone
 

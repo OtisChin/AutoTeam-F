@@ -56,7 +56,7 @@ def is_proxy_api_url(value: str) -> bool:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
     host = str(parsed.netloc or "").lower()
-    if "cliproxy" in host or "1024proxy" in host:
+    if "cliproxy" in host or "1024proxy" in host or "711proxy" in host or "rotgbapi" in host:
         return True
     path = str(parsed.path or "").lower()
     return any(marker in path for marker in ("getporxy", "getproxy", "traffic", "/white/api"))
@@ -71,6 +71,8 @@ def infer_proxy_api_provider_from_url(value: str) -> str:
         return "cliproxy"
     if "1024proxy" in host:
         return "1024proxy"
+    if "711proxy" in host or "rotgbapi" in host:
+        return "711proxy"
     return ""
 
 
@@ -82,7 +84,9 @@ def normalize_proxy_api_provider(value: str) -> str:
         return "1024proxy"
     if provider in {"cliproxy", "cli"}:
         return "cliproxy"
-    raise ValueError("代理 API 供应商暂只支持 1024proxy 或 cliproxy")
+    if provider in {"711proxy", "711"}:
+        return "711proxy"
+    raise ValueError("代理 API 供应商暂只支持 1024proxy、cliproxy 或 711proxy")
 
 
 def _normalize_proxy_api_country(value: str, fallback: str = "JP") -> str:
@@ -94,14 +98,30 @@ def default_proxy_api_url(provider: str, _proxy_url: str = "", *, country: str =
     region = _normalize_proxy_api_country(country, "JP")
     if normalized_provider == "1024proxy":
         return f"https://white.1024proxy.com/white/api?region={region}&num=1&time=10&format=1&type=json"
-    return f"https://api.cliproxy.io/white/api?region={region}&num=1&time=30&format=n&type=json"
+    if normalized_provider == "cliproxy":
+        return f"https://api.cliproxy.io/white/api?region={region}&num=1&time=30&format=n&type=json"
+    return (
+        "http://global.rotgbapi.711proxy.com:8089/gen?"
+        f"zone=custom&ptype=1&region={region}&count=1&proto=http&stype=text&split=%5Cr%5Cn&"
+        "sessType=sticky&sessTime=30&sessAuto=1"
+    )
 
 
 def default_gopay_proxy_api_url(provider: str, _proxy_url: str = "") -> str:
     normalized_provider = normalize_proxy_api_provider(provider)
     if normalized_provider == "1024proxy":
         return "https://white.1024proxy.com/white/api?region=ID&num=1&time=10&format=1&type=json"
-    return "https://api.cliproxy.io/white/api?region=ID&num=1&time=30&format=n&type=txt"
+    if normalized_provider == "cliproxy":
+        return "https://api.cliproxy.io/white/api?region=ID&num=1&time=30&format=n&type=txt"
+    return (
+        "http://global.rotgbapi.711proxy.com:8089/gen?"
+        "zone=custom&ptype=1&region=ID&count=1&proto=http&stype=text&split=%5Cr%5Cn&"
+        "sessType=sticky&sessTime=30&sessAuto=1"
+    )
+
+
+def default_proxy_auth_scheme(provider: str) -> str:
+    return "http" if normalize_proxy_api_provider(provider) == "711proxy" else "socks5h"
 
 
 def proxy_api_url_with_region(api_url: str, region: str) -> str:
@@ -391,6 +411,8 @@ def build_oauth_proxy_selector(
     provider = normalize_proxy_api_provider(proxy_api_provider) if proxy_api_provider else ""
     api_url = str(proxy_api_url or "").strip()
     api_country = _normalize_proxy_api_country(proxy_api_country or "JP", "JP")
+    if api_url and not provider:
+        provider = infer_proxy_api_provider_from_url(api_url)
     if provider and not api_url:
         api_url = default_proxy_api_url(provider, raw_proxy_url, country=api_country)
     elif api_url and proxy_api_country:
@@ -401,7 +423,7 @@ def build_oauth_proxy_selector(
         if is_proxy_api_url(raw_pool_proxy):
             if not api_url:
                 api_url = raw_pool_proxy
-                provider = normalize_proxy_api_provider(provider or "1024proxy")
+                provider = normalize_proxy_api_provider(provider or infer_proxy_api_provider_from_url(raw_pool_proxy) or "1024proxy")
             continue
         try:
             normalized = normalize_proxy_url(raw_pool_proxy)
@@ -412,9 +434,12 @@ def build_oauth_proxy_selector(
 
     def _select() -> str:
         if api_url:
+            selected_default_auth_scheme = (
+                default_proxy_auth_scheme(provider) if provider else default_auth_scheme
+            )
             fetched_proxy = fetch_proxy_from_api_url(
                 api_url,
-                default_auth_scheme=default_auth_scheme,
+                default_auth_scheme=selected_default_auth_scheme,
                 provider=provider or "1024proxy",
             )
             if fetched_proxy:

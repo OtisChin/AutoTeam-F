@@ -6,9 +6,10 @@ from fastapi import HTTPException
 from autotoken.api_routes.account_login import (
     ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY,
     ACCOUNT_LOGIN_BATCH_MAX_EMAILS,
+    AccountEmailBatchAppendParams,
     AccountEmailBatchParams,
-    MailAccountAuthSessionBatchParams,
     LoginAccountParams,
+    MailAccountAuthSessionBatchParams,
     create_account_login_router,
 )
 from autotoken.services.task_runtime import TASK_GROUP_OAUTH
@@ -21,6 +22,10 @@ def _routes(
     main_email="owner@example.com",
     build_oauth_proxy_selector=None,
     run_account_codex_login_once=None,
+    current_oauth_task=None,
+    init_oauth_batch_control=None,
+    append_oauth_batch_emails=None,
+    drain_oauth_batch_emails=None,
 ):
     accounts = accounts if accounts is not None else [{"email": "user@example.com"}]
     build_oauth_proxy_selector = build_oauth_proxy_selector or (lambda **_kwargs: (lambda: "", {}))
@@ -44,6 +49,10 @@ def _routes(
         oauth_login_required_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
         oauth_account_deactivated_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
         task_result_error=RuntimeError,
+        current_oauth_task=current_oauth_task,
+        init_oauth_batch_control=init_oauth_batch_control,
+        append_oauth_batch_emails=append_oauth_batch_emails,
+        drain_oauth_batch_emails=drain_oauth_batch_emails,
         logger=type(
             "Logger",
             (),
@@ -57,6 +66,78 @@ def _routes(
     )
     routes = {route.endpoint.__name__: route.endpoint for route in router.routes}
     return routes, accounts
+
+
+def test_post_accounts_login_batch_append_adds_emails_to_running_oauth_task(monkeypatch):
+    appended = {}
+    rows = [{"email": "first@example.com"}, {"email": "second@example.com"}]
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda accounts, email: next((account for account in accounts if account["email"] == email), None),
+    )
+
+    routes, _accounts = _routes(
+        [],
+        accounts=rows,
+        current_oauth_task=lambda: {
+            "task_id": "task-oauth",
+            "command": "login-batch",
+            "status": "running",
+            "params": {"emails": ["first@example.com"]},
+        },
+        append_oauth_batch_emails=lambda task_id, emails: (
+            appended.setdefault("value", (task_id, emails)),
+            {"added_emails": emails, "duplicates": []},
+        )[1],
+    )
+
+    result = routes["post_accounts_login_batch_append"](
+        AccountEmailBatchAppendParams(emails=["SECOND@example.com", "missing@example.com"])
+    )
+
+    assert appended["value"] == ("task-oauth", ["second@example.com"])
+    assert result["added_emails"] == ["second@example.com"]
+    assert result["missing"] == ["missing@example.com"]
+
+
+def test_post_accounts_login_batch_processes_appended_accounts_after_first_round(monkeypatch):
+    started = []
+    rows = [{"email": "first@example.com"}, {"email": "second@example.com"}]
+    calls = []
+    drain_calls = {"count": 0}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda accounts, email: next((account for account in accounts if account["email"] == email), None),
+    )
+    monkeypatch.setenv("CODEX_OAUTH_BATCH_CONCURRENCY", "1")
+
+    def fake_run(email, acc, **_kwargs):
+        calls.append((email, acc))
+        return {"email": email, "plan": "free"}
+
+    def fake_drain(_task_id, existing):
+        drain_calls["count"] += 1
+        if drain_calls["count"] == 1:
+            assert existing == {"first@example.com"}
+            return ["second@example.com"]
+        return []
+
+    routes, _accounts = _routes(
+        started,
+        accounts=rows,
+        run_account_codex_login_once=fake_run,
+        init_oauth_batch_control=lambda *_args, **_kwargs: None,
+        drain_oauth_batch_emails=fake_drain,
+    )
+    routes["post_accounts_login_batch"](AccountEmailBatchParams(emails=["first@example.com"]))
+
+    result = started[0]["func"]("task-batch")
+
+    assert [email for email, _acc in calls] == ["first@example.com", "second@example.com"]
+    assert result["total"] == 2
+    assert sorted(item["email"] for item in result["ok"]) == ["first@example.com", "second@example.com"]
 
 
 def test_post_account_login_rejects_main_account(monkeypatch):

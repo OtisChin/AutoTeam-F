@@ -371,7 +371,7 @@ def test_codex_oauth_hero_sms_no_reuse_does_not_cache_registration_phone(monkeyp
     codex_auth._OAUTH_HERO_SMS_REUSE.clear()
 
 
-def test_protocol_hero_sms_reuses_only_before_phone_first_submission(monkeypatch, tmp_path):
+def test_protocol_hero_sms_does_not_reuse_oauth_numbers(monkeypatch, tmp_path):
     from autotoken import gopay_auto_register
     from autotoken.protocol_register import _attach_oauth_phone_supplier
 
@@ -409,16 +409,17 @@ def test_protocol_hero_sms_reuses_only_before_phone_first_submission(monkeypatch
     flow._openai_phone_failure(first, "failed_before_openai_submission")
     second = flow._openai_phone_supplier()
 
-    assert second["activation_id"] == first["activation_id"]
-    assert calls["get_number"] == 1
+    assert first["activation_id"] == "act-submit-1"
+    assert second["activation_id"] == "act-submit-2"
+    assert calls["get_number"] == 2
     assert calls["cancel"] == 0
 
     second["phone_first_openai_used"] = True
     flow._openai_phone_failure(second, "failed_after_openai_submission")
     third = flow._openai_phone_supplier()
 
-    assert third["activation_id"] == "act-submit-2"
-    assert calls["get_number"] == 2
+    assert third["activation_id"] == "act-submit-3"
+    assert calls["get_number"] == 3
     assert calls["cancel"] == 1
     codex_auth._OAUTH_HERO_SMS_REUSE.clear()
 
@@ -830,6 +831,13 @@ def test_protocol_hero_sms_otp_wait_uses_remaining_order_budget(monkeypatch):
     assert activation.wait_kwargs["timeout_sec"] == 30
 
 
+def test_oauth_add_phone_whatsapp_fallback_classifies_number_invalid():
+    error = "WHATSAPP_FALLBACK: 我们无法向该电话号码发送短信，因此已切换为 WhatsApp。请继续通过 WhatsApp 发送验证码。"
+
+    assert codex_auth._classify_oauth_phone_failure(error) == "invalid"
+    assert protocol_register._phone_pool_failure_action(error) == "invalid"
+
+
 def test_protocol_phone_supplier_not_attached_without_provider():
     from autotoken.protocol_register import _attach_oauth_phone_supplier
 
@@ -950,7 +958,7 @@ def test_codex_oauth_smsbower_reuse_survives_memory_clear(monkeypatch, tmp_path)
     codex_auth._OAUTH_SMSBOWER_REUSE.clear()
 
 
-def test_protocol_smsbower_reuses_only_before_phone_first_submission(monkeypatch, tmp_path):
+def test_protocol_smsbower_does_not_reuse_oauth_numbers(monkeypatch, tmp_path):
     from autotoken import gopay_auto_register
     from autotoken.protocol_register import _attach_oauth_phone_supplier
 
@@ -988,16 +996,17 @@ def test_protocol_smsbower_reuses_only_before_phone_first_submission(monkeypatch
     flow._openai_phone_failure(first, "failed_before_openai_submission")
     second = flow._openai_phone_supplier()
 
-    assert second["activation_id"] == first["activation_id"]
-    assert calls["get_number"] == 1
+    assert first["activation_id"] == "act-smsbower-submit-1"
+    assert second["activation_id"] == "act-smsbower-submit-2"
+    assert calls["get_number"] == 2
     assert calls["cancel"] == 0
 
     second["phone_first_openai_used"] = True
     flow._openai_phone_failure(second, "failed_after_openai_submission")
     third = flow._openai_phone_supplier()
 
-    assert third["activation_id"] == "act-smsbower-submit-2"
-    assert calls["get_number"] == 2
+    assert third["activation_id"] == "act-smsbower-submit-3"
+    assert calls["get_number"] == 3
     assert calls["cancel"] == 1
     codex_auth._OAUTH_SMSBOWER_REUSE.clear()
 
@@ -1235,3 +1244,141 @@ def test_acquired_phone_is_reserved_until_released(monkeypatch, tmp_path):
 
     second = oauth_phone_pool.acquire_available_phone("second@example.com")
     assert second["id"] == item["id"]
+
+
+def test_protocol_hero_sms_openai_phone_rate_limit_cancels_and_acquires_new_phone(monkeypatch, tmp_path):
+    from autotoken import gopay_auto_register
+    from autotoken.protocol_register import _attach_oauth_phone_supplier
+
+    calls = {"get_number": 0, "cancel": 0}
+
+    def fake_get_number(**kwargs):
+        calls["get_number"] += 1
+        return f"act-rate-{calls['get_number']}", f"1213555000{calls['get_number']}", ""
+
+    class DummyActivation:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.used_codes = set()
+
+        def finish(self):
+            pass
+
+        def cancel(self):
+            calls["cancel"] += 1
+
+    class DummyFlow:
+        pass
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setenv("OAUTH_HERO_SMS_API_KEY", "hero-key")
+    monkeypatch.setenv("OAUTH_HERO_SMS_MAX_BINDS", "3")
+    monkeypatch.setenv("OAUTH_HERO_SMS_REUSE_TTL_SECONDS", "1200")
+    monkeypatch.setattr(gopay_auto_register, "_hero_get_number", fake_get_number)
+    monkeypatch.setattr(gopay_auto_register, "SmsActivation", DummyActivation)
+    monkeypatch.setattr(codex_auth, "_oauth_hero_sms_finish_or_cancel", lambda entry, **_kwargs: entry["activation"].cancel() or "updated")
+    codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+
+    flow = DummyFlow()
+    _attach_oauth_phone_supplier(flow, provider="hero_sms", email="rate-limit@example.com")
+    first = flow._openai_phone_supplier()
+    flow._openai_phone_failure(
+        first,
+        "add-phone/send 失败: 400 - "
+        "{\"error\":{\"message\":\"You've made too many phone verification requests. Please try again later.\"}}",
+    )
+    second = flow._openai_phone_supplier()
+
+    assert first["activation_id"] == "act-rate-1"
+    assert second["activation_id"] == "act-rate-2"
+    assert calls["get_number"] == 2
+    assert calls["cancel"] == 1
+    codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+
+
+def test_protocol_hero_sms_success_finishes_number_instead_of_reusing(monkeypatch, tmp_path):
+    from autotoken import gopay_auto_register
+    from autotoken.protocol_register import _attach_oauth_phone_supplier
+
+    calls = {"get_number": 0, "finish": 0}
+
+    def fake_get_number(**kwargs):
+        calls["get_number"] += 1
+        return f"act-success-{calls['get_number']}", f"1213444000{calls['get_number']}", ""
+
+    class DummyActivation:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.used_codes = set()
+
+        def finish(self):
+            calls["finish"] += 1
+
+        def cancel(self):
+            pass
+
+    class DummyFlow:
+        pass
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setenv("OAUTH_HERO_SMS_API_KEY", "hero-key")
+    monkeypatch.setattr(gopay_auto_register, "_hero_get_number", fake_get_number)
+    monkeypatch.setattr(gopay_auto_register, "SmsActivation", DummyActivation)
+    codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+
+    flow = DummyFlow()
+    _attach_oauth_phone_supplier(flow, provider="hero_sms", email="success@example.com")
+    first = flow._openai_phone_supplier()
+    flow._openai_phone_success(first)
+    second = flow._openai_phone_supplier()
+
+    assert first["activation_id"] == "act-success-1"
+    assert second["activation_id"] == "act-success-2"
+    assert calls["get_number"] == 2
+    assert calls["finish"] == 1
+    assert codex_auth._OAUTH_HERO_SMS_REUSE.get("current") is None
+    codex_auth._OAUTH_HERO_SMS_REUSE.clear()
+
+
+def test_protocol_smsbower_success_finishes_number_instead_of_reusing(monkeypatch, tmp_path):
+    from autotoken import gopay_auto_register
+    from autotoken.protocol_register import _attach_oauth_phone_supplier
+
+    calls = {"get_number": 0, "finish": 0}
+
+    def fake_get_number(**kwargs):
+        calls["get_number"] += 1
+        return f"sb-success-{calls['get_number']}", f"1213333000{calls['get_number']}", ""
+
+    class DummyActivation:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.used_codes = set()
+
+        def finish(self):
+            calls["finish"] += 1
+
+        def cancel(self):
+            pass
+
+    class DummyFlow:
+        pass
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setenv("OAUTH_SMSBOWER_API_KEY", "smsbower-key")
+    monkeypatch.setattr(gopay_auto_register, "_smsbower_get_number", fake_get_number)
+    monkeypatch.setattr(gopay_auto_register, "SmsActivation", DummyActivation)
+    codex_auth._OAUTH_SMSBOWER_REUSE.clear()
+
+    flow = DummyFlow()
+    _attach_oauth_phone_supplier(flow, provider="smsbower", email="success@example.com")
+    first = flow._openai_phone_supplier()
+    flow._openai_phone_success(first)
+    second = flow._openai_phone_supplier()
+
+    assert first["activation_id"] == "sb-success-1"
+    assert second["activation_id"] == "sb-success-2"
+    assert calls["get_number"] == 2
+    assert calls["finish"] == 1
+    assert codex_auth._OAUTH_SMSBOWER_REUSE.get("current") is None
+    codex_auth._OAUTH_SMSBOWER_REUSE.clear()

@@ -95,12 +95,12 @@
           </button>
           <button
             @click="batchLoginAccounts"
-            :disabled="loginDisabled || batchLoggingIn || !batchLoginableAccounts.length"
+            :disabled="loginDisabled || batchLoggingIn || !oauthBatchActionAccounts.length"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-            :class="loginDisabled || batchLoggingIn || !batchLoginableAccounts.length
+            :class="loginDisabled || batchLoggingIn || !oauthBatchActionAccounts.length
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
-            {{ batchLoggingIn ? '提交中...' : `批量OAuth补登录 (${batchLoginableAccounts.length})` }}
+            {{ oauthBatchButtonLabel }}
           </button>
           <button
             @click="oauthConfigOpen = true"
@@ -2236,6 +2236,33 @@ const scopedAccounts = computed(() => {
 const batchLoginableAccounts = computed(() => {
   return scopedAccounts.value.filter(acc => canLogin(acc))
 })
+const oauthBatchTask = computed(() => {
+  const task = props.runningTask
+  if (!task || task.command !== 'login-batch') return null
+  if (!['running', 'pending'].includes(String(task.status || ''))) return null
+  return task
+})
+const oauthBatchRunning = computed(() => !!oauthBatchTask.value)
+const oauthBatchQueuedEmails = computed(() => {
+  const params = oauthBatchTask.value?.params || {}
+  const emails = Array.isArray(params.emails) ? params.emails : []
+  return new Set(emails.map(email => String(email || '').trim().toLowerCase()).filter(Boolean))
+})
+const oauthBatchAppendableAccounts = computed(() => {
+  const queued = oauthBatchQueuedEmails.value
+  return batchLoginableAccounts.value.filter(acc => {
+    const email = String(acc.email || '').trim().toLowerCase()
+    return email && !queued.has(email)
+  })
+})
+const oauthBatchActionAccounts = computed(() =>
+  oauthBatchRunning.value ? oauthBatchAppendableAccounts.value : batchLoginableAccounts.value
+)
+const oauthBatchButtonLabel = computed(() => {
+  if (batchLoggingIn.value) return oauthBatchRunning.value ? '追加中...' : '提交中...'
+  const count = oauthBatchActionAccounts.value.length
+  return oauthBatchRunning.value ? `追加OAuth补登录 (${count})` : `批量OAuth补登录 (${count})`
+})
 const cpaExportableAccounts = computed(() => {
   return scopedAccounts.value.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
 })
@@ -3319,19 +3346,27 @@ async function batchUpdateExportStatus(exported) {
 
 async function batchLoginAccounts() {
   if (loginDisabled.value || batchLoggingIn.value) return
-  const emails = batchLoginableAccounts.value.map(acc => acc.email).filter(Boolean)
+  const appendMode = oauthBatchRunning.value
+  const emails = oauthBatchActionAccounts.value.map(acc => acc.email).filter(Boolean)
   if (!emails.length) return
 
   batchLoggingIn.value = true
   message.value = ''
   try {
-    await loadOauthPhoneSmsConfig({ silent: true })
-    const oauthPayload = buildDashboardOauthPayload()
-    const result = await api.loginAccountsBatch(emails, oauthPayload)
-    const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
-    const bindText = batchLoginableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
-    const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-    message.value = `已提交批量协议补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}${phoneText}`
+    if (appendMode) {
+      const result = await api.appendLoginAccountsBatch(emails, oauthBatchTask.value?.task_id || '')
+      const skipped = Array.isArray(result.missing) && result.missing.length ? `，跳过不存在账号 ${result.missing.length} 个` : ''
+      const duplicates = Array.isArray(result.duplicates) && result.duplicates.length ? `，已在队列 ${result.duplicates.length} 个` : ''
+      message.value = `已追加到当前 OAuth 补登录任务: ${result.task_id}，新增 ${result.added_emails?.length || 0} 个${skipped}${duplicates}`
+    } else {
+      await loadOauthPhoneSmsConfig({ silent: true })
+      const oauthPayload = buildDashboardOauthPayload()
+      const result = await api.loginAccountsBatch(emails, oauthPayload)
+      const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+      const bindText = batchLoginableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
+      const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
+      message.value = `已提交批量协议补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}${phoneText}`
+    }
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
     emit('refresh')

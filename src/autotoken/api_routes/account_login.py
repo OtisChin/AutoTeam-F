@@ -91,6 +91,11 @@ class AccountEmailBatchParams(BaseModel):
     )
 
 
+class AccountEmailBatchAppendParams(BaseModel):
+    emails: list[str]
+    task_id: str = Field("", validation_alias=AliasChoices("task_id", "taskId"))
+
+
 class MailAccountAuthSessionBatchParams(BaseModel):
     emails: list[str] = Field(default_factory=list)
 
@@ -137,6 +142,10 @@ def create_account_login_router(
     oauth_account_deactivated_result: Callable[[str, Exception], dict],
     task_result_error: type[Exception],
     logger: Any,
+    current_oauth_task: Callable[[], dict | None] | None = None,
+    init_oauth_batch_control: Callable[[str, list[str]], Any] | None = None,
+    append_oauth_batch_emails: Callable[[str, list[str]], dict[str, Any]] | None = None,
+    drain_oauth_batch_emails: Callable[[str, set[str]], list[str]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -379,16 +388,23 @@ def create_account_login_router(
                 except Exception as exc:
                     logger.warning("[账号登录] 同步 mail.com 登录成功 refreshToken 失败: email=%s error=%s", item_email, exc)
 
+            if callable(init_oauth_batch_control):
+                init_oauth_batch_control(task_id, list(accounts_by_email))
+
             ok = []
             failed = []
             phone_required = []
-            total = len(accounts_by_email)
+            all_emails: list[str] = list(accounts_by_email)
+            processed_emails: set[str] = set()
+            total = len(all_emails)
             result_lock = threading.Lock()
 
-            missing_mail_ids = [
-                email for email, acc in accounts_by_email.items() if not acc.get("cloudmail_account_id")
-            ]
-            if missing_mail_ids:
+            def _prefill_missing_mail_ids(target_accounts: dict[str, dict]) -> None:
+                missing_mail_ids = [
+                    email for email, acc in target_accounts.items() if not acc.get("cloudmail_account_id")
+                ]
+                if not missing_mail_ids:
+                    return
                 try:
                     from autotoken.mail import TemporaryEmailClient
 
@@ -406,7 +422,7 @@ def create_account_login_router(
                             account_id = by_email.get(email)
                             if not account_id:
                                 continue
-                            accounts_by_email[email]["cloudmail_account_id"] = account_id
+                            target_accounts[email]["cloudmail_account_id"] = account_id
                             update_account(email, cloudmail_account_id=account_id)
                             filled += 1
                         if filled:
@@ -422,13 +438,15 @@ def create_account_login_router(
                 except Exception as exc:
                     logger.warning("[账号登录] 批量补登录预热 cloud-mail accountId 失败: %s", exc)
 
-            def _run_one(index: int, email: str, acc: dict) -> dict:
+            _prefill_missing_mail_ids(accounts_by_email)
+
+            def _run_one(index: int, email: str, acc: dict, current_total: int) -> dict:
                 started_at = time.time()
                 logger.info(
                     "[账号登录] 批量 worker 开始: email=%s index=%s/%s thread=%s",
                     email,
                     index,
-                    total,
+                    current_total,
                     threading.current_thread().name,
                 )
                 append_task_progress(
@@ -437,10 +455,10 @@ def create_account_login_router(
                         "stage": "account_login",
                         "email": email,
                         "current": index,
-                        "total": total,
+                        "total": current_total,
                         "ok": len(ok),
                         "failed": len(failed),
-                        "message": f"正在补登录 {email} ({index}/{total})",
+                        "message": f"正在补登录 {email} ({index}/{current_total})",
                     },
                 )
                 try:
@@ -452,7 +470,7 @@ def create_account_login_router(
                                 "stage": "account_login_proxy_selected",
                                 "email": email,
                                 "current": index,
-                                "total": total,
+                                "total": current_total,
                                 **oauth_proxy_meta,
                                 "message": "OAuth 补登录已选择代理",
                             },
@@ -464,7 +482,7 @@ def create_account_login_router(
                             **dict(event or {}),
                             "email": str((event or {}).get("email") or email),
                             "current": index,
-                            "total": total,
+                            "total": current_total,
                         },
                     )
                     if selected_oauth_proxy:
@@ -509,88 +527,133 @@ def create_account_login_router(
                 configured_workers = ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY
             max_workers = max(1, min(total, configured_workers))
             logger.info("[账号登录] 批量补登录并发启动: total=%s max_workers=%s", total, max_workers)
-            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="codex-oauth") as executor:
-                future_map = {
-                    executor.submit(_run_one, index, email, acc): (index, email)
-                    for index, (email, acc) in enumerate(accounts_by_email.items(), start=1)
-                }
-                for future in as_completed(future_map):
-                    item = future.result()
-                    item_email = item["email"]
-                    item_account = accounts_by_email.get(item_email) or {}
-                    with result_lock:
-                        if item["kind"] == "ok":
-                            ok.append(item["result"])
-                        elif item["kind"] in {"phone_required", "phone_rate_limited", "login_required", "account_deactivated"}:
-                            if item["kind"] == "phone_required":
-                                phone_required.append(item["result"])
-                            failed.append(item["result"])
-                        else:
-                            failed.append({"email": item_email, "error": item["error"]})
 
-                        ok_count = len(ok)
-                        failed_count = len(failed)
-
+            def _handle_completed_item(item: dict) -> None:
+                nonlocal total
+                item_email = item["email"]
+                item_account = accounts_by_email.get(item_email) or {}
+                with result_lock:
                     if item["kind"] == "ok":
-                        _persist_mailcom_login_success(item_email, item_account, item["result"])
-                        append_task_progress(
-                            task_id,
-                            {
-                                "stage": "account_login_done",
-                                "email": item_email,
-                                "current": item["index"],
-                                "total": total,
-                                "ok": ok_count,
-                                "failed": failed_count,
-                                "message": f"补登录成功: {item_email}",
-                            },
-                        )
+                        ok.append(item["result"])
                     elif item["kind"] in {"phone_required", "phone_rate_limited", "login_required", "account_deactivated"}:
-                        _persist_mailcom_login_failure(
-                            item_email,
-                            item_account,
-                            item["kind"],
-                            str(item["result"].get("message") or f"补登录失败: {item_email}"),
-                        )
-                        stage = {
-                            "account_deactivated": "account_login_deactivated_removed",
-                            "login_required": "account_login_required",
-                            "phone_rate_limited": "account_login_phone_rate_limited",
-                        }.get(item["kind"], "account_login_phone_required")
-                        append_task_progress(
-                            task_id,
-                            {
-                                "stage": stage,
-                                "email": item_email,
-                                "current": item["index"],
-                                "total": total,
-                                "ok": ok_count,
-                                "failed": failed_count,
-                                "removed_pool_emails": item["result"].get("removed_pool_emails") or [],
-                                "message": item["result"].get("message") or f"OAuth 需要手机验证，已从号池删除账号: {item_email}",
-                                "level": "warn",
-                            },
-                        )
+                        if item["kind"] == "phone_required":
+                            phone_required.append(item["result"])
+                        failed.append(item["result"])
                     else:
-                        _persist_mailcom_login_failure(item_email, item_account, item["kind"], str(item.get("error") or ""))
-                        append_task_progress(
-                            task_id,
-                            {
-                                "stage": "account_login_failed",
-                                "email": item_email,
-                                "current": item["index"],
-                                "total": total,
-                                "ok": ok_count,
-                                "failed": failed_count,
-                                "message": f"补登录失败: {item_email}: {item['error']}",
-                            },
-                        )
-                        exc = item.get("exception")
-                        logger.error(
-                            "[账号登录] 批量补登录失败: email=%s",
-                            item_email,
-                            exc_info=(type(exc), exc, getattr(exc, "__traceback__", None)) if exc else None,
-                        )
+                        failed.append({"email": item_email, "error": item["error"]})
+
+                    ok_count = len(ok)
+                    failed_count = len(failed)
+
+                if item["kind"] == "ok":
+                    _persist_mailcom_login_success(item_email, item_account, item["result"])
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_done",
+                            "email": item_email,
+                            "current": item["index"],
+                            "total": total,
+                            "ok": ok_count,
+                            "failed": failed_count,
+                            "message": f"补登录成功: {item_email}",
+                        },
+                    )
+                elif item["kind"] in {"phone_required", "phone_rate_limited", "login_required", "account_deactivated"}:
+                    _persist_mailcom_login_failure(
+                        item_email,
+                        item_account,
+                        item["kind"],
+                        str(item["result"].get("message") or f"补登录失败: {item_email}"),
+                    )
+                    stage = {
+                        "account_deactivated": "account_login_deactivated_removed",
+                        "login_required": "account_login_required",
+                        "phone_rate_limited": "account_login_phone_rate_limited",
+                    }.get(item["kind"], "account_login_phone_required")
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": stage,
+                            "email": item_email,
+                            "current": item["index"],
+                            "total": total,
+                            "ok": ok_count,
+                            "failed": failed_count,
+                            "removed_pool_emails": item["result"].get("removed_pool_emails") or [],
+                            "message": item["result"].get("message") or f"OAuth 需要手机验证，已从号池删除账号: {item_email}",
+                            "level": "warn",
+                        },
+                    )
+                else:
+                    _persist_mailcom_login_failure(item_email, item_account, item["kind"], str(item.get("error") or ""))
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_failed",
+                            "email": item_email,
+                            "current": item["index"],
+                            "total": total,
+                            "ok": ok_count,
+                            "failed": failed_count,
+                            "message": f"补登录失败: {item_email}: {item['error']}",
+                        },
+                    )
+                    exc = item.get("exception")
+                    logger.error(
+                        "[账号登录] 批量补登录失败: email=%s",
+                        item_email,
+                        exc_info=(type(exc), exc, getattr(exc, "__traceback__", None)) if exc else None,
+                    )
+
+            def _load_appended_accounts() -> dict[str, dict]:
+                nonlocal total
+                if not callable(drain_oauth_batch_emails):
+                    return {}
+                appended = drain_oauth_batch_emails(task_id, set(all_emails))
+                if not appended:
+                    return {}
+                account_list_latest = load_accounts()
+                appended_accounts: dict[str, dict] = {}
+                for email in appended:
+                    if is_main_account_email(email) or email in set(all_emails):
+                        continue
+                    acc = find_account(account_list_latest, email)
+                    if not acc:
+                        missing.append(email)
+                        continue
+                    appended_accounts[email] = acc
+                    accounts_by_email[email] = acc
+                    all_emails.append(email)
+                if appended_accounts:
+                    total = len(all_emails)
+                    _prefill_missing_mail_ids(appended_accounts)
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_batch_appended",
+                            "total": total,
+                            "added": len(appended_accounts),
+                            "message": f"已追加 OAuth 补登录账号 {len(appended_accounts)} 个，当前总数 {total}",
+                            "level": "success",
+                        },
+                    )
+                return appended_accounts
+
+            next_round: dict[str, dict] = dict(accounts_by_email)
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="codex-oauth") as executor:
+                while next_round:
+                    round_accounts = next_round
+                    next_round = {}
+                    future_map = {
+                        executor.submit(_run_one, index, email, acc, total): (index, email)
+                        for index, (email, acc) in enumerate(round_accounts.items(), start=len(processed_emails) + 1)
+                    }
+                    for future in as_completed(future_map):
+                        item = future.result()
+                        processed_emails.add(item["email"])
+                        _handle_completed_item(item)
+                    next_round = _load_appended_accounts()
 
             return {
                 "ok": ok,
@@ -608,6 +671,67 @@ def create_account_login_router(
             task_group=TASK_GROUP_OAUTH,
             pass_task_id=True,
         )
+
+    @router.post("/api/accounts/login-batch/append")
+    def post_accounts_login_batch_append(params: AccountEmailBatchAppendParams):
+        """向正在运行的 OAuth 批量补登录任务追加账号。"""
+        from autotoken.storage.accounts import find_account, load_accounts
+
+        if not callable(current_oauth_task) or not callable(append_oauth_batch_emails):
+            raise HTTPException(status_code=409, detail="当前后端不支持追加 OAuth 批量任务")
+        task = current_oauth_task() or {}
+        if not task:
+            raise HTTPException(status_code=404, detail="当前没有正在运行的 OAuth 批量任务")
+        if str(task.get("command") or "") != "login-batch":
+            raise HTTPException(status_code=409, detail="当前 OAuth 任务不是批量补登录任务，不能追加账号")
+        requested_task_id = str(getattr(params, "task_id", "") or "").strip()
+        task_id = str(requested_task_id or task.get("task_id") or "").strip()
+        if requested_task_id and requested_task_id != str(task.get("task_id") or ""):
+            raise HTTPException(status_code=404, detail="指定任务不是当前运行的 OAuth 批量任务")
+        if len(params.emails or []) > ACCOUNT_LOGIN_BATCH_MAX_EMAILS:
+            raise HTTPException(status_code=400, detail=f"追加账号过多，最多支持 {ACCOUNT_LOGIN_BATCH_MAX_EMAILS} 个")
+        emails = []
+        seen = set()
+        for item in params.emails or []:
+            email = normalize_email(item)
+            if email and email not in seen:
+                seen.add(email)
+                emails.append(email)
+        if not emails:
+            raise HTTPException(status_code=400, detail="emails 不能为空")
+        if any(is_main_account_email(email) for email in emails):
+            raise HTTPException(status_code=400, detail="主号不属于账号池登录对象")
+
+        account_list = load_accounts()
+        appendable = []
+        missing = []
+        for email in emails:
+            if find_account(account_list, email):
+                appendable.append(email)
+            else:
+                missing.append(email)
+        if not appendable:
+            raise HTTPException(status_code=404, detail="账号不存在")
+
+        result = append_oauth_batch_emails(task_id, appendable) or {}
+        added = list(result.get("added_emails") or [])
+        append_task_progress(
+            task_id,
+            {
+                "stage": "account_login_batch_append_queued",
+                "added": len(added),
+                "missing": missing,
+                "message": f"已追加 OAuth 补登录账号 {len(added)} 个" + (f"，跳过不存在账号 {len(missing)} 个" if missing else ""),
+                "level": "success",
+            },
+        )
+        return {
+            "task_id": task_id,
+            "added_emails": added,
+            "duplicates": list(result.get("duplicates") or []),
+            "missing": missing,
+            "message": f"已追加 {len(added)} 个账号到当前 OAuth 批量任务",
+        }
 
     @router.post("/api/mail-accounts/login-auth-session", status_code=202)
     def post_mail_accounts_login_auth_session(params: MailAccountAuthSessionBatchParams):

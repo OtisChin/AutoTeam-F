@@ -275,6 +275,59 @@ def test_add_phone_verification_dynamic_phone_attempts_default_to_three(monkeypa
     assert state["calls"] == 3
 
 
+def test_add_phone_verification_retries_new_number_when_sms_switches_to_whatsapp(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    state = {"calls": 0}
+    failures = []
+
+    def fake_supplier():
+        state["calls"] += 1
+        return [
+            {
+                "phone_number": f"+2761000000{state['calls']}",
+                "source": "hero_sms",
+                "activation_id": f"act-whatsapp-{state['calls']}",
+            }
+        ]
+
+    send_responses = [
+        {
+            "page": {
+                "type": "add_phone",
+                "payload": {
+                    "message": "我们无法向该电话号码发送短信，因此已切换为 WhatsApp。请继续通过 WhatsApp 发送验证码。"
+                },
+            }
+        },
+        {"page": {"type": "phone_otp_verification"}, "continue_url": "https://auth.openai.com/add-phone"},
+    ]
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow._openai_phone_provider = "hero_sms"
+    flow._openai_phone_supplier = fake_supplier
+    flow._openai_phone_failure = lambda item, reason="": failures.append((item["activation_id"], reason))
+    flow._openai_phone_success = lambda _item: None
+    flow._add_phone_send = lambda _phone: send_responses.pop(0)
+    flow._extract_page_type = lambda resp: (resp.get("page") or {}).get("type", "")
+    flow._extract_continue_url_from_step = lambda resp: resp.get("continue_url", "")
+    flow._normalize_continue_url = lambda url: url
+    flow._wait_phone_otp = lambda *_args, **_kwargs: "123456"
+    flow._phone_otp_validate = lambda _code: {"continue_url": "https://chatgpt.com"}
+
+    monkeypatch.setattr(auth_flow.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = flow._handle_add_phone_verification("https://auth.openai.com/add-phone")
+
+    assert result == "https://chatgpt.com"
+    assert state["calls"] == 2
+    assert failures and failures[0][0] == "act-whatsapp-1"
+    assert "WHATSAPP_FALLBACK" in failures[0][1]
+
+
 def test_new_protocol_register_uses_unified_email_otp_delivery(monkeypatch):
     auth_flow = _load_auth_flow_module()
 
@@ -567,3 +620,47 @@ def test_extract_workspace_id_uses_bounded_cookie_decoder(monkeypatch):
     monkeypatch.setattr(auth_flow, "AUTH_FLOW_B64URL_SEGMENT_MAX_CHARS", 8)
 
     assert flow._extract_workspace_id() == ""
+
+
+def test_add_phone_send_rate_limit_stops_account_without_reusing_phone(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+    from autotoken.auth.codex_auth import CodexOAuthPhoneRateLimited
+
+    class FakeConfig:
+        proxy = None
+
+    supplier_calls = {"count": 0}
+    failure_reasons = []
+    resend_calls = {"count": 0}
+
+    def fake_supplier():
+        supplier_calls["count"] += 1
+        return {
+            "phone_number": "+15551234567",
+            "source": "hero_sms",
+            "activation_id": f"act-{supplier_calls['count']}",
+        }
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow._openai_phone_provider = "hero_sms"
+    flow._openai_phone_supplier = fake_supplier
+    flow._openai_phone_failure = lambda _item, reason="": failure_reasons.append(reason)
+    flow._add_phone_send = lambda _phone: (_ for _ in ()).throw(
+        RuntimeError(
+            "add-phone/send 失败: 400 - "
+            "{\"error\":{\"message\":\"You've made too many phone verification requests. Please try again later.\"}}"
+        )
+    )
+    flow._phone_otp_resend = lambda: resend_calls.__setitem__("count", resend_calls["count"] + 1)
+
+    try:
+        flow._handle_add_phone_verification("https://auth.openai.com/add-phone")
+    except CodexOAuthPhoneRateLimited as exc:
+        assert "too many phone verification requests" in str(exc).lower()
+    else:
+        raise AssertionError("expected add-phone rate limit to stop current account")
+
+    assert supplier_calls["count"] == 1
+    assert len(failure_reasons) == 1
+    assert "too many phone verification requests" in failure_reasons[0].lower()
+    assert resend_calls["count"] == 0

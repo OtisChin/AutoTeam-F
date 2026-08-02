@@ -228,6 +228,60 @@ def test_bind_link_open_route_uses_roxybrowser_open_mode():
     assert result["open_mode"] == "roxybrowser"
 
 
+def test_bind_link_open_route_passes_selected_proxy_to_roxybrowser():
+    captured = {}
+
+    def fake_generate_checkout_link(_token, _payload):
+        return {
+            "checkout_session_id": "oaics_demo",
+            "processor_entity": "openai_llc",
+            "url": "",
+        }
+
+    def fake_open_checkout_url(email, url, *, open_mode="", proxy_url=None):
+        captured["open"] = {
+            "email": email,
+            "url": url,
+            "open_mode": open_mode,
+            "proxy_url": proxy_url,
+        }
+        return {
+            "opened": True,
+            "current_url": url,
+            "open_mode": open_mode,
+            "open_proxy_url_present": bool(proxy_url),
+        }
+
+    app = FastAPI()
+    app.include_router(
+        create_bind_link_router(
+            normalize_access_token=lambda value: str(value or "").strip(),
+            generate_checkout_link=fake_generate_checkout_link,
+            get_account_access_token=lambda email: f"token-for-{email}",
+            open_checkout_url=fake_open_checkout_url,
+            select_open_proxy_url=lambda: "socks5h://us-proxy.example:3010",
+            logger=logging.getLogger("test.bind_link"),
+        )
+    )
+
+    result = _endpoint(app, "/api/bind/link/open", "POST")(
+        BindLinkOpenParams(
+            email="user@example.com",
+            plan_name="chatgptplusplan",
+            billing_details={"country": "PH", "currency": "PHP"},
+            checkout_ui_mode="hosted",
+        )
+    )
+
+    assert captured["open"] == {
+        "email": "user@example.com",
+        "url": "https://chatgpt.com/checkout/openai_llc/oaics_demo",
+        "open_mode": "roxybrowser",
+        "proxy_url": "socks5h://us-proxy.example:3010",
+    }
+    assert result["open_proxy_url_present"] is True
+
+
 def test_bind_link_route_rejects_empty_token():
     app = _app(normalize_access_token=lambda _value: "")
 

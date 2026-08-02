@@ -80,6 +80,7 @@ def create_bind_link_router(
     generate_plus_trial_checkout_link: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     get_account_access_token: Callable[[str], str] | None = None,
     open_checkout_url: Callable[..., dict[str, Any]] | None = None,
+    select_open_proxy_url: Callable[[], str] | None = None,
     logger: logging.Logger | None = None,
 ) -> APIRouter:
     router = APIRouter()
@@ -131,7 +132,11 @@ def create_bind_link_router(
             checkout_url = str(generated.get("url") or "").strip()
             if not checkout_url:
                 raise HTTPException(status_code=502, detail="生成 checkout 返回缺少 url")
-            opened = open_checkout_url(email, checkout_url, open_mode="roxybrowser")
+            open_proxy_url = str(select_open_proxy_url() or "").strip() if select_open_proxy_url else ""
+            open_kwargs: dict[str, Any] = {"open_mode": "roxybrowser"}
+            if open_proxy_url:
+                open_kwargs["proxy_url"] = open_proxy_url
+            opened = open_checkout_url(email, checkout_url, **open_kwargs)
             return {**generated, **(opened or {}), "opened": bool((opened or {}).get("opened", True))}
         except HTTPException:
             raise
