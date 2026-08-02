@@ -24,6 +24,7 @@ from autotoken.core.jwt import decode_jwt_payload
 from autotoken.core.oauth_helper import oauth_helper_auth_url
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.core.redaction import compact_log_text as _compact_log_text
+from autotoken.core.redaction import safe_error_summary as _safe_error_summary
 from autotoken.core.textio import write_text
 from autotoken.core.url_params import first_url_param, has_url_param
 from autotoken.services import chatgpt_session as chatgpt_session_service
@@ -1242,22 +1243,40 @@ def _is_add_phone_page(page) -> bool:
         url = (page.url or "").lower()
         if "auth.openai.com/add-phone" in url or "/add-phone" in url:
             return True
+        if "auth.openai.com/log-in" in url or "/log-in" in url:
+            return False
     except Exception:
         pass
     try:
         text = page.locator("body").inner_text(timeout=600).lower()
+        positive_hints = (
+            "add phone",
+            "phone verification",
+            "phone number is required",
+            "continue adding your phone number",
+            "添加手机号",
+            "手机号验证",
+            "电话号码是必填项",
+        )
+        if any(hint in text for hint in positive_hints):
+            return True
+        # 登录页也会出现“使用电话号码继续”，不能按 add-phone 处理，否则会误取号并卡在找不到输入框。
+        login_hints = (
+            "使用电话号码继续",
+            "continue with phone",
+            "email address",
+            "电子邮件地址",
+            "还没有账户",
+            "don't have an account",
+        )
+        if any(hint in text for hint in login_hints):
+            return False
         return any(
             hint in text
             for hint in (
-                "add phone",
-                "phone verification",
-                "phone number is required",
-                "continue adding your phone number",
-                "添加手机号",
-                "手机号验证",
-                "电话号码是必填项",
-                "电话号码",
-                "电话号",
+                "通过以下方式发送验证码",
+                "send code by",
+                "send verification code",
             )
         )
     except Exception:
@@ -1462,7 +1481,32 @@ def _click_phone_resend_if_present(page) -> bool:
     return False
 
 
-def _format_oauth_phone_for_input(page, phone_input, phone: str, *, force_us: bool = False) -> str:
+_OAUTH_DYNAMIC_SMS_COUNTRY_DIAL_CODES = {
+    "12": "1",
+    "187": "1",
+    "36": "1",
+    "175": "61",
+    "16": "44",
+    "48": "31",
+    "73": "55",
+    "31": "27",
+    "6": "62",
+    "182": "81",
+    "54": "52",
+    "4": "63",
+    "52": "66",
+    "33": "57",
+}
+
+
+def _format_oauth_phone_for_input(
+    page,
+    phone_input,
+    phone: str,
+    *,
+    force_us: bool = False,
+    country_id: str | None = None,
+) -> str:
     raw = str(phone or "").strip()
     digits = re.sub(r"\D+", "", raw)
     if not digits:
@@ -1484,6 +1528,14 @@ def _format_oauth_phone_for_input(page, phone_input, phone: str, *, force_us: bo
     )
     if country_is_us and digits.startswith("1") and len(digits) == 11:
         return digits[1:]
+    provider_country = str(country_id or "").strip()
+    dial_code = _OAUTH_DYNAMIC_SMS_COUNTRY_DIAL_CODES.get(provider_country)
+    if dial_code and not country_is_us:
+        if raw.startswith("+"):
+            return raw
+        if digits.startswith(dial_code):
+            return f"+{digits}"
+        return f"+{dial_code}{digits}"
     return raw
 
 
@@ -2212,8 +2264,8 @@ def _schedule_oauth_hero_sms_delayed_cancel(
         "[Codex] add-phone hero-sms 取消过早，已安排延迟取消: activation=%s delay=%ss reason=%s error=%s",
         entry.get("activation_id"),
         delay_seconds,
-        reason,
-        exc,
+        _safe_error_summary(reason, limit=180),
+        _safe_error_summary(exc, limit=180),
     )
     return True
 
@@ -3069,6 +3121,7 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         phone_input,
         phone,
         force_us=is_dynamic_sms and str(phone_item.get("country_id") or "") == "187",
+        country_id=str(phone_item.get("country_id") or ""),
     )
     ok, fill_error = _fill_oauth_phone_field(page, phone_input, phone_for_input)
     if not ok:

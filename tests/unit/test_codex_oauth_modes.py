@@ -20,6 +20,8 @@ from autotoken.codex_auth import (
     _fill_auth_email_if_present,
     _fill_otp_input_and_verify,
     _follow_codex_oauth_redirects_protocol,
+    _format_oauth_phone_for_input,
+    _is_add_phone_page,
     _is_browser_open_url,
     _is_codex_oauth_callback_url,
     _is_personal_codex_plan,
@@ -253,6 +255,71 @@ def test_should_invalidate_oauth_phone_keeps_recoverable_errors_available():
     assert _should_invalidate_oauth_phone("手机验证码无效且未找到重新发送按钮: no button") is False
     assert _should_invalidate_oauth_phone("手机验证码提交后页面未前进: still waiting") is False
     assert _should_invalidate_oauth_phone("phone number already used") is True
+
+
+def test_is_add_phone_page_does_not_match_login_phone_option():
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return "欢迎回来\n电子邮件地址\n继续\n使用电话号码继续"
+
+    class FakePage:
+        url = "https://auth.openai.com/log-in"
+
+        def locator(self, selector):
+            assert selector == "body"
+            return FakeBody()
+
+    assert _is_add_phone_page(FakePage()) is False
+
+
+def test_is_add_phone_page_matches_required_phone_title():
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return "电话号码是必填项\n添加您的电话号码以继续。"
+
+    class FakePage:
+        url = "https://auth.openai.com/add-phone"
+
+        def locator(self, selector):
+            assert selector == "body"
+            return FakeBody()
+
+    assert _is_add_phone_page(FakePage()) is True
+
+
+def test_format_oauth_phone_for_input_prefixes_non_us_dynamic_country():
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return "电话号码是必填项"
+
+    class FakePage:
+        def locator(self, selector):
+            assert selector == "body"
+            return FakeBody()
+
+    class FakeInput:
+        def input_value(self, timeout=0):
+            return ""
+
+    assert _format_oauth_phone_for_input(FakePage(), FakeInput(), "27631234567", country_id="31") == "+27631234567"
+    assert _format_oauth_phone_for_input(FakePage(), FakeInput(), "631234567", country_id="31") == "+27631234567"
+
+
+def test_format_oauth_phone_for_input_strips_us_country_when_page_is_us():
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return "美国 (+1)\n电话号码是必填项"
+
+    class FakePage:
+        def locator(self, selector):
+            assert selector == "body"
+            return FakeBody()
+
+    class FakeInput:
+        def input_value(self, timeout=0):
+            return "+1"
+
+    assert _format_oauth_phone_for_input(FakePage(), FakeInput(), "12125551234", force_us=True, country_id="187") == "2125551234"
 
 
 def test_native_browser_oauth_uses_simple_email_code_flow(monkeypatch):

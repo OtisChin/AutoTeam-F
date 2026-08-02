@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
 
+from autotoken.core.redaction import safe_error_summary
 from autotoken.services.task_runtime import TASK_GROUP_OAUTH
 
 ACCOUNT_LOGIN_BATCH_MAX_EMAILS = 1_000
@@ -512,8 +513,14 @@ def create_account_login_router(
                     logger.warning("[账号登录] 批量 worker 账号停用: email=%s elapsed=%.1fs", email, time.time() - started_at)
                     return {"kind": "account_deactivated", "email": email, "index": index, "result": result}
                 except Exception as exc:
-                    logger.exception("[账号登录] 批量 worker 异常: email=%s elapsed=%.1fs", email, time.time() - started_at)
-                    return {"kind": "failed", "email": email, "index": index, "error": str(exc), "exception": exc}
+                    error_summary = safe_error_summary(exc, limit=220)
+                    logger.error(
+                        "[账号登录] 批量 worker 异常: email=%s elapsed=%.1fs error=%s",
+                        email,
+                        time.time() - started_at,
+                        error_summary,
+                    )
+                    return {"kind": "failed", "email": email, "index": index, "error": error_summary}
 
             try:
                 configured_workers = int(
@@ -596,14 +603,13 @@ def create_account_login_router(
                             "total": total,
                             "ok": ok_count,
                             "failed": failed_count,
-                            "message": f"补登录失败: {item_email}: {item['error']}",
+                            "message": f"补登录失败: {item_email}: {safe_error_summary(item['error'], limit=220)}",
                         },
                     )
-                    exc = item.get("exception")
                     logger.error(
-                        "[账号登录] 批量补登录失败: email=%s",
+                        "[账号登录] 批量补登录失败: email=%s error=%s",
                         item_email,
-                        exc_info=(type(exc), exc, getattr(exc, "__traceback__", None)) if exc else None,
+                        safe_error_summary(item.get("error") or "", limit=220),
                     )
 
             def _load_appended_accounts() -> dict[str, dict]:

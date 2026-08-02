@@ -40,6 +40,16 @@ def test_safe_error_summary_redacts_bearer_and_query_secret():
     assert "<redacted>" in value
 
 
+def test_safe_error_summary_compacts_openai_json_error():
+    value = safe_error_summary(
+        'add-phone/send 失败: 400 - {"error":{"message":"Phone number already in use. Please use a different phone number.","type":"invalid_request_error","param":null,"code":"phone_number_in_use"}}'
+    )
+
+    assert value == "400: phone_number_in_use: Phone number already in use. Please use a different phone number."
+    assert "\n" not in value
+    assert '"error"' not in value
+
+
 def test_compact_log_text_collapses_whitespace_and_truncates():
     assert compact_log_text("a\n\n b\t c", limit=20) == "a b c"
     assert compact_log_text("x" * 20, limit=8) == "xxxxxxxx..."

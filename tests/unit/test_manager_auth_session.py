@@ -803,3 +803,44 @@ def test_post_register_oauth_uses_windows_ui_when_requested(monkeypatch):
     assert result["source"] == "windows_ui_oauth"
     assert result["auth_file"] == "data/auths/codex-ui@example.com-free.json"
     assert updates[0][0] == "ui@example.com"
+
+
+def test_protocol_login_missing_codex_bundle_reports_underlying_oauth_error(monkeypatch):
+    from autotoken.auth import protocol_register as protocol_register_module
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeResult:
+        def is_valid(self):
+            return True
+
+        def to_dict(self):
+            return {
+                "email": "free@example.com",
+                "session_token": "chatgpt-session",
+                "chatgpt_access_token": "chatgpt-access",
+                "access_token": "chatgpt-access",
+                "refresh_token": "",
+            }
+
+    class FakeFlow:
+        def __init__(self, _cfg):
+            self._last_codex_oauth_error = ""
+
+        def run_protocol_login(self, _adapter, _email, password=""):
+            self._last_codex_oauth_error = "Codex OAuth 未捕获 callback code: https://auth.openai.com/add-phone"
+            return FakeResult()
+
+    monkeypatch.setattr(protocol_register_module, "_load_protocol_classes", lambda: (FakeFlow, FakeConfig))
+
+    try:
+        protocol_register_module.login_once(object(), email="free@example.com", password="pw")
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected missing bundle to raise detailed RuntimeError")
+
+    assert "协议登录完成但未生成 CPA OAuth bundle" in message
+    assert "Codex OAuth 未捕获 callback code" in message
+    assert "add-phone" in message

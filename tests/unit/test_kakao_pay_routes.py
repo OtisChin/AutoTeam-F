@@ -1045,32 +1045,49 @@ def test_kakao_temp_poll_retries_transient_read_timeout(monkeypatch):
     assert "继续等待" in errors[0][0]
 
 
-def test_kakao_kk_payment_order_routes_use_customer_api_headers(monkeypatch):
+def test_kakao_kk_payment_order_routes_use_linkqueue_tasks_api(monkeypatch):
     app = _app()
     calls = []
 
     class SubmitResp:
         ok = True
         status_code = 201
-        text = '{"ok": true}'
+        text = '{"tasks": []}'
 
         def json(self):
             return {
-                "ok": True,
-                "data": {
-                    "order": {"id": "order_kk", "status": "PENDING"},
-                    "customerToken": "customer-token",
-                    "pollUrl": "/api/v1/customer/orders/order_kk",
-                },
+                "tasks": [
+                    {
+                        "id": "task_kk",
+                        "url": "https://pay.nicepay.co.kr/v1/checkout/pay/abc",
+                        "status": "queued",
+                        "queuePosition": 4,
+                    }
+                ],
+                "remaining": 2,
+                "prefix": "PAY-CDK",
+                "submissionsUsed": 1,
+                "submissionRemaining": 5,
             }
 
-    class PollResp:
+    class AccountResp:
         ok = True
         status_code = 200
-        text = '{"ok": true}'
+        text = '{"cdk": {}, "tasks": []}'
 
         def json(self):
-            return {"ok": True, "data": {"order": {"id": "order_kk", "status": "SUCCESS"}}}
+            return {
+                "cdk": {"capacity": 3, "remaining": 2, "consumed": 1, "submissionRemaining": 5},
+                "tasks": [
+                    {
+                        "id": "task_kk",
+                        "url": "https://pay.nicepay.co.kr/v1/checkout/pay/abc",
+                        "status": "scanned",
+                        "merchantName": "merchant-1",
+                    }
+                ],
+                "page": {"total": 1, "hasMore": False},
+            }
 
     def fake_post(url, **kwargs):
         calls.append(("post", url, kwargs))
@@ -1078,7 +1095,7 @@ def test_kakao_kk_payment_order_routes_use_customer_api_headers(monkeypatch):
 
     def fake_get(url, **kwargs):
         calls.append(("get", url, kwargs))
-        return PollResp()
+        return AccountResp()
 
     monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
     monkeypatch.setattr(kakao_pay.requests, "get", fake_get)
@@ -1086,51 +1103,51 @@ def test_kakao_kk_payment_order_routes_use_customer_api_headers(monkeypatch):
     created = _endpoint(app, "/api/kakao-pay/kk-payment/orders", "POST")(
         kakao_pay.KakaoPayCustomerOrderRequest.model_validate({
             "cdk": "PAY-CDK",
-            "accessToken": "at-test",
             "paymentUrl": "https://pay.nicepay.co.kr/v1/checkout/pay/abc",
             "paymentMethod": "kakao_pay",
             "mode": "READY_LINK",
         })
     )
-    polled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}", "GET")("order_kk", token="customer-token", cdk="")
+    polled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}", "GET")("task_kk", token="", cdk="PAY-CDK")
 
-    assert created["data"]["order"]["id"] == "order_kk"
-    assert calls[0][1] == "https://customer.i7wap.xyz/api/v1/customer/orders"
-    assert calls[0][2]["headers"]["X-CDK-Key"] == "PAY-CDK"
-    assert calls[0][2]["json"]["channel"] == "KAKAO_KK"
-    assert calls[0][2]["json"]["mode"] == "READY_LINK"
-    assert calls[0][2]["json"]["productType"] == "KAKAO_AT"
-    assert calls[0][2]["json"]["payment_url"].startswith("https://pay.nicepay.co.kr/")
-    assert polled["data"]["order"]["status"] == "SUCCESS"
-    assert calls[1][2]["headers"]["Authorization"] == "Bearer customer-token"
+    assert created["data"]["order"]["id"] == "task_kk"
+    assert created["data"]["order"]["status"] == "queued"
+    assert created["data"]["cdk"]["availableCount"] == 2
+    assert calls[0][1] == "https://kakao.whitexfox.cn/api/v1/tasks"
+    assert calls[0][2]["headers"]["Authorization"] == "Bearer PAY-CDK"
+    assert calls[0][2]["json"] == {"urls": ["https://pay.nicepay.co.kr/v1/checkout/pay/abc"]}
+    assert polled["data"]["order"]["status"] == "scanned"
+    assert calls[1][1] == "https://kakao.whitexfox.cn/api/v1/account"
+    assert calls[1][2]["headers"]["Authorization"] == "Bearer PAY-CDK"
+    assert "customer.i7wap.xyz" not in "\n".join(call[1] for call in calls)
 
 
-def test_kakao_kk_payment_cdk_status_uses_customer_check_api(monkeypatch):
+def test_kakao_kk_payment_cdk_status_uses_linkqueue_account_api(monkeypatch):
     app = _app()
     calls = []
 
     class Resp:
         ok = True
         status_code = 200
-        text = '{"ok": true}'
+        text = '{"cdk": {}, "tasks": []}'
 
         def json(self):
             return {
-                "ok": True,
-                "data": {
-                    "orders": [
-                        {
-                            "id": "order-1",
-                            "cdk": {
-                                "productType": "KAKAO_AT",
-                                "totalCount": 10,
-                                "usedCount": 2,
-                                "frozenCount": 1,
-                                "availableCount": 7,
-                            },
-                        }
-                    ]
+                "cdk": {
+                    "prefix": "PAY-CDK",
+                    "initial": 10,
+                    "capacity": 12,
+                    "remaining": 7,
+                    "consumed": 3,
+                    "status": "active",
+                    "submissionRemaining": 5,
                 },
+                "tasks": [
+                    {"id": "queued-1", "status": "queued"},
+                    {"id": "claimed-1", "status": "claimed"},
+                    {"id": "scanned-1", "status": "scanned"},
+                ],
+                "page": {"total": 3, "hasMore": False},
             }
 
     def fake_get(url, **kwargs):
@@ -1143,88 +1160,16 @@ def test_kakao_kk_payment_cdk_status_uses_customer_check_api(monkeypatch):
         kakao_pay.KakaoPayTempTicketRequest.model_validate({"cdk": "PAY-CDK"})
     )
 
-    assert data["data"]["productType"] == "KAKAO_AT"
     assert data["data"]["availableCount"] == 7
-    assert calls[0][0] == "https://customer.i7wap.xyz/api/v1/customer/orders"
-    assert calls[0][1]["headers"]["X-CDK-Key"] == "PAY-CDK"
-    assert calls[0][1]["params"] == {"page": 1, "pageSize": 100}
+    assert data["data"]["totalCount"] == 12
+    assert data["data"]["usedCount"] == 3
+    assert data["data"]["frozenCount"] == 2
+    assert calls[0][0] == "https://kakao.whitexfox.cn/api/v1/account"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer PAY-CDK"
+    assert calls[0][1]["params"] == {"offset": 0, "limit": 100}
 
 
-def test_kakao_kk_payment_cdk_status_uses_customer_cdk_orders_when_no_orders(monkeypatch):
-    app = _app()
-    calls = []
-
-    class LegacyOrdersResp:
-        ok = True
-        status_code = 200
-        text = '{"ok": true, "data": {"orders": []}}'
-
-        def json(self):
-            return {"ok": True, "data": {"orders": []}}
-
-    class CdkOrdersResp:
-        ok = True
-        status_code = 200
-        text = '{"ok": true}'
-
-        def json(self):
-            return {
-                "ok": True,
-                "data": {
-                    "cdk": {
-                        "code": "PAY-CDK",
-                        "productType": "KAKAO_AT",
-                        "totalCount": 20,
-                        "usedCount": 0,
-                        "frozenCount": 0,
-                        "availableCount": 20,
-                        "status": "ACTIVE",
-                    },
-                    "orders": [],
-                },
-            }
-
-    def fake_get(url, **kwargs):
-        calls.append(("GET", url, kwargs))
-        return LegacyOrdersResp()
-
-    def fake_post(url, **kwargs):
-        calls.append(("POST", url, kwargs))
-        return CdkOrdersResp()
-
-    monkeypatch.setattr(kakao_pay.requests, "get", fake_get)
-    monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
-
-    data = _endpoint(app, "/api/kakao-pay/kk-payment/cdk/status", "POST")(
-        kakao_pay.KakaoPayTempTicketRequest.model_validate({"cdk": "PAY-CDK"})
-    )
-
-    assert data["data"]["availableCount"] == 20
-    assert data["data"]["totalCount"] == 20
-    assert data["orders"] == []
-    assert calls == [
-        (
-            "GET",
-            "https://customer.i7wap.xyz/api/v1/customer/orders",
-            {
-                "params": {"page": 1, "pageSize": 100},
-                "headers": {"Accept": "application/json", "X-CDK-Key": "PAY-CDK"},
-                "timeout": 20,
-            },
-        ),
-        (
-            "POST",
-            "https://customer.i7wap.xyz/api/customer/cdk/orders",
-            {
-                "json": {"code": "PAY-CDK"},
-                "headers": {"Accept": "application/json", "Content-Type": "application/json"},
-                "timeout": 20,
-            },
-        ),
-    ]
-
-
-def test_kakao_kk_payment_submit_uses_account_session_cookie_and_extracted_link(monkeypatch):
+def test_kakao_kk_payment_submit_uses_linkqueue_cdk_and_extracted_link(monkeypatch):
     app = _app()
     email = "pay@example.com"
     link_id = "link-1"
@@ -1239,16 +1184,22 @@ def test_kakao_kk_payment_submit_uses_account_session_cookie_and_extracted_link(
         "kakao_expires_at_ts": 1785387000,
         "country": "KR",
     })
-    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: f"token-for:{value}")
-    monkeypatch.setattr(kakao_pay, "load_auth_session", lambda value: {"cookie_header": "__Secure-next-auth.session-token=session-for-pay", "accessToken": f"access-for:{value}"})
+    monkeypatch.setattr(kakao_pay, "load_auth_session", lambda value: (_ for _ in ()).throw(AssertionError("old supplier must not load account session")))
+    monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: (_ for _ in ()).throw(AssertionError("old supplier must not load access token")))
 
     class SubmitResp:
         ok = True
         status_code = 201
-        text = '{"ok": true}'
+        text = '{"tasks": []}'
 
         def json(self):
-            return {"ok": True, "data": {"order": {"id": "kk-order-1", "status": "PENDING"}, "customerToken": "customer-token"}}
+            return {
+                "tasks": [{"id": "kk-task-1", "status": "queued", "url": "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"}],
+                "remaining": 6,
+                "prefix": "KK-CDK-1",
+                "submissionsUsed": 1,
+                "submissionRemaining": 6,
+            }
 
     def fake_post(url, **kwargs):
         calls.append((url, kwargs))
@@ -1267,71 +1218,67 @@ def test_kakao_kk_payment_submit_uses_account_session_cookie_and_extracted_link(
     assert data["account_email"] == email
     assert data["link_id"] == link_id
     assert data["payment_url"] == "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"
-    assert calls[0][0] == "https://customer.i7wap.xyz/api/v1/customer/orders"
-    assert calls[0][1]["headers"]["X-CDK-Key"] == "KK-CDK-1"
-    assert calls[0][1]["json"]["session_cookie"] == "__Secure-next-auth.session-token=session-for-pay"
-    assert calls[0][1]["json"]["credential"] == "__Secure-next-auth.session-token=session-for-pay"
-    assert calls[0][1]["json"]["access_token"] == f"access-for:{email}"
-    assert calls[0][1]["json"]["payment_url"] == "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"
-    assert calls[0][1]["json"]["productType"] == "KAKAO_AT"
-    assert kakao_pay.KK_PAYMENT_JOBS["kk-order-1"]["account_email"] == email
+    assert data["data"]["order"]["id"] == "kk-task-1"
+    assert calls[0][0] == "https://kakao.whitexfox.cn/api/v1/tasks"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer KK-CDK-1"
+    assert calls[0][1]["json"] == {"urls": ["https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"]}
+    assert kakao_pay.KK_PAYMENT_JOBS["kk-task-1"]["account_email"] == email
 
 
-def test_kakao_kk_payment_submit_preserves_new_channel_disabled_error(monkeypatch):
+def test_kakao_kk_payment_submit_preserves_linkqueue_error(monkeypatch):
     app = _app()
-    email = "channel-disabled@example.com"
-    link_id = "link-channel-disabled"
+    email = "no-merchant@example.com"
+    link_id = "link-no-merchant"
     calls = []
     kakao_pay._append_link({
         "id": link_id,
         "account_email": email,
-        "provider_redirect_url": "https://pay.nicepay.co.kr/v1/checkout/pay/channel-disabled",
+        "provider_redirect_url": "https://pay.nicepay.co.kr/v1/checkout/pay/no-merchant",
         "created_at_ts": 1785386400,
         "kakao_expires_at_ts": 1785387300,
         "country": "KR",
     })
-    monkeypatch.setattr(kakao_pay, "_load_kakao_customer_credentials_for_email", lambda value: ("cookie-channel-disabled", f"token-for:{value}"))
 
-    class DisabledResp:
+    class NoMerchantResp:
         ok = False
-        status_code = 422
-        text = '{"error":{"code":"kakao_provider_error","message":"韩国 KK 渠道当前未开放 / Korea KK channel is disabled"}}'
+        status_code = 409
+        text = '{"error":"当前没有商家在线，暂时无法提交任务","code":"NO_MERCHANT_ONLINE"}'
 
         def json(self):
-            return {"error": {"code": "kakao_provider_error", "message": "韩国 KK 渠道当前未开放 / Korea KK channel is disabled"}}
+            return {"error": "当前没有商家在线，暂时无法提交任务", "code": "NO_MERCHANT_ONLINE"}
 
     def fake_post(url, **kwargs):
         calls.append((url, kwargs))
-        return DisabledResp()
+        return NoMerchantResp()
 
     monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
 
     with pytest.raises(HTTPException) as exc:
         _endpoint(app, "/api/kakao-pay/kk-payment/submit", "POST")(
             kakao_pay.KakaoPayKkPaymentSubmitRequest.model_validate({
-                "cdk": "KK-CDK-CHANNEL-DISABLED",
+                "cdk": "KK-CDK-NO-MERCHANT",
                 "linkId": link_id,
                 "paymentMethod": "kakao_pay",
             })
         )
 
-    assert exc.value.status_code == 422
-    assert exc.value.detail["error"]["code"] == "kakao_provider_error"
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "NO_MERCHANT_ONLINE"
     assert len(calls) == 1
-    assert calls[0][0] == "https://customer.i7wap.xyz/api/v1/customer/orders"
+    assert calls[0][0] == "https://kakao.whitexfox.cn/api/v1/tasks"
 
 
-def test_kakao_kk_payment_cancel_and_resubmit_routes_call_customer_api(monkeypatch):
+def test_kakao_kk_payment_cancel_route_calls_linkqueue_cancel_api(monkeypatch):
     app = _app()
     calls = []
 
     class Resp:
         ok = True
         status_code = 200
-        text = '{"ok": true}'
+        text = '{"task": {}}'
 
         def json(self):
-            return {"ok": True, "data": {"order": {"id": "order-cancel", "status": "CANCELLED", "problemReason": "customer_cancelled"}}}
+            return {"task": {"id": "task-cancel", "status": "cancelled", "refunded": True}, "remaining": 3}
 
     def fake_post(url, **kwargs):
         calls.append((url, kwargs))
@@ -1339,14 +1286,12 @@ def test_kakao_kk_payment_cancel_and_resubmit_routes_call_customer_api(monkeypat
 
     monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
 
-    cancelled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}/cancel", "POST")("order-cancel", token="customer-token", cdk="")
-    resubmitted = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}/resubmit", "POST")("order-cancel", token="", cdk="PAY-CDK")
+    cancelled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}/cancel", "POST")("task-cancel", token="", cdk="PAY-CDK")
 
-    assert cancelled["data"]["order"]["status"] == "CANCELLED"
-    assert calls[0][0] == "https://customer.i7wap.xyz/api/v1/customer/orders/order-cancel/cancel"
-    assert calls[0][1]["headers"]["Authorization"] == "Bearer customer-token"
-    assert calls[1][0] == "https://customer.i7wap.xyz/api/v1/customer/orders/order-cancel/resubmit"
-    assert calls[1][1]["headers"]["X-CDK-Key"] == "PAY-CDK"
+    assert cancelled["data"]["order"]["status"] == "cancelled"
+    assert cancelled["data"]["cdk"]["availableCount"] == 3
+    assert calls[0][0] == "https://kakao.whitexfox.cn/api/v1/tasks/task-cancel/cancel"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer PAY-CDK"
 
 
 def test_mark_account_plus_kakao_sets_dashboard_plus_snapshot(monkeypatch):

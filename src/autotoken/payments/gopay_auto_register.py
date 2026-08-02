@@ -20,6 +20,8 @@ from urllib.parse import urlsplit
 
 import requests
 
+from autotoken.core.redaction import safe_error_summary
+
 try:
     from curl_cffi import requests as curl_requests
 except Exception:  # pragma: no cover - optional dependency
@@ -348,7 +350,13 @@ class SmsActivation:
                 if elapsed > wait_time:
                     resend_count += 1
                     self.log(f"[{label}] 超过 {wait_time}s 未收到新码，请求第 {resend_count} 次重发")
-                    _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_RESEND)
+                    try:
+                        _hero_set_status(self.base_url, self.api_key, self.activation_id, STATUS_RESEND)
+                    except Exception as exc:
+                        self.log(
+                            f"[{label}] 短信供应商重发请求失败，继续等待验证码: "
+                            f"activation={self.activation_id} error={safe_error_summary(exc, limit=120)}"
+                        )
                     last_resend = time.time()
             time.sleep(POLL_INTERVAL_SEC)
         return ""
@@ -404,7 +412,7 @@ def _delayed_cancel_activation(
                     "[gopay-signup] 已延迟取消短信号码: "
                     f"provider={getattr(activation, 'provider', 'unknown')} "
                     f"activation={getattr(activation, 'activation_id', '')} "
-                    f"reason={reason or 'existing_or_probe_failed'}"
+                    f"reason={safe_error_summary(reason or 'existing_or_probe_failed', limit=180)}"
                 )
                 return
             except Exception as exc:
@@ -425,7 +433,7 @@ def _delayed_cancel_activation(
                     "[gopay-signup] 延迟取消短信号码失败: "
                     f"provider={getattr(activation, 'provider', 'unknown')} "
                     f"activation={getattr(activation, 'activation_id', '')} "
-                    f"error={exc}"
+                    f"error={safe_error_summary(exc, limit=180)}"
                 )
                 return
 

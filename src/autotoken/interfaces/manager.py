@@ -2891,15 +2891,9 @@ def _register_direct_once(
         def _cleanup_roxybrowser():
             if not roxy_client or not roxy_launch:
                 return
-            try:
-                roxy_client.browser_close(roxy_launch.dir_id)
-            except Exception:
-                pass
-            if getattr(roxy_launch, "created_profile", False):
-                try:
-                    roxy_client.browser_delete(roxy_launch.workspace_id, [roxy_launch.dir_id])
-                except Exception:
-                    pass
+            from autotoken.roxybrowser_client import cleanup_roxybrowser_launch
+
+            cleanup_roxybrowser_launch(roxy_client, roxy_launch)
 
         if use_roxybrowser:
             from autotoken.roxybrowser_client import RoxyBrowserClient, pick_roxybrowser_endpoint

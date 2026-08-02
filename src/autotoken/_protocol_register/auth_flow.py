@@ -28,6 +28,7 @@ from http_client import USER_AGENT, create_http_session
 from mail_provider import MailProvider
 
 from autotoken.core.jwt import decode_jwt_payload
+from autotoken.core.redaction import safe_error_summary
 from autotoken.core.url_params import first_url_param
 from autotoken.services import chatgpt_session as chatgpt_session_service
 
@@ -994,7 +995,8 @@ class AuthFlow:
         )
         self._trace_http("add_phone_send", resp)
         if resp.status_code != 200:
-            raise RuntimeError(f"add-phone/send 失败: {resp.status_code} - {(resp.text or '')[:220]}")
+            detail = safe_error_summary(f"{resp.status_code} - {resp.text or ''}", limit=180)
+            raise RuntimeError(f"add-phone/send 失败: {detail}")
         try:
             return resp.json() if resp is not None else {}
         except Exception:
@@ -1278,7 +1280,7 @@ class AuthFlow:
 
         if callable(phone_supplier):
             phone_items, phone_supply_error = _load_dynamic_phone_items()
-            if not phone_items and phone_provider in {"hero_sms", "smsbower"}:
+            if not phone_items and phone_provider in {"hero_sms", "smsbower", "oasis"}:
                 from autotoken.auth.codex_auth import CodexOAuthPhoneRequired
 
                 detail = phone_supply_error or f"{phone_provider.replace('_', '-')} 无可用号码"
@@ -1294,6 +1296,13 @@ class AuthFlow:
                 if str(item.get("phone_number") or item.get("phone") or "").strip()
             ]
         if not phone_candidates:
+            if callable(phone_supplier):
+                from autotoken.auth.codex_auth import CodexOAuthPhoneRequired
+
+                detail = phone_supply_error or f"{phone_provider.replace('_', '-')} 无可用号码"
+                self._last_codex_oauth_error = f"add-phone 取号失败: {detail}"
+                logger.warning("命中 add-phone，但%s", detail)
+                raise CodexOAuthPhoneRequired(detail)
             logger.warning("命中 add-phone，但未配置 OPENAI_PHONE_NUMBER，无法继续推进")
             return continue_url or ""
 
@@ -1362,8 +1371,8 @@ class AuthFlow:
                         logger.warning("add-phone 成功回调失败: %s", callback_exc)
                 return next_url or continue_url or ""
             except Exception as e:
-                last_err = str(e)
-                logger.warning("add-phone 号码 %s 失败: %s", phone, e)
+                last_err = safe_error_summary(e, limit=180)
+                logger.warning("add-phone 号码 %s 失败: %s", phone, last_err)
                 phone_failure = getattr(self, "_openai_phone_failure", None)
                 if callable(phone_failure) and phone_item:
                     try:
@@ -1380,6 +1389,7 @@ class AuthFlow:
                     pass
 
         if last_err:
+            self._last_codex_oauth_error = f"add-phone 阶段未成功: {last_err}"
             logger.warning("add-phone 阶段未成功: %s", last_err)
         return continue_url or ""
 
@@ -1459,6 +1469,7 @@ class AuthFlow:
                 try:
                     continue_url = self._handle_add_phone_verification(continue_url=final_url or "")
                 except Exception as e:
+                    self._last_codex_oauth_error = str(e)
                     logger.warning(f"Codex add-phone 协议绑定失败: {e}")
                 if continue_url:
                     callback_url, final_url = self._follow_authorize_for_callback(
@@ -1542,6 +1553,7 @@ class AuthFlow:
                     if detail
                     else f"Codex OAuth 未捕获 callback code: {(final_url or '')[:160]}"
                 )
+                self._last_codex_oauth_error = message
                 logger.warning(
                     "Codex OAuth 未捕获 callback code, final=%s detail=%s", (final_url or "")[:180], detail[:220]
                 )
@@ -2209,8 +2221,8 @@ class AuthFlow:
         )
         self._trace_http("validate_email_otp", resp)
         if resp.status_code != 200:
-            body = (resp.text or "")[:260]
-            raise RuntimeError(f"OTP 验证失败: {resp.status_code} - {body}")
+            detail = safe_error_summary(f"{resp.status_code} - {resp.text or ''}", limit=180)
+            raise RuntimeError(f"OTP 验证失败: {detail}")
         logger.info("OTP 验证成功")
         try:
             return resp.json()
@@ -2706,6 +2718,8 @@ class AuthFlow:
         candidates.append(("without_verifier", dict(base_form)))
 
         seen_fingerprints: set[str] = set()
+        failed_modes: list[str] = []
+        last_failure: tuple[str, int, str] | None = None
         for mode, form in candidates:
             fp = json.dumps(form, sort_keys=True, ensure_ascii=False)
             if fp in seen_fingerprints:
@@ -2743,7 +2757,20 @@ class AuthFlow:
                 return True
 
             body = (resp.text or "")[:240]
-            logger.warning("Token 交换失败(mode=%s): status=%s body=%s", mode, resp.status_code, body)
+            body_summary = safe_error_summary(f"{resp.status_code} - {resp.text or ''}", limit=180)
+            failed_modes.append(mode)
+            last_failure = (mode, resp.status_code, body_summary)
+            logger.debug("Token 交换候选失败(mode=%s): status=%s body=%s", mode, resp.status_code, body_summary)
+
+        if last_failure:
+            mode, status_code, body = last_failure
+            logger.warning(
+                "Token 交换兜底失败: 已尝试 %s 种模式，最后失败 mode=%s status=%s body=%s",
+                len(failed_modes),
+                mode,
+                status_code,
+                body,
+            )
 
         return False
 
@@ -3095,7 +3122,7 @@ class AuthFlow:
             except RuntimeError as e:
                 # 偶发 401 错码，补发一次 OTP 并重试
                 if "401" in str(e):
-                    logger.warning(f"OTP 首次验证失败，补发重试: {e}")
+                    logger.warning("OTP 首次验证失败，补发重试: %s", safe_error_summary(e, limit=180))
                     otp_sent_at = time.time()
                     if not self.kickoff_otp_delivery("verify_otp_retry_new"):
                         self.send_otp()
@@ -3201,7 +3228,7 @@ class AuthFlow:
                     self.fetch_client_auth_session_dump("post_verify_otp_existing")
                 except RuntimeError as e:
                     if any(code in str(e) for code in ("401", "409")):
-                        logger.warning(f"OTP 首次验证失败，重发重试: {e}")
+                        logger.warning("OTP 首次验证失败，重发重试: %s", safe_error_summary(e, limit=180))
                         otp_sent_at = time.time()
                         if not self.kickoff_otp_delivery("existing_verify_retry"):
                             self.send_otp()
@@ -3408,7 +3435,7 @@ class AuthFlow:
                 self.fetch_client_auth_session_dump("post_verify_otp_protocol")
             except RuntimeError as e:
                 if any(code in str(e) for code in ("401", "409")):
-                    logger.warning(f"OTP 首次验证失败，重发重试: {e}")
+                    logger.warning("OTP 首次验证失败，重发重试: %s", safe_error_summary(e, limit=180))
                     otp_sent_at = time.time()
                     if not self.kickoff_otp_delivery("protocol_verify_retry"):
                         self.send_otp()

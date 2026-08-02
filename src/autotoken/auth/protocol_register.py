@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from autotoken.core.redaction import safe_error_summary
 from autotoken.services import chatgpt_session as chatgpt_session_service
 
 logger = logging.getLogger(__name__)
@@ -1033,7 +1034,12 @@ def login_once(
         raise RuntimeError(f"协议登录未返回有效 auth_session: {email}")
     payload = _session_data_from_auth_result(result)
     if not payload.get("codex_oauth_bundle"):
-        logger.warning("[协议登录] 协议登录完成但未直接生成 CPA OAuth bundle: %s", email)
+        detail = str(getattr(flow, "_last_codex_oauth_error", "") or "").strip()
+        message = f"协议登录完成但未生成 CPA OAuth bundle: {email}"
+        if detail:
+            message = f"{message}; Codex OAuth 失败原因: {safe_error_summary(detail, limit=220)}"
+        logger.warning("[协议登录] %s", message)
+        raise RuntimeError(message)
     else:
         logger.info("[协议登录] 协议登录已生成 CPA OAuth bundle: %s", email)
     return payload

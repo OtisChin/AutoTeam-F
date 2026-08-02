@@ -133,6 +133,55 @@ def test_sms_activation_marks_ready_before_waiting_code(monkeypatch):
     assert request_calls == [("getStatus", {"id": "activation-ready"})]
 
 
+def test_sms_activation_resend_bad_status_keeps_waiting_until_timeout(monkeypatch):
+    set_status_calls = []
+    logs = []
+    now = {"value": 0.0}
+
+    def fake_set_status(base_url, api_key, activation_id, status):
+        set_status_calls.append((base_url, api_key, activation_id, status))
+        if status == gopay_auto_register.STATUS_RESEND:
+            raise RuntimeError("BAD_STATUS")
+        return "ACCESS_READY"
+
+    monkeypatch.setattr(gopay_auto_register, "_hero_set_status", fake_set_status)
+    monkeypatch.setattr(
+        gopay_auto_register,
+        "_hero_request",
+        lambda *_args, **_kwargs: (True, "STATUS_WAIT_CODE", None),
+    )
+    monkeypatch.setattr(gopay_auto_register, "POLL_INTERVAL_SEC", 31)
+    monkeypatch.setattr(gopay_auto_register.time, "time", lambda: now["value"])
+    monkeypatch.setattr(gopay_auto_register.time, "sleep", lambda seconds: now.__setitem__("value", now["value"] + seconds))
+
+    activation = gopay_auto_register.SmsActivation(
+        activation_id="activation-resend-bad-status",
+        phone="5547999231890",
+        country_id=73,
+        base_url="https://smsbower.example.test",
+        api_key="smsbower-key",
+        provider="smsbower",
+        log=logs.append,
+    )
+
+    assert activation.wait_code(timeout_sec=35, label="test") == ""
+    assert set_status_calls == [
+        (
+            "https://smsbower.example.test",
+            "smsbower-key",
+            "activation-resend-bad-status",
+            gopay_auto_register.STATUS_READY,
+        ),
+        (
+            "https://smsbower.example.test",
+            "smsbower-key",
+            "activation-resend-bad-status",
+            gopay_auto_register.STATUS_RESEND,
+        ),
+    ]
+    assert any("短信供应商重发请求失败，继续等待验证码" in item for item in logs)
+
+
 @pytest.mark.parametrize(
     ("ok", "response"),
     [

@@ -168,6 +168,8 @@ def oauth_phone_sms_country_fallback(provider: str) -> list[dict[str, str]]:
         return [
             *common,
             {"value": "187", "label": "美国 / 187"},
+            {"value": "31", "label": "南非 / 31"},
+            {"value": "48", "label": "荷兰 / 48"},
             {"value": "6", "label": "印度尼西亚 / 6"},
             {"value": "33", "label": "哥伦比亚 / 33"},
         ]
@@ -175,6 +177,8 @@ def oauth_phone_sms_country_fallback(provider: str) -> list[dict[str, str]]:
         return [
             *common,
             {"value": "187", "label": "美国 / 187"},
+            {"value": "31", "label": "南非 / 31"},
+            {"value": "48", "label": "荷兰 / 48"},
             {"value": "6", "label": "印度尼西亚 / 6"},
             {"value": "33", "label": "哥伦比亚 / 33"},
         ]

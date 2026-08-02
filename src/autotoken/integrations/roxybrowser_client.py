@@ -767,17 +767,18 @@ class RoxyBrowserClient:
                 requested_os_version=str(requested_fingerprint.get("osVersion") or ""),
             )
         except Exception:
-            if reserved_profile_id:
-                self.release_profile_reservation(reserved_profile_id)
             if created_profile and resolved_workspace_id and resolved_dir_id:
-                try:
-                    self.browser_close(resolved_dir_id)
-                except Exception:
-                    pass
-                try:
-                    self.browser_delete(resolved_workspace_id, [resolved_dir_id])
-                except Exception:
-                    pass
+                cleanup_roxybrowser_launch(
+                    self,
+                    RoxyBrowserLaunchResult(
+                        workspace_id=resolved_workspace_id,
+                        dir_id=resolved_dir_id,
+                        connection={},
+                        created_profile=True,
+                    ),
+                )
+            elif reserved_profile_id:
+                self.release_profile_reservation(reserved_profile_id)
             raise
 
 
@@ -791,3 +792,25 @@ def pick_roxybrowser_endpoint(connection: dict[str, Any]) -> str:
     if ws:
         return ws
     raise RuntimeError("RoxyBrowser connection info 缺少 ws/http endpoint")
+
+
+def cleanup_roxybrowser_launch(client: RoxyBrowserClient, launch: RoxyBrowserLaunchResult) -> None:
+    """Close a launched RoxyBrowser profile without releasing new-profile reservations too early."""
+    if not client or not launch:
+        return
+    if getattr(launch, "created_profile", False):
+        try:
+            client.browser_close(launch.dir_id, release_reservation=False)
+        except Exception:
+            pass
+        try:
+            client.browser_delete(launch.workspace_id, [launch.dir_id])
+        except Exception:
+            pass
+        finally:
+            client.release_profile_reservation(launch.dir_id)
+        return
+    try:
+        client.browser_close(launch.dir_id)
+    except Exception:
+        pass

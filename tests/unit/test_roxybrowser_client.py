@@ -1,3 +1,5 @@
+import pytest
+
 from autotoken.roxybrowser_client import RoxyBrowserClient, _normalize_proxy_info, pick_roxybrowser_endpoint
 
 def test_roxybrowser_proxy_info_from_authenticated_socks_proxy():
@@ -180,3 +182,79 @@ def test_roxybrowser_launch_create_quota_has_clear_error_when_no_idle_profile(mo
         assert "没有可清理的本项目窗口，且新建窗口额度不足" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_cleanup_created_roxybrowser_launch_keeps_reservation_until_after_delete():
+    from autotoken.roxybrowser_client import RoxyBrowserLaunchResult, cleanup_roxybrowser_launch
+
+    calls = []
+
+    class FakeClient:
+        def browser_close(self, dir_id, *, release_reservation=True):
+            calls.append(("close", dir_id, release_reservation))
+
+        def browser_delete(self, workspace_id, dir_ids):
+            calls.append(("delete", workspace_id, dir_ids))
+
+        def release_profile_reservation(self, dir_id):
+            calls.append(("release", dir_id))
+
+    launch = RoxyBrowserLaunchResult(
+        workspace_id="workspace-1",
+        dir_id="created-dir",
+        connection={"http": "127.0.0.1:5566"},
+        created_profile=True,
+    )
+
+    cleanup_roxybrowser_launch(FakeClient(), launch)
+
+    assert calls == [
+        ("close", "created-dir", False),
+        ("delete", "workspace-1", ["created-dir"]),
+        ("release", "created-dir"),
+    ]
+
+
+def test_roxybrowser_launch_failure_keeps_created_profile_reserved_until_after_delete(monkeypatch):
+    from autotoken.roxybrowser_client import RoxyBrowserClient, _RESERVED_PROFILE_IDS
+
+    requests = []
+    cleanup_calls = []
+
+    def fake_request(self, method, path, *, params=None, json_body=None, timeout=None):
+        requests.append((method, path, json_body, params))
+        if path == "/browser/workspace":
+            return {"data": [{"workspaceId": 1, "workspaceName": "default"}], "total": 1}
+        if path == "/browser/create":
+            return {"data": {"dirId": "new-dir"}}
+        if path == "/browser/open":
+            raise RuntimeError("open failed")
+        return {"code": 0, "msg": "ok"}
+
+    def fake_close(self, dir_id, *, release_reservation=True):
+        cleanup_calls.append(("close", dir_id, release_reservation))
+
+    def fake_delete(self, workspace_id, dir_ids):
+        cleanup_calls.append(("delete", workspace_id, dir_ids))
+
+    def fake_release(self, dir_id):
+        cleanup_calls.append(("release", dir_id))
+        _RESERVED_PROFILE_IDS.discard(dir_id)
+
+    monkeypatch.setattr(RoxyBrowserClient, "_request", fake_request)
+    monkeypatch.setattr(RoxyBrowserClient, "browser_close", fake_close)
+    monkeypatch.setattr(RoxyBrowserClient, "browser_delete", fake_delete)
+    monkeypatch.setattr(RoxyBrowserClient, "release_profile_reservation", fake_release)
+
+    client = RoxyBrowserClient("http://127.0.0.1:50000", "token")
+    try:
+        with pytest.raises(RuntimeError, match="open failed"):
+            client.launch(force_new_profile=True)
+
+        assert cleanup_calls == [
+            ("close", "new-dir", False),
+            ("delete", "1", ["new-dir"]),
+            ("release", "new-dir"),
+        ]
+    finally:
+        _RESERVED_PROFILE_IDS.discard("new-dir")

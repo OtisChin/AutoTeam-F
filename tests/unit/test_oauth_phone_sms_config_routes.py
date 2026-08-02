@@ -18,6 +18,30 @@ class FakeRequest:
         return self.payload
 
 
+@pytest.fixture(autouse=True)
+def clear_oauth_phone_sms_env(monkeypatch):
+    for key in (
+        "OAUTH_PHONE_SMS_PROVIDER",
+        "OAUTH_HERO_SMS_API_KEY",
+        "OAUTH_HERO_SMS_MAX_PRICE",
+        "OAUTH_HERO_SMS_BASE_URL",
+        "OAUTH_HERO_SMS_COUNTRY",
+        "OAUTH_HERO_SMS_SERVICE",
+        "OAUTH_SMSBOWER_API_KEY",
+        "OAUTH_SMSBOWER_MAX_PRICE",
+        "OAUTH_SMSBOWER_BASE_URL",
+        "OAUTH_SMSBOWER_COUNTRY",
+        "OAUTH_SMSBOWER_SERVICE",
+        "OAUTH_OASIS_SMS_BASE_URL",
+        "OAUTH_OASIS_SMS_CDKS",
+        "OAUTH_OASIS_SMS_CDK_FILE",
+        "OAUTH_OASIS_SMS_POLL_ATTEMPTS",
+        "OAUTH_OASIS_SMS_POLL_INTERVAL_MS",
+        "OAUTH_OASIS_SMS_ACCOUNT_MAP_FILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def _routes():
     return {
         route.endpoint.__name__: route.endpoint
@@ -65,8 +89,9 @@ def test_oauth_phone_sms_countries_uses_fallback_without_api_key(monkeypatch):
 
     assert result["provider"] == "smsbower"
     assert result["fallback"] is True
-    assert result["count"] == 4
+    assert result["count"] == 6
     assert result["options"][0] == {"value": "all", "label": "全部国家 / 不限制"}
+    assert {"value": "31", "label": "南非 / 31"} in result["options"]
     assert result["error"] == "缺少 API Key，使用兜底国家列表"
 
 

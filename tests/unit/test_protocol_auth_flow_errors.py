@@ -1,6 +1,7 @@
 import base64
 import importlib
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -93,6 +94,44 @@ def test_get_auth_session_captures_account_metadata():
     assert flow.result.account_id == "acct-plus"
     assert flow.result.plan_type == "plus"
     assert flow.result.chatgpt_access_token == "chatgpt-access"
+
+
+def test_oauth_token_exchange_summarizes_candidate_failures(caplog):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"error":{"code":"token_exchange_user_error"}}'
+
+    class FakeSession:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, **kwargs):
+            self.posts.append((url, kwargs))
+            return FakeResponse()
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow.session = FakeSession()
+    flow._trace_http = lambda *_args, **_kwargs: None
+    flow._sniff_login_verifier = lambda *_args, **_kwargs: None
+    flow._collect_code_verifier_candidates = lambda *_args, **_kwargs: [("captured", "verifier-1")]
+
+    caplog.set_level(logging.WARNING, logger=auth_flow.logger.name)
+
+    assert flow.oauth_token_exchange(
+        "https://chatgpt.com/api/auth/callback/openai?code=auth-code",
+        "",
+    ) is False
+
+    warnings = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert warnings == [
+        "Token 交换兜底失败: 已尝试 2 种模式，最后失败 mode=without_verifier status=400 body=400: token_exchange_user_error"
+    ]
+    assert "Token 交换失败(mode=" not in "\n".join(warnings)
 
 
 def test_phone_first_oauth_failure_preserves_specific_error(monkeypatch):
@@ -235,6 +274,68 @@ def test_add_phone_verification_reacquire_path_handles_dynamic_phone_item_lists(
 
     assert result == "https://auth.openai.com/add-phone"
     assert state["calls"] >= 2
+
+
+def test_add_phone_verification_oasis_no_numbers_reports_supplier_error(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow._openai_phone_provider = "oasis"
+    flow._openai_phone_supplier = lambda: (_ for _ in ()).throw(RuntimeError("CDK已过期"))
+
+    monkeypatch.setenv("OPENAI_PHONE_NUMBER", "+15550000000")
+
+    try:
+        flow._handle_add_phone_verification("https://auth.openai.com/add-phone")
+    except Exception as exc:
+        assert "CDK已过期" in str(exc)
+    else:
+        raise AssertionError("expected oasis supplier failure")
+
+
+def test_add_phone_verification_preserves_dynamic_timeout_reason(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    state = {"calls": 0}
+
+    def fake_supplier():
+        state["calls"] += 1
+        return [
+            {
+                "phone_number": f"+2761000000{state['calls']}",
+                "source": "hero_sms",
+                "activation_id": f"act-timeout-{state['calls']}",
+            }
+        ]
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow._openai_phone_provider = "hero_sms"
+    flow._openai_phone_supplier = fake_supplier
+    flow._openai_phone_failure = lambda _item, _reason="": None
+    flow._add_phone_send = lambda _phone: {
+        "page": {"type": "phone_otp_verification"},
+        "continue_url": "https://auth.openai.com/add-phone",
+    }
+    flow._extract_page_type = lambda resp: (resp.get("page") or {}).get("type", "")
+    flow._extract_continue_url_from_step = lambda resp: resp.get("continue_url", "")
+    flow._normalize_continue_url = lambda url: url
+    flow._wait_phone_otp = lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("等待手机 OTP 超时 (60s)"))
+    flow._phone_otp_resend = lambda: None
+
+    monkeypatch.setenv("OPENAI_PHONE_DYNAMIC_MAX_ATTEMPTS", "2")
+    monkeypatch.setattr(auth_flow.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = flow._handle_add_phone_verification("https://auth.openai.com/add-phone")
+
+    assert result == "https://auth.openai.com/add-phone"
+    assert state["calls"] == 2
+    assert "等待手机 OTP 超时" in flow._last_codex_oauth_error
 
 
 def test_add_phone_verification_dynamic_phone_attempts_default_to_three(monkeypatch):
@@ -664,3 +765,33 @@ def test_add_phone_send_rate_limit_stops_account_without_reusing_phone(monkeypat
     assert len(failure_reasons) == 1
     assert "too many phone verification requests" in failure_reasons[0].lower()
     assert resend_calls["count"] == 0
+
+
+def test_codex_rt_exchange_preserves_add_phone_failure_reason(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow._build_codex_authorize = lambda: (
+        "https://auth.openai.com/oauth/authorize?prompt=login",
+        "state",
+        "verifier",
+        "http://localhost:1455/auth/callback",
+        "client",
+    )
+    flow._follow_authorize_for_callback = lambda *_args, **_kwargs: ("", "https://auth.openai.com/add-phone")
+    flow._is_add_email_state = lambda **_kwargs: False
+    flow._is_add_phone_state = lambda **_kwargs: True
+    flow._handle_add_phone_verification = lambda **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("add-phone/send 失败: 400 - too many phone verification requests")
+    )
+    flow._codex_refresh_retry_after_add_phone = lambda **_kwargs: ("", "https://auth.openai.com/add-phone")
+    flow._drop_query_keys = lambda url, _keys: url.replace("?prompt=login", "")
+    flow._emit_progress = lambda *_args, **_kwargs: None
+    monkeypatch.setenv("OAUTH_CODEX_ADD_PHONE_REFRESH_RETRY", "0")
+
+    assert flow.oauth_codex_rt_exchange(mail_provider=None) is False
+    assert "add-phone/send 失败" in flow._last_codex_oauth_error
+    assert "too many phone verification requests" in flow._last_codex_oauth_error

@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.convertors import Convertor, register_url_convertor
 
+from autotoken import install_no_traceback_filter
 from autotoken.api_routes.account_cpa_auths import create_account_cpa_auths_router
 from autotoken.api_routes.account_exports import create_account_exports_router
 from autotoken.api_routes.account_hub import create_account_hub_router
@@ -165,6 +166,9 @@ from autotoken.core.redaction import (
 )
 from autotoken.core.redaction import (
     safe_email_summary as _safe_email_summary,
+)
+from autotoken.core.redaction import (
+    safe_error_summary as _safe_error_summary,
 )
 from autotoken.core.redaction import (
     safe_phone_summary as _safe_phone_summary,
@@ -2756,8 +2760,8 @@ def _run_account_codex_login_once(
                 raise RuntimeError(f"协议补登录未返回 Codex OAuth bundle: {email}")
         except (CodexOAuthPhoneRequired, CodexOAuthAccountDeactivated):
             raise
-        except Exception:
-            logger.exception("[账号登录] 协议补登录失败: %s", email)
+        except Exception as exc:
+            logger.error("[账号登录] 协议补登录失败: %s error=%s", email, _safe_error_summary(exc, limit=220))
             raise
 
     use_protocol_oauth = (
@@ -3073,6 +3077,7 @@ class _LogCollector(logging.Handler):
 
 
 _log_collector = _LogCollector()
+install_no_traceback_filter(_log_collector)
 _log_collector.setFormatter(logging.Formatter("%(message)s"))
 logging.getLogger().addHandler(_log_collector)
 
@@ -7816,6 +7821,7 @@ class _QuietAccessLog(logging.Filter):
     _quiet_paths = (
         "/api/status",
         "/api/tasks",
+        "/api/accounts",
         "/api/config/auto-check",
         "/api/admin/status",
         "/api/main-codex/status",

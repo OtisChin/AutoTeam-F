@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
@@ -118,7 +119,34 @@ def safe_otp_summary(otp: Any) -> str:
 
 
 def safe_error_summary(error: Any, *, limit: int = 240) -> str:
-    text = compact_log_text(error, limit=limit)
+    text = compact_log_text(error, limit=max(limit, 4096))
+    status = ""
+    match = re.search(r"\b(?:HTTP\s*)?(\d{3})\s*-\s*(\{.*\})\s*$", text)
+    json_text = ""
+    if match:
+        status = match.group(1)
+        json_text = match.group(2)
+    elif text.startswith("{") and text.endswith("}"):
+        json_text = text
+    if json_text:
+        try:
+            payload = json.loads(json_text)
+            detail = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(detail, dict):
+                code = str(detail.get("code") or detail.get("type") or "").strip()
+                message = str(detail.get("message") or "").strip()
+                parts = []
+                if status:
+                    parts.append(status)
+                if code:
+                    parts.append(code)
+                if message:
+                    parts.append(message)
+                if parts:
+                    text = ": ".join(parts)
+        except Exception:
+            pass
+    text = compact_log_text(text, limit=limit)
     text = re.sub(r"://[^@\s]+@", "://<auth>@", text)
     text = re.sub(r"([?&](?:token|access_token|session_token|client_secret|otp|pin)=)[^&\s]+", r"\1<redacted>", text, flags=re.IGNORECASE)
     text = re.sub(r"(Bearer\s+)[A-Za-z0-9._=-]+", r"\1<redacted>", text, flags=re.IGNORECASE)
