@@ -159,6 +159,7 @@ def test_codex_oauth_rate_limit_exception_classification_separates_account_and_p
 def test_protocol_phone_pool_rate_limit_failure_cools_down_phone():
     assert protocol_register._phone_pool_failure_action("HTTP 429 - Too many requests") == "cooldown"
     assert protocol_register._phone_pool_failure_action("rate_limit_exceeded") == "cooldown"
+    assert protocol_register._phone_pool_failure_action("fraud_guard: phone numbers similar to yours") == "cooldown"
     assert protocol_register._phone_pool_failure_action("PHONE_NUMBER_IN_USE: 手机号已被使用") == "invalid"
     assert protocol_register._phone_pool_failure_action("temporary network error") == "release"
 

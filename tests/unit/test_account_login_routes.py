@@ -280,6 +280,43 @@ def test_post_accounts_login_batch_passes_bind_phone(monkeypatch):
     assert captured[0][2]["oauth_phone_sms_max_price"] == "0.05"
 
 
+def test_post_accounts_login_batch_passes_proxy_api_country(monkeypatch):
+    started = []
+    rows = [{"email": "first@example.com"}]
+    selector_calls = []
+    captured = []
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: rows[0] if email == "first@example.com" else None)
+
+    def build_selector(**kwargs):
+        selector_calls.append(kwargs)
+        return (lambda: "socks5h://batch-proxy.example:1000"), {"proxy_api_provider": kwargs.get("proxy_api_provider")}
+
+    def fake_run(email, acc, **kwargs):
+        captured.append((email, acc, kwargs))
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(
+        started,
+        accounts=rows,
+        build_oauth_proxy_selector=build_selector,
+        run_account_codex_login_once=fake_run,
+    )
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(
+            emails=["first@example.com"],
+            proxy_api_provider="cliproxy",
+            proxy_api_url="https://proxy-api.example/get",
+            proxy_api_country="GB",
+        )
+    )
+
+    result = started[0]["func"]("task-batch")
+    assert result["total"] == 1
+    assert selector_calls[0]["proxy_api_country"] == "GB"
+    assert captured[0][2]["proxy_url"] == "socks5h://batch-proxy.example:1000"
+
+
 def test_post_account_login_bind_phone_disables_bind_email(monkeypatch):
     started = []
     account = {"email": "first@example.com"}
@@ -297,6 +334,42 @@ def test_post_account_login_bind_phone_disables_bind_email(monkeypatch):
     started[0]["func"]("task-1")
     assert captured["kwargs"]["bind_phone"] is True
     assert captured["kwargs"]["bind_email"] is False
+
+
+def test_post_account_login_passes_proxy_api_country(monkeypatch):
+    started = []
+    account = {"email": "first@example.com"}
+    selector_calls = []
+    captured = {}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "first@example.com" else None)
+
+    def build_selector(**kwargs):
+        selector_calls.append(kwargs)
+        return (lambda: "socks5h://proxy.example:1000"), {"proxy_api_provider": kwargs.get("proxy_api_provider")}
+
+    def fake_run(email, acc, **kwargs):
+        captured.update({"email": email, "acc": acc, "kwargs": kwargs})
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(
+        started,
+        accounts=[account],
+        build_oauth_proxy_selector=build_selector,
+        run_account_codex_login_once=fake_run,
+    )
+    routes["post_account_login"](
+        LoginAccountParams(
+            email="first@example.com",
+            proxy_api_provider="cliproxy",
+            proxy_api_url="https://proxy-api.example/get",
+            proxy_api_country="GB",
+        )
+    )
+
+    started[0]["func"]("task-1")
+    assert selector_calls[0]["proxy_api_country"] == "GB"
+    assert captured["kwargs"]["proxy_url"] == "socks5h://proxy.example:1000"
 
 
 def test_post_accounts_login_batch_rejects_too_many_raw_emails():

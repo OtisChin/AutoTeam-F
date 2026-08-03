@@ -1613,3 +1613,50 @@ def test_register_accounts_retries_dynamic_proxy_when_probe_fails(monkeypatch):
     assert captured["kwargs"]["proxy_url"] == "http://good-proxy.example:7002"
     assert [event["stage"] for event in progress_events].count("register_proxy_api_probe_failed") == 1
     assert any(event["stage"] == "register_proxy_api_selected" and event["proxy_attempt"] == 2 for event in progress_events)
+
+
+def test_direct_register_continue_labels_include_japanese_locale():
+    assert "続行" in manager._DIRECT_CONTINUE_LABELS
+    assert "続行" in manager._DIRECT_PASSWORD_CONTINUE_LABELS
+    assert "続行" in manager._DIRECT_CODE_CONTINUE_LABELS
+    assert "続行" in manager._DIRECT_ABOUT_YOU_BUTTON_TEXTS
+
+
+def test_roxybrowser_register_dynamic_proxy_skips_http_csrf_probe(monkeypatch):
+    captured = {}
+    progress_events = []
+    proxies = iter(["http://proxy-roxy.example:7001"])
+
+    class FakeMailClient:
+        def login(self):
+            captured["mail_login"] = True
+
+    def fake_create_account_direct(mail_client, **kwargs):
+        captured["kwargs"] = kwargs
+        kwargs["out_outcome"].update(status="success", email="roxy@example.com")
+        return "roxy@example.com"
+
+    def fail_create_http_session(**_kwargs):
+        raise AssertionError("RoxyBrowser registration should not use HTTP csrf proxy probe")
+
+    monkeypatch.setattr(manager, "TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(manager, "create_account_direct", fake_create_account_direct)
+    monkeypatch.setattr("autotoken._protocol_register.http_client.create_http_session", fail_create_http_session)
+
+    result = manager.cmd_register_accounts(
+        count=1,
+        concurrency=1,
+        interval_seconds=0,
+        jitter_min_seconds=0,
+        jitter_max_seconds=0,
+        register_proxy_selector=lambda: next(proxies),
+        register_proxy_meta={"proxy_api_provider": "cliproxy", "proxy_api_url_present": True},
+        use_roxybrowser=True,
+        progress_callback=progress_events.append,
+    )
+
+    assert result["ok"] == 1
+    assert captured["kwargs"]["proxy_url"] == "http://proxy-roxy.example:7001"
+    assert captured["kwargs"]["use_roxybrowser"] is True
+    assert not any(event["stage"] == "register_proxy_api_probe_failed" for event in progress_events)
+    assert any(event["stage"] == "register_proxy_api_selected" and event["proxy_attempt"] == 1 for event in progress_events)

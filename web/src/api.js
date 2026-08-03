@@ -187,7 +187,6 @@ export const api = {
   getKakaoPayKkPaymentCdkStatus: (cdk) => request('GET', `/kakao-pay/kk-payment/cdk/status?cdk=${encodeURIComponent(cdk)}`),
   getKakaoPayKkPaymentOrder: (orderId, token = '', cdk = '', accountEmail = '') => request('GET', `/kakao-pay/kk-payment/orders/${encodeURIComponent(orderId)}?token=${encodeURIComponent(token)}&cdk=${encodeURIComponent(cdk)}&accountEmail=${encodeURIComponent(accountEmail)}`),
   cancelKakaoPayKkPaymentOrder: (orderId, token = '', cdk = '') => request('POST', `/kakao-pay/kk-payment/orders/${encodeURIComponent(orderId)}/cancel?token=${encodeURIComponent(token)}&cdk=${encodeURIComponent(cdk)}`),
-  resubmitKakaoPayKkPaymentOrder: (orderId, token = '', cdk = '') => request('POST', `/kakao-pay/kk-payment/orders/${encodeURIComponent(orderId)}/resubmit?token=${encodeURIComponent(token)}&cdk=${encodeURIComponent(cdk)}`),
   getMomoVnAccounts: () => request('GET', '/momo-vn/accounts'),
   deleteMomoVnAccount: (email) => request('DELETE', `/momo-vn/accounts/${encodeURIComponent(email)}`),
   deleteMomoVnAccounts: (emails) => request('POST', '/momo-vn/accounts/delete', { emails }),

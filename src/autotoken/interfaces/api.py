@@ -1375,15 +1375,31 @@ def _fetch_proxy_from_api_url(api_url: str, *, default_auth_scheme: str, provide
     )
 
 
-def _select_bind_link_open_proxy_url() -> str:
-    api_url = proxy_runtime_service.default_proxy_api_url("cliproxy", country="US")
+def _select_bind_link_open_proxy_url(
+    *,
+    provider: str = "cliproxy",
+    country: str = "US",
+    api_url: str = "",
+) -> str:
+    normalized_provider = proxy_runtime_service.normalize_proxy_api_provider(provider or "cliproxy")
+    normalized_country = "".join(ch for ch in str(country or "US").strip().upper() if ch.isalpha())[:2] or "US"
+    resolved_api_url = str(api_url or "").strip()
+    if resolved_api_url:
+        resolved_api_url = proxy_runtime_service.proxy_api_url_with_region(resolved_api_url, normalized_country)
+    else:
+        resolved_api_url = proxy_runtime_service.default_proxy_api_url(normalized_provider, country=normalized_country)
     proxy_url = proxy_runtime_service.fetch_proxy_from_api_url(
-        api_url,
-        default_auth_scheme="socks5h",
-        provider="cliproxy",
+        resolved_api_url,
+        default_auth_scheme=proxy_runtime_service.default_proxy_auth_scheme(normalized_provider),
+        provider=normalized_provider,
     )
     if not proxy_url:
-        raise RuntimeError("Cliproxy US 代理 API 未返回可用代理")
+        provider_label = {
+            "cliproxy": "Cliproxy",
+            "711proxy": "711Proxy",
+            "1024proxy": "1024proxy",
+        }.get(normalized_provider, normalized_provider)
+        raise RuntimeError(f"{provider_label} {normalized_country} 代理 API 未返回可用代理")
     return proxy_url
 
 
@@ -3046,6 +3062,7 @@ app.include_router(
         get_account_access_token=_extract_account_access_token,
         open_checkout_url=_open_bind_checkout_with_auth_session,
         select_open_proxy_url=_select_bind_link_open_proxy_url,
+        preflight_open_proxy_url=proxy_runtime_service.preflight_payment_proxy_url,
         logger=logger,
     )
 )

@@ -28,6 +28,36 @@ def test_bind_link_open_default_proxy_selector_uses_us_cliproxy(monkeypatch):
     }
 
 
+def test_bind_link_open_proxy_selector_uses_requested_711proxy(monkeypatch):
+    calls = {}
+
+    def fake_default_proxy_api_url(provider, _proxy_url="", *, country="JP"):
+        calls["default"] = {"provider": provider, "proxy_url": _proxy_url, "country": country}
+        return "http://global.rotgbapi.711proxy.com:8089/gen?region=JP&proto=http"
+
+    def fake_fetch_proxy_from_api_url(api_url, *, default_auth_scheme, provider=""):
+        calls["fetch"] = {
+            "api_url": api_url,
+            "default_auth_scheme": default_auth_scheme,
+            "provider": provider,
+        }
+        return "http://711-proxy.example:8080"
+
+    monkeypatch.setattr(interface_api.proxy_runtime_service, "default_proxy_api_url", fake_default_proxy_api_url)
+    monkeypatch.setattr(interface_api.proxy_runtime_service, "fetch_proxy_from_api_url", fake_fetch_proxy_from_api_url)
+
+    assert (
+        interface_api._select_bind_link_open_proxy_url(provider="711proxy", country="JP", api_url="")
+        == "http://711-proxy.example:8080"
+    )
+    assert calls["default"] == {"provider": "711proxy", "proxy_url": "", "country": "JP"}
+    assert calls["fetch"] == {
+        "api_url": "http://global.rotgbapi.711proxy.com:8089/gen?region=JP&proto=http",
+        "default_auth_scheme": "http",
+        "provider": "711proxy",
+    }
+
+
 def test_bind_link_open_default_proxy_selector_rejects_empty_us_proxy(monkeypatch):
     monkeypatch.setattr(
         interface_api.proxy_runtime_service,

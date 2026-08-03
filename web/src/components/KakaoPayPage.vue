@@ -179,6 +179,15 @@
 
         <div class="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
           <input v-model.trim="accountFilter" placeholder="搜索账号邮箱" class="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" />
+          <input
+            v-model.number="accountSelectLimit"
+            type="number"
+            min="1"
+            :max="filteredAccounts.length || 1"
+            placeholder="数量"
+            class="w-24 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none"
+            :disabled="inputLocked"
+          />
           <select v-model="accountStatusFilter" class="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
             <option value="all">全部状态</option>
             <option value="pending">未提链</option>
@@ -187,6 +196,7 @@
             <option value="paid">已支付</option>
           </select>
           <div class="flex flex-wrap gap-2">
+            <button @click="selectFirstFilteredAccounts" :disabled="inputLocked || !filteredAccounts.length" class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-semibold text-blue-100 hover:bg-blue-500/20 disabled:opacity-50">勾选前N</button>
             <button @click="selectAllFiltered" :disabled="inputLocked" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">全选当前</button>
             <button @click="clearSelectedAccounts" :disabled="inputLocked" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50">清空选择</button>
             <button
@@ -369,9 +379,9 @@
     <section v-else class="overflow-hidden rounded-2xl border border-blue-500/20 bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.13),transparent_34%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(2,6,23,0.98))] p-5 shadow-2xl shadow-black/30 md:p-6">
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 md:flex-row md:items-start md:justify-between">
         <div>
-          <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-300/80">KK Customer Payment API</p>
+          <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-300/80">LinkQueue 支付 API</p>
           <h2 class="mt-2 text-2xl font-black text-white md:text-3xl">支付页：已提链账号 + KK CDK 支付</h2>
-          <p class="mt-2 max-w-3xl text-sm text-slate-400">只同步已提取 Kakao/NicePay 链接的账号；提交时后端按账号加载 access token，并和链接、KK CDK 一起提交。支付 CDK 按额度重复分配。</p>
+          <p class="mt-2 max-w-3xl text-sm text-slate-400">只同步已提取 Kakao/NicePay 链接的账号；提交时后端把 CDK + Kakao 链接提交到 LinkQueue。支付 CDK 按额度重复分配。</p>
         </div>
         <div class="flex flex-wrap gap-2">
           <button @click="importKkPaymentLinks" :disabled="kkPaymentCdkQuotaBusy" class="rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 text-sm font-bold text-cyan-100 transition hover:bg-cyan-500/20 disabled:opacity-50">同步已提取链接</button>
@@ -473,7 +483,6 @@
                   <div class="flex shrink-0 flex-wrap justify-end gap-2">
                     <button @click="runKkPaymentTask(item)" :disabled="!(kkPaymentTaskRunnable(item) || kkPaymentOrderRestorable(item))" class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-bold text-blue-200 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50">提交/查询</button>
                     <button v-if="kkPaymentCanCancel(item)" @click="cancelKkPaymentOrder(item)" class="rounded-lg border border-orange-400/40 bg-orange-400/10 px-3 py-1.5 text-xs font-bold text-orange-100 hover:bg-orange-400/20">取消订单</button>
-                    <button v-if="kkPaymentCanResubmit(item)" @click="resubmitKkPaymentOrder(item)" class="rounded-lg border border-cyan-400/40 bg-cyan-400/10 px-3 py-1.5 text-xs font-bold text-cyan-100 hover:bg-cyan-400/20">重投订单</button>
                     <button v-if="kkPaymentNeedsRelink(item)" @click="reExtractKkPaymentLink(item)" :disabled="starting || cancelling" class="rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-3 py-1.5 text-xs font-bold text-yellow-100 hover:bg-yellow-400/20 disabled:opacity-50">重新提链</button>
                     <button @click="toggleKkPaymentDetails(item.id)" :aria-expanded="kkPaymentDetailsExpanded(item.id)" class="rounded-lg border border-slate-600 bg-slate-800/70 px-3 py-1.5 text-xs font-bold text-slate-100 hover:bg-slate-700">{{ kkPaymentDetailsExpanded(item.id) ? '收起' : '详情' }}</button>
                     <a :href="item.paymentUrl || '#'" target="_blank" class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-200 hover:bg-sky-500/20" :class="!item.paymentUrl ? 'pointer-events-none opacity-50' : ''">打开</a>
@@ -576,6 +585,7 @@ const currentResult = taskFieldRef('currentResult')
 const statusText = taskFieldRef('statusText')
 const statusError = taskFieldRef('statusError')
 const accountFilter = ref('')
+const accountSelectLimit = ref(10)
 const accountStatusFilter = ref('all')
 const accountVisibleCount = ref(100)
 const recentResultFilter = ref('all')
@@ -1375,6 +1385,17 @@ function selectAllFiltered() {
   selectedAccounts.value = new Set(filteredAccounts.value.filter(accountSelectable).map(item => item.email))
 }
 
+function selectFirstFilteredAccounts() {
+  const limit = Math.max(1, Math.floor(Number(accountSelectLimit.value || 0)))
+  accountSelectLimit.value = limit
+  const emails = filteredAccounts.value
+    .filter(accountSelectable)
+    .slice(0, limit)
+    .map(item => item.email)
+  selectedAccounts.value = new Set(emails)
+  setStatus(`已勾选当前筛选结果前 ${emails.length} 个账号。`)
+}
+
 function clearSelectedAccounts() {
   selectedAccounts.value = new Set()
 }
@@ -1832,7 +1853,6 @@ function externalOrderStatusText(status) {
     paid: '已支付',
     cancelled: '已取消',
     canceled: '已取消',
-    resubmitted: '已重投',
   }[key] || status || '未知'
 }
 
@@ -1841,7 +1861,7 @@ function externalOrderStatusClass(status) {
   if (['completed', 'success', 'succeeded', 'paid'].includes(key)) return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
   if (['failed', 'error', 'rejected', 'cancelled', 'canceled'].includes(key)) return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
   if (['expired', 'timeout', 'qr_timeout'].includes(key)) return 'border-yellow-400/30 bg-yellow-400/10 text-yellow-200'
-  if (['claimed', 'assigned', 'scanner_assigned', 'processing', 'checking', 'extracting', 'pending', 'queued', 'waiting', 'awaiting_scanner', 'waiting_scanner', 'awaiting_worker', 'resubmitted'].includes(key)) return 'border-blue-500/30 bg-blue-500/10 text-blue-300'
+  if (['claimed', 'assigned', 'scanner_assigned', 'processing', 'checking', 'extracting', 'pending', 'queued', 'waiting', 'awaiting_scanner', 'waiting_scanner', 'awaiting_worker'].includes(key)) return 'border-blue-500/30 bg-blue-500/10 text-blue-300'
   return 'border-yellow-400/30 bg-yellow-400/10 text-yellow-200'
 }
 
@@ -1937,18 +1957,6 @@ function kkPaymentNeedsRelink(item) {
 function kkPaymentCanCancel(item) {
   const status = String(item?.status || '').toLowerCase()
   return Boolean(item?.orderId) && ['running', 'pending', 'imported'].includes(status)
-}
-
-function kkPaymentCanResubmit(item) {
-  const status = String(item?.status || '').toLowerCase()
-  const message = String(item?.message || '').toLowerCase()
-  return Boolean(item?.orderId) && ['failed', 'stopped', 'needs_action'].includes(status) && (
-    message.includes('timeout')
-    || message.includes('超时')
-    || message.includes('过期')
-    || message.includes('qr')
-    || message.includes('二维码')
-  )
 }
 
 function kkPaymentCanRemove(item) {
@@ -2455,7 +2463,7 @@ function kkOrderProblemReason(data, fallback = '') {
     multiple: '存在多个失败原因',
     customer_cancelled: '客户已取消订单',
     scanner_timeout: '扫码员处理超时',
-    qr_timeout: '二维码超时，可尝试重投订单',
+    qr_timeout: '二维码超时，可重新提交任务',
   }[code]
   const parts = []
   if (codeText) parts.push(`${codeText}${code ? `（${code}）` : ''}`)
@@ -2468,12 +2476,12 @@ function kkOrderProblemReason(data, fallback = '') {
 
 function kkPaymentStatusFromOrderStatus(status) {
   const key = String(status || '').toLowerCase()
-  if (['success', 'succeeded', 'paid', 'completed'].includes(key)) return 'success'
+  if (['success', 'succeeded', 'paid', 'completed', 'scanned'].includes(key)) return 'success'
   if (['cancelled', 'canceled', 'stopped'].includes(key)) return 'stopped'
   if (['failed', 'error', 'rejected'].includes(key)) return 'failed'
   if (['expired', 'timeout', 'qr_timeout'].includes(key)) return 'needs_action'
   if (kkPaymentOrderMissing(key)) return 'needs_action'
-  if (['pending', 'queued', 'waiting', 'awaiting_scanner', 'waiting_scanner', 'awaiting_worker', 'claimed', 'assigned', 'scanner_assigned', 'checking', 'processing', 'extracting', 'resubmitted'].includes(key)) return 'running'
+  if (['pending', 'queued', 'waiting', 'awaiting_scanner', 'waiting_scanner', 'awaiting_worker', 'claimed', 'assigned', 'scanner_assigned', 'checking', 'processing', 'extracting'].includes(key)) return 'running'
   return key ? 'needs_action' : 'pending'
 }
 
@@ -2538,7 +2546,7 @@ async function runKkPaymentTask(item) {
   }
   kkPaymentRunningCount.value += 1
   item.status = 'running'
-  item.message = hasExistingOrder ? '查询 KK 支付状态中...' : '提交 session_cookie/AT + Kakao 链接 + CDK 中...'
+  item.message = hasExistingOrder ? '查询 KK 支付状态中...' : '提交 CDK + Kakao 链接到 LinkQueue 中...'
   try {
     if (!hasExistingOrder) {
       const submitted = await api.submitKakaoPayKkPayment({
@@ -2553,7 +2561,7 @@ async function runKkPaymentTask(item) {
       item.orderNo = String(order.orderNo || order.order_no || '').trim()
       item.customerToken = String(payload.customerToken || payload.customer_token || payload.token || '').trim()
       applyKkOrderWorkerInfo(item, submitted)
-      if (!item.orderId) throw new Error('KK 客户支付 API 未返回 order id')
+      if (!item.orderId) throw new Error('LinkQueue 支付 API 未返回 task id')
       if (!applyKkPaymentCdkSnapshot(cdk, submitted, '订单创建后额度')) markKkPaymentCdkSubmitted(cdk, item)
     }
     const job = await waitKkPaymentOrder(item)
@@ -2635,30 +2643,6 @@ async function cancelKkPaymentOrder(item) {
   } catch (error) {
     item.status = 'needs_action'
     item.message = `取消失败：${cleanError(error)}`
-    kkPaymentStatusText.value = item.message
-  } finally {
-    saveKkPaymentState()
-  }
-}
-
-async function resubmitKkPaymentOrder(item) {
-  if (!item?.orderId) return
-  item.message = '正在重投 KK 支付订单...'
-  try {
-    const data = await api.resubmitKakaoPayKkPaymentOrder(item.orderId, item.customerToken, item.cdk)
-    const { payload, order } = kkCustomerOrderPayload(data)
-    const status = String(order.status || payload.status || 'resubmitted').toLowerCase()
-    applyKkOrderWorkerInfo(item, data)
-    item.status = kkPaymentStatusFromOrderStatus(status)
-    item.message = kkOrderProblemReason(data, `订单${externalOrderStatusText(status)}，正在继续查询。`)
-    const cdk = kkPaymentCdks.value.find(row => row.id === item.cdkId || row.value === item.cdk)
-    applyKkPaymentCdkSnapshot(cdk, data, '重投后额度')
-    kkPaymentStatusText.value = `订单 ${item.orderId} 已重投，继续查询。`
-    item.status = 'needs_action'
-    await runKkPaymentTask(item)
-  } catch (error) {
-    item.status = 'needs_action'
-    item.message = `重投失败：${cleanError(error)}`
     kkPaymentStatusText.value = item.message
   } finally {
     saveKkPaymentState()
@@ -2754,7 +2738,7 @@ async function submitKkOrders() {
         item.problemReason = cleanError(error)
       }
     }
-    kkStatusText.value = `KK 客户支付 API 订单已提交：${tokens.length} 个。`
+    kkStatusText.value = `LinkQueue 支付 API 任务已提交：${tokens.length} 个。`
   } finally {
     kkBusy.value = false
   }

@@ -250,13 +250,17 @@
                   <label class="text-xs text-gray-500">代理池，一行一个</label>
                   <textarea v-model.trim="oauthProxyPoolText" rows="3" placeholder="hostname:port:username:password&#10;socks5://user:pass@host:port" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60"></textarea>
                 </div>
-                <div v-else class="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+                <div v-else class="grid gap-3 sm:grid-cols-[180px_120px_minmax(0,1fr)]">
                   <div>
                     <label class="text-xs text-gray-500">供应商</label>
                     <select v-model="oauthProxyApiProvider" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
                       <option value="cliproxy">cliproxy</option>
                       <option value="1024proxy">1024proxy</option>
                     </select>
+                  </div>
+                  <div>
+                    <label class="text-xs text-gray-500">国家</label>
+                    <input v-model.trim="oauthProxyApiCountry" type="text" placeholder="US / JP / GB" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60" />
                   </div>
                   <div>
                     <label class="text-xs text-gray-500">连接入口代理，可选</label>
@@ -1525,6 +1529,7 @@ const oauthProxyMode = ref('single')
 const oauthProxyUrl = ref('')
 const oauthProxyPoolText = ref('')
 const oauthProxyApiProvider = ref('cliproxy')
+const oauthProxyApiCountry = ref('US')
 const oauthBindPhone = ref(false)
 
 // 批量删除选中态:按邮箱(小写)保存,便于跨刷新复用
@@ -1690,6 +1695,7 @@ function loadOauthProxyConfig() {
     oauthProxyUrl.value = saved.proxyUrl || ''
     oauthProxyPoolText.value = saved.proxyPoolText || ''
     oauthProxyApiProvider.value = saved.proxyApiProvider === '1024proxy' ? '1024proxy' : 'cliproxy'
+    oauthProxyApiCountry.value = String(saved.proxyApiCountry || 'US').trim().toUpperCase() || 'US'
   } catch (_) {
     // ignore broken local storage
   }
@@ -1722,6 +1728,7 @@ function saveOauthProxyConfig() {
       proxyUrl: oauthProxyUrl.value,
       proxyPoolText: oauthProxyPoolText.value,
       proxyApiProvider: oauthProxyApiProvider.value,
+      proxyApiCountry: String(oauthProxyApiCountry.value || 'US').trim().toUpperCase() || 'US',
     }))
   } catch (_) {
     // ignore local storage write errors
@@ -1734,6 +1741,7 @@ function resetOauthProxyConfig() {
   oauthProxyUrl.value = ''
   oauthProxyPoolText.value = ''
   oauthProxyApiProvider.value = 'cliproxy'
+  oauthProxyApiCountry.value = 'US'
 }
 
 function buildOauthProxyPayload() {
@@ -1746,6 +1754,7 @@ function buildOauthProxyPayload() {
   }
   return {
     proxy_api_provider: oauthProxyApiProvider.value || 'cliproxy',
+    proxy_api_country: String(oauthProxyApiCountry.value || 'US').trim().toUpperCase() || 'US',
     ...(oauthProxyUrl.value ? { proxy_url: oauthProxyUrl.value } : {}),
   }
 }
@@ -1807,7 +1816,7 @@ const oauthProxySummary = computed(() => {
     const count = oauthProxyPoolText.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean).length
     return count ? `批量补登录会从 ${count} 条代理中按账号随机选择。` : '请导入或粘贴代理池。'
   }
-  return `补登录会通过 ${oauthProxyApiProvider.value} API 每个账号取一次代理。`
+  return `补登录会通过 ${oauthProxyApiProvider.value} API 每个账号取一次 ${String(oauthProxyApiCountry.value || 'US').trim().toUpperCase() || 'US'} 代理。`
 })
 
 const oauthPhoneSmsConfigured = computed(() => {
@@ -1870,7 +1879,7 @@ onMounted(() => {
   })
 })
 watch(
-  [oauthProxyEnabled, oauthProxyMode, oauthProxyUrl, oauthProxyPoolText, oauthProxyApiProvider],
+  [oauthProxyEnabled, oauthProxyMode, oauthProxyUrl, oauthProxyPoolText, oauthProxyApiProvider, oauthProxyApiCountry],
   saveOauthProxyConfig,
 )
 watch(oauthBindPhone, saveOauthPhoneConfig)

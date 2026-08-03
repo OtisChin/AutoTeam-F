@@ -34,8 +34,7 @@ ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "kakao_pay_account_status.json"
 KAKAO_TEMP_EXTRACT_API_BASE = "https://masi.cc.cd"
 KAKAO_TEMP_SHZYHQN_API_BASE = "https://kakao.shzyhqn.online"
 KAKAO_TEMP_SCAN_API_BASE = "https://masi.cc.cd/kakao/scan/api/integration"
-KAKAO_KK_CUSTOMER_API_BASE = "https://customer.i7wap.xyz/api/v1/customer"
-KAKAO_KK_CUSTOMER_WEB_API_BASE = "https://customer.i7wap.xyz/api/customer"
+KAKAO_KK_LINKQUEUE_API_BASE = "https://kakao.whitexfox.cn/api/v1"
 KAKAO_LINK_TTL_SECONDS = 15 * 60
 MAX_BATCH_CONCURRENCY = 20
 MAX_ACCOUNT_ATTEMPTS = 5
@@ -264,13 +263,11 @@ class KakaoPayCustomerOrderRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     cdk: str = Field("", validation_alias=AliasChoices("cdk", "CDK", "code", "xCdk", "xCdkKey"))
-    access_token: str = Field("", alias="accessToken", validation_alias=AliasChoices("accessToken", "access_token", "at", "token"))
-    session_cookie: str = Field("", alias="sessionCookie", validation_alias=AliasChoices("sessionCookie", "session_cookie", "credential", "cookie", "cookieHeader", "cookie_header"))
     payment_url: str = Field("", alias="paymentUrl", validation_alias=AliasChoices("paymentUrl", "payment_url", "link", "url"))
     payment_method: str = Field("kakao_pay", alias="paymentMethod", validation_alias=AliasChoices("paymentMethod", "payment_method"))
     mode: str = "READY_LINK"
 
-    @field_validator("cdk", "access_token", "session_cookie", "payment_url", "payment_method", "mode", mode="before")
+    @field_validator("cdk", "payment_url", "payment_method", "mode", mode="before")
     @classmethod
     def _clean_text(cls, value: Any) -> str:
         return str(value or "").strip()
@@ -337,29 +334,9 @@ def _remote_unreachable(exc: requests.RequestException, label: str) -> HTTPExcep
     return HTTPException(status_code=502, detail={"ok": False, "code": "remote_api_unreachable", "message": f"{label} 请求失败：{exc}"})
 
 
-def _customer_product_type(mode: str) -> str:
-    return "KAKAO_EXTRACT" if str(mode or "").upper() == "EXTRACT" else "KAKAO_AT"
-
-
-def _customer_order_payload(req: KakaoPayCustomerOrderRequest) -> dict[str, Any]:
-    mode = str(req.mode or "READY_LINK").strip().upper()
-    body: dict[str, Any] = {
-        "channel": "KAKAO_KK",
-        "mode": mode,
-        "productType": _customer_product_type(mode),
-        "payment_method": req.payment_method,
-    }
-    session_cookie = str(req.session_cookie or "").strip()
-    access_token = str(req.access_token or "").strip()
-    if session_cookie:
-        body["session_cookie"] = session_cookie
-        body["credential"] = session_cookie
-    if access_token:
-        body["access_token"] = access_token
+def _linkqueue_task_payload(req: KakaoPayCustomerOrderRequest) -> dict[str, Any]:
     payment_url = str(req.payment_url or "").strip()
-    if payment_url:
-        body["payment_url"] = payment_url
-    return body
+    return {"urls": [payment_url]} if payment_url else {"urls": []}
 
 
 def _load_links() -> list[dict[str, Any]]:
@@ -476,35 +453,6 @@ def _load_kakao_session_context_for_email(email: str) -> dict[str, str]:
     }
 
 
-def _load_kakao_customer_credentials_for_email(email: str) -> tuple[str, str]:
-    """Return (session_cookie, access_token) for the customer API.
-
-    The new customer API prefers session_cookie/credential because it can refresh
-    the web session. Keep access_token as a legacy fallback when the session file
-    is absent or incomplete.
-    """
-    session_cookie = ""
-    access_token = ""
-    try:
-        session_data = load_auth_session(email)
-    except Exception:
-        session_data = {}
-    if isinstance(session_data, dict):
-        session_cookie = str(
-            session_data.get("cookie_header")
-            or session_data.get("cookieHeader")
-            or session_data.get("session_cookie")
-            or session_data.get("sessionCookie")
-            or session_data.get("sessionToken")
-            or session_data.get("session_token")
-            or ""
-        ).strip()
-        access_token = str(session_data.get("accessToken") or session_data.get("access_token") or "").strip()
-    if not access_token:
-        access_token = _load_token_for_email(email)
-    return session_cookie, access_token
-
-
 def _parse_proxies(value: str | list[str]) -> list[str]:
     return pix_routes._parse_proxies(value)
 
@@ -593,69 +541,152 @@ def _find_kakao_payment_link(*, link_id: str = "", account_email: str = "", paym
 
 
 def _submit_kakao_customer_order(req: KakaoPayCustomerOrderRequest) -> dict[str, Any]:
+    clean_cdk = str(req.cdk or "").strip()
     try:
         resp = requests.post(
-            f"{KAKAO_KK_CUSTOMER_API_BASE}/orders",
-            json=_customer_order_payload(req),
-            headers={"Content-Type": "application/json", "X-CDK-Key": str(req.cdk or "").strip()},
+            f"{KAKAO_KK_LINKQUEUE_API_BASE}/tasks",
+            json=_linkqueue_task_payload(req),
+            headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {clean_cdk}"},
             timeout=70,
         )
     except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "KK 客户支付 API") from exc
-    return _remote_json(resp, "KK 客户支付 API 返回非 JSON 响应")
+        raise _remote_unreachable(exc, "LinkQueue 支付 API") from exc
+    data = _remote_json(resp, "LinkQueue 支付 API 返回非 JSON 响应")
+    return _linkqueue_order_envelope(data, cdk=clean_cdk)
 
 
 def _customer_api_get(path: str, *, headers: dict[str, str], timeout: int = 20) -> dict[str, Any]:
     try:
-        resp = requests.get(f"{KAKAO_KK_CUSTOMER_API_BASE}{path}", headers=headers, timeout=timeout)
+        resp = requests.get(f"{KAKAO_KK_LINKQUEUE_API_BASE}{path}", headers=headers, timeout=timeout)
     except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "KK 客户支付 API") from exc
-    return _remote_json(resp, "KK 客户支付 API 返回非 JSON 响应")
+        raise _remote_unreachable(exc, "LinkQueue 支付 API") from exc
+    return _remote_json(resp, "LinkQueue 支付 API 返回非 JSON 响应")
 
 
 def _customer_api_post_action(path: str, *, headers: dict[str, str], timeout: int = 20) -> dict[str, Any]:
     try:
-        resp = requests.post(f"{KAKAO_KK_CUSTOMER_API_BASE}{path}", headers=headers, timeout=timeout)
+        resp = requests.post(f"{KAKAO_KK_LINKQUEUE_API_BASE}{path}", headers=headers, timeout=timeout)
     except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "KK 客户支付 API") from exc
-    return _remote_json(resp, "KK 客户支付 API 返回非 JSON 响应")
+        raise _remote_unreachable(exc, "LinkQueue 支付 API") from exc
+    return _remote_json(resp, "LinkQueue 支付 API 返回非 JSON 响应")
+
+
+def _linkqueue_authorization_headers(cdk: str) -> dict[str, str]:
+    clean_cdk = str(cdk or "").strip()
+    return {"Accept": "application/json", "Authorization": f"Bearer {clean_cdk}"}
+
+
+def _linkqueue_account(cdk: str) -> dict[str, Any]:
+    clean_cdk = str(cdk or "").strip()
+    try:
+        resp = requests.get(
+            f"{KAKAO_KK_LINKQUEUE_API_BASE}/account",
+            params={"offset": 0, "limit": 100},
+            headers=_linkqueue_authorization_headers(clean_cdk),
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise _remote_unreachable(exc, "LinkQueue 支付 CDK 额度查询 API") from exc
+    return _remote_json(resp, "LinkQueue 支付 CDK 额度查询 API 返回非 JSON 响应")
+
+
+def _linkqueue_tasks_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    raw_tasks = payload.get("tasks") or payload.get("items") or payload.get("list") or payload.get("records") or []
+    return [item for item in raw_tasks if isinstance(item, dict)] if isinstance(raw_tasks, list) else []
+
+
+def _linkqueue_active_task_count(tasks: list[dict[str, Any]]) -> int:
+    return sum(1 for item in tasks if str(item.get("status") or "").strip().lower() in {"queued", "claimed"})
+
+
+def _linkqueue_cdk_snapshot(data: dict[str, Any], *, cdk: str = "") -> dict[str, Any]:
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    cdk_data = payload.get("cdk") if isinstance(payload.get("cdk"), dict) else {}
+    tasks = _linkqueue_tasks_from_payload(data)
+    capacity = cdk_data.get("capacity", cdk_data.get("totalCount", cdk_data.get("initial", data.get("totalCount", "-"))))
+    remaining = cdk_data.get("remaining", cdk_data.get("availableCount", data.get("remaining", data.get("availableCount", "-"))))
+    consumed = cdk_data.get("consumed", cdk_data.get("usedCount", data.get("submissionsUsed", data.get("usedCount", "-"))))
+    frozen = cdk_data.get("frozenCount", data.get("frozenCount", _linkqueue_active_task_count(tasks)))
+    return {
+        "code": str(cdk or cdk_data.get("code") or "").strip(),
+        "prefix": cdk_data.get("prefix", data.get("prefix", "")),
+        "productType": "LINKQUEUE",
+        "totalCount": capacity,
+        "usedCount": consumed,
+        "frozenCount": frozen,
+        "availableCount": remaining,
+        "initial": cdk_data.get("initial", ""),
+        "capacity": capacity,
+        "remaining": remaining,
+        "consumed": consumed,
+        "status": cdk_data.get("status", data.get("status", "active")),
+        "submissionLimit": cdk_data.get("submissionLimit", data.get("submissionLimit", "")),
+        "submissionsUsed": cdk_data.get("submissionsUsed", data.get("submissionsUsed", "")),
+        "submissionRemaining": cdk_data.get("submissionRemaining", data.get("submissionRemaining", "")),
+    }
+
+
+def _linkqueue_normalize_task(task: dict[str, Any], *, order_id: str = "") -> dict[str, Any]:
+    item = dict(task or {})
+    item["id"] = str(item.get("id") or item.get("taskId") or item.get("task_id") or order_id or "").strip()
+    item["status"] = str(item.get("status") or "").strip().lower()
+    if "payment_url" not in item and item.get("url"):
+        item["payment_url"] = item.get("url")
+    if "problemReason" not in item:
+        item["problemReason"] = item.get("error") or item.get("reason") or item.get("message") or ""
+    worker = item.get("merchantName") or item.get("merchant_name") or ""
+    if worker and not item.get("workerName"):
+        item["workerName"] = worker
+    return item
+
+
+def _linkqueue_order_envelope(data: dict[str, Any], *, cdk: str = "", order_id: str = "", task: dict[str, Any] | None = None) -> dict[str, Any]:
+    tasks = _linkqueue_tasks_from_payload(data)
+    selected = task or (tasks[0] if tasks else {})
+    if selected:
+        selected = _linkqueue_normalize_task(selected, order_id=order_id)
+    cdk_snapshot = _linkqueue_cdk_snapshot(data, cdk=cdk)
+    wrapped = dict(data)
+    wrapped["ok"] = data.get("ok", True)
+    wrapped["data"] = {"order": selected, "cdk": cdk_snapshot}
+    if tasks:
+        wrapped["tasks"] = [_linkqueue_normalize_task(item) for item in tasks]
+    return wrapped
+
+
+def _linkqueue_order_not_found_payload(order_id: str, cdk: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    base = data if isinstance(data, dict) else {}
+    return _linkqueue_order_envelope(
+        base,
+        cdk=cdk,
+        order_id=order_id,
+        task={"id": order_id, "status": "not_found", "problemReason": "任务不存在 / Task not found."},
+    ) | {"ok": False, "code": "TASK_NOT_FOUND"}
+
+
+def _get_linkqueue_order(order_id: str, cdk: str) -> dict[str, Any]:
+    clean_order_id = str(order_id or "").strip()
+    clean_cdk = str(cdk or "").strip()
+    data = _linkqueue_account(clean_cdk)
+    for task in _linkqueue_tasks_from_payload(data):
+        if str(task.get("id") or task.get("taskId") or task.get("task_id") or "").strip() == clean_order_id:
+            return _linkqueue_order_envelope(data, cdk=clean_cdk, order_id=clean_order_id, task=task)
+    return _linkqueue_order_not_found_payload(clean_order_id, clean_cdk, data)
 
 
 def _kk_payment_cdk_status(cdk: str) -> dict[str, Any]:
     clean_cdk = str(cdk or "").strip()
     if not clean_cdk:
         raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "KK 支付 CDK 不能为空"})
-    try:
-        resp = requests.get(
-            f"{KAKAO_KK_CUSTOMER_API_BASE}/orders",
-            params={"page": 1, "pageSize": 100},
-            headers={"Accept": "application/json", "X-CDK-Key": clean_cdk},
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "KK 支付 CDK 额度查询 API") from exc
-    data = _remote_json(resp, "KK 支付 CDK 额度查询 API 返回非 JSON 响应")
-    snapshot = _cdk_snapshot_from_customer_orders(data)
-    orders = _customer_orders_from_payload(data)
-    if snapshot:
-        return {"ok": True, "data": snapshot, "orders": orders}
-    try:
-        resp = requests.post(
-            f"{KAKAO_KK_CUSTOMER_WEB_API_BASE}/cdk/orders",
-            json={"code": clean_cdk},
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "KK 支付 CDK 额度查询 API") from exc
-    data = _remote_json(resp, "KK 支付 CDK 额度查询 API 返回非 JSON 响应")
-    snapshot = _cdk_snapshot_from_customer_orders(data)
-    if snapshot:
-        return {"ok": True, "data": snapshot, "orders": _customer_orders_from_payload(data)}
-    return {"ok": True, "data": {"totalCount": "-", "usedCount": "-", "frozenCount": "-", "availableCount": "-"}, "orders": orders}
+    data = _linkqueue_account(clean_cdk)
+    return {"ok": True, "data": _linkqueue_cdk_snapshot(data, cdk=clean_cdk), "orders": _linkqueue_tasks_from_payload(data), "tasks": _linkqueue_tasks_from_payload(data)}
 
 
 def _customer_orders_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
+    linkqueue_tasks = _linkqueue_tasks_from_payload(data)
+    if linkqueue_tasks:
+        return linkqueue_tasks
     if isinstance(data.get("data"), list):
         return [item for item in data.get("data") or [] if isinstance(item, dict)]
     payload = data.get("data") if isinstance(data.get("data"), dict) else data
@@ -687,18 +718,14 @@ def _cdk_snapshot_from_customer_orders(data: dict[str, Any]) -> dict[str, Any]:
 def _kk_payment_order_action(order_id: str, action: str, *, token: str = "", cdk: str = "") -> dict[str, Any]:
     clean_order_id = str(order_id or "").strip()
     clean_action = str(action or "").strip().lower()
-    clean_token = str(token or "").strip()
     clean_cdk = str(cdk or "").strip()
-    if clean_action not in {"cancel", "resubmit"}:
+    if clean_action != "cancel":
         raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "不支持的 KK 订单操作"})
-    if not clean_order_id or (not clean_token and not clean_cdk):
-        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "order_id 以及 customerToken 或 CDK 不能为空"})
-    headers: dict[str, str] = {"Accept": "application/json"}
-    if clean_token:
-        headers["Authorization"] = f"Bearer {clean_token}"
-    if clean_cdk:
-        headers["X-CDK-Key"] = clean_cdk
-    return _customer_api_post_action(f"/orders/{clean_order_id}/{clean_action}", headers=headers, timeout=20)
+    if not clean_order_id or not clean_cdk:
+        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "task_id 和 CDK 不能为空"})
+    data = _customer_api_post_action(f"/tasks/{clean_order_id}/cancel", headers=_linkqueue_authorization_headers(clean_cdk), timeout=20)
+    task = data.get("task") if isinstance(data.get("task"), dict) else {}
+    return _linkqueue_order_envelope(data, cdk=clean_cdk, order_id=clean_order_id, task=task)
 
 
 def _kakao_temp_ticket_status(cdk: str, channel: str = "masi") -> dict[str, Any]:
@@ -767,7 +794,7 @@ def _customer_token(data: dict[str, Any]) -> str:
 def _customer_order_success(data: dict[str, Any]) -> bool:
     _payload, order = _customer_order_response_payload(data)
     status = str(order.get("status") or data.get("status") or "").strip().lower()
-    return status in {"success", "succeeded", "paid", "completed"}
+    return status in {"success", "succeeded", "paid", "completed", "scanned"}
 
 
 def _remember_kk_payment_order(order_id: str, *, account_email: str, link_id: str, payment_url: str, cdk: str, customer_token: str = "") -> None:
@@ -2220,12 +2247,10 @@ def create_kakao_pay_router() -> APIRouter:
     @router.post("/api/kakao-pay/kk-payment/orders")
     def create_kakao_pay_customer_order(req: KakaoPayCustomerOrderRequest) -> dict[str, Any]:
         cdk = str(req.cdk or "").strip()
-        access_token = str(req.access_token or "").strip()
-        session_cookie = str(req.session_cookie or "").strip()
         mode = str(req.mode or "READY_LINK").strip().upper()
         payment_url = str(req.payment_url or "").strip()
-        if not cdk or not (session_cookie or access_token):
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "KK 支付 CDK 和 session_cookie/AT 不能为空"})
+        if not cdk:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "KK 支付 CDK 不能为空"})
         if mode == "READY_LINK" and not payment_url:
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "READY_LINK 模式需要 NicePay 支付链接"})
         return _submit_kakao_customer_order(req)
@@ -2243,13 +2268,8 @@ def create_kakao_pay_router() -> APIRouter:
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请选择已提取链接对应账号"})
         if not payment_url:
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "该账号缺少已提取 Kakao/NicePay 链接"})
-        session_cookie, access_token = _load_kakao_customer_credentials_for_email(account_email)
-        if not session_cookie and not access_token:
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_account", "message": "账号缺少有效 session_cookie 或 accessToken"})
         order_req = KakaoPayCustomerOrderRequest.model_validate({
             "cdk": cdk,
-            "sessionCookie": session_cookie,
-            "accessToken": access_token,
             "paymentUrl": payment_url,
             "paymentMethod": req.payment_method,
             "mode": "READY_LINK",
@@ -2280,18 +2300,12 @@ def create_kakao_pay_router() -> APIRouter:
     @router.get("/api/kakao-pay/kk-payment/orders/{order_id}")
     def get_kakao_pay_customer_order(order_id: str, token: str = Query(""), cdk: str = Query(""), accountEmail: str = Query("")) -> dict[str, Any]:
         clean_order_id = str(order_id or "").strip()
-        clean_token = str(token or "").strip()
         clean_cdk = str(cdk or "").strip()
-        if not clean_order_id or (not clean_token and not clean_cdk):
-            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "order_id 以及 customerToken 或 CDK 不能为空"})
-        headers: dict[str, str] = {"Accept": "application/json"}
-        if clean_token:
-            headers["Authorization"] = f"Bearer {clean_token}"
-        if clean_cdk:
-            headers["X-CDK-Key"] = clean_cdk
-        data = _customer_api_get(f"/orders/{clean_order_id}", headers=headers, timeout=20)
+        if not clean_order_id or not clean_cdk:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "task_id 和 CDK 不能为空"})
+        data = _get_linkqueue_order(clean_order_id, clean_cdk)
         if _customer_order_success(data):
-            account_update = _mark_kk_payment_success_account(clean_order_id, accountEmail, "KK 客户支付 API 支付成功")
+            account_update = _mark_kk_payment_success_account(clean_order_id, accountEmail, "LinkQueue 支付 API 支付成功")
             if account_update:
                 payload, order = _customer_order_response_payload(data)
                 order["account_email"] = account_update.get("email") or ""
@@ -2305,9 +2319,5 @@ def create_kakao_pay_router() -> APIRouter:
     @router.post("/api/kakao-pay/kk-payment/orders/{order_id}/cancel")
     def cancel_kakao_pay_customer_order(order_id: str, token: str = Query(""), cdk: str = Query("")) -> dict[str, Any]:
         return _kk_payment_order_action(order_id, "cancel", token=token, cdk=cdk)
-
-    @router.post("/api/kakao-pay/kk-payment/orders/{order_id}/resubmit")
-    def resubmit_kakao_pay_customer_order(order_id: str, token: str = Query(""), cdk: str = Query("")) -> dict[str, Any]:
-        return _kk_payment_order_action(order_id, "resubmit", token=token, cdk=cdk)
 
     return router

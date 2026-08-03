@@ -134,6 +134,84 @@ def test_oauth_token_exchange_summarizes_candidate_failures(caplog):
     assert "Token 交换失败(mode=" not in "\n".join(warnings)
 
 
+def test_add_phone_fraud_guard_is_phone_rate_limited():
+    auth_flow = _load_auth_flow_module()
+
+    reason = (
+        "add-phone/send 失败: 400: fraud_guard: We've detected suspicious behavior "
+        "from phone numbers similar to yours."
+    )
+
+    assert auth_flow._is_add_phone_rate_limited_error(reason) is True
+
+
+def test_email_otp_verify_retries_three_attempts_after_wrong_code(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    monkeypatch.setenv("OPENAI_EMAIL_OTP_VERIFY_MAX_ATTEMPTS", "3")
+    verify_codes = []
+    wait_calls = []
+    delivery_modes = []
+    dumps = []
+
+    def fake_verify(code):
+        verify_codes.append(code)
+        if len(verify_codes) < 3:
+            raise RuntimeError("OTP 验证失败: 401: wrong_email_otp_code")
+        return {"continue_url": "https://chatgpt.com"}
+
+    def fake_wait(*_args, **kwargs):
+        wait_calls.append(kwargs)
+        return f"retry-code-{len(wait_calls)}"
+
+    flow.verify_otp = fake_verify
+    flow._wait_for_email_otp = fake_wait
+    flow.kickoff_otp_delivery = lambda mode="": delivery_modes.append(mode) or True
+    flow.fetch_client_auth_session_dump = lambda stage="": dumps.append(stage)
+
+    assert flow._verify_email_otp_with_retries(
+        object(),
+        "user@example.com",
+        "initial-code",
+        otp_timeout=60,
+        retry_mode="protocol_verify_retry",
+        dump_stage="post_verify_otp_protocol",
+    ) == {"continue_url": "https://chatgpt.com"}
+
+    assert verify_codes == ["initial-code", "retry-code-1", "retry-code-2"]
+    assert delivery_modes == ["protocol_verify_retry", "protocol_verify_retry_2"]
+    assert len(wait_calls) == 2
+    assert all(call["exclude_used"] is True for call in wait_calls)
+    assert dumps == ["post_verify_otp_protocol_retry_2"]
+
+
+def test_protocol_mail_adapter_waits_before_first_email_otp_query(monkeypatch):
+    from autotoken.auth import protocol_register
+
+    events = []
+
+    class FakeMailClient:
+        def search_emails_by_recipient(self, *_args, **_kwargs):
+            events.append("search")
+            return [{"subject": "OpenAI code"}]
+
+        def extract_verification_code(self, _item):
+            return "123456"
+
+    monkeypatch.setenv("OPENAI_EMAIL_OTP_INITIAL_DELAY", "3")
+    monkeypatch.setattr(protocol_register.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(protocol_register.time, "sleep", lambda seconds: events.append(("sleep", seconds)))
+
+    adapter = protocol_register.ProtocolMailAdapter(FakeMailClient(), email="user@example.com")
+
+    assert adapter.wait_for_otp("user@example.com", timeout=60) == "123456"
+    assert events[:2] == [("sleep", 3.0), "search"]
+
+
 def test_phone_first_oauth_failure_preserves_specific_error(monkeypatch):
     auth_flow = _load_auth_flow_module()
 

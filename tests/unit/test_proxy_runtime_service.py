@@ -34,7 +34,7 @@ def test_normalize_proxy_api_provider_accepts_711proxy_aliases():
 def test_default_proxy_api_url_builds_711proxy_residential_url():
     assert proxy_runtime.default_proxy_api_url("711proxy", country="US") == (
         "http://global.rotgbapi.711proxy.com:8089/gen?"
-        "zone=custom&ptype=1&region=US&count=1&proto=http&stype=text&split=%5Cr%5Cn&"
+        "zone=custom&ptype=1&region=US&count=1&proto=socks5&stype=text&split=%5Cr%5Cn&"
         "sessType=sticky&sessTime=30&sessAuto=1"
     )
 
@@ -77,7 +77,7 @@ def test_fetch_proxy_from_api_url_normalizes_711proxy_to_http(monkeypatch):
             default_auth_scheme=proxy_runtime.default_proxy_auth_scheme("711proxy"),
             provider="711proxy",
         )
-        == "http://5.5.5.5:8080"
+        == "socks5h://5.5.5.5:8080"
     )
 
 def test_fetch_proxy_from_api_url_rejects_html_response(monkeypatch):

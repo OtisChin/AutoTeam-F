@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class BindLinkParams(BaseModel):
@@ -19,6 +19,10 @@ class BindLinkParams(BaseModel):
     entry_point: str | None = None
     promo_code: str | None = None
     cancel_url: str | None = None
+    proxy_api_enabled: bool = Field(False, validation_alias=AliasChoices("proxy_api_enabled", "proxyApiEnabled"))
+    proxy_api_provider: str = Field("cliproxy", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
+    proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
+    proxy_api_country: str = Field("US", validation_alias=AliasChoices("proxy_api_country", "proxyApiCountry"))
 
 
 class BindLinkOpenParams(BaseModel):
@@ -30,6 +34,10 @@ class BindLinkOpenParams(BaseModel):
     checkout_ui_mode: str = "hosted"
     team_plan_data: dict | None = None
     entry_point: str | None = None
+    proxy_api_enabled: bool = Field(False, validation_alias=AliasChoices("proxy_api_enabled", "proxyApiEnabled"))
+    proxy_api_provider: str = Field("cliproxy", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
+    proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
+    proxy_api_country: str = Field("US", validation_alias=AliasChoices("proxy_api_country", "proxyApiCountry"))
 
 
 def _checkout_payload(params: BindLinkParams) -> dict[str, Any]:
@@ -57,6 +65,64 @@ def _is_plus_trial_flow(payload: dict[str, Any]) -> bool:
     return str(payload.get("checkout_flow") or "").strip().lower() == "plus_trial"
 
 
+def _proxy_api_kwargs(params: BindLinkParams | BindLinkOpenParams, *, country: str | None = None) -> dict[str, str]:
+    return {
+        "provider": str(params.proxy_api_provider or "cliproxy").strip() or "cliproxy",
+        "country": str(country or params.proxy_api_country or "US").strip().upper() or "US",
+        "api_url": str(params.proxy_api_url or "").strip(),
+    }
+
+
+def _select_proxy_url(
+    selector: Callable[..., str] | None,
+    params: BindLinkParams | BindLinkOpenParams,
+    *,
+    country: str | None = None,
+    strict: bool = False,
+) -> str:
+    if not selector or not params.proxy_api_enabled:
+        return ""
+    try:
+        proxy_url = str(selector(**_proxy_api_kwargs(params, country=country)) or "").strip()
+    except Exception as exc:
+        if strict:
+            raise HTTPException(status_code=502, detail=f"打开浏览器代理 API 获取失败: {exc}") from exc
+        logging.getLogger(__name__).info("[bind/link] proxy API unavailable; falling back to direct: %s", exc)
+        return ""
+    if strict and not proxy_url:
+        raise HTTPException(status_code=502, detail="打开浏览器代理 API 未返回可用代理")
+    return proxy_url
+
+
+def _select_preflighted_open_proxy_url(
+    selector: Callable[..., str] | None,
+    params: BindLinkParams | BindLinkOpenParams,
+    *,
+    preflight_proxy_url: Callable[[str], tuple[bool, str]] | None = None,
+    country: str | None = None,
+    attempts: int = 3,
+) -> str:
+    if not selector or not params.proxy_api_enabled:
+        return ""
+    max_attempts = max(1, int(attempts or 1))
+    last_message = ""
+    for attempt_index in range(max_attempts):
+        proxy_url = _select_proxy_url(selector, params, country=country, strict=True)
+        if not proxy_url or not preflight_proxy_url:
+            return proxy_url
+        ok, message = preflight_proxy_url(proxy_url)
+        if ok:
+            return proxy_url
+        last_message = str(message or "unknown")
+        logging.getLogger(__name__).info(
+            "[bind/link/open] browser proxy preflight failed (%s/%s): %s",
+            attempt_index + 1,
+            max_attempts,
+            last_message,
+        )
+    raise HTTPException(status_code=502, detail=f"打开浏览器代理预检失败: {last_message}")
+
+
 def _prefer_chatgpt_checkout_url(result: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(result)
     checkout_session_id = str(normalized.get("checkout_session_id") or "").strip()
@@ -76,11 +142,12 @@ def _prefer_chatgpt_checkout_url(result: dict[str, Any]) -> dict[str, Any]:
 def create_bind_link_router(
     *,
     normalize_access_token: Callable[[str], str],
-    generate_checkout_link: Callable[[str, dict[str, Any]], dict[str, Any]],
+    generate_checkout_link: Callable[..., dict[str, Any]],
     generate_plus_trial_checkout_link: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     get_account_access_token: Callable[[str], str] | None = None,
     open_checkout_url: Callable[..., dict[str, Any]] | None = None,
-    select_open_proxy_url: Callable[[], str] | None = None,
+    select_open_proxy_url: Callable[..., str] | None = None,
+    preflight_open_proxy_url: Callable[[str], tuple[bool, str]] | None = None,
     logger: logging.Logger | None = None,
 ) -> APIRouter:
     router = APIRouter()
@@ -99,6 +166,9 @@ def create_bind_link_router(
                 if not generate_plus_trial_checkout_link:
                     raise HTTPException(status_code=500, detail="当前服务未配置 Plus 试用提链器")
                 return _prefer_chatgpt_checkout_url(generate_plus_trial_checkout_link(access_token, payload))
+            proxy_url = _select_proxy_url(select_open_proxy_url, params)
+            if proxy_url:
+                return _prefer_chatgpt_checkout_url(generate_checkout_link(access_token, payload, proxy_url=proxy_url))
             return _prefer_chatgpt_checkout_url(generate_checkout_link(access_token, payload))
         except HTTPException:
             raise
@@ -123,16 +193,31 @@ def create_bind_link_router(
 
         try:
             payload = _checkout_payload(params)
+            generated_proxy_url = ""
             if _is_plus_trial_flow(payload):
                 if not generate_plus_trial_checkout_link:
                     raise HTTPException(status_code=500, detail="当前服务未配置 Plus 试用提链器")
                 generated = _prefer_chatgpt_checkout_url(generate_plus_trial_checkout_link(access_token, payload))
             else:
-                generated = _prefer_chatgpt_checkout_url(generate_checkout_link(access_token, payload))
+                generated_proxy_url = _select_preflighted_open_proxy_url(
+                    select_open_proxy_url,
+                    params,
+                    preflight_proxy_url=preflight_open_proxy_url,
+                )
+                if generated_proxy_url:
+                    generated = _prefer_chatgpt_checkout_url(
+                        generate_checkout_link(access_token, payload, proxy_url=generated_proxy_url)
+                    )
+                else:
+                    generated = _prefer_chatgpt_checkout_url(generate_checkout_link(access_token, payload))
             checkout_url = str(generated.get("url") or "").strip()
             if not checkout_url:
                 raise HTTPException(status_code=502, detail="生成 checkout 返回缺少 url")
-            open_proxy_url = str(select_open_proxy_url() or "").strip() if select_open_proxy_url else ""
+            open_proxy_url = generated_proxy_url or _select_preflighted_open_proxy_url(
+                select_open_proxy_url,
+                params,
+                preflight_proxy_url=preflight_open_proxy_url,
+            )
             open_kwargs: dict[str, Any] = {"open_mode": "roxybrowser"}
             if open_proxy_url:
                 open_kwargs["proxy_url"] = open_proxy_url

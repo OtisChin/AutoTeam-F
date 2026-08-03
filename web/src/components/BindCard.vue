@@ -131,6 +131,47 @@
             </select>
           </div>
 
+          <div class="rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-3">
+            <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+              <input
+                v-model="bindForm.proxyApiEnabled"
+                type="checkbox"
+                :disabled="generating"
+                class="accent-blue-500"
+              />
+              启用代理 API 打开/提链
+            </label>
+            <div v-if="bindForm.proxyApiEnabled" class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">供应商</label>
+                <select
+                  v-model="bindForm.proxyApiProvider"
+                  :disabled="generating"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="cliproxy">Cliproxy</option>
+                  <option value="1024proxy">1024proxy</option>
+                  <option value="711proxy">711Proxy</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">代理国家</label>
+                <select
+                  v-model="bindForm.proxyApiCountry"
+                  :disabled="generating"
+                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option v-for="option in bindCountryOptions" :key="`generate-proxy-${option.country}`" :value="option.country">
+                    {{ option.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <div class="mt-2 text-xs" :class="bindForm.proxyApiEnabled ? 'text-blue-300' : 'text-gray-500'">
+              {{ generateProxyApiHelp }}
+            </div>
+          </div>
+
           <template v-if="bindForm.planType === 'team'">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
@@ -430,7 +471,7 @@
               />
               启用代理 API 轮换
             </label>
-            <div v-if="bindTaskForm.proxyApiEnabled" class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div v-if="bindTaskForm.proxyApiEnabled" class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label class="block text-sm text-gray-400 mb-1">供应商</label>
                 <select
@@ -454,16 +495,6 @@
                     {{ option.label }}
                   </option>
                 </select>
-              </div>
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">代理 API URL（可选）</label>
-                <input
-                  v-model.trim="bindTaskForm.proxyApiUrl"
-                  type="text"
-                  :disabled="bindSubmitting || bindTaskRunning"
-                  placeholder="留空使用所选供应商默认 API"
-                  class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-                />
               </div>
             </div>
             <div class="mt-2 text-xs" :class="bindTaskForm.proxyApiEnabled ? 'text-blue-300' : 'text-gray-500'">
@@ -2032,6 +2063,9 @@ const bindForm = ref({
   teamWorkspaceName: 'MyWorkspace',
   teamSeatQuantity: 5,
   teamPriceInterval: 'month',
+  proxyApiEnabled: false,
+  proxyApiProvider: 'cliproxy',
+  proxyApiCountry: 'US',
 })
 
 const bindTaskForm = ref({
@@ -2042,11 +2076,22 @@ const bindTaskForm = ref({
   proxyApiEnabled: false,
   proxyApiProvider: 'cliproxy',
   proxyApiCountry: 'US',
-  proxyApiUrl: '',
   manualConfirm: false,
 })
 
 const selectedPlanName = computed(() => bindPlanLabel(bindForm.value.planType))
+
+const generateProxyApiHelp = computed(() => {
+  if (!bindForm.value.proxyApiEnabled) {
+    return '未启用时生成并打开不设置浏览器代理；Plus 试用提链也不会注入动态代理。'
+  }
+  const provider = String(bindForm.value.proxyApiProvider || 'cliproxy')
+  const country = String(bindForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US'
+  if (provider === '711proxy') {
+    return `生成支付链接/打开支付页时调用 711Proxy 住宅代理 API，region=${country}&proto=http。`
+  }
+  return `生成支付链接/打开支付页时调用 ${provider} API，region=${country}。`
+})
 
 const filteredAccountOptions = computed(() => {
   const keyword = accountSearchKeyword.value.trim().toLowerCase()
@@ -3485,7 +3530,6 @@ function getRememberedChatGPTBindForm() {
       proxyApiEnabled: Boolean(bindTaskForm.value.proxyApiEnabled),
       proxyApiProvider: proxyApiProviderOptions.includes(String(bindTaskForm.value.proxyApiProvider || '')) ? bindTaskForm.value.proxyApiProvider : 'cliproxy',
       proxyApiCountry: String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US',
-      proxyApiUrl: String(bindTaskForm.value.proxyApiUrl || '').trim(),
     },
   }
 }
@@ -3523,7 +3567,6 @@ function loadChatGPTBindFormState() {
       proxyApiEnabled: Boolean(taskForm.proxyApiEnabled),
       proxyApiProvider: proxyApiProviderOptions.includes(String(saved.proxyApiProvider || '')) ? saved.proxyApiProvider : 'cliproxy',
       proxyApiCountry: String(taskForm.proxyApiCountry || 'US').trim().toUpperCase() || 'US',
-      proxyApiUrl: String(taskForm.proxyApiUrl || '').trim(),
       manualConfirm: false,
     }
     return true
@@ -3941,7 +3984,7 @@ function formatCardOption(card) {
 }
 
 function buildBindLinkPayload(accessToken) {
-  return buildCheckoutPayload({
+  const payload = buildCheckoutPayload({
     accessToken,
     planType: bindForm.value.planType,
     country: bindForm.value.country,
@@ -3949,6 +3992,14 @@ function buildBindLinkPayload(accessToken) {
     teamPriceInterval: bindForm.value.teamPriceInterval,
     teamSeatQuantity: bindForm.value.teamSeatQuantity,
   })
+  return {
+    ...payload,
+    proxy_api_enabled: Boolean(bindForm.value.proxyApiEnabled),
+    proxy_api_provider: bindForm.value.proxyApiEnabled ? bindForm.value.proxyApiProvider : '',
+    proxy_api_country: bindForm.value.proxyApiEnabled
+      ? (String(bindForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US')
+      : '',
+  }
 }
 
 function resolveGeneratedLink(result) {
@@ -4352,7 +4403,6 @@ async function startBindCard() {
       proxy_api_country: bindTaskForm.value.proxyApiEnabled
         ? (String(bindTaskForm.value.proxyApiCountry || 'US').trim().toUpperCase() || 'US')
         : '',
-      proxy_api_url: bindTaskForm.value.proxyApiEnabled ? String(bindTaskForm.value.proxyApiUrl || '').trim() : '',
       payment_flow: bindTaskForm.value.paymentFlow === 'protocol' ? 'protocol' : 'playwright',
       manual_confirm: false,
     })

@@ -2384,6 +2384,19 @@ _DIRECT_CODE_SELECTORS = (
     'input[placeholder*="code" i], input[placeholder*="verification" i], '
     'input[aria-label*="code" i], input[aria-label*="verification" i]'
 )
+_DIRECT_CONTINUE_LABELS = ("Continue", "继续", "繼續", "続行")
+_DIRECT_PASSWORD_CONTINUE_LABELS = (*_DIRECT_CONTINUE_LABELS, "Log in", "登录", "登入", "ログイン")
+_DIRECT_CODE_CONTINUE_LABELS = (*_DIRECT_CONTINUE_LABELS, "Verify", "Submit", "验证", "確認")
+_DIRECT_ABOUT_YOU_BUTTON_TEXTS = (
+    "完成帐户创建",
+    "完成账号创建",
+    "创建帐户",
+    "创建账号",
+    "Create account",
+    *_DIRECT_CONTINUE_LABELS,
+    "アカウント作成",
+    "アカウントを作成",
+)
 
 
 def _safe_invite_screenshot(page, name):
@@ -2771,13 +2784,7 @@ def _complete_direct_about_you(page):
                 pass
 
         submitted = False
-        for btn_selector in (
-            'button:has-text("完成帐户创建")',
-            'button:has-text("创建帐户")',
-            'button:has-text("创建账号")',
-            'button:has-text("Create account")',
-            'button:has-text("Continue")',
-            'button:has-text("继续")',
+        for btn_selector in tuple(f'button:has-text("{label}")' for label in _DIRECT_ABOUT_YOU_BUTTON_TEXTS) + (
             'button[type="submit"]',
         ):
             try:
@@ -3048,7 +3055,7 @@ def _register_direct_once(
                 time.sleep(0.5)
                 logger.info("[直接注册] 邮箱已填入，点击 Continue... (attempt %d)", attempt + 1)
                 _safe_invite_screenshot(page, f"direct_02b_email_filled_{attempt}.png")
-                _click_primary_auth_button(page, email_input, ["Continue", "继续"])
+                _click_primary_auth_button(page, email_input, _DIRECT_CONTINUE_LABELS)
 
                 next_step = _wait_for_direct_step_change(page, "email", timeout=15)
                 logger.info("[直接注册] 点击 Continue 后状态: %s | URL: %s", next_step, page.url)
@@ -3126,7 +3133,7 @@ def _register_direct_once(
                 logger.info("[直接注册] 设置密码")
                 pwd_input.fill(password)
                 time.sleep(0.5)
-                _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"])
+                _click_primary_auth_button(page, pwd_input, _DIRECT_PASSWORD_CONTINUE_LABELS)
                 next_step = _wait_for_direct_step_change(page, "password", timeout=15)
                 logger.info("[直接注册] 提交密码后状态: %s | URL: %s", next_step, page.url)
 
@@ -3207,7 +3214,7 @@ def _register_direct_once(
                     return _finish(False)
                 time.sleep(0.5)
                 anchor = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=800)
-                _click_primary_auth_button(page, anchor, ["Continue", "Verify", "Submit", "继续"])
+                _click_primary_auth_button(page, anchor, _DIRECT_CODE_CONTINUE_LABELS)
                 time.sleep(8)
             else:
                 logger.error("[直接注册] %ss 内未收到验证码 provider=%s email=%s", code_timeout, provider_name or "<unknown>", email)
@@ -4742,6 +4749,22 @@ def cmd_register_accounts(
             if not selected:
                 last_error = "动态代理 API 未返回可用代理"
                 break
+            if use_roxybrowser:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "stage": "register_proxy_api_selected",
+                            "message": f"已为第 {job_index + 1}/{total} 个账号获取动态代理（RoxyBrowser 跳过 HTTP 预探测）",
+                            "proxy_api_provider": register_proxy_meta.get("proxy_api_provider") or "",
+                            "proxy_api_url_present": bool(register_proxy_meta.get("proxy_api_url_present")),
+                            "email_index": job_index + 1,
+                            "proxy_attempt": proxy_attempt,
+                            "max_proxy_attempts": max_attempts,
+                            "probe_skipped": True,
+                            "probe_skip_reason": "roxybrowser",
+                        }
+                    )
+                return selected
             ok, probe_error = _probe_register_proxy(selected)
             if ok:
                 if progress_callback:

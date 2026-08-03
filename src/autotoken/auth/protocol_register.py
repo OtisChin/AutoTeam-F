@@ -87,6 +87,9 @@ def _is_phone_rate_limited_reason(reason: str) -> bool:
         return False
     return (
         "429" in text
+        or "fraud_guard" in text
+        or "suspicious behavior from phone numbers similar" in text
+        or "phone numbers similar to yours" in text
         or "too many requests" in text
         or "rate_limit" in text
         or "rate limit" in text
@@ -227,6 +230,12 @@ class ProtocolMailAdapter:
         last_no_code_signature = ""
         next_wait_log_at = 0.0
         logger.info("[协议注册] 等待邮箱验证码: email=%s timeout=%ss", target, int(timeout or 60))
+        try:
+            initial_delay = max(0.0, float(os.environ.get("OPENAI_EMAIL_OTP_INITIAL_DELAY", "3") or "3"))
+        except (TypeError, ValueError):
+            initial_delay = 3.0
+        if initial_delay > 0:
+            time.sleep(min(initial_delay, max(0.0, deadline - time.time())))
         while time.time() < deadline:
             try:
                 try:

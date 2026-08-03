@@ -42,7 +42,10 @@ def _is_add_phone_rate_limited_error(reason: str) -> bool:
     if not text:
         return False
     return (
-        "too many phone verification requests" in text
+        "fraud_guard" in text
+        or "suspicious behavior from phone numbers similar" in text
+        or "phone numbers similar to yours" in text
+        or "too many phone verification requests" in text
         or "too many verification requests" in text
         or "requested phone verification too many" in text
         or "phone verification requests" in text
@@ -205,6 +208,52 @@ class AuthFlow:
         if code:
             self._used_email_otp_codes.add(code)
         return code
+
+    def _email_otp_verify_max_attempts(self) -> int:
+        try:
+            return max(1, int(os.getenv("OPENAI_EMAIL_OTP_VERIFY_MAX_ATTEMPTS", "3") or "3"))
+        except (TypeError, ValueError):
+            return 3
+
+    def _verify_email_otp_with_retries(
+        self,
+        mail_provider: MailProvider,
+        email: str,
+        otp_code: str,
+        *,
+        otp_timeout: int,
+        retry_mode: str,
+        dump_stage: str,
+    ) -> dict:
+        max_attempts = self._email_otp_verify_max_attempts()
+        current_code = str(otp_code or "").strip()
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = self.verify_otp(current_code)
+                self.fetch_client_auth_session_dump(dump_stage if attempt == 1 else f"{dump_stage}_retry_{attempt - 1}")
+                return resp
+            except RuntimeError as exc:
+                if not any(code in str(exc) for code in ("401", "409")) or attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    "OTP 验证失败，重发重试: attempt=%s/%s error=%s",
+                    attempt + 1,
+                    max_attempts,
+                    safe_error_summary(exc, limit=180),
+                )
+                otp_sent_at = time.time()
+                mode = retry_mode if attempt == 1 else f"{retry_mode}_{attempt}"
+                if not self.kickoff_otp_delivery(mode):
+                    self.send_otp()
+                    otp_sent_at = time.time()
+                current_code = self._wait_for_email_otp(
+                    mail_provider,
+                    email,
+                    timeout=otp_timeout,
+                    issued_after=otp_sent_at,
+                    exclude_used=True,
+                )
+        raise RuntimeError("OTP 验证失败")
 
     def _build_chatgpt_cookie_header(self) -> str:
         """
@@ -2103,7 +2152,8 @@ class AuthFlow:
         )
         self._trace_http("send_email_otp", resp)
         if resp.status_code != 200:
-            raise RuntimeError(f"发送 OTP 失败: {resp.status_code} - {resp.text[:200]}")
+            detail = safe_error_summary(f"{resp.status_code} - {resp.text or ''}", limit=180)
+            raise RuntimeError(f"发送 OTP 失败: {detail}")
         logger.info("OTP 已发送到邮箱")
 
     def send_passwordless_otp(self, referer: str = "https://auth.openai.com/create-account/password") -> bool:
@@ -2123,7 +2173,10 @@ class AuthFlow:
         if resp.status_code == 200:
             logger.info("passwordless OTP 已发送")
             return True
-        logger.warning(f"passwordless 发码失败: {resp.status_code} - {(resp.text or '')[:220]}")
+        logger.warning(
+            "passwordless 发码失败: %s",
+            safe_error_summary(f"{resp.status_code} - {resp.text or ''}", limit=180),
+        )
         return False
 
     def resend_otp(self, referer: str = "https://auth.openai.com/email-verification") -> bool:
@@ -2144,7 +2197,10 @@ class AuthFlow:
         if resp.status_code == 200:
             logger.info("OTP 已重发")
             return True
-        logger.warning(f"重发 OTP 失败: {resp.status_code} - {(resp.text or '')[:200]}")
+        logger.warning(
+            "重发 OTP 失败: %s",
+            safe_error_summary(f"{resp.status_code} - {resp.text or ''}", limit=180),
+        )
         return False
 
     def kickoff_otp_delivery(self, mode: str = "") -> bool:
@@ -3116,27 +3172,14 @@ class AuthFlow:
                     issued_after=otp_sent_at,
                     exclude_used=True,
                 )
-            try:
-                self.verify_otp(otp_code)
-                self.fetch_client_auth_session_dump("post_verify_otp_new")
-            except RuntimeError as e:
-                # 偶发 401 错码，补发一次 OTP 并重试
-                if "401" in str(e):
-                    logger.warning("OTP 首次验证失败，补发重试: %s", safe_error_summary(e, limit=180))
-                    otp_sent_at = time.time()
-                    if not self.kickoff_otp_delivery("verify_otp_retry_new"):
-                        self.send_otp()
-                    otp_code = self._wait_for_email_otp(
-                        mail_provider,
-                        email,
-                        timeout=otp_timeout,
-                        issued_after=otp_sent_at,
-                        exclude_used=True,
-                    )
-                    self.verify_otp(otp_code)
-                    self.fetch_client_auth_session_dump("post_verify_otp_retry_new")
-                else:
-                    raise
+            self._verify_email_otp_with_retries(
+                mail_provider,
+                email,
+                otp_code,
+                otp_timeout=otp_timeout,
+                retry_mode="verify_otp_retry_new",
+                dump_stage="post_verify_otp_new",
+            )
 
             try:
                 continue_url = self.create_account()
@@ -3223,26 +3266,14 @@ class AuthFlow:
                         issued_after=otp_sent_at,
                         exclude_used=True,
                     )
-                try:
-                    otp_resp = self.verify_otp(otp_code)
-                    self.fetch_client_auth_session_dump("post_verify_otp_existing")
-                except RuntimeError as e:
-                    if any(code in str(e) for code in ("401", "409")):
-                        logger.warning("OTP 首次验证失败，重发重试: %s", safe_error_summary(e, limit=180))
-                        otp_sent_at = time.time()
-                        if not self.kickoff_otp_delivery("existing_verify_retry"):
-                            self.send_otp()
-                        otp_code = self._wait_for_email_otp(
-                            mail_provider,
-                            email,
-                            timeout=otp_timeout,
-                            issued_after=otp_sent_at,
-                            exclude_used=True,
-                        )
-                        otp_resp = self.verify_otp(otp_code)
-                        self.fetch_client_auth_session_dump("post_verify_otp_retry_existing")
-                    else:
-                        raise
+                otp_resp = self._verify_email_otp_with_retries(
+                    mail_provider,
+                    email,
+                    otp_code,
+                    otp_timeout=otp_timeout,
+                    retry_mode="existing_verify_retry",
+                    dump_stage="post_verify_otp_existing",
+                )
                 continue_url = (otp_resp or {}).get("continue_url", "") if isinstance(otp_resp, dict) else ""
                 continue_url = self._normalize_continue_url(continue_url)
                 if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
@@ -3430,26 +3461,14 @@ class AuthFlow:
                 issued_after=otp_sent_at,
                 exclude_used=True,
             )
-            try:
-                otp_resp = self.verify_otp(otp_code)
-                self.fetch_client_auth_session_dump("post_verify_otp_protocol")
-            except RuntimeError as e:
-                if any(code in str(e) for code in ("401", "409")):
-                    logger.warning("OTP 首次验证失败，重发重试: %s", safe_error_summary(e, limit=180))
-                    otp_sent_at = time.time()
-                    if not self.kickoff_otp_delivery("protocol_verify_retry"):
-                        self.send_otp()
-                    otp_code = self._wait_for_email_otp(
-                        mail_provider,
-                        email,
-                        timeout=otp_timeout,
-                        issued_after=otp_sent_at,
-                        exclude_used=True,
-                    )
-                    otp_resp = self.verify_otp(otp_code)
-                    self.fetch_client_auth_session_dump("post_verify_otp_retry_protocol")
-                else:
-                    raise
+            otp_resp = self._verify_email_otp_with_retries(
+                mail_provider,
+                email,
+                otp_code,
+                otp_timeout=otp_timeout,
+                retry_mode="protocol_verify_retry",
+                dump_stage="post_verify_otp_protocol",
+            )
             continue_url = self._extract_continue_url_from_step(otp_resp)
             continue_url = self._normalize_continue_url(continue_url)
             if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):

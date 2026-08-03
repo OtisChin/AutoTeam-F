@@ -26,6 +26,7 @@ class LoginAccountParams(BaseModel):
     proxy_pool_text: str = Field("", validation_alias=AliasChoices("proxy_pool_text", "proxyPoolText"))
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
+    proxy_api_country: str = Field("US", validation_alias=AliasChoices("proxy_api_country", "proxyApiCountry"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
     protocol_only: bool = Field(True, validation_alias=AliasChoices("protocol_only", "protocolOnly"))
     bind_email: bool = Field(True, validation_alias=AliasChoices("bind_email", "bindEmail"))
@@ -63,6 +64,7 @@ class AccountEmailBatchParams(BaseModel):
     proxy_pool_text: str = Field("", validation_alias=AliasChoices("proxy_pool_text", "proxyPoolText"))
     proxy_api_provider: str = Field("", validation_alias=AliasChoices("proxy_api_provider", "proxyApiProvider"))
     proxy_api_url: str = Field("", validation_alias=AliasChoices("proxy_api_url", "proxyApiUrl"))
+    proxy_api_country: str = Field("US", validation_alias=AliasChoices("proxy_api_country", "proxyApiCountry"))
     proxy_bypass: str | None = Field(None, validation_alias=AliasChoices("proxy_bypass", "proxyBypass"))
     protocol_only: bool = Field(True, validation_alias=AliasChoices("protocol_only", "protocolOnly"))
     bind_email: bool = Field(True, validation_alias=AliasChoices("bind_email", "bindEmail"))
@@ -169,6 +171,7 @@ def create_account_login_router(
                 proxy_pool_text=params.proxy_pool_text,
                 proxy_api_provider=params.proxy_api_provider,
                 proxy_api_url=params.proxy_api_url,
+                proxy_api_country=params.proxy_api_country,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -199,6 +202,17 @@ def create_account_login_router(
                             "email": email,
                             **oauth_proxy_meta,
                             "message": "OAuth 补登录已选择代理",
+                        },
+                    )
+                elif oauth_proxy_meta.get("proxy_api_url_present"):
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_proxy_unavailable",
+                            "email": email,
+                            **oauth_proxy_meta,
+                            "message": "OAuth 代理 API 未返回可用代理，本次将直连",
+                            "level": "warn",
                         },
                     )
                 login_kwargs: dict[str, Any] = _oauth_login_kwargs(params)
@@ -309,6 +323,7 @@ def create_account_login_router(
                 proxy_pool_text=params.proxy_pool_text,
                 proxy_api_provider=params.proxy_api_provider,
                 proxy_api_url=params.proxy_api_url,
+                proxy_api_country=params.proxy_api_country,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -474,6 +489,19 @@ def create_account_login_router(
                                 "total": current_total,
                                 **oauth_proxy_meta,
                                 "message": "OAuth 补登录已选择代理",
+                            },
+                        )
+                    elif oauth_proxy_meta.get("proxy_api_url_present"):
+                        append_task_progress(
+                            task_id,
+                            {
+                                "stage": "account_login_proxy_unavailable",
+                                "email": email,
+                                "current": index,
+                                "total": current_total,
+                                **oauth_proxy_meta,
+                                "message": "OAuth 代理 API 未返回可用代理，本账号将直连",
+                                "level": "warn",
                             },
                         )
                     login_kwargs: dict[str, Any] = _oauth_login_kwargs(params)
