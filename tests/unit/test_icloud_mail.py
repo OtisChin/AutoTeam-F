@@ -1,3 +1,5 @@
+import base64
+
 from autotoken.mail.icloud import ICloudMailProvider
 
 
@@ -83,6 +85,61 @@ def test_search_emails_by_recipient_reads_receive_code_link_json(monkeypatch):
     assert len(messages) == 1
     assert messages[0]["subject"] == "Your temporary ChatGPT verification code"
     assert client.extract_verification_code(messages[0]) == "654321"
+
+
+def test_search_emails_by_recipient_reads_yangyang_message_list_detail(monkeypatch):
+    client = ICloudMailProvider()
+    client.accounts = [
+        ICloudMailProvider._parse_account_line(
+            "user@icloud.com----http://yangyang.website/messages/token/user@icloud.com"
+        )
+    ]
+    html_body = "<html><body>Your OpenAI verification code is <b>789012</b></body></html>"
+    encoded_body = "data:text/html;charset=utf-8;base64," + base64.b64encode(html_body.encode()).decode()
+    calls = []
+
+    def fake_get(url, *args, **kwargs):
+        calls.append(url)
+        if url == "http://yangyang.website/messages/token/user@icloud.com":
+            return FakeResponse(
+                None,
+                text=(
+                    "<html><body>"
+                    '<a class="item active" href="#mail-1428351" data-id="1428351">'
+                    '<div class="subject">ChatGPT の一時的な認証コード</div>'
+                    '<div class="time">2026-08-03 10:07:39</div>'
+                    '<div class="from">noreply_at_tm_openai_com@example.com</div>'
+                    "</a>"
+                    "<script>"
+                    "var detailBase='/message/';"
+                    "var detailSuffix='/token/user@icloud.com';"
+                    "</script>"
+                    "</body></html>"
+                ),
+            )
+        if url == "http://yangyang.website/message/1428351/token/user@icloud.com":
+            return FakeResponse(
+                {
+                    "subject": "ChatGPT の一時的な認証コード",
+                    "fromAddress": "noreply_at_tm_openai_com@example.com",
+                    "receivedAt": "2026-08-03 10:07:39",
+                    "html": True,
+                    "body": encoded_body,
+                }
+            )
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("autotoken.mail.icloud.curl_requests.get", fake_get)
+
+    messages = client.search_emails_by_recipient("user@icloud.com", account_id="user@icloud.com")
+
+    assert calls == [
+        "http://yangyang.website/messages/token/user@icloud.com",
+        "http://yangyang.website/message/1428351/token/user@icloud.com",
+    ]
+    assert len(messages) == 1
+    assert messages[0]["subject"] == "ChatGPT の一時的な認証コード"
+    assert client.extract_verification_code(messages[0]) == "789012"
 
 
 def test_factory_accepts_icloud_provider(monkeypatch):

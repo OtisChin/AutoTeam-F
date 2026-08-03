@@ -13,8 +13,11 @@ import os
 import re
 import threading
 import time
+from base64 import b64decode
 from dataclasses import dataclass
+from html import unescape
 from typing import Any
+from urllib.parse import unquote_to_bytes, urljoin
 
 from curl_cffi import requests as curl_requests
 
@@ -225,7 +228,83 @@ class ICloudMailProvider(MailProvider):
                 return messages[:count]
         if not text.strip():
             return []
+        messages = self._messages_from_receive_code_html(account, text, page_url=account.receive_code_url, count=count)
+        if messages:
+            return messages[:count]
         return [self._item_to_legacy(account, text, index=0)]
+
+    def _messages_from_receive_code_html(
+        self,
+        account: ICloudAccount,
+        html: str,
+        *,
+        page_url: str,
+        count: int,
+    ) -> list[dict]:
+        """Read mail detail JSON from receive-code list pages such as yangyang.website/messages/..."""
+        detail_base = self._html_js_string(html, "detailBase")
+        detail_suffix = self._html_js_string(html, "detailSuffix")
+        if not detail_base or not detail_suffix:
+            return []
+
+        message_ids = self._html_message_ids(html)
+        messages: list[dict] = []
+        for message_id in message_ids[: max(1, int(count or 10))]:
+            detail_url = urljoin(page_url, f"{detail_base}{message_id}{detail_suffix}")
+            try:
+                resp = curl_requests.get(
+                    detail_url,
+                    timeout=30,
+                    impersonate="chrome110",
+                    headers={"Accept": "application/json,text/html;q=0.9,*/*;q=0.8"},
+                )
+            except Exception as exc:
+                logger.debug("[icloud] 查询收码详情失败: %s url=%s", exc, detail_url)
+                continue
+            if resp.status_code != 200:
+                logger.debug("[icloud] 收码详情 HTTP %s url=%s", resp.status_code, detail_url)
+                continue
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = str(resp.text or "")
+            for item in self._payload_items(payload):
+                message = self._item_to_legacy(account, item, index=len(messages))
+                if message:
+                    message["raw"] = {
+                        **(message.get("raw") if isinstance(message.get("raw"), dict) else {}),
+                        "source": "icloud_receive_code_detail_link",
+                        "detail_url": detail_url,
+                    }
+                    messages.append(message)
+                    break
+        return messages
+
+    @staticmethod
+    def _html_js_string(html: str, variable: str) -> str:
+        match = re.search(
+            rf"\bvar\s+{re.escape(variable)}\s*=\s*(['\"])(.*?)\1",
+            str(html or ""),
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return ""
+        return unescape(match.group(2)).strip()
+
+    @staticmethod
+    def _html_message_ids(html: str) -> list[str]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        for pattern in (
+            r"\bdata-id\s*=\s*(['\"])(\d+)\1",
+            r"href\s*=\s*(['\"])#mail-(\d+)\1",
+        ):
+            for match in re.finditer(pattern, str(html or ""), re.IGNORECASE):
+                value = match.group(2).strip()
+                if value and value not in seen:
+                    seen.add(value)
+                    ids.append(value)
+        return ids
 
     @classmethod
     def _messages_from_payload(cls, account: ICloudAccount, payload: Any) -> list[dict]:
@@ -309,22 +388,24 @@ class ICloudMailProvider(MailProvider):
 
         subject = cls._first_text(item, "subject", "mail_subject", "title")
         sender = cls._first_text(item, "from", "mail_from", "sender", "sendEmail", "fromEmail")
-        html = cls._first_text(item, "html", "html_body", "body_html", "mail_html", "raw_html")
-        body = cls._first_text(
-            item,
-            "text",
-            "plain_text",
-            "body_text",
-            "text_body",
-            "mail_text",
-            "mail_body",
-            "mail_content",
-            "content",
-            "message",
-            "body",
-            "snippet",
-            "summary",
-            "preview",
+        html = cls._decode_data_uri_text(cls._first_text(item, "html", "html_body", "body_html", "mail_html", "raw_html"))
+        body = cls._decode_data_uri_text(
+            cls._first_text(
+                item,
+                "text",
+                "plain_text",
+                "body_text",
+                "text_body",
+                "mail_text",
+                "mail_body",
+                "mail_content",
+                "content",
+                "message",
+                "body",
+                "snippet",
+                "summary",
+                "preview",
+            )
         )
         code = cls._first_text(
             item,
@@ -385,9 +466,26 @@ class ICloudMailProvider(MailProvider):
     def _first_text(item: dict[str, Any], *keys: str) -> str:
         for key in keys:
             value = item.get(key)
+            if isinstance(value, bool):
+                continue
             if value is not None and str(value).strip():
                 return str(value).strip()
         return ""
+
+    @staticmethod
+    def _decode_data_uri_text(value: str) -> str:
+        text = str(value or "").strip()
+        if not text.lower().startswith("data:text/"):
+            return text
+        header, separator, data = text.partition(",")
+        if not separator:
+            return text
+        try:
+            if ";base64" in header.lower():
+                return b64decode(data).decode("utf-8", errors="replace")
+            return unquote_to_bytes(data).decode("utf-8", errors="replace")
+        except Exception:
+            return text
 
     @staticmethod
     def _to_timestamp(value: Any) -> int:
