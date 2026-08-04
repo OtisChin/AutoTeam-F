@@ -62,8 +62,11 @@ def test_accounts_default_to_pending_kakao_status(monkeypatch):
 def test_batch_job_generates_kakao_link_and_records_status(monkeypatch):
     email = "user@example.com"
     captured = {}
+    captured_updates = []
     monkeypatch.setattr(kakao_pay, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
     monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda value: "token-" + value)
+    monkeypatch.setattr(kakao_pay.account_store, "ensure_session_only_account", lambda value: None)
+    monkeypatch.setattr(kakao_pay.account_store, "update_account", lambda email, **kwargs: captured_updates.append((email, kwargs)) or {"email": email, **kwargs})
 
     def fake_generate_kakao_trial(cfg, log):
         captured["cfg"] = cfg
@@ -114,6 +117,14 @@ def test_batch_job_generates_kakao_link_and_records_status(monkeypatch):
     assert saved_link["kakao_expires_at_ts"] - saved_link["created_at_ts"] == kakao_pay.KAKAO_LINK_TTL_SECONDS
     statuses = json.loads(kakao_pay.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
     assert statuses[email]["status"] == "success"
+    assert captured_updates[0][0] == email
+    assert captured_updates[0][1]["last_bind_provider"] == "kakao_pay"
+    assert captured_updates[0][1]["last_bind_status"] == "link_extracted"
+    assert captured_updates[0][1]["last_quota"]["source"] == "kakao_pay_link_extracted"
+    assert captured_updates[0][1]["last_quota"]["kakao_link_extracted"] is True
+    assert captured_updates[0][1]["last_quota"]["cs_id"] == "cs_test"
+    assert captured_updates[0][1]["last_quota"]["expires_at"] == saved_link["kakao_expires_at_ts"]
+    assert "account_type" not in captured_updates[0][1]
 
 
 def test_batch_account_keeps_non_zero_amount_account(monkeypatch):
@@ -922,12 +933,15 @@ def test_kakao_temp_batch_uses_selected_accounts_and_cdks(monkeypatch):
     emails = ["one@example.com", "two@example.com"]
     created_calls = []
     polled_calls = []
+    captured_updates = []
     monkeypatch.setattr(kakao_pay, "_iter_auth_accounts", lambda include_paid=False: [
         {"email": "one@example.com", "auth_file": "auth-one.json"},
         {"email": "two@example.com", "auth_file": "auth-two.json"},
         {"email": "unused@example.com", "auth_file": "auth-unused.json"},
     ])
     monkeypatch.setattr(kakao_pay, "_load_token_for_email", lambda email: f"token:{email}")
+    monkeypatch.setattr(kakao_pay.account_store, "ensure_session_only_account", lambda value: None)
+    monkeypatch.setattr(kakao_pay.account_store, "update_account", lambda email, **kwargs: captured_updates.append((email, kwargs)) or {"email": email, **kwargs})
 
     def fake_create(access_token, cdk):
         created_calls.append((access_token, cdk))
@@ -969,6 +983,12 @@ def test_kakao_temp_batch_uses_selected_accounts_and_cdks(monkeypatch):
     saved_links = json.loads(kakao_pay.LINKS_FILE.read_text(encoding="utf-8"))
     assert [item["account_email"] for item in saved_links] == ["two@example.com", "one@example.com"]
     assert saved_links[0]["kakao_ttl_seconds"] == kakao_pay.KAKAO_LINK_TTL_SECONDS
+    assert [item[0] for item in captured_updates] == ["one@example.com", "two@example.com"]
+    assert all(item[1]["last_bind_provider"] == "kakao_pay" for item in captured_updates)
+    assert all(item[1]["last_bind_status"] == "link_extracted" for item in captured_updates)
+    assert all(item[1]["last_quota"]["source"] == "kakao_pay_link_extracted" for item in captured_updates)
+    assert all(item[1]["last_quota"]["kakao_link_extracted"] is True for item in captured_updates)
+    assert all("account_type" not in item[1] for item in captured_updates)
 
 
 def test_kakao_temp_batch_shzyhqn_uses_session_token_and_channel(monkeypatch):

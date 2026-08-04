@@ -223,6 +223,211 @@ def test_codex_oauth_hero_sms_config_accepts_max_price_override(monkeypatch):
     assert codex_auth._oauth_hero_sms_config(max_price="0.05")["max_price"] == "0.05"
 
 
+def test_codex_oauth_smscloud_acquires_number(monkeypatch):
+    captured = {}
+
+    class FakeActivation:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    def fake_acquire(**kwargs):
+        captured.update(kwargs)
+        return {
+            "id": "order-1",
+            "phoneNumber": "447700900123",
+            "countryCode": "44",
+            "countryPhoneCode": "+44",
+            "creditAmount": 0.07,
+            "activationEndTime": 2000,
+        }, ""
+
+    monkeypatch.setenv("OAUTH_SMSCLOUD_API_KEY", "cloud-key")
+    monkeypatch.setenv("OAUTH_SMSCLOUD_COUNTRY", "44")
+    monkeypatch.setenv("OAUTH_SMSCLOUD_MAX_PRICE", "0.08")
+    monkeypatch.setattr("autotoken.auth.smscloud_sms.acquire_smscloud_number", fake_acquire)
+    monkeypatch.setattr("autotoken.auth.smscloud_sms.SMSCloudActivation", FakeActivation)
+
+    item, error = codex_auth._acquire_oauth_smscloud_phone("user@example.com")
+
+    assert error == ""
+    assert item["source"] == "smscloud"
+    assert item["activation_id"] == "order-1"
+    assert item["phone_number"] == "447700900123"
+    assert item["country_id"] == "44"
+    assert captured["api_key"] == "cloud-key"
+    assert captured["country"] == "44"
+    assert captured["service"] == "dr"
+    assert captured["max_price"] == "0.08"
+
+
+def test_smscloud_acquire_uses_inventory_price_bucket_for_ceiling(monkeypatch):
+    from autotoken.auth import smscloud_sms
+
+    calls = []
+
+    def fake_request(_base_url, _api_key, path, *, params=None):
+        params = params or {}
+        calls.append((path, dict(params)))
+        if path == "/public/sms/getInventory":
+            return {
+                "code": 0,
+                "data": [
+                    {
+                        "country": 73,
+                        "retailPrice": 1.35,
+                        "freePriceMap": {"1.63": "0", "1.74": "10", "4.61": "100"},
+                    }
+                ],
+            }
+        if path == "/public/sms/flexible":
+            price = str(params.get("maxPrice") or "")
+            if price in {"1.35", "1.63"}:
+                raise RuntimeError("当前国家暂无可用号码，请稍后重试")
+            assert price == "1.74"
+            return {
+                "code": 0,
+                "data": {
+                    "id": "order-br",
+                    "phoneNumber": "551699991234",
+                    "countryCode": "73",
+                    "countryPhoneCode": "55",
+                    "creditAmount": 1.74,
+                },
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(smscloud_sms, "_request_json", fake_request)
+
+    data, error = smscloud_sms.acquire_smscloud_number(
+        base_url="https://smscloud.example/api/system",
+        api_key="key",
+        service="dr",
+        country="73",
+        max_price="1.75",
+    )
+
+    assert error == ""
+    assert data["id"] == "order-br"
+    assert data["_requestedMaxPrice"] == "1.74"
+    assert [params.get("maxPrice") for path, params in calls if path == "/public/sms/flexible"] == [
+        "1.35",
+        "1.63",
+        "1.74",
+    ]
+
+
+def test_smscloud_acquire_reports_attempted_price_buckets_on_no_numbers(monkeypatch):
+    from autotoken.auth import smscloud_sms
+
+    def fake_request(_base_url, _api_key, path, *, params=None):
+        params = params or {}
+        if path == "/public/sms/getInventory":
+            return {
+                "code": 0,
+                "data": [
+                    {
+                        "country": 33,
+                        "retailPrice": 1.5,
+                        "freePriceMap": {"1.87": "782", "2.4": "9846", "2.98": "10948", "3": "11363"},
+                    }
+                ],
+            }
+        if path == "/public/sms/flexible":
+            raise RuntimeError("当前国家暂无可用号码，请稍后重试")
+        raise AssertionError(path)
+
+    monkeypatch.setattr(smscloud_sms, "_request_json", fake_request)
+
+    data, error = smscloud_sms.acquire_smscloud_number(
+        base_url="https://smscloud.example/api/system",
+        api_key="key",
+        service="dr",
+        country="33",
+        max_price="2.99",
+    )
+
+    assert data is None
+    assert "当前国家暂无可用号码，请稍后重试" in error
+    assert "已尝试价档: 1.5, 1.87, 2.4, 2.98" in error
+
+
+def test_smscloud_acquire_filters_inventory_buckets_by_min_and_max_price(monkeypatch):
+    from autotoken.auth import smscloud_sms
+
+    calls = []
+
+    def fake_request(_base_url, _api_key, path, *, params=None):
+        params = params or {}
+        calls.append((path, dict(params)))
+        if path == "/public/sms/getInventory":
+            return {
+                "code": 0,
+                "data": [
+                    {
+                        "country": 33,
+                        "retailPrice": 1.5,
+                        "freePriceMap": {"1.87": "782", "2.4": "9846", "2.98": "10948", "3": "11363"},
+                    }
+                ],
+            }
+        if path == "/public/sms/flexible":
+            raise RuntimeError("当前国家暂无可用号码，请稍后重试")
+        raise AssertionError(path)
+
+    monkeypatch.setattr(smscloud_sms, "_request_json", fake_request)
+
+    data, error = smscloud_sms.acquire_smscloud_number(
+        base_url="https://smscloud.example/api/system",
+        api_key="key",
+        service="dr",
+        country="33",
+        min_price="2.98",
+        max_price="2.99",
+    )
+
+    assert data is None
+    assert [params.get("maxPrice") for path, params in calls if path == "/public/sms/flexible"] == ["2.98"]
+    assert "已尝试价档: 2.98" in error
+    assert "1.5" not in error
+
+
+def test_smscloud_wait_code_continues_when_resend_not_supported(monkeypatch):
+    from autotoken.auth import smscloud_sms
+
+    state = {"now": 0.0}
+    calls = []
+    logs = []
+
+    def fake_time():
+        return state["now"]
+
+    def fake_sleep(seconds):
+        state["now"] += float(seconds)
+
+    def fake_request(_base_url, _api_key, path, *, params=None):
+        calls.append(path)
+        if "/resend/" in path:
+            raise RuntimeError("当前订单状态不支持重发")
+        if "/sync/" in path and state["now"] >= 6:
+            return {"code": 0, "data": {"code": "123456"}}
+        return {"code": 0, "data": {}}
+
+    monkeypatch.setattr(smscloud_sms.time, "time", fake_time)
+    monkeypatch.setattr(smscloud_sms.time, "sleep", fake_sleep)
+    monkeypatch.setattr(smscloud_sms, "_request_json", fake_request)
+
+    activation = smscloud_sms.SMSCloudActivation(
+        order_id="order-1",
+        base_url="https://smscloud.example/api/system",
+        api_key="key",
+        log=lambda *args: logs.append(args),
+    )
+
+    assert activation.wait_code(timeout_sec=10, max_resends=2) == "123456"
+    assert any("/resend/" in path for path in calls)
+    assert any("重发请求失败" in str(item[0]) for item in logs)
+
+
 def test_codex_oauth_smsbower_preserves_numeric_country_id(monkeypatch):
     monkeypatch.setenv("OAUTH_SMSBOWER_COUNTRY", "1")
 
@@ -956,6 +1161,95 @@ def test_codex_oauth_smsbower_reuse_survives_memory_clear(monkeypatch, tmp_path)
     assert second["activation_id"] == "act-smsbower"
     assert second["smsbower_bound_count"] == 1
     assert calls["get_number"] == 1
+    codex_auth._OAUTH_SMSBOWER_REUSE.clear()
+
+
+def test_codex_oauth_hero_sms_lowest_mode_forces_price_lookup(monkeypatch, tmp_path):
+    from autotoken import gopay_auto_register
+
+    calls = []
+
+    def fake_get_number(**kwargs):
+        calls.append(kwargs)
+        return "act-hero-lowest", "12134567890", ""
+
+    class DummyActivation:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.used_codes = set()
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setenv("OAUTH_HERO_SMS_API_KEY", "hero-key")
+    monkeypatch.setenv("OAUTH_HERO_SMS_MIN_PRICE", "0.1")
+    monkeypatch.setenv("OAUTH_HERO_SMS_PRICE_MODE", "lowest")
+    monkeypatch.delenv("OAUTH_HERO_SMS_MAX_PRICE", raising=False)
+    monkeypatch.setattr(gopay_auto_register, "_hero_get_number", fake_get_number)
+    monkeypatch.setattr(gopay_auto_register, "SmsActivation", DummyActivation)
+
+    item, error = codex_auth._acquire_oauth_hero_sms_phone("hero-lowest@example.com", allow_reuse=False)
+
+    assert error == ""
+    assert item["activation_id"] == "act-hero-lowest"
+    assert calls[0]["min_price"] == "0.1"
+    assert calls[0]["preferred_price"] == ""
+
+
+def test_codex_oauth_smsbower_lowest_mode_uses_lowest_provider(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from autotoken import gopay_auto_register
+    from autotoken._paypal_protocol_engine.paypal import smsbower as smsbower_mod
+
+    captured = {}
+
+    class FakeSMSBowerClient:
+        def __init__(self, **kwargs):
+            captured["client_init"] = kwargs
+
+        def get_provider_prices(self, service, country):
+            captured["price_query"] = {"service": service, "country": country}
+            return [
+                SimpleNamespace(provider_id="too-cheap", price=0.028, count=4),
+                SimpleNamespace(provider_id="lowest-in-range", price=0.126, count=10),
+                SimpleNamespace(provider_id="expensive", price=0.2, count=10),
+            ]
+
+        def get_number_v2(self, **kwargs):
+            captured["get_number_v2"] = kwargs
+            return {
+                "activationId": "act-smsbower-lowest",
+                "phoneNumber": "12135550000",
+                "activationCost": kwargs["max_price"],
+                "activationOperator": kwargs["provider_id"],
+            }
+
+    class DummyActivation:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.used_codes = set()
+
+    def legacy_get_number_should_not_be_used(**_kwargs):
+        raise AssertionError("lowest mode should use getPricesV3 + getNumberV2")
+
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setenv("OAUTH_SMSBOWER_API_KEY", "smsbower-key")
+    monkeypatch.setenv("OAUTH_SMSBOWER_COUNTRY", "73")
+    monkeypatch.setenv("OAUTH_SMSBOWER_SERVICE", "dr")
+    monkeypatch.setenv("OAUTH_SMSBOWER_MIN_PRICE", "0.1")
+    monkeypatch.setenv("OAUTH_SMSBOWER_MAX_PRICE", "0.13")
+    monkeypatch.setenv("OAUTH_SMSBOWER_PRICE_MODE", "lowest")
+    monkeypatch.setattr(smsbower_mod, "SMSBowerClient", FakeSMSBowerClient)
+    monkeypatch.setattr(gopay_auto_register, "_smsbower_get_number", legacy_get_number_should_not_be_used)
+    monkeypatch.setattr(gopay_auto_register, "SmsActivation", DummyActivation)
+    codex_auth._OAUTH_SMSBOWER_REUSE.clear()
+
+    item, error = codex_auth._acquire_oauth_smsbower_phone("smsbower-lowest@example.com", allow_reuse=False)
+
+    assert error == ""
+    assert item["activation_id"] == "act-smsbower-lowest"
+    assert captured["price_query"] == {"service": "dr", "country": "73"}
+    assert captured["get_number_v2"]["provider_id"] == "lowest-in-range"
+    assert captured["get_number_v2"]["max_price"] == 0.126
     codex_auth._OAUTH_SMSBOWER_REUSE.clear()
 
 

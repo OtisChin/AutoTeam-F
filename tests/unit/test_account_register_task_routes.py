@@ -30,6 +30,7 @@ def _routes(started, progress=None, *, oauth_env=None, proxy_meta=None, proxy_se
         build_oauth_proxy_selector=build_oauth_proxy_selector,
         normalize_oauth_phone_sms_provider=lambda value: str(value or "").strip().lower(),
         normalize_oauth_smsbower_country=lambda value: str(value or "").strip().upper(),
+        normalize_oauth_smscloud_country=lambda value: f"cloud:{str(value or '').strip()}",
         normalize_oauth_hero_sms_country=lambda value: str(value or "").strip().lower(),
         oauth_phone_sms_env=lambda: oauth_env,
         append_task_progress=lambda task_id, item: progress.append({"task_id": task_id, **item}),
@@ -116,12 +117,48 @@ def test_post_add_passes_use_roxybrowser_to_register_worker(monkeypatch):
     monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
     monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
 
+    class AvailableRoxyClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def list_workspaces(self):
+            return [{"id": "workspace-1", "name": "Default"}]
+
+    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"})
+    monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", AvailableRoxyClient)
+
     routes = _routes(started)
     result = routes["post_add"](ManualRegisterParams(use_roxybrowser=True))
 
     assert result["params"]["use_roxybrowser"] is True
     assert started[0]["func"]("task-register") == {"created": 1}
     assert calls[0]["use_roxybrowser"] is True
+
+
+def test_post_add_rejects_unavailable_roxybrowser_before_starting_task(monkeypatch):
+    started = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    class FailingRoxyClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def list_workspaces(self):
+            raise RuntimeError("HTTPConnectionPool(host='127.0.0.1', port=50000): Failed to establish a new connection")
+
+    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"})
+    monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", FailingRoxyClient)
+
+    routes = _routes(started)
+    with pytest.raises(HTTPException) as exc_info:
+        routes["post_add"](ManualRegisterParams(use_roxybrowser=True))
+
+    assert exc_info.value.status_code == 400
+    assert "RoxyBrowser 未连接" in str(exc_info.value.detail)
+    assert started == []
 
 
 def test_post_add_rejects_invalid_registration_flow(monkeypatch):
@@ -176,6 +213,31 @@ def test_post_add_allows_oasis_with_cdk_pool_without_api_key(monkeypatch):
     assert started[0]["kwargs"]["oauth_phone_sms_country"] is None
     assert started[0]["kwargs"]["oauth_phone_sms_max_price"] == ""
     assert started[0]["kwargs"]["oauth_oasis_sms_cdks"] is None
+
+
+def test_post_add_allows_smscloud_oauth_provider(monkeypatch):
+    started = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+
+    routes = _routes(started, oauth_env={"smscloud_api_key": "cloud-key"})
+    result = routes["post_add"](
+        ManualRegisterParams(
+            post_register_oauth=True,
+            oauth_phone_sms_provider="smscloud",
+            oauth_phone_sms_country="44",
+            oauth_phone_sms_max_price="0.08",
+        )
+    )
+
+    assert result["params"]["oauth_phone_sms_provider"] == "smscloud"
+    assert result["params"]["oauth_phone_sms_country"] == "cloud:44"
+    assert result["params"]["oauth_phone_sms_max_price"] == "0.08"
+    assert started[0]["kwargs"]["oauth_phone_sms_provider"] == "smscloud"
+    assert started[0]["kwargs"]["oauth_phone_sms_country"] == "cloud:44"
+    assert started[0]["kwargs"]["oauth_phone_sms_max_price"] == "0.08"
 
 
 def test_post_add_allows_oasis_with_inline_task_cdks(monkeypatch):

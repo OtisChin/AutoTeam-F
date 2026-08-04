@@ -4870,7 +4870,7 @@ def cmd_register_accounts(
                     oauth_phone_sms_provider=oauth_phone_sms_provider,
                     oauth_phone_sms_country=oauth_phone_sms_country,
                     oauth_phone_sms_max_price=oauth_max_price if oauth_provider in {"hero_sms", "smsbower"} else "",
-                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks if oauth_provider == "oasis" else None,
+                    oauth_oasis_sms_cdks=oauth_oasis_sms_cdks if oauth_provider in {"oasis", "tujie"} else None,
                     phone_only=phone_only,
                     progress_callback=progress_callback,
                 )

@@ -212,6 +212,99 @@ def test_protocol_mail_adapter_waits_before_first_email_otp_query(monkeypatch):
     assert events[:2] == [("sleep", 3.0), "search"]
 
 
+def test_protocol_mail_adapter_prefers_newer_otp_after_issue_time(monkeypatch):
+    from autotoken.auth import protocol_register
+
+    class FakeMailClient:
+        def search_emails_by_recipient(self, *_args, **_kwargs):
+            return [
+                {"subject": "OpenAI old", "verification_code": "111111", "createTime": 900},
+                {"subject": "OpenAI new", "verification_code": "222222", "createTime": 1008},
+            ]
+
+        def extract_verification_code(self, item):
+            return item.get("verification_code")
+
+    monkeypatch.setenv("OPENAI_EMAIL_OTP_INITIAL_DELAY", "0")
+    monkeypatch.setattr(protocol_register.time, "time", lambda: 1010.0)
+    monkeypatch.setattr(protocol_register.time, "sleep", lambda _seconds: None)
+
+    adapter = protocol_register.ProtocolMailAdapter(FakeMailClient(), email="user@example.com")
+
+    assert adapter.wait_for_otp("user@example.com", timeout=60, issued_after=1000) == "222222"
+
+
+def test_protocol_mail_adapter_ignores_non_otp_openai_sign_in_notice(monkeypatch):
+    from autotoken.auth import protocol_register
+
+    class FakeMailClient:
+        def search_emails_by_recipient(self, *_args, **_kwargs):
+            return [
+                {
+                    "subject": "New sign-in to your OpenAI account",
+                    "text": "New sign-in at 202608 from location 123456",
+                    "createTime": 1010,
+                },
+                {
+                    "subject": "Your temporary ChatGPT login code",
+                    "text": "Your temporary ChatGPT login code is 654321",
+                    "createTime": 1008,
+                },
+            ]
+
+        def extract_verification_code(self, item):
+            import re
+
+            match = re.search(r"\b(\d{6})\b", item.get("text", ""))
+            return match.group(1) if match else ""
+
+    monkeypatch.setenv("OPENAI_EMAIL_OTP_INITIAL_DELAY", "0")
+    monkeypatch.setattr(protocol_register.time, "time", lambda: 1012.0)
+    monkeypatch.setattr(protocol_register.time, "sleep", lambda _seconds: None)
+
+    adapter = protocol_register.ProtocolMailAdapter(FakeMailClient(), email="user@example.com")
+
+    assert adapter.wait_for_otp("user@example.com", timeout=60, issued_after=1000) == "654321"
+
+
+def test_protocol_mail_adapter_waits_for_fresh_icloud_otp_instead_of_same_day_old_code(monkeypatch):
+    from autotoken.auth import protocol_register
+
+    calls = []
+
+    class FakeMailClient:
+        def search_emails_by_recipient(self, *_args, **_kwargs):
+            calls.append("search")
+            old = {
+                "subject": "Your temporary ChatGPT login code",
+                "text": "Your temporary ChatGPT login code is 304051",
+                "createTime": 900,
+                "provider": "icloud",
+            }
+            new = {
+                "subject": "Your temporary ChatGPT login code",
+                "text": "Your temporary ChatGPT login code is 698114",
+                "createTime": 1008,
+                "provider": "icloud",
+            }
+            return [old] if len(calls) == 1 else [old, new]
+
+        def extract_verification_code(self, item):
+            import re
+
+            match = re.search(r"\b(\d{6})\b", item.get("text", ""))
+            return match.group(1) if match else ""
+
+    monkeypatch.setenv("OPENAI_EMAIL_OTP_INITIAL_DELAY", "0")
+    monkeypatch.setattr(protocol_register.time, "time", lambda: 1010.0)
+    monkeypatch.setattr(protocol_register.time, "sleep", lambda _seconds: None)
+
+    adapter = protocol_register.ProtocolMailAdapter(FakeMailClient(), email="user@example.com")
+
+    assert adapter.wait_for_otp("user@example.com", timeout=60, issued_after=1000) == "698114"
+    assert len(calls) == 2
+
+
 def test_phone_first_oauth_failure_preserves_specific_error(monkeypatch):
     auth_flow = _load_auth_flow_module()
 
@@ -590,6 +683,73 @@ def test_new_protocol_register_resends_email_otp_after_timeout(monkeypatch):
     assert delivery_modes == ["register_password_success", "new_register_timeout_retry"]
     assert wait_calls[0]["timeout"] == 60
     assert wait_calls[1]["exclude_used"] is True
+
+
+def test_protocol_login_rebuilds_authorize_state_after_login_invalid_state(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeMailProvider:
+        pass
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    monkeypatch.setenv("LOCALAUTH_EXISTING_LOGIN_USE_LOGIN_HINT", "1")
+    monkeypatch.setenv("OAUTH_CODEX_RT_BEFORE_CALLBACK", "0")
+    monkeypatch.setenv("OAUTH_EXCHANGE_BEFORE_CALLBACK", "0")
+    monkeypatch.setenv("OAUTH_CODEX_RT_EXCHANGE", "0")
+    monkeypatch.setenv("OAUTH_INVALID_STATE_RETRIES", "3")
+    flow.check_proxy = lambda: True
+
+    csrf_calls = []
+    flow.get_csrf_token = lambda: csrf_calls.append(1) or f"csrf-{len(csrf_calls)}"
+    flow.get_auth_url = lambda csrf: f"https://auth.openai.test/authorize?csrf={csrf}"
+    flow.auth_oauth_init = lambda auth_url: f"device-{auth_url.rsplit('-', 1)[-1]}"
+    flow.get_sentinel_token = lambda device_id: f"sentinel-{device_id.rsplit('-', 1)[-1]}"
+    reset_reasons = []
+    flow._reset_authorize_http_session = lambda reason="": reset_reasons.append(reason)
+
+    def fake_authorize_continue(**kwargs):
+        assert kwargs["screen_hint"] == "login"
+        raise RuntimeError(
+            'authorize/continue 失败(screen_hint=login): HTTP 409 - {"error":{"code":"invalid_state",'
+            '"message":"Your sign-in session is no longer valid. Please start over to continue."}}'
+        )
+
+    signup_sentinels = []
+
+    def fake_signup(_email, sentinel):
+        signup_sentinels.append(sentinel)
+        flow._existing_page_type = "email_otp_verification"
+        flow._existing_email_verification_mode = "passwordless_login"
+        flow._is_existing_account = True
+        return False
+
+    flow.authorize_continue = fake_authorize_continue
+    flow.signup = fake_signup
+    flow.kickoff_otp_delivery = lambda _mode="": True
+    flow._wait_for_email_otp = lambda *_args, **_kwargs: "123456"
+    flow._verify_email_otp_with_retries = lambda *_args, **_kwargs: {
+        "continue_url": "https://auth.openai.com/authorize/resume?state=ok"
+    }
+    flow._is_add_phone_state = lambda **_kwargs: False
+    flow.follow_redirect_chain = lambda _url: ("https://chatgpt.com/backend-api/accounts/check/v4", "https://chatgpt.com/")
+    flow.fetch_client_auth_session_dump = lambda _stage="": {}
+    flow.oauth_token_exchange = lambda *_args, **_kwargs: setattr(flow.result, "refresh_token", "refresh-token")
+    flow.get_auth_session = lambda: (
+        setattr(flow.result, "session_token", "session-token"),
+        setattr(flow.result, "access_token", "access-token"),
+    )
+
+    result = flow.run_protocol_login(FakeMailProvider(), "exists@example.com")
+
+    assert result.is_valid()
+    assert len(csrf_calls) == 2
+    assert reset_reasons == [
+        "login_probe_invalid_state_fallback_signup",
+    ]
+    assert signup_sentinels == ["sentinel-2"]
 
 
 def test_email_verification_delivery_uses_resend_before_passwordless():

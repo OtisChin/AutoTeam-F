@@ -117,6 +117,9 @@ from autotoken.api_routes.oauth_phone_sms_config import (
     normalize_oauth_smsbower_country as _normalize_oauth_smsbower_country,
 )
 from autotoken.api_routes.oauth_phone_sms_config import (
+    normalize_oauth_smscloud_country as _normalize_oauth_smscloud_country,
+)
+from autotoken.api_routes.oauth_phone_sms_config import (
     oauth_phone_sms_env as _oauth_phone_sms_env,
 )
 from autotoken.api_routes.payment_task_models import (
@@ -2710,10 +2713,21 @@ def _run_account_codex_login_once(
                     effective_oauth_phone_sms_max_price
                     or str(oauth_phone_cfg.get("smsbower_max_price") or "").strip()
                 )
+            elif provider_key == "smscloud":
+                effective_oauth_phone_sms_country = str(oauth_phone_cfg.get("smscloud_country") or "").strip()
+                effective_oauth_phone_sms_max_price = (
+                    effective_oauth_phone_sms_max_price
+                    or str(oauth_phone_cfg.get("smscloud_max_price") or "").strip()
+                )
             elif provider_key == "oasis":
                 effective_oauth_oasis_sms_cdks = (
                     effective_oauth_oasis_sms_cdks
                     or str(oauth_phone_cfg.get("oasis_sms_cdks") or "").strip()
+                )
+            elif provider_key == "tujie":
+                effective_oauth_oasis_sms_cdks = (
+                    effective_oauth_oasis_sms_cdks
+                    or str(oauth_phone_cfg.get("tujie_sms_cdks") or "").strip()
                 )
     session_payload: dict | None = None
 
@@ -7390,6 +7404,7 @@ _account_register_task_router = create_account_register_task_router(
     build_oauth_proxy_selector=lambda **kwargs: _build_oauth_proxy_selector(**kwargs),
     normalize_oauth_phone_sms_provider=_normalize_oauth_phone_sms_provider,
     normalize_oauth_smsbower_country=_normalize_oauth_smsbower_country,
+    normalize_oauth_smscloud_country=_normalize_oauth_smscloud_country,
     normalize_oauth_hero_sms_country=_normalize_oauth_hero_sms_country,
     oauth_phone_sms_env=_oauth_phone_sms_env,
     append_task_progress=lambda task_id, progress: _append_task_progress(task_id, progress),

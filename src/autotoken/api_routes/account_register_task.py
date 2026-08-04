@@ -7,6 +7,31 @@ from fastapi import APIRouter, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
 
 
+def _assert_roxybrowser_available() -> None:
+    """Fail fast when RoxyBrowser mode is selected but the local API is unavailable."""
+
+    try:
+        from autotoken.roxybrowser_client import RoxyBrowserClient
+        from autotoken.settings.config import get_roxybrowser_config
+
+        cfg = get_roxybrowser_config()
+        client = RoxyBrowserClient(cfg["api_host"], cfg["api_token"], timeout=3)
+        workspaces = client.list_workspaces()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "RoxyBrowser 未连接或不可用，请启动 RoxyBrowser 客户端并确认设置页 API Host/Token 正确，"
+                f"或取消“使用Roxy Browser”：{exc}"
+            ),
+        ) from exc
+    if not workspaces:
+        raise HTTPException(
+            status_code=400,
+            detail="RoxyBrowser 未找到可用工作空间，请先在客户端创建工作空间，或取消“使用Roxy Browser”",
+        )
+
+
 class ManualRegisterParams(BaseModel):
     mode: str = "single"
     registration_flow: str = Field("standard", validation_alias=AliasChoices("registration_flow", "registrationFlow"))
@@ -65,6 +90,7 @@ def create_account_register_task_router(
     build_oauth_proxy_selector: Callable[..., tuple[Callable[[], str], dict[str, Any]]],
     normalize_oauth_phone_sms_provider: Callable[[str | None], str],
     normalize_oauth_smsbower_country: Callable[[str | None], str],
+    normalize_oauth_smscloud_country: Callable[[str | None], str],
     normalize_oauth_hero_sms_country: Callable[[str | None], str],
     oauth_phone_sms_env: Callable[[], dict[str, str]],
     append_task_progress: Callable[[str | None, dict], Any],
@@ -109,6 +135,8 @@ def create_account_register_task_router(
         if registration_flow not in {"standard", "phone_cpa"}:
             raise HTTPException(status_code=400, detail="registration_flow 只支持 standard 或 phone_cpa")
         use_roxybrowser = registration_flow == "standard" and bool(params.use_roxybrowser)
+        if use_roxybrowser:
+            _assert_roxybrowser_available()
         register_mode = (
             "protocol"
             if registration_flow == "phone_cpa" or (bool(params.protocol_register) and not use_roxybrowser)
@@ -122,10 +150,12 @@ def create_account_register_task_router(
             else ""
         )
         if params.oauth_phone_sms_country:
-            if oauth_phone_sms_provider == "oasis":
+            if oauth_phone_sms_provider in {"oasis", "tujie"}:
                 oauth_phone_sms_country = ""
             elif oauth_phone_sms_provider == "smsbower":
                 oauth_phone_sms_country = normalize_oauth_smsbower_country(params.oauth_phone_sms_country)
+            elif oauth_phone_sms_provider == "smscloud":
+                oauth_phone_sms_country = normalize_oauth_smscloud_country(params.oauth_phone_sms_country)
             else:
                 oauth_phone_sms_country = normalize_oauth_hero_sms_country(params.oauth_phone_sms_country)
         else:
@@ -136,13 +166,10 @@ def create_account_register_task_router(
             oauth_phone_sms_provider = normalize_oauth_phone_sms_provider(
                 oauth_phone_sms_env().get("provider") or "phone_pool"
             )
-        if post_register_oauth and oauth_phone_sms_provider in {"hero_sms", "smsbower"}:
+        if post_register_oauth and oauth_phone_sms_provider in {"hero_sms", "smsbower", "smscloud"}:
             oauth_sms_cfg = oauth_phone_sms_env()
-            key_present = (
-                bool(oauth_sms_cfg.get("hero_sms_api_key"))
-                if oauth_phone_sms_provider == "hero_sms"
-                else bool(oauth_sms_cfg.get("smsbower_api_key"))
-            )
+            key_field = "hero_sms_api_key" if oauth_phone_sms_provider == "hero_sms" else f"{oauth_phone_sms_provider}_api_key"
+            key_present = bool(oauth_sms_cfg.get(key_field))
             if not key_present:
                 raise HTTPException(
                     status_code=400, detail=f"启用 {oauth_phone_sms_provider} 前需要先在设置页配置 API Key"
@@ -153,18 +180,22 @@ def create_account_register_task_router(
                 oauth_phone_sms_country or "<default>",
                 oauth_phone_sms_max_price or "<default>",
             )
-        if post_register_oauth and oauth_phone_sms_provider == "oasis":
+        if post_register_oauth and oauth_phone_sms_provider in {"oasis", "tujie"}:
             oauth_sms_cfg = oauth_phone_sms_env()
+            cdk_field = "oasis_sms_cdks" if oauth_phone_sms_provider == "oasis" else "tujie_sms_cdks"
+            cdk_file_field = "oasis_sms_cdk_file" if oauth_phone_sms_provider == "oasis" else "tujie_sms_cdk_file"
+            provider_label = "Oasis" if oauth_phone_sms_provider == "oasis" else "TuJie"
             if not (
                 oauth_oasis_sms_cdks
-                or str(oauth_sms_cfg.get("oasis_sms_cdks") or "").strip()
-                or str(oauth_sms_cfg.get("oasis_sms_cdk_file") or "").strip()
+                or str(oauth_sms_cfg.get(cdk_field) or "").strip()
+                or str(oauth_sms_cfg.get(cdk_file_field) or "").strip()
             ):
-                raise HTTPException(status_code=400, detail="启用 Oasis 前需要先在设置页配置 CDK 池")
+                raise HTTPException(status_code=400, detail=f"启用 {provider_label} 前需要先在设置页配置 CDK 池")
             oauth_phone_sms_country = ""
             oauth_phone_sms_max_price = ""
             logger.info(
-                "[注册账号] OAuth 接码参数: provider=oasis cdk_pool=%s",
+                "[注册账号] OAuth 接码参数: provider=%s cdk_pool=%s",
+                oauth_phone_sms_provider,
                 "task_inline" if oauth_oasis_sms_cdks else "configured",
             )
         if mode not in ("single", "batch"):
@@ -301,7 +332,7 @@ def create_account_register_task_router(
                 oauth_phone_sms_provider=oauth_phone_sms_provider or None,
                 oauth_phone_sms_country=oauth_phone_sms_country or None,
                 oauth_phone_sms_max_price=oauth_phone_sms_max_price,
-                oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None) if oauth_phone_sms_provider == "oasis" else None,
+                oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None) if oauth_phone_sms_provider in {"oasis", "tujie"} else None,
                 progress_callback=_register_progress,
             )
 
@@ -328,7 +359,7 @@ def create_account_register_task_router(
             oauth_phone_sms_provider=oauth_phone_sms_provider or None,
             oauth_phone_sms_country=oauth_phone_sms_country or None,
             oauth_phone_sms_max_price=oauth_phone_sms_max_price,
-            oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None) if oauth_phone_sms_provider == "oasis" else None,
+            oauth_oasis_sms_cdks=(oauth_oasis_sms_cdks or None) if oauth_phone_sms_provider in {"oasis", "tujie"} else None,
             task_group=task_group_register,
             pass_task_id=True,
         )

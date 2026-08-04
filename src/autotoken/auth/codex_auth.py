@@ -1768,8 +1768,12 @@ def _normalize_oauth_phone_sms_provider(value: str | None = None) -> str:
         return "hero_sms"
     if normalized in {"smsbower", "sms_bower"}:
         return "smsbower"
+    if normalized in {"smscloud", "sms_cloud", "sms_cloud_sbs"}:
+        return "smscloud"
     if normalized in {"oasis", "oasis_sms", "oasissms", "oapi"}:
         return "oasis"
+    if normalized in {"tujie", "tujie_sms", "tujie_cdk", "tujiecdk", "tj"}:
+        return "tujie"
     return "phone_pool"
 
 
@@ -1786,6 +1790,8 @@ def _oauth_add_phone_provider_order(provider_mode: str) -> list[str]:
         order.append("hero_sms")
     if os.environ.get("OAUTH_SMSBOWER_API_KEY") and "smsbower" not in order:
         order.append("smsbower")
+    if os.environ.get("OAUTH_SMSCLOUD_API_KEY") and "smscloud" not in order:
+        order.append("smscloud")
     try:
         from autotoken.auth.oasis_sms import oasis_configured
 
@@ -1793,6 +1799,13 @@ def _oauth_add_phone_provider_order(provider_mode: str) -> list[str]:
             order.append("oasis")
     except Exception:
         logger.debug("[Codex] 检查 Oasis 配置失败", exc_info=True)
+    try:
+        from autotoken.auth.tujie_sms import tujie_configured
+
+        if tujie_configured() and "tujie" not in order:
+            order.append("tujie")
+    except Exception:
+        logger.debug("[Codex] 检查 TuJie 配置失败", exc_info=True)
     if "phone_pool" not in order:
         order.append("phone_pool")
     return order
@@ -1836,6 +1849,25 @@ def _normalize_oauth_smsbower_country(value: str | None = None) -> str:
     return text
 
 
+def _normalize_oauth_smscloud_country(value: str | None = None) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"all", "any", "*", "全部", "所有", "不限", "global"}:
+        return "all"
+    if text and re.fullmatch(r"\d+", text):
+        return text
+    if text in {"", "us", "usa", "united_states", "united states", "+1"}:
+        return "187"
+    if text in {"gb", "uk", "united_kingdom", "united kingdom", "britain", "英国", "+44"}:
+        return "44"
+    if text in {"br", "bra", "brazil", "brasil", "巴西", "+55"}:
+        return "73"
+    if text in {"id", "idn", "indonesia", "indonesian", "印度尼西亚", "印尼", "+62"}:
+        return "6"
+    if text in {"co", "colombia", "colombian", "哥伦比亚", "哥伦比亚共和国", "+57"}:
+        return "33"
+    return text
+
+
 def _oauth_hero_sms_config(country: str | None = None, max_price: str | None = None) -> dict[str, str]:
     return {
         "base_url": str(
@@ -1846,7 +1878,9 @@ def _oauth_hero_sms_config(country: str | None = None, max_price: str | None = N
         "api_key": str(os.environ.get("OAUTH_HERO_SMS_API_KEY") or "").strip(),
         "country": _normalize_oauth_hero_sms_country(country or os.environ.get("OAUTH_HERO_SMS_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_HERO_SMS_SERVICE")),
+        "min_price": str(os.environ.get("OAUTH_HERO_SMS_MIN_PRICE") or "").strip(),
         "max_price": str(max_price if max_price is not None else os.environ.get("OAUTH_HERO_SMS_MAX_PRICE") or "").strip(),
+        "price_mode": _normalize_oauth_sms_price_mode(os.environ.get("OAUTH_HERO_SMS_PRICE_MODE")),
     }
 
 
@@ -1858,7 +1892,23 @@ def _oauth_smsbower_config(country: str | None = None, max_price: str | None = N
         "api_key": str(os.environ.get("OAUTH_SMSBOWER_API_KEY") or "").strip(),
         "country": _normalize_oauth_smsbower_country(country or os.environ.get("OAUTH_SMSBOWER_COUNTRY")),
         "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_SMSBOWER_SERVICE")),
+        "min_price": str(os.environ.get("OAUTH_SMSBOWER_MIN_PRICE") or "").strip(),
         "max_price": str(max_price if max_price is not None else os.environ.get("OAUTH_SMSBOWER_MAX_PRICE") or "").strip(),
+        "price_mode": _normalize_oauth_sms_price_mode(os.environ.get("OAUTH_SMSBOWER_PRICE_MODE")),
+    }
+
+
+def _oauth_smscloud_config(country: str | None = None, max_price: str | None = None) -> dict[str, str]:
+    return {
+        "base_url": str(
+            os.environ.get("OAUTH_SMSCLOUD_BASE_URL") or "https://smscloud.sbs/api/system"
+        ).strip(),
+        "api_key": str(os.environ.get("OAUTH_SMSCLOUD_API_KEY") or "").strip(),
+        "country": _normalize_oauth_smscloud_country(country or os.environ.get("OAUTH_SMSCLOUD_COUNTRY")),
+        "service": _normalize_oauth_hero_sms_service(os.environ.get("OAUTH_SMSCLOUD_SERVICE")),
+        "min_price": str(os.environ.get("OAUTH_SMSCLOUD_MIN_PRICE") or "").strip(),
+        "max_price": str(max_price if max_price is not None else os.environ.get("OAUTH_SMSCLOUD_MAX_PRICE") or "").strip(),
+        "price_mode": _normalize_oauth_sms_price_mode(os.environ.get("OAUTH_SMSCLOUD_PRICE_MODE")),
     }
 
 
@@ -1891,6 +1941,13 @@ def _oauth_smsbower_max_binds() -> int:
     return max(1, int(float(os.environ.get("OAUTH_SMSBOWER_MAX_BINDS", "3") or "3")))
 
 
+def _normalize_oauth_sms_price_mode(raw: object = "") -> str:
+    value = str(raw or "").strip().lower().replace("-", "_")
+    if value in {"lowest", "min", "minimum", "lowest_price", "min_price", "cheap", "cheapest", "低价", "最低价"}:
+        return "lowest"
+    return "ceiling"
+
+
 def _oauth_hero_sms_remaining_seconds(entry: dict[str, Any], *, now: float | None = None) -> int:
     current = time.time() if now is None else float(now)
     expires_at = float(entry.get("expires_at") or 0)
@@ -1917,7 +1974,9 @@ def _oauth_hero_sms_activation_used_codes(entry: dict[str, Any]) -> list[str]:
 
 def _oauth_hero_sms_config_fingerprint(cfg: dict[str, str] | None = None) -> str:
     data = cfg or _oauth_hero_sms_config()
-    raw = "|".join(str(data.get(key) or "") for key in ("base_url", "api_key", "country", "service", "max_price"))
+    raw = "|".join(
+        str(data.get(key) or "") for key in ("base_url", "api_key", "country", "service", "min_price", "max_price", "price_mode")
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -2288,7 +2347,9 @@ def _oauth_smsbower_entry_reusable(entry: dict[str, Any], *, now: float | None =
 
 def _oauth_smsbower_config_fingerprint(cfg: dict[str, str] | None = None) -> str:
     data = cfg or _oauth_smsbower_config()
-    raw = "|".join(str(data.get(key) or "") for key in ("base_url", "api_key", "country", "service", "max_price"))
+    raw = "|".join(
+        str(data.get(key) or "") for key in ("base_url", "api_key", "country", "service", "min_price", "max_price", "price_mode")
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -2432,6 +2493,17 @@ def _oauth_smsbower_item_from_entry(entry: dict[str, Any], email: str = "") -> d
     }
 
 
+def _oauth_price_limit(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _acquire_oauth_hero_sms_phone(
     email: str = "",
     *,
@@ -2499,6 +2571,8 @@ def _acquire_oauth_hero_sms_phone(
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
         max_price=cfg["max_price"],
+        min_price=cfg["min_price"],
+        preferred_price="",
     )
     if not activation_id or not phone:
         return None, error or "hero-sms 未返回可用号码"
@@ -2628,14 +2702,82 @@ def _acquire_oauth_smsbower_phone(
             )
 
     meta: dict[str, Any] = {}
-    activation_id, phone, error = _smsbower_get_number(
-        service_code=cfg["service"] or "dr",
-        country_id=country_id,
-        base_url=cfg["base_url"],
-        api_key=cfg["api_key"],
-        max_price=cfg["max_price"],
-        meta_out=meta,
-    )
+    activation_id = ""
+    phone = ""
+    error = ""
+    if cfg.get("price_mode") == "lowest" and country_id != "all":
+        try:
+            from autotoken._paypal_protocol_engine.paypal.smsbower import SMSBowerClient
+
+            client = SMSBowerClient(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout_seconds=20)
+            price_floor = _oauth_price_limit(cfg["min_price"])
+            price_limit = _oauth_price_limit(cfg["max_price"])
+            prices = [
+                item
+                for item in client.get_provider_prices(cfg["service"] or "dr", str(country_id))
+                if getattr(item, "price", 0) > 0
+                and getattr(item, "count", 0) > 0
+                and (price_floor is None or float(getattr(item, "price", 0)) >= price_floor)
+                and (price_limit is None or float(getattr(item, "price", 0)) <= price_limit)
+            ]
+            prices = sorted(prices, key=lambda item: (float(getattr(item, "price", 0)), str(getattr(item, "provider_id", ""))))
+            if not prices:
+                floor_hint = f" >= {price_floor}" if price_floor is not None else ""
+                limit_hint = f" <= {price_limit}" if price_limit is not None else ""
+                error = f"smsbower 当前没有符合价格区间的可用 provider{floor_hint}{limit_hint}"
+            for price in prices:
+                provider_id = str(getattr(price, "provider_id", "") or "").strip()
+                if not provider_id:
+                    continue
+                try:
+                    data = client.get_number_v2(
+                        service=cfg["service"] or "dr",
+                        country=str(country_id),
+                        provider_id=provider_id,
+                        max_price=float(getattr(price, "price", 0)),
+                    )
+                except Exception as exc:
+                    error = str(exc)
+                    logger.warning(
+                        "[Codex] add-phone smsbower 最低价 provider 取号失败: provider=%s price=%s error=%s",
+                        provider_id,
+                        getattr(price, "price", ""),
+                        _safe_error_summary(exc, limit=180),
+                    )
+                    continue
+                if isinstance(data, dict):
+                    activation_id = str(data.get("activationId") or data.get("activation_id") or data.get("id") or "")
+                    phone = str(data.get("phoneNumber") or data.get("phone") or data.get("number") or "")
+                    if activation_id and phone:
+                        meta.update(
+                            {
+                                "request_params": {
+                                    "service": cfg["service"] or "dr",
+                                    "country": str(country_id),
+                                    "providerIds": provider_id,
+                                    "maxPrice": float(getattr(price, "price", 0)),
+                                },
+                                "response_data": data,
+                                "price": str(data.get("activationCost") or data.get("price") or getattr(price, "price", "")),
+                                "price_source": "lowest_provider",
+                                "provider_id": provider_id,
+                            }
+                        )
+                        break
+                    error = f"smsbower getNumberV2 返回无效数据: {data!r}"
+        except Exception as exc:
+            error = str(exc)
+            logger.warning("[Codex] add-phone smsbower 最低价查询失败，回退普通取号: %s", _safe_error_summary(exc, limit=180))
+    if not activation_id or not phone:
+        activation_id, phone, error = _smsbower_get_number(
+            service_code=cfg["service"] or "dr",
+            country_id=country_id,
+            base_url=cfg["base_url"],
+            api_key=cfg["api_key"],
+            min_price=cfg["min_price"],
+            max_price=cfg["max_price"],
+            meta_out=meta,
+        )
     if not activation_id or not phone:
         return None, error or "smsbower 未返回可用号码"
     activation = SmsActivation(
@@ -2701,6 +2843,93 @@ def _acquire_oauth_smsbower_phone(
     return item, ""
 
 
+def _acquire_oauth_smscloud_phone(
+    email: str = "",
+    *,
+    country: str | None = None,
+    max_price: str | None = None,
+    reservation_owner: str | None = None,
+    allow_reuse: bool = False,
+) -> tuple[dict | None, str]:
+    del reservation_owner, allow_reuse
+    try:
+        from autotoken.auth.smscloud_sms import SMSCloudActivation, acquire_smscloud_number
+    except Exception as exc:
+        return None, f"SMSCloud 模块不可用: {exc}"
+
+    cfg = _oauth_smscloud_config(country, max_price=max_price)
+    if not cfg["api_key"]:
+        return None, "缺少 OAUTH_SMSCLOUD_API_KEY 配置"
+    country_id = str(cfg["country"] or "").strip()
+    logger.info(
+        "[Codex] add-phone smscloud 取号参数: email=%s service=%s country=%s max_price=%s",
+        email,
+        cfg["service"] or "dr",
+        country_id or "-",
+        cfg["max_price"] or "-",
+    )
+    data, error = acquire_smscloud_number(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        service=cfg["service"] or "dr",
+        country=country_id,
+        min_price=cfg["min_price"],
+        max_price=cfg["max_price"],
+    )
+    if not data:
+        return None, error or "SMSCloud 未返回可用号码"
+    activation_id = str(data.get("id") or "").strip()
+    phone = str(data.get("phoneNumber") or data.get("phone") or "").strip()
+    if not activation_id or not phone:
+        return None, f"SMSCloud 返回无效取号数据: {data!r}"
+    activation = SMSCloudActivation(
+        order_id=activation_id,
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        log=logger.info,
+    )
+    logger.info(
+        "[Codex] add-phone smscloud 已取号: email=%s activation=%s service=%s country=%s max_price=%s",
+        email,
+        activation_id,
+        cfg["service"] or "dr",
+        country_id,
+        cfg["max_price"] or "-",
+    )
+    record_id = f"smscloud:{activation_id}"
+    try:
+        from autotoken.auth.oauth_phone_records import record_acquired
+
+        record_acquired(
+            {
+                "id": record_id,
+                "provider": "smscloud",
+                "activation_id": activation_id,
+                "phone_number": phone,
+                "country": country_id or str(data.get("countryCode") or ""),
+                "service": cfg["service"] or "dr",
+                "price": str(data.get("creditAmount") or ""),
+                "price_limit": cfg["max_price"] or "",
+                "price_source": "smscloud_flexible",
+                "email": email,
+                "status": "acquired",
+                "meta": {"response_data": data},
+            }
+        )
+    except Exception:
+        logger.debug("[Codex] add-phone 记录 SMSCloud 取号失败", exc_info=True)
+    return {
+        "id": record_id,
+        "record_id": record_id,
+        "source": "smscloud",
+        "activation": activation,
+        "activation_id": activation_id,
+        "phone_number": phone,
+        "country_id": country_id or str(data.get("countryCode") or ""),
+        "smscloud_order": data,
+    }, ""
+
+
 def _release_oauth_sms_activation_phone(
     phone_item: dict,
     *,
@@ -2719,6 +2948,33 @@ def _release_oauth_sms_activation_phone(
             reason=reason,
             reservation_owner=reservation_owner,
         )
+        return
+    if str(phone_item.get("source") or "").lower() == "smscloud":
+        activation = phone_item.get("activation")
+        activation_id = str(phone_item.get("activation_id") or "").strip()
+        try:
+            if activation and finish:
+                activation.finish()
+                logger.info("[Codex] add-phone smscloud 会话已完成: activation=%s reason=%s", activation_id, reason)
+            elif activation and cancel:
+                activation.cancel()
+                logger.info("[Codex] add-phone smscloud 会话已取消: activation=%s reason=%s", activation_id, reason)
+        except Exception as exc:
+            logger.warning(
+                "[Codex] add-phone smscloud 会话状态更新失败: activation=%s finish=%s cancel=%s reason=%s error=%s",
+                activation_id,
+                finish,
+                cancel,
+                reason,
+                exc,
+            )
+        try:
+            from autotoken.auth.oauth_phone_records import update_record
+
+            record_id = str(phone_item.get("record_id") or f"smscloud:{activation_id}")
+            update_record(record_id, status="success" if finish else ("cancelled" if cancel else "released"), reason=reason)
+        except Exception:
+            logger.debug("[Codex] add-phone 更新 smscloud 记录失败", exc_info=True)
         return
     activation = phone_item.get("activation")
     activation_id = str(phone_item.get("activation_id") or "").strip()
@@ -3053,7 +3309,7 @@ def _mark_oauth_hero_sms_bound(phone_item: dict, *, email: str = "") -> None:
 
 def _make_phone_item_otp_provider(phone_item: dict):
     source = str(phone_item.get("source") or "").lower()
-    if source in {"hero_sms", "smsbower", "oasis"}:
+    if source in {"hero_sms", "smsbower", "smscloud", "oasis", "tujie"}:
         activation = phone_item.get("activation")
         if not activation:
             raise RuntimeError(f"{source} activation 为空")
@@ -3101,7 +3357,7 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
     phone = str(phone_item.get("phone_number") or "").strip()
     sms_url = str(phone_item.get("sms_url") or "").strip()
     dynamic_sms_source = str(phone_item.get("source") or "").lower()
-    is_dynamic_sms = dynamic_sms_source in {"hero_sms", "smsbower", "oasis"}
+    is_dynamic_sms = dynamic_sms_source in {"hero_sms", "smsbower", "smscloud", "oasis", "tujie"}
     if not phone or (not sms_url and not is_dynamic_sms):
         return False, "手机号或接码链接为空"
     if not _is_add_phone_page(page):
@@ -3286,6 +3542,8 @@ def _handle_oauth_add_phone_if_present(
     provider_order = _oauth_add_phone_provider_order(provider_mode)
     if phone_sms_country and provider_mode == "smsbower":
         country_override = _normalize_oauth_smsbower_country(phone_sms_country)
+    elif phone_sms_country and provider_mode == "smscloud":
+        country_override = _normalize_oauth_smscloud_country(phone_sms_country)
     else:
         country_override = _normalize_oauth_hero_sms_country(phone_sms_country) if phone_sms_country else None
     logger.info(
@@ -3326,10 +3584,16 @@ def _handle_oauth_add_phone_if_present(
                 phone_item, error = _acquire_oauth_hero_sms_phone(email, country=country_override, allow_reuse=False)
             elif candidate == "smsbower":
                 phone_item, error = _acquire_oauth_smsbower_phone(email, country=country_override, allow_reuse=False)
+            elif candidate == "smscloud":
+                phone_item, error = _acquire_oauth_smscloud_phone(email, country=country_override, allow_reuse=False)
             elif candidate == "oasis":
                 from autotoken.auth.oasis_sms import acquire_oasis_phone
 
                 phone_item, error = acquire_oasis_phone(email, cdks=phone_sms_oasis_cdks)
+            elif candidate == "tujie":
+                from autotoken.auth.tujie_sms import acquire_tujie_phone
+
+                phone_item, error = acquire_tujie_phone(email, cdks=phone_sms_oasis_cdks)
             elif pool_api.get("acquire"):
                 phone_item = pool_api["acquire"](email)
             else:
@@ -3362,10 +3626,18 @@ def _handle_oauth_add_phone_if_present(
         if source == "smsbower":
             _release_oauth_sms_activation_phone(phone_item, email=email, reason=reason)
             return
+        if source == "smscloud":
+            _release_oauth_sms_activation_phone(phone_item, email=email, reason=reason)
+            return
         if source == "oasis":
             from autotoken.auth.oasis_sms import record_oasis_account_mapping
 
             record_oasis_account_mapping(phone_item, email=email, status="failed", reason=reason)
+            return
+        if source == "tujie":
+            from autotoken.auth.tujie_sms import record_tujie_account_mapping
+
+            record_tujie_account_mapping(phone_item, email=email, status="failed", reason=reason)
             return
         pool_api["release"](str(phone_item.get("id") or ""), email)
 
@@ -3377,10 +3649,23 @@ def _handle_oauth_add_phone_if_present(
         if source == "smsbower":
             _mark_oauth_smsbower_bound(phone_item, email=email)
             return
+        if source == "smscloud":
+            _release_oauth_sms_activation_phone(
+                phone_item,
+                email=email,
+                finish=True,
+                reason="oauth_phone_success_no_reuse",
+            )
+            return
         if source == "oasis":
             from autotoken.auth.oasis_sms import record_oasis_account_mapping
 
             record_oasis_account_mapping(phone_item, email=email, status="success")
+            return
+        if source == "tujie":
+            from autotoken.auth.tujie_sms import record_tujie_account_mapping
+
+            record_tujie_account_mapping(phone_item, email=email, status="success")
             return
         pool_api["bound"](str(phone_item.get("id") or ""), email)
 
@@ -3401,10 +3686,21 @@ def _handle_oauth_add_phone_if_present(
             else:
                 _release_oauth_sms_activation_phone(phone_item, email=email, reason=reason)
             return
+        if source == "smscloud":
+            if action in {"cooldown", "invalid", "hero_release"}:
+                _release_oauth_sms_activation_phone(phone_item, email=email, cancel=True, reason=reason)
+            else:
+                _release_oauth_sms_activation_phone(phone_item, email=email, reason=reason)
+            return
         if source == "oasis":
             from autotoken.auth.oasis_sms import record_oasis_account_mapping
 
             record_oasis_account_mapping(phone_item, email=email, status="failed", reason=reason)
+            return
+        if source == "tujie":
+            from autotoken.auth.tujie_sms import record_tujie_account_mapping
+
+            record_tujie_account_mapping(phone_item, email=email, status="failed", reason=reason)
             return
         if action == "cooldown":
             pool_api["cooldown"](str(phone_item.get("id") or ""), reason)

@@ -23,6 +23,8 @@ assert.match(page, /function startRegisterPolling\(\)[\s\S]*?setInterval\(loadRe
 assert.match(page, /if\s*\(props\.runningTask\)\s*startRegisterPolling\(\)/, 'register page restores live log polling when an active register task exists')
 assert.match(page, /if\s*\(newId\)\s*\{[\s\S]*?loadRegisterLogs\(\)[\s\S]*?loadRegisterStats\(\)[\s\S]*?startRegisterPolling\(\)/, 'register page starts live refresh when a register task appears')
 assert.doesNotMatch(page, /mailProviderWatchReady\s*=\s*true[\s\S]{0,120}loadOutlookPoolStatus\(\)/, 'register page does not automatically load account pool on entry')
+assert.match(page, /api\.getRoxyBrowserWorkspaces\(\)/, 'register page preflights RoxyBrowser before submitting RoxyBrowser registration')
+assert.match(page, /RoxyBrowser 未连接/, 'register page shows a friendly RoxyBrowser unavailable message')
 assert.match(
   page,
   /watch\(\s*\(\)\s*=>\s*registerForm\.value\.mailProvider[\s\S]*?loadOutlookPoolStatus\(\)/,

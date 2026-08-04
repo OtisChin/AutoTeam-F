@@ -1,9 +1,9 @@
 """SQLite persistence helpers for AutoToken runtime data.
 
 The store uses one local database under ``data/autotoken.sqlite3`` by default.
-If a pre-rename ``data/autoteam.sqlite3`` already exists and the new database
-does not, that file remains the default to avoid silently starting with empty
-state after an upgrade.
+If a pre-rename ``data/autoteam.sqlite3`` already exists and still contains
+more account data than the new database, that file remains the default to avoid
+silently starting with empty or partial state after an upgrade.
 Modules can pass an explicit path in tests to keep fixtures isolated.
 """
 
@@ -23,13 +23,29 @@ LEGACY_DB_FILE = PROJECT_ROOT / "data" / "autoteam.sqlite3"
 _LOCK = threading.RLock()
 
 
+def _account_row_count(path: Path) -> int | None:
+    if not path.exists() or path.stat().st_size <= 0:
+        return 0
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as conn:
+            row = conn.execute("SELECT count(*) FROM accounts").fetchone()
+            return int(row[0] or 0) if row else 0
+    except sqlite3.Error:
+        return None
+
+
 def default_db_path() -> Path:
     override = str(os.environ.get("AUTOTOKEN_DB_FILE") or os.environ.get("AUTOTEAM_DB_FILE") or "").strip()
     if override:
         path = Path(override)
         return path if path.is_absolute() else PROJECT_ROOT / path
-    if LEGACY_DB_FILE.exists() and not DB_FILE.exists():
-        return LEGACY_DB_FILE
+    if LEGACY_DB_FILE.exists():
+        if not DB_FILE.exists():
+            return LEGACY_DB_FILE
+        legacy_count = _account_row_count(LEGACY_DB_FILE)
+        current_count = _account_row_count(DB_FILE)
+        if legacy_count is not None and current_count is not None and legacy_count > current_count:
+            return LEGACY_DB_FILE
     return DB_FILE
 
 

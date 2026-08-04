@@ -732,6 +732,28 @@ def test_sqlite_store_uses_legacy_db_when_new_db_missing(tmp_path, monkeypatch):
 
     assert sqlite_store.default_db_path() == legacy_db
 
+def test_sqlite_store_prefers_populated_legacy_db_over_new_empty_db(tmp_path, monkeypatch):
+    import sqlite3
+
+    import autotoken.sqlite_store as sqlite_store
+
+    legacy_db = tmp_path / "autoteam.sqlite3"
+    new_db = tmp_path / "autotoken.sqlite3"
+    for db_path, account_count in [(legacy_db, 3), (new_db, 0)]:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE accounts (email TEXT PRIMARY KEY)")
+            conn.executemany(
+                "INSERT INTO accounts(email) VALUES (?)",
+                [(f"user-{i}@example.com",) for i in range(account_count)],
+            )
+
+    monkeypatch.setattr(sqlite_store, "LEGACY_DB_FILE", legacy_db)
+    monkeypatch.setattr(sqlite_store, "DB_FILE", new_db)
+    monkeypatch.delenv("AUTOTOKEN_DB_FILE", raising=False)
+    monkeypatch.delenv("AUTOTEAM_DB_FILE", raising=False)
+
+    assert sqlite_store.default_db_path() == legacy_db
+
 def test_pyproject_uses_autotoken_as_canonical_cli_and_keeps_autoteam_alias():
     project_root = Path(__file__).resolve().parents[2]
     pyproject_text = (project_root / "pyproject.toml").read_text(encoding="utf-8")

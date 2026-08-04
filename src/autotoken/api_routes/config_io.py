@@ -103,6 +103,12 @@ def _env_config_keys() -> list[str]:
         "OAUTH_OASIS_SMS_POLL_ATTEMPTS",
         "OAUTH_OASIS_SMS_POLL_INTERVAL_MS",
         "OAUTH_OASIS_SMS_ACCOUNT_MAP_FILE",
+        "OAUTH_TUJIE_SMS_BASE_URL",
+        "OAUTH_TUJIE_SMS_CDKS",
+        "OAUTH_TUJIE_SMS_CDK_FILE",
+        "OAUTH_TUJIE_SMS_POLL_ATTEMPTS",
+        "OAUTH_TUJIE_SMS_POLL_INTERVAL_MS",
+        "OAUTH_TUJIE_SMS_ACCOUNT_MAP_FILE",
         "OUTLOOK_REGISTER_CODE_TIMEOUT",
     ]
     for key in extra_keys:

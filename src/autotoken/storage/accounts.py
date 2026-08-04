@@ -93,6 +93,11 @@ def _normalize_account_record(account: dict) -> dict:
     acc.setdefault("last_bind_task_id", "")
     acc.setdefault("last_bind_message", "")
     acc.setdefault("last_bind_failure_stage", "")
+    acc.setdefault("kakao_link_extracted", False)
+    acc.setdefault("kakao_link_extracted_at", None)
+    acc.setdefault("kakao_link_expires_at", None)
+    acc.setdefault("kakao_link_cs_id", "")
+    acc.setdefault("kakao_link_job_id", "")
     acc.setdefault("credentials_exported", False)
     acc.setdefault("credentials_exported_at", None)
     acc.setdefault("account_source", ACCOUNT_SOURCE_MANAGED)
@@ -365,6 +370,11 @@ def update_account(email, **kwargs):
         "last_bind_task_id",
         "last_bind_message",
         "last_bind_failure_stage",
+        "kakao_link_extracted",
+        "kakao_link_extracted_at",
+        "kakao_link_expires_at",
+        "kakao_link_cs_id",
+        "kakao_link_job_id",
         "plus_bound_at",
         "quota_exhausted_at",
         "quota_resets_at",

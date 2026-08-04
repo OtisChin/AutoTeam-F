@@ -142,6 +142,26 @@ def test_search_emails_by_recipient_reads_yangyang_message_list_detail(monkeypat
     assert client.extract_verification_code(messages[0]) == "789012"
 
 
+def test_item_to_legacy_parses_string_received_at_without_now_fallback(monkeypatch):
+    monkeypatch.setattr("autotoken.mail.icloud.time.time", lambda: 1_999_999_999)
+    account = ICloudMailProvider._parse_account_line(
+        "user@icloud.com----https://icloud-api.top/show/token/user@icloud.com"
+    )
+
+    message = ICloudMailProvider._item_to_legacy(
+        account,
+        {
+            "subject": "Your temporary ChatGPT login code",
+            "receivedAt": "2026-08-03 22:54:04",
+            "content": "Your temporary ChatGPT login code is 123456",
+        },
+        index=0,
+    )
+
+    assert message["createTime"] == 1785768844
+    assert message["createdAt"] == 1785768844
+
+
 def test_factory_accepts_icloud_provider(monkeypatch):
     monkeypatch.setenv("MAIL_PROVIDER", "icloud")
 

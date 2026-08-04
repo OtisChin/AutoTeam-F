@@ -1329,7 +1329,7 @@ class AuthFlow:
 
         if callable(phone_supplier):
             phone_items, phone_supply_error = _load_dynamic_phone_items()
-            if not phone_items and phone_provider in {"hero_sms", "smsbower", "oasis"}:
+            if not phone_items and phone_provider in {"hero_sms", "smsbower", "smscloud", "oasis"}:
                 from autotoken.auth.codex_auth import CodexOAuthPhoneRequired
 
                 detail = phone_supply_error or f"{phone_provider.replace('_', '-')} 无可用号码"
@@ -1765,6 +1765,20 @@ class AuthFlow:
         return True
 
     @staticmethod
+    def _is_invalid_state_error(exc: object) -> bool:
+        text = str(exc or "").lower()
+        return "invalid_state" in text or "sign-in session is no longer valid" in text
+
+    def _reset_authorize_http_session(self, reason: str = "") -> None:
+        """Start over with a clean cookie jar after auth.openai.com invalid_state."""
+        if reason:
+            logger.info("重置 OAuth HTTP 会话: %s", reason)
+        self.session = create_http_session(
+            proxy=self.config.proxy,
+            impersonate=self._impersonate_candidates[self._impersonate_idx],
+        )
+
+    @staticmethod
     def _datadog_trace_headers() -> dict:
         """生成 Datadog APM 追踪头。
 
@@ -1859,6 +1873,30 @@ class AuthFlow:
     def get_csrf_token(self) -> str:
         logger.info("[1/10] 获取 CSRF Token...")
         headers = self._common_headers("https://chatgpt.com/auth/login")
+
+        # Newer ChatGPT auth builds do not always set the NextAuth CSRF cookie
+        # from /api/auth/csrf alone. Preloading the login page establishes
+        # __Host-next-auth.csrf-token / callback-url cookies; without those,
+        # POST /api/auth/signin/openai returns /api/auth/signin?csrf=true and
+        # the following auth.openai.com authorize/continue call fails with
+        # invalid_state.
+        try:
+            warmup_resp = self.session.get(
+                "https://chatgpt.com/auth/login",
+                headers=self._common_headers("https://chatgpt.com/"),
+                timeout=30,
+            )
+            self._trace_http("chatgpt_auth_login_warmup", warmup_resp)
+        except Exception as e:
+            if self._is_tls_error(e) and self._rotate_impersonate_session():
+                headers = self._common_headers("https://chatgpt.com/auth/login")
+            elif self._is_tls_error(e):
+                raise RuntimeError(
+                    "chatgpt.com TLS 握手失败，当前网络无法建立到 /auth/login 的 HTTPS 连接。"
+                    "请切换可直连 chatgpt.com 的网络或在界面中配置可用代理后重试。"
+                ) from e
+            else:
+                logger.warning("ChatGPT 登录页预热失败，继续尝试 CSRF 接口: %s", e)
 
         # Cloudflare 可能在短时间内多次请求后返回 403，重试 3 次
         for attempt in range(3):
@@ -3129,10 +3167,18 @@ class AuthFlow:
         self.result.email = email
 
         # 登录/注册链路
-        csrf_token = self.get_csrf_token()
-        auth_url = self.get_auth_url(csrf_token)
-        device_id = self.auth_oauth_init(auth_url)
-        sentinel = self.get_sentinel_token(device_id)
+        def start_authorize_state(reason: str = "", *, reset_session: bool = False) -> tuple[str, str]:
+            if reason:
+                logger.info("重建 OAuth authorize 状态: %s", reason)
+            if reset_session:
+                self._reset_authorize_http_session(reason)
+            csrf_token = self.get_csrf_token()
+            auth_url = self.get_auth_url(csrf_token)
+            device_id = self.auth_oauth_init(auth_url)
+            sentinel_token = self.get_sentinel_token(device_id)
+            return auth_url, sentinel_token
+
+        auth_url, sentinel = start_authorize_state()
         is_new = self.signup(email, sentinel)
 
         if is_new:
@@ -3367,10 +3413,18 @@ class AuthFlow:
         login_password = (password or "").strip() or self._default_password_from_email(email)
         self.result.password = login_password
 
-        csrf_token = self.get_csrf_token()
-        auth_url = self.get_auth_url(csrf_token)
-        device_id = self.auth_oauth_init(auth_url)
-        sentinel = self.get_sentinel_token(device_id)
+        def start_authorize_state(reason: str = "", *, reset_session: bool = False) -> tuple[str, str]:
+            if reason:
+                logger.info("重建 OAuth authorize 状态: %s", reason)
+            if reset_session:
+                self._reset_authorize_http_session(reason)
+            csrf_token = self.get_csrf_token()
+            auth_url = self.get_auth_url(csrf_token)
+            device_id = self.auth_oauth_init(auth_url)
+            sentinel_token = self.get_sentinel_token(device_id)
+            return auth_url, sentinel_token
+
+        auth_url, sentinel = start_authorize_state()
 
         continue_url = ""
         try:
@@ -3380,6 +3434,10 @@ class AuthFlow:
 
         page_type = ""
         mode = ""
+        try:
+            invalid_state_retries = max(1, int(os.getenv("OAUTH_INVALID_STATE_RETRIES", "5") or "5"))
+        except Exception:
+            invalid_state_retries = 5
         prefer_login_screen_first = str(os.getenv("LOCALAUTH_EXISTING_LOGIN_USE_LOGIN_HINT", "1")).lower() in (
             "1",
             "true",
@@ -3388,44 +3446,76 @@ class AuthFlow:
         )
 
         if prefer_login_screen_first:
-            try:
-                logger.info("已有账号协议登录：优先走 login screen_hint 探测 password/otp 分支")
-                login_step = self.authorize_continue(
-                    email=email,
-                    sentinel_token=sentinel,
-                    screen_hint="login",
-                    referer="https://auth.openai.com/log-in",
-                    trace_step="authorize_continue_login_protocol",
-                )
-                page_type = (self._extract_page_type(login_step) or "").lower()
-                continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_step))
-                page = (login_step.get("page") or {}) if isinstance(login_step, dict) else {}
-                payload = (page.get("payload") or {}) if isinstance(page, dict) else {}
-                mode = (payload.get("email_verification_mode", "") or "").lower()
-                self._existing_page_type = page_type
-                self._existing_email_verification_mode = mode
-
-                if page_type == "login_password" or "/log-in/password" in (continue_url or ""):
-                    logger.info("登录分支: login_password -> password/verify")
-                    login_resp = self.login_password_verify(login_password)
-                    page_type = (self._extract_page_type(login_resp) or "").lower()
-                    continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_resp))
-                elif page_type == "email_otp_verification" or "/email-verification" in (continue_url or ""):
-                    logger.info("登录分支: email_otp_verification")
-                else:
-                    logger.info(
-                        "login screen_hint 未直接命中已有账号完成态: page_type=%s continue_url=%s",
-                        page_type or "(empty)",
-                        (continue_url or "")[:180] or "(empty)",
+            for attempt in range(1):
+                try:
+                    logger.info("已有账号协议登录：优先走 login screen_hint 探测 password/otp 分支")
+                    login_step = self.authorize_continue(
+                        email=email,
+                        sentinel_token=sentinel,
+                        screen_hint="login",
+                        referer="https://auth.openai.com/log-in",
+                        trace_step=f"authorize_continue_login_protocol_{attempt + 1}",
                     )
-            except Exception as e:
-                logger.warning(f"login screen_hint 探测失败，回退 signup 探测: {e}")
-                continue_url = ""
-                page_type = ""
-                mode = ""
+                    page_type = (self._extract_page_type(login_step) or "").lower()
+                    continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_step))
+                    page = (login_step.get("page") or {}) if isinstance(login_step, dict) else {}
+                    payload = (page.get("payload") or {}) if isinstance(page, dict) else {}
+                    mode = (payload.get("email_verification_mode", "") or "").lower()
+                    self._existing_page_type = page_type
+                    self._existing_email_verification_mode = mode
+
+                    if page_type == "login_password" or "/log-in/password" in (continue_url or ""):
+                        logger.info("登录分支: login_password -> password/verify")
+                        login_resp = self.login_password_verify(login_password)
+                        page_type = (self._extract_page_type(login_resp) or "").lower()
+                        continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(login_resp))
+                    elif page_type == "email_otp_verification" or "/email-verification" in (continue_url or ""):
+                        logger.info("登录分支: email_otp_verification")
+                    else:
+                        logger.info(
+                            "login screen_hint 未直接命中已有账号完成态: page_type=%s continue_url=%s",
+                            page_type or "(empty)",
+                            (continue_url or "")[:180] or "(empty)",
+                        )
+                    break
+                except Exception as e:
+                    continue_url = ""
+                    page_type = ""
+                    mode = ""
+                    if self._is_invalid_state_error(e):
+                        logger.warning(
+                            "login screen_hint 探测状态已失效，重建干净会话后回退 signup 探测: %s",
+                            e,
+                        )
+                        auth_url, sentinel = start_authorize_state("login_probe_invalid_state_fallback_signup", reset_session=True)
+                    else:
+                        logger.warning(f"login screen_hint 探测失败，回退 signup 探测: {e}")
+                    break
 
         if not continue_url and page_type not in ("login_password", "email_otp_verification"):
-            is_new = self.signup(email, sentinel)
+            last_signup_invalid_state: Exception | None = None
+            for attempt in range(invalid_state_retries):
+                try:
+                    is_new = self.signup(email, sentinel)
+                    break
+                except Exception as e:
+                    if not self._is_invalid_state_error(e):
+                        raise
+                    last_signup_invalid_state = e
+                    if attempt >= invalid_state_retries - 1:
+                        raise
+                    logger.warning(
+                        "signup screen_hint 探测状态已失效，重建干净会话后重试 signup 探测: %s/%s: %s",
+                        attempt + 1,
+                        invalid_state_retries,
+                        e,
+                    )
+                    auth_url, sentinel = start_authorize_state(
+                        f"signup_probe_invalid_state_{attempt + 1}",
+                        reset_session=True,
+                    )
+            else:
+                raise RuntimeError(last_signup_invalid_state or "signup screen_hint 探测失败")
             if is_new:
                 logger.warning("目标邮箱未命中已有账号分支，回退到注册链路")
                 self.register_password(email)

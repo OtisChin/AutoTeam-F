@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,28 @@ from autotoken.services.task_runtime import TASK_GROUP_OAUTH
 
 ACCOUNT_LOGIN_BATCH_MAX_EMAILS = 1_000
 ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY = 10
+ACCOUNT_LOGIN_BATCH_FRAUD_GUARD_ABORT_THRESHOLD = 2
+
+
+def _oauth_fraud_guard_abort_threshold() -> int:
+    try:
+        return max(
+            0,
+            int(
+                os.environ.get(
+                    "CODEX_OAUTH_FRAUD_GUARD_ABORT_THRESHOLD",
+                    str(ACCOUNT_LOGIN_BATCH_FRAUD_GUARD_ABORT_THRESHOLD),
+                )
+                or str(ACCOUNT_LOGIN_BATCH_FRAUD_GUARD_ABORT_THRESHOLD)
+            ),
+        )
+    except (TypeError, ValueError):
+        return ACCOUNT_LOGIN_BATCH_FRAUD_GUARD_ABORT_THRESHOLD
+
+
+def _is_similar_phone_fraud_guard_error(message: str | None) -> bool:
+    text = str(message or "").lower()
+    return "fraud_guard" in text and "phone numbers similar" in text
 
 
 class LoginAccountParams(BaseModel):
@@ -410,10 +432,15 @@ def create_account_login_router(
             ok = []
             failed = []
             phone_required = []
+            skipped = []
             all_emails: list[str] = list(accounts_by_email)
             processed_emails: set[str] = set()
             total = len(all_emails)
             result_lock = threading.Lock()
+            abort_event = threading.Event()
+            abort_reason = ""
+            consecutive_fraud_guard = 0
+            fraud_guard_abort_threshold = _oauth_fraud_guard_abort_threshold()
 
             def _prefill_missing_mail_ids(target_accounts: dict[str, dict]) -> None:
                 missing_mail_ids = [
@@ -457,6 +484,8 @@ def create_account_login_router(
             _prefill_missing_mail_ids(accounts_by_email)
 
             def _run_one(index: int, email: str, acc: dict, current_total: int) -> dict:
+                if abort_event.is_set():
+                    return {"kind": "skipped", "email": email, "index": index, "reason": abort_reason or "批量任务已终止"}
                 started_at = time.time()
                 logger.info(
                     "[账号登录] 批量 worker 开始: email=%s index=%s/%s thread=%s",
@@ -564,9 +593,26 @@ def create_account_login_router(
             logger.info("[账号登录] 批量补登录并发启动: total=%s max_workers=%s", total, max_workers)
 
             def _handle_completed_item(item: dict) -> None:
-                nonlocal total
+                nonlocal abort_reason, consecutive_fraud_guard, total
                 item_email = item["email"]
                 item_account = accounts_by_email.get(item_email) or {}
+                if item["kind"] == "skipped":
+                    reason = str(item.get("reason") or abort_reason or "批量任务已终止")
+                    skipped.append({"email": item_email, "reason": reason})
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_batch_skipped",
+                            "email": item_email,
+                            "current": item["index"],
+                            "total": total,
+                            "ok": len(ok),
+                            "failed": len(failed),
+                            "message": f"批量补登录已终止，跳过: {item_email}",
+                            "level": "warn",
+                        },
+                    )
+                    return
                 with result_lock:
                     if item["kind"] == "ok":
                         ok.append(item["result"])
@@ -579,6 +625,39 @@ def create_account_login_router(
 
                     ok_count = len(ok)
                     failed_count = len(failed)
+
+                item_error_text = str(item.get("error") or "")
+                if isinstance(item.get("result"), dict):
+                    item_error_text = str(item["result"].get("message") or item_error_text)
+                if _is_similar_phone_fraud_guard_error(item_error_text):
+                    consecutive_fraud_guard += 1
+                elif item["kind"] in {"ok", "phone_required", "login_required", "account_deactivated", "failed"}:
+                    consecutive_fraud_guard = 0
+
+                if (
+                    fraud_guard_abort_threshold > 0
+                    and consecutive_fraud_guard >= fraud_guard_abort_threshold
+                    and not abort_event.is_set()
+                ):
+                    abort_reason = (
+                        f"连续 {consecutive_fraud_guard} 个账号命中 OpenAI fraud_guard "
+                        "（phone numbers similar），已终止整个批量补登录任务"
+                    )
+                    abort_event.set()
+                    logger.warning("[账号登录] %s", abort_reason)
+                    append_task_progress(
+                        task_id,
+                        {
+                            "stage": "account_login_batch_aborted",
+                            "email": item_email,
+                            "current": item["index"],
+                            "total": total,
+                            "ok": ok_count,
+                            "failed": failed_count,
+                            "message": abort_reason,
+                            "level": "error",
+                        },
+                    )
 
                 if item["kind"] == "ok":
                     _persist_mailcom_login_success(item_email, item_account, item["result"])
@@ -676,17 +755,66 @@ def create_account_login_router(
 
             next_round: dict[str, dict] = dict(accounts_by_email)
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="codex-oauth") as executor:
+                def _run_round(round_accounts: dict[str, dict]) -> None:
+                    items = list(round_accounts.items())
+                    next_index = len(processed_emails) + 1
+                    cursor = 0
+                    pending: dict[Any, tuple[int, str]] = {}
+
+                    def submit_available() -> None:
+                        nonlocal cursor, next_index
+                        while not abort_event.is_set() and cursor < len(items) and len(pending) < max_workers:
+                            email, acc = items[cursor]
+                            index = next_index
+                            cursor += 1
+                            next_index += 1
+                            pending[executor.submit(_run_one, index, email, acc, total)] = (index, email)
+
+                    submit_available()
+                    while pending:
+                        done, _not_done = wait(pending, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            pending.pop(future, None)
+                            item = future.result()
+                            processed_emails.add(item["email"])
+                            _handle_completed_item(item)
+                        if abort_event.is_set():
+                            break
+                        submit_available()
+
+                    if abort_event.is_set():
+                        for email, _acc in items[cursor:]:
+                            processed_emails.add(email)
+                            _handle_completed_item(
+                                {
+                                    "kind": "skipped",
+                                    "email": email,
+                                    "index": len(processed_emails),
+                                    "reason": abort_reason or "批量任务已终止",
+                                }
+                            )
+                        for future, (_index, email) in list(pending.items()):
+                            if future.cancel():
+                                processed_emails.add(email)
+                                _handle_completed_item(
+                                    {
+                                        "kind": "skipped",
+                                        "email": email,
+                                        "index": len(processed_emails),
+                                        "reason": abort_reason or "批量任务已终止",
+                                    }
+                                )
+                            else:
+                                item = future.result()
+                                processed_emails.add(item["email"])
+                                _handle_completed_item(item)
+
                 while next_round:
                     round_accounts = next_round
                     next_round = {}
-                    future_map = {
-                        executor.submit(_run_one, index, email, acc, total): (index, email)
-                        for index, (email, acc) in enumerate(round_accounts.items(), start=len(processed_emails) + 1)
-                    }
-                    for future in as_completed(future_map):
-                        item = future.result()
-                        processed_emails.add(item["email"])
-                        _handle_completed_item(item)
+                    _run_round(round_accounts)
+                    if abort_event.is_set():
+                        break
                     next_round = _load_appended_accounts()
 
             return {
@@ -696,6 +824,9 @@ def create_account_login_router(
                 "missing": missing,
                 "total": total,
                 "concurrency": max_workers,
+                "aborted": abort_event.is_set(),
+                "abort_reason": abort_reason,
+                "skipped": skipped,
             }
 
         return start_task(

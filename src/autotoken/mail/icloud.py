@@ -15,6 +15,7 @@ import threading
 import time
 from base64 import b64decode
 from dataclasses import dataclass
+from datetime import datetime
 from html import unescape
 from typing import Any
 from urllib.parse import unquote_to_bytes, urljoin
@@ -500,6 +501,19 @@ class ICloudMailProvider(MailProvider):
         if text.isdigit():
             ts = float(text)
             return int(ts / 1000) if ts > 10_000_000_000 else int(ts)
+        normalized = text.replace("T", " ").replace("Z", "+0000")
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S%z",
+            "%Y-%m-%d %H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+        ):
+            try:
+                return int(datetime.strptime(normalized, fmt).timestamp())
+            except Exception:
+                continue
         return 0
 
     @staticmethod

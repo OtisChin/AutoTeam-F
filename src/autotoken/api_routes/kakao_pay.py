@@ -1803,6 +1803,7 @@ def _run_batch_account(
         result["account_email"] = email
         record = _link_record_from_result(job_id, email, result)
         _append_link(record)
+        _mark_account_kakao_link_extracted(email, record)
         status = _set_account_status(email, KAKAO_STATUS_SUCCESS, job_id=job_id)
         compact = {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "attempts": attempts, "link": record}
         _append_log(job_id, f"[{index}/{total}] 成功：{email} attempts={attempts} cs_id={record.get('cs_id')}")
@@ -1868,6 +1869,7 @@ def _run_temp_batch_account(job_id: str, account: dict[str, Any], cdk: str, inde
         result = _kakao_temp_result_for_link(email, order_id, polled)
         record = _link_record_from_result(job_id, email, result)
         _append_link(record)
+        _mark_account_kakao_link_extracted(email, record)
         status = _set_account_status(email, KAKAO_STATUS_SUCCESS, job_id=job_id)
         compact = {
             "email": email,
@@ -2001,6 +2003,39 @@ def _mark_account_plus_kakao(email: str, message: str = "User is already paid") 
         last_bind_message=message,
         last_bind_failure_stage="",
         last_quota={"plan_type": account_store.ACCOUNT_TYPE_PLUS, "source": "kakao_pay_payment_success", "checked_at": now},
+    ) or {}
+
+
+def _mark_account_kakao_link_extracted(email: str, record: dict[str, Any] | None = None, message: str = "Kakao Pay link extracted") -> dict[str, Any]:
+    clean_email = str(email or "").strip()
+    if not clean_email:
+        return {}
+    account = account_store.ensure_session_only_account(clean_email) or {}
+    now = time.time()
+    link_record = record if isinstance(record, dict) else {}
+    existing_quota = account.get("last_quota") if isinstance(account.get("last_quota"), dict) else {}
+    expires_at = int(link_record.get("kakao_expires_at_ts") or link_record.get("expires_at") or 0) or None
+    cs_id = str(link_record.get("cs_id") or "").strip()
+    return account_store.update_account(
+        clean_email,
+        kakao_link_extracted=True,
+        kakao_link_extracted_at=now,
+        kakao_link_expires_at=expires_at,
+        kakao_link_cs_id=cs_id,
+        kakao_link_job_id=str(link_record.get("job_id") or "").strip(),
+        last_bind_provider="kakao_pay",
+        last_bind_status="link_extracted",
+        last_bind_at=now,
+        last_bind_message=message,
+        last_bind_failure_stage="",
+        last_quota={
+            **existing_quota,
+            "source": "kakao_pay_link_extracted",
+            "checked_at": now,
+            "kakao_link_extracted": True,
+            "cs_id": cs_id,
+            "expires_at": expires_at or 0,
+        },
     ) or {}
 
 

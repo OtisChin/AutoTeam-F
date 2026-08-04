@@ -426,6 +426,77 @@ def test_post_accounts_login_batch_defaults_to_ten_workers(monkeypatch):
     assert result["concurrency"] == ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY
 
 
+def test_post_accounts_login_batch_aborts_after_consecutive_similar_phone_fraud_guard(monkeypatch):
+    started = []
+    rows = [
+        {"email": "first@example.com"},
+        {"email": "second@example.com"},
+        {"email": "third@example.com"},
+    ]
+    calls = []
+    monkeypatch.setenv("CODEX_OAUTH_BATCH_CONCURRENCY", "1")
+    monkeypatch.delenv("CODEX_OAUTH_FRAUD_GUARD_ABORT_THRESHOLD", raising=False)
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda accounts, email: next((account for account in accounts if account["email"] == email), None),
+    )
+
+    def fake_run(email, _acc, **_kwargs):
+        from autotoken.auth.codex_auth import CodexOAuthPhoneRateLimited
+
+        calls.append(email)
+        raise CodexOAuthPhoneRateLimited(
+            "add-phone/send 失败: 400: fraud_guard: We've detected suspicious behavior "
+            "from phone numbers similar to yours. Please try again later"
+        )
+
+    routes, _accounts = _routes(started, accounts=rows, run_account_codex_login_once=fake_run)
+    routes["post_accounts_login_batch"](AccountEmailBatchParams(emails=[row["email"] for row in rows]))
+
+    result = started[0]["func"]("task-batch")
+
+    assert calls == ["first@example.com", "second@example.com"]
+    assert result["aborted"] is True
+    assert result["abort_reason"].startswith("连续 2 个账号命中 OpenAI fraud_guard")
+    assert [item["email"] for item in result["failed"]] == ["first@example.com", "second@example.com"]
+    assert result["skipped"] == [{"email": "third@example.com", "reason": result["abort_reason"]}]
+
+
+def test_post_accounts_login_batch_aborts_when_fraud_guard_is_wrapped_as_generic_failure(monkeypatch):
+    started = []
+    rows = [
+        {"email": "first@example.com"},
+        {"email": "second@example.com"},
+        {"email": "third@example.com"},
+    ]
+    calls = []
+    monkeypatch.setenv("CODEX_OAUTH_BATCH_CONCURRENCY", "1")
+    monkeypatch.delenv("CODEX_OAUTH_FRAUD_GUARD_ABORT_THRESHOLD", raising=False)
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr(
+        "autotoken.accounts.find_account",
+        lambda accounts, email: next((account for account in accounts if account["email"] == email), None),
+    )
+
+    def fake_run(email, _acc, **_kwargs):
+        calls.append(email)
+        raise RuntimeError(
+            "协议登录完成但未生成 CPA OAuth bundle; Codex OAuth 失败原因: "
+            "add-phone/send 失败: 400: fraud_guard: We've detected suspicious behavior "
+            "from phone numbers similar to yours. Please try again later"
+        )
+
+    routes, _accounts = _routes(started, accounts=rows, run_account_codex_login_once=fake_run)
+    routes["post_accounts_login_batch"](AccountEmailBatchParams(emails=[row["email"] for row in rows]))
+
+    result = started[0]["func"]("task-batch")
+
+    assert calls == ["first@example.com", "second@example.com"]
+    assert result["aborted"] is True
+    assert result["skipped"] == [{"email": "third@example.com", "reason": result["abort_reason"]}]
+
+
 def test_post_accounts_login_batch_passes_protocol_email_domain(monkeypatch):
     started = []
     rows = [{"email": "first@example.com"}]

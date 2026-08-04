@@ -32,9 +32,11 @@
             <option value="phone_pool">OAuth 手机号池</option>
             <option value="hero_sms">hero-sms</option>
             <option value="smsbower">smsbower</option>
+            <option value="smscloud">SMSCloud</option>
             <option value="oasis">Oasis CDK</option>
+            <option value="tujie">TuJie CDK</option>
           </select>
-          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；hero-sms / smsbower 按国家买号；Oasis 使用 CDK 池兑换号码。</p>
+          <p class="mt-1 text-xs text-gray-500">手机号池适合固定号码；hero-sms / smsbower / SMSCloud 按国家买号；Oasis / TuJie 使用 CDK 池兑换号码。</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">固定参数</label>
@@ -57,6 +59,18 @@
             />
           </div>
           <div>
+            <label class="block text-sm text-gray-400 mb-1">hero-sms 最低价格</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.hero_sms_min_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.1，留空不限下限"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">填 0.1 时，0.1 以下的号码不会取。</p>
+          </div>
+          <div>
             <label class="block text-sm text-gray-400 mb-1">hero-sms 最高价格</label>
             <input
               v-model.trim="oauthPhoneSmsForm.hero_sms_max_price"
@@ -66,7 +80,7 @@
               placeholder="例如 0.045，留空不限价"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
-            <p class="mt-1 text-xs text-gray-500">保存后作为 maxPrice 传给 Hero-SMS getNumber。</p>
+            <p class="mt-1 text-xs text-gray-500">作为价格上限；留空则不限上限。</p>
           </div>
         </template>
         <template v-if="oauthPhoneSmsForm.provider === 'smsbower'">
@@ -84,6 +98,18 @@
             />
           </div>
           <div>
+            <label class="block text-sm text-gray-400 mb-1">smsbower 最低价格</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.smsbower_min_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.1，留空不限下限"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">填 0.1 时，0.1 以下的 provider 不会取。</p>
+          </div>
+          <div>
             <label class="block text-sm text-gray-400 mb-1">smsbower 最高价格</label>
             <input
               v-model.trim="oauthPhoneSmsForm.smsbower_max_price"
@@ -93,7 +119,46 @@
               placeholder="例如 0.045，留空不限价"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
             />
-            <p class="mt-1 text-xs text-gray-500">保存后作为 maxPrice 传给 smsbower getNumber。</p>
+            <p class="mt-1 text-xs text-gray-500">作为价格上限；留空则不限上限。</p>
+          </div>
+        </template>
+        <template v-if="oauthPhoneSmsForm.provider === 'smscloud'">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              SMSCloud API Key
+              <span v-if="oauthPhoneSmsStatus.smscloud_api_key_present" class="text-xs text-green-400 ml-1">已保存</span>
+            </label>
+            <input
+              v-model="oauthPhoneSmsForm.smscloud_api_key"
+              type="password"
+              autocomplete="off"
+              :placeholder="oauthPhoneSmsStatus.smscloud_api_key_masked || '留空则保留现有配置'"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">SMSCloud 最低价格</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.smscloud_min_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.05，留空不限下限"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">填 0.05 时，实际扣费低于 0.05 的号码会取消并换号。</p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">SMSCloud 最高价格</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.smscloud_max_price"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="例如 0.08，留空不限价"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">作为 maxPrice 传给 SMSCloud flexible 取号接口。</p>
           </div>
         </template>
         <template v-if="oauthPhoneSmsForm.provider === 'oasis'">
@@ -163,6 +228,82 @@
               <label class="block text-sm text-gray-400 mb-1">轮询间隔 ms</label>
               <input
                 v-model.trim="oauthPhoneSmsForm.oasis_sms_poll_interval_ms"
+                type="number"
+                min="500"
+                autocomplete="off"
+                placeholder="5000"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          </div>
+        </template>
+        <template v-if="oauthPhoneSmsForm.provider === 'tujie'">
+          <div class="md:col-span-2">
+            <label class="block text-sm text-gray-400 mb-1">
+              TuJie CDK 池
+              <span v-if="oauthPhoneSmsStatus.tujie_sms_cdk_count" class="text-xs text-green-400 ml-1">
+                已保存 {{ oauthPhoneSmsStatus.tujie_sms_cdk_count }} 个
+              </span>
+            </label>
+            <textarea
+              v-model.trim="oauthPhoneSmsForm.tujie_sms_cdks"
+              rows="5"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="一行一个或粘贴多个 CDK，例如 SMS-AE4H6TLEZV5H69SJGQ"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-blue-500"
+            ></textarea>
+            <p class="mt-1 text-xs text-gray-500">每个 CDK 只对应一个号码和验证码，OAuth 成功后会保存 CDK 与账号的映射。</p>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">
+              CDK 文件
+              <span v-if="oauthPhoneSmsStatus.tujie_sms_cdk_file_present" class="text-xs text-green-400 ml-1">已配置</span>
+            </label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.tujie_sms_cdk_file"
+              type="text"
+              autocomplete="off"
+              placeholder="例如 data/tujie_cdks.txt"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">TuJie 取码页面地址</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.tujie_sms_base_url"
+              type="text"
+              autocomplete="off"
+              placeholder="填写 TuJie 页面地址；支持 {cdk} 占位符"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">账号映射文件</label>
+            <input
+              v-model.trim="oauthPhoneSmsForm.tujie_sms_account_map_file"
+              type="text"
+              autocomplete="off"
+              placeholder="tujie-cdk-accounts.jsonl"
+              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1">轮询次数</label>
+              <input
+                v-model.trim="oauthPhoneSmsForm.tujie_sms_poll_attempts"
+                type="number"
+                min="1"
+                autocomplete="off"
+                placeholder="24"
+                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label class="block text-sm text-gray-400 mb-1">轮询间隔 ms</label>
+              <input
+                v-model.trim="oauthPhoneSmsForm.tujie_sms_poll_interval_ms"
                 type="number"
                 min="500"
                 autocomplete="off"
@@ -1122,15 +1263,26 @@ const oauthPhoneSmsStatus = ref({})
 const oauthPhoneSmsForm = ref({
   provider: 'phone_pool',
   hero_sms_api_key: '',
+  hero_sms_min_price: '',
   hero_sms_max_price: '',
   smsbower_api_key: '',
+  smsbower_min_price: '',
   smsbower_max_price: '',
+  smscloud_api_key: '',
+  smscloud_min_price: '',
+  smscloud_max_price: '',
   oasis_sms_cdks: '',
   oasis_sms_cdk_file: '',
   oasis_sms_base_url: 'https://sms.oapi.vip',
   oasis_sms_poll_attempts: '24',
   oasis_sms_poll_interval_ms: '5000',
   oasis_sms_account_map_file: 'oasis-cdk-accounts.jsonl',
+  tujie_sms_cdks: '',
+  tujie_sms_cdk_file: '',
+  tujie_sms_base_url: 'https://tujie.xyz/api',
+  tujie_sms_poll_attempts: '24',
+  tujie_sms_poll_interval_ms: '5000',
+  tujie_sms_account_map_file: 'tujie-cdk-accounts.jsonl',
 })
 const rekberinajaLoading = ref(false)
 const rekberinajaSaving = ref(false)
@@ -1163,7 +1315,11 @@ const gopayAutoSignupConfigured = computed(() => {
 const oauthPhoneSmsConfigured = computed(() => {
   if (oauthPhoneSmsForm.value.provider === 'phone_pool') return true
   if (oauthPhoneSmsForm.value.provider === 'smsbower') return Boolean(oauthPhoneSmsStatus.value.smsbower_api_key_present)
+  if (oauthPhoneSmsForm.value.provider === 'smscloud') return Boolean(oauthPhoneSmsStatus.value.smscloud_api_key_present)
   if (oauthPhoneSmsForm.value.provider === 'oasis') return Number(oauthPhoneSmsStatus.value.oasis_sms_cdk_count || 0) > 0
+  if (oauthPhoneSmsForm.value.provider === 'tujie') {
+    return Number(oauthPhoneSmsStatus.value.tujie_sms_cdk_count || 0) > 0 && Boolean(oauthPhoneSmsStatus.value.tujie_sms_base_url)
+  }
   return Boolean(oauthPhoneSmsStatus.value.hero_sms_api_key_present)
 })
 const rekberinajaConfigured = computed(() => Boolean(rekberinajaStatus.value.configured || rekberinajaForm.value.enabled))
@@ -1493,17 +1649,28 @@ async function loadOAuthPhoneSmsConfig() {
     const cfg = await api.getOAuthPhoneSmsConfig()
     oauthPhoneSmsStatus.value = cfg || {}
     oauthPhoneSmsForm.value = {
-      provider: ['hero_sms', 'smsbower', 'oasis'].includes(cfg?.provider) ? cfg.provider : 'phone_pool',
+      provider: ['hero_sms', 'smsbower', 'smscloud', 'oasis', 'tujie'].includes(cfg?.provider) ? cfg.provider : 'phone_pool',
       hero_sms_api_key: '',
+      hero_sms_min_price: cfg?.hero_sms_min_price || '',
       hero_sms_max_price: cfg?.hero_sms_max_price || '',
       smsbower_api_key: '',
+      smsbower_min_price: cfg?.smsbower_min_price || '',
       smsbower_max_price: cfg?.smsbower_max_price || '',
+      smscloud_api_key: '',
+      smscloud_min_price: cfg?.smscloud_min_price || '',
+      smscloud_max_price: cfg?.smscloud_max_price || '',
       oasis_sms_cdks: '',
       oasis_sms_cdk_file: cfg?.oasis_sms_cdk_file || '',
       oasis_sms_base_url: cfg?.oasis_sms_base_url || 'https://sms.oapi.vip',
       oasis_sms_poll_attempts: cfg?.oasis_sms_poll_attempts || '24',
       oasis_sms_poll_interval_ms: cfg?.oasis_sms_poll_interval_ms || '5000',
       oasis_sms_account_map_file: cfg?.oasis_sms_account_map_file || 'oasis-cdk-accounts.jsonl',
+      tujie_sms_cdks: '',
+      tujie_sms_cdk_file: cfg?.tujie_sms_cdk_file || '',
+      tujie_sms_base_url: cfg?.tujie_sms_base_url || 'https://tujie.xyz/api',
+      tujie_sms_poll_attempts: cfg?.tujie_sms_poll_attempts || '24',
+      tujie_sms_poll_interval_ms: cfg?.tujie_sms_poll_interval_ms || '5000',
+      tujie_sms_account_map_file: cfg?.tujie_sms_account_map_file || 'tujie-cdk-accounts.jsonl',
     }
   } catch (e) {
     setMessage(e.message || '加载 OAuth 接码配置失败', 'error')
@@ -1519,7 +1686,9 @@ async function saveOAuthPhoneSmsConfig() {
     oauthPhoneSmsStatus.value = result || {}
     oauthPhoneSmsForm.value.hero_sms_api_key = ''
     oauthPhoneSmsForm.value.smsbower_api_key = ''
+    oauthPhoneSmsForm.value.smscloud_api_key = ''
     oauthPhoneSmsForm.value.oasis_sms_cdks = ''
+    oauthPhoneSmsForm.value.tujie_sms_cdks = ''
     setMessage(result.message || 'OAuth 接码配置已保存')
     await loadOAuthPhoneSmsConfig()
   } catch (e) {

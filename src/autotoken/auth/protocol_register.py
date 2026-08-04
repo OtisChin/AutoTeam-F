@@ -181,6 +181,116 @@ def _email_received_at(email_data: dict) -> float:
     return 0.0
 
 
+def _first_message_text(email_data: dict, *keys: str) -> str:
+    if not isinstance(email_data, dict):
+        return ""
+    for key in keys:
+        value = email_data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _has_explicit_otp_field(email_data: dict) -> bool:
+    code_keys = (
+        "verification_code",
+        "verificationCode",
+        "verify_code",
+        "verifyCode",
+        "email_code",
+        "mail_code",
+        "otp",
+        "otp_code",
+        "code",
+    )
+    for item in (email_data, email_data.get("raw") if isinstance(email_data.get("raw"), dict) else None):
+        if not isinstance(item, dict):
+            continue
+        if any(str(item.get(key) or "").strip() for key in code_keys):
+            return True
+        nested = item.get("mail")
+        if isinstance(nested, dict) and any(str(nested.get(key) or "").strip() for key in code_keys):
+            return True
+    return False
+
+
+def _looks_like_email_otp_message(email_data: dict) -> bool:
+    if not isinstance(email_data, dict):
+        return False
+    if _has_explicit_otp_field(email_data):
+        return True
+
+    subject = _first_message_text(email_data, "subject")
+    raw = email_data.get("raw")
+    if isinstance(raw, dict) and not subject:
+        subject = _first_message_text(raw, "subject", "mail_subject", "title")
+    subject_lc = subject.lower()
+    non_otp_subject_markers = (
+        "new sign-in",
+        "new sign in",
+        "new login",
+        "account activity",
+        "security alert",
+        "安全提醒",
+        "新登录",
+        "新登入",
+    )
+    if any(marker in subject_lc for marker in non_otp_subject_markers):
+        return False
+
+    parts = [
+        subject,
+        _first_message_text(email_data, "text", "content", "message", "body", "snippet", "summary", "preview"),
+    ]
+    if isinstance(raw, dict):
+        parts.extend(
+            [
+                _first_message_text(raw, "subject", "mail_subject", "title"),
+                _first_message_text(raw, "text", "content", "message", "body", "snippet", "summary", "preview"),
+            ]
+        )
+    haystack = "\n".join(part for part in parts if part).lower()
+    if not haystack:
+        return False
+    otp_markers = (
+        "verification code",
+        "login code",
+        "openai code",
+        "chatgpt code",
+        "temporary chatgpt",
+        "temporary openai",
+        "one-time code",
+        "one time code",
+        "otp",
+        "認証コード",
+        "確認コード",
+        "验证码",
+        "驗證碼",
+        "验证代码",
+        "驗證代碼",
+        "登录代码",
+        "登入代码",
+        "临时验证码",
+        "一次性验证码",
+    )
+    return any(marker in haystack for marker in otp_markers)
+
+
+def _is_icloud_message(email_data: dict, mail_client: Any = None) -> bool:
+    provider = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
+    if provider == "icloud":
+        return True
+    if not isinstance(email_data, dict):
+        return False
+    for item in (email_data, email_data.get("raw") if isinstance(email_data.get("raw"), dict) else None):
+        if not isinstance(item, dict):
+            continue
+        item_provider = str(item.get("provider") or item.get("source") or "").strip().lower()
+        if item_provider == "icloud" or item_provider.startswith("icloud_"):
+            return True
+    return False
+
+
 class ProtocolMailAdapter:
     """Adapter expected by the referenced AuthFlow."""
 
@@ -204,7 +314,7 @@ class ProtocolMailAdapter:
             self.email = str(email or "").strip()
         if not self.email:
             raise RuntimeError("邮箱供应商未返回可用邮箱")
-        logger.info("[协议注册] 已锁定注册邮箱: %s", self.email)
+        logger.info("[OAuth登陆] 已锁定注册邮箱: %s", self.email)
         return self.email
 
     def rotate_mailbox(self) -> str:
@@ -229,7 +339,7 @@ class ProtocolMailAdapter:
         last_seen = ""
         last_no_code_signature = ""
         next_wait_log_at = 0.0
-        logger.info("[协议注册] 等待邮箱验证码: email=%s timeout=%ss", target, int(timeout or 60))
+        logger.info("[OAuth登陆] 等待邮箱验证码: email=%s timeout=%ss", target, int(timeout or 60))
         try:
             initial_delay = max(0.0, float(os.environ.get("OPENAI_EMAIL_OTP_INITIAL_DELAY", "3") or "3"))
         except (TypeError, ValueError):
@@ -247,14 +357,25 @@ class ProtocolMailAdapter:
                 except TypeError:
                     emails = self.mail_client.search_emails_by_recipient(target, size=10)
             except Exception as exc:
-                logger.warning("[协议注册] 查询邮箱验证码失败，稍后重试: %s", exc)
+                logger.warning("[OAuth登陆] 查询邮箱验证码失败，稍后重试: %s", exc)
                 emails = []
 
             if time.time() >= next_wait_log_at:
-                logger.info("[协议注册] 正在查询邮箱验证码: email=%s matched=%d", target, len(emails or []))
+                logger.info("[OAuth登陆] 正在查询邮箱验证码: email=%s matched=%d", target, len(emails or []))
                 next_wait_log_at = time.time() + 15
 
-            for item in emails or []:
+            email_items = [
+                item
+                for _, item in sorted(
+                    enumerate(emails or []),
+                    key=lambda pair: (
+                        1 if _email_received_at(pair[1]) else 0,
+                        _email_received_at(pair[1]) or -pair[0],
+                    ),
+                    reverse=True,
+                )
+            ]
+            for item in email_items:
                 if not isinstance(item, dict):
                     continue
                 received_at = _email_received_at(item)
@@ -264,18 +385,32 @@ class ProtocolMailAdapter:
                 # earlier than the trigger time.
                 if issued_after_ts and received_at and 86400 < (issued_after_ts - received_at):
                     continue
-                if strict_issued_after and issued_after_ts and received_at and received_at < issued_after_ts - 5:
-                    continue
+                if (strict_issued_after or _is_icloud_message(item, self.mail_client)) and issued_after_ts and received_at:
+                    if received_at < issued_after_ts - 5:
+                        logger.info(
+                            "[OAuth登陆] 跳过旧邮箱验证码邮件: subject=%s received_at=%s issued_after=%s",
+                            str(item.get("subject") or "")[:80],
+                            int(received_at),
+                            int(issued_after_ts),
+                        )
+                        continue
                 code = ""
                 try:
                     code = str(self.mail_client.extract_verification_code(item) or "").strip()
                 except Exception:
                     code = ""
                 if code:
-                    if code in excluded:
-                        logger.info("[协议注册] 跳过已使用邮箱验证码: %s***len=%d", code[:1], len(code))
+                    if not _looks_like_email_otp_message(item):
+                        logger.info(
+                            "[OAuth登陆] 跳过非验证码邮件中的数字: subject=%s received_at=%s",
+                            str(item.get("subject") or "")[:80],
+                            received_at or "",
+                        )
                         continue
-                    logger.info("[协议注册] 收到邮箱验证码: %s***len=%d", code[:1], len(code))
+                    if code in excluded:
+                        logger.info("[OAuth登陆] 跳过已使用邮箱验证码: %s***len=%d", code[:1], len(code))
+                        continue
+                    logger.info("[OAuth登陆] 收到邮箱验证码: %s***len=%d", code[:1], len(code))
                     return code
                 raw = item.get("raw")
                 raw_keys = sorted(raw.keys())[:12] if isinstance(raw, dict) else []
@@ -283,7 +418,7 @@ class ProtocolMailAdapter:
                 signature = f"{item.get('id') or item.get('message_id') or ''}|{item.get('subject') or ''}|{item_keys}|{raw_keys}"
                 if signature != last_no_code_signature:
                     logger.info(
-                        "[协议注册] 候选邮件未解析出验证码: subject=%s received_at=%s keys=%s raw_keys=%s",
+                        "[OAuth登陆] 候选邮件未解析出验证码: subject=%s received_at=%s keys=%s raw_keys=%s",
                         str(item.get("subject") or "")[:80],
                         received_at or "",
                         item_keys,
@@ -307,10 +442,10 @@ def _wrap_flow_stage(flow, method_name: str, start_message: str, done_message: s
         return
 
     def wrapped(*args, **kwargs):
-        logger.info("[协议注册] %s", start_message)
+        logger.info("[OAuth登陆] %s", start_message)
         result = method(*args, **kwargs)
         if done_message:
-            logger.info("[协议注册] %s", done_message)
+            logger.info("[OAuth登陆] %s", done_message)
         return result
 
     setattr(flow, method_name, wrapped)
@@ -326,7 +461,7 @@ def _attach_flow_stage_logs(flow):
     signup = getattr(flow, "signup", None)
     if callable(signup):
         def signup_wrapped(*args, **kwargs):
-            logger.info("[协议注册] 提交注册邮箱")
+            logger.info("[OAuth登陆] 提交注册邮箱")
             result = signup(*args, **kwargs)
             mode = str(getattr(flow, "_existing_email_verification_mode", "") or "").lower()
             if result:
@@ -335,7 +470,7 @@ def _attach_flow_stage_logs(flow):
                 account_kind = "passwordless signup 注册分支"
             else:
                 account_kind = "已有账号"
-            logger.info("[协议注册] 邮箱提交完成，账号类型: %s", account_kind)
+            logger.info("[OAuth登陆] 邮箱提交完成，账号类型: %s", account_kind)
             return result
 
         flow.signup = signup_wrapped
@@ -345,11 +480,11 @@ def _attach_flow_stage_logs(flow):
         def kickoff_wrapped(*args, **kwargs):
             reason = str(args[0] if args else kwargs.get("reason") or "").strip()
             if reason:
-                logger.info("[协议注册] 触发/重发邮箱验证码: %s", reason)
+                logger.info("[OAuth登陆] 触发/重发邮箱验证码: %s", reason)
             else:
-                logger.info("[协议注册] 触发/重发邮箱验证码")
+                logger.info("[OAuth登陆] 触发/重发邮箱验证码")
             result = kickoff(*args, **kwargs)
-            logger.info("[协议注册] 邮箱验证码触发结果: %s", "成功" if result else "失败")
+            logger.info("[OAuth登陆] 邮箱验证码触发结果: %s", "成功" if result else "失败")
             return result
 
         flow.kickoff_otp_delivery = kickoff_wrapped
@@ -374,7 +509,11 @@ def _attach_oauth_phone_supplier(
         provider = "phone_pool"
     if provider in {"oasis_sms", "oasissms", "oapi"}:
         provider = "oasis"
-    if provider not in {"hero_sms", "smsbower", "oasis", "phone_pool"}:
+    if provider in {"tujie_sms", "tujie_cdk", "tujiecdk", "tj"}:
+        provider = "tujie"
+    if provider in {"sms_cloud", "smscloud_sbs"}:
+        provider = "smscloud"
+    if provider not in {"hero_sms", "smsbower", "smscloud", "oasis", "tujie", "phone_pool"}:
         return
 
     phone_state: dict[str, Any] = {"item": None, "finished": False}
@@ -433,7 +572,7 @@ def _attach_oauth_phone_supplier(
             last_error = str(error or "").strip()
             if attempt < max_attempts and _is_retryable_supply_error(last_error):
                 logger.warning(
-                    "[协议注册] add-phone %s 取号失败，准备重试(%s/%s): email=%s error=%s",
+                    "[OAuth登陆] add-phone %s 取号失败，准备重试(%s/%s): email=%s error=%s",
                     label,
                     attempt,
                     max_attempts,
@@ -448,7 +587,11 @@ def _attach_oauth_phone_supplier(
     def supplier() -> dict:
         if isinstance(phone_state.get("item"), dict) and not phone_state.get("finished"):
             return phone_state["item"]
-        from autotoken.auth.codex_auth import _acquire_oauth_hero_sms_phone, _acquire_oauth_smsbower_phone
+        from autotoken.auth.codex_auth import (
+            _acquire_oauth_hero_sms_phone,
+            _acquire_oauth_smsbower_phone,
+            _acquire_oauth_smscloud_phone,
+        )
 
         phone_state["finished"] = False
         if provider == "hero_sms":
@@ -473,10 +616,25 @@ def _attach_oauth_phone_supplier(
                     allow_reuse=False,
                 ),
             )
+        elif provider == "smscloud":
+            item, error = _retryable_acquire(
+                "SMSCloud",
+                lambda: _acquire_oauth_smscloud_phone(
+                    email=email,
+                    country=country,
+                    max_price=max_price,
+                    reservation_owner=reservation_owner,
+                    allow_reuse=False,
+                ),
+            )
         elif provider == "oasis":
             from autotoken.auth.oasis_sms import acquire_oasis_phone
 
             item, error = acquire_oasis_phone(email=email, reservation_owner=reservation_owner, cdks=oasis_cdks)
+        elif provider == "tujie":
+            from autotoken.auth.tujie_sms import acquire_tujie_phone
+
+            item, error = acquire_tujie_phone(email=email, reservation_owner=reservation_owner, cdks=oasis_cdks)
         else:
             try:
                 from autotoken.auth.oauth_phone_pool import acquire_available_phone
@@ -489,7 +647,7 @@ def _attach_oauth_phone_supplier(
             raise RuntimeError(error or f"{provider} 未返回可用号码")
         item.setdefault("source", provider)
         phone_state["item"] = item
-        logger.info("[协议注册] add-phone 已取号: provider=%s phone=%s", provider, item.get("phone_number") or item.get("phone"))
+        logger.info("[OAuth登陆] add-phone 已取号: provider=%s phone=%s", provider, item.get("phone_number") or item.get("phone"))
         return item
 
     def otp_reader(phone_item: dict, timeout: int) -> str:
@@ -502,7 +660,7 @@ def _attach_oauth_phone_supplier(
 
             return str(_make_phone_otp_provider(sms_url)() or "").strip()
         logger.info(
-            "[协议注册] add-phone 等待手机验证码: provider=%s activation=%s",
+            "[OAuth登陆] add-phone 等待手机验证码: provider=%s activation=%s",
             provider,
             phone_item.get("activation_id") or "",
         )
@@ -544,11 +702,26 @@ def _attach_oauth_phone_supplier(
                 reason="oauth_phone_success_no_reuse",
                 reservation_owner=reservation_owner,
             )
+        elif source == "smscloud":
+            from autotoken.auth.codex_auth import _release_oauth_sms_activation_phone
+
+            _release_oauth_sms_activation_phone(
+                phone_item,
+                email=bound_email,
+                finish=True,
+                reason="oauth_phone_success_no_reuse",
+                reservation_owner=reservation_owner,
+            )
         elif source == "oasis":
             from autotoken.auth.oasis_sms import record_oasis_account_mapping
 
             password = str(getattr(getattr(flow, "result", None), "password", "") or "").strip()
             record_oasis_account_mapping(phone_item, email=bound_email, password=password, status="success")
+        elif source == "tujie":
+            from autotoken.auth.tujie_sms import record_tujie_account_mapping
+
+            password = str(getattr(getattr(flow, "result", None), "password", "") or "").strip()
+            record_tujie_account_mapping(phone_item, email=bound_email, password=password, status="success")
         else:
             from autotoken.auth.oauth_phone_pool import mark_phone_bound
 
@@ -593,10 +766,31 @@ def _attach_oauth_phone_supplier(
                 reason=reason or "protocol_oauth_failed",
                 reservation_owner=reservation_owner,
             )
+        elif source == "smscloud":
+            from autotoken.auth.codex_auth import _release_oauth_sms_activation_phone
+
+            phone_first_used = bool(phone_item.get("phone_first_openai_used") or phone_item.get("phone_first_signup"))
+            should_cancel = (
+                phone_first_used
+                or _is_phone_otp_timeout_reason(reason)
+                or _is_phone_rate_limited_reason(reason)
+                or _is_phone_unusable_reason(reason)
+            )
+            _release_oauth_sms_activation_phone(
+                phone_item,
+                email=email,
+                cancel=should_cancel,
+                reason=reason or "protocol_oauth_failed",
+                reservation_owner=reservation_owner,
+            )
         elif source == "oasis":
             from autotoken.auth.oasis_sms import record_oasis_account_mapping
 
             record_oasis_account_mapping(phone_item, email=email, status="failed", reason=reason or "protocol_oauth_failed")
+        elif source == "tujie":
+            from autotoken.auth.tujie_sms import record_tujie_account_mapping
+
+            record_tujie_account_mapping(phone_item, email=email, status="failed", reason=reason or "protocol_oauth_failed")
         else:
             from autotoken.auth.oauth_phone_pool import (
                 mark_phone_cooldown,
@@ -607,17 +801,17 @@ def _attach_oauth_phone_supplier(
             item_id = str(phone_item.get("id") or "")
             if phone_item.get("phone_first_openai_used") or phone_item.get("phone_first_signup"):
                 mark_phone_invalid(item_id, reason or "phone_first_openai_used")
-                logger.info("[协议注册] phone_pool 注册手机号已标记无效: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
+                logger.info("[OAuth登陆] phone_pool 注册手机号已标记无效: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
                 phone_state["item"] = None
                 phone_state["finished"] = False
                 return
             action = _phone_pool_failure_action(reason)
             if action == "cooldown":
                 mark_phone_cooldown(item_id, reason or "rate_limited")
-                logger.info("[协议注册] phone_pool 号码已冷却: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
+                logger.info("[OAuth登陆] phone_pool 号码已冷却: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
             elif action == "invalid":
                 mark_phone_invalid(item_id, reason or "phone_unusable")
-                logger.info("[协议注册] phone_pool 号码已标记无效: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
+                logger.info("[OAuth登陆] phone_pool 号码已标记无效: phone=%s reason=%s", phone_item.get("phone_number") or phone_item.get("phone"), reason)
             else:
                 release_phone_reservation(item_id, email)
         phone_state["item"] = None
@@ -695,7 +889,7 @@ def _session_data_from_auth_result(result) -> dict:
                 bundle["plan_type"] = plan_type
                 bundle["chatgpt_plan_type"] = plan_type
         except Exception as exc:
-            logger.warning("[协议注册] 构建协议 OAuth bundle 失败，仍保留 auth_session: %s", exc)
+            logger.warning("[OAuth登陆] 构建协议 OAuth bundle 失败，仍保留 auth_session: %s", exc)
     return payload
 
 
@@ -766,7 +960,7 @@ def register_once(
         flow._default_password_from_email = lambda _email: password  # type: ignore[attr-defined]
     adapter = ProtocolMailAdapter(mail_client, email=email, account_id=account_id)
     logger.info(
-        "[协议注册] 开始协议注册: email=%s mailbox_id_present=%s proxy=%s",
+        "[OAuth登陆] 开始协议注册: email=%s mailbox_id_present=%s proxy=%s",
         email,
         bool(account_id),
         "enabled" if cfg.proxy else "disabled",
@@ -785,9 +979,9 @@ def register_once(
                     pass
         raise
     if not result or not result.is_valid():
-        logger.error("[协议注册] 协议注册未返回有效 auth_session: %s", email)
+        logger.error("[OAuth登陆] 协议注册未返回有效 auth_session: %s", email)
         return False, {"status": 0, "data": {}, "raw": "协议注册未返回有效 auth_session"}
-    logger.info("[协议注册] 协议注册完成，已获取 auth_session: %s", email)
+    logger.info("[OAuth登陆] 协议注册完成，已获取 auth_session: %s", email)
     return True, _session_data_from_auth_result(result)
 
 
