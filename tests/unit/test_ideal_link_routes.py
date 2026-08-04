@@ -94,6 +94,59 @@ def test_start_ideal_long_link_job_preserves_source_default_proxy_chain(monkeypa
     assert result == {"job_id": "ideal-job-2"}
 
 
+def test_ideal_batch_defaults_to_nl_checkout_and_provider(monkeypatch, tmp_path):
+    from autotoken.api_routes import ideal_link
+
+    app = _app()
+    captured = {}
+
+    class ImmediateThread:
+        def __init__(self, target, daemon=False):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    class FakeResult:
+        def model_dump(self):
+            return {
+                "cs_id": "cs_ideal",
+                "billing_country": "NL",
+                "currency": "EUR",
+                "link_type": "ideal",
+                "long_url": "https://pay.openai.com/ideal",
+                "amount": "0",
+                "amount_display": "€0.00",
+                "provider_redirect_url": "https://pay.openai.com/ideal",
+                "stripe_redirect_url": "",
+                "stripe_hosted_url": "",
+            }
+
+    def fake_prepare(long_req):
+        captured["checkout_proxy_region"] = long_req.checkout_proxy_region
+        captured["provider_proxy_region"] = long_req.provider_proxy_region
+        return False
+
+    monkeypatch.setattr(ideal_link, "LINKS_FILE", tmp_path / "ideal_links.json")
+    monkeypatch.setattr(ideal_link, "ACCOUNT_STATUS_FILE", tmp_path / "ideal_account_status.json")
+    monkeypatch.setattr(ideal_link.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(ideal_link.pix_routes, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": "ideal@example.com", "ttl_seconds": 3600, "updated_at": 1},
+    ])
+    monkeypatch.setattr(ideal_link.pix_routes, "_load_token_for_email", lambda email: "token-for-" + email)
+    monkeypatch.setattr(ideal_link.account_store, "load_accounts", lambda: [])
+    monkeypatch.setattr(ideal_link.legacy, "prepare_request_proxy", fake_prepare)
+    monkeypatch.setattr(ideal_link.legacy, "generate_long_link_once", lambda req, use_explicit_proxy, steps=None: FakeResult())
+    ideal_link.JOBS.clear()
+
+    result = _endpoint(app, "/api/ideal/batch/start", "POST")(
+        IdealBatchStartRequest.model_validate({"accountEmails": ["ideal@example.com"], "concurrency": 1})
+    )
+
+    assert _endpoint(app, "/api/ideal/jobs/{job_id}", "GET")(result["job_id"])["status"] == "success"
+    assert captured == {"checkout_proxy_region": "NL", "provider_proxy_region": "NL"}
+
+
 def test_get_ideal_long_link_job_returns_snapshot(monkeypatch):
     app = _app()
     monkeypatch.setattr(
@@ -197,10 +250,53 @@ def test_ideal_prepare_request_proxy_uses_configured_preflight_attempts(monkeypa
     assert len(preflighted) == 3
 
 
-def test_ideal_amount_policy_accepts_one_minor_unit():
+def test_ideal_prepare_request_proxy_normalizes_711_colon_proxy_and_applies_region(monkeypatch):
+    raw_proxy = (
+        "global.rotgb.711proxy.com:10000:"
+        "USER000000-zone-custom-region-VN-session-39391603-sessTime-10-sessAuto-1:"
+        "secret"
+    )
+    expected_proxy = (
+        "http://USER000000-zone-custom-region-NL-session-39391603-sessTime-10-sessAuto-1:"
+        "secret@global.rotgb.711proxy.com:10000"
+    )
+    preflighted: list[str] = []
+    auth_preflighted: list[str] = []
+
+    def fake_payment_preflight(proxy_url):
+        preflighted.append(proxy_url)
+        return (True, "ok")
+
+    def fake_auth_preflight(proxy_url, access_token):
+        auth_preflighted.append(proxy_url)
+        return (True, "auth_api HTTP 200")
+
+    monkeypatch.setattr(ideal_app, "refresh_711_proxy", lambda proxy_or_region: True)
+    monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", fake_payment_preflight)
+    monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", fake_auth_preflight)
+
+    req = ideal_app.LongLinkRequest.model_validate(
+        {
+            "accessToken": "token",
+            "proxy": raw_proxy,
+            "link_type": "ideal",
+            "billing_country": "NL",
+            "checkoutProxyRegion": "NL",
+        }
+    )
+
+    assert ideal_app.prepare_request_proxy(req) is True
+    assert req.proxy == expected_proxy
+    assert preflighted == [expected_proxy]
+    assert auth_preflighted == [expected_proxy]
+
+
+def test_ideal_amount_policy_requires_exact_zero():
     assert ideal_app.is_acceptable_low_amount("0") is True
     assert ideal_app.is_acceptable_low_amount(0) is True
-    assert ideal_app.is_acceptable_low_amount("1") is True
+    assert ideal_app.is_acceptable_low_amount("1") is False
+    assert ideal_app.is_acceptable_low_amount(1) is False
+    assert ideal_app.is_acceptable_low_amount("-1") is False
 
 
 def test_ideal_accounts_default_to_pending_status(monkeypatch, tmp_path):

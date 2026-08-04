@@ -19,7 +19,6 @@ from autotoken.integrations.gpthel_ideal import app as legacy
 from autotoken.storage import accounts as account_store
 from autotoken.storage.auth_session_store import delete_auth_session
 
-
 IdealLongLinkRequest = legacy.LongLinkRequest
 IdealQrRequest = legacy.QRCodeRequest
 IdealProxyChainTestRequest = legacy.ProxyChainTestRequest
@@ -75,7 +74,7 @@ class IdealBatchStartRequest(BaseModel):
     user_agent: str = Field("", alias="userAgent")
     diagnostic_enabled: bool = Field(False, alias="diagnosticEnabled")
     proxy_chain_strategy: str = Field("", alias="proxyChainStrategy")
-    checkout_proxy_region: str = Field("JP", alias="checkoutProxyRegion")
+    checkout_proxy_region: str = Field("NL", alias="checkoutProxyRegion")
     provider_proxy_region: str = Field("NL", alias="providerProxyRegion")
     approve_proxy_region: str = Field("", alias="approveProxyRegion")
     proxy_preflight_attempts: int = Field(5, alias="proxyPreflightAttempts")

@@ -179,528 +179,6 @@
     {
       "decision": {
         "action": "allow",
-        "reason": "signup_context_marketing_script",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/martech/tm/paypal/mktgtagmanager.js",
-          "reason": "signup_context_marketing_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/martech/tm/paypal/mktgtagmanager.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_analytics_config",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/pa/mi/paypal/latmconf.js",
-          "reason": "signup_context_analytics_config",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/pa/mi/paypal/latmconf.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "ddbm",
-        "reason": "datadome_exception",
-        "rule": {
-          "host": "ddbm2.paypal.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/tags.js",
-          "reason": "datadome_exception",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://ddbm2.paypal.com/tags.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_tealeaf_script",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/pa/3pjs/tl/",
-          "reason": "signup_context_tealeaf_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/pa/3pjs/tl/6.4.177/patleaf.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_manifest",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/checkoutweb/release/weasley/content-manifest.",
-          "reason": "signup_context_manifest",
-          "resource_types": [
-            "fetch"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "fetch",
-      "url": "https://www.paypalobjects.com/checkoutweb/release/weasley/content-manifest.11f545996f2c4231476c31cc5d858b86.json"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_logger",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/xoplatform/logger/api/logger",
-          "reason": "signup_context_logger",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_graphql",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/graphql",
-          "reason": "signup_context_graphql",
-          "resource_types": [
-            "xhr",
-            "fetch"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://www.paypal.com/graphql?DeferredFeature="
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_script",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/checkoutweb/",
-          "reason": "signup_context_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/checkoutweb/release/weasley/common.7f685ed583de27da96f0.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_script",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/checkoutweb/",
-          "reason": "signup_context_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/checkoutweb/release/weasley/8.4968bc0476c2bbe6743d.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_script",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/checkoutweb/",
-          "reason": "signup_context_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/checkoutweb/release/weasley/address.1cad7b39f918c27939c4.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_script",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/checkoutweb/",
-          "reason": "signup_context_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/checkoutweb/release/weasley/29.1dd4f673217bc1bbada9.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_logger",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/xoplatform/logger/api/logger",
-          "reason": "signup_context_logger",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_logger",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/xoplatform/logger/api/logger",
-          "reason": "signup_context_logger",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_logger",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/xoplatform/logger/api/logger",
-          "reason": "signup_context_logger",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_graphql",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/graphql",
-          "reason": "signup_context_graphql",
-          "resource_types": [
-            "xhr",
-            "fetch"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://www.paypal.com/graphql?GriffinMetadataQuery="
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_tealeaf_script",
-        "rule": {
-          "host": "www.paypalobjects.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/pa/3pjs/tl/",
-          "reason": "signup_context_tealeaf_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://www.paypalobjects.com/pa/3pjs/tl/6.4.177/patlcfg.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "datadog_rum",
-        "reason": "datadog_rum",
-        "rule": {
-          "host": "browser-intake-us5-datadoghq.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/api/v2/rum",
-          "reason": "datadog_rum",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=cb939b0d-80e8-444a-9f2b-b21e57d4a4ef&batch_time=1785006576992"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "signup_context_graphql",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/graphql",
-          "reason": "signup_context_graphql",
-          "resource_types": [
-            "xhr",
-            "fetch"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://www.paypal.com/graphql?CheckoutSessionDataQuery="
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_logger",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/xoplatform/logger/api/logger",
-          "reason": "signup_context_logger",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_logger",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/xoplatform/logger/api/logger",
-          "reason": "signup_context_logger",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_logger",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/xoplatform/logger/api/logger",
-          "reason": "signup_context_logger",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "datadog_rum",
-        "reason": "datadog_rum",
-        "rule": {
-          "host": "browser-intake-us5-datadoghq.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/api/v2/rum",
-          "reason": "datadog_rum",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=e4985d7f-3d61-46d1-8a28-4f218135e68a&batch_time=1785006577064"
-    },
-    {
-      "decision": {
-        "action": "allow",
         "reason": "dfp_script",
         "rule": {
           "host": "www.paypalobjects.com",
@@ -719,31 +197,6 @@
       "method": "GET",
       "resource_type": "script",
       "url": "https://www.paypalobjects.com/v15170r-1d3n71ph1c4710n/dfp.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "datadog_rum",
-        "reason": "datadog_rum",
-        "rule": {
-          "host": "browser-intake-us5-datadoghq.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/api/v2/rum",
-          "reason": "datadog_rum",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=8920c1cf-645b-42e2-aff5-99c8dd383ebd&batch_time=1785006577649"
     },
     {
       "decision": {
@@ -770,33 +223,6 @@
     {
       "decision": {
         "action": "allow",
-        "family": "observability",
-        "reason": "observability",
-        "rule": {
-          "host": "t.paypal.com",
-          "methods": [
-            "GET",
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/ts",
-          "reason": "observability",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "fetch",
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006577757&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Abilling&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=ccpa&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&e=im&fpti_sdk_name=pa-js&imsrc=setup&view=%7B%22t10%22%3A0%2C%22t11%22%3A2463%2C%22tcp%22%3A1976%2C%22et%22%3A%224g%22%2C%22nt%22%3A%22navigate%22%2C%22bt%22%3A102%7D&pt=PayPal&cd=24&sw=390&sh=844&dw=1170&dh=2532&bw=390&bh=753&ce=1&t1=0&t1c=0&t1d=0&t1s=0&t2=178&t3=0&t4d=0&t4=0&t4e=3&tt=2363&rdc=0&res=%7B%7D"
-    },
-    {
-      "decision": {
-        "action": "allow",
         "reason": "fraudnet_script",
         "rule": {
           "host": "c.paypal.com",
@@ -815,403 +241,6 @@
       "method": "GET",
       "resource_type": "script",
       "url": "https://c.paypal.com/da/r/fb_fp.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_logger",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/xoplatform/logger/api/logger",
-          "reason": "signup_context_logger",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "observability",
-        "rule": {
-          "host": "t.paypal.com",
-          "methods": [
-            "GET",
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/ts",
-          "reason": "observability",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "fetch",
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006577899&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Acustom-ForcedSignup&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=gdpr_v2.1&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&action=ForcedSignup_page_loaded&uicomp=custom-ForcedSignup&uitype=page&tt=2362&view=%7B%22bh%22%3A753%2C%22bw%22%3A390%2C%22cd%22%3A24%2C%22dh%22%3A2532%2C%22dw%22%3A1170%2C%22et%22%3A%224g%22%2C%22pt%22%3A%22PayPal%22%2C%22ru%22%3A%22%22%2C%22sh%22%3A844%2C%22sw%22%3A390%2C%22t11%22%3A1914%7D&e=pf&fpti_sdk_name=pa-js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "ddbm",
-        "reason": "learned_ddbm",
-        "rule": {
-          "host": "ddbm2.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/js/",
-          "reason": "learned_ddbm",
-          "resource_types": [
-            "xhr"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://ddbm2.paypal.com/js/"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "tealeaf",
-        "reason": "tealeaf_observe",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/platform/tealeaftarget",
-          "reason": "tealeaf_observe",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://www.paypal.com/platform/tealeaftarget"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "reason": "fraudnet_script",
-        "rule": {
-          "host": "c.paypal.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/da/r/fb_fp.js",
-          "reason": "fraudnet_script",
-          "resource_types": [
-            "script"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "script",
-      "url": "https://c.paypal.com/da/r/fb_fp.js"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "fraudnet_p1",
-        "reason": "fraudnet_p1",
-        "rule": {
-          "host": "c.paypal.com",
-          "methods": [
-            "POST",
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v1/r/d/b/p1",
-          "reason": "fraudnet_p1",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/p1"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_stats",
-        "rule": {
-          "host": "b.stats.paypal.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v2/counter.cgi",
-          "reason": "signup_context_stats",
-          "resource_types": [
-            "image",
-            "fetch",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "image",
-      "url": "https://b.stats.paypal.com/v2/counter.cgi?p=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "fraudnet_p3",
-        "reason": "fraudnet_p3",
-        "rule": {
-          "host": "c6.paypal.com",
-          "methods": [
-            "GET",
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v1/r/d/b/p3",
-          "reason": "fraudnet_p3",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "image",
-      "url": "https://c6.paypal.com/v1/r/d/b/p3?f=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "fraudnet_p2",
-        "reason": "fraudnet_p2",
-        "rule": {
-          "host": "c.paypal.com",
-          "methods": [
-            "POST",
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v1/r/d/b/p2",
-          "reason": "fraudnet_p2",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/p2"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "fraudnet_w",
-        "reason": "fraudnet_w",
-        "rule": {
-          "host": "c.paypal.com",
-          "methods": [
-            "POST",
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v1/r/d/b/w",
-          "reason": "fraudnet_w",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/w"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "signup_context_stats",
-        "rule": {
-          "host": "b.stats.paypal.com",
-          "methods": [
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v2/counter.cgi",
-          "reason": "signup_context_stats",
-          "resource_types": [
-            "image",
-            "fetch",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "image",
-      "url": "https://b.stats.paypal.com/v2/counter.cgi?p=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "fraudnet_p1",
-        "reason": "fraudnet_p1",
-        "rule": {
-          "host": "c.paypal.com",
-          "methods": [
-            "POST",
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v1/r/d/b/p1",
-          "reason": "fraudnet_p1",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/p1"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "fraudnet_p2",
-        "reason": "fraudnet_p2",
-        "rule": {
-          "host": "c.paypal.com",
-          "methods": [
-            "POST",
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v1/r/d/b/p2",
-          "reason": "fraudnet_p2",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/p2"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "fraudnet_w",
-        "reason": "fraudnet_w",
-        "rule": {
-          "host": "c.paypal.com",
-          "methods": [
-            "POST",
-            "GET"
-          ],
-          "path_contains": "",
-          "path_prefix": "/v1/r/d/b/w",
-          "reason": "fraudnet_w",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image",
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/w"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "observability",
-        "reason": "observability",
-        "rule": {
-          "host": "t.paypal.com",
-          "methods": [
-            "GET",
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/ts",
-          "reason": "observability",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon",
-            "image"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "fetch",
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006578772&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Abilling&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=gdpr_v2.1&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&event_name=c_paypal_cpl&t1=214&t1c=213&t1d=0&t1s=163&t2=102&t3=67&tt=383&protocol=h2&cdn=cloudflare&tmpl=%2F%2Fc.paypal.&view=%7B%22t10%22%3A214%2C%22t11%22%3A383%2C%22nt%22%3A%22res%22%7D&e=pf&fpti_sdk_name=pa-js"
     },
     {
       "decision": {
@@ -1239,104 +268,6 @@
     {
       "decision": {
         "action": "allow",
-        "family": "datadog_rum",
-        "reason": "datadog_rum",
-        "rule": {
-          "host": "browser-intake-us5-datadoghq.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/api/v2/rum",
-          "reason": "datadog_rum",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=20586989-147e-4f03-8cd6-f1828a6bf052&batch_time=1785006579687"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "datadog_rum",
-        "reason": "datadog_rum",
-        "rule": {
-          "host": "browser-intake-us5-datadoghq.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/api/v2/rum",
-          "reason": "datadog_rum",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=d178fd1e-9622-4617-a482-5f6365fbf414&batch_time=1785006579689"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "identity_di_log",
-        "reason": "learned_identity_di_log",
-        "rule": {
-          "host": "www.paypal.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/identity/di/log",
-          "reason": "learned_identity_di_log",
-          "resource_types": [
-            "ping"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "ping",
-      "url": "https://www.paypal.com/identity/di/log"
-    },
-    {
-      "decision": {
-        "action": "allow",
-        "family": "datadog_rum",
-        "reason": "datadog_rum",
-        "rule": {
-          "host": "browser-intake-us5-datadoghq.com",
-          "methods": [
-            "POST"
-          ],
-          "path_contains": "",
-          "path_prefix": "/api/v2/rum",
-          "reason": "datadog_rum",
-          "resource_types": [
-            "xhr",
-            "fetch",
-            "beacon"
-          ]
-        }
-      },
-      "event": "route",
-      "method": "POST",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=ef11733f-5f42-486d-9525-7b1e54984f0b&batch_time=1785006585849"
-    },
-    {
-      "decision": {
-        "action": "allow",
         "family": "observability",
         "reason": "signup_context_logger",
         "rule": {
@@ -1363,16 +294,16 @@
     {
       "decision": {
         "action": "allow",
-        "family": "datadog_rum",
-        "reason": "datadog_rum",
+        "family": "identity_di_log",
+        "reason": "identity_di_log",
         "rule": {
-          "host": "browser-intake-us5-datadoghq.com",
+          "host": "www.paypal.com",
           "methods": [
             "POST"
           ],
           "path_contains": "",
-          "path_prefix": "/api/v2/rum",
-          "reason": "datadog_rum",
+          "path_prefix": "/identity/di/log",
+          "reason": "identity_di_log",
           "resource_types": [
             "xhr",
             "fetch",
@@ -1383,7 +314,7 @@
       "event": "route",
       "method": "POST",
       "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=e80eb1d9-080a-4c0e-9c7e-f65272f78b23&batch_time=1785006615854"
+      "url": "https://www.paypal.com/identity/di/log"
     }
   ],
   "blocked_requests_tail": [
@@ -1465,41 +396,105 @@
       "event": "route",
       "method": "GET",
       "resource_type": "script",
-      "url": "https://www.paypalobjects.com/martech/tm/paypal/mktconf.js"
-    },
-    {
-      "decision": {
-        "action": "abort",
-        "reason": "static_resource_blocked"
-      },
-      "event": "route",
-      "method": "GET",
-      "resource_type": "image",
-      "url": "https://www.paypalobjects.com/digitalassets/c/website/marketing/global/shared/global/country-worldwide/sprite_countries_flag5.png"
+      "url": "https://www.paypalobjects.com/ice/widgets/identitySCAWidgets.js"
     }
   ],
   "counts": {
-    "datadog_rum": 7,
-    "ddbm": 3,
-    "fraudnet_p1": 2,
-    "fraudnet_p2": 2,
-    "fraudnet_p3": 1,
+    "datadog_rum": 1,
+    "ddbm": 1,
+    "fraudnet_p1": 0,
+    "fraudnet_p2": 0,
+    "fraudnet_p3": 0,
     "fraudnet_pa": 0,
-    "fraudnet_w": 2,
+    "fraudnet_w": 0,
     "identity_di_log": 1,
-    "observability": 14,
-    "tealeaf": 1
+    "observability": 1,
+    "tealeaf": 0
   },
-  "created_at": 1785006624.8120806,
+  "created_at": 1785831193.231801,
   "cwd": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine",
-  "datadog_flushes": [],
-  "datadog_probes": [],
-  "datadog_runtime": {},
+  "datadog_flushes": [
+    {
+      "ok": false,
+      "reason": "DD_RUM_global_missing"
+    }
+  ],
+  "datadog_probes": [
+    {
+      "cookieNames": [],
+      "datadogScripts": [
+        "https://www.datadoghq-browser-agent.com/us5/v5/datadog-rum.js"
+      ],
+      "hasDDRumGlobal": false,
+      "hasInitConfiguration": false,
+      "hasInternalContext": false,
+      "has_add_action": false,
+      "has_start_resource": false,
+      "has_start_view": false,
+      "initConfiguration": null,
+      "keys": [],
+      "present": false,
+      "readyState": "complete",
+      "sessionIdPresent": false,
+      "stage": "signup_context_headless_before_datadog_flush",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+      "version": "",
+      "viewIdPresent": false,
+      "viewName": "",
+      "visibilityState": "visible"
+    },
+    {
+      "cookieNames": [],
+      "datadogScripts": [
+        "https://www.datadoghq-browser-agent.com/us5/v5/datadog-rum.js"
+      ],
+      "hasDDRumGlobal": false,
+      "hasInitConfiguration": false,
+      "hasInternalContext": false,
+      "has_add_action": false,
+      "has_start_resource": false,
+      "has_start_view": false,
+      "initConfiguration": null,
+      "keys": [],
+      "present": false,
+      "readyState": "complete",
+      "sessionIdPresent": false,
+      "stage": "signup_context_headless_after_datadog_flush",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+      "version": "",
+      "viewIdPresent": false,
+      "viewName": "",
+      "visibilityState": "visible"
+    }
+  ],
+  "datadog_runtime": {
+    "cookieNames": [],
+    "datadogScripts": [
+      "https://www.datadoghq-browser-agent.com/us5/v5/datadog-rum.js"
+    ],
+    "hasDDRumGlobal": false,
+    "hasInitConfiguration": false,
+    "hasInternalContext": false,
+    "has_add_action": false,
+    "has_start_resource": false,
+    "has_start_view": false,
+    "initConfiguration": null,
+    "keys": [],
+    "present": false,
+    "readyState": "complete",
+    "sessionIdPresent": false,
+    "stage": "signup_context_headless_after_datadog_flush",
+    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+    "version": "",
+    "viewIdPresent": false,
+    "viewName": "",
+    "visibilityState": "visible"
+  },
   "datadome_cookie_len": 128,
   "datadome_cookie_present": true,
   "debug_log_path": "",
   "event": "signup_context_missing_diagnostic",
-  "final_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+  "final_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
   "headless_debug_enabled": false,
   "important_decisions": {
     "analytics_config": {
@@ -1748,20 +743,41 @@
       }
     }
   },
-  "inject_errors": [],
-  "injected_scripts": [
-    "https://www.paypalobjects.com/v15170r-1d3n71ph1c4710n/dfp.js",
-    "https://www.paypalobjects.com/rdaAssets/fraudnet/ext/dfp.js",
-    "https://c.paypal.com/da/r/fb_fp.js",
-    "https://ddbm2.paypal.com/tags.js"
+  "inject_errors": [
+    {
+      "error": "Page.add_script_tag: Error: Failed to load script at https://www.paypalobjects.com/v15170r-1d3n71ph1c4710n/dfp.js\n    at script.onerror (eval at evaluate (:290:30), <anonymous>:8:76)",
+      "url": "https://www.paypalobjects.com/v15170r-1d3n71ph1c4710n/dfp.js"
+    },
+    {
+      "error": "Page.add_script_tag: Error: Failed to load script at https://www.paypalobjects.com/rdaAssets/fraudnet/ext/dfp.js\n    at script.onerror (eval at evaluate (:290:30), <anonymous>:8:76)",
+      "url": "https://www.paypalobjects.com/rdaAssets/fraudnet/ext/dfp.js"
+    },
+    {
+      "error": "Page.add_script_tag: Error: Failed to load script at https://c.paypal.com/da/r/fb_fp.js\n    at script.onerror (eval at evaluate (:290:30), <anonymous>:8:76)",
+      "url": "https://c.paypal.com/da/r/fb_fp.js"
+    },
+    {
+      "error": "Page.add_script_tag: Error: Failed to load script at https://ddbm2.paypal.com/tags.js\n    at script.onerror (eval at evaluate (:290:30), <anonymous>:8:76)",
+      "url": "https://ddbm2.paypal.com/tags.js"
+    },
+    {
+      "error": "Failed to fetch",
+      "url": "https://www.paypal.com/identity/di/log"
+    }
   ],
+  "injected_scripts": [],
   "intercept": {
-    "allowed_count": 57,
-    "blocked_count": 9,
+    "allowed_count": 14,
+    "blocked_count": 8,
     "debug_log_path": "",
     "fail_open": false
   },
-  "missing": [],
+  "missing": [
+    "fraudnet_p1",
+    "fraudnet_p2",
+    "fraudnet_w",
+    "tealeaf"
+  ],
   "mtr": {
     "post_status": 0,
     "requestId": "",
@@ -1772,12 +788,7 @@
     "x0_status": 0
   },
   "observed": [
-    "fraudnet_p3",
-    "fraudnet_p1",
-    "fraudnet_p2",
-    "fraudnet_w",
     "identity_di_log",
-    "tealeaf",
     "datadog_rum",
     "observability",
     "ddbm"
@@ -1785,23 +796,28 @@
   "observed_order": [
     "ddbm",
     "observability",
-    "datadog_rum",
-    "tealeaf",
-    "fraudnet_p1",
-    "fraudnet_p3",
-    "fraudnet_p2",
-    "fraudnet_w",
-    "identity_di_log"
+    "identity_di_log",
+    "datadog_rum"
   ],
-  "page_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+  "page_url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
   "project_root": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine",
-  "proxy_configured": false,
-  "proxy_fingerprint": "",
+  "proxy_configured": true,
+  "proxy_fingerprint": "c54a6fb5b47fa7b9",
   "request_failures_tail": [
     {
-      "family": "observability",
+      "family": "ddbm",
       "method": "GET",
-      "url": "https://b.stats.paypal.com/v2/counter.cgi?p=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
+      "url": "https://ddbm2.paypal.com/tags.js"
+    },
+    {
+      "family": "observability",
+      "method": "POST",
+      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
+    },
+    {
+      "family": "identity_di_log",
+      "method": "POST",
+      "url": "https://www.paypal.com/identity/di/log"
     }
   ],
   "requests_tail": [
@@ -1820,224 +836,18 @@
       "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
     },
     {
-      "family": "observability",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=cb939b0d-80e8-444a-9f2b-b21e57d4a4ef&batch_time=1785006576992"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=e4985d7f-3d61-46d1-8a28-4f218135e68a&batch_time=1785006577064"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=8920c1cf-645b-42e2-aff5-99c8dd383ebd&batch_time=1785006577649"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006577757&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Abilling&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=ccpa&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&e=im&fpti_sdk_name=pa-js&imsrc=setup&view=%7B%22t10%22%3A0%2C%22t11%22%3A2463%2C%22tcp%22%3A1976%2C%22et%22%3A%224g%22%2C%22nt%22%3A%22navigate%22%2C%22bt%22%3A102%7D&pt=PayPal&cd=24&sw=390&sh=844&dw=1170&dh=2532&bw=390&bh=753&ce=1&t1=0&t1c=0&t1d=0&t1s=0&t2=178&t3=0&t4d=0&t4=0&t4e=3&tt=2363&rdc=0&res=%7B%7D"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006577899&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Acustom-ForcedSignup&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=gdpr_v2.1&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&action=ForcedSignup_page_loaded&uicomp=custom-ForcedSignup&uitype=page&tt=2362&view=%7B%22bh%22%3A753%2C%22bw%22%3A390%2C%22cd%22%3A24%2C%22dh%22%3A2532%2C%22dw%22%3A1170%2C%22et%22%3A%224g%22%2C%22pt%22%3A%22PayPal%22%2C%22ru%22%3A%22%22%2C%22sh%22%3A844%2C%22sw%22%3A390%2C%22t11%22%3A1914%7D&e=pf&fpti_sdk_name=pa-js"
-    },
-    {
-      "family": "ddbm",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://ddbm2.paypal.com/js/"
-    },
-    {
-      "family": "tealeaf",
-      "method": "POST",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://www.paypal.com/platform/tealeaftarget"
-    },
-    {
-      "family": "fraudnet_p1",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/p1"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "resourceType": "image",
-      "resource_type": "image",
-      "url": "https://b.stats.paypal.com/v2/counter.cgi?p=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
-    },
-    {
-      "family": "fraudnet_p3",
-      "method": "GET",
-      "resourceType": "image",
-      "resource_type": "image",
-      "url": "https://c6.paypal.com/v1/r/d/b/p3?f=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
-    },
-    {
-      "family": "fraudnet_p2",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/p2"
-    },
-    {
-      "family": "fraudnet_w",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/w"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "resourceType": "image",
-      "resource_type": "image",
-      "url": "https://b.stats.paypal.com/v2/counter.cgi?p=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
-    },
-    {
-      "family": "fraudnet_p1",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/p1"
-    },
-    {
-      "family": "fraudnet_p2",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/p2"
-    },
-    {
-      "family": "fraudnet_w",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://c.paypal.com/v1/r/d/b/w"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006578772&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Abilling&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=gdpr_v2.1&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&event_name=c_paypal_cpl&t1=214&t1c=213&t1d=0&t1s=163&t2=102&t3=67&tt=383&protocol=h2&cdn=cloudflare&tmpl=%2F%2Fc.paypal.&view=%7B%22t10%22%3A214%2C%22t11%22%3A383%2C%22nt%22%3A%22res%22%7D&e=pf&fpti_sdk_name=pa-js"
-    },
-    {
-      "family": "ddbm",
-      "method": "GET",
-      "resourceType": "script",
-      "resource_type": "script",
-      "url": "https://ddbm2.paypal.com/tags.js"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=20586989-147e-4f03-8cd6-f1828a6bf052&batch_time=1785006579687"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=d178fd1e-9622-4617-a482-5f6365fbf414&batch_time=1785006579689"
-    },
-    {
       "family": "identity_di_log",
       "method": "POST",
-      "resourceType": "ping",
-      "resource_type": "ping",
+      "resourceType": "fetch",
+      "resource_type": "fetch",
       "url": "https://www.paypal.com/identity/di/log"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=ef11733f-5f42-486d-9525-7b1e54984f0b&batch_time=1785006585849"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "resourceType": "xhr",
-      "resource_type": "xhr",
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "resourceType": "fetch",
-      "resource_type": "fetch",
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=e80eb1d9-080a-4c0e-9c7e-f65272f78b23&batch_time=1785006615854"
     }
   ],
-  "required_missing": [],
+  "required_missing": [
+    "fraudnet_p1",
+    "fraudnet_p2",
+    "fraudnet_w"
+  ],
   "required_signals": [
     "fraudnet_p1",
     "fraudnet_p2",
@@ -2046,214 +856,28 @@
     "datadog_rum"
   ],
   "response_counts": {
-    "datadog_rum": 7,
-    "ddbm": 3,
-    "fraudnet_p1": 2,
-    "fraudnet_p2": 2,
-    "fraudnet_p3": 1,
+    "datadog_rum": 1,
+    "ddbm": 0,
+    "fraudnet_p1": 0,
+    "fraudnet_p2": 0,
+    "fraudnet_p3": 0,
     "fraudnet_pa": 0,
-    "fraudnet_w": 2,
-    "identity_di_log": 1,
-    "observability": 13,
-    "tealeaf": 1
+    "fraudnet_w": 0,
+    "identity_di_log": 0,
+    "observability": 0,
+    "tealeaf": 0
   },
-  "responses_tail": [
-    {
-      "family": "ddbm",
-      "method": "GET",
-      "status": 200,
-      "url": "https://ddbm2.paypal.com/tags.js"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "status": 202,
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=cb939b0d-80e8-444a-9f2b-b21e57d4a4ef&batch_time=1785006576992"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "status": 202,
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=e4985d7f-3d61-46d1-8a28-4f218135e68a&batch_time=1785006577064"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "status": 202,
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=8920c1cf-645b-42e2-aff5-99c8dd383ebd&batch_time=1785006577649"
-    },
-    {
-      "family": "ddbm",
-      "method": "POST",
-      "status": 200,
-      "url": "https://ddbm2.paypal.com/js/"
-    },
-    {
-      "family": "tealeaf",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/platform/tealeaftarget"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "status": 200,
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006577757&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Abilling&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=ccpa&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&e=im&fpti_sdk_name=pa-js&imsrc=setup&view=%7B%22t10%22%3A0%2C%22t11%22%3A2463%2C%22tcp%22%3A1976%2C%22et%22%3A%224g%22%2C%22nt%22%3A%22navigate%22%2C%22bt%22%3A102%7D&pt=PayPal&cd=24&sw=390&sh=844&dw=1170&dh=2532&bw=390&bh=753&ce=1&t1=0&t1c=0&t1d=0&t1s=0&t2=178&t3=0&t4d=0&t4=0&t4e=3&tt=2363&rdc=0&res=%7B%7D"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "status": 200,
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006577899&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Acustom-ForcedSignup&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=gdpr_v2.1&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&action=ForcedSignup_page_loaded&uicomp=custom-ForcedSignup&uitype=page&tt=2362&view=%7B%22bh%22%3A753%2C%22bw%22%3A390%2C%22cd%22%3A24%2C%22dh%22%3A2532%2C%22dw%22%3A1170%2C%22et%22%3A%224g%22%2C%22pt%22%3A%22PayPal%22%2C%22ru%22%3A%22%22%2C%22sh%22%3A844%2C%22sw%22%3A390%2C%22t11%22%3A1914%7D&e=pf&fpti_sdk_name=pa-js"
-    },
-    {
-      "family": "fraudnet_p1",
-      "method": "POST",
-      "status": 200,
-      "url": "https://c.paypal.com/v1/r/d/b/p1"
-    },
-    {
-      "family": "fraudnet_p2",
-      "method": "POST",
-      "status": 200,
-      "url": "https://c.paypal.com/v1/r/d/b/p2"
-    },
-    {
-      "family": "fraudnet_w",
-      "method": "POST",
-      "status": 200,
-      "url": "https://c.paypal.com/v1/r/d/b/w"
-    },
-    {
-      "family": "fraudnet_p1",
-      "method": "POST",
-      "status": 200,
-      "url": "https://c.paypal.com/v1/r/d/b/p1"
-    },
-    {
-      "family": "fraudnet_w",
-      "method": "POST",
-      "status": 200,
-      "url": "https://c.paypal.com/v1/r/d/b/w"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "status": 200,
-      "url": "https://t.paypal.com/ts?v=1.15.0&t=1785006578772&g=420&pgrp=main%3Axo%3Alite&page=main%3Axo%3Alite%3Aweasley%3AguestAndSignup%3Abilling&pgtf=Nodejs&s=ci&env=live&comp=checkoutuinodeweb&tsrce=unifiedloginnodeweb&cu=0&ef_policy=gdpr_v2.1&pxpguid=9aae83ac19f647e170294cd1fcb8c63f&pgst=1785006557477&calc=ca20d75474a58&csci=856e085a25a44de8b2b0c8f0eb5fd316&nsid=TbvsUogQu_LHqNKbAOf0QDGr8-22i0RR&rsta=en_US&ccpg=US&flnm=Weasley&fltk=EC-44P635331B1788702&event_name=c_paypal_cpl&t1=214&t1c=213&t1d=0&t1s=163&t2=102&t3=67&tt=383&protocol=h2&cdn=cloudflare&tmpl=%2F%2Fc.paypal.&view=%7B%22t10%22%3A214%2C%22t11%22%3A383%2C%22nt%22%3A%22res%22%7D&e=pf&fpti_sdk_name=pa-js"
-    },
-    {
-      "family": "fraudnet_p2",
-      "method": "POST",
-      "status": 200,
-      "url": "https://c.paypal.com/v1/r/d/b/p2"
-    },
-    {
-      "family": "observability",
-      "method": "GET",
-      "status": 302,
-      "url": "https://b.stats.paypal.com/v2/counter.cgi?p=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
-    },
-    {
-      "family": "fraudnet_p3",
-      "method": "GET",
-      "status": 200,
-      "url": "https://c6.paypal.com/v1/r/d/b/p3?f=EC-44P635331B1788702&s=CHECKOUTUINODEWEB_ONBOARDING_LITE"
-    },
-    {
-      "family": "ddbm",
-      "method": "GET",
-      "status": 200,
-      "url": "https://ddbm2.paypal.com/tags.js"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "status": 202,
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=20586989-147e-4f03-8cd6-f1828a6bf052&batch_time=1785006579687"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "status": 202,
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=d178fd1e-9622-4617-a482-5f6365fbf414&batch_time=1785006579689"
-    },
-    {
-      "family": "identity_di_log",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/identity/di/log"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "status": 202,
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=ef11733f-5f42-486d-9525-7b1e54984f0b&batch_time=1785006585849"
-    },
-    {
-      "family": "observability",
-      "method": "POST",
-      "status": 200,
-      "url": "https://www.paypal.com/xoplatform/logger/api/logger/"
-    },
-    {
-      "family": "datadog_rum",
-      "method": "POST",
-      "status": 202,
-      "url": "https://browser-intake-us5-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.35.1%2Capi%3Afetch%2Cservice%3Aweasley%28checkoutuinodeweb%29%2Cversion%3Ab0f959e&dd-api-key=pub415c6a9024efa76be0dc3ee2e2099763&dd-evp-origin-version=5.35.1&dd-evp-origin=browser&dd-request-id=e80eb1d9-080a-4c0e-9c7e-f65272f78b23&batch_time=1785006615854"
-    }
-  ],
+  "responses_tail": [],
   "run_mtr": true,
   "runtime": "headless",
-  "runtime_signals": [],
+  "runtime_signals": [
+    {
+      "family": "datadog_rum",
+      "observability_count": 1,
+      "reason": "signup_context_headless_paypal_observability_without_datadog_sdk",
+      "source": "paypal_observability"
+    }
+  ],
   "signup_context_bootstrap": {},
   "signup_context_page": {
     "blocked_by_datadome": false,
@@ -2263,10 +887,11 @@
     "datadome_cookie_len": 128,
     "datadome_cookie_present": true,
     "host": "www.paypal.com",
-    "html_length": 76052,
+    "html_length": 129409,
     "html_present": true,
     "label": "after_runtime_wait",
     "normal_markers": [
+      "checkoutweb/signup",
       "checkoutuinodeweb_onboarding_lite",
       "create account",
       "weasley",
@@ -2278,7 +903,7 @@
     "stale_challenge_status_with_normal_doc": false,
     "status": 200,
     "status_ok": true,
-    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
     "url_ok": true
   },
   "signup_context_page_after_runtime": {
@@ -2289,10 +914,11 @@
     "datadome_cookie_len": 128,
     "datadome_cookie_present": true,
     "host": "www.paypal.com",
-    "html_length": 76052,
+    "html_length": 129409,
     "html_present": true,
     "label": "after_runtime_wait",
     "normal_markers": [
+      "checkoutweb/signup",
       "checkoutuinodeweb_onboarding_lite",
       "create account",
       "weasley",
@@ -2304,7 +930,7 @@
     "stale_challenge_status_with_normal_doc": false,
     "status": 200,
     "status_ok": true,
-    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+    "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
     "url_ok": true
   },
   "signup_context_seeded_document": {
@@ -2314,7 +940,7 @@
       "challenge_by_url": false,
       "challenge_markers": [],
       "host": "www.paypal.com",
-      "html_length": 128839,
+      "html_length": 128845,
       "html_present": true,
       "normal_markers": [
         "checkoutweb/signup",
@@ -2329,11 +955,11 @@
       "stale_challenge_status_with_normal_doc": false,
       "status": 200,
       "status_ok": true,
-      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_US&country.x=US&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
+      "url": "https://www.paypal.com/checkoutweb/signup?ssrt=%3Credacted%3E&ul=1&modxo_redirect_reason=guest_user&locale.x=en_GB&country.x=GB&ba_token=%3Credacted%3E&token=%3Credacted%3E&rcache=1&cookieBannerVariant=hidden",
       "url_ok": true
     },
     "enabled": true,
-    "html_length": 128839,
+    "html_length": 128845,
     "status": 200
   },
   "source_file": "D:\\code\\OpenSource\\AutoTeam-F\\src\\autotoken\\_paypal_protocol_engine\\paypal\\local_headless.py",

@@ -20,10 +20,11 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from autotoken.services.payment_error_classifier import is_non_zero_amount_error
 from autotoken.services import proxy_runtime
-from autotoken.storage import accounts as account_store
-from autotoken.storage.auth_session_store import delete_auth_session
+from autotoken.services.payment_error_classifier import is_non_zero_amount_error
+from autotoken.settings.config import normalize_proxy_url
+from autotoken.storage import accounts as account_store  # noqa: F401
+from autotoken.storage.auth_session_store import delete_auth_session  # noqa: F401
 
 try:
     import qrcode
@@ -741,6 +742,14 @@ def proxy_with_fresh_sid(proxy: str) -> str:
     return re.sub(r"sid-[^-:@]*-t-", f"sid-{sid}-t-", proxy, count=1)
 
 
+def normalize_payment_proxy_url(proxy: str) -> str:
+    proxy = str(proxy or "").strip()
+    if not proxy:
+        return ""
+    default_scheme = "http" if is_711_proxy(proxy) else "socks5h"
+    return normalize_proxy_url(proxy, default_auth_scheme=default_scheme)
+
+
 def stripe_browser_id() -> str:
     return f"{uuid.uuid4()}{uuid.uuid4().hex[:8]}"
 
@@ -759,9 +768,13 @@ def prepare_attempt_proxy(req: LongLinkRequest, original_proxy: str) -> bool:
     if normalize_link_type(req.link_type) in {"paypal", "gopay", "ideal"} and is_loopback_proxy(original_proxy):
         original_proxy = ""
     if original_proxy:
-        req.proxy = proxy_with_fresh_sid(proxy_with_region_override(original_proxy, req.checkout_proxy_region))
+        req.proxy = normalize_payment_proxy_url(
+            proxy_with_fresh_sid(proxy_with_region_override(original_proxy, req.checkout_proxy_region))
+        )
         return True
-    req.proxy = proxy_with_fresh_sid(proxy_with_region_override(DEFAULT_PROXY, req.checkout_proxy_region))
+    req.proxy = normalize_payment_proxy_url(
+        proxy_with_fresh_sid(proxy_with_region_override(DEFAULT_PROXY, req.checkout_proxy_region))
+    )
     return False
 
 
@@ -783,7 +796,9 @@ def prepare_request_proxy(req: LongLinkRequest) -> bool:
     attempts = proxy_preflight_attempt_limit(req)
     errors: list[str] = []
     for _attempt in range(1, attempts + 1):
-        req.proxy = proxy_with_fresh_sid(proxy_with_region_override(original_proxy, req.checkout_proxy_region))
+        req.proxy = normalize_payment_proxy_url(
+            proxy_with_fresh_sid(proxy_with_region_override(original_proxy, req.checkout_proxy_region))
+        )
         ok, message = proxy_runtime.preflight_payment_proxy_url(req.proxy)
         if ok:
             auth_ok, auth_message = proxy_runtime.preflight_chatgpt_authenticated_proxy_url(req.proxy, req.access_token)
@@ -803,7 +818,7 @@ def effective_default_proxy(proxy: str = "") -> str:
 
 
 def set_proxy_url(session: Any, proxy: str) -> None:
-    proxy = str(proxy or "").strip()
+    proxy = normalize_payment_proxy_url(proxy)
     if proxy:
         session.proxies = {"http": proxy, "https": proxy}
 
@@ -1279,6 +1294,8 @@ def build_chatgpt_session(req: LongLinkRequest) -> Any:
 
     requested_device_id = req.device_id.strip()
     device_id = requested_device_id if requested_device_id and is_latin1_header_value(requested_device_id) else str(uuid.uuid4())
+    if not requested_device_id:
+        req.device_id = device_id
     user_agent = default_user_agent_for_request(req)
     browser_profile = browser_profile_for_request(req)
     browser_profile["client_fingerprint"] = normalize_client_fingerprint(req.client_fingerprint)
@@ -1332,12 +1349,13 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
             "country": billing_country,
             "currency": currency,
         },
-        "promo_campaign": {
-            "promo_campaign_id": promo_campaign_id,
-            "is_coupon_from_query_param": False,
-        },
         "checkout_ui_mode": checkout_ui_mode,
     }
+    if link_type != "ideal":
+        body["promo_campaign"] = {
+            "promo_campaign_id": promo_campaign_id,
+            "is_coupon_from_query_param": False,
+        }
     headers = {
         "referer": "https://chatgpt.com/",
         "x-openai-target-path": "/backend-api/payments/checkout",
@@ -1383,6 +1401,61 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
         "billing_country": billing_country,
         "currency": currency,
     }
+
+
+def checkout_page_url(checkout: dict[str, Any], country: str = "NL") -> str:
+    processor = processor_entity_for_country(country, str(checkout.get("processor_entity") or ""))
+    return f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}"
+
+
+def update_checkout_promotion(
+    chatgpt: Any,
+    checkout: dict[str, Any],
+    req: LongLinkRequest,
+    steps: list[dict[str, str]] | None = None,
+) -> None:
+    _ = chatgpt
+    update_req = req.model_copy()
+    update_req.checkout_proxy_region = "VN"
+    update_req.proxy = normalize_payment_proxy_url(proxy_with_fresh_sid(proxy_for_region(req.proxy, "VN")))
+    update_req.proxy = ensure_proxy_region(update_req.proxy, "VN", "checkout/update promo", steps)
+    update_chatgpt = build_chatgpt_session(update_req)
+    body: dict[str, Any] = {
+        "checkout_session_id": checkout["cs_id"],
+        "processor_entity": processor_entity_for_country("NL", str(checkout.get("processor_entity") or "")),
+        "plan_name": "chatgptplusplan",
+        "price_interval": "month",
+        "seat_quantity": 1,
+        "promo_campaign": {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": False,
+        },
+    }
+    url = "https://chatgpt.com/backend-api/payments/checkout/update"
+    headers = {
+        "Referer": checkout_page_url(checkout, "NL"),
+        "x-openai-target-path": "/backend-api/payments/checkout/update",
+        "x-openai-target-route": "/backend-api/payments/checkout/update",
+    }
+    response = update_chatgpt.post(url, json=body, headers=headers, timeout=DEFAULT_TIMEOUT)
+    record_diagnostic(
+        req,
+        "chatgpt_checkout_update",
+        response,
+        request_body=body,
+        request_headers=diagnostic_request_headers(update_chatgpt, headers),
+        proxy_stage="checkout_update",
+        extra={"cs_id": checkout["cs_id"], "promotion_region": "VN"},
+    )
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=f"checkout/update failed: {short_text(response.text)}")
+    try:
+        payload = response.json() or {}
+    except Exception:
+        raise HTTPException(status_code=502, detail=short_text(response.text)) from None
+    if isinstance(payload, dict) and payload.get("success") is False:
+        raise HTTPException(status_code=502, detail=f"checkout/update rejected: {short_text(payload)}")
+    add_step(steps, "iDEAL checkout/update promo", "ok", "VN checkout/update 已注入 plus-1-month-free")
 
 
 def stripe_init(cs_id: str, req: LongLinkRequest, proxy_override: str = "") -> dict[str, Any]:
@@ -1579,18 +1652,35 @@ def is_zero_amount(value: Any) -> bool:
 
 
 def is_acceptable_low_amount(value: Any, max_minor_amount: int = MAX_ACCEPTABLE_MINOR_AMOUNT) -> bool:
-    text = str(value if value is not None else "").strip()
-    if not text:
-        return False
-    try:
-        amount = float(text)
-    except Exception:
-        return text in {"0", "0.0", "0.00"}
-    return 0 <= amount <= max_minor_amount
+    _ = max_minor_amount
+    return is_zero_amount(value)
 
 
 def amount_policy_text(value: Any) -> str:
-    return f"amount={value}, allowed<= {MAX_ACCEPTABLE_MINOR_AMOUNT}"
+    return f"amount={value}, allowed==0"
+
+
+def payment_methods_for_payload(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    methods: list[str] = []
+    for key in ("payment_method_types", "ordered_payment_method_types"):
+        values = payload.get(key)
+        if isinstance(values, list):
+            methods.extend(str(item).strip().lower() for item in values if str(item).strip())
+    return methods
+
+
+def payment_payload_supports_method(payload: Any, payment_method_type: str) -> bool:
+    methods = payment_methods_for_payload(payload)
+    if not methods:
+        return True
+    return normalize_link_type(payment_method_type) in methods
+
+
+def payment_methods_policy_text(payload: Any, payment_method_type: str) -> str:
+    methods = payment_methods_for_payload(payload)
+    return f"required={normalize_link_type(payment_method_type)}, methods={methods or 'unknown'}"
 
 
 def display_amount(value: Any, currency: str = "") -> str:
@@ -2283,6 +2373,11 @@ def should_retry_second_confirm_after_approve(detail: Any) -> bool:
 def is_chatgpt_approve_blocked(detail: Any) -> bool:
     text = str(detail or "").lower()
     return "chatgpt approve unexpected result" in text and "blocked" in text
+
+
+def is_payment_method_types_mismatch(detail: Any) -> bool:
+    text = str(detail or "").lower()
+    return "payment_method_types_mismatch" in text
 
 
 def retryable_transient_error(detail: Any) -> bool:
@@ -3454,6 +3549,8 @@ def generate_long_link_once(
     if checkout.get("publishable_key") and not req.stripe_publishable_key.strip():
         req.stripe_publishable_key = str(checkout["publishable_key"])
         add_step(steps, "Stripe Publishable Key", "ok", "using publishable_key returned by checkout")
+    if link_type == "ideal":
+        update_checkout_promotion(chatgpt, checkout, req, steps=steps)
     post_checkout_proxy = ""
     if link_type in {"paypal", "gopay", "ideal"}:
         post_checkout_proxy = provider_stage_proxy(req, use_explicit_proxy=use_explicit_proxy)
@@ -3502,13 +3599,25 @@ def generate_long_link_once(
     )
     if link_type in {"gopay", "ideal"}:
         amount_attempt = 1
-        while not is_acceptable_low_amount(expected_amount(init_payload)) and amount_attempt < checkout_attempts:
+        while (
+            (
+                not is_acceptable_low_amount(expected_amount(init_payload))
+                or not payment_payload_supports_method(init_payload, link_type)
+            )
+            and amount_attempt < checkout_attempts
+        ):
             bad_amount = expected_amount(init_payload)
+            bad_methods = payment_methods_policy_text(init_payload, link_type)
+            reason = amount_policy_text(bad_amount)
+            if is_acceptable_low_amount(bad_amount):
+                reason = bad_methods
+            elif not payment_payload_supports_method(init_payload, link_type):
+                reason = f"{reason}; {bad_methods}"
             add_step(
                 steps,
                 f"{link_type} 金额校验 第 {amount_attempt}/{checkout_attempts} 次",
                 "warn",
-                f"{amount_policy_text(bad_amount)}，丢弃当前 cs 并重建 checkout",
+                f"{reason}，丢弃当前 cs 并重建 checkout",
             )
             amount_attempt += 1
             req.proxy = ensure_proxy_region(
@@ -3530,6 +3639,8 @@ def generate_long_link_once(
             if checkout.get("publishable_key") and not req.stripe_publishable_key.strip():
                 req.stripe_publishable_key = str(checkout["publishable_key"])
                 add_step(steps, "Stripe Publishable Key", "ok", "using publishable_key returned by checkout")
+            if link_type == "ideal":
+                update_checkout_promotion(chatgpt, checkout, req, steps=steps)
             if post_checkout_proxy:
                 post_checkout_proxy = ensure_proxy_region(
                     proxy_with_fresh_sid(post_checkout_proxy),
@@ -3543,7 +3654,7 @@ def generate_long_link_once(
                 steps,
                 f"重建 Stripe init 第 {amount_attempt}/{checkout_attempts} 次",
                 "ok",
-                f"{amount_policy_text(expected_amount(init_payload))}; hosted={stripe_hosted_url[:180]}",
+                f"{amount_policy_text(expected_amount(init_payload))}; {payment_methods_policy_text(init_payload, link_type)}; hosted={stripe_hosted_url[:180]}",
             )
         final_amount = expected_amount(init_payload)
         if not is_acceptable_low_amount(final_amount):
@@ -3554,7 +3665,19 @@ def generate_long_link_once(
                 f"{amount_policy_text(final_amount)}，已重试 {amount_attempt}/{checkout_attempts} 次仍超过阈值",
             )
             raise HTTPException(status_code=502, detail=f"amount policy failed after retries: {amount_policy_text(final_amount)}")
+        if not payment_payload_supports_method(init_payload, link_type):
+            add_step(
+                steps,
+                f"{link_type} 支付方式校验",
+                "fail",
+                f"{payment_methods_policy_text(init_payload, link_type)}，已重试 {amount_attempt}/{checkout_attempts} 次仍不支持",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"payment method policy failed after retries: {payment_methods_policy_text(init_payload, link_type)}",
+            )
         add_step(steps, f"{link_type} 金额校验", "ok", amount_policy_text(final_amount))
+        add_step(steps, f"{link_type} 支付方式校验", "ok", payment_methods_policy_text(init_payload, link_type))
     hosted_long_url = to_openai_pay_url(stripe_hosted_url)
     add_step(steps, "生成 hosted 长链", "ok", hosted_long_url)
     provider = {
@@ -3582,7 +3705,9 @@ def generate_long_link_once(
             except HTTPException as exc:
                 fallback = True
                 provider_error = str(exc.detail)
-                should_rebuild = link_type in {"gopay", "ideal"} and is_chatgpt_approve_blocked(provider_error)
+                should_rebuild = link_type in {"gopay", "ideal"} and (
+                    is_chatgpt_approve_blocked(provider_error) or is_payment_method_types_mismatch(provider_error)
+                )
                 if not should_rebuild or provider_attempt >= provider_attempts:
                     add_step(steps, "Provider 提取失败，回退 hosted", "fail", provider_error)
                     if link_type in {"paypal", "ideal"}:
@@ -3635,6 +3760,8 @@ def generate_long_link_once(
             if checkout.get("publishable_key") and not req.stripe_publishable_key.strip():
                 req.stripe_publishable_key = str(checkout["publishable_key"])
                 add_step(steps, "Stripe Publishable Key", "ok", "using publishable_key returned by checkout")
+            if link_type == "ideal":
+                update_checkout_promotion(chatgpt, checkout, req, steps=steps)
             if post_checkout_proxy:
                 post_checkout_proxy = ensure_proxy_region(
                     proxy_with_fresh_sid(post_checkout_proxy),
