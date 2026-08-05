@@ -383,6 +383,9 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     else:
         raise ValueError("不支持的 PayPal 手机接码平台")
 
+    approval_path = "create-member-no-fi" if country == "US" else "signup-card"
+    approval_path_env = "create_member_no_fi" if country == "US" else "signup_card"
+
     cmd = [
         sys.executable,
         "-u",
@@ -396,11 +399,11 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
         "--country",
         country,
         "--approval-path",
-        "create-member-no-fi" if country == "US" else "auto",
+        approval_path,
         "--fingerprint-source",
         "headless",
         "--datadome-mode",
-        "headless",
+        "protocol",
         "--mtr-runtime",
         "headless",
         "--risk-signals-mode",
@@ -445,10 +448,10 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     env["PAYPAL_HEADLESS_USE_PINNED_FINGERPRINT"] = "1"
     env["PAYPAL_RISK_SIGNALS_MODE"] = "headless"
     env["PAYPAL_RISK_HEADLESS_WAIT_SECONDS"] = "45"
-    env["PAYPAL_DATADOME_MODE"] = "headless"
+    env["PAYPAL_DATADOME_MODE"] = "protocol"
     env["PAYPAL_MTR_RUNTIME"] = "headless"
     env["PAYPAL_MTR_HEADLESS_WAIT_SECONDS"] = "45"
-    env["PAYPAL_APPROVAL_PATH"] = "create_member_no_fi" if country == "US" else "auto"
+    env["PAYPAL_APPROVAL_PATH"] = approval_path_env
     env["PAYPAL_COUNTRY"] = country
     # The verified AutoTeam-F tuple is a normal preflight run, not strict lab
     # mode.  Parent shells may export PAYPAL_STRICT_BROWSER_RISK=1 while doing

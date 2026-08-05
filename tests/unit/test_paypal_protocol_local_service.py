@@ -31,7 +31,9 @@ def test_build_protocol_command_uses_vendored_engine_and_success_env(tmp_path, m
     assert env["PAYPAL_USE_CURL_CFFI"] == "0"
     assert env["PAYPAL_HEADLESS_USE_PINNED_FINGERPRINT"] == "1"
     assert env["PAYPAL_HEADLESS_PINNED_FINGERPRINT_PATH"] == str(fp)
+    assert cmd[cmd.index("--datadome-mode") + 1] == "protocol"
     assert env["PAYPAL_APPROVAL_PATH"] == "create_member_no_fi"
+    assert env["PAYPAL_DATADOME_MODE"] == "protocol"
     assert env["PAYPAL_STRICT_BROWSER_RISK"] == "0"
     assert env["PAYPAL_MTR_HEADLESS_WAIT_SECONDS"] == "45"
     joined = " ".join(cmd)
@@ -632,7 +634,7 @@ def test_australia_generated_address_uses_state_abbreviation_and_four_digit_post
         assert not address.house_number
 
 
-def test_gb_auto_approval_path_uses_create_member_no_fi(monkeypatch):
+def test_gb_auto_approval_path_uses_legacy_signup_card(monkeypatch):
     engine_root = service.DEFAULT_ENGINE_ROOT
     sys.path.insert(0, str(engine_root))
     try:
@@ -656,7 +658,7 @@ def test_gb_auto_approval_path_uses_create_member_no_fi(monkeypatch):
     )
     monkeypatch.setenv("PAYPAL_APPROVAL_PATH", "auto")
 
-    assert paypal_flow._create_member_no_fi_enabled() is True
+    assert paypal_flow._create_member_no_fi_enabled() is False
 
 
 def test_build_protocol_command_supports_gb_with_auto_path_and_sms_default(tmp_path, monkeypatch):
@@ -672,10 +674,12 @@ def test_build_protocol_command_supports_gb_with_auto_path_and_sms_default(tmp_p
     ))
 
     assert cmd[cmd.index("--country") + 1] == "GB"
-    assert cmd[cmd.index("--approval-path") + 1] == "auto"
+    assert cmd[cmd.index("--approval-path") + 1] == "signup-card"
+    assert cmd[cmd.index("--datadome-mode") + 1] == "protocol"
     assert cmd[cmd.index("--sms-country") + 1] == "16"
     assert env["PAYPAL_COUNTRY"] == "GB"
-    assert env["PAYPAL_APPROVAL_PATH"] == "auto"
+    assert env["PAYPAL_APPROVAL_PATH"] == "signup_card"
+    assert env["PAYPAL_DATADOME_MODE"] == "protocol"
     assert env["PAYPAL_SMS_COUNTRY"] == "16"
 
 

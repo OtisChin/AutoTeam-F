@@ -501,13 +501,17 @@ class PayPalFlow:
             "roxy": "roxy",
             "browser": "roxy",
             "real_browser": "roxy",
-            "headless": "headless",
-            "headless_optimized": "headless",
-            "optimized_headless": "headless",
-            "local_headless": "headless",
-            "playwright": "headless",
-            "local_playwright": "headless",
-            "prefer_headless": "headless",
+            # Do not use local-headless as a DataDome solver.  The legacy
+            # PayPal protocol flow treats DataDome as a protocol/browser
+            # boundary: a 403 must be retried with a clean protocol request or
+            # fail fast, not continued with a Playwright error/challenge page.
+            "headless": "protocol",
+            "headless_optimized": "protocol",
+            "optimized_headless": "protocol",
+            "local_headless": "protocol",
+            "playwright": "protocol",
+            "local_playwright": "protocol",
+            "prefer_headless": "protocol",
             "auto": "auto",
             "off": "off",
             "none": "off",
@@ -631,6 +635,16 @@ class PayPalFlow:
     def _browser_document_from_datadome_result(result: dict[str, Any]) -> dict[str, Any]:
         if not result.get("ok"):
             return {}
+        url = str(result.get("url") or "")
+        try:
+            parsed_url = urllib.parse.urlparse(url)
+        except Exception:
+            parsed_url = urllib.parse.ParseResult("", "", "", "", "", "")
+        if parsed_url.scheme not in {"http", "https"}:
+            return {}
+        hostname = (parsed_url.hostname or "").lower()
+        if hostname != "www.paypal.com":
+            return {}
         html = str(result.get("html") or "")
         if not html:
             return {}
@@ -644,7 +658,7 @@ class PayPalFlow:
             return {}
         return {
             "status_code": status or 200,
-            "url": str(result.get("url") or ""),
+            "url": url,
             "text": html,
         }
 
@@ -2518,16 +2532,32 @@ class PayPalFlow:
                 "Skipping Phase 0 DataDome browser preflight; protocol GET will run first and browser runtime is reserved for HTTP 403."
             )
 
+        phase0_headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-User": "?1",
+            "Sec-Fetch-Dest": "document",
+        }
+
         # First GET - may return 403 with DataDome challenge or 302 redirect
         if resp is None:
-            resp = self.session.get(url, headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-User": "?1",
-                "Sec-Fetch-Dest": "document",
-            })
+            try:
+                resp = self.session.get(url, headers=phase0_headers)
+            except Exception as exc:
+                retry_without_http2 = getattr(self.session, "retry_without_http2", None)
+                error_text = f"{type(exc).__name__}: {exc}".lower()
+                if callable(retry_without_http2) and "timeout" in error_text and retry_without_http2(
+                    reason=f"phase0 initial load {type(exc).__name__}"
+                ):
+                    logger.warning(
+                        "Phase 0 initial load timed out through HTTP/2; retrying once without HTTP/2: {}",
+                        self._safe_error_text(exc),
+                    )
+                    resp = self.session.get(url, headers=phase0_headers)
+                else:
+                    raise
         self._capture_datadome_clientid(resp.text)
 
         if resp.status_code == 403:
@@ -5741,6 +5771,8 @@ class PayPalFlow:
         state = tfa_data.get("state", "")
         logger.info("2FA state: {}, authId=<redacted>, challengeId=<redacted>", state)
 
+        if state != "PENDING":
+            raise RuntimeError(f"PayPal SMS was not sent; 2FA state={state or '<missing>'}")
         if not auth_id or not challenge_id:
             raise RuntimeError("Failed to get authId/challengeId from 2FA initiation")
         return auth_id, challenge_id
@@ -5880,6 +5912,23 @@ class PayPalFlow:
                 self.sms_provider.wait_seconds,
             )
             code = self.sms_provider.wait_for_code(activation, timeout_seconds=self.sms_provider.wait_seconds)
+            if not code:
+                if sys.stdin.isatty():
+                    value = input(
+                        "\n>>> SMS record 未取到本次验证码。请直接输入6位短信验证码；"
+                        "输入 q 放弃当前号码: "
+                    ).strip()
+                    if value.lower() not in {"q", "quit", "exit"} and len(value) == 6 and value.isdigit():
+                        code = value
+                    else:
+                        self.sms_provider.abandon(activation, "sms_timeout")
+                        continue
+                else:
+                    logger.warning(
+                        "SMS provider returned no OTP and stdin is not interactive; cannot request manual code input"
+                    )
+                    self.sms_provider.abandon(activation, "sms_timeout")
+                    continue
             if not code:
                 self.sms_provider.abandon(activation, "sms_timeout")
                 continue
@@ -6043,7 +6092,7 @@ class PayPalFlow:
             return True
         if raw in {"signup", "signup_card", "card", "legacy"}:
             return False
-        return str(self.address.country or "").upper() in {"US", "GB"}
+        return str(self.address.country or "").upper() == "US"
 
     def _build_create_member_no_fi_variables(self, token: str) -> dict[str, Any]:
         base = self._build_signup_variables(token)

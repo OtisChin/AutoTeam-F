@@ -61,3 +61,38 @@ def test_phase0_initial_load_retries_once_without_http2_after_read_timeout(monke
     assert flow.session.fallback_reasons
     assert "phase0" in flow.session.fallback_reasons[0]
     assert flow.state.ssrt == "123456"
+
+
+def test_datadome_browser_document_rejects_chrome_error_page():
+    document = PayPalFlow._browser_document_from_datadome_result(
+        {
+            "ok": True,
+            "status": 200,
+            "url": "chrome-error://chromewebdata/",
+            "html": "<html><title>www.paypal.com</title><body>ERR_TUNNEL_CONNECTION_FAILED</body></html>",
+        }
+    )
+
+    assert document == {}
+
+
+def test_datadome_browser_document_accepts_paypal_page():
+    document = PayPalFlow._browser_document_from_datadome_result(
+        {
+            "ok": True,
+            "status": 200,
+            "url": "https://www.paypal.com/agreements/approve?ba_token=BA-1GB123",
+            "html": '<html><script>window.__INITIAL_DATA__ = {"ctxId":"CTX-GB"}</script></html>',
+        }
+    )
+
+    assert document["status_code"] == 200
+    assert document["url"].startswith("https://www.paypal.com/")
+
+
+def test_headless_datadome_mode_is_disabled():
+    flow = PayPalFlow.__new__(PayPalFlow)
+    flow.datadome_mode = "headless"
+    flow._roxy_runtime_disabled_reason = ""
+
+    assert flow._datadome_mode() == "protocol"
