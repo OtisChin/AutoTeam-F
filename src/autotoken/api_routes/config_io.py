@@ -328,6 +328,7 @@ def _load_icloud_pool_status(target: Path, *, include_all: bool = False) -> dict
         payload.update(
             {
                 "all_accounts": entries[:500],
+                "available_accounts": available_entries[:500],
                 "registered_accounts": [item for item in entries if item["status"] == "registered"][:500],
                 "unavailable_accounts": [item for item in entries if item["status"] == "unavailable"][:500],
             }

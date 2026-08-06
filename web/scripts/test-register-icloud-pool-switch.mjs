@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { accountPoolVisibleAccounts } from '../src/accountPoolStatus.js'
 
 const api = readFileSync(new URL('../src/api.js', import.meta.url), 'utf8')
 const page = readFileSync(new URL('../src/components/RegisterAccountPage.vue', import.meta.url), 'utf8')
@@ -13,7 +14,7 @@ assert.match(page, /api\.getICloudAccountsStatus\(includeAll\)/, 'register page 
 assert.match(page, /api\.importICloudAccounts\(/, 'register page imports iCloud pool accounts')
 assert.match(page, /api\.deleteICloudAccounts\(/, 'register page deletes iCloud pool accounts')
 assert.match(page, /outlookPoolStatusFilter\.value\s*=\s*isICloudProvider\.value\s*\?\s*'available'\s*:\s*'all'/, 'iCloud pool defaults to available filter')
-assert.match(page, /outlookPoolStatus\.value\?\.all_accounts/, 'register page can render full iCloud status list from all_accounts')
+assert.match(page, /resolveAccountPoolVisibleAccounts\(outlookPoolStatus\.value,\s*outlookPoolStatusFilter\.value/, 'register page resolves filtered pool lists through accountPoolStatus helper')
 assert.match(page, /openOutlookPoolDialog[\s\S]*?loadOutlookPoolStatus\(\{\s*includeAll:\s*true\s*\}\)/, 'opening account pool management requests full iCloud status list')
 assert.match(page, /loadOutlookPoolStatus\(options\s*=\s*\{\}\)[\s\S]*?const includeAll\s*=\s*Boolean\(options\.includeAll\s*\|\|\s*outlookPoolDialogOpen\.value\)/, 'pool status loader keeps default load lightweight and dialog load full')
 assert.match(page, /function loadRegisterLogs\(\)\s*\{\s*if\s*\(logsLoading\.value\)\s*return/, 'register log polling avoids overlapping requests')
@@ -29,4 +30,23 @@ assert.match(
   page,
   /watch\(\s*\(\)\s*=>\s*registerForm\.value\.mailProvider[\s\S]*?loadOutlookPoolStatus\(\)/,
   'switching between outlook and icloud providers reloads the account pool'
+)
+
+const icloudStatus = {
+  total: 3705,
+  available: 1,
+  accounts: [{ email: 'fresh@icloud.com', status: 'available' }],
+  all_accounts: [
+    { email: 'dead1@icloud.com', status: 'unavailable' },
+    { email: 'dead2@icloud.com', status: 'unavailable' },
+  ],
+  unavailable_accounts: [
+    { email: 'dead1@icloud.com', status: 'unavailable' },
+    { email: 'dead2@icloud.com', status: 'unavailable' },
+  ],
+}
+assert.deepEqual(
+  accountPoolVisibleAccounts(icloudStatus, 'available', { isICloudProvider: true }).map(item => item.email),
+  ['fresh@icloud.com'],
+  'iCloud available filter uses the available accounts bucket even when all_accounts page has no available rows',
 )

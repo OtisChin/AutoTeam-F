@@ -1065,109 +1065,91 @@ def test_kakao_temp_poll_retries_transient_read_timeout(monkeypatch):
     assert "继续等待" in errors[0][0]
 
 
-def test_kakao_kk_payment_order_routes_use_linkqueue_tasks_api(monkeypatch):
+def test_kakao_kk_payment_order_routes_use_masa_external_submission_api(monkeypatch):
     app = _app()
     calls = []
 
     class SubmitResp:
         ok = True
-        status_code = 201
-        text = '{"tasks": []}'
+        status_code = 200
+        text = '{"items": []}'
 
         def json(self):
             return {
-                "tasks": [
+                "items": [
                     {
-                        "id": "task_kk",
+                        "task_id": "task_kk",
                         "url": "https://pay.nicepay.co.kr/v1/checkout/pay/abc",
-                        "status": "queued",
-                        "queuePosition": 4,
+                        "status": "pending",
                     }
                 ],
-                "remaining": 2,
-                "prefix": "PAY-CDK",
-                "submissionsUsed": 1,
-                "submissionRemaining": 5,
+                "accepted_count": 1,
+                "duplicate_count": 0,
             }
 
-    class AccountResp:
+    class QueryResp:
         ok = True
         status_code = 200
-        text = '{"cdk": {}, "tasks": []}'
+        text = '{"items": []}'
 
         def json(self):
             return {
-                "cdk": {"capacity": 3, "remaining": 2, "consumed": 1, "submissionRemaining": 5},
-                "tasks": [
+                "items": [
                     {
-                        "id": "task_kk",
+                        "task_id": "task_kk",
                         "url": "https://pay.nicepay.co.kr/v1/checkout/pay/abc",
-                        "status": "scanned",
-                        "merchantName": "merchant-1",
+                        "status": "succeeded",
+                        "result": "succeeded",
                     }
                 ],
-                "page": {"total": 1, "hasMore": False},
             }
 
     def fake_post(url, **kwargs):
         calls.append(("post", url, kwargs))
-        return SubmitResp()
-
-    def fake_get(url, **kwargs):
-        calls.append(("get", url, kwargs))
-        return AccountResp()
+        return SubmitResp() if "items" in (kwargs.get("json") or {}) else QueryResp()
 
     monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
-    monkeypatch.setattr(kakao_pay.requests, "get", fake_get)
 
     created = _endpoint(app, "/api/kakao-pay/kk-payment/orders", "POST")(
         kakao_pay.KakaoPayCustomerOrderRequest.model_validate({
-            "cdk": "PAY-CDK",
+            "cdk": "taskp_PAY_TOKEN",
             "paymentUrl": "https://pay.nicepay.co.kr/v1/checkout/pay/abc",
             "paymentMethod": "kakao_pay",
             "mode": "READY_LINK",
         })
     )
-    polled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}", "GET")("task_kk", token="", cdk="PAY-CDK")
+    polled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}", "GET")("task_kk", token="", cdk="taskp_PAY_TOKEN")
 
     assert created["data"]["order"]["id"] == "task_kk"
-    assert created["data"]["order"]["status"] == "queued"
-    assert created["data"]["cdk"]["availableCount"] == 2
-    assert calls[0][1] == "https://kakao.whitexfox.cn/api/v1/tasks"
-    assert calls[0][2]["headers"]["Authorization"] == "Bearer PAY-CDK"
-    assert calls[0][2]["json"] == {"urls": ["https://pay.nicepay.co.kr/v1/checkout/pay/abc"]}
-    assert polled["data"]["order"]["status"] == "scanned"
-    assert calls[1][1] == "https://kakao.whitexfox.cn/api/v1/account"
-    assert calls[1][2]["headers"]["Authorization"] == "Bearer PAY-CDK"
-    assert "customer.i7wap.xyz" not in "\n".join(call[1] for call in calls)
+    assert created["data"]["order"]["status"] == "pending"
+    assert calls[0][1] == "https://plus.masa168.cc/api/v1/external/producer/submissions"
+    assert calls[0][2]["headers"]["Authorization"] == "Bearer taskp_PAY_TOKEN"
+    assert calls[0][2]["headers"]["Idempotency-Key"].startswith("kakao-pay-")
+    assert calls[0][2]["json"] == {"items": [{"url": "https://pay.nicepay.co.kr/v1/checkout/pay/abc"}]}
+    assert polled["data"]["order"]["status"] == "succeeded"
+    assert calls[1][1] == "https://plus.masa168.cc/api/v1/external/producer/submissions"
+    assert calls[1][2]["headers"]["Authorization"] == "Bearer taskp_PAY_TOKEN"
+    assert calls[1][2]["json"] == {"task_ids": ["task_kk"]}
+    assert "kakao.whitexfox.cn" not in "\n".join(call[1] for call in calls)
 
 
-def test_kakao_kk_payment_cdk_status_uses_linkqueue_account_api(monkeypatch):
+def test_kakao_kk_payment_cdk_status_uses_masa_daily_metrics_api(monkeypatch):
     app = _app()
     calls = []
 
     class Resp:
         ok = True
         status_code = 200
-        text = '{"cdk": {}, "tasks": []}'
+        text = '{"submission_quota_balance": 7}'
 
         def json(self):
             return {
-                "cdk": {
-                    "prefix": "PAY-CDK",
-                    "initial": 10,
-                    "capacity": 12,
-                    "remaining": 7,
-                    "consumed": 3,
-                    "status": "active",
-                    "submissionRemaining": 5,
-                },
-                "tasks": [
-                    {"id": "queued-1", "status": "queued"},
-                    {"id": "claimed-1", "status": "claimed"},
-                    {"id": "scanned-1", "status": "scanned"},
-                ],
-                "page": {"total": 3, "hasMore": False},
+                "submission_quota_balance": 7,
+                "submitted_count": 3,
+                "processing_count": 2,
+                "succeeded_count": 1,
+                "failed_count": 0,
+                "api_https_without_jwt_enabled": True,
             }
 
     def fake_get(url, **kwargs):
@@ -1177,19 +1159,44 @@ def test_kakao_kk_payment_cdk_status_uses_linkqueue_account_api(monkeypatch):
     monkeypatch.setattr(kakao_pay.requests, "get", fake_get)
 
     data = _endpoint(app, "/api/kakao-pay/kk-payment/cdk/status", "POST")(
-        kakao_pay.KakaoPayTempTicketRequest.model_validate({"cdk": "PAY-CDK"})
+        kakao_pay.KakaoPayTempTicketRequest.model_validate({"cdk": "taskp_PAY_TOKEN"})
     )
 
     assert data["data"]["availableCount"] == 7
-    assert data["data"]["totalCount"] == 12
     assert data["data"]["usedCount"] == 3
     assert data["data"]["frozenCount"] == 2
-    assert calls[0][0] == "https://kakao.whitexfox.cn/api/v1/account"
-    assert calls[0][1]["headers"]["Authorization"] == "Bearer PAY-CDK"
-    assert calls[0][1]["params"] == {"offset": 0, "limit": 100}
+    assert data["data"]["productType"] == "MASA_PLUS"
+    assert calls[0][0] == "https://plus.masa168.cc/api/v1/external/producer/daily-metrics"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer taskp_PAY_TOKEN"
 
 
-def test_kakao_kk_payment_submit_uses_linkqueue_cdk_and_extracted_link(monkeypatch):
+def test_kakao_kk_payment_cdk_status_preserves_zero_masa_quota(monkeypatch):
+    app = _app()
+
+    class Resp:
+        ok = True
+        status_code = 200
+        text = '{"submission_quota_balance": 0}'
+
+        def json(self):
+            return {
+                "submission_quota_balance": 0,
+                "submitted_count": 0,
+                "processing_count": 0,
+            }
+
+    monkeypatch.setattr(kakao_pay.requests, "get", lambda url, **kwargs: Resp())
+
+    data = _endpoint(app, "/api/kakao-pay/kk-payment/cdk/status", "POST")(
+        kakao_pay.KakaoPayTempTicketRequest.model_validate({"cdk": "taskp_ZERO"})
+    )
+
+    assert data["data"]["availableCount"] == 0
+    assert data["data"]["usedCount"] == 0
+    assert data["data"]["frozenCount"] == 0
+
+
+def test_kakao_kk_payment_submit_uses_masa_api_token_and_extracted_link(monkeypatch):
     app = _app()
     email = "pay@example.com"
     link_id = "link-1"
@@ -1209,16 +1216,13 @@ def test_kakao_kk_payment_submit_uses_linkqueue_cdk_and_extracted_link(monkeypat
 
     class SubmitResp:
         ok = True
-        status_code = 201
-        text = '{"tasks": []}'
+        status_code = 200
+        text = '{"items": []}'
 
         def json(self):
             return {
-                "tasks": [{"id": "kk-task-1", "status": "queued", "url": "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"}],
-                "remaining": 6,
-                "prefix": "KK-CDK-1",
-                "submissionsUsed": 1,
-                "submissionRemaining": 6,
+                "items": [{"task_id": "masa-task-1", "status": "pending", "url": "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"}],
+                "accepted_count": 1,
             }
 
     def fake_post(url, **kwargs):
@@ -1229,7 +1233,7 @@ def test_kakao_kk_payment_submit_uses_linkqueue_cdk_and_extracted_link(monkeypat
 
     data = _endpoint(app, "/api/kakao-pay/kk-payment/submit", "POST")(
         kakao_pay.KakaoPayKkPaymentSubmitRequest.model_validate({
-            "cdk": "KK-CDK-1",
+            "cdk": "taskp_KK_TOKEN",
             "linkId": link_id,
             "paymentMethod": "kakao_pay",
         })
@@ -1238,80 +1242,54 @@ def test_kakao_kk_payment_submit_uses_linkqueue_cdk_and_extracted_link(monkeypat
     assert data["account_email"] == email
     assert data["link_id"] == link_id
     assert data["payment_url"] == "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"
-    assert data["data"]["order"]["id"] == "kk-task-1"
-    assert calls[0][0] == "https://kakao.whitexfox.cn/api/v1/tasks"
-    assert calls[0][1]["headers"]["Authorization"] == "Bearer KK-CDK-1"
-    assert calls[0][1]["json"] == {"urls": ["https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"]}
-    assert kakao_pay.KK_PAYMENT_JOBS["kk-task-1"]["account_email"] == email
+    assert data["data"]["order"]["id"] == "masa-task-1"
+    assert calls[0][0] == "https://plus.masa168.cc/api/v1/external/producer/submissions"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer taskp_KK_TOKEN"
+    assert calls[0][1]["json"] == {"items": [{"url": "https://pay.nicepay.co.kr/v1/checkout/pay/kakao-1"}]}
+    assert kakao_pay.KK_PAYMENT_JOBS["masa-task-1"]["account_email"] == email
 
 
-def test_kakao_kk_payment_submit_preserves_linkqueue_error(monkeypatch):
+def test_kakao_kk_payment_submit_preserves_masa_error(monkeypatch):
     app = _app()
-    email = "no-merchant@example.com"
-    link_id = "link-no-merchant"
+    email = "no-quota@example.com"
+    link_id = "link-no-quota"
     calls = []
     kakao_pay._append_link({
         "id": link_id,
         "account_email": email,
-        "provider_redirect_url": "https://pay.nicepay.co.kr/v1/checkout/pay/no-merchant",
+        "provider_redirect_url": "https://pay.nicepay.co.kr/v1/checkout/pay/no-quota",
         "created_at_ts": 1785386400,
         "kakao_expires_at_ts": 1785387300,
         "country": "KR",
     })
 
-    class NoMerchantResp:
+    class QuotaResp:
         ok = False
         status_code = 409
-        text = '{"error":"当前没有商家在线，暂时无法提交任务","code":"NO_MERCHANT_ONLINE"}'
+        text = '{"detail":{"code":"SUBMISSION_QUOTA_BLOCKED","message":"余额不足"}}'
 
         def json(self):
-            return {"error": "当前没有商家在线，暂时无法提交任务", "code": "NO_MERCHANT_ONLINE"}
+            return {"detail": {"code": "SUBMISSION_QUOTA_BLOCKED", "message": "余额不足"}}
 
     def fake_post(url, **kwargs):
         calls.append((url, kwargs))
-        return NoMerchantResp()
+        return QuotaResp()
 
     monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
 
     with pytest.raises(HTTPException) as exc:
         _endpoint(app, "/api/kakao-pay/kk-payment/submit", "POST")(
             kakao_pay.KakaoPayKkPaymentSubmitRequest.model_validate({
-                "cdk": "KK-CDK-NO-MERCHANT",
+                "cdk": "taskp_NO_QUOTA",
                 "linkId": link_id,
                 "paymentMethod": "kakao_pay",
             })
         )
 
     assert exc.value.status_code == 409
-    assert exc.value.detail["code"] == "NO_MERCHANT_ONLINE"
+    assert exc.value.detail["detail"]["code"] == "SUBMISSION_QUOTA_BLOCKED"
     assert len(calls) == 1
-    assert calls[0][0] == "https://kakao.whitexfox.cn/api/v1/tasks"
-
-
-def test_kakao_kk_payment_cancel_route_calls_linkqueue_cancel_api(monkeypatch):
-    app = _app()
-    calls = []
-
-    class Resp:
-        ok = True
-        status_code = 200
-        text = '{"task": {}}'
-
-        def json(self):
-            return {"task": {"id": "task-cancel", "status": "cancelled", "refunded": True}, "remaining": 3}
-
-    def fake_post(url, **kwargs):
-        calls.append((url, kwargs))
-        return Resp()
-
-    monkeypatch.setattr(kakao_pay.requests, "post", fake_post)
-
-    cancelled = _endpoint(app, "/api/kakao-pay/kk-payment/orders/{order_id}/cancel", "POST")("task-cancel", token="", cdk="PAY-CDK")
-
-    assert cancelled["data"]["order"]["status"] == "cancelled"
-    assert cancelled["data"]["cdk"]["availableCount"] == 3
-    assert calls[0][0] == "https://kakao.whitexfox.cn/api/v1/tasks/task-cancel/cancel"
-    assert calls[0][1]["headers"]["Authorization"] == "Bearer PAY-CDK"
+    assert calls[0][0] == "https://plus.masa168.cc/api/v1/external/producer/submissions"
 
 
 def test_mark_account_plus_kakao_sets_dashboard_plus_snapshot(monkeypatch):

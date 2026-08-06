@@ -2396,6 +2396,8 @@ _DIRECT_ABOUT_YOU_BUTTON_TEXTS = (
     *_DIRECT_CONTINUE_LABELS,
     "アカウント作成",
     "アカウントを作成",
+    "계정 생성 끝내기",
+    "계정 만들기",
 )
 
 
@@ -2630,7 +2632,64 @@ def _fill_about_you_birthday_by_meta(page, desired=None):
         return True
     except Exception as exc:
         logger.warning("[直接注册] 按字段填写生日失败，降级为位置猜测: %s", exc)
-        return False
+    return False
+
+
+def _accept_direct_about_you_required_consents(page) -> int:
+    """Accept required about-you consent checkboxes, including Korean localized forms."""
+
+    try:
+        clicked = page.evaluate(
+            r"""() => {
+            const visible = (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+            };
+            const checked = (el) => {
+                if (el.matches && el.matches('input[type="checkbox"]')) return Boolean(el.checked);
+                return el.getAttribute('aria-checked') === 'true';
+            };
+            const clickTarget = (el) => {
+                const id = el.getAttribute('id');
+                if (id) {
+                    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                    if (label) return label;
+                }
+                return el.closest('label') || el;
+            };
+            const textFor = (el) => {
+                const id = el.getAttribute('id');
+                const label = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+                const container = el.closest('label, li, div, section') || el.parentElement || el;
+                return [
+                    el.getAttribute('aria-label') || '',
+                    label ? label.innerText || label.textContent || '' : '',
+                    container ? container.innerText || container.textContent || '' : '',
+                ].join(' ');
+            };
+            const requiredText = /(필수|국외\s*전송|민감한\s*정보|개인정보\s*(?:수집|사용|제공)|required|privacy|personal information|sensitive|必須|必填|必需|必要)/i;
+            let count = 0;
+            for (const el of Array.from(document.querySelectorAll('input[type="checkbox"], [role="checkbox"]'))) {
+                if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true' || checked(el)) continue;
+                const text = textFor(el);
+                if (!requiredText.test(text)) continue;
+                const target = clickTarget(el);
+                target.scrollIntoView({block: 'center', inline: 'center'});
+                target.click();
+                count += 1;
+            }
+            return count;
+        }"""
+        )
+        clicked = int(clicked or 0)
+        if clicked:
+            logger.info("[直接注册] 已勾选 about-you 必选同意项: %d", clicked)
+            time.sleep(0.3)
+        return clicked
+    except Exception as exc:
+        logger.debug("[直接注册] about-you 必选同意项勾选失败: %s", exc)
+        return 0
 
 
 def _detect_direct_register_step(page):
@@ -2775,13 +2834,15 @@ def _complete_direct_about_you(page):
         else:
             try:
                 age_input = page.locator(
-                    'input[name="age"], input[placeholder*="年龄"], input[placeholder*="Age"]'
+                    'input[name="age"], input[placeholder*="年龄"], input[placeholder*="Age"], input[placeholder*="연령"], input[aria-label*="연령"], input[placeholder*="나이"], input[aria-label*="나이"]'
                 ).first
                 if age_input.is_visible(timeout=2000) and age_input.is_editable(timeout=500):
                     age_input.fill(identity_age)
                     logger.info("[直接注册] 填入年龄: %s", identity_age)
             except Exception:
                 pass
+
+        _accept_direct_about_you_required_consents(page)
 
         submitted = False
         for btn_selector in tuple(f'button:has-text("{label}")' for label in _DIRECT_ABOUT_YOU_BUTTON_TEXTS) + (

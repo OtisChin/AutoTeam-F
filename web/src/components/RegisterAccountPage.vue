@@ -1109,6 +1109,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import { accountPoolAllAccounts, accountPoolVisibleAccounts as resolveAccountPoolVisibleAccounts } from '../accountPoolStatus.js'
 import { bindCountryOptions } from '../bindLinkPayload.js'
 
 const REGISTER_FORM_STORAGE_KEY = 'autotoken_register_form_v1'
@@ -1478,16 +1479,11 @@ const outlookPoolStatusFilterOptions = computed(() => [
   { value: 'registered', label: '已注册', count: Number(outlookPoolStatus.value?.registered || 0) },
   { value: 'unavailable', label: '暂不可用', count: Number(outlookPoolStatus.value?.unavailable || 0) },
 ])
-const outlookPoolAllAccounts = computed(() => (
-  Array.isArray(outlookPoolStatus.value?.all_accounts)
-    ? outlookPoolStatus.value.all_accounts
-    : (outlookPoolStatus.value?.accounts || [])
-))
+const outlookPoolAllAccounts = computed(() => accountPoolAllAccounts(outlookPoolStatus.value))
 const outlookPoolVisibleAccounts = computed(() => {
-  const accounts = outlookPoolAllAccounts.value
-  const filter = outlookPoolStatusFilter.value
-  if (filter === 'all') return accounts
-  return accounts.filter(account => account.status === filter)
+  return resolveAccountPoolVisibleAccounts(outlookPoolStatus.value, outlookPoolStatusFilter.value, {
+    isICloudProvider: isICloudProvider.value,
+  })
 })
 const outlookPoolVisibleEmails = computed(() => outlookPoolVisibleAccounts.value.map(account => account.email))
 const outlookPoolSelectedSet = computed(() => new Set(outlookPoolSelectedEmails.value))

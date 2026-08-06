@@ -379,9 +379,9 @@
     <section v-else class="overflow-hidden rounded-2xl border border-blue-500/20 bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.13),transparent_34%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(2,6,23,0.98))] p-5 shadow-2xl shadow-black/30 md:p-6">
       <div class="flex flex-col gap-4 border-b border-slate-800 pb-5 md:flex-row md:items-start md:justify-between">
         <div>
-          <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-300/80">LinkQueue 支付 API</p>
+          <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-300/80">Masa Plus 支付 API</p>
           <h2 class="mt-2 text-2xl font-black text-white md:text-3xl">支付页：已提链账号 + KK CDK 支付</h2>
-          <p class="mt-2 max-w-3xl text-sm text-slate-400">只同步已提取 Kakao/NicePay 链接的账号；提交时后端把 CDK + Kakao 链接提交到 LinkQueue。支付 CDK 按额度重复分配。</p>
+          <p class="mt-2 max-w-3xl text-sm text-slate-400">只同步已提取 Kakao/NicePay 链接的账号；提交时后端把 API 令牌 + Kakao 链接提交到 Masa Plus。支付 API 令牌按额度重复分配。</p>
         </div>
         <div class="flex flex-wrap gap-2">
           <button @click="importKkPaymentLinks" :disabled="kkPaymentCdkQuotaBusy" class="rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 text-sm font-bold text-cyan-100 transition hover:bg-cyan-500/20 disabled:opacity-50">同步已提取链接</button>
@@ -482,7 +482,6 @@
                   </div>
                   <div class="flex shrink-0 flex-wrap justify-end gap-2">
                     <button @click="runKkPaymentTask(item)" :disabled="!(kkPaymentTaskRunnable(item) || kkPaymentOrderRestorable(item))" class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-bold text-blue-200 hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50">提交/查询</button>
-                    <button v-if="kkPaymentCanCancel(item)" @click="cancelKkPaymentOrder(item)" class="rounded-lg border border-orange-400/40 bg-orange-400/10 px-3 py-1.5 text-xs font-bold text-orange-100 hover:bg-orange-400/20">取消订单</button>
                     <button v-if="kkPaymentNeedsRelink(item)" @click="reExtractKkPaymentLink(item)" :disabled="starting || cancelling" class="rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-3 py-1.5 text-xs font-bold text-yellow-100 hover:bg-yellow-400/20 disabled:opacity-50">重新提链</button>
                     <button @click="toggleKkPaymentDetails(item.id)" :aria-expanded="kkPaymentDetailsExpanded(item.id)" class="rounded-lg border border-slate-600 bg-slate-800/70 px-3 py-1.5 text-xs font-bold text-slate-100 hover:bg-slate-700">{{ kkPaymentDetailsExpanded(item.id) ? '收起' : '详情' }}</button>
                     <a :href="item.paymentUrl || '#'" target="_blank" class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-200 hover:bg-sky-500/20" :class="!item.paymentUrl ? 'pointer-events-none opacity-50' : ''">打开</a>
@@ -1954,11 +1953,6 @@ function kkPaymentNeedsRelink(item) {
   return kkPaymentLinkInvalid(item) || ['failed', 'stopped', 'needs_action'].includes(status)
 }
 
-function kkPaymentCanCancel(item) {
-  const status = String(item?.status || '').toLowerCase()
-  return Boolean(item?.orderId) && ['running', 'pending', 'imported'].includes(status)
-}
-
 function kkPaymentCanRemove(item) {
   const status = String(item?.status || '').toLowerCase()
   if (status === 'running') return false
@@ -2244,7 +2238,7 @@ function releaseKkPaymentCdkForLink(id, message = '') {
 function removeKkPaymentLink(id) {
   const item = kkPaymentLinks.value.find(row => row.id === id)
   if (item && !kkPaymentCanRemove(item)) {
-    kkPaymentStatusText.value = '运行中的支付订单不能直接移除，请先取消订单。'
+    kkPaymentStatusText.value = '运行中的支付任务不能直接移除，请等待任务结束或查询最新状态。'
     return
   }
   releaseKkPaymentCdkForLink(id, '关联账号已移除，CDK 已释放。')
@@ -2461,7 +2455,7 @@ function kkOrderProblemReason(data, fallback = '') {
     payment_link_non_zero: '支付链接金额不是 0 KRW',
     payment_link_rejected: '支付链接被上游拒绝',
     multiple: '存在多个失败原因',
-    customer_cancelled: '客户已取消订单',
+    customer_cancelled: '客户已中止任务',
     scanner_timeout: '扫码员处理超时',
     qr_timeout: '二维码超时，可重新提交任务',
   }[code]
@@ -2546,7 +2540,7 @@ async function runKkPaymentTask(item) {
   }
   kkPaymentRunningCount.value += 1
   item.status = 'running'
-  item.message = hasExistingOrder ? '查询 KK 支付状态中...' : '提交 CDK + Kakao 链接到 LinkQueue 中...'
+  item.message = hasExistingOrder ? '查询 KK 支付状态中...' : '提交 API 令牌 + Kakao 链接到 Masa Plus 中...'
   try {
     if (!hasExistingOrder) {
       const submitted = await api.submitKakaoPayKkPayment({
@@ -2561,12 +2555,12 @@ async function runKkPaymentTask(item) {
       item.orderNo = String(order.orderNo || order.order_no || '').trim()
       item.customerToken = String(payload.customerToken || payload.customer_token || payload.token || '').trim()
       applyKkOrderWorkerInfo(item, submitted)
-      if (!item.orderId) throw new Error('LinkQueue 支付 API 未返回 task id')
+      if (!item.orderId) throw new Error('Masa Plus 支付 API 未返回 task id')
       if (!applyKkPaymentCdkSnapshot(cdk, submitted, '订单创建后额度')) markKkPaymentCdkSubmitted(cdk, item)
     }
     const job = await waitKkPaymentOrder(item)
     applyKkOrderWorkerInfo(item, job)
-    if (['success', 'succeeded', 'paid', 'completed'].includes(job.status)) {
+    if (['success', 'succeeded', 'paid', 'completed', 'scanned'].includes(job.status)) {
       item.status = 'success'
       item.success_at = job.success_at || job.successAt || new Date().toLocaleString()
       item.success_at_ts = Date.now()
@@ -2625,28 +2619,6 @@ async function reExtractKkPaymentLink(item) {
   item.message = '已切换到临时提链页并选中账号，正在尝试重新提链。'
   setStatus(`已为 ${email} 切到临时提链页，默认使用 KSCAN 临时提链重新提链。`)
   await startWithEmails([email], '重新提链')
-}
-
-async function cancelKkPaymentOrder(item) {
-  if (!item?.orderId) return
-  item.message = '正在取消 KK 支付订单...'
-  try {
-    const data = await api.cancelKakaoPayKkPaymentOrder(item.orderId, item.customerToken, item.cdk)
-    const { payload, order } = kkCustomerOrderPayload(data)
-    const status = String(order.status || payload.status || 'cancelled').toLowerCase()
-    applyKkOrderWorkerInfo(item, data)
-    item.status = kkPaymentStatusFromOrderStatus(status)
-    item.message = kkOrderProblemReason(data, `订单${externalOrderStatusText(status)}。`)
-    const cdk = kkPaymentCdks.value.find(row => row.id === item.cdkId || row.value === item.cdk)
-    if (!applyKkPaymentCdkSnapshot(cdk, data, '取消后额度')) releaseKkPaymentCdkForLink(item.id, '订单已取消，本地预留已释放。')
-    kkPaymentStatusText.value = `订单 ${item.orderId} 已取消/更新：${item.message}`
-  } catch (error) {
-    item.status = 'needs_action'
-    item.message = `取消失败：${cleanError(error)}`
-    kkPaymentStatusText.value = item.message
-  } finally {
-    saveKkPaymentState()
-  }
 }
 
 async function runAllKkPayments() {
@@ -2738,7 +2710,7 @@ async function submitKkOrders() {
         item.problemReason = cleanError(error)
       }
     }
-    kkStatusText.value = `LinkQueue 支付 API 任务已提交：${tokens.length} 个。`
+    kkStatusText.value = `Masa Plus 支付 API 任务已提交：${tokens.length} 个。`
   } finally {
     kkBusy.value = false
   }

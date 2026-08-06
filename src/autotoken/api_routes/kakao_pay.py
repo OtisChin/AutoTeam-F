@@ -34,7 +34,7 @@ ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "kakao_pay_account_status.json"
 KAKAO_TEMP_EXTRACT_API_BASE = "https://masi.cc.cd"
 KAKAO_TEMP_SHZYHQN_API_BASE = "https://kakao.shzyhqn.online"
 KAKAO_TEMP_SCAN_API_BASE = "https://masi.cc.cd/kakao/scan/api/integration"
-KAKAO_KK_LINKQUEUE_API_BASE = "https://kakao.whitexfox.cn/api/v1"
+KAKAO_KK_MASA_API_BASE = "https://plus.masa168.cc/api/v1"
 KAKAO_LINK_TTL_SECONDS = 15 * 60
 MAX_BATCH_CONCURRENCY = 20
 MAX_ACCOUNT_ATTEMPTS = 5
@@ -334,9 +334,9 @@ def _remote_unreachable(exc: requests.RequestException, label: str) -> HTTPExcep
     return HTTPException(status_code=502, detail={"ok": False, "code": "remote_api_unreachable", "message": f"{label} 请求失败：{exc}"})
 
 
-def _linkqueue_task_payload(req: KakaoPayCustomerOrderRequest) -> dict[str, Any]:
+def _masa_task_payload(req: KakaoPayCustomerOrderRequest) -> dict[str, Any]:
     payment_url = str(req.payment_url or "").strip()
-    return {"urls": [payment_url]} if payment_url else {"urls": []}
+    return {"items": [{"url": payment_url}]} if payment_url else {"items": []}
 
 
 def _load_links() -> list[dict[str, Any]]:
@@ -542,76 +542,104 @@ def _find_kakao_payment_link(*, link_id: str = "", account_email: str = "", paym
 
 def _submit_kakao_customer_order(req: KakaoPayCustomerOrderRequest) -> dict[str, Any]:
     clean_cdk = str(req.cdk or "").strip()
+    payment_url = str(req.payment_url or "").strip()
+    idem_source = f"{clean_cdk}\n{payment_url}\n{time.time_ns()}"
+    idempotency_key = f"kakao-pay-{hashlib.sha256(idem_source.encode('utf-8')).hexdigest()[:24]}"
     try:
         resp = requests.post(
-            f"{KAKAO_KK_LINKQUEUE_API_BASE}/tasks",
-            json=_linkqueue_task_payload(req),
-            headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {clean_cdk}"},
+            f"{KAKAO_KK_MASA_API_BASE}/external/producer/submissions",
+            json=_masa_task_payload(req),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {clean_cdk}",
+                "Idempotency-Key": idempotency_key,
+            },
             timeout=70,
         )
     except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "LinkQueue 支付 API") from exc
-    data = _remote_json(resp, "LinkQueue 支付 API 返回非 JSON 响应")
-    return _linkqueue_order_envelope(data, cdk=clean_cdk)
+        raise _remote_unreachable(exc, "Masa Plus 支付 API") from exc
+    data = _remote_json(resp, "Masa Plus 支付 API 返回非 JSON 响应")
+    return _masa_order_envelope(data, cdk=clean_cdk)
 
 
-def _customer_api_get(path: str, *, headers: dict[str, str], timeout: int = 20) -> dict[str, Any]:
-    try:
-        resp = requests.get(f"{KAKAO_KK_LINKQUEUE_API_BASE}{path}", headers=headers, timeout=timeout)
-    except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "LinkQueue 支付 API") from exc
-    return _remote_json(resp, "LinkQueue 支付 API 返回非 JSON 响应")
-
-
-def _customer_api_post_action(path: str, *, headers: dict[str, str], timeout: int = 20) -> dict[str, Any]:
-    try:
-        resp = requests.post(f"{KAKAO_KK_LINKQUEUE_API_BASE}{path}", headers=headers, timeout=timeout)
-    except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "LinkQueue 支付 API") from exc
-    return _remote_json(resp, "LinkQueue 支付 API 返回非 JSON 响应")
-
-
-def _linkqueue_authorization_headers(cdk: str) -> dict[str, str]:
+def _masa_authorization_headers(cdk: str) -> dict[str, str]:
     clean_cdk = str(cdk or "").strip()
     return {"Accept": "application/json", "Authorization": f"Bearer {clean_cdk}"}
 
 
-def _linkqueue_account(cdk: str) -> dict[str, Any]:
+def _masa_daily_metrics(cdk: str) -> dict[str, Any]:
     clean_cdk = str(cdk or "").strip()
     try:
         resp = requests.get(
-            f"{KAKAO_KK_LINKQUEUE_API_BASE}/account",
-            params={"offset": 0, "limit": 100},
-            headers=_linkqueue_authorization_headers(clean_cdk),
+            f"{KAKAO_KK_MASA_API_BASE}/external/producer/daily-metrics",
+            headers=_masa_authorization_headers(clean_cdk),
             timeout=20,
         )
     except requests.RequestException as exc:
-        raise _remote_unreachable(exc, "LinkQueue 支付 CDK 额度查询 API") from exc
-    return _remote_json(resp, "LinkQueue 支付 CDK 额度查询 API 返回非 JSON 响应")
+        raise _remote_unreachable(exc, "Masa Plus 支付 API 额度查询") from exc
+    return _remote_json(resp, "Masa Plus 支付 API 额度查询返回非 JSON 响应")
 
 
-def _linkqueue_tasks_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _masa_tasks_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
     payload = data.get("data") if isinstance(data.get("data"), dict) else data
-    raw_tasks = payload.get("tasks") or payload.get("items") or payload.get("list") or payload.get("records") or []
+    raw_tasks = payload.get("tasks") or payload.get("items") or payload.get("submissions") or payload.get("list") or payload.get("records") or []
     return [item for item in raw_tasks if isinstance(item, dict)] if isinstance(raw_tasks, list) else []
 
 
-def _linkqueue_active_task_count(tasks: list[dict[str, Any]]) -> int:
-    return sum(1 for item in tasks if str(item.get("status") or "").strip().lower() in {"queued", "claimed"})
+def _masa_active_task_count(tasks: list[dict[str, Any]]) -> int:
+    active_statuses = {"pending", "queued", "processing", "in_progress", "buffered", "claimed", "assigned", "checking"}
+    return sum(1 for item in tasks if str(item.get("status") or "").strip().lower() in active_statuses)
 
 
-def _linkqueue_cdk_snapshot(data: dict[str, Any], *, cdk: str = "") -> dict[str, Any]:
+def _first_present(*values: Any, default: Any = "-") -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return default
+
+
+def _masa_cdk_snapshot(data: dict[str, Any], *, cdk: str = "") -> dict[str, Any]:
     payload = data.get("data") if isinstance(data.get("data"), dict) else data
     cdk_data = payload.get("cdk") if isinstance(payload.get("cdk"), dict) else {}
-    tasks = _linkqueue_tasks_from_payload(data)
-    capacity = cdk_data.get("capacity", cdk_data.get("totalCount", cdk_data.get("initial", data.get("totalCount", "-"))))
-    remaining = cdk_data.get("remaining", cdk_data.get("availableCount", data.get("remaining", data.get("availableCount", "-"))))
-    consumed = cdk_data.get("consumed", cdk_data.get("usedCount", data.get("submissionsUsed", data.get("usedCount", "-"))))
-    frozen = cdk_data.get("frozenCount", data.get("frozenCount", _linkqueue_active_task_count(tasks)))
+    tasks = _masa_tasks_from_payload(data)
+    capacity = _first_present(
+        cdk_data.get("capacity"),
+        cdk_data.get("totalCount"),
+        cdk_data.get("initial"),
+        payload.get("submission_quota_limit"),
+        payload.get("quota_limit"),
+        data.get("totalCount"),
+    )
+    remaining = _first_present(
+        cdk_data.get("remaining"),
+        cdk_data.get("availableCount"),
+        payload.get("submission_quota_balance"),
+        payload.get("quota_balance"),
+        data.get("remaining"),
+        data.get("availableCount"),
+    )
+    consumed = _first_present(
+        cdk_data.get("consumed"),
+        cdk_data.get("usedCount"),
+        payload.get("submitted_count"),
+        payload.get("submissionsUsed"),
+        data.get("submissionsUsed"),
+        data.get("usedCount"),
+        default=0,
+    )
+    frozen = _first_present(
+        cdk_data.get("frozenCount"),
+        payload.get("processing_count"),
+        payload.get("pending_count"),
+        data.get("frozenCount"),
+        _masa_active_task_count(tasks),
+        default=0,
+    )
     return {
         "code": str(cdk or cdk_data.get("code") or "").strip(),
         "prefix": cdk_data.get("prefix", data.get("prefix", "")),
-        "productType": "LINKQUEUE",
+        "productType": "MASA_PLUS",
         "totalCount": capacity,
         "usedCount": consumed,
         "frozenCount": frozen,
@@ -627,7 +655,7 @@ def _linkqueue_cdk_snapshot(data: dict[str, Any], *, cdk: str = "") -> dict[str,
     }
 
 
-def _linkqueue_normalize_task(task: dict[str, Any], *, order_id: str = "") -> dict[str, Any]:
+def _masa_normalize_task(task: dict[str, Any], *, order_id: str = "") -> dict[str, Any]:
     item = dict(task or {})
     item["id"] = str(item.get("id") or item.get("taskId") or item.get("task_id") or order_id or "").strip()
     item["status"] = str(item.get("status") or "").strip().lower()
@@ -641,23 +669,23 @@ def _linkqueue_normalize_task(task: dict[str, Any], *, order_id: str = "") -> di
     return item
 
 
-def _linkqueue_order_envelope(data: dict[str, Any], *, cdk: str = "", order_id: str = "", task: dict[str, Any] | None = None) -> dict[str, Any]:
-    tasks = _linkqueue_tasks_from_payload(data)
+def _masa_order_envelope(data: dict[str, Any], *, cdk: str = "", order_id: str = "", task: dict[str, Any] | None = None) -> dict[str, Any]:
+    tasks = _masa_tasks_from_payload(data)
     selected = task or (tasks[0] if tasks else {})
     if selected:
-        selected = _linkqueue_normalize_task(selected, order_id=order_id)
-    cdk_snapshot = _linkqueue_cdk_snapshot(data, cdk=cdk)
+        selected = _masa_normalize_task(selected, order_id=order_id)
+    cdk_snapshot = _masa_cdk_snapshot(data, cdk=cdk)
     wrapped = dict(data)
     wrapped["ok"] = data.get("ok", True)
     wrapped["data"] = {"order": selected, "cdk": cdk_snapshot}
     if tasks:
-        wrapped["tasks"] = [_linkqueue_normalize_task(item) for item in tasks]
+        wrapped["tasks"] = [_masa_normalize_task(item) for item in tasks]
     return wrapped
 
 
-def _linkqueue_order_not_found_payload(order_id: str, cdk: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+def _masa_order_not_found_payload(order_id: str, cdk: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     base = data if isinstance(data, dict) else {}
-    return _linkqueue_order_envelope(
+    return _masa_order_envelope(
         base,
         cdk=cdk,
         order_id=order_id,
@@ -665,28 +693,41 @@ def _linkqueue_order_not_found_payload(order_id: str, cdk: str, data: dict[str, 
     ) | {"ok": False, "code": "TASK_NOT_FOUND"}
 
 
-def _get_linkqueue_order(order_id: str, cdk: str) -> dict[str, Any]:
+def _get_masa_order(order_id: str, cdk: str) -> dict[str, Any]:
     clean_order_id = str(order_id or "").strip()
     clean_cdk = str(cdk or "").strip()
-    data = _linkqueue_account(clean_cdk)
-    for task in _linkqueue_tasks_from_payload(data):
+    try:
+        resp = requests.post(
+            f"{KAKAO_KK_MASA_API_BASE}/external/producer/submissions",
+            json={"task_ids": [clean_order_id]},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {clean_cdk}",
+            },
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise _remote_unreachable(exc, "Masa Plus 支付 API 状态查询") from exc
+    data = _remote_json(resp, "Masa Plus 支付 API 状态查询返回非 JSON 响应")
+    for task in _masa_tasks_from_payload(data):
         if str(task.get("id") or task.get("taskId") or task.get("task_id") or "").strip() == clean_order_id:
-            return _linkqueue_order_envelope(data, cdk=clean_cdk, order_id=clean_order_id, task=task)
-    return _linkqueue_order_not_found_payload(clean_order_id, clean_cdk, data)
+            return _masa_order_envelope(data, cdk=clean_cdk, order_id=clean_order_id, task=task)
+    return _masa_order_not_found_payload(clean_order_id, clean_cdk, data)
 
 
 def _kk_payment_cdk_status(cdk: str) -> dict[str, Any]:
     clean_cdk = str(cdk or "").strip()
     if not clean_cdk:
         raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "KK 支付 CDK 不能为空"})
-    data = _linkqueue_account(clean_cdk)
-    return {"ok": True, "data": _linkqueue_cdk_snapshot(data, cdk=clean_cdk), "orders": _linkqueue_tasks_from_payload(data), "tasks": _linkqueue_tasks_from_payload(data)}
+    data = _masa_daily_metrics(clean_cdk)
+    return {"ok": True, "data": _masa_cdk_snapshot(data, cdk=clean_cdk), "orders": _masa_tasks_from_payload(data), "tasks": _masa_tasks_from_payload(data)}
 
 
 def _customer_orders_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
-    linkqueue_tasks = _linkqueue_tasks_from_payload(data)
-    if linkqueue_tasks:
-        return linkqueue_tasks
+    masa_tasks = _masa_tasks_from_payload(data)
+    if masa_tasks:
+        return masa_tasks
     if isinstance(data.get("data"), list):
         return [item for item in data.get("data") or [] if isinstance(item, dict)]
     payload = data.get("data") if isinstance(data.get("data"), dict) else data
@@ -713,19 +754,6 @@ def _cdk_snapshot_from_customer_orders(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(cdk, dict):
             return cdk
     return {}
-
-
-def _kk_payment_order_action(order_id: str, action: str, *, token: str = "", cdk: str = "") -> dict[str, Any]:
-    clean_order_id = str(order_id or "").strip()
-    clean_action = str(action or "").strip().lower()
-    clean_cdk = str(cdk or "").strip()
-    if clean_action != "cancel":
-        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "不支持的 KK 订单操作"})
-    if not clean_order_id or not clean_cdk:
-        raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "task_id 和 CDK 不能为空"})
-    data = _customer_api_post_action(f"/tasks/{clean_order_id}/cancel", headers=_linkqueue_authorization_headers(clean_cdk), timeout=20)
-    task = data.get("task") if isinstance(data.get("task"), dict) else {}
-    return _linkqueue_order_envelope(data, cdk=clean_cdk, order_id=clean_order_id, task=task)
 
 
 def _kakao_temp_ticket_status(cdk: str, channel: str = "masi") -> dict[str, Any]:
@@ -2338,9 +2366,9 @@ def create_kakao_pay_router() -> APIRouter:
         clean_cdk = str(cdk or "").strip()
         if not clean_order_id or not clean_cdk:
             raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "task_id 和 CDK 不能为空"})
-        data = _get_linkqueue_order(clean_order_id, clean_cdk)
+        data = _get_masa_order(clean_order_id, clean_cdk)
         if _customer_order_success(data):
-            account_update = _mark_kk_payment_success_account(clean_order_id, accountEmail, "LinkQueue 支付 API 支付成功")
+            account_update = _mark_kk_payment_success_account(clean_order_id, accountEmail, "Masa Plus 支付 API 支付成功")
             if account_update:
                 payload, order = _customer_order_response_payload(data)
                 order["account_email"] = account_update.get("email") or ""
@@ -2350,9 +2378,5 @@ def create_kakao_pay_router() -> APIRouter:
                 data["account_email"] = account_update.get("email") or ""
                 data["account_marked_plus"] = True
         return data
-
-    @router.post("/api/kakao-pay/kk-payment/orders/{order_id}/cancel")
-    def cancel_kakao_pay_customer_order(order_id: str, token: str = Query(""), cdk: str = Query("")) -> dict[str, Any]:
-        return _kk_payment_order_action(order_id, "cancel", token=token, cdk=cdk)
 
     return router

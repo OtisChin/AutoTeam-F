@@ -499,8 +499,26 @@ def test_browser_register_uses_default_playwright_context_without_randomized_fin
     ]
 
 
+def test_direct_about_you_accepts_korean_required_consents():
+    class FakePage:
+        def __init__(self):
+            self.scripts = []
+
+        def evaluate(self, script):
+            self.scripts.append(script)
+            return 4
+
+    page = FakePage()
+
+    assert manager._accept_direct_about_you_required_consents(page) == 4
+    assert "필수" in page.scripts[0]
+    assert "국외" in page.scripts[0]
+    assert "민감" in page.scripts[0]
+    assert "계정 생성 끝내기" in manager._DIRECT_ABOUT_YOU_BUTTON_TEXTS
+
+
 def test_browser_register_uses_roxybrowser_cdp_and_reuses_idle_profiles(monkeypatch):
-    calls = {"launches": [], "cdp": [], "closed": [], "deleted": []}
+    calls = {"launches": [], "cdp": [], "closed": [], "deleted": [], "released": []}
 
     class FakePage:
         url = "about:blank"
@@ -557,11 +575,14 @@ def test_browser_register_uses_roxybrowser_cdp_and_reuses_idle_profiles(monkeypa
                 },
             )()
 
-        def browser_close(self, dir_id):
+        def browser_close(self, dir_id, **_kwargs):
             calls["closed"].append(dir_id)
 
         def browser_delete(self, workspace_id, dir_ids):
             calls["deleted"].append((workspace_id, dir_ids))
+
+        def release_profile_reservation(self, dir_id):
+            calls["released"].append(dir_id)
 
     monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
     monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://roxy", "api_token": "token"})
@@ -582,6 +603,7 @@ def test_browser_register_uses_roxybrowser_cdp_and_reuses_idle_profiles(monkeypa
     assert calls["cdp"] == ["http://127.0.0.1:9222"]
     assert "dir-1" in calls["closed"]
     assert calls["deleted"] == [("workspace-1", ["dir-1"])]
+    assert calls["released"] == ["dir-1"]
 
 
 def test_session_data_keeps_chatgpt_access_separate_from_codex_bundle(monkeypatch):
