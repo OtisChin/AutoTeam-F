@@ -82,14 +82,12 @@ class SmsRecordOtpProvider:
         self.wait_seconds = wait_seconds
         self.poll_interval = poll_interval
         self._seen_codes: set[str] = set()
-        self._sent_at = 0.0
 
     def reserve_number(self):
         return SmsRecordActivation(self.phone)
 
     def mark_sms_sent(self, activation) -> None:
         self._sent_at = time.time()
-        logger.info("SMS record provider marked OTP request time={}", _dt.datetime.fromtimestamp(self._sent_at).isoformat())
 
     def abandon(self, activation, reason: str) -> None:
         logger.warning("SMS record provider abandon reason={}", reason)
@@ -132,40 +130,24 @@ class SmsRecordOtpProvider:
             return text, None
 
     def wait_for_code(self, activation, timeout_seconds: float | None = None) -> str | None:
-        deadline = time.time() + float(self.wait_seconds if timeout_seconds is None else timeout_seconds)
+        deadline = time.time() + float(timeout_seconds or self.wait_seconds)
         sent_at = float(getattr(self, "_sent_at", 0.0) or 0.0)
-        attempt = 0
         while time.time() < deadline:
-            attempt += 1
             try:
                 req = urllib.request.Request(self.record_url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     raw = resp.read().decode("utf-8", errors="replace")
                 text, code_ts = self._record_payload_text_and_time(raw)
-                codes = self._extract_codes(text)
-                logger.info(
-                    "SMS record poll attempt={} bytes={} parsed_codes={} code_time={} sent_at={}",
-                    attempt,
-                    len(raw),
-                    len(codes),
-                    _dt.datetime.fromtimestamp(code_ts).isoformat() if code_ts is not None else "<missing>",
-                    _dt.datetime.fromtimestamp(sent_at).isoformat() if sent_at else "<missing>",
-                )
-                older_than_request = bool(sent_at and code_ts is not None and code_ts + 3 < sent_at)
-                for code in codes:
+                if sent_at and code_ts is not None and code_ts + 3 < sent_at:
+                    logger.debug("SMS record code is older than this OTP request; waiting for a fresh code")
+                    time.sleep(self.poll_interval)
+                    continue
+                for code in self._extract_codes(text):
                     if code not in self._seen_codes:
-                        if older_than_request:
-                            self._seen_codes.add(code)
-                            logger.warning(
-                                "SMS record has a PayPal OTP candidate but provider code_time is older than this request; "
-                                "submitting it directly instead of timing out"
-                            )
-                            return code
                         self._seen_codes.add(code)
-                        logger.info("SMS record OTP candidate accepted from fresh poll")
                         return code
             except Exception as exc:
-                logger.info("SMS record poll soft-failed attempt={} error={}", attempt, exc)
+                logger.debug("SMS record poll soft-failed: {}", exc)
             time.sleep(self.poll_interval)
         return None
 
