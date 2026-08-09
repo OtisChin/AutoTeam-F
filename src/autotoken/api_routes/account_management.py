@@ -1,16 +1,23 @@
 """Account mutation HTTP routes."""
 
 import logging
+import json
+import threading
+import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from autotoken.core.normalization import normalized_email
+from autotoken.core.paths import PROJECT_ROOT
 from autotoken.api_routes.input_limits import validate_list_payload_limit
 
 logger = logging.getLogger(__name__)
 ACCOUNT_DELETE_BATCH_MAX_EMAILS = 1_000
+_delete_batch_audit_lock = threading.Lock()
 
 
 class AccountTypeUpdateParams(BaseModel):
@@ -21,6 +28,13 @@ class AccountMetadataUpdateParams(BaseModel):
     account_type: str
     status: str
     last_bind_provider: str = ""
+
+
+class AccountMetadataBatchUpdateParams(BaseModel):
+    emails: list[str]
+    account_type: str | None = None
+    status: str | None = None
+    last_bind_provider: str | None = None
 
 
 class DeleteBatchParams(BaseModel):
@@ -58,6 +72,7 @@ def _clean_account_status_or_raise(value: str) -> str:
         STATUS_PENDING,
         STATUS_PERSONAL,
         STATUS_PLUS,
+        STATUS_STASHED,
         STATUS_SESSION_ONLY,
         STATUS_STANDBY,
     )
@@ -70,6 +85,7 @@ def _clean_account_status_or_raise(value: str) -> str:
         STATUS_PENDING,
         STATUS_PERSONAL,
         STATUS_PLUS,
+        STATUS_STASHED,
         STATUS_AUTH_INVALID,
         STATUS_ORPHAN,
         STATUS_FAIL,
@@ -105,6 +121,125 @@ def _account_type_update_fields(account: dict, next_type: str, **changes: Any) -
     if isinstance(last_quota, dict) and "plan_type" in last_quota:
         update_fields["last_quota"] = {**last_quota, "plan_type": next_type}
     return update_fields
+
+
+def _account_metadata_update_fields(
+    account: dict,
+    *,
+    account_type: str | None = None,
+    status: str | None = None,
+    last_bind_provider: str | None = None,
+) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    if account_type is not None:
+        changes["account_type"] = _clean_account_type_or_raise(account_type)
+    if status is not None:
+        changes["status"] = _clean_account_status_or_raise(status)
+    if last_bind_provider is not None:
+        changes["last_bind_provider"] = _clean_bind_provider_or_raise(last_bind_provider)
+    if not changes:
+        raise HTTPException(status_code=400, detail="至少需要提供一个可更新字段")
+    if "account_type" in changes:
+        return _account_type_update_fields(account, str(changes.pop("account_type")), **changes)
+    return changes
+
+
+def _delete_batch_audit_path() -> Path:
+    return PROJECT_ROOT / "data" / "account_delete_audit.jsonl"
+
+
+def _account_delete_audit_snapshot(account: dict | None) -> dict[str, Any]:
+    if not account:
+        return {}
+    keys = [
+        "email",
+        "status",
+        "account_type",
+        "seat_type",
+        "mail_provider",
+        "cloudmail_account_id",
+        "auth_file",
+        "credentials_exported",
+        "credentials_exported_at",
+        "last_bind_status",
+        "last_bind_failure_stage",
+        "last_bind_message",
+        "last_bind_task_id",
+        "last_bind_at",
+        "discarded_reason",
+        "discarded_at",
+    ]
+    return {key: account.get(key) for key in keys if key in account}
+
+
+def append_delete_batch_account_audit(
+    *,
+    email: str,
+    account: dict | None,
+    record_deleted: bool,
+    auth_session_deleted: bool,
+    remote_cleanup: bool,
+    cleanup: dict | None,
+    success: bool,
+    error: str = "",
+) -> None:
+    """Persist a complete local audit row for /api/accounts/delete-batch."""
+    payload = {
+        "ts": time.time(),
+        "email": normalized_email(email),
+        "source": "api-delete-batch",
+        "actor": "dashboard/api",
+        "reason": "manual_delete_batch",
+        "success": bool(success),
+        "error": str(error or ""),
+        "record_deleted": bool(record_deleted),
+        "auth_session_deleted": bool(auth_session_deleted),
+        "remote_cleanup": bool(remote_cleanup),
+        "cleanup": cleanup or {},
+        "account_existed": bool(account),
+        "status": (account or {}).get("status"),
+        "account_type": (account or {}).get("account_type"),
+        "seat_type": (account or {}).get("seat_type"),
+        "mail_provider": (account or {}).get("mail_provider"),
+        "cloudmail_account_id_present": bool((account or {}).get("cloudmail_account_id")),
+        "auth_file": (account or {}).get("auth_file"),
+        "credentials_exported": bool((account or {}).get("credentials_exported")),
+        "credentials_exported_at": (account or {}).get("credentials_exported_at"),
+        "last_bind_status": (account or {}).get("last_bind_status"),
+        "last_bind_failure_stage": (account or {}).get("last_bind_failure_stage"),
+        "last_bind_message": (account or {}).get("last_bind_message"),
+        "last_bind_task_id": (account or {}).get("last_bind_task_id"),
+        "last_bind_at": (account or {}).get("last_bind_at"),
+        "account_snapshot": _account_delete_audit_snapshot(account),
+    }
+    path = _delete_batch_audit_path()
+    try:
+        from autotoken.storage import sqlite_store
+
+        sqlite_store.initialize()
+        with sqlite_store.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO event_records(kind, timestamp, email, category, task_id, status, data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "account_delete_batch_audit",
+                    float(payload["ts"]),
+                    payload["email"],
+                    payload["reason"],
+                    "delete-batch",
+                    str(payload.get("status") or ""),
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        with _delete_batch_audit_lock:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except Exception as exc:
+        logger.warning("[delete-batch-audit] failed to persist audit: email=%s error=%s", email, exc)
 
 
 def cleanup_brazil_pix_account_artifacts(email: str) -> dict[str, Any]:
@@ -209,9 +344,9 @@ def create_account_management_router(
 
         updated = update_account(
             normalized_email,
-            **_account_type_update_fields(
+            **_account_metadata_update_fields(
                 account,
-                next_type,
+                account_type=next_type,
                 status=next_status,
                 last_bind_provider=next_provider,
             ),
@@ -219,6 +354,65 @@ def create_account_management_router(
         return {
             "message": f"已更新 {normalized_email} 账号信息",
             "account": sanitize_account(updated),
+        }
+
+    @router.patch("/api/accounts/metadata-batch")
+    def update_accounts_metadata_batch(params: AccountMetadataBatchUpdateParams):
+        """批量更新账号类型、账号状态和绑定渠道。只改本地账号池记录。"""
+        from autotoken.storage.accounts import find_account, load_accounts, update_account
+
+        validate_list_payload_limit(params.emails, max_items=ACCOUNT_DELETE_BATCH_MAX_EMAILS, label="批量修改账号")
+        raw_emails = [(email or "").strip() for email in (params.emails or [])]
+        emails = [email for email in raw_emails if email]
+        if not emails:
+            raise HTTPException(status_code=400, detail="emails 不能为空")
+        if params.account_type is None and params.status is None and params.last_bind_provider is None:
+            raise HTTPException(status_code=400, detail="至少需要提供一个可更新字段")
+        if params.account_type is not None:
+            _clean_account_type_or_raise(params.account_type)
+        if params.status is not None:
+            _clean_account_status_or_raise(params.status)
+        if params.last_bind_provider is not None:
+            _clean_bind_provider_or_raise(params.last_bind_provider)
+
+        seen: set[str] = set()
+        unique_emails: list[str] = []
+        for email in emails:
+            normalized = email.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_emails.append(email)
+
+        accounts = load_accounts()
+        updated_accounts: list[dict[str, Any]] = []
+        missing: list[str] = []
+        skipped_main: list[str] = []
+        for email in unique_emails:
+            normalized_email = email.strip().lower()
+            if is_main_account_email(normalized_email):
+                skipped_main.append(normalized_email)
+                continue
+            account = find_account(accounts, normalized_email)
+            if not account:
+                missing.append(normalized_email)
+                continue
+            changes = _account_metadata_update_fields(
+                account,
+                account_type=params.account_type,
+                status=params.status,
+                last_bind_provider=params.last_bind_provider,
+            )
+            updated = update_account(normalized_email, **changes)
+            if updated:
+                updated_accounts.append(sanitize_account(updated))
+
+        return {
+            "message": f"已批量更新 {len(updated_accounts)} 个账号信息",
+            "updated": len(updated_accounts),
+            "missing": missing,
+            "skipped_main": skipped_main,
+            "accounts": updated_accounts,
         }
 
     @router.post("/api/accounts/{email}/kick")
@@ -308,8 +502,19 @@ def create_account_management_router(
                 remote_state = fetch_team_state(chatgpt_api) if remote_cleanup else None
 
                 for email in emails:
+                    account_before = existing.get(email.lower())
                     if email.lower() not in existing and not get_auth_session_file(email):
                         results.append({"email": email, "ok": False, "error": "账号不存在"})
+                        append_delete_batch_account_audit(
+                            email=email,
+                            account=None,
+                            record_deleted=False,
+                            auth_session_deleted=False,
+                            remote_cleanup=remote_cleanup,
+                            cleanup={},
+                            success=False,
+                            error="账号不存在",
+                        )
                         if not params.continue_on_error:
                             break
                         continue
@@ -325,9 +530,29 @@ def create_account_management_router(
                         cleanup["auth_session_deleted"] = delete_auth_session(email)
                         cleanup["brazil_pix"] = cleanup_brazil_pix_account_artifacts(email)
                         results.append({"email": email, "ok": True, "cleanup": cleanup})
+                        append_delete_batch_account_audit(
+                            email=email,
+                            account=account_before,
+                            record_deleted=bool(cleanup.get("local_record")),
+                            auth_session_deleted=bool(cleanup.get("auth_session_deleted")),
+                            remote_cleanup=remote_cleanup,
+                            cleanup=cleanup,
+                            success=True,
+                            error="",
+                        )
                     except Exception as exc:
                         logger.error("[批量删除] %s 失败: %s", email, exc)
                         results.append({"email": email, "ok": False, "error": str(exc)})
+                        append_delete_batch_account_audit(
+                            email=email,
+                            account=account_before,
+                            record_deleted=False,
+                            auth_session_deleted=False,
+                            remote_cleanup=remote_cleanup,
+                            cleanup={},
+                            success=False,
+                            error=str(exc),
+                        )
                         if not params.continue_on_error:
                             break
             finally:

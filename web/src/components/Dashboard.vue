@@ -120,6 +120,13 @@
             {{ refreshQuotaButtonLabel }}
           </button>
           <button
+            v-if="selectedEmails.length"
+            @click="openBatchAccountEditor"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="'bg-slate-600/10 text-slate-200 border-slate-500/30 hover:bg-slate-600/20'">
+            批量修改账号 ({{ selectedEmails.length }})
+          </button>
+          <button
             @click="deleteInvalidCredentials"
             :disabled="deleteDisabled || invalidDeleting || !invalidCredentialAccounts.length"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -1454,6 +1461,73 @@
         </div>
       </div>
 
+      <!-- 批量修改账号弹窗 -->
+      <div v-if="batchAccountEditOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeBatchAccountEditor">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
+          <div class="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <div>
+              <h3 class="text-white font-semibold">批量修改账号</h3>
+              <div class="text-xs text-gray-500 font-mono mt-0.5">{{ batchAccountEditEmails.length }} 个账号</div>
+            </div>
+            <button @click="closeBatchAccountEditor" class="text-gray-400 hover:text-white text-lg">&times;</button>
+          </div>
+          <div class="p-4 space-y-4">
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">账号类型</label>
+              <select
+                v-model="batchAccountEditType"
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                <option :value="BATCH_METADATA_SKIP">不修改</option>
+                <option v-for="option in editableAccountTypeOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">账号状态</label>
+              <select
+                v-model="batchAccountEditStatus"
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                <option :value="BATCH_METADATA_SKIP">不修改</option>
+                <option v-for="option in editableAccountStatusOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-2">绑定渠道</label>
+              <select
+                v-model="batchAccountEditProvider"
+                class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                <option :value="BATCH_METADATA_SKIP">不修改</option>
+                <option v-for="option in editableBindProviderOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div class="text-xs text-gray-500 leading-relaxed">
+              只会修改选中的本地账号池记录；未选择的字段保持不变。
+            </div>
+          </div>
+          <div class="px-4 py-3 border-t border-gray-800 flex justify-end gap-3">
+            <button
+              @click="closeBatchAccountEditor"
+              class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-300 rounded-lg border border-gray-700 transition">
+              取消
+            </button>
+            <button
+              @click="saveBatchAccountMetadata"
+              :disabled="batchAccountSaving || !batchAccountMetadataHasChanges"
+              class="px-4 py-2 text-sm rounded-lg border transition"
+              :class="batchAccountSaving || !batchAccountMetadataHasChanges
+                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                : 'bg-cyan-600 hover:bg-cyan-500 text-white border-cyan-500'">
+              {{ batchAccountSaving ? '保存中...' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 账密导出弹窗 -->
       <div v-if="credentialExportOpen" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" @click.self="closeCredentialExport">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg">
@@ -1622,6 +1696,13 @@ const accountTypeEditValue = ref('')
 const accountStatusEditValue = ref('')
 const accountBindProviderEditValue = ref('')
 const accountTypeSaving = ref(false)
+const BATCH_METADATA_SKIP = '__skip__'
+const batchAccountEditOpen = ref(false)
+const batchAccountEditEmails = ref([])
+const batchAccountEditType = ref(BATCH_METADATA_SKIP)
+const batchAccountEditStatus = ref(BATCH_METADATA_SKIP)
+const batchAccountEditProvider = ref(BATCH_METADATA_SKIP)
+const batchAccountSaving = ref(false)
 const credentialExportOpen = ref(false)
 const credentialExporting = ref(false)
 const cpaImportOpen = ref(false)
@@ -2154,6 +2235,14 @@ const accountMetadataEditUnchanged = computed(() => {
     && String(accountBindProviderEditValue.value || '').toLowerCase() === String(account.last_bind_provider || '').toLowerCase()
 })
 
+const batchAccountMetadataHasChanges = computed(() =>
+  Boolean(
+    batchAccountEditType.value !== BATCH_METADATA_SKIP
+    || batchAccountEditStatus.value !== BATCH_METADATA_SKIP
+    || batchAccountEditProvider.value !== BATCH_METADATA_SKIP,
+  ),
+)
+
 function setMessage(text, type = 'success') {
   message.value = text
   messageClass.value = type === 'error'
@@ -2215,6 +2304,7 @@ const editableAccountStatusOptions = [
   { value: 'active', label: 'Active' },
   { value: 'exhausted', label: 'Used up' },
   { value: 'standby', label: 'Standby' },
+  { value: 'stashed', label: '暂存' },
   { value: 'pending', label: 'Pending' },
   { value: 'personal', label: 'Personal' },
   { value: 'plus', label: 'Plus' },
@@ -2486,6 +2576,7 @@ const accountPageEndDisplay = computed(() =>
 const accountStatusOptions = computed(() => {
   const counts = new Map()
   counts.set('auth_invalid', 0)
+  counts.set('stashed', 0)
   for (const acc of allAccounts.value) {
     const status = normalizedStatus(acc?.status)
     if (!status) continue
@@ -2873,12 +2964,30 @@ function openAccountTypeEditor(acc) {
   accountBindProviderEditValue.value = acc?.last_bind_provider || ''
 }
 
+function openBatchAccountEditor() {
+  if (!selectedEmails.value.length) return
+  batchAccountEditEmails.value = [...selectedEmails.value]
+  batchAccountEditType.value = BATCH_METADATA_SKIP
+  batchAccountEditStatus.value = BATCH_METADATA_SKIP
+  batchAccountEditProvider.value = BATCH_METADATA_SKIP
+  batchAccountEditOpen.value = true
+}
+
 function closeAccountTypeEditor() {
   if (accountTypeSaving.value) return
   accountTypeEditAccount.value = null
   accountTypeEditValue.value = ''
   accountStatusEditValue.value = ''
   accountBindProviderEditValue.value = ''
+}
+
+function closeBatchAccountEditor() {
+  if (batchAccountSaving.value) return
+  batchAccountEditOpen.value = false
+  batchAccountEditEmails.value = []
+  batchAccountEditType.value = BATCH_METADATA_SKIP
+  batchAccountEditStatus.value = BATCH_METADATA_SKIP
+  batchAccountEditProvider.value = BATCH_METADATA_SKIP
 }
 
 function openCredentialExport() {
@@ -3026,6 +3135,7 @@ const cards = computed(() => {
   return [
     { label: '活跃', value: s.active, color: 'text-green-400' },
     { label: '待命', value: s.standby, color: 'text-yellow-400' },
+    { label: '暂存', value: s.stashed || 0, color: 'text-slate-300' },
     { label: '废弃', value: s.fail || 0, color: 'text-orange-400' },
     { label: 'Free', value: s.free || 0, color: 'text-fuchsia-400' },
     { label: 'Team', value: s.team || 0, color: 'text-violet-400' },
@@ -3048,6 +3158,7 @@ function statusClass(s) {
     active: 'bg-green-500/10 text-green-400',
     exhausted: 'bg-red-500/10 text-red-400',
     standby: 'bg-yellow-500/10 text-yellow-400',
+    stashed: 'bg-slate-500/10 text-slate-300',
     pending: 'bg-gray-500/10 text-gray-400',
     session_only: 'bg-green-500/10 text-green-400',
     auth_invalid: 'bg-orange-500/10 text-orange-400',
@@ -3062,6 +3173,7 @@ function dotClass(s) {
     active: 'bg-green-400',
     exhausted: 'bg-red-400',
     standby: 'bg-yellow-400',
+    stashed: 'bg-slate-300',
     pending: 'bg-gray-400',
     session_only: 'bg-green-400',
     auth_invalid: 'bg-orange-400',
@@ -3076,6 +3188,7 @@ function statusLabel(s) {
     active: 'Active',
     exhausted: 'Used up',
     standby: 'Standby',
+    stashed: '暂存',
     pending: 'Pending',
     session_only: 'Active',
     auth_invalid: 'token失效',
@@ -3860,6 +3973,42 @@ async function saveAccountType() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     accountTypeSaving.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function saveBatchAccountMetadata() {
+  if (!batchAccountEditEmails.value.length || batchAccountSaving.value) return
+  const selectedType = String(batchAccountEditType.value || '').trim()
+  const selectedStatus = String(batchAccountEditStatus.value || '').trim()
+  const selectedProvider = String(batchAccountEditProvider.value ?? '').trim()
+  const payload = {
+    emails: [...batchAccountEditEmails.value],
+    ...(selectedType !== BATCH_METADATA_SKIP ? { account_type: selectedType.toLowerCase() } : {}),
+    ...(selectedStatus !== BATCH_METADATA_SKIP ? { status: selectedStatus.toLowerCase() } : {}),
+    ...(selectedProvider !== BATCH_METADATA_SKIP ? { last_bind_provider: selectedProvider.toLowerCase() } : {}),
+  }
+  if (Object.keys(payload).length <= 1) return
+
+  batchAccountSaving.value = true
+  message.value = ''
+  let saved = false
+  try {
+    const result = await api.updateAccountsMetadataBatch(payload)
+    const missing = Array.isArray(result.missing) && result.missing.length ? `，跳过 ${result.missing.length} 个不存在账号` : ''
+    const skippedMain = Array.isArray(result.skipped_main) && result.skipped_main.length ? `，跳过主号 ${result.skipped_main.length} 个` : ''
+    message.value = `${result.message || '已批量更新账号信息'}${missing}${skippedMain}`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    saved = true
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    batchAccountSaving.value = false
+    if (saved) {
+      closeBatchAccountEditor()
+    }
     setTimeout(() => { message.value = '' }, 8000)
   }
 }

@@ -12,7 +12,7 @@ function statusOf(account) {
 
 function linkCountry(link) {
   const billing = link?.billing && typeof link.billing === 'object' ? link.billing : {}
-  return normalizeCountry(link?.country || link?.region || billing.country)
+  return normalizeCountry(link?.target_country || link?.targetCountry || link?.paypal_country || link?.paypalCountry || link?.country || link?.region || billing.country)
 }
 
 function linkUrl(link) {
@@ -26,21 +26,62 @@ function timestampOf(value) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function latestLinksByEmail(links) {
+export const PAYPAL_LINK_TTL_MS = 3 * 60 * 60 * 1000
+
+export function paypalLinkCreatedAtMs(link) {
+  const explicit = link?.created_at_ts ?? link?.createdAtTs
+  if (explicit !== undefined && explicit !== null && explicit !== '') {
+    const numeric = Number(explicit)
+    if (Number.isFinite(numeric) && numeric > 0) return numeric < 100000000000 ? numeric * 1000 : numeric
+  }
+  return timestampOf({ created_at: link?.created_at ?? link?.createdAt })
+}
+
+export function paypalLinkExpiresAtMs(link) {
+  const explicit = link?.paypal_expires_at_ts ?? link?.paypalExpiresAtTs ?? link?.expires_at_ts ?? link?.expiresAtTs
+  if (explicit !== undefined && explicit !== null && explicit !== '') {
+    const numeric = Number(explicit)
+    if (Number.isFinite(numeric) && numeric > 0) return numeric < 100000000000 ? numeric * 1000 : numeric
+  }
+  const createdAt = paypalLinkCreatedAtMs(link)
+  return createdAt ? createdAt + PAYPAL_LINK_TTL_MS : 0
+}
+
+export function paypalLinkIsActive(link, nowMs = Date.now()) {
+  const expiresAt = paypalLinkExpiresAtMs(link)
+  return Boolean(expiresAt && expiresAt > nowMs)
+}
+
+export function paypalLinkMatchesTimeFilter(link, timeFilter = 'all', nowMs = Date.now()) {
+  const filter = String(timeFilter || 'all').trim().toLowerCase()
+  if (filter === 'all') return true
+  const minutes = Number(filter.replace(/m$/, ''))
+  if (!Number.isFinite(minutes) || minutes <= 0) return true
+  const createdAt = paypalLinkCreatedAtMs(link)
+  return Boolean(createdAt && createdAt >= nowMs - minutes * 60 * 1000)
+}
+
+function latestLinksByEmail(links, nowMs = Date.now()) {
   const byEmail = new Map()
   for (const link of Array.isArray(links) ? links : []) {
     const email = normalizeEmail(link?.account_email || link?.accountEmail || link?.email)
     const url = linkUrl(link)
     if (!email || !url) continue
+    if (!paypalLinkIsActive(link, nowMs)) continue
     const previous = byEmail.get(email)
     if (!previous || timestampOf(link) >= timestampOf(previous)) byEmail.set(email, link)
   }
   return byEmail
 }
 
-export function successfulPayPalLinkAccounts(accounts, links, countryFilter = 'all') {
+export function successfulPayPalLinkAccounts(accounts, links, countryFilter = 'all', options = {}) {
+  const nowMs = Number(options.nowMs || Date.now())
+  const timeFilter = options.timeFilter || 'all'
   const targetCountry = normalizeCountry(countryFilter)
-  const byEmail = latestLinksByEmail(links)
+  const byEmail = latestLinksByEmail(
+    (Array.isArray(links) ? links : []).filter(link => paypalLinkMatchesTimeFilter(link, timeFilter, nowMs)),
+    nowMs,
+  )
   return (Array.isArray(accounts) ? accounts : [])
     .map((account) => {
       const email = normalizeEmail(account?.email)
@@ -50,6 +91,7 @@ export function successfulPayPalLinkAccounts(accounts, links, countryFilter = 'a
         email: String(account?.email || '').trim(),
         country,
         paypalLink: linkUrl(link),
+        paypalStatus: statusOf(account),
         account,
         link,
         sortAt: Math.max(timestampOf(account), timestampOf(link)),
@@ -58,19 +100,19 @@ export function successfulPayPalLinkAccounts(accounts, links, countryFilter = 'a
     .filter((item) => (
       item.email
       && item.paypalLink
-      && statusOf(item.account) === 'success'
+      && item.paypalStatus !== 'paid'
       && (!targetCountry || targetCountry === 'ALL' || item.country === targetCountry)
     ))
     .sort((a, b) => b.sortAt - a.sortAt || a.email.localeCompare(b.email))
 }
 
-export function paypalAccountCountryOptions(accounts, links) {
-  return Array.from(new Set(successfulPayPalLinkAccounts(accounts, links).map((item) => item.country).filter(Boolean))).sort()
+export function paypalAccountCountryOptions(accounts, links, options = {}) {
+  return Array.from(new Set(successfulPayPalLinkAccounts(accounts, links, 'all', options).map((item) => item.country).filter(Boolean))).sort()
 }
 
-export function resolveSelectedPayPalLinkAccount(accounts, links, selectedEmail) {
+export function resolveSelectedPayPalLinkAccount(accounts, links, selectedEmail, options = {}) {
   const target = normalizeEmail(selectedEmail)
-  const item = successfulPayPalLinkAccounts(accounts, links).find((candidate) => normalizeEmail(candidate.email) === target)
+  const item = successfulPayPalLinkAccounts(accounts, links, 'all', options).find((candidate) => normalizeEmail(candidate.email) === target)
   if (!item) return null
   return { email: item.email, country: item.country, paypalLink: item.paypalLink }
 }

@@ -26,12 +26,12 @@ def test_build_protocol_command_uses_vendored_engine_and_success_env(tmp_path, m
 
     assert cwd == engine.resolve()
     assert str(engine / "main.py") in cmd
-    assert "--approval-path" in cmd and "create-member-no-fi" in cmd
+    assert "--approval-path" in cmd and "signup-card" in cmd
     assert "--proxy" in cmd
     assert env["PAYPAL_USE_CURL_CFFI"] == "0"
     assert env["PAYPAL_HEADLESS_USE_PINNED_FINGERPRINT"] == "1"
     assert env["PAYPAL_HEADLESS_PINNED_FINGERPRINT_PATH"] == str(fp)
-    assert env["PAYPAL_APPROVAL_PATH"] == "create_member_no_fi"
+    assert env["PAYPAL_APPROVAL_PATH"] == "signup_card"
     assert env["PAYPAL_STRICT_BROWSER_RISK"] == "0"
     assert env["PAYPAL_MTR_HEADLESS_WAIT_SECONDS"] == "45"
     joined = " ".join(cmd)
@@ -632,7 +632,14 @@ def test_australia_generated_address_uses_state_abbreviation_and_four_digit_post
         assert not address.house_number
 
 
-def test_gb_auto_approval_path_uses_create_member_no_fi(monkeypatch):
+@pytest.mark.parametrize(
+    ("country", "expected"),
+    [
+        ("US", False),
+        ("GB", False),
+    ],
+)
+def test_auto_approval_path_uses_signup_card_by_default(monkeypatch, country, expected):
     engine_root = service.DEFAULT_ENGINE_ROOT
     sys.path.insert(0, str(engine_root))
     try:
@@ -652,14 +659,121 @@ def test_gb_auto_approval_path_uses_create_member_no_fi(monkeypatch):
         city="Cambridge",
         state="",
         postal_code="CB4 3BW",
-        country="GB",
+        country=country,
     )
     monkeypatch.setenv("PAYPAL_APPROVAL_PATH", "auto")
+
+    assert paypal_flow._create_member_no_fi_enabled() is expected
+
+
+def test_create_member_no_fi_path_requires_explicit_opt_in(monkeypatch):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        flow = importlib.import_module("paypal.flow")
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    paypal_flow = flow.PayPalFlow.__new__(flow.PayPalFlow)
+    paypal_flow.address = models.BillingAddress(
+        street="1 Bierce St",
+        house_number="",
+        district="",
+        city="Austin",
+        state="TX",
+        postal_code="78701",
+        country="US",
+    )
+    monkeypatch.setenv("PAYPAL_APPROVAL_PATH", "create_member_no_fi")
 
     assert paypal_flow._create_member_no_fi_enabled() is True
 
 
-def test_build_protocol_command_supports_gb_with_auto_path_and_sms_default(tmp_path, monkeypatch):
+def test_partial_fi_contingency_authorization_uses_legacy_billing_authorize(monkeypatch):
+    engine_root = service.DEFAULT_ENGINE_ROOT
+    sys.path.insert(0, str(engine_root))
+    try:
+        flow = importlib.import_module("paypal.flow")
+        models = importlib.import_module("paypal.models")
+    finally:
+        try:
+            sys.path.remove(str(engine_root))
+        except ValueError:
+            pass
+
+    calls: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+        url = "https://merchant.example/final"
+        headers: dict[str, str] = {}
+
+    class FakeSession:
+        def graphql(self, operation, _query, _variables, **_kwargs):
+            calls.append(str(operation))
+            assert operation == "authorize"
+            return [
+                {
+                    "data": {
+                        "billing": {
+                            "authorize": {
+                                "billingAgreementToken": "BA-1PARTIAL123",
+                                "paymentAction": "SALE",
+                                "returnURL": {"href": "https://pm-redirects.stripe.com/return/acct/nonce?status=success&token=EC-1PARTIAL"},
+                                "buyer": {"userId": "BUYER123"},
+                            }
+                        }
+                    }
+                }
+            ]
+
+        def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    paypal_flow = flow.PayPalFlow.__new__(flow.PayPalFlow)
+    paypal_flow.ba_token = "BA-1PARTIAL123"
+    paypal_flow.session = FakeSession()
+    paypal_flow.address = models.BillingAddress(
+        street="1 Bierce St",
+        house_number="",
+        district="",
+        city="Austin",
+        state="TX",
+        postal_code="78701",
+        country="US",
+    )
+    paypal_flow.state = models.SessionState(
+        ba_token="BA-1PARTIAL123",
+        ec_token="EC-1PARTIAL",
+        euat_token="euat-token",
+        signup_url="https://www.paypal.com/checkoutweb/signup",
+        signup_fallback_reason="FI_CONFIRMATION_CONTINGENCY",
+    )
+    paypal_flow.max_authorize_attempts = 1
+    paypal_flow._used_partial_signup_token = True
+    paypal_flow._phase4_weasley_approve = lambda: pytest.fail("FI contingency should go directly to billing.authorize")
+    paypal_flow._load_checkoutweb_drop = lambda *_args, **_kwargs: calls.append("drop")
+    paypal_flow._load_hagrid_review_context = lambda *_args, **_kwargs: calls.append("review")
+    paypal_flow._send_tealeaf_data = lambda *_args, **_kwargs: None
+    paypal_flow._send_datadog_rum_view = lambda *_args, **_kwargs: None
+    paypal_flow._send_datadog_rum_action = lambda *_args, **_kwargs: None
+    paypal_flow._authorize_metadata_candidates = lambda: ["metadata-1"]
+    paypal_flow._parse_redirect_status = lambda _url: {"status": "success"}
+    monkeypatch.setattr(flow, "send_analytics_ts", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("PAYPAL_APPROVAL_PATH", "signup_card")
+
+    result = paypal_flow._phase4_authorize()
+
+    assert result["status"] == "success"
+    assert result["payment_action"] == "SALE"
+    assert calls == ["drop", "review", "authorize"]
+
+
+def test_build_protocol_command_supports_gb_with_signup_card_path_and_sms_default(tmp_path, monkeypatch):
     engine = tmp_path / "engine"
     engine.mkdir()
     (engine / "main.py").write_text("print('ok')\n", encoding="utf-8")
@@ -672,10 +786,10 @@ def test_build_protocol_command_supports_gb_with_auto_path_and_sms_default(tmp_p
     ))
 
     assert cmd[cmd.index("--country") + 1] == "GB"
-    assert cmd[cmd.index("--approval-path") + 1] == "auto"
+    assert cmd[cmd.index("--approval-path") + 1] == "signup-card"
     assert cmd[cmd.index("--sms-country") + 1] == "16"
     assert env["PAYPAL_COUNTRY"] == "GB"
-    assert env["PAYPAL_APPROVAL_PATH"] == "auto"
+    assert env["PAYPAL_APPROVAL_PATH"] == "signup_card"
     assert env["PAYPAL_SMS_COUNTRY"] == "16"
 
 

@@ -345,7 +345,7 @@ def main():
         "--approval-path",
         choices=["auto", "create-member-no-fi", "signup-card", "legacy"],
         default=os.getenv("PAYPAL_APPROVAL_PATH", "auto"),
-        help="Approval strategy. auto uses createMemberAccount(no FI) for US and legacy signup-card elsewhere.",
+        help="Approval strategy. auto uses SignUpNewMember/card; create-member-no-fi is explicit opt-in.",
     )
     parser.add_argument(
         "--risk-signals-mode",

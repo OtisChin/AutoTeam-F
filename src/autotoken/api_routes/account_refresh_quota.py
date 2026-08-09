@@ -77,6 +77,7 @@ def create_account_refresh_quota_router(
                 STATUS_FAIL,
                 STATUS_PERSONAL,
                 STATUS_PLUS,
+                STATUS_STASHED,
                 STATUS_STANDBY,
                 update_account,
             )
@@ -397,6 +398,7 @@ def create_account_refresh_quota_router(
                 current_status = str(acc.get("status") or "").strip().lower()
                 account_type = str(acc.get("account_type") or "").strip().lower()
                 recoverable_free_statuses = {"", STATUS_ACTIVE, STATUS_EXHAUSTED, STATUS_PERSONAL, "pending", "session_only"}
+                quota_preserved_statuses = {STATUS_PLUS, STATUS_STANDBY, STATUS_STASHED}
 
                 if status == "ok":
                     info, allow_free_downgrade = _align_free_monthly_quota_with_subscription(
@@ -417,7 +419,7 @@ def create_account_refresh_quota_router(
                     effective_account_type = update_payload.get("account_type") or account_type
                     if effective_account_type == ACCOUNT_TYPE_FREE and current_status in recoverable_free_statuses:
                         update_payload["status"] = STATUS_PERSONAL
-                    elif (acc.get("status") or "") not in {STATUS_PLUS, STATUS_STANDBY}:
+                    elif current_status not in quota_preserved_statuses:
                         update_payload["status"] = STATUS_ACTIVE
                     return {
                         "kind": "ok",
@@ -449,7 +451,7 @@ def create_account_refresh_quota_router(
                     if is_free_personal_account:
                         if effective_account_type == ACCOUNT_TYPE_FREE and current_status in recoverable_free_statuses:
                             update_payload["status"] = STATUS_PERSONAL
-                    else:
+                    elif current_status not in quota_preserved_statuses:
                         update_payload["status"] = STATUS_EXHAUSTED
                     return {
                         "kind": "exhausted",

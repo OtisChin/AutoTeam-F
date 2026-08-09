@@ -5,6 +5,7 @@ import autotoken.api_routes.account_management as account_management
 from autotoken import account_ops, accounts, admin_state, auth_session_store, chatgpt_api, manager
 from autotoken.api_routes.account_management import (
     ACCOUNT_DELETE_BATCH_MAX_EMAILS,
+    AccountMetadataBatchUpdateParams,
     AccountMetadataUpdateParams,
     AccountTypeUpdateParams,
     DeleteBatchParams,
@@ -217,6 +218,65 @@ def test_account_management_delete_batch_uses_timeout_runner_when_lock_acquired(
     }
     assert executor.timeout_calls[0][0] == 300
     assert lock.release_calls == 1
+
+
+def test_account_management_delete_batch_writes_audit_for_successful_deletions(monkeypatch):
+    lock = FakeLock(acquired=False)
+    app = _app(lock=lock)
+    captured_audits = []
+    account = {
+        "email": "user@example.com",
+        "status": "auth_invalid",
+        "account_type": "free",
+        "seat_type": "unknown",
+        "credentials_exported": False,
+        "mail_provider": "icloud",
+        "cloudmail_account_id": "user@example.com",
+        "auth_file": "data/auth_session/user@example_com.json",
+        "last_bind_failure_stage": "auth_token_expired",
+        "last_bind_message": "token expired",
+    }
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [account])
+    monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: "")
+    monkeypatch.setattr(auth_session_store, "delete_auth_session", lambda _email: True)
+    monkeypatch.setattr(admin_state, "get_admin_session_token", lambda: "")
+    monkeypatch.setattr(admin_state, "get_chatgpt_account_id", lambda: "")
+    monkeypatch.setattr(
+        account_ops,
+        "delete_managed_account",
+        lambda email, **_kwargs: {"local_record": True, "local_auth_files": ["codex.json"], "cpa_files": []},
+    )
+    monkeypatch.setattr(
+        account_management,
+        "append_delete_batch_account_audit",
+        lambda **kwargs: captured_audits.append(kwargs),
+        raising=False,
+    )
+
+    result = _endpoint(app, "/api/accounts/delete-batch", "POST")(
+        DeleteBatchParams(emails=["user@example.com"], continue_on_error=True)
+    )
+
+    assert result["summary"]["ok"] == 1
+    assert captured_audits == [
+        {
+            "email": "user@example.com",
+            "account": account,
+            "record_deleted": True,
+            "auth_session_deleted": True,
+            "remote_cleanup": False,
+            "cleanup": {
+                "local_record": True,
+                "local_auth_files": ["codex.json"],
+                "cpa_files": [],
+                "auth_session_deleted": True,
+                "brazil_pix": {"links_deleted": 0},
+            },
+            "success": True,
+            "error": "",
+        }
+    ]
 
 
 def test_account_management_delete_batch_rejects_empty_and_main_accounts():
@@ -494,6 +554,65 @@ def test_account_management_update_account_metadata_reports_invalid_main_and_mis
         _endpoint(app, "/api/accounts/{email}/metadata", "PATCH")(
             "missing@example.com",
             AccountMetadataUpdateParams(account_type="free", status="active", last_bind_provider=""),
+        )
+
+
+def test_account_management_update_accounts_metadata_batch_updates_partial_fields_and_skips_main(monkeypatch):
+    app = _app(is_main_account_email=lambda email: email == "owner@example.com")
+    captured = []
+    accounts_by_email = {
+        "user@example.com": {"email": "user@example.com", "account_type": "free", "status": "pending", "last_bind_provider": ""},
+        "other@example.com": {"email": "other@example.com", "account_type": "team", "status": "standby", "last_bind_provider": "paypal"},
+    }
+
+    monkeypatch.setattr(accounts, "load_accounts", lambda: list(accounts_by_email.values()))
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: accounts_by_email.get(email))
+
+    def fake_update_account(email, **changes):
+        captured.append((email, changes))
+        current = dict(accounts_by_email[email])
+        current.update(changes)
+        accounts_by_email[email] = current
+        return current
+
+    monkeypatch.setattr(accounts, "update_account", fake_update_account)
+
+    result = _endpoint(app, "/api/accounts/metadata-batch", "PATCH")(
+        AccountMetadataBatchUpdateParams(
+            emails=["user@example.com", "owner@example.com", "missing@example.com", "other@example.com"],
+            status="stashed",
+            last_bind_provider="kakao_pay",
+        )
+    )
+
+    assert result == {
+        "message": "已批量更新 2 个账号信息",
+        "updated": 2,
+        "missing": ["missing@example.com"],
+        "skipped_main": ["owner@example.com"],
+        "accounts": [
+            {"email": "user@example.com", "account_type": "free", "status": "stashed", "last_bind_provider": "kakao_pay", "sanitized": True},
+            {"email": "other@example.com", "account_type": "team", "status": "stashed", "last_bind_provider": "kakao_pay", "sanitized": True},
+        ],
+    }
+    assert captured == [
+        ("user@example.com", {"status": "stashed", "last_bind_provider": "kakao_pay"}),
+        ("other@example.com", {"status": "stashed", "last_bind_provider": "kakao_pay"}),
+    ]
+
+
+def test_account_management_update_accounts_metadata_batch_rejects_empty_payload_and_invalid_values():
+    app = _app()
+
+    with _raises_http(400, "emails 不能为空"):
+        _endpoint(app, "/api/accounts/metadata-batch", "PATCH")(AccountMetadataBatchUpdateParams(emails=[]))
+
+    with _raises_http(400, "至少需要提供一个可更新字段"):
+        _endpoint(app, "/api/accounts/metadata-batch", "PATCH")(AccountMetadataBatchUpdateParams(emails=["user@example.com"]))
+
+    with _raises_http(400, "不支持的账号状态: invalid"):
+        _endpoint(app, "/api/accounts/metadata-batch", "PATCH")(
+            AccountMetadataBatchUpdateParams(emails=["user@example.com"], status="invalid")
         )
 
 

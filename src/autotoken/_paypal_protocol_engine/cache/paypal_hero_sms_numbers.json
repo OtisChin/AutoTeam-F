@@ -1,20 +1,6 @@
 {
-  "activations": [
-    {
-      "activation_id": "641791242",
-      "phone_number": "+447529287333",
-      "provider_id": "ee",
-      "price": 0.165,
-      "expires_at": 1784909332.0111098,
-      "provider_name": "hero_sms",
-      "service": "ts",
-      "country": "16",
-      "last_code": "767736",
-      "use_count": 1,
-      "last_used_at": 1784908154.1406538
-    }
-  ],
+  "activations": [],
   "provider_failures": {
-    "ee": 0
+    "truemove": 37
   }
 }

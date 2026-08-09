@@ -20,6 +20,7 @@ def build_status_response(
         STATUS_FAIL,
         STATUS_ORPHAN,
         STATUS_PENDING,
+        STATUS_STASHED,
         STATUS_STANDBY,
     )
 
@@ -36,6 +37,7 @@ def build_status_response(
         "summary": {
             "active": sum(1 for account in sanitized_accounts if account["status"] == STATUS_ACTIVE),
             "standby": sum(1 for account in sanitized_accounts if account["status"] == STATUS_STANDBY),
+            "stashed": sum(1 for account in sanitized_accounts if account["status"] == STATUS_STASHED),
             "exhausted": sum(1 for account in sanitized_accounts if account["status"] == STATUS_EXHAUSTED),
             "pending": sum(1 for account in sanitized_accounts if account["status"] == STATUS_PENDING),
             "auth_invalid": sum(1 for account in sanitized_accounts if account["status"] == STATUS_AUTH_INVALID),

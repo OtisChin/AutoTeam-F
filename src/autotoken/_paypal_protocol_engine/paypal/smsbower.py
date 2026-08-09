@@ -699,6 +699,7 @@ def build_smsbower_provider(*, enabled: bool | None = None, api_key: str | None 
             24 * 60 * 60,
         ),
         max_attempts=_env_int("SMSBOWER_MAX_ATTEMPTS", SMSBOWER_DEFAULT_MAX_ATTEMPTS, 1, 100),
+        reuse_enabled=_env_bool("PAYPAL_SMS_REUSE_ENABLED", default=True),
     )
 
 
@@ -1133,6 +1134,7 @@ def build_sms_activate_provider(
     min_price: str = "",
     max_price: str = "",
     preferred_price: str = "",
+    reuse_enabled: bool | None = None,
 ) -> SmsActivateOtpProvider | None:
     normalized = normalize_paypal_sms_provider(provider)
     if normalized not in {"hero_sms", "hero_sms_rent", "smsbower"}:
@@ -1170,7 +1172,7 @@ def build_sms_activate_provider(
         min_price=min_price or _load_dotenv_value("PAYPAL_SMS_MIN_PRICE"),
         max_price=max_price or _load_dotenv_value("PAYPAL_SMS_MAX_PRICE"),
         preferred_price=preferred_price or _load_dotenv_value("PAYPAL_SMS_PREFERRED_PRICE"),
-        reuse_enabled=_env_bool("PAYPAL_SMS_REUSE_ENABLED", default=True),
+        reuse_enabled=_env_bool("PAYPAL_SMS_REUSE_ENABLED", default=True) if reuse_enabled is None else bool(reuse_enabled),
         reuse_max_uses=_env_int("PAYPAL_SMS_REUSE_MAX_USES", 5, 1, 50),
         finalize_on_success=_env_bool("PAYPAL_SMS_FINALIZE_ON_SUCCESS", default=False),
         cancel_on_abandon=_env_bool("PAYPAL_SMS_CANCEL_ON_ABANDON", default=False),
@@ -1280,6 +1282,7 @@ class HeroSmsRentOtpProvider:
         store: SMSBowerActivationStore | None = None,
         web_client: HeroSmsWebClient | None = None,
         country: str = PAYPAL_SMS_DEFAULT_COUNTRY,
+        reuse_enabled: bool = True,
         wait_seconds: float = SMSBOWER_DEFAULT_WAIT_SECONDS,
         poll_interval_seconds: float = SMSBOWER_DEFAULT_POLL_INTERVAL_SECONDS,
     ) -> None:
@@ -1290,6 +1293,7 @@ class HeroSmsRentOtpProvider:
         self.store = store or SMSBowerActivationStore(_project_root() / "cache" / "paypal_hero_sms_rent_numbers.json")
         self.web_client = web_client
         self.country = str(country or PAYPAL_SMS_DEFAULT_COUNTRY).strip()
+        self.reuse_enabled = bool(reuse_enabled)
         self.wait_seconds = max(1.0, float(wait_seconds)) if wait_seconds >= 1 else float(wait_seconds)
         self.poll_interval_seconds = max(0.01, float(poll_interval_seconds))
         self.max_attempts = 1
@@ -1309,7 +1313,17 @@ class HeroSmsRentOtpProvider:
         return text, ""
 
     def reserve_number(self) -> SMSBowerActivation:
-        rent_id = self._find_rent_id_by_phone()
+        rent_id = ""
+        if self.reuse_enabled:
+            reusable = self.store.reusable_activation(
+                provider_name="hero_sms_rent",
+                country=self.country,
+                phone_number=self.phone_number,
+            )
+            if reusable is not None:
+                rent_id = reusable.activation_id
+        if not rent_id:
+            rent_id = self._find_rent_id_by_phone()
         if not rent_id:
             raise SMSBowerApiError(
                 "HeroSMS rent number not found in reusable cache/web session: "
@@ -1322,7 +1336,7 @@ class HeroSmsRentOtpProvider:
             provider_id="hero_sms_rent",
             price=0.0,
             expires_at=time.time() + 24 * 60 * 60,
-            reused=True,
+            reused=bool(self.reuse_enabled),
             provider_name="hero_sms_rent",
             country=self.country,
         )
@@ -1443,7 +1457,8 @@ class HeroSmsRentOtpProvider:
                     time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
                     continue
                 activation.last_code = code
-                self.store.remember_activation(activation, last_code=code, increment_use=False)
+                if self.reuse_enabled:
+                    self.store.remember_activation(activation, last_code=code, increment_use=False)
                 return code
             time.sleep(min(self.poll_interval_seconds, max(0.0, deadline - time.time())))
         return None
@@ -1473,10 +1488,18 @@ class HeroSmsRentOtpProvider:
         return ""
 
     def abandon(self, activation: SMSBowerActivation, reason: str) -> None:
+        if not self.reuse_enabled:
+            return
         self.store.remember_activation(activation, increment_use=False)
         logger.info("Keeping HeroSMS rent activation={} reason={}", activation.activation_id, reason)
 
     def register_confirmation_result(self, activation: SMSBowerActivation, confirmed: bool) -> None:
+        if not self.reuse_enabled:
+            try:
+                self.client.set_status(activation.activation_id, 3)
+            except Exception as exc:
+                logger.debug("HeroSMS rent setStatus(3) after confirmation soft-failed: {}", exc)
+            return
         self.store.remember_activation(activation, increment_use=confirmed)
         try:
             self.client.set_status(activation.activation_id, 3)
@@ -1494,6 +1517,7 @@ def build_hero_sms_rent_provider(
     paypal_country: str = "US",
     wait_seconds: float | None = None,
     poll_interval_seconds: float | None = None,
+    reuse_enabled: bool | None = None,
 ) -> HeroSmsRentOtpProvider:
     resolved_key = _sms_provider_api_key("hero_sms_rent", api_key)
     resolved_base_url = _sms_provider_base_url("hero_sms_rent", base_url or _load_dotenv_value("PAYPAL_HERO_SMS_BASE_URL"))
@@ -1509,6 +1533,7 @@ def build_hero_sms_rent_provider(
         store=SMSBowerActivationStore(_project_root() / "cache" / "paypal_hero_sms_rent_numbers.json"),
         web_client=_load_hero_sms_web_client(),
         country=resolved_country,
+        reuse_enabled=_env_bool("PAYPAL_SMS_REUSE_ENABLED", default=True) if reuse_enabled is None else bool(reuse_enabled),
         wait_seconds=wait_seconds
         if wait_seconds is not None
         else _env_float("PAYPAL_SMS_WAIT_SECONDS", SMSBOWER_DEFAULT_WAIT_SECONDS, 1.0, 900.0),

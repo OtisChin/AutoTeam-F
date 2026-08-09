@@ -6033,7 +6033,15 @@ class PayPalFlow:
 
 
     def _create_member_no_fi_enabled(self) -> bool:
-        """Use the verified US no-backup-FI path instead of SignUpNewMember+card."""
+        """Use the no-backup-FI path only when explicitly requested.
+
+        The current verified success path is SignUpNewMember with a recoverable
+        FI_CONFIRMATION_CONTINGENCY that preserves the member access token, then
+        legacy billing.authorize.  Auto must not silently route US/GB through
+        CreateMemberAccount(no FI), because PayPal can later reject
+        approveMemberPayment(primaryFundingOptionId=null) with
+        NEED_CREDIT_CARD/NO_VALID_FUNDING_INSTRUMENT.
+        """
         raw = (
             os.getenv("PAYPAL_APPROVAL_PATH", "")
             or os.getenv("PAYPAL_ONBOARDING_PATH", "")
@@ -6043,7 +6051,7 @@ class PayPalFlow:
             return True
         if raw in {"signup", "signup_card", "card", "legacy"}:
             return False
-        return str(self.address.country or "").upper() in {"US", "GB"}
+        return False
 
     def _build_create_member_no_fi_variables(self, token: str) -> dict[str, Any]:
         base = self._build_signup_variables(token)
@@ -7607,9 +7615,10 @@ class PayPalFlow:
                 self.state.content_identifier or self._short_content_identifier(),
             )
 
-        # Step 3: For verified US no-backup BA flows, create the member without
-        # card/bank and let Phase 4 use approveMemberPayment with no primary FI.
-        # Other countries keep the legacy SignUpNewMember + funding-instrument path.
+        # Step 3: Default to the captured successful flow:
+        # SignUpNewMember + recoverable FI_CONFIRMATION_CONTINGENCY/accessToken
+        # followed by Phase 4 authorization.  The no-FI CreateMemberAccount path
+        # is retained only as an explicit diagnostic opt-in.
         if self._create_member_no_fi_enabled():
             self._phase3_create_member_no_fi(token, signup_url)
         else:
@@ -8304,13 +8313,23 @@ class PayPalFlow:
         # Current checkoutweb/weasley source calls ApproveOnboardPaymentMutation
         # after SignUpNewMember. Prefer it when signup produced authenticated state;
         # keep legacy Hagrid billing.authorize as fallback for older captures.
-        if self.state.euat_token or self.state.instrument_id:
+        partial_fi_contingency = (
+            self._used_partial_signup_token
+            and str(self.state.signup_fallback_reason or "").upper()
+            == "FI_CONFIRMATION_CONTINGENCY"
+        )
+        if (self.state.euat_token or self.state.instrument_id) and not partial_fi_contingency:
             weasley_result = self._phase4_weasley_approve()
             if weasley_result.get("status") == "success":
                 return weasley_result
             logger.warning(
                 "Weasley approve did not complete; falling back to legacy Hagrid authorize: {}",
                 weasley_result.get("error") or weasley_result.get("reason") or "unknown",
+            )
+        elif partial_fi_contingency:
+            logger.info(
+                "Skipping Weasley approve after recoverable FI_CONFIRMATION_CONTINGENCY; "
+                "continuing with legacy billing.authorize."
             )
 
         if self.state.signup_fallback_reason:

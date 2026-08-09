@@ -54,6 +54,7 @@ DEFAULT_SMSBOWER_COUNTRY_BY_PAYPAL_COUNTRY = dict(DEFAULT_SMS_COUNTRY_BY_PAYPAL_
 DEFAULT_PAYPAL_SMS_SERVICE = "ts"
 DEFAULT_HEROSMS_BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 DEFAULT_SMSBOWER_BASE_URL = "https://smsbower.page/stubs/handler_api.php"
+DEFAULT_SIGNUP_CARD_COUNTRIES = {"US", "GB"}
 
 
 @dataclass(slots=True)
@@ -75,6 +76,7 @@ class PaypalProtocolRunConfig:
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     sms_record_wait_seconds: int = 300
     sms_record_poll_seconds: float = 3.0
+    phone_pool_reuse_enabled: bool = False
     debug: bool = False
 
 
@@ -396,7 +398,7 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
         "--country",
         country,
         "--approval-path",
-        "create-member-no-fi" if country == "US" else "auto",
+        "signup-card" if country in DEFAULT_SIGNUP_CARD_COUNTRIES else "auto",
         "--fingerprint-source",
         "headless",
         "--datadome-mode",
@@ -448,7 +450,7 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     env["PAYPAL_DATADOME_MODE"] = "headless"
     env["PAYPAL_MTR_RUNTIME"] = "headless"
     env["PAYPAL_MTR_HEADLESS_WAIT_SECONDS"] = "45"
-    env["PAYPAL_APPROVAL_PATH"] = "create_member_no_fi" if country == "US" else "auto"
+    env["PAYPAL_APPROVAL_PATH"] = "signup_card" if country in DEFAULT_SIGNUP_CARD_COUNTRIES else "auto"
     env["PAYPAL_COUNTRY"] = country
     # The verified AutoTeam-F tuple is a normal preflight run, not strict lab
     # mode.  Parent shells may export PAYPAL_STRICT_BROWSER_RISK=1 while doing
@@ -460,6 +462,7 @@ def build_protocol_command(cfg: PaypalProtocolRunConfig, *, engine_root: Path | 
     env["PAYPAL_SMS_SERVICE"] = _backend_sms_service()
     env["PAYPAL_SMS_COUNTRY"] = _backend_sms_country(sms_provider, country)
     env["PAYPAL_SMS_NUMBER_WAIT_SECONDS"] = "60"
+    env["PAYPAL_SMS_REUSE_ENABLED"] = "1" if bool(cfg.phone_pool_reuse_enabled) else "0"
     if sms_provider in {"hero_sms", "hero_sms_rent", "smsbower"}:
         env["PAYPAL_SMS_BASE_URL"] = _backend_sms_base_url(sms_provider)
         if sms_provider in {"hero_sms", "hero_sms_rent"}:

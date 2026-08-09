@@ -20,6 +20,7 @@ ACCOUNTS_FILE = PROJECT_ROOT / "accounts.json"
 STATUS_ACTIVE = "active"  # 在 team 中，额度可用
 STATUS_EXHAUSTED = "exhausted"  # 在 team 中，额度用完
 STATUS_STANDBY = "standby"  # 已移出 team，等待额度恢复
+STATUS_STASHED = "stashed"  # 暂存，不参与自动处理
 STATUS_PENDING = "pending"  # 已邀请，等待注册完成
 STATUS_PERSONAL = "personal"  # 已主动退出 team，走个人号 Codex OAuth，不再参与 Team 轮转
 STATUS_PLUS = "plus"  # 已通过 GoPay/支付流程升级为 Plus，不再参与号池选择

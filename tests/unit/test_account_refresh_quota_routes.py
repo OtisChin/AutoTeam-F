@@ -102,6 +102,56 @@ def test_refresh_quota_applies_updates_in_input_order(tmp_path, monkeypatch):
     assert all(payload["status"] == "active" for _email, payload in updated)
 
 
+def test_refresh_quota_preserves_stashed_status_on_success(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {
+        "email": "user@example.com",
+        "auth_file": _auth_file(tmp_path, "stashed"),
+        "status": "stashed",
+        "account_type": "plus",
+    }
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda *_args, **_kwargs: ("ok", {"plan_type": "plus"}))
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    started[0]["func"]("task-refresh")
+
+    assert updated[0][0] == "user@example.com"
+    assert updated[0][1]["account_type"] == "plus"
+    assert "last_quota" in updated[0][1]
+    assert "status" not in updated[0][1]
+
+
+def test_refresh_quota_preserves_stashed_status_when_exhausted(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {
+        "email": "user@example.com",
+        "auth_file": _auth_file(tmp_path, "stashed-exhausted"),
+        "status": "stashed",
+        "account_type": "plus",
+    }
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.check_codex_quota",
+        lambda *_args, **_kwargs: ("exhausted", {"quota": {"plan_type": "plus", "primary_pct": 100}, "resets_at": 1785000000}),
+    )
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    started[0]["func"]("task-refresh")
+
+    assert updated[0][0] == "user@example.com"
+    assert updated[0][1]["quota_resets_at"] == 1785000000
+    assert "status" not in updated[0][1]
+
+
 def test_refresh_quota_marks_auth_error_accounts_fail(tmp_path, monkeypatch):
     started = []
     updated = []

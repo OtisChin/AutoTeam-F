@@ -426,6 +426,7 @@ function buildDashboardStatusFromAccounts(payload) {
   const computedSummary = {
     active: 0,
     standby: 0,
+    stashed: 0,
     exhausted: 0,
     pending: 0,
     auth_invalid: 0,
