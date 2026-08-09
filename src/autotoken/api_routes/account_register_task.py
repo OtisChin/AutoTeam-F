@@ -57,6 +57,7 @@ class ManualRegisterParams(BaseModel):
         validation_alias=AliasChoices("luckmail_preferred_domains", "luckmailPreferredDomains"),
     )
     post_register_oauth: bool = False
+    enable_totp_mfa: bool = Field(False, validation_alias=AliasChoices("enable_totp_mfa", "enableTotpMfa", "enable2fa", "enable2FA"))
     phone_only: bool = False
     protocol_register: bool = Field(False, validation_alias=AliasChoices("protocol_register", "protocolRegister"))
     use_roxybrowser: bool = Field(False, validation_alias=AliasChoices("use_roxybrowser", "useRoxyBrowser"))
@@ -144,6 +145,7 @@ def create_account_register_task_router(
         )
         phone_only = bool(params.phone_only)
         post_register_oauth = (registration_flow == "phone_cpa" and not phone_only) or bool(params.post_register_oauth)
+        enable_totp_mfa = bool(params.enable_totp_mfa)
         oauth_phone_sms_provider = (
             normalize_oauth_phone_sms_provider(params.oauth_phone_sms_provider)
             if params.oauth_phone_sms_provider
@@ -287,6 +289,7 @@ def create_account_register_task_router(
             "luckmail_preferred_domain": luckmail_preferred_domain or "",
             "luckmail_preferred_domains": luckmail_preferred_domains,
             "post_register_oauth": post_register_oauth,
+            "enable_totp_mfa": enable_totp_mfa,
             "phone_only": phone_only,
             "oauth_phone_sms_provider": oauth_phone_sms_provider or "<default>",
             "oauth_phone_sms_country": oauth_phone_sms_country or "",
@@ -322,6 +325,7 @@ def create_account_register_task_router(
                 luckmail_preferred_domain=luckmail_preferred_domain,
                 luckmail_preferred_domains=luckmail_preferred_domains,
                 post_register_oauth=post_register_oauth,
+                enable_totp_mfa=enable_totp_mfa,
                 phone_only=phone_only,
                 registration_flow=registration_flow,
                 register_mode=register_mode,
@@ -354,8 +358,12 @@ def create_account_register_task_router(
             luckmail_preferred_domain=luckmail_preferred_domain,
             luckmail_preferred_domains=luckmail_preferred_domains,
             post_register_oauth=post_register_oauth,
+            enable_totp_mfa=enable_totp_mfa,
             phone_only=phone_only,
             registration_flow=registration_flow,
+            register_mode=register_mode,
+            proxy_url=normalized_proxy_url,
+            use_roxybrowser=use_roxybrowser,
             oauth_phone_sms_provider=oauth_phone_sms_provider or None,
             oauth_phone_sms_country=oauth_phone_sms_country or None,
             oauth_phone_sms_max_price=oauth_phone_sms_max_price,

@@ -30,6 +30,7 @@ import threading
 import time
 from pathlib import Path
 
+from autotoken import accounts
 from autotoken.auth.auth_prompts import dismiss_passkey_prompt
 from autotoken.auth.codex_auth import (
     CodexOAuthPhoneRequired,
@@ -61,6 +62,7 @@ from autotoken.mail import TemporaryEmailClient
 from autotoken.services import account_presentation as account_presentation_service
 from autotoken.services import reconcile as reconcile_service
 from autotoken.services import registration, rotation, team_cleanup
+from autotoken.services.chatgpt_2fa_setup import ChatGPT2FASetupExecutor, ChatGPT2FASetupStatus
 from autotoken.settings.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
 from autotoken.settings.config import get_playwright_launch_options
 from autotoken.storage.account_ops import delete_managed_account, fetch_team_state
@@ -100,10 +102,70 @@ POST_REGISTER_OAUTH_ENABLED = os.environ.get("POST_REGISTER_OAUTH_ENABLED", "fal
 TEAM_INVITE_REGISTER_DISABLED_MESSAGE = (
     "Team invite / leave_workspace 注册链路已禁用；请改用独立直接注册，不再通过 Team 邀请或加入后退出 workspace 生产账号。"
 )
+REGISTER_RISK_BREAKER_STATUSES = {
+    "account_deactivated",
+    "auth_session_exception",
+    "auth_session_missing",
+    "exception",
+    "phone_blocked",
+    "phone_first_auth_failed",
+    "phone_first_exception",
+    "phone_first_failed",
+    "phone_only_auth_failed",
+    "phone_only_exception",
+    "phone_only_failed",
+    "register_failed",
+}
+REGISTER_RISK_BREAKER_REASON_KEYWORDS = (
+    "account_deactivated",
+    "add-phone",
+    "csrf http 403",
+    "dynamic proxy unavailable",
+    "http 403",
+    "phone verification",
+    "risk",
+    "动态代理不可用",
+    "风控",
+    "手机号验证",
+    "被阻断",
+)
 
 
 def _raise_team_invite_register_disabled():
     raise RuntimeError(TEAM_INVITE_REGISTER_DISABLED_MESSAGE)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0, maximum: int | None = None) -> int:
+    try:
+        value = int(str(os.environ.get(name, default)).strip())
+    except Exception:
+        value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _is_risky_register_failure(item: dict | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("status") in ("registered", "success"):
+        return False
+    status = str(item.get("status") or "").strip().lower()
+    if status in REGISTER_RISK_BREAKER_STATUSES:
+        return True
+    reason = " ".join(
+        str(item.get(key) or "")
+        for key in ("reason", "error", "message", "register_blocked_reason")
+    ).lower()
+    return any(keyword in reason for keyword in REGISTER_RISK_BREAKER_REASON_KEYWORDS)
 
 
 def _check_registration_email_registered(email, *, proxy_url=None, register_mode=None):
@@ -1815,7 +1877,134 @@ def _fetch_auth_session_from_page(
     return last_result
 
 
-def _save_auth_from_session_page(email, password, cloudmail_account_id, session_data, out_outcome=None, mail_provider=None):
+def _enable_totp_mfa_after_auth_session(
+    result: dict | None,
+    *,
+    page=None,
+    email: str = "",
+    email_code_provider=None,
+    session_data: dict | None = None,
+    progress_callback=None,
+):
+    if not isinstance(result, dict) or page is None:
+        return result
+    target_email = str(email or result.get("email") or "").strip()
+    if not target_email:
+        return result
+
+    executor = ChatGPT2FASetupExecutor(
+        page,
+        save_metadata=accounts.save_totp_metadata,
+        mark_recovery_required=accounts.mark_totp_recovery_required,
+        email_code_provider=email_code_provider,
+    )
+
+    def _progress(event):
+        if callable(progress_callback):
+            progress_callback(event)
+
+    setup_result = executor.enable(target_email, progress=_progress)
+    if setup_result.status == ChatGPT2FASetupStatus.SECRET_UNAVAILABLE:
+        retry_result = _retry_totp_mfa_with_fresh_auth_session(
+            target_email,
+            session_data=session_data,
+            email_code_provider=email_code_provider,
+            progress_callback=progress_callback,
+            browser=_page_browser(page),
+        )
+        if retry_result is not None:
+            setup_result = retry_result
+    result["two_factor"] = setup_result.to_public_dict()
+    return result
+
+
+def _retry_totp_mfa_with_fresh_auth_session(
+    email: str,
+    *,
+    session_data: dict | None,
+    email_code_provider=None,
+    progress_callback=None,
+    browser=None,
+):
+    if not isinstance(session_data, dict):
+        return None
+    cookies = session_data.get("cookies")
+    if not isinstance(cookies, list) or not cookies:
+        return None
+
+    def _run_with_browser(browser_obj):
+        context = browser_obj.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent=str(session_data.get("user_agent") or "")
+            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        )
+        try:
+            context.add_cookies(cookies)
+            retry_page = context.new_page()
+            executor = ChatGPT2FASetupExecutor(
+                retry_page,
+                save_metadata=accounts.save_totp_metadata,
+                mark_recovery_required=accounts.mark_totp_recovery_required,
+                email_code_provider=email_code_provider,
+            )
+
+            def _progress(event):
+                if callable(progress_callback):
+                    progress_callback(event)
+
+            return executor.enable(email, progress=_progress)
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
+
+    try:
+        if browser is not None:
+            return _run_with_browser(browser)
+
+        from playwright.sync_api import sync_playwright
+
+        playwright = sync_playwright().start()
+        launched_browser = None
+        try:
+            launch_kwargs = get_playwright_launch_options()
+            if sys.platform.startswith("win"):
+                launch_kwargs["slow_mo"] = 100
+            launched_browser = playwright.chromium.launch(**launch_kwargs)
+            return _run_with_browser(launched_browser)
+        finally:
+            try:
+                if launched_browser:
+                    launched_browser.close()
+            finally:
+                playwright.stop()
+    except Exception as exc:
+        logger.warning("[注册] fresh auth_session 重试 2FA 设置失败: %s", exc)
+        return None
+
+
+def _page_browser(page):
+    try:
+        context = getattr(page, "context", None)
+        browser = getattr(context, "browser", None)
+        return browser() if callable(browser) else browser
+    except Exception:
+        return None
+
+
+def _save_auth_from_session_page(
+    email,
+    password,
+    cloudmail_account_id,
+    session_data,
+    out_outcome=None,
+    mail_provider=None,
+    page=None,
+    enable_totp_mfa=False,
+    email_code_provider=None,
+    progress_callback=None,
+):
     """
     在已登录的 ChatGPT 页面里直接调用 /api/auth/session 提取 accessToken，
     并把完整 JSON 保存到 data/auth_session/<email>.json。
@@ -1893,13 +2082,23 @@ def _save_auth_from_session_page(email, password, cloudmail_account_id, session_
         cloudmail_account_id=cloudmail_account_id,
         mail_provider=mail_provider,
     )
-    return registration.free_codex_oauth_result(
+    result = registration.free_codex_oauth_result(
         email=email,
         auth_file=auth_file,
         password=password,
         cloudmail_account_id=cloudmail_account_id,
         mail_provider=mail_provider,
     )
+    if enable_totp_mfa:
+        _enable_totp_mfa_after_auth_session(
+            result,
+            page=page,
+            email=email,
+            email_code_provider=email_code_provider,
+            session_data=data,
+            progress_callback=progress_callback,
+        )
+    return result
 
 
 def _auth_session_payload_has_web_session(session_data) -> bool:
@@ -2753,6 +2952,75 @@ def _wait_for_direct_register_step(page, allowed_steps, timeout=15):
     return _detect_direct_register_step(page)
 
 
+def _is_cloudflare_challenge_page(page) -> bool:
+    url = (getattr(page, "url", "") or "").lower()
+    if "challenge" in url and ("openai.com" in url or "chatgpt.com" in url):
+        return True
+    try:
+        html = (page.content() or "")[:12000].lower()
+    except Exception:
+        html = ""
+    return (
+        "verify you are human" in html
+        or "正在进行安全验证" in html
+        or "请验证您是真人" in html
+        or "challenges.cloudflare.com" in html
+        or "cf-turnstile" in html
+    )
+
+
+def _try_click_cloudflare_turnstile(page) -> bool:
+    frame_selectors = [
+        'iframe[src*="challenges.cloudflare.com"]',
+        'iframe[title*="Cloudflare" i]',
+        'iframe[title*="challenge" i]',
+    ]
+    for frame_selector in frame_selectors:
+        try:
+            frame = page.frame_locator(frame_selector).first
+            for selector in [
+                'input[type="checkbox"]',
+                'label',
+                'button',
+                '[role="checkbox"]',
+            ]:
+                locator = frame.locator(selector).first
+                if locator.is_visible(timeout=1000):
+                    locator.click(timeout=3000, force=True)
+                    return True
+        except Exception:
+            pass
+
+    for frame_selector in frame_selectors:
+        try:
+            iframe = page.locator(frame_selector).first
+            if not iframe.is_visible(timeout=1000):
+                continue
+            box = iframe.bounding_box()
+            if not box:
+                continue
+            page.mouse.click(box["x"] + min(32, box["width"] / 2), box["y"] + box["height"] / 2)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def _wait_for_cloudflare_challenge(page, *, stage: str, timeout=90) -> bool:
+    """Wait through Cloudflare interstitials that can appear between auth steps."""
+    deadline = time.time() + max(1, int(timeout or 90))
+    clicked = False
+    while time.time() < deadline:
+        if not _is_cloudflare_challenge_page(page):
+            return True
+        if not clicked:
+            logger.info("[直接注册] %s 检测到 Cloudflare 验证，尝试触发验证控件", stage)
+            clicked = _try_click_cloudflare_turnstile(page)
+        time.sleep(3)
+    logger.warning("[直接注册] %s Cloudflare 验证等待超时 | URL: %s", stage, page.url)
+    return not _is_cloudflare_challenge_page(page)
+
+
 def _wait_for_direct_step_change(page, current_step, timeout=15):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -2920,6 +3188,9 @@ def _register_direct_once(
     return_session=False,
     proxy_url=None,
     use_roxybrowser=False,
+    enable_totp_mfa=False,
+    progress_callback=None,
+    out_outcome=None,
 ):
     """执行一次直接注册，返回是否完成注册并进入 Team。
 
@@ -2973,7 +3244,7 @@ def _register_direct_once(
                 window_name=f"autotoken-register-{random.randint(100000, 999999)}",
                 proxy_url=proxy_url,
                 clear_profile_data=True,
-                force_new_profile=False,
+                force_new_profile=_env_flag("REGISTER_ROXYBROWSER_FORCE_NEW_PROFILE", False),
             )
             stack.callback(_cleanup_roxybrowser)
             p = sync_playwright().start()
@@ -3002,8 +3273,32 @@ def _register_direct_once(
             )
             page = context.new_page()
         auth_context_state = _new_auth_context_capture_state()
+        used_email_codes: set[str] = set()
         page.on("request", lambda request: _capture_auth_context_request(request, auth_context_state))
         page.on("response", lambda response: _capture_auth_context_response(response, auth_context_state))
+
+        def _recent_auth_email_code_provider(target_email: str, *, issued_after=None) -> str:
+            code_timeout = _direct_register_code_timeout(mail_client, target_email)
+            deadline = time.time() + max(30, min(180, int(code_timeout or 90)))
+            while time.time() < deadline:
+                try:
+                    emails = mail_client.search_emails_by_recipient(
+                        target_email,
+                        size=10,
+                        account_id=cloudmail_account_id,
+                    )
+                except Exception:
+                    emails = []
+                for item in emails or []:
+                    try:
+                        code = str(mail_client.extract_verification_code(item) or "").strip()
+                    except Exception:
+                        code = ""
+                    if code and code not in used_email_codes:
+                        used_email_codes.add(code)
+                        return code
+                time.sleep(3)
+            return ""
 
         def _finish(success, session_data=None):
             try:
@@ -3035,12 +3330,7 @@ def _register_direct_once(
 
         time.sleep(5)
 
-        for i in range(12):
-            html = page.content()[:2000].lower()
-            if "verify you are human" not in html and "challenge" not in page.url:
-                break
-            logger.info("[直接注册] 等待 Cloudflare... (%ds)", i * 5)
-            time.sleep(5)
+        _wait_for_cloudflare_challenge(page, stage="打开登录页后", timeout=60)
 
         _safe_invite_screenshot(page, "direct_01_login_page.png")
 
@@ -3268,6 +3558,7 @@ def _register_direct_once(
                 time.sleep(3)
 
             if verification_code:
+                used_email_codes.add(str(verification_code).strip())
                 logger.info("[直接注册] 输入验证码: %s", verification_code)
                 if not _fill_direct_verification_code(page, verification_code):
                     logger.warning("[直接注册] 未找到验证码输入框 | URL: %s | body=%s", page.url, _page_excerpt(page))
@@ -3277,6 +3568,7 @@ def _register_direct_once(
                 anchor = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=800)
                 _click_primary_auth_button(page, anchor, _DIRECT_CODE_CONTINUE_LABELS)
                 time.sleep(8)
+                _wait_for_cloudflare_challenge(page, stage="提交邮箱验证码后", timeout=90)
             else:
                 logger.error("[直接注册] %ss 内未收到验证码 provider=%s email=%s", code_timeout, provider_name or "<unknown>", email)
                 if provider_name == "outlook":
@@ -3291,6 +3583,7 @@ def _register_direct_once(
 
         _safe_invite_screenshot(page, "direct_05_after_code.png")
         logger.info("[直接注册] 当前 URL: %s", page.url)
+        _wait_for_cloudflare_challenge(page, stage="进入资料页前", timeout=90)
 
         try:
             assert_not_blocked(page, "code_submit")
@@ -3331,6 +3624,21 @@ def _register_direct_once(
         session_data = None
         if success and return_session:
             session_data = _fetch_auth_session_from_page(page, context, auth_context_state)
+            if enable_totp_mfa and isinstance(session_data, dict):
+                saved_auth = _save_auth_from_session_page(
+                    email,
+                    password,
+                    cloudmail_account_id,
+                    session_data,
+                    out_outcome=out_outcome,
+                    mail_provider=_mail_client_provider_name(mail_client) or None,
+                    page=page,
+                    enable_totp_mfa=True,
+                    email_code_provider=_recent_auth_email_code_provider,
+                    progress_callback=progress_callback,
+                )
+                if saved_auth:
+                    session_data["_saved_auth_result"] = saved_auth
 
         return _finish(success, session_data)
 
@@ -3345,6 +3653,7 @@ def create_account_direct(
     domain=None,
     skip_post_register=False,
     post_register_oauth=None,
+    enable_totp_mfa=False,
     check_team_membership=True,
     progress_callback=None,
     register_mode="browser",
@@ -3665,6 +3974,9 @@ def create_account_direct(
                     return_session=not check_team_membership,
                     proxy_url=proxy_url,
                     use_roxybrowser=use_roxybrowser,
+                    enable_totp_mfa=enable_totp_mfa,
+                    progress_callback=progress_callback,
+                    out_outcome=out_outcome,
                 )
             if not check_team_membership:
                 success, session_data = result
@@ -3816,14 +4128,18 @@ def create_account_direct(
                 try:
                     logger.info("[注册] 独立注册成功，开始调用 /api/auth/session 保存 auth_session: %s", email)
                     _progress("register_auth_session_fetch", f"正在保存 auth_session: {email}", email=email)
-                    session_auth = _save_auth_from_session_page(
-                        email,
-                        password,
-                        account_id,
-                        session_data,
-                        out_outcome=out_outcome,
-                        mail_provider=_mail_client_provider_name(mail_client) or None,
-                    )
+                    session_auth = (session_data or {}).get("_saved_auth_result") if isinstance(session_data, dict) else None
+                    if not session_auth:
+                        session_auth = _save_auth_from_session_page(
+                            email,
+                            password,
+                            account_id,
+                            session_data,
+                            out_outcome=out_outcome,
+                            mail_provider=_mail_client_provider_name(mail_client) or None,
+                            enable_totp_mfa=enable_totp_mfa,
+                            progress_callback=progress_callback,
+                        )
                     if session_auth:
                         if not post_register_oauth_enabled:
                             logger.info("[注册] auth_session 已保存，注册后 Codex OAuth 已禁用: %s", email)
@@ -4677,6 +4993,7 @@ def cmd_register_accounts(
     domain=None,
     domains=None,
     post_register_oauth=False,
+    enable_totp_mfa=False,
     mail_provider=None,
     luckmail_email_type=None,
     luckmail_preferred_domain=None,
@@ -4726,6 +5043,14 @@ def cmd_register_accounts(
     next_index = 0
     index_lock = threading.Lock()
     progress_lock = threading.Lock()
+    abort_event = threading.Event()
+    risk_breaker_enabled = _env_flag("REGISTER_RISK_BREAKER_ENABLED", True)
+    risk_breaker_threshold = _env_int("REGISTER_RISK_BREAKER_CONSECUTIVE_FAILURES", 3, minimum=1, maximum=50)
+    risk_state = {
+        "consecutive": 0,
+        "triggered": False,
+        "reason": "",
+    }
     progress = {
         "total": total,
         "completed": 0,
@@ -4885,10 +5210,15 @@ def cmd_register_accounts(
     def _worker(worker_id):
         nonlocal next_index
         logger.info("[注册账号] worker-%d 已启动", worker_id)
+        if workers > 1 and spacing > 0:
+            initial_stagger = (spacing / workers) * (worker_id - 1)
+            if initial_stagger > 0:
+                logger.info("[注册账号] worker-%d 初始错峰 %.1fs 后开始", worker_id, initial_stagger)
+                time.sleep(initial_stagger)
 
         while True:
             with index_lock:
-                if next_index >= total:
+                if abort_event.is_set() or next_index >= total:
                     break
                 job_index = next_index
                 next_index += 1
@@ -4923,6 +5253,7 @@ def cmd_register_accounts(
                     domain=job_domain,
                     skip_post_register=not post_register_oauth,
                     post_register_oauth=post_register_oauth,
+                    enable_totp_mfa=enable_totp_mfa,
                     check_team_membership=False,
                     register_mode=register_mode,
                     registration_flow=registration_flow,
@@ -4953,9 +5284,48 @@ def cmd_register_accounts(
                     progress["completed"] += 1
                     if is_ok:
                         progress["ok"] += 1
+                        risk_state["consecutive"] = 0
                     else:
                         progress["failed"] += 1
+                        if risk_breaker_enabled and _is_risky_register_failure(item):
+                            risk_state["consecutive"] += 1
+                            if (
+                                not risk_state["triggered"]
+                                and risk_state["consecutive"] >= risk_breaker_threshold
+                            ):
+                                risk_state["triggered"] = True
+                                risk_state["reason"] = str(
+                                    item.get("reason")
+                                    or item.get("error")
+                                    or item.get("status")
+                                    or "连续高风险注册失败"
+                                )
+                                abort_event.set()
+                                logger.error(
+                                    "[注册账号] 风控熔断已触发：连续 %d 个高风险失败，停止提交新账号；reason=%s",
+                                    risk_state["consecutive"],
+                                    risk_state["reason"],
+                                )
+                                if progress_callback:
+                                    progress_callback(
+                                        {
+                                            "stage": "register_circuit_breaker_opened",
+                                            "message": (
+                                                f"连续 {risk_state['consecutive']} 个高风险注册失败，"
+                                                "已停止提交后续账号"
+                                            ),
+                                            "level": "error",
+                                            "consecutive_risky_failures": risk_state["consecutive"],
+                                            "threshold": risk_breaker_threshold,
+                                            "reason": risk_state["reason"],
+                                        }
+                                    )
+                        else:
+                            risk_state["consecutive"] = 0
                     _emit_progress()
+
+            if abort_event.is_set():
+                break
 
             if job_index + 1 < total:
                 sleep_seconds = spacing
@@ -4973,16 +5343,29 @@ def cmd_register_accounts(
     for t in threads:
         t.join()
 
+    if risk_state["triggered"]:
+        skipped_reason = (
+            f"注册风控熔断：连续 {risk_state['consecutive']} 个高风险失败，"
+            f"停止后续账号；last_reason={risk_state['reason']}"
+        )
+        for idx, item in enumerate(results):
+            if item is None:
+                results[idx] = {
+                    "status": "skipped_circuit_breaker",
+                    "reason": skipped_reason,
+                }
+
     normalized_results = [item or {"status": "failed", "reason": "unknown"} for item in results]
     ok = [item for item in normalized_results if isinstance(item, dict) and item.get("status") in ("registered", "success")]
     logger.info(
-        "[注册账号] 完成: 成功 %d / %d (并发=%d, 固定间隔=%.1fs, 抖动=%.1f-%.1fs)",
+        "[注册账号] 完成: 成功 %d / %d (并发=%d, 固定间隔=%.1fs, 抖动=%.1f-%.1fs, 风控熔断=%s)",
         len(ok),
         len(normalized_results),
         workers,
         spacing,
         jitter_min,
         jitter_max,
+        "是" if risk_state["triggered"] else "否",
     )
     return {
         "count": len(normalized_results),
@@ -4992,6 +5375,9 @@ def cmd_register_accounts(
         "interval_seconds": spacing,
         "jitter_min_seconds": jitter_min,
         "jitter_max_seconds": jitter_max,
+        "circuit_breaker_triggered": bool(risk_state["triggered"]),
+        "circuit_breaker_reason": risk_state["reason"],
+        "circuit_breaker_consecutive_failures": risk_state["consecutive"],
         "results": normalized_results,
     }
 

@@ -197,6 +197,7 @@ PAYPAL_COUNTRY_BILLING_PRESETS = {
 PAYPAL_COUNTRY_BILLING_ALIASES = {
     "BA": "DE",
     "BR": "DE",
+    "ID": "DE",
     "TH": "DE",
 }
 

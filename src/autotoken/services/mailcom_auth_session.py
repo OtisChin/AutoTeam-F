@@ -47,7 +47,7 @@ def login_mailcom_auth_session_once(
     from autotoken.auth.protocol_register import login_once
     from autotoken.core.normalization import normalized_email
     from autotoken.mail.mailcom import MailComMailProvider
-    from autotoken.storage import auth_session_store, mail_accounts
+    from autotoken.storage import accounts, auth_session_store, mail_accounts
 
     normalized = normalized_email(email)
     if not normalized:
@@ -76,6 +76,7 @@ def login_mailcom_auth_session_once(
             email=normalized,
             password=password,
             account_id=normalized,
+            totp_secret=((accounts.get_totp_credentials(normalized) or {}).get("secret") or None),
             progress_callback=progress_callback,
         )
 

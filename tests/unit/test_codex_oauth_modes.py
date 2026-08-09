@@ -1660,3 +1660,41 @@ def test_roxybrowser_register_dynamic_proxy_skips_http_csrf_probe(monkeypatch):
     assert captured["kwargs"]["use_roxybrowser"] is True
     assert not any(event["stage"] == "register_proxy_api_probe_failed" for event in progress_events)
     assert any(event["stage"] == "register_proxy_api_selected" and event["proxy_attempt"] == 1 for event in progress_events)
+
+
+def test_register_accounts_stops_after_risky_failure_burst(monkeypatch):
+    calls = []
+    progress_events = []
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_create_account_direct(mail_client, **kwargs):
+        calls.append(kwargs)
+        kwargs["out_outcome"].update(
+            status="account_deactivated",
+            reason="OpenAI 返回 account_deactivated",
+        )
+        return None
+
+    monkeypatch.setenv("REGISTER_RISK_BREAKER_CONSECUTIVE_FAILURES", "2")
+    monkeypatch.setattr(manager, "TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr(manager, "create_account_direct", fake_create_account_direct)
+
+    result = manager.cmd_register_accounts(
+        count=4,
+        concurrency=1,
+        interval_seconds=0,
+        jitter_min_seconds=0,
+        jitter_max_seconds=0,
+        progress_callback=progress_events.append,
+    )
+
+    assert len(calls) == 2
+    assert result["ok"] == 0
+    assert result["failed"] == 4
+    assert result["circuit_breaker_triggered"] is True
+    assert result["results"][2]["status"] == "skipped_circuit_breaker"
+    assert result["results"][3]["status"] == "skipped_circuit_breaker"
+    assert any(event["stage"] == "register_circuit_breaker_opened" for event in progress_events)

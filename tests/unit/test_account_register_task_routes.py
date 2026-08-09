@@ -293,3 +293,53 @@ def test_post_add_mailcom_does_not_require_register_domain(monkeypatch):
     assert started[0]["kwargs"]["mail_provider"] == "mail.com"
     assert started[0]["func"]("task-register") == {"created": 1}
     assert calls[0]["mail_provider"] == "mail.com"
+
+
+def test_post_add_enable_totp_mfa_flag_passes_to_register_command(monkeypatch):
+    started = []
+    calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+
+    routes = _routes(started)
+    result = routes["post_add"](ManualRegisterParams(enable2fa=True))
+
+    assert result["params"]["enable_totp_mfa"] is True
+    assert started[0]["kwargs"]["enable_totp_mfa"] is True
+    assert started[0]["func"]("task-register") == {"created": 1}
+    assert calls[0]["enable_totp_mfa"] is True
+
+
+def test_post_add_passes_use_roxybrowser_and_enable_totp_to_register_worker(monkeypatch):
+    started = []
+    calls = []
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domains", lambda: ["example.com"])
+    monkeypatch.setattr("autotoken.runtime_config.get_register_domain", lambda: "example.com")
+    monkeypatch.setattr("autotoken.identity.random_password", lambda: "generated-pass")
+    monkeypatch.setattr("autotoken.setup_wizard.get_mail_provider", lambda value=None: value or "cloudmail")
+    monkeypatch.setattr("autotoken.manager.cmd_register_accounts", lambda **kwargs: calls.append(kwargs) or {"created": 1})
+
+    class AvailableRoxyClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def list_workspaces(self):
+            return [{"id": "workspace-1", "name": "Default"}]
+
+    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"})
+    monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", AvailableRoxyClient)
+
+    routes = _routes(started)
+    result = routes["post_add"](ManualRegisterParams(useRoxyBrowser=True, enable2FA=True))
+
+    assert result["params"]["register_mode"] == "browser"
+    assert result["params"]["use_roxybrowser"] is True
+    assert result["params"]["enable_totp_mfa"] is True
+    assert started[0]["kwargs"]["use_roxybrowser"] is True
+    assert started[0]["kwargs"]["enable_totp_mfa"] is True
+    assert started[0]["func"]("task-register") == {"created": 1}
+    assert calls[0]["use_roxybrowser"] is True
+    assert calls[0]["enable_totp_mfa"] is True

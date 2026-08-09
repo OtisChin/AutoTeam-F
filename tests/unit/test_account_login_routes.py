@@ -665,3 +665,27 @@ def test_post_mail_accounts_login_auth_session_uses_plain_chatgpt_login_not_oaut
     assert task_result["ok"] == [{"email": "finished@mail.com", "status": "success"}]
     assert task_result["failed"] == []
     assert captured == [("finished@mail.com", {"progress_callback": captured[0][1]["progress_callback"]})]
+
+
+def test_single_account_login_passes_totp_secret_when_account_has_2fa(monkeypatch):
+    started = []
+    account = {"email": "totp@example.com", "password": "pw", "two_factor_enabled": True}
+    captured = {}
+
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "totp@example.com" else None)
+
+    def fake_run(email, acc, **kwargs):
+        captured.update({"email": email, "acc": acc, "kwargs": kwargs})
+        return {"status": "success"}
+
+    routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_run)
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.get_totp_credentials",
+        lambda email: {"secret": ("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ")} if email == "totp@example.com" else None,
+    )
+
+    response = routes["post_account_login"](LoginAccountParams(email="totp@example.com"))
+    assert response["task_id"] == "task-1"
+    assert started[0]["func"]("task-1") == {"status": "success"}
+    assert captured["kwargs"]["totp_secret"] == ("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ")

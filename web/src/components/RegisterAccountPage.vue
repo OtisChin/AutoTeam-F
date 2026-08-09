@@ -192,6 +192,28 @@
             </span>
           </label>
 
+          <label
+            class="flex items-start gap-2 rounded-lg border px-3 py-2 text-sm"
+            :class="isPhoneCpaFlow
+              ? 'border-gray-800 bg-gray-900/50 text-gray-500'
+              : 'border-cyan-500/20 bg-cyan-500/10 text-gray-300'"
+          >
+            <input
+              v-model="registerForm.enableTotpMfa"
+              type="checkbox"
+              :disabled="registeringBusy || isPhoneCpaFlow"
+              class="mt-1 rounded border-gray-600 bg-gray-800"
+            />
+            <span>
+              <span :class="isPhoneCpaFlow ? 'text-gray-400' : 'text-cyan-100'">注册后启用官方 2FA / TOTP</span>
+              <span class="block text-xs" :class="isPhoneCpaFlow ? 'text-gray-500' : 'text-cyan-200/80'">
+                {{ isPhoneCpaFlow
+                  ? '当前手机号注册链路暂不支持自动启用 2FA；切回“邮箱注册”后可勾选。'
+                  : '通过 ChatGPT 官方安全设置启用 Authenticator app，并只在本地保存 masked 状态；raw secret 默认不导出。' }}
+              </span>
+            </span>
+          </label>
+
           <div v-if="isPhoneCpaFlow || registerForm.postRegisterOauth" class="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-3 text-sm text-gray-300 space-y-3">
             <div class="grid grid-cols-2 gap-3">
               <div>
@@ -1200,6 +1222,7 @@ const registerForm = ref({
   protocolRegister: false,
   useRoxyBrowser: false,
   postRegisterOauth: false,
+  enableTotpMfa: false,
   phoneOnly: false,
   oauthPhoneSmsProvider: 'phone_pool',
   oauthPhoneSmsCountry: '187',
@@ -2014,6 +2037,7 @@ function loadSavedRegisterForm() {
       useRoxyBrowser: Boolean(saved.useRoxyBrowser),
       protocolRegister: Boolean(saved.protocolRegister) && !Boolean(saved.useRoxyBrowser),
       postRegisterOauth: Boolean(saved.postRegisterOauth),
+      enableTotpMfa: Boolean(saved.enableTotpMfa),
       phoneOnly: Boolean(saved.phoneOnly),
       oauthPhoneSmsProvider: savedOauthPhoneSmsProvider,
       oauthPhoneSmsCountry: savedOauthPhoneSmsCountry,
@@ -2066,6 +2090,7 @@ function saveRegisterForm() {
       protocolRegister: Boolean(registerForm.value.protocolRegister),
       useRoxyBrowser: Boolean(registerForm.value.useRoxyBrowser),
       postRegisterOauth: Boolean(registerForm.value.postRegisterOauth),
+      enableTotpMfa: Boolean(registerForm.value.enableTotpMfa),
       phoneOnly: Boolean(registerForm.value.phoneOnly),
       oauthPhoneSmsProvider: oauthProvider,
       oauthPhoneSmsCountry: isCdkOAuthPhoneProvider(oauthProvider) ? '' : (oauthCountry || '187'),
@@ -2400,6 +2425,7 @@ async function submitManualRegister() {
       password: registerForm.value.password || null,
       protocol_register: isPhoneCpaFlow.value || (!Boolean(registerForm.value.useRoxyBrowser) && Boolean(registerForm.value.protocolRegister)),
       use_roxybrowser: !isPhoneCpaFlow.value && Boolean(registerForm.value.useRoxyBrowser),
+      enable2fa: !isPhoneCpaFlow.value && Boolean(registerForm.value.enableTotpMfa),
       phone_only: isPhoneCpaFlow.value && Boolean(registerForm.value.phoneOnly),
       post_register_oauth: (isPhoneCpaFlow.value && !Boolean(registerForm.value.phoneOnly)) || Boolean(registerForm.value.postRegisterOauth),
       oauth_phone_sms_provider: oauthUsesProvider ? oauthProvider : '',

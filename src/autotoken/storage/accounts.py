@@ -11,6 +11,7 @@ from pathlib import Path
 
 from autotoken.core.normalization import normalized_email as _core_normalized_email
 from autotoken.core.paths import PROJECT_ROOT
+from autotoken.services.totp import TOTPSecretError, mask_totp_secret, normalize_totp_secret
 from autotoken.settings.admin_state import get_admin_email
 from autotoken.storage import sqlite_store
 
@@ -42,6 +43,10 @@ SEAT_UNKNOWN = "unknown"  # 未知/未记录,老账号或手动导入默认值
 
 ACCOUNT_SOURCE_MANAGED = "managed"
 ACCOUNT_SOURCE_AUTH_SESSION_STUB = "auth_session_stub"
+
+TOTP_STATUS_DISABLED = "disabled"
+TOTP_STATUS_ENABLED = "enabled"
+TOTP_STATUS_RECOVERY_REQUIRED = "recovery_required"
 _accounts_write_lock = threading.RLock()
 
 def _normalized_email(value):
@@ -102,10 +107,23 @@ def _normalize_account_record(account: dict) -> dict:
     acc.setdefault("credentials_exported", False)
     acc.setdefault("credentials_exported_at", None)
     acc.setdefault("account_source", ACCOUNT_SOURCE_MANAGED)
+    acc.setdefault("two_factor_enabled", False)
+    acc.setdefault("totp_status", TOTP_STATUS_DISABLED)
+    acc.setdefault("totp_secret_masked", "")
+    acc.setdefault("totp_enabled_at", None)
+    acc.setdefault("totp_issuer", "")
+    acc.setdefault("totp_factor_label", "")
     return acc
 
 
-def _row_to_account(row) -> dict:
+def _public_account(account: dict) -> dict:
+    public = dict(account or {})
+    public.pop("totp_secret", None)
+    public.pop("totp_otpauth_uri", None)
+    return public
+
+
+def _row_to_account(row, *, include_private: bool = False) -> dict:
     data = {}
     try:
         data = json.loads(row["data"] or "{}")
@@ -129,7 +147,8 @@ def _row_to_account(row) -> dict:
             "updated_at": row["updated_at"],
         }
     )
-    return _normalize_account_record(data)
+    normalized = _normalize_account_record(data)
+    return normalized if include_private else _public_account(normalized)
 
 
 def _upsert_account(conn, account: dict) -> None:
@@ -175,12 +194,12 @@ def _upsert_account(conn, account: dict) -> None:
     )
 
 
-def _get_account_by_email(conn, email: str) -> dict | None:
+def _get_account_by_email(conn, email: str, *, include_private: bool = False) -> dict | None:
     target = _normalized_email(email)
     if not target:
         return None
     row = conn.execute("SELECT * FROM accounts WHERE email = ?", (target,)).fetchone()
-    return _row_to_account(row) if row else None
+    return _row_to_account(row, include_private=include_private) if row else None
 
 
 def load_accounts():
@@ -218,7 +237,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
     with _accounts_write_lock:
         sqlite_store.initialize(_db_path())
         with sqlite_store.connect(_db_path()) as conn:
-            existing = _get_account_by_email(conn, normalized)
+            existing = _get_account_by_email(conn, normalized, include_private=True)
             if existing:
                 changed = False
                 # 已存在仍允许补写注册来源信息。auth_session stub 由真实注册流程接管后恢复为 managed。
@@ -289,7 +308,7 @@ def ensure_session_only_account(email):
     with _accounts_write_lock:
         sqlite_store.initialize(_db_path())
         with sqlite_store.connect(_db_path()) as conn:
-            existing = _get_account_by_email(conn, normalized)
+            existing = _get_account_by_email(conn, normalized, include_private=True)
             if existing:
                 if (
                     existing.get("account_source") == ACCOUNT_SOURCE_AUTH_SESSION_STUB
@@ -317,8 +336,8 @@ def ensure_session_only_account(email):
                             changed = True
                     if changed:
                         _upsert_account(conn, existing)
-                        existing = _get_account_by_email(conn, normalized) or existing
-                return existing
+                        existing = _get_account_by_email(conn, normalized, include_private=True) or existing
+                return _public_account(existing)
 
             stub = {
                 "email": normalized,
@@ -388,11 +407,11 @@ def update_account(email, **kwargs):
     with _accounts_write_lock:
         sqlite_store.initialize(_db_path())
         with sqlite_store.connect(_db_path()) as conn:
-            acc = _get_account_by_email(conn, email)
+            acc = _get_account_by_email(conn, email, include_private=True)
             if acc:
                 acc.update(kwargs)
                 _upsert_account(conn, acc)
-                return _get_account_by_email(conn, email) or acc
+                return _get_account_by_email(conn, email) or _public_account(acc)
             return None
 
 
@@ -405,10 +424,10 @@ def replace_account_email(old_email, new_email, **kwargs):
     with _accounts_write_lock:
         sqlite_store.initialize(_db_path())
         with sqlite_store.connect(_db_path()) as conn:
-            old_acc = _get_account_by_email(conn, old_target)
+            old_acc = _get_account_by_email(conn, old_target, include_private=True)
             if not old_acc:
                 return None
-            existing_new = _get_account_by_email(conn, new_target)
+            existing_new = _get_account_by_email(conn, new_target, include_private=True)
             merged = dict(existing_new or {})
             merged.update(old_acc)
             merged.update(kwargs)
@@ -416,7 +435,7 @@ def replace_account_email(old_email, new_email, **kwargs):
             _upsert_account(conn, merged)
             if old_target != new_target:
                 conn.execute("DELETE FROM accounts WHERE email = ?", (old_target,))
-            return _get_account_by_email(conn, new_target) or merged
+            return _get_account_by_email(conn, new_target) or _public_account(merged)
 
 
 def delete_account(email):
@@ -468,3 +487,77 @@ def get_next_reusable_account():
     if standby:
         return standby[0]
     return None
+
+def save_totp_metadata(
+    email: str,
+    *,
+    secret: str,
+    otpauth_uri: str = "",
+    issuer: str = "",
+    factor_label: str = "",
+    enabled_at: float | None = None,
+    status: str = TOTP_STATUS_ENABLED,
+) -> dict | None:
+    """Persist account-level TOTP credentials and return the public account view."""
+    try:
+        normalized_secret = normalize_totp_secret(secret)
+    except TOTPSecretError as exc:
+        raise ValueError(str(exc)) from exc
+
+    target = _normalized_email(email)
+    if not target:
+        return None
+
+    with _accounts_write_lock:
+        sqlite_store.initialize(_db_path())
+        with sqlite_store.connect(_db_path()) as conn:
+            acc = _get_account_by_email(conn, target, include_private=True)
+            if not acc:
+                return None
+            acc.update(
+                {
+                    "two_factor_enabled": status == TOTP_STATUS_ENABLED,
+                    "totp_status": status,
+                    "totp_secret": normalized_secret,
+                    "totp_secret_masked": mask_totp_secret(normalized_secret),
+                    "totp_otpauth_uri": str(otpauth_uri or ""),
+                    "totp_issuer": str(issuer or ""),
+                    "totp_factor_label": str(factor_label or ""),
+                    "totp_enabled_at": enabled_at if enabled_at is not None else time.time(),
+                }
+            )
+            _upsert_account(conn, acc)
+            return _get_account_by_email(conn, target)
+
+
+def mark_totp_recovery_required(email: str) -> dict | None:
+    """Record that remote MFA is enabled but the local secret is unavailable."""
+    return update_account(
+        email,
+        two_factor_enabled=True,
+        totp_status=TOTP_STATUS_RECOVERY_REQUIRED,
+        totp_secret_masked="",
+        totp_enabled_at=time.time(),
+    )
+
+
+def get_totp_credentials(email: str) -> dict | None:
+    """Return raw TOTP credentials for privileged login/setup handlers only."""
+    target = _normalized_email(email)
+    if not target:
+        return None
+    sqlite_store.initialize(_db_path())
+    with sqlite_store.connect(_db_path()) as conn:
+        acc = _get_account_by_email(conn, target, include_private=True)
+    if not acc or not acc.get("two_factor_enabled") or not acc.get("totp_secret"):
+        return None
+    return {
+        "email": target,
+        "secret": str(acc.get("totp_secret") or ""),
+        "masked_secret": str(acc.get("totp_secret_masked") or ""),
+        "otpauth_uri": str(acc.get("totp_otpauth_uri") or ""),
+        "issuer": str(acc.get("totp_issuer") or ""),
+        "factor_label": str(acc.get("totp_factor_label") or ""),
+        "enabled_at": acc.get("totp_enabled_at"),
+        "status": str(acc.get("totp_status") or TOTP_STATUS_DISABLED),
+    }

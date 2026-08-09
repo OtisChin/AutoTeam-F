@@ -31,3 +31,29 @@ def test_mailcom_auth_session_login_promotes_pending_pool_account(monkeypatch, t
     assert account["password"] == "gpt-pass"
     assert account["mail_provider"] == "mail.com"
     assert account["seat_type"] == accounts.SEAT_CODEX
+
+
+def test_mailcom_auth_session_login_passes_stored_totp_secret(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", tmp_path / "auth_session")
+    monkeypatch.setattr(accounts, "get_admin_email", lambda: "")
+
+    mail_accounts.import_mail_accounts("totp@mail.com----mail-pass----gpt-pass")
+    mail_accounts.sync_mail_accounts_to_account_pool(["totp@mail.com"])
+    accounts.save_totp_metadata("totp@mail.com", secret=("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ"))
+    captured = {}
+
+    class FakeMailComProvider:
+        def login(self):
+            return None
+
+    def fake_login_once(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"user": {"email": "totp@mail.com"}, "access_token": "at"}
+
+    monkeypatch.setattr("autotoken.mail.mailcom.MailComMailProvider", FakeMailComProvider)
+    monkeypatch.setattr("autotoken.auth.protocol_register.login_once", fake_login_once)
+
+    login_mailcom_auth_session_once("totp@mail.com")
+
+    assert captured["totp_secret"] == ("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ")

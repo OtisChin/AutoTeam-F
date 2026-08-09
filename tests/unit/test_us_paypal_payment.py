@@ -91,7 +91,7 @@ def test_create_express_billing_agreement_returns_ba_url():
         ("AU", "AUD", "AU"),
         ("CA", "CAD", "CA"),
         ("GB", "GBP", "GB"),
-        ("ID", "IDR", "ID"),
+        ("ID", "EUR", "DE"),
         ("JP", "JPY", "JP"),
         ("MX", "MXN", "MX"),
         ("PH", "PHP", "PH"),

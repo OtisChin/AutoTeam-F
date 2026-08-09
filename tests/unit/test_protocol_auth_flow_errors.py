@@ -1033,3 +1033,58 @@ def test_codex_rt_exchange_preserves_add_phone_failure_reason(monkeypatch):
     assert flow.oauth_codex_rt_exchange(mail_provider=None) is False
     assert "add-phone/send 失败" in flow._last_codex_oauth_error
     assert "too many phone verification requests" in flow._last_codex_oauth_error
+
+
+def test_protocol_login_handles_totp_challenge_after_password(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeMailProvider:
+        pass
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    flow.check_proxy = lambda: True
+    flow.get_csrf_token = lambda: "csrf"
+    flow.get_auth_url = lambda _csrf: "https://auth.openai.test/authorize"
+    flow.auth_oauth_init = lambda _url: "device"
+    flow.get_sentinel_token = lambda _device_id: "sentinel"
+    flow.authorize_continue = lambda **_kwargs: {
+        "page": {"type": "login_password", "payload": {}},
+        "continue_url": "https://auth.openai.com/log-in/password",
+    }
+    flow.login_password_verify = lambda _password: {
+        "page": {"type": "totp_verification", "payload": {}},
+        "continue_url": "https://auth.openai.com/mfa/totp",
+    }
+    flow._handle_totp_challenge = lambda **kwargs: "https://chatgpt.com/api/auth/callback?code=abc&state=state"
+    flow.follow_redirect_chain = lambda _url: ("https://chatgpt.com/api/auth/callback?code=abc&state=state", "https://chatgpt.com")
+    flow.get_auth_session = lambda: (
+        setattr(flow.result, "session_token", "session-token"),
+        setattr(flow.result, "access_token", "access-token"),
+    )
+    flow.oauth_codex_rt_exchange = lambda mail_provider=None: True
+    flow._totp_secret = ("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ")
+
+    result = flow.run_protocol_login(FakeMailProvider(), "user@example.com", password="pw")
+
+    assert result.is_valid()
+    assert result.session_token == "session-token"
+
+
+def test_protocol_login_totp_challenge_requires_stored_secret(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+
+    try:
+        flow._handle_totp_challenge(continue_url="https://auth.openai.com/mfa/totp", page_type="totp_verification")
+    except RuntimeError as exc:
+        assert "TOTP" in str(exc)
+        assert "secret" in str(exc)
+    else:
+        raise AssertionError("missing TOTP secret should fail explicitly")

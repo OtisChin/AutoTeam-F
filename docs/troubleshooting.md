@@ -67,6 +67,21 @@ cat state.json | python -m json.tool
 - 系统会按 **邮件 ID** 跳过已经尝试过的验证码邮件，而不是按 6 位数字去重
 - 如果浏览器长时间停在 `email-verification`，通常说明新的验证码邮件没有到达，或拿到的是旧邮件
 
+
+### ChatGPT 官方 2FA / TOTP 设置失败
+
+官方 TOTP 设置应从 `https://chatgpt.com/#settings/Security` 的 `Authenticator app` 开关进入。当前实现只走 OpenAI/ChatGPT 官方 UI 或同源浏览器协议，不调用第三方 TOTP 开通接口。
+
+常见状态：
+
+1. **要求 recent-auth** — 页面跳到 `https://auth.openai.com/email-verification`，需要先输入邮箱中的临时登录代码。
+2. **看不到 Authenticator app 开关** — 账号或当前 UI rollout 暂不支持自动设置，保留浏览器状态后重试或手动处理。
+3. **二维码无法提取** — 正常情况下 DOM 会有 `a[href^="otpauth://totp/"]`；如果没有该链接，不要用日志输出二维码或 secret。
+4. **已经启用但本地没有 secret** — 需要人工恢复；系统不能从已启用状态反推出 TOTP secret。
+5. **验证码被拒绝** — 检查系统时间；自动流程可尝试相邻 30 秒窗口，但不会记录 raw secret 或验证码。
+
+默认账号导出不包含 raw TOTP secret；只有显式选择包含 2FA 凭据的导出模式时才会输出。
+
 ## 轮转相关
 
 ### rotate 没有补号

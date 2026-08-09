@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from autotoken.api_routes.input_limits import validate_list_payload_limit
 
@@ -14,6 +14,10 @@ ACCOUNT_EXPORT_MAX_EMAILS = 1_000
 class AccountCredentialExportParams(BaseModel):
     emails: list[str] = Field(default_factory=list)
     line_format: str = "{email}-----{password}"
+    include_totp_secret: bool = Field(
+        False,
+        validation_alias=AliasChoices("include_totp_secret", "includeTotpSecret", "include2fa", "include2FA"),
+    )
 
 
 class AccountExportStatusUpdateParams(BaseModel):
@@ -38,7 +42,12 @@ def create_account_exports_router(
             icloud_accounts_by_email,
             outlook_accounts_by_email,
         )
-        from autotoken.storage.accounts import ACCOUNT_SOURCE_AUTH_SESSION_STUB, load_accounts, update_account
+        from autotoken.storage.accounts import (
+            ACCOUNT_SOURCE_AUTH_SESSION_STUB,
+            get_totp_credentials,
+            load_accounts,
+            update_account,
+        )
 
         validate_list_payload_limit(params.emails, max_items=ACCOUNT_EXPORT_MAX_EMAILS, label="账号导出")
         requested = []
@@ -78,15 +87,20 @@ def create_account_exports_router(
             if str(item.get("mailapi_url") or "").strip()
         }
         icloud_accounts = icloud_accounts_by_email()
-        content = "\n".join(
-            credential_export_line_for_account(
+        include_totp_secret = bool(params.include_totp_secret)
+        lines = []
+        for account in export_rows:
+            line = credential_export_line_for_account(
                 account,
                 outlook_mailapi_urls=outlook_mailapi_urls,
                 outlook_accounts=outlook_accounts,
                 icloud_accounts=icloud_accounts,
             )
-            for account in export_rows
-        )
+            if include_totp_secret:
+                credentials = get_totp_credentials(normalize_email(account.get("email"))) or {}
+                line = f"{line}-----{credentials.get('secret') or ''}"
+            lines.append(line)
+        content = "\n".join(lines)
         exported_at = current_time()
         exported_emails = []
         for account in export_rows:
@@ -107,7 +121,9 @@ def create_account_exports_router(
             "exported_emails": exported_emails,
             "exported_at": exported_at,
             "filename": "accounts-credentials.txt",
-            "format": "{email}-----{password_or_token}-----{mail_url}",
+            "format": "{email}-----{password_or_token}-----{mail_url}"
+            + ("-----{totp_secret}" if include_totp_secret else ""),
+            "totp_included": include_totp_secret,
         }
 
     @router.post("/api/accounts/export-status")

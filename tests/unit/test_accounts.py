@@ -3,6 +3,7 @@ import time
 
 from autotoken import accounts
 
+
 def test_add_and_update_account_persists_data(tmp_path, monkeypatch):
     accounts_file = tmp_path / "accounts.json"
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
@@ -147,3 +148,79 @@ def test_get_standby_accounts_orders_recovered_first_and_skips_main_account(tmp_
     assert standby[1]["_quota_recovered"] is True
     assert standby[2]["_quota_recovered"] is False
     assert accounts.get_next_reusable_account()["email"] == "always@example.com"
+
+
+def test_save_totp_metadata_persists_raw_secret_for_privileged_lookup(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(accounts, "get_admin_email", lambda: "")
+
+    accounts.add_account("User@Example.com", "secret")
+    updated = accounts.save_totp_metadata(
+        "user@example.com",
+        secret="ABCDEFGH234567AB",
+        otpauth_uri="otpauth://totp/OpenAI:user@example.com?secret=ABCDEFGH234567AB&issuer=OpenAI",
+        issuer="OpenAI",
+        factor_label="OpenAI:user@example.com",
+        enabled_at=1234.5,
+    )
+
+    assert updated["two_factor_enabled"] is True
+    assert updated["totp_status"] == accounts.TOTP_STATUS_ENABLED
+    assert updated["totp_secret_masked"] == "ABCD…67AB"
+    assert "totp_secret" not in updated
+
+    privileged = accounts.get_totp_credentials("USER@example.com")
+    assert privileged["secret"] == "ABCDEFGH234567AB"
+    assert privileged["otpauth_uri"].startswith("otpauth://totp/")
+    assert privileged["masked_secret"] == "ABCD…67AB"
+    assert privileged["issuer"] == "OpenAI"
+
+
+def test_legacy_accounts_default_to_no_two_factor(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(accounts, "get_admin_email", lambda: "")
+
+    accounts.save_accounts([{"email": "legacy@example.com", "status": accounts.STATUS_ACTIVE}])
+    loaded = accounts.load_accounts()[0]
+
+    assert loaded["two_factor_enabled"] is False
+    assert loaded["totp_status"] == accounts.TOTP_STATUS_DISABLED
+    assert loaded["totp_secret_masked"] == ""
+    assert accounts.get_totp_credentials("legacy@example.com") is None
+
+
+def test_save_totp_metadata_rejects_blank_or_invalid_secret_without_corrupting_existing(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(accounts, "get_admin_email", lambda: "")
+
+    accounts.add_account("user@example.com", "secret")
+    accounts.save_totp_metadata("user@example.com", secret="ABCDEFGH234567AB")
+
+    for invalid in ["", "ABCDEF10"]:
+        try:
+            accounts.save_totp_metadata("user@example.com", secret=invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid TOTP secret should be rejected")
+
+    assert accounts.get_totp_credentials("user@example.com")["secret"] == "ABCDEFGH234567AB"
+
+
+def test_account_listing_never_exposes_raw_totp_secret(tmp_path, monkeypatch):
+    accounts_file = tmp_path / "accounts.json"
+    monkeypatch.setattr(accounts, "ACCOUNTS_FILE", accounts_file)
+    monkeypatch.setattr(accounts, "get_admin_email", lambda: "")
+
+    accounts.add_account("user@example.com", "secret")
+    accounts.save_totp_metadata("user@example.com", secret="ABCDEFGH234567AB")
+
+    listed = accounts.load_accounts()[0]
+    serialized = str(listed)
+
+    assert "totp_secret" not in listed
+    assert "ABCDEFGH234567AB" not in serialized
+    assert listed["totp_secret_masked"] == "ABCD…67AB"

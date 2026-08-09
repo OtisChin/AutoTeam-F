@@ -153,6 +153,17 @@ def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) ->
     return kwargs
 
 
+
+def _apply_stored_totp_secret(login_kwargs: dict[str, Any], email: str) -> None:
+    try:
+        from autotoken.storage.accounts import get_totp_credentials
+
+        totp_credentials = get_totp_credentials(email)
+        if totp_credentials and totp_credentials.get("secret"):
+            login_kwargs["totp_secret"] = str(totp_credentials.get("secret") or "")
+    except Exception:
+        pass
+
 def create_account_login_router(
     *,
     start_task: Callable[..., dict[str, Any]],
@@ -247,6 +258,7 @@ def create_account_login_router(
                 )
                 if selected_oauth_proxy:
                     login_kwargs["proxy_url"] = selected_oauth_proxy
+                _apply_stored_totp_secret(login_kwargs, email)
                 return run_account_codex_login_once(email, acc, **login_kwargs)
             except CodexOAuthPhoneRequired as exc:
                 result = oauth_phone_required_result(email, exc)
@@ -545,6 +557,7 @@ def create_account_login_router(
                     )
                     if selected_oauth_proxy:
                         login_kwargs["proxy_url"] = selected_oauth_proxy
+                    _apply_stored_totp_secret(login_kwargs, email)
                     login_result = run_account_codex_login_once(email, acc, **login_kwargs)
                     logger.info(
                         "[账号登录] 批量 worker 成功: email=%s elapsed=%.1fs thread=%s",

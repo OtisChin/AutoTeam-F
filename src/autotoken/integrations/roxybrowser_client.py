@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import threading
 import time
 import uuid
@@ -228,9 +229,55 @@ def _coerce_workspace_id(value: str | int) -> int | str:
         return raw
 
 
+def _roxybrowser_dotenv_value(name: str) -> str:
+    try:
+        from autotoken.core.paths import PROJECT_ROOT
+        from autotoken.core.env import read_env_lines
+        from autotoken.core.textio import parse_env_line
+
+        for line in read_env_lines(PROJECT_ROOT / ".env"):
+            parsed = parse_env_line(line)
+            if not parsed:
+                continue
+            key, value = parsed
+            if key == name:
+                return str(value or "")
+    except Exception:
+        return ""
+    return ""
+
+
+def _roxybrowser_env_value(name: str, default: str = "") -> str:
+    if name in os.environ:
+        return str(os.environ.get(name) or "")
+    value = _roxybrowser_dotenv_value(name)
+    return value if value != "" else default
+
+
+def _roxybrowser_env_flag(name: str, default: bool = False) -> bool:
+    value = _roxybrowser_env_value(name, "")
+    if value == "":
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _random_roxybrowser_os() -> str:
+    raw_choices = _roxybrowser_env_value("ROXYBROWSER_RANDOM_OS_CHOICES", "Windows,macOS")
+    choices = [item.strip() for item in raw_choices.split(",") if item.strip()]
+    if not choices:
+        choices = ["Windows", "macOS"]
+    return random.choice(choices)
+
+
 def _default_roxybrowser_fingerprint() -> dict[str, str]:
-    os_name = str(os.environ.get("ROXYBROWSER_DEFAULT_OS") or DEFAULT_ROXYBROWSER_OS).strip()
-    os_version = str(os.environ.get("ROXYBROWSER_DEFAULT_OS_VERSION") or DEFAULT_ROXYBROWSER_OS_VERSION).strip()
+    explicit_os = bool(
+        _roxybrowser_env_value("ROXYBROWSER_DEFAULT_OS", "")
+        or _roxybrowser_env_value("ROXYBROWSER_DEFAULT_OS_VERSION", "")
+    )
+    if _roxybrowser_env_flag("ROXYBROWSER_RANDOM_OS_ON_CREATE", False) and not explicit_os:
+        return {"os": _random_roxybrowser_os()}
+    os_name = str(_roxybrowser_env_value("ROXYBROWSER_DEFAULT_OS", DEFAULT_ROXYBROWSER_OS)).strip()
+    os_version = str(_roxybrowser_env_value("ROXYBROWSER_DEFAULT_OS_VERSION", DEFAULT_ROXYBROWSER_OS_VERSION)).strip()
     result: dict[str, str] = {}
     if os_name:
         result["os"] = os_name

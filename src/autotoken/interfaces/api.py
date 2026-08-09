@@ -2600,6 +2600,7 @@ def _run_account_codex_login_once(
     oauth_phone_sms_country: str | None = None,
     oauth_phone_sms_max_price: str | None = None,
     oauth_oasis_sms_cdks: str | None = None,
+    totp_secret: str | None = None,
     progress_callback: Callable[[dict], Any] | None = None,
 ) -> dict:
     from autotoken.auth.codex_auth import (
@@ -2783,6 +2784,7 @@ def _run_account_codex_login_once(
                     oauth_phone_sms_country=effective_oauth_phone_sms_country,
                     oauth_phone_sms_max_price=effective_oauth_phone_sms_max_price,
                     oauth_oasis_sms_cdks=effective_oauth_oasis_sms_cdks,
+                    totp_secret=totp_secret,
                     progress_callback=progress_callback,
                 )
             bundle = (session_payload or {}).get("codex_oauth_bundle")

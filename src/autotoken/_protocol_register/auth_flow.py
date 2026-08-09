@@ -998,6 +998,62 @@ class AuthFlow:
         return (pt == "add_email") or ("add-email" in cu)
 
     @staticmethod
+    def _is_totp_challenge_state(page_type: str = "", continue_url: str = "") -> bool:
+        pt = (page_type or "").strip().lower()
+        cu = (continue_url or "").strip().lower()
+        return any(token in pt for token in ("totp", "mfa", "authenticator")) or any(
+            token in cu for token in ("/mfa", "totp", "authenticator")
+        )
+
+    def _handle_totp_challenge(self, *, continue_url: str = "", page_type: str = "", payload: dict | None = None) -> str:
+        """Complete an existing-account TOTP challenge using a stored local secret.
+
+        The endpoint is resolved from OpenAI's first-party page payload when
+        available. If the current rollout does not expose a protocol endpoint,
+        fail explicitly so callers can fall back to browser UI instead of
+        leaking credentials to third-party services.
+        """
+        from autotoken.services.totp import generate_totp_candidates
+
+        secret = str(getattr(self, "_totp_secret", "") or "").strip()
+        if not secret:
+            raise RuntimeError("TOTP challenge requires stored TOTP secret")
+
+        payload = payload if isinstance(payload, dict) else {}
+        endpoint = str(
+            payload.get("totp_validation_url")
+            or payload.get("mfa_validation_url")
+            or payload.get("validation_url")
+            or payload.get("url")
+            or ""
+        ).strip()
+        if endpoint and endpoint.startswith("/"):
+            endpoint = f"https://auth.openai.com{endpoint}"
+        if endpoint and not endpoint.startswith("https://auth.openai.com/"):
+            endpoint = ""
+        if not endpoint:
+            raise RuntimeError("TOTP challenge protocol endpoint unavailable; use official browser UI flow")
+
+        headers = self._common_headers(continue_url or "https://auth.openai.com/")
+        headers["Content-Type"] = "application/json"
+        last_error = ""
+        for code in generate_totp_candidates(secret):
+            resp = self.session.post(endpoint, headers=headers, json={"code": code}, timeout=30)
+            self._trace_http("validate_totp", resp)
+            if resp.status_code != 200:
+                last_error = f"HTTP {resp.status_code}"
+                continue
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            next_url = self._normalize_continue_url(self._extract_continue_url_from_step(data))
+            if next_url:
+                return next_url
+            last_error = "missing continue_url"
+        raise RuntimeError(f"TOTP challenge verification failed: {last_error or 'unknown'}")
+
+    @staticmethod
     def _looks_like_email_already_in_use_error(exc: Any) -> bool:
         text = str(exc or "").lower()
         return "email_already" in text or "email is already in use" in text
@@ -3536,6 +3592,12 @@ class AuthFlow:
             page_type = (page_type or self._existing_page_type or "").lower()
             mode = (mode or self._existing_email_verification_mode or "").lower()
 
+        if self._is_totp_challenge_state(page_type=page_type, continue_url=continue_url):
+            continue_url = self._normalize_continue_url(
+                self._handle_totp_challenge(continue_url=continue_url, page_type=page_type, payload=payload)
+            )
+            page_type = ""
+
         if not continue_url or "/email-verification" in continue_url:
             # 仍需 OTP：优先 resend 获取新码
             otp_sent_at = time.time()
@@ -3561,6 +3623,17 @@ class AuthFlow:
             )
             continue_url = self._extract_continue_url_from_step(otp_resp)
             continue_url = self._normalize_continue_url(continue_url)
+            otp_page_type = (self._extract_page_type(otp_resp) or "").lower()
+            otp_page = (otp_resp.get("page") or {}) if isinstance(otp_resp, dict) else {}
+            otp_payload = (otp_page.get("payload") or {}) if isinstance(otp_page, dict) else {}
+            if self._is_totp_challenge_state(page_type=otp_page_type, continue_url=continue_url):
+                continue_url = self._normalize_continue_url(
+                    self._handle_totp_challenge(
+                        continue_url=continue_url,
+                        page_type=otp_page_type,
+                        payload=otp_payload,
+                    )
+                )
             if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
                 continue_url = self._normalize_continue_url(
                     self._handle_add_phone_verification(continue_url=continue_url)

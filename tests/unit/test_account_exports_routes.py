@@ -150,3 +150,60 @@ def test_update_accounts_export_status_rejects_too_many_raw_emails():
         assert "账号导出状态更新条目过多" in exc.detail
     else:
         raise AssertionError("oversized export status update selection must fail")
+
+
+def test_export_account_credentials_excludes_totp_secret_by_default(monkeypatch):
+    app = _app()
+    account = {
+        "email": "totp@example.com",
+        "password": "chatgpt-password",
+        "mail_provider": "cloudmail",
+        "account_source": "managed",
+        "two_factor_enabled": True,
+        "totp_secret_masked": "GEZD…QOJQ",
+    }
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {**account, **kwargs})
+    monkeypatch.setattr("autotoken.commerce.trade.outlook_accounts_by_email", lambda: {})
+    monkeypatch.setattr("autotoken.commerce.trade.icloud_accounts_by_email", lambda: {})
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.get_totp_credentials",
+        lambda email: {"secret": ("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ")},
+    )
+
+    result = _endpoint(app, "/api/accounts/export-credentials", "POST")(
+        AccountCredentialExportParams(emails=["totp@example.com"])
+    )
+
+    assert "GEZDGNBVGY3TQOJQ" not in result["content"]
+    assert result["totp_included"] is False
+
+
+def test_export_account_credentials_includes_totp_secret_only_when_requested(monkeypatch):
+    app = _app()
+    account = {
+        "email": "totp@example.com",
+        "password": "chatgpt-password",
+        "mail_provider": "cloudmail",
+        "account_source": "managed",
+        "two_factor_enabled": True,
+        "totp_secret_masked": "GEZD…QOJQ",
+    }
+
+    monkeypatch.setattr("autotoken.storage.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.storage.accounts.update_account", lambda email, **kwargs: {**account, **kwargs})
+    monkeypatch.setattr("autotoken.commerce.trade.outlook_accounts_by_email", lambda: {})
+    monkeypatch.setattr("autotoken.commerce.trade.icloud_accounts_by_email", lambda: {})
+    monkeypatch.setattr(
+        "autotoken.storage.accounts.get_totp_credentials",
+        lambda email: {"secret": ("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ")} if email == "totp@example.com" else None,
+    )
+
+    result = _endpoint(app, "/api/accounts/export-credentials", "POST")(
+        AccountCredentialExportParams(emails=["totp@example.com"], include_totp_secret=True)
+    )
+
+    assert result["content"].endswith("-----GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+    assert result["totp_included"] is True
+    assert result["format"].endswith("-----{totp_secret}")

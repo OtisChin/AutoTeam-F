@@ -838,6 +838,7 @@ const paypalCountryOptions = [
   { value: 'AU', label: 'AU · 澳大利亚' },
   { value: 'JP', label: 'JP · 日本' },
   { value: 'BR', label: 'BR · 巴西' },
+  { value: 'ID', label: 'ID · 印度尼西亚' },
   { value: 'VN', label: 'VN · 越南' },
   { value: 'TH', label: 'TH · 泰国' },
   { value: 'DE', label: 'DE · 德国' },

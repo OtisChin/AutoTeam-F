@@ -1,6 +1,7 @@
 import pytest
 
 from autotoken.roxybrowser_client import RoxyBrowserClient, _normalize_proxy_info, pick_roxybrowser_endpoint
+import autotoken.roxybrowser_client as roxybrowser_module
 
 def test_roxybrowser_proxy_info_from_authenticated_socks_proxy():
     proxy_info = _normalize_proxy_info("socks5://user:pass@proxy.example:3010")
@@ -47,8 +48,48 @@ def test_roxybrowser_fingerprint_can_be_overridden_by_env(monkeypatch):
         )
     ]
 
+
+def test_roxybrowser_fingerprint_can_randomize_os_on_create(monkeypatch):
+    calls = []
+
+    def fake_request(self, method, path, *, params=None, json_body=None, timeout=None):
+        calls.append((method, path, json_body))
+        return {"code": 0, "msg": "ok"}
+
+    monkeypatch.delenv("ROXYBROWSER_DEFAULT_OS", raising=False)
+    monkeypatch.delenv("ROXYBROWSER_DEFAULT_OS_VERSION", raising=False)
+    monkeypatch.setenv("ROXYBROWSER_RANDOM_OS_ON_CREATE", "true")
+    monkeypatch.setenv("ROXYBROWSER_RANDOM_OS_CHOICES", "Windows,macOS")
+    monkeypatch.setattr(roxybrowser_module.random, "choice", lambda choices: "macOS")
+    monkeypatch.setattr(RoxyBrowserClient, "_request", fake_request)
+
+    client = RoxyBrowserClient("http://127.0.0.1:50000", "token")
+    client.browser_create(workspace_id="1", window_name="autotoken-test")
+
+    assert calls[0][2]["os"] == "macOS"
+    assert "osVersion" not in calls[0][2]
+
+
+def test_roxybrowser_random_os_reads_dotenv_when_process_env_missing(monkeypatch):
+    monkeypatch.delenv("ROXYBROWSER_RANDOM_OS_ON_CREATE", raising=False)
+    monkeypatch.delenv("ROXYBROWSER_RANDOM_OS_CHOICES", raising=False)
+    monkeypatch.delenv("ROXYBROWSER_DEFAULT_OS", raising=False)
+    monkeypatch.delenv("ROXYBROWSER_DEFAULT_OS_VERSION", raising=False)
+    monkeypatch.setattr(
+        roxybrowser_module,
+        "_roxybrowser_dotenv_value",
+        lambda name: {
+            "ROXYBROWSER_RANDOM_OS_ON_CREATE": "true",
+            "ROXYBROWSER_RANDOM_OS_CHOICES": "Windows,macOS",
+        }.get(name, ""),
+    )
+    monkeypatch.setattr(roxybrowser_module.random, "choice", lambda choices: "macOS")
+
+    assert roxybrowser_module._default_roxybrowser_fingerprint() == {"os": "macOS"}
+
 def test_roxybrowser_launch_prefers_reusing_idle_profile_before_create(monkeypatch):
     calls = []
+    monkeypatch.setenv("ROXYBROWSER_RANDOM_OS_ON_CREATE", "false")
 
     def fake_request(self, method, path, *, params=None, json_body=None, timeout=None):
         calls.append((method, path, json_body, params))

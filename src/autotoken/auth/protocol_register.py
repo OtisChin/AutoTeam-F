@@ -1194,6 +1194,7 @@ def login_once(
     oauth_phone_sms_country: str | None = None,
     oauth_phone_sms_max_price: str | None = None,
     oauth_oasis_sms_cdks: str | None = None,
+    totp_secret: str | None = None,
     progress_callback=None,
 ) -> dict:
     """Pure protocol login for an existing account; returns auth_session and optional Codex OAuth bundle."""
@@ -1204,6 +1205,8 @@ def login_once(
     flow = AuthFlow(cfg)
     if callable(progress_callback):
         flow._autotoken_progress_callback = progress_callback
+    if totp_secret:
+        flow._totp_secret = str(totp_secret or "").strip()
     _attach_flow_stage_logs(flow)
     _attach_oauth_phone_supplier(
         flow,
