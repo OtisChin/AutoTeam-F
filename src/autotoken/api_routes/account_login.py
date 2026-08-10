@@ -18,6 +18,7 @@ from autotoken.services.task_runtime import TASK_GROUP_OAUTH
 ACCOUNT_LOGIN_BATCH_MAX_EMAILS = 1_000
 ACCOUNT_LOGIN_BATCH_DEFAULT_CONCURRENCY = 10
 ACCOUNT_LOGIN_BATCH_FRAUD_GUARD_ABORT_THRESHOLD = 2
+ACCOUNT_LOGIN_OAUTH_PROXY_PREFLIGHT_ATTEMPTS = 5
 
 
 def _oauth_fraud_guard_abort_threshold() -> int:
@@ -39,6 +40,34 @@ def _oauth_fraud_guard_abort_threshold() -> int:
 def _is_similar_phone_fraud_guard_error(message: str | None) -> bool:
     text = str(message or "").lower()
     return "fraud_guard" in text and "phone numbers similar" in text
+
+
+def _oauth_proxy_preflight_attempt_limit() -> int:
+    try:
+        return max(
+            1,
+            min(
+                100,
+                int(
+                    os.environ.get(
+                        "OAUTH_PROXY_PREFLIGHT_ATTEMPTS",
+                        str(ACCOUNT_LOGIN_OAUTH_PROXY_PREFLIGHT_ATTEMPTS),
+                    )
+                    or str(ACCOUNT_LOGIN_OAUTH_PROXY_PREFLIGHT_ATTEMPTS)
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        return ACCOUNT_LOGIN_OAUTH_PROXY_PREFLIGHT_ATTEMPTS
+
+
+def _is_retryable_oauth_proxy_error(message: str | None) -> bool:
+    text = str(message or "").lower()
+    if "未返回可用代理" in text or "no proxy" in text:
+        return True
+    if "403" not in text:
+        return False
+    return any(marker in text for marker in ("cloudflare", "challenge", "just a moment", "access denied", "html_challenge"))
 
 
 class LoginAccountParams(BaseModel):
@@ -170,6 +199,7 @@ def create_account_login_router(
     normalize_email: Callable[[str | None], str],
     is_main_account_email: Callable[[str | None], bool],
     build_oauth_proxy_selector: Callable[..., tuple[Callable[[], str], dict[str, Any]]],
+    preflight_oauth_proxy_url: Callable[..., tuple[bool, str]],
     run_account_codex_login_once: Callable[..., dict[str, Any]],
     append_task_progress: Callable[[str | None, dict], Any],
     oauth_phone_required_result: Callable[[str, Exception], dict],
@@ -208,6 +238,10 @@ def create_account_login_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        oauth_proxy_api_enabled = bool(oauth_proxy_meta.get("proxy_api_url_present")) or int(
+            oauth_proxy_meta.get("proxy_pool_count") or 0
+        ) > 0
+        oauth_proxy_attempts = _oauth_proxy_preflight_attempt_limit() if oauth_proxy_api_enabled else 1
 
         def _run(task_id: str = ""):
             from autotoken.auth.codex_auth import (
@@ -216,6 +250,65 @@ def create_account_login_router(
                 CodexOAuthPhoneRateLimited,
                 CodexOAuthPhoneRequired,
             )
+
+            def _resolve_oauth_proxy_or_raise(proxy_attempt: int) -> str:
+                try:
+                    selected_proxy = oauth_proxy_selector()
+                except Exception as exc:
+                    selected_proxy = ""
+                    if oauth_proxy_api_enabled:
+                        last_error = f"OAuth 代理 API 未返回可用代理: {safe_error_summary(exc, limit=120)}"
+                        append_task_progress(
+                            task_id,
+                            {
+                                "stage": "account_login_proxy_preflight_failed",
+                                "email": email,
+                                **oauth_proxy_meta,
+                                "proxy_attempt": proxy_attempt,
+                                "proxy_attempts": oauth_proxy_attempts,
+                                "message": last_error,
+                                "level": "warn",
+                            },
+                        )
+                        raise RuntimeError(last_error) from exc
+                    return ""
+                if not selected_proxy:
+                    if oauth_proxy_api_enabled:
+                        raise RuntimeError("OAuth 代理 API 未返回可用代理")
+                    return ""
+                if not oauth_proxy_api_enabled:
+                    return selected_proxy
+
+                ok, message = preflight_oauth_proxy_url(
+                    selected_proxy,
+                    email=email,
+                    proxy_api_provider=oauth_proxy_meta.get("proxy_api_provider") or "",
+                )
+                if ok:
+                    return selected_proxy
+
+                last_error = str(message or "OAuth 代理预检失败")
+                append_task_progress(
+                    task_id,
+                    {
+                        "stage": "account_login_proxy_preflight_failed",
+                        "email": email,
+                        **oauth_proxy_meta,
+                        "proxy_attempt": proxy_attempt,
+                        "proxy_attempts": oauth_proxy_attempts,
+                        "proxy_url": selected_proxy,
+                        "message": last_error,
+                        "level": "warn",
+                    },
+                )
+                logger.warning(
+                    "[账号登录] OAuth 代理预检失败: email=%s attempt=%s/%s error=%s",
+                    email,
+                    proxy_attempt,
+                    oauth_proxy_attempts,
+                    last_error,
+                )
+                raise RuntimeError(f"OAuth 代理预检失败: {last_error}")
 
             try:
                 append_task_progress(
@@ -226,40 +319,79 @@ def create_account_login_router(
                         "message": f"正在补登录 {email}",
                     },
                 )
-                selected_oauth_proxy = oauth_proxy_selector()
-                if selected_oauth_proxy:
-                    append_task_progress(
-                        task_id,
-                        {
-                            "stage": "account_login_proxy_selected",
-                            "email": email,
-                            **oauth_proxy_meta,
-                            "message": "OAuth 补登录已选择代理",
-                        },
-                    )
-                elif oauth_proxy_meta.get("proxy_api_url_present"):
-                    append_task_progress(
-                        task_id,
-                        {
-                            "stage": "account_login_proxy_unavailable",
-                            "email": email,
-                            **oauth_proxy_meta,
-                            "message": "OAuth 代理 API 未返回可用代理，本次将直连",
-                            "level": "warn",
-                        },
-                    )
-                login_kwargs: dict[str, Any] = _oauth_login_kwargs(params)
-                login_kwargs["progress_callback"] = lambda event: append_task_progress(
-                    task_id,
-                    {
-                        **dict(event or {}),
-                        "email": str((event or {}).get("email") or email),
-                    },
-                )
-                if selected_oauth_proxy:
-                    login_kwargs["proxy_url"] = selected_oauth_proxy
-                _apply_stored_totp_secret(login_kwargs, email)
-                return run_account_codex_login_once(email, acc, **login_kwargs)
+                last_error = ""
+                for proxy_attempt in range(1, oauth_proxy_attempts + 1):
+                    try:
+                        selected_oauth_proxy = _resolve_oauth_proxy_or_raise(proxy_attempt)
+                        if selected_oauth_proxy:
+                            append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "account_login_proxy_selected",
+                                    "email": email,
+                                    **oauth_proxy_meta,
+                                    "proxy_attempt": proxy_attempt,
+                                    "proxy_attempts": oauth_proxy_attempts,
+                                    "message": "OAuth 补登录已选择并预检通过代理",
+                                },
+                            )
+                        elif oauth_proxy_meta.get("proxy_api_url_present"):
+                            append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "account_login_proxy_unavailable",
+                                    "email": email,
+                                    **oauth_proxy_meta,
+                                    "message": "OAuth 代理 API 未返回可用代理，本次将直连",
+                                    "level": "warn",
+                                },
+                            )
+                        login_kwargs: dict[str, Any] = _oauth_login_kwargs(params)
+                        login_kwargs["progress_callback"] = lambda event: append_task_progress(
+                            task_id,
+                            {
+                                **dict(event or {}),
+                                "email": str((event or {}).get("email") or email),
+                            },
+                        )
+                        if selected_oauth_proxy:
+                            login_kwargs["proxy_url"] = selected_oauth_proxy
+                        _apply_stored_totp_secret(login_kwargs, email)
+                        return run_account_codex_login_once(email, acc, **login_kwargs)
+                    except Exception as exc:
+                        last_error = safe_error_summary(exc, limit=220)
+                        if (
+                            oauth_proxy_api_enabled
+                            and proxy_attempt < oauth_proxy_attempts
+                            and _is_retryable_oauth_proxy_error(last_error)
+                        ):
+                            append_task_progress(
+                                task_id,
+                                {
+                                    "stage": "account_login_proxy_retry",
+                                    "email": email,
+                                    **oauth_proxy_meta,
+                                    "proxy_attempt": proxy_attempt,
+                                    "proxy_attempts": oauth_proxy_attempts,
+                                    "message": f"OAuth 代理命中 403，重试下一条代理: {last_error}",
+                                    "level": "warn",
+                                },
+                            )
+                            logger.warning(
+                                "[账号登录] OAuth 代理命中 403，切换下一条代理: email=%s attempt=%s/%s error=%s",
+                                email,
+                                proxy_attempt,
+                                oauth_proxy_attempts,
+                                last_error,
+                            )
+                            continue
+                        if oauth_proxy_api_enabled and (
+                            _is_retryable_oauth_proxy_error(last_error)
+                            or "OAuth 代理预检失败" in last_error
+                            or "OAuth 代理 API" in last_error
+                        ):
+                            raise RuntimeError(f"OAuth 代理预检失败: {last_error}") from exc
+                        raise
             except CodexOAuthPhoneRequired as exc:
                 result = oauth_phone_required_result(email, exc)
                 append_task_progress(
@@ -361,6 +493,10 @@ def create_account_login_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        oauth_proxy_api_enabled = bool(oauth_proxy_meta.get("proxy_api_url_present")) or int(
+            oauth_proxy_meta.get("proxy_pool_count") or 0
+        ) > 0
+        oauth_proxy_attempts = _oauth_proxy_preflight_attempt_limit() if oauth_proxy_api_enabled else 1
 
         def _run(task_id: str = ""):
             from autotoken.auth.codex_auth import (
@@ -519,53 +655,159 @@ def create_account_login_router(
                     },
                 )
                 try:
-                    selected_oauth_proxy = oauth_proxy_selector()
-                    if selected_oauth_proxy:
-                        append_task_progress(
-                            task_id,
-                            {
-                                "stage": "account_login_proxy_selected",
-                                "email": email,
-                                "current": index,
-                                "total": current_total,
-                                **oauth_proxy_meta,
-                                "message": "OAuth 补登录已选择代理",
-                            },
+                    last_error = ""
+
+                    def _resolve_oauth_proxy_or_raise(proxy_attempt: int) -> str:
+                        try:
+                            selected_proxy = oauth_proxy_selector()
+                        except Exception as exc:
+                            selected_proxy = ""
+                            if oauth_proxy_api_enabled:
+                                last_error = f"OAuth 代理 API 未返回可用代理: {safe_error_summary(exc, limit=120)}"
+                                append_task_progress(
+                                    task_id,
+                                    {
+                                        "stage": "account_login_proxy_preflight_failed",
+                                        "email": email,
+                                        "current": index,
+                                        "total": current_total,
+                                        **oauth_proxy_meta,
+                                        "proxy_attempt": proxy_attempt,
+                                        "proxy_attempts": oauth_proxy_attempts,
+                                        "message": last_error,
+                                        "level": "warn",
+                                    },
+                                )
+                                raise RuntimeError(last_error) from exc
+                            return ""
+                        if not selected_proxy:
+                            if oauth_proxy_api_enabled:
+                                raise RuntimeError("OAuth 代理 API 未返回可用代理")
+                            return ""
+                        if not oauth_proxy_api_enabled:
+                            return selected_proxy
+
+                        ok, message = preflight_oauth_proxy_url(
+                            selected_proxy,
+                            email=email,
+                            proxy_api_provider=oauth_proxy_meta.get("proxy_api_provider") or "",
                         )
-                    elif oauth_proxy_meta.get("proxy_api_url_present"):
+                        if ok:
+                            return selected_proxy
+
+                        last_error = str(message or "OAuth 代理预检失败")
                         append_task_progress(
                             task_id,
                             {
-                                "stage": "account_login_proxy_unavailable",
+                                "stage": "account_login_proxy_preflight_failed",
                                 "email": email,
                                 "current": index,
                                 "total": current_total,
                                 **oauth_proxy_meta,
-                                "message": "OAuth 代理 API 未返回可用代理，本账号将直连",
+                                "proxy_attempt": proxy_attempt,
+                                "proxy_attempts": oauth_proxy_attempts,
+                                "proxy_url": selected_proxy,
+                                "message": last_error,
                                 "level": "warn",
                             },
                         )
-                    login_kwargs: dict[str, Any] = _oauth_login_kwargs(params)
-                    login_kwargs["progress_callback"] = lambda event: append_task_progress(
-                        task_id,
-                        {
-                            **dict(event or {}),
-                            "email": str((event or {}).get("email") or email),
-                            "current": index,
-                            "total": current_total,
-                        },
-                    )
-                    if selected_oauth_proxy:
-                        login_kwargs["proxy_url"] = selected_oauth_proxy
-                    _apply_stored_totp_secret(login_kwargs, email)
-                    login_result = run_account_codex_login_once(email, acc, **login_kwargs)
-                    logger.info(
-                        "[账号登录] 批量 worker 成功: email=%s elapsed=%.1fs thread=%s",
-                        email,
-                        time.time() - started_at,
-                        threading.current_thread().name,
-                    )
-                    return {"kind": "ok", "email": email, "index": index, "result": login_result}
+                        logger.warning(
+                            "[账号登录] OAuth 代理预检失败: email=%s attempt=%s/%s error=%s",
+                            email,
+                            proxy_attempt,
+                            oauth_proxy_attempts,
+                            last_error,
+                        )
+                        raise RuntimeError(f"OAuth 代理预检失败: {last_error}")
+
+                    for proxy_attempt in range(1, oauth_proxy_attempts + 1):
+                        try:
+                            selected_oauth_proxy = _resolve_oauth_proxy_or_raise(proxy_attempt)
+                            if selected_oauth_proxy:
+                                append_task_progress(
+                                    task_id,
+                                    {
+                                        "stage": "account_login_proxy_selected",
+                                        "email": email,
+                                        "current": index,
+                                        "total": current_total,
+                                        **oauth_proxy_meta,
+                                        "proxy_attempt": proxy_attempt,
+                                        "proxy_attempts": oauth_proxy_attempts,
+                                        "message": "OAuth 补登录已选择并预检通过代理",
+                                    },
+                                )
+                            elif oauth_proxy_meta.get("proxy_api_url_present"):
+                                append_task_progress(
+                                    task_id,
+                                    {
+                                        "stage": "account_login_proxy_unavailable",
+                                        "email": email,
+                                        "current": index,
+                                        "total": current_total,
+                                        **oauth_proxy_meta,
+                                        "message": "OAuth 代理 API 未返回可用代理，本账号将直连",
+                                        "level": "warn",
+                                    },
+                                )
+                            login_kwargs: dict[str, Any] = _oauth_login_kwargs(params)
+                            login_kwargs["progress_callback"] = lambda event: append_task_progress(
+                                task_id,
+                                {
+                                    **dict(event or {}),
+                                    "email": str((event or {}).get("email") or email),
+                                    "current": index,
+                                    "total": current_total,
+                                },
+                            )
+                            if selected_oauth_proxy:
+                                login_kwargs["proxy_url"] = selected_oauth_proxy
+                            _apply_stored_totp_secret(login_kwargs, email)
+                            login_result = run_account_codex_login_once(email, acc, **login_kwargs)
+                            logger.info(
+                                "[账号登录] 批量 worker 成功: email=%s elapsed=%.1fs thread=%s",
+                                email,
+                                time.time() - started_at,
+                                threading.current_thread().name,
+                            )
+                            return {"kind": "ok", "email": email, "index": index, "result": login_result}
+                        except Exception as exc:
+                            error_summary = safe_error_summary(exc, limit=220)
+                            if (
+                                oauth_proxy_api_enabled
+                                and proxy_attempt < oauth_proxy_attempts
+                                and _is_retryable_oauth_proxy_error(error_summary)
+                            ):
+                                append_task_progress(
+                                    task_id,
+                                    {
+                                        "stage": "account_login_proxy_retry",
+                                        "email": email,
+                                        "current": index,
+                                        "total": current_total,
+                                        **oauth_proxy_meta,
+                                        "proxy_attempt": proxy_attempt,
+                                        "proxy_attempts": oauth_proxy_attempts,
+                                        "message": f"OAuth 代理命中 403，重试下一条代理: {error_summary}",
+                                        "level": "warn",
+                                    },
+                                )
+                                logger.warning(
+                                    "[账号登录] OAuth 代理命中 403，切换下一条代理: email=%s attempt=%s/%s error=%s",
+                                    email,
+                                    proxy_attempt,
+                                    oauth_proxy_attempts,
+                                    error_summary,
+                                )
+                                last_error = error_summary
+                                continue
+                            if oauth_proxy_api_enabled and (
+                                _is_retryable_oauth_proxy_error(error_summary)
+                                or "OAuth 代理预检失败" in error_summary
+                                or "OAuth 代理 API" in error_summary
+                            ):
+                                raise RuntimeError(f"OAuth 代理预检失败: {error_summary}") from exc
+                            raise
                 except CodexOAuthPhoneRequired as exc:
                     result = oauth_phone_required_result(email, exc)
                     logger.warning("[账号登录] 批量 worker 手机验证: email=%s elapsed=%.1fs", email, time.time() - started_at)

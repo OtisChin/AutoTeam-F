@@ -1,6 +1,10 @@
 {
   "activations": [],
   "provider_failures": {
-    "truemove": 58
+    "truemove": 58,
+    "orange": 6,
+    "hero_sms": 2,
+    "ee": 5,
+    "three": 1
   }
 }

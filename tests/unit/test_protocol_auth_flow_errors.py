@@ -752,6 +752,78 @@ def test_protocol_login_rebuilds_authorize_state_after_login_invalid_state(monke
     assert signup_sentinels == ["sentinel-2"]
 
 
+def test_preflight_oauth_proxy_url_retries_signup_after_login_403(monkeypatch):
+    from autotoken.auth import protocol_register
+
+    calls = []
+
+    class FakeSession:
+        def close(self):
+            calls.append("close")
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeAuthFlow:
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.session = FakeSession()
+
+        def get_csrf_token(self):
+            calls.append("csrf")
+            return "csrf-token"
+
+        def get_auth_url(self, csrf_token):
+            calls.append(("auth_url", csrf_token))
+            return "https://auth.openai.test/authorize"
+
+        def auth_oauth_init(self, auth_url):
+            calls.append(("init", auth_url))
+            return "device-id"
+
+        def get_sentinel_token(self, device_id):
+            calls.append(("sentinel", device_id))
+            return "sentinel-token"
+
+        def authorize_continue(self, email, sentinel, **kwargs):
+            calls.append(("authorize_continue", email, sentinel, kwargs["screen_hint"]))
+            if kwargs["screen_hint"] == "login":
+                raise RuntimeError(
+                    "authorize/continue 失败(screen_hint=login): HTTP 403 - "
+                    '<!DOCTYPE html><html><title>Just a moment...</title></html>'
+                )
+            return {"continue_url": "https://chatgpt.com"}
+
+    monkeypatch.setattr(protocol_register, "_load_protocol_classes", lambda: (FakeAuthFlow, FakeConfig))
+
+    ok, message = protocol_register.preflight_oauth_proxy_url(
+        "socks5h://proxy.example:1000",
+        email="user@example.com",
+    )
+
+    assert ok is True
+    assert message == "authorize/continue signup ok"
+    assert calls == [
+        "csrf",
+        ("auth_url", "csrf-token"),
+        ("init", "https://auth.openai.test/authorize"),
+        ("sentinel", "device-id"),
+        (
+            "authorize_continue",
+            "user@example.com",
+            "sentinel-token",
+            "login",
+        ),
+        (
+            "authorize_continue",
+            "user@example.com",
+            "sentinel-token",
+            "signup",
+        ),
+        "close",
+    ]
+
+
 def test_email_verification_delivery_uses_resend_before_passwordless():
     auth_flow = _load_auth_flow_module()
 
@@ -1064,6 +1136,7 @@ def test_protocol_login_handles_totp_challenge_after_password(monkeypatch):
         setattr(flow.result, "session_token", "session-token"),
         setattr(flow.result, "access_token", "access-token"),
     )
+    flow.oauth_token_exchange = lambda *_args, **_kwargs: setattr(flow.result, "refresh_token", "refresh-token") or True
     flow.oauth_codex_rt_exchange = lambda mail_provider=None: True
     flow._totp_secret = ("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ")
 

@@ -35,6 +35,7 @@ from autotoken.api_routes.account_login import (
 from autotoken.api_routes.account_login import (
     create_account_login_router,
 )
+from autotoken.auth.protocol_register import preflight_oauth_proxy_url as _preflight_oauth_proxy_url
 from autotoken.api_routes.account_management import create_account_management_router
 from autotoken.api_routes.account_overview import create_account_overview_router
 from autotoken.api_routes.account_refresh_quota import create_account_refresh_quota_router
@@ -3012,6 +3013,7 @@ _account_login_router = create_account_login_router(
     normalize_email=_normalized_email,
     is_main_account_email=lambda email: _is_main_account_email(email),
     build_oauth_proxy_selector=lambda **kwargs: _build_oauth_proxy_selector(**kwargs),
+    preflight_oauth_proxy_url=lambda *args, **kwargs: _preflight_oauth_proxy_url(*args, **kwargs),
     run_account_codex_login_once=lambda *args, **kwargs: _run_account_codex_login_once(*args, **kwargs),
     append_task_progress=lambda task_id, progress: _append_task_progress(task_id, progress),
     oauth_phone_required_result=_oauth_phone_required_result,

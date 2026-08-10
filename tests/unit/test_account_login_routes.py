@@ -21,6 +21,7 @@ def _routes(
     accounts=None,
     main_email="owner@example.com",
     build_oauth_proxy_selector=None,
+    preflight_oauth_proxy_url=None,
     run_account_codex_login_once=None,
     current_oauth_task=None,
     init_oauth_batch_control=None,
@@ -29,6 +30,7 @@ def _routes(
 ):
     accounts = accounts if accounts is not None else [{"email": "user@example.com"}]
     build_oauth_proxy_selector = build_oauth_proxy_selector or (lambda **_kwargs: (lambda: "", {}))
+    preflight_oauth_proxy_url = preflight_oauth_proxy_url or (lambda _proxy_url, **_kwargs: (True, "ok"))
     run_account_codex_login_once = run_account_codex_login_once or (
         lambda email, _acc, **_kwargs: {"email": email, "plan": "free"}
     )
@@ -42,6 +44,7 @@ def _routes(
         normalize_email=lambda value: str(value or "").strip().lower(),
         is_main_account_email=lambda email: str(email or "").strip().lower() == main_email,
         build_oauth_proxy_selector=build_oauth_proxy_selector,
+        preflight_oauth_proxy_url=preflight_oauth_proxy_url,
         run_account_codex_login_once=run_account_codex_login_once,
         append_task_progress=lambda _task_id, _progress: None,
         oauth_phone_required_result=lambda email, exc: {"email": email, "message": str(exc), "removed_pool_emails": []},
@@ -317,6 +320,62 @@ def test_post_accounts_login_batch_passes_proxy_api_country(monkeypatch):
     assert captured[0][2]["proxy_url"] == "socks5h://batch-proxy.example:1000"
 
 
+def test_post_accounts_login_batch_retries_oauth_proxy_api_until_preflight_passes(monkeypatch):
+    started = []
+    rows = [{"email": "first@example.com"}]
+    selector_calls = []
+    preflighted = []
+    captured = []
+    proxies = ["socks5h://bad-batch-proxy.example:1000", "socks5h://good-batch-proxy.example:1001"]
+    monkeypatch.setenv("CODEX_OAUTH_BATCH_CONCURRENCY", "1")
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: rows)
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: rows[0] if email == "first@example.com" else None)
+
+    def build_selector(**kwargs):
+        selector_calls.append(kwargs)
+
+        def selector():
+            return proxies.pop(0)
+
+        return selector, {"proxy_api_provider": kwargs.get("proxy_api_provider"), "proxy_api_url_present": True}
+
+    def preflight(proxy_url, **kwargs):
+        preflighted.append((proxy_url, kwargs.get("email")))
+        if "bad-batch-proxy" in proxy_url:
+            return False, "auth_api HTTP 403; html_challenge"
+        return True, "auth_api HTTP 200"
+
+    def fake_run(email, acc, **kwargs):
+        captured.append((email, acc, kwargs))
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(
+        started,
+        accounts=rows,
+        build_oauth_proxy_selector=build_selector,
+        preflight_oauth_proxy_url=preflight,
+        run_account_codex_login_once=fake_run,
+    )
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(
+            emails=["first@example.com"],
+            proxy_api_provider="cliproxy",
+            proxy_api_url="https://proxy-api.example/get",
+            proxy_api_country="GB",
+        )
+    )
+
+    result = started[0]["func"]("task-batch")
+    assert result["total"] == 1
+    assert result["ok"][0]["email"] == "first@example.com"
+    assert selector_calls[0]["proxy_api_country"] == "GB"
+    assert preflighted == [
+        ("socks5h://bad-batch-proxy.example:1000", "first@example.com"),
+        ("socks5h://good-batch-proxy.example:1001", "first@example.com"),
+    ]
+    assert captured[0][2]["proxy_url"] == "socks5h://good-batch-proxy.example:1001"
+
+
 def test_post_account_login_bind_phone_disables_bind_email(monkeypatch):
     started = []
     account = {"email": "first@example.com"}
@@ -370,6 +429,95 @@ def test_post_account_login_passes_proxy_api_country(monkeypatch):
     started[0]["func"]("task-1")
     assert selector_calls[0]["proxy_api_country"] == "GB"
     assert captured["kwargs"]["proxy_url"] == "socks5h://proxy.example:1000"
+
+
+def test_post_account_login_retries_oauth_proxy_api_until_preflight_passes(monkeypatch):
+    started = []
+    account = {"email": "first@example.com"}
+    selector_calls = []
+    preflighted = []
+    captured = {}
+    proxies = ["socks5h://bad-proxy.example:1000", "socks5h://good-proxy.example:1001"]
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "first@example.com" else None)
+
+    def build_selector(**kwargs):
+        selector_calls.append(kwargs)
+
+        def selector():
+            return proxies.pop(0)
+
+        return selector, {"proxy_api_provider": kwargs.get("proxy_api_provider"), "proxy_api_url_present": True}
+
+    def preflight(proxy_url, **kwargs):
+        preflighted.append((proxy_url, kwargs.get("email")))
+        if "bad-proxy" in proxy_url:
+            return False, "auth_api HTTP 403; html_challenge"
+        return True, "auth_api HTTP 200"
+
+    def fake_run(email, acc, **kwargs):
+        captured.update({"email": email, "acc": acc, "kwargs": kwargs})
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(
+        started,
+        accounts=[account],
+        build_oauth_proxy_selector=build_selector,
+        preflight_oauth_proxy_url=preflight,
+        run_account_codex_login_once=fake_run,
+    )
+    routes["post_account_login"](
+        LoginAccountParams(
+            email="first@example.com",
+            proxy_api_provider="cliproxy",
+            proxy_api_url="https://proxy-api.example/get",
+            proxy_api_country="GB",
+        )
+    )
+
+    started[0]["func"]("task-1")
+    assert selector_calls[0]["proxy_api_country"] == "GB"
+    assert preflighted == [
+        ("socks5h://bad-proxy.example:1000", "first@example.com"),
+        ("socks5h://good-proxy.example:1001", "first@example.com"),
+    ]
+    assert captured["kwargs"]["proxy_url"] == "socks5h://good-proxy.example:1001"
+
+
+def test_post_account_login_raises_when_all_oauth_proxy_preflights_fail(monkeypatch):
+    started = []
+    account = {"email": "first@example.com"}
+    proxies = ["socks5h://bad-proxy.example:1000", "socks5h://bad-proxy.example:1001"]
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "first@example.com" else None)
+
+    def build_selector(**_kwargs):
+        def selector():
+            return proxies.pop(0)
+
+        return selector, {"proxy_api_provider": "cliproxy", "proxy_api_url_present": True}
+
+    def preflight(_proxy_url, **_kwargs):
+        return False, "auth_api HTTP 403; html_challenge"
+
+    routes, _accounts = _routes(
+        started,
+        accounts=[account],
+        build_oauth_proxy_selector=build_selector,
+        preflight_oauth_proxy_url=preflight,
+        run_account_codex_login_once=lambda *_args, **_kwargs: pytest.fail("login should not run when preflight fails"),
+    )
+    routes["post_account_login"](
+        LoginAccountParams(
+            email="first@example.com",
+            proxy_api_provider="cliproxy",
+            proxy_api_url="https://proxy-api.example/get",
+            proxy_api_country="GB",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="OAuth 代理预检失败"):
+        started[0]["func"]("task-1")
 
 
 def test_post_accounts_login_batch_rejects_too_many_raw_emails():

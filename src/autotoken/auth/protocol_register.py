@@ -131,6 +131,67 @@ def _load_protocol_classes():
     return auth_flow.AuthFlow, config_mod.Config
 
 
+def _is_oauth_proxy_retryable_error(message: str | None) -> bool:
+    text = str(message or "").lower()
+    if "403" not in text:
+        return False
+    return any(marker in text for marker in ("cloudflare", "challenge", "just a moment", "access denied", "html_challenge"))
+
+
+def preflight_oauth_proxy_url(proxy_url: str, *, email: str = "", **_kwargs) -> tuple[bool, str]:
+    raw_proxy = str(proxy_url or "").strip()
+    if not raw_proxy:
+        return True, "no proxy"
+
+    AuthFlow, Config = _load_protocol_classes()
+    cfg = Config()
+    cfg.proxy = raw_proxy or os.getenv("PROXY_URL") or os.getenv("HTTPS_PROXY") or None
+    flow = AuthFlow(cfg)
+    _attach_flow_stage_logs(flow)
+
+    def start_authorize_state(reason: str = "") -> tuple[str, str]:
+        if reason:
+            logger.info("OAuth 代理预检重建 authorize 状态: %s", reason)
+        csrf_token = flow.get_csrf_token()
+        auth_url = flow.get_auth_url(csrf_token)
+        device_id = flow.auth_oauth_init(auth_url)
+        sentinel_token = flow.get_sentinel_token(device_id)
+        return auth_url, sentinel_token
+
+    try:
+        _auth_url, sentinel = start_authorize_state("initial")
+        probe_email = email or "oauth-proxy-preflight@example.com"
+        last_error = ""
+        for screen_hint, referer in (
+            ("login", "https://auth.openai.com/log-in"),
+            ("signup", "https://auth.openai.com/create-account"),
+        ):
+            try:
+                flow.authorize_continue(
+                    probe_email,
+                    sentinel,
+                    screen_hint=screen_hint,
+                    referer=referer,
+                    trace_step=f"oauth_proxy_preflight_{screen_hint}",
+                )
+                return True, f"authorize/continue {screen_hint} ok"
+            except Exception as exc:
+                summary = safe_error_summary(exc, limit=220)
+                last_error = summary
+                if _is_oauth_proxy_retryable_error(summary):
+                    continue
+                return False, summary
+        return False, last_error or "authorize/continue 403"
+    except Exception as exc:
+        summary = safe_error_summary(exc, limit=220)
+        return False, summary
+    finally:
+        try:
+            flow.session.close()
+        except Exception:
+            pass
+
+
 def _parse_message_ts(value: Any) -> float:
     if value is None:
         return 0.0

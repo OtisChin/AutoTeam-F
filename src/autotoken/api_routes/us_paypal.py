@@ -41,7 +41,7 @@ sanitize_protocol_log_text = paypal_protocol_service.sanitize_log_text
 
 LINKS_FILE = PROJECT_ROOT / "data" / "us_paypal_links.json"
 ACCOUNT_STATUS_FILE = PROJECT_ROOT / "data" / "us_paypal_account_status.json"
-MAX_BATCH_CONCURRENCY = 20
+MAX_BATCH_CONCURRENCY = 30
 MAX_PROTOCOL_BATCH_CONCURRENCY = 10
 MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20

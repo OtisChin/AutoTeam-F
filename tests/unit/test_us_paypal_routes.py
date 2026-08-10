@@ -113,10 +113,10 @@ def test_batch_job_generates_paypal_link_and_records_status(monkeypatch):
     assert statuses[email]["status"] == "success"
 
 
-def test_paypal_link_batch_concurrency_allows_twenty():
-    req = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": [], "concurrency": 25})
+def test_paypal_link_batch_concurrency_allows_thirty():
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": [], "concurrency": 99})
 
-    assert us_paypal._batch_concurrency(req, total=30) == 20
+    assert us_paypal._batch_concurrency(req, total=40) == 30
 
 
 def test_paypal_proxy_preflight_attempts_cap_at_one_hundred():

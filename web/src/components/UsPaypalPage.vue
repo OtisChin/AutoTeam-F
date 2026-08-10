@@ -100,8 +100,8 @@
           <div class="grid gap-4 md:grid-cols-3">
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">并发数</span>
-              <input v-model.number="form.concurrency" type="number" min="1" max="20" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
-              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 20；并发越高越依赖代理质量。</span>
+              <input v-model.number="form.concurrency" type="number" min="1" max="30" class="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none" :disabled="busy" />
+              <span class="mt-1 block text-xs text-gray-500">默认 1，最高 30；并发越高越依赖代理质量。</span>
             </label>
             <label class="block">
               <span class="mb-1.5 block text-sm font-semibold text-gray-300">重试次数</span>
@@ -1385,7 +1385,7 @@ function validateStart(emails = selectedEmails.value) {
     setStatus('请在账号池中选择至少一个账号。', true)
     return false
   }
-  form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
+  form.value.concurrency = Math.max(1, Math.min(30, Number(form.value.concurrency || 1)))
   form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
   form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   form.value.region = String(form.value.region || 'US').trim().toUpperCase()
@@ -2184,7 +2184,7 @@ onMounted(async () => {
     for (const key of Object.keys(form.value)) {
       if (savedForm[key] !== undefined) form.value[key] = savedForm[key]
     }
-    form.value.concurrency = Math.max(1, Math.min(20, Number(form.value.concurrency || 1)))
+    form.value.concurrency = Math.max(1, Math.min(30, Number(form.value.concurrency || 1)))
     form.value.maxAttempts = Math.max(1, Math.min(20, Number(form.value.maxAttempts || 5)))
     form.value.proxyPreflightAttempts = Math.max(1, Math.min(100, Number(form.value.proxyPreflightAttempts || 5)))
   } catch { /* ignore malformed local state */ }
