@@ -10,11 +10,13 @@ const page = readFileSync(resolve(webRoot, 'src/components/UsPaypalPage.vue'), '
 const template = page.split('<script setup>')[0]
 const titleSection = page.slice(page.indexOf('<h2 class="mt-1 text-2xl font-bold text-white">PayPal 任务</h2>'), page.indexOf(`<template v-if="activeTab === 'links'">`))
 const pay153Section = page.slice(page.indexOf(`<section v-else-if="activeTab === 'pay153'"`), page.indexOf('</template>'))
+const pay153DrainSection = page.slice(page.indexOf('async function drainPay153AutoPayQueue'), page.indexOf('function splitProtocolLines'))
 
 for (const name of [
   'startUsPaypal153Batch',
   'getUsPaypal153Job',
   'cancelUsPaypal153Job',
+  'cancelUsPaypal153RemoteByBa',
   'submitUsPaypal153Otp',
   'submitUsPaypal153Captcha',
   'getUsPaypal153SupportedCountries',
@@ -24,6 +26,7 @@ for (const name of [
 }
 
 assert.match(api, /\/us-paypal\/pay153\/batch\/start/, 'Pay153 batch start endpoint is wired')
+assert.match(api, /\/us-paypal\/pay153\/remote\/cancel-by-ba/, 'Pay153 remote cancel-by-BA endpoint is wired')
 assert.match(api, /\/us-paypal\/pay153\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/otp/, 'Pay153 OTP endpoint is wired')
 assert.match(api, /\/us-paypal\/pay153\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/captcha/, 'Pay153 captcha endpoint is wired')
 
@@ -38,6 +41,8 @@ assert.match(page, /pay153SelectedEmails/, '153支付 supports multi-select acco
 assert.match(page, /refreshLinks\(\)/, '153支付页面支持刷新链接列表')
 assert.match(page, /失败重试/, '153支付页面支持上一轮失败账号重试')
 assert.match(page, /retryFailedPay153Payment/, '153支付有失败重试处理函数')
+assert.match(page, /清理153卡住任务/, '153支付页支持手动清理 already processing 的远端任务')
+assert.match(page, /cancelPay153RemoteByCurrentBa[\s\S]*cancelUsPaypal153RemoteByBa/, '153支付按当前 BA 调用远端清理接口')
 assert.match(page, /账号支付失败自动重试最多 3 次/, '153支付页面说明账号支付失败会自动重试3次')
 assert.match(page, /successfulPayPalLinkAccounts\(accounts\.value, links\.value, 'all'\)/, '153支付失败重试不受当前筛选限制')
 assert.match(page, /pay153FailedEmails/, '153支付会记录上一轮失败账号')
@@ -52,7 +57,7 @@ assert.match(page, /链接有效期/, '153支付链接列表显示链接有效�
 assert.match(page, /60 秒未收到验证码自动换号，最多 3 次/, '153支付页面说明 HeroSMS/SMSBower 自动换号策略')
 assert.match(page, /phonePool/, '153支付 supports fixed SMS phone pool import')
 assert.match(page, /手机号----SMS record URL/, '153支付 documents phone pool import format')
-assert.match(page, /phonePool:\s*pay153Form\.value\.smsProvider === 'sms_record' \? phonePoolPayloadForSubmission\(pay153Form\.value\.phonePool, 'pay153'\) : pay153Form\.value\.phonePool/, '153支付 sends filtered phonePool payload')
+assert.match(page, /phonePool:\s*pay153Form\.value\.smsProvider === 'sms_record' \? \(phonePoolReuseEnabled\.value \? phonePoolPayloadForSubmission\(pay153Form\.value\.phonePool, 'pay153'\) : formatPhonePoolEntries\(claimedPhonePoolEntries\)\) : pay153Form\.value\.phonePool/, '153支付 sends pre-claimed phonePool payload')
 assert.match(page, /phonePoolReuseEnabled:\s*phonePoolReuseEnabled\.value/, '153支付提交手机号复用开关')
 assert.equal(page.includes('共享设置'), false, '手机号复用不再放在顶部长条共享设置')
 assert.match(page, /savePay153Form[\s\S]{0,260}togglePhonePoolReuse/, '153支付手机号复用按钮放在保存输入旁边')
@@ -62,6 +67,9 @@ assert.match(page, /removePhonePoolEntry/, '手机号池管理支持单条移除
 assert.match(page, /purgeUsedPhonePoolEntries/, '手机号池管理支持批量清理已使用号码')
 assert.match(page, /phonePoolStatusMap/, '独立手机号池管理区维护手机号状态')
 assert.match(page, /syncPhonePoolStatusFromJobResult/, '153支付结束后同步手机号状态')
+assert.match(page, /usablePhonePoolEntriesFromText[\s\S]*status === 'available' \|\| status === 'failed'/, '153支付号池关闭复用时失败号码仍可再次领取')
+assert.match(page, /releaseClaimedPhonePoolEntriesAfterJob[\s\S]*'failed'/, '153支付任务结束后释放本轮未成功的已领取号码为失败可复用')
+assert.match(page, /pollPay153Job[\s\S]*releaseClaimedPhonePoolEntriesAfterJob/, '153支付轮询终态会释放卡住的手机号')
 assert.match(page, /开启手机号复用/, '153支付页面显示手机号复用开关')
 assert.match(page, /togglePhonePoolReuse/, '153支付页面可以切换手机号复用开关')
 assert.match(page, /PHONE_POOL_REUSE_STORAGE_KEY/, '153支付页会持久化手机号复用开关')
@@ -92,7 +100,7 @@ assert.match(page, /togglePay153AutoPay/, '153支付自动支付按钮可启动�
 assert.match(page, /scanPay153AutoPayLinks[\s\S]*refreshPaymentLinks/, '153支付自动支付会刷新最新链接数据')
 assert.match(page, /scanPay153AutoPayLinks[\s\S]*pay153AutoPayQueue/, '153支付自动支付会把新链接追加到支付队列')
 assert.match(page, /drainPay153AutoPayQueue[\s\S]*availableSlots[\s\S]*launchPay153AutoPayItem/, '153支付自动队列按空闲并发槽立即补任务')
-assert.doesNotMatch(page, /drainPay153AutoPayQueue[\s\S]*await startPay153Payment/, '153支付自动队列不再等待上一批全部完成才启动下一批')
+assert.doesNotMatch(pay153DrainSection, /await startPay153Payment/, '153支付自动队列不再等待上一批全部完成才启动下一批')
 assert.equal(template.includes('v-model.trim="pay153ActionInputs[child.remote_job_id]"'), false, '153支付页不显示手动输入验证码的输入框')
 assert.equal(template.includes('submitPay153Otp(child)'), false, '153支付页不显示手动提交验证码按钮')
 assert.equal(template.includes('等待自动接码'), false, '153支付页不显示等待自动接码提示块')

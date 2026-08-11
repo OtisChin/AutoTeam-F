@@ -149,6 +149,7 @@
             <option value="all">全部状态</option>
             <option value="pending">未提链</option>
             <option value="failed">提链失败</option>
+            <option value="no_promo">无优惠</option>
             <option value="success">已提链</option>
             <option value="paid">已支付</option>
           </select>
@@ -753,6 +754,9 @@
                 <button v-if="pay153Busy" @click="cancelPay153Job" :disabled="pay153Canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
                   {{ pay153Canceling ? '取消中...' : '取消153支付' }}
                 </button>
+                <button type="button" @click="cancelPay153RemoteByCurrentBa" :disabled="pay153Canceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
+                  清理153卡住任务
+                </button>
                 <button @click="savePay153Form" :disabled="pay153Busy" class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50">保存输入</button>
                 <button type="button" @click="togglePhonePoolReuse" :disabled="pay153Busy" class="rounded-lg border px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50" :class="phonePoolReuseEnabled ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20' : 'border-gray-700 bg-gray-900 text-gray-200 hover:bg-gray-800'">{{ phonePoolReuseEnabled ? '关闭手机号复用' : '开启手机号复用' }}</button>
               </div>
@@ -822,7 +826,7 @@ const PHONE_POOL_MANAGEMENT_STORAGE_KEY = 'autotoken_us_paypal_phone_pool_manage
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const AUTO_PAYMENT_POLL_MS = 60 * 1000
 const AUTO_PAYMENT_IDLE_LIMIT_MS = 30 * 60 * 1000
-const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', paid: '已支付' }
+const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', no_promo: '无优惠', paid: '已支付' }
 const PROTOCOL_COUNTRIES = new Set(['AU', 'BR', 'CA', 'GB', 'ID', 'JP', 'MX', 'PH', 'TH', 'NL', 'US'])
 const linkTimeFilterOptions = [
   { value: 'all', label: '全部时间' },
@@ -964,8 +968,12 @@ const pay153ActionInputs = ref({})
 let componentUnmounted = false
 let protocolAutoPayTimer = null
 let pay153AutoPayTimer = null
+let protocolAutoPayDraining = false
+let pay153AutoPayDraining = false
 const protocolAutoPayLogOffsets = new Map()
 const pay153AutoPayLogOffsets = new Map()
+const protocolClaimedPhonePoolKeysByJob = new Map()
+const pay153ClaimedPhonePoolKeysByJob = new Map()
 
 const selectedEmails = computed(() => Array.from(selectedAccounts.value))
 const protocolSelectedEmails = computed(() => Array.from(selectedProtocolAccountEmails.value))
@@ -1106,7 +1114,7 @@ const pay153ProgressText = computed(() => {
   if (waiting) return `等待操作 ${waiting}`
   return total ? `153支付 ${completed}/${total}` : '153任务执行中'
 })
-const anyBusy = computed(() => busy.value || protocolBusy.value || pay153Busy.value)
+const anyBusy = computed(() => busy.value || protocolBusy.value || pay153Busy.value || protocolAutoPayActiveJobs.value.length > 0 || pay153AutoPayActiveJobs.value.length > 0)
 const activeStatusText = computed(() => {
   if (activeTab.value === 'protocol' && protocolBusy.value) return protocolBadgeText.value
   if (activeTab.value === 'pay153' && pay153Busy.value) return pay153BadgeText.value
@@ -1230,16 +1238,27 @@ function phonePoolStatsFor(value, scope = 'shared') {
 function usablePhonePoolEntriesFromText(value, scope = 'shared') {
   const entries = parsePhonePoolEntries(value, scope)
   if (phonePoolReuseEnabled.value) return entries
-  return entries.filter(item => (phonePoolStatusMap.value[item.key] || 'available') === 'available')
+  return entries.filter(item => {
+    const status = phonePoolStatusMap.value[item.key] || 'available'
+    return status === 'available' || status === 'failed'
+  })
 }
 function phonePoolPayloadForSubmission(value, scope = 'shared') {
   const entries = usablePhonePoolEntriesFromText(value, scope)
-  return entries.map(item => `${item.phone}----${item.url}`).join('\n')
+  return formatPhonePoolEntries(entries)
 }
-function markPhonePoolClaimedForSubmission(value, count, scope = 'shared') {
-  if (phonePoolReuseEnabled.value) return
+function formatPhonePoolEntries(entries) {
+  return (entries || []).map(item => `${item.phone}----${item.url}`).join('\n')
+}
+function claimPhonePoolEntriesForSubmission(value, count, scope = 'shared') {
+  if (phonePoolReuseEnabled.value) return []
   const entries = usablePhonePoolEntriesFromText(value, scope).slice(0, Math.max(0, Number(count || 0)))
   setPhonePoolStatus(entries, 'claimed')
+  return entries
+}
+function markPhonePoolClaimedForSubmission(value, count, scope = 'shared') {
+  const entries = claimPhonePoolEntriesForSubmission(value, count, scope)
+  return entries.map(item => item.key).filter(Boolean)
 }
 function resetPhonePoolStatusesForText(value, scope = 'shared') {
   const entries = parsePhonePoolEntries(value, scope)
@@ -1288,6 +1307,31 @@ function syncPhonePoolStatusFromJobResult(result, scope = 'shared') {
   }
   phonePoolStatusMap.value = next
 }
+function releaseClaimedPhonePoolEntriesAfterJob(result, scope = 'shared', claimedKeys = [], sourceText = '') {
+  if (phonePoolReuseEnabled.value) return
+  const successKeys = new Set()
+  const successes = Array.isArray(result?.successes) ? result.successes : []
+  for (const item of successes) {
+    if (!String(item?.phone || '').trim()) continue
+    successKeys.add(phonePoolEntryKey(scope, item?.phone, item?.phone_url || item?.sms_record_url || item?.record_url || ''))
+  }
+  const providedKeys = (claimedKeys || []).filter(Boolean)
+  const fallbackKeys = sourceText && !providedKeys.length
+    ? parsePhonePoolEntries(sourceText, scope).filter(item => (phonePoolStatusMap.value[item.key] || 'available') === 'claimed').map(item => item.key)
+    : []
+  const keys = Array.from(new Set([...providedKeys, ...fallbackKeys]))
+  if (!keys.length) return
+  const next = { ...phonePoolStatusMap.value }
+  let changed = false
+  for (const key of keys) {
+    if (successKeys.has(key)) continue
+    if ((next[key] || 'available') === 'claimed') {
+      next[key] = 'failed'
+      changed = true
+    }
+  }
+  if (changed) phonePoolStatusMap.value = next
+}
 function accountJobStatus(account) { const statuses = currentJob.value?.account_statuses || {}; return statuses[account.email] || statuses[String(account.email || '').toLowerCase()] || null }
 function accountStatus(account) { return accountJobStatus(account)?.status || account?.paypal_status || 'pending' }
 function ttlText(seconds) { const value = Number(seconds); if (!Number.isFinite(value) || value < 0) return '-'; if (value < 60) return `${Math.floor(value)}s`; if (value < 3600) return `${Math.ceil(value / 60)}m`; return `${Math.ceil(value / 3600)}h` }
@@ -1308,13 +1352,20 @@ function linkValidityText(link) {
   return `${ttlText(Math.floor(remaining / 1000))} · ${shortDateTime(expiresAt)}`
 }
 function accountStatusText(account) { const jobStatus = accountJobStatus(account); if (jobStatus) return jobStatus.status_text || ACCOUNT_STATUS_TEXT[jobStatus.status] || '未提链'; return account.paypal_status_text || ACCOUNT_STATUS_TEXT[account.paypal_status] || '未提链' }
-function accountStatusClass(account) { const status = accountStatus(account); return ({ running: 'border-blue-500/30 bg-blue-500/10 text-blue-300', success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300', failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300', paid: 'border-violet-500/30 bg-violet-500/10 text-violet-300' })[status] || 'border-gray-700 bg-gray-900 text-gray-400' }
+function accountStatusClass(account) { const status = accountStatus(account); return ({ running: 'border-blue-500/30 bg-blue-500/10 text-blue-300', success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300', failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300', no_promo: 'border-amber-500/30 bg-amber-500/10 text-amber-200', paid: 'border-violet-500/30 bg-violet-500/10 text-violet-300' })[status] || 'border-gray-700 bg-gray-900 text-gray-400' }
 function accountStatusError(account) { return accountJobStatus(account)?.error || account.paypal_error || '' }
 function accountSelectable(account) { return account.paypal_selectable !== false && accountStatus(account) !== 'paid' }
 function paymentAccountJobStatus(job, email) {
   const statuses = job?.account_statuses || {}
   const item = statuses[email] || statuses[String(email || '').toLowerCase()] || null
   return String(item?.status || '').trim().toLowerCase()
+}
+function paymentAccountJobStatusFromActive(activeJobs, email) {
+  const target = String(email || '').trim().toLowerCase()
+  const active = (activeJobs || []).find(item => String(item?.email || '').trim().toLowerCase() === target)
+  if (!active) return ''
+  const status = paymentAccountJobStatus(active.job, email)
+  return status || (TERMINAL_STATUSES.has(String(active.status || '')) ? String(active.status || '') : 'running')
 }
 function paymentAccountStatusText(status, fromPaymentJob = false) {
   if (status === 'running') return '支付中'
@@ -1329,11 +1380,11 @@ function paymentAccountStatusClass(status) {
   if (status === 'failed' || status === 'error') return 'border-rose-500/30 bg-rose-500/10 text-rose-300'
   return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
 }
-function protocolPaymentAccountJobStatus(item) { return paymentAccountJobStatus(protocolJob.value, item.email) }
+function protocolPaymentAccountJobStatus(item) { return paymentAccountJobStatus(protocolJob.value, item.email) || paymentAccountJobStatusFromActive(protocolAutoPayActiveJobs.value, item.email) }
 function protocolPaymentAccountStatus(item) { return protocolPaymentAccountJobStatus(item) || item.paypalStatus }
 function protocolPaymentAccountStatusText(item) { return paymentAccountStatusText(protocolPaymentAccountStatus(item), Boolean(protocolPaymentAccountJobStatus(item))) }
 function protocolPaymentAccountStatusClass(item) { return paymentAccountStatusClass(protocolPaymentAccountStatus(item)) }
-function pay153PaymentAccountJobStatus(item) { return paymentAccountJobStatus(pay153Job.value, item.email) }
+function pay153PaymentAccountJobStatus(item) { return paymentAccountJobStatus(pay153Job.value, item.email) || paymentAccountJobStatusFromActive(pay153AutoPayActiveJobs.value, item.email) }
 function pay153PaymentAccountStatus(item) { return pay153PaymentAccountJobStatus(item) || item.paypalStatus }
 function pay153PaymentAccountStatusText(item) { return paymentAccountStatusText(pay153PaymentAccountStatus(item), Boolean(pay153PaymentAccountJobStatus(item))) }
 function pay153PaymentAccountStatusClass(item) { return paymentAccountStatusClass(pay153PaymentAccountStatus(item)) }
@@ -1617,7 +1668,9 @@ function paymentJobSnapshot(jobId, job, logs, result, statusText, statusError, f
   }
 }
 function persistProtocolJobState(fallback = {}) {
-  const payload = paymentJobSnapshot(protocolJob.value?.id || fallback.jobId, protocolJob.value, protocolLogs.value, protocolResult.value, protocolStatusText.value, protocolStatusError.value, fallback)
+  const jobId = protocolJob.value?.id || fallback.jobId
+  const claimedPhonePoolKeys = fallback.claimedPhonePoolKeys || protocolClaimedPhonePoolKeysByJob.get(jobId) || []
+  const payload = paymentJobSnapshot(jobId, protocolJob.value, protocolLogs.value, protocolResult.value, protocolStatusText.value, protocolStatusError.value, { ...fallback, claimedPhonePoolKeys })
   if (payload.jobId || payload.logs.length || payload.result) localStorage.setItem(PROTOCOL_JOB_STORAGE_KEY, JSON.stringify(payload))
 }
 function restoreProtocolJobState(saved = {}) {
@@ -1625,6 +1678,7 @@ function restoreProtocolJobState(saved = {}) {
   protocolJob.value = saved.job || { id: saved.jobId, status: 'queued', total: Number(saved.accountCount || 1), completed: 0, concurrency: Number(saved.concurrency || 1) }
   protocolLogs.value = Array.isArray(saved.logs) ? saved.logs : []
   protocolResult.value = saved.result || null
+  if (saved.jobId && Array.isArray(saved.claimedPhonePoolKeys)) protocolClaimedPhonePoolKeysByJob.set(saved.jobId, saved.claimedPhonePoolKeys)
   if (saved.statusText) setProtocolStatus(saved.statusText, Boolean(saved.statusError))
   return true
 }
@@ -1764,7 +1818,7 @@ async function scanProtocolAutoPayLinks() {
   }
   const idleMs = Date.now() - Number(protocolAutoPayLastNewAt.value || Date.now())
   protocolAutoPayStatusText.value = `协议自动支付等待新链接中，队列 ${protocolAutoPayQueue.value.length} 个，已空闲 ${Math.floor(idleMs / 60000)} 分钟。`
-  if (idleMs >= AUTO_PAYMENT_IDLE_LIMIT_MS && !protocolAutoPayQueue.value.length && !protocolBusy.value) stopProtocolAutoPay('协议自动支付已结束：30分钟没有新链接。')
+  if (idleMs >= AUTO_PAYMENT_IDLE_LIMIT_MS && !protocolAutoPayQueue.value.length && !protocolAutoPayActiveJobs.value.length) stopProtocolAutoPay('协议自动支付已结束：30分钟没有新链接。')
 }
 async function scanPay153AutoPayLinks() {
   if (!pay153AutoPayActive.value) return
@@ -1790,37 +1844,188 @@ async function scanPay153AutoPayLinks() {
   }
   const idleMs = Date.now() - Number(pay153AutoPayLastNewAt.value || Date.now())
   pay153AutoPayStatusText.value = `153自动支付等待新链接中，队列 ${pay153AutoPayQueue.value.length} 个，已空闲 ${Math.floor(idleMs / 60000)} 分钟。`
-  if (idleMs >= AUTO_PAYMENT_IDLE_LIMIT_MS && !pay153AutoPayQueue.value.length && !pay153Busy.value) stopPay153AutoPay('153自动支付已结束：30分钟没有新链接。')
+  if (idleMs >= AUTO_PAYMENT_IDLE_LIMIT_MS && !pay153AutoPayQueue.value.length && !pay153AutoPayActiveJobs.value.length) stopPay153AutoPay('153自动支付已结束：30分钟没有新链接。')
+}
+function mergePaymentResult(current, next) {
+  const base = current && typeof current === 'object' ? current : { batch: true, successes: [], errors: [], skipped: [] }
+  const incoming = next && typeof next === 'object' ? next : {}
+  return {
+    batch: true,
+    successes: [...(base.successes || []), ...(incoming.successes || [])],
+    errors: [...(base.errors || []), ...(incoming.errors || [])],
+    skipped: [...(base.skipped || []), ...(incoming.skipped || [])],
+  }
+}
+function appendAutoPayLogs(logsRef, offsets, jobId, email, logsList) {
+  const rows = Array.isArray(logsList) ? logsList : []
+  const offset = Number(offsets.get(jobId) || 0)
+  const additions = rows.slice(offset).map(line => `[自动 ${email}] ${line}`)
+  if (additions.length) logsRef.value = [...logsRef.value, ...additions]
+  offsets.set(jobId, rows.length)
+}
+function updateAutoPayActiveJob(activeRef, email, patch) {
+  activeRef.value = activeRef.value.map(item => item.email === email ? { ...item, ...patch } : item)
+}
+function removeAutoPayActiveJob(activeRef, email) {
+  activeRef.value = activeRef.value.filter(item => item.email !== email)
+}
+async function launchProtocolAutoPayItem(item) {
+  const email = String(item?.email || '').trim()
+  if (!email || !protocolAutoPayActive.value) return
+  if (!validateProtocolPayment([email])) return
+  const claimedPhonePoolEntries = protocolForm.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(protocolForm.value.phonePool, 1, 'protocol') : []
+  const claimedPhonePoolKeys = claimedPhonePoolEntries.map(entry => entry.key).filter(Boolean)
+  protocolAutoPayActiveJobs.value = [...protocolAutoPayActiveJobs.value, { email, key: item.key, status: 'queued', jobId: '' }]
+  try {
+    saveProtocolForm({ silent: true })
+    const payload = {
+      paypalLink: protocolForm.value.paypalLink,
+      phone: protocolForm.value.phone,
+      phonePool: protocolForm.value.smsProvider === 'sms_record' ? (phonePoolReuseEnabled.value ? phonePoolPayloadForSubmission(protocolForm.value.phonePool, 'protocol') : formatPhonePoolEntries(claimedPhonePoolEntries)) : protocolForm.value.phonePool,
+      smsRecordUrl: protocolForm.value.smsRecordUrl,
+      smsProvider: protocolForm.value.smsProvider,
+      proxies: protocolForm.value.proxies,
+      country: protocolForm.value.country,
+      accountEmail: protocolForm.value.accountEmail,
+      concurrency: 1,
+      proxyPreflightAttempts: protocolForm.value.proxyPreflightAttempts,
+      smsRecordWaitSeconds: protocolForm.value.smsRecordWaitSeconds,
+      smsRecordPollSeconds: protocolForm.value.smsRecordPollSeconds,
+      accountEmails: [email],
+    }
+    const data = await api.startUsPaypalProtocolBatch(payload)
+    if (!data.job_id) throw new Error('后端没有返回协议支付任务 ID')
+    protocolClaimedPhonePoolKeysByJob.set(data.job_id, claimedPhonePoolKeys)
+    updateAutoPayActiveJob(protocolAutoPayActiveJobs, email, { jobId: data.job_id, status: 'running' })
+    void pollProtocolAutoPayJob(data.job_id, email)
+  } catch (error) {
+    releaseClaimedPhonePoolEntriesAfterJob({}, 'protocol', claimedPhonePoolKeys, protocolForm.value.phonePool)
+    removeAutoPayActiveJob(protocolAutoPayActiveJobs, email)
+    protocolResult.value = mergePaymentResult(protocolResult.value, { errors: [{ email, error: cleanError(error) }] })
+    protocolAutoPayStatusText.value = `协议自动支付启动失败：${email} ${cleanError(error)}`
+    void drainProtocolAutoPayQueue()
+  }
+}
+async function launchPay153AutoPayItem(item) {
+  const email = String(item?.email || '').trim()
+  if (!email || !pay153AutoPayActive.value) return
+  if (!validatePay153Payment([email])) return
+  const claimedPhonePoolEntries = pay153Form.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(pay153Form.value.phonePool, 1, 'pay153') : []
+  const claimedPhonePoolKeys = claimedPhonePoolEntries.map(entry => entry.key).filter(Boolean)
+  pay153AutoPayActiveJobs.value = [...pay153AutoPayActiveJobs.value, { email, key: item.key, status: 'queued', jobId: '' }]
+  try {
+    savePay153Form({ silent: true })
+    const data = await api.startUsPaypal153Batch({
+      accountEmails: [email],
+      country: pay153Form.value.country,
+      smsProvider: pay153Form.value.smsProvider,
+      phone: pay153Form.value.phone,
+      phonePool: pay153Form.value.smsProvider === 'sms_record' ? (phonePoolReuseEnabled.value ? phonePoolPayloadForSubmission(pay153Form.value.phonePool, 'pay153') : formatPhonePoolEntries(claimedPhonePoolEntries)) : pay153Form.value.phonePool,
+      smsRecordUrl: pay153Form.value.smsRecordUrl,
+      proxies: pay153Form.value.proxies,
+      buyerMode: pay153Form.value.buyerMode,
+      concurrency: 1,
+      smsRecordWaitSeconds: pay153Form.value.smsRecordWaitSeconds,
+      smsRecordPollSeconds: pay153Form.value.smsRecordPollSeconds,
+      phonePoolReuseEnabled: phonePoolReuseEnabled.value,
+    })
+    if (!data.job_id) throw new Error('后端没有返回153支付任务 ID')
+    pay153ClaimedPhonePoolKeysByJob.set(data.job_id, claimedPhonePoolKeys)
+    updateAutoPayActiveJob(pay153AutoPayActiveJobs, email, { jobId: data.job_id, status: 'running' })
+    void pollPay153AutoPayJob(data.job_id, email)
+  } catch (error) {
+    releaseClaimedPhonePoolEntriesAfterJob({}, 'pay153', claimedPhonePoolKeys, pay153Form.value.phonePool)
+    removeAutoPayActiveJob(pay153AutoPayActiveJobs, email)
+    pay153Result.value = mergePaymentResult(pay153Result.value, { errors: [{ email, error: cleanError(error) }] })
+    pay153AutoPayStatusText.value = `153自动支付启动失败：${email} ${cleanError(error)}`
+    void drainPay153AutoPayQueue()
+  }
+}
+async function pollProtocolAutoPayJob(jobId, email) {
+  try {
+    for (;;) {
+      if (componentUnmounted) return
+      const job = await api.getUsPaypalProtocolJob(jobId)
+      if (componentUnmounted) return
+      protocolJob.value = job
+      updateAutoPayActiveJob(protocolAutoPayActiveJobs, email, { jobId, status: job.status, job })
+      appendAutoPayLogs(protocolLogs, protocolAutoPayLogOffsets, jobId, email, job.logs)
+      if (TERMINAL_STATUSES.has(String(job.status || ''))) {
+        protocolResult.value = mergePaymentResult(protocolResult.value, job.result || {})
+        syncPhonePoolStatusFromJobResult(job.result || {}, 'protocol')
+        releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'protocol', protocolClaimedPhonePoolKeysByJob.get(jobId) || [], protocolForm.value.phonePool)
+        removeAutoPayActiveJob(protocolAutoPayActiveJobs, email)
+        await refreshAccounts()
+        void drainProtocolAutoPayQueue()
+        return
+      }
+      protocolAutoPayStatusText.value = `协议自动支付运行中：进行中 ${protocolAutoPayActiveJobs.value.length}，队列 ${protocolAutoPayQueue.value.length}。`
+      await new Promise(resolve => window.setTimeout(resolve, 1000))
+    }
+  } catch (error) {
+    releaseClaimedPhonePoolEntriesAfterJob({}, 'protocol', protocolClaimedPhonePoolKeysByJob.get(jobId) || [], protocolForm.value.phonePool)
+    removeAutoPayActiveJob(protocolAutoPayActiveJobs, email)
+    protocolResult.value = mergePaymentResult(protocolResult.value, { errors: [{ email, error: cleanError(error) }] })
+    void drainProtocolAutoPayQueue()
+  }
+}
+async function pollPay153AutoPayJob(jobId, email) {
+  try {
+    for (;;) {
+      if (componentUnmounted) return
+      const job = await api.getUsPaypal153Job(jobId)
+      if (componentUnmounted) return
+      pay153Job.value = job
+      updateAutoPayActiveJob(pay153AutoPayActiveJobs, email, { jobId, status: job.status, job })
+      appendAutoPayLogs(pay153Logs, pay153AutoPayLogOffsets, jobId, email, job.logs)
+      if (TERMINAL_STATUSES.has(String(job.status || ''))) {
+        pay153Result.value = mergePaymentResult(pay153Result.value, job.result || {})
+        syncPhonePoolStatusFromJobResult(job.result || {}, 'pay153')
+        releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'pay153', pay153ClaimedPhonePoolKeysByJob.get(jobId) || [], pay153Form.value.phonePool)
+        removeAutoPayActiveJob(pay153AutoPayActiveJobs, email)
+        await refreshAccounts()
+        void drainPay153AutoPayQueue()
+        return
+      }
+      pay153AutoPayStatusText.value = `153自动支付运行中：进行中 ${pay153AutoPayActiveJobs.value.length}，队列 ${pay153AutoPayQueue.value.length}。`
+      await new Promise(resolve => window.setTimeout(resolve, 1000))
+    }
+  } catch (error) {
+    releaseClaimedPhonePoolEntriesAfterJob({}, 'pay153', pay153ClaimedPhonePoolKeysByJob.get(jobId) || [], pay153Form.value.phonePool)
+    removeAutoPayActiveJob(pay153AutoPayActiveJobs, email)
+    pay153Result.value = mergePaymentResult(pay153Result.value, { errors: [{ email, error: cleanError(error) }] })
+    void drainPay153AutoPayQueue()
+  }
 }
 async function drainProtocolAutoPayQueue() {
-  if (protocolAutoPayDraining || protocolBusy.value) return
+  if (protocolAutoPayDraining) return
   protocolAutoPayDraining = true
   try {
     while (protocolAutoPayActive.value && protocolAutoPayQueue.value.length) {
-      if (protocolBusy.value) break
-      const batch = protocolAutoPayQueue.value.splice(0, Math.max(1, Number(protocolForm.value.concurrency || 1)))
+      const limit = Math.max(1, Number(protocolForm.value.concurrency || 1))
+      const availableSlots = Math.max(0, limit - protocolAutoPayActiveJobs.value.length)
+      if (!availableSlots) break
+      const batch = protocolAutoPayQueue.value.splice(0, availableSlots)
       protocolAutoPayQueue.value = [...protocolAutoPayQueue.value]
-      const emails = batch.map(item => item.email).filter(Boolean)
-      if (!emails.length) continue
-      protocolAutoPayStatusText.value = `协议自动支付正在提交 ${emails.length} 个账号，队列剩余 ${protocolAutoPayQueue.value.length} 个。`
-      await startProtocolPayment({ autoBatchEmails: emails })
+      protocolAutoPayStatusText.value = `协议自动支付正在提交 ${batch.length} 个账号，进行中 ${protocolAutoPayActiveJobs.value.length}，队列剩余 ${protocolAutoPayQueue.value.length} 个。`
+      for (const item of batch) void launchProtocolAutoPayItem(item)
     }
   } finally {
     protocolAutoPayDraining = false
   }
 }
 async function drainPay153AutoPayQueue() {
-  if (pay153AutoPayDraining || pay153Busy.value) return
+  if (pay153AutoPayDraining) return
   pay153AutoPayDraining = true
   try {
     while (pay153AutoPayActive.value && pay153AutoPayQueue.value.length) {
-      if (pay153Busy.value) break
-      const batch = pay153AutoPayQueue.value.splice(0, Math.max(1, Number(pay153Form.value.concurrency || 1)))
+      const limit = Math.max(1, Number(pay153Form.value.concurrency || 1))
+      const availableSlots = Math.max(0, limit - pay153AutoPayActiveJobs.value.length)
+      if (!availableSlots) break
+      const batch = pay153AutoPayQueue.value.splice(0, availableSlots)
       pay153AutoPayQueue.value = [...pay153AutoPayQueue.value]
-      const emails = batch.map(item => item.email).filter(Boolean)
-      if (!emails.length) continue
-      pay153AutoPayStatusText.value = `153自动支付正在提交 ${emails.length} 个账号，队列剩余 ${pay153AutoPayQueue.value.length} 个。`
-      await startPay153Payment({ autoBatchEmails: emails })
+      pay153AutoPayStatusText.value = `153自动支付正在提交 ${batch.length} 个账号，进行中 ${pay153AutoPayActiveJobs.value.length}，队列剩余 ${pay153AutoPayQueue.value.length} 个。`
+      for (const item of batch) void launchPay153AutoPayItem(item)
     }
   } finally {
     pay153AutoPayDraining = false
@@ -1869,12 +2074,14 @@ async function startProtocolPayment(options = {}) {
   protocolJob.value = null
   activeTab.value = 'protocol'
   setProtocolStatus('协议支付任务已提交，正在启动本地 PayPal 引擎。')
+  const claimedPhonePoolEntries = protocolForm.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(protocolForm.value.phonePool, selectedEmails.length || 1, 'protocol') : []
+  const claimedPhonePoolKeys = claimedPhonePoolEntries.map(item => item.key).filter(Boolean)
   try {
     saveProtocolForm({ silent: true })
     const payload = {
       paypalLink: protocolForm.value.paypalLink,
       phone: protocolForm.value.phone,
-      phonePool: protocolForm.value.smsProvider === 'sms_record' ? phonePoolPayloadForSubmission(protocolForm.value.phonePool, 'protocol') : protocolForm.value.phonePool,
+      phonePool: protocolForm.value.smsProvider === 'sms_record' ? (phonePoolReuseEnabled.value ? phonePoolPayloadForSubmission(protocolForm.value.phonePool, 'protocol') : formatPhonePoolEntries(claimedPhonePoolEntries)) : protocolForm.value.phonePool,
       smsRecordUrl: protocolForm.value.smsRecordUrl,
       smsProvider: protocolForm.value.smsProvider,
       proxies: protocolForm.value.proxies,
@@ -1889,12 +2096,13 @@ async function startProtocolPayment(options = {}) {
       ? await api.startUsPaypalProtocolBatch({ ...payload, accountEmails: selectedEmails })
       : await api.startUsPaypalProtocol(payload)
     if (!data.job_id) throw new Error('后端没有返回协议支付任务 ID')
-    if (protocolForm.value.smsProvider === 'sms_record') markPhonePoolClaimedForSubmission(protocolForm.value.phonePool, selectedEmails.length || 1, 'protocol')
+    if (claimedPhonePoolKeys.length) protocolClaimedPhonePoolKeysByJob.set(data.job_id, claimedPhonePoolKeys)
     protocolJob.value = { id: data.job_id, status: 'queued', total: selectedEmails.length || 1, completed: 0, concurrency: protocolForm.value.concurrency }
-    persistProtocolJobState({ jobId: data.job_id, accountCount: selectedEmails.length || 1, concurrency: protocolForm.value.concurrency, startedAt: Date.now() })
+    persistProtocolJobState({ jobId: data.job_id, accountCount: selectedEmails.length || 1, concurrency: protocolForm.value.concurrency, startedAt: Date.now(), claimedPhonePoolKeys })
     await pollProtocolJob(data.job_id)
     return true
   } catch (error) {
+    releaseClaimedPhonePoolEntriesAfterJob({}, 'protocol', claimedPhonePoolKeys, protocolForm.value.phonePool)
     setProtocolStatus(cleanError(error), true)
     persistProtocolJobState()
     return false
@@ -1916,6 +2124,7 @@ async function pollProtocolJob(jobId) {
     if (protocolLogRef.value) protocolLogRef.value.scrollTop = protocolLogRef.value.scrollHeight
     if (job.status === 'success') {
       syncPhonePoolStatusFromJobResult(job.result || {}, 'protocol')
+      releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'protocol', protocolClaimedPhonePoolKeysByJob.get(jobId) || [], protocolForm.value.phonePool)
       setProtocolStatus(Number(job.total || 0) > 1 ? `协议批量支付完成，已完成 ${job.completed || 0}/${job.total || 0}。` : '协议支付成功。')
       persistProtocolJobState({ jobId })
       await refreshAccounts()
@@ -1923,12 +2132,14 @@ async function pollProtocolJob(jobId) {
     }
     if (job.status === 'cancelled') {
       syncPhonePoolStatusFromJobResult(job.result || {}, 'protocol')
+      releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'protocol', protocolClaimedPhonePoolKeysByJob.get(jobId) || [], protocolForm.value.phonePool)
       setProtocolStatus('协议支付任务已取消。')
       persistProtocolJobState({ jobId })
       return
     }
     if (job.status === 'error' || job.status === 'failed') {
       syncPhonePoolStatusFromJobResult(job.result || {}, 'protocol')
+      releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'protocol', protocolClaimedPhonePoolKeysByJob.get(jobId) || [], protocolForm.value.phonePool)
       setProtocolStatus(job.error || '协议支付失败', true)
       persistProtocolJobState({ jobId })
       throw new Error(job.error || '协议支付失败')
@@ -1956,7 +2167,9 @@ async function cancelProtocolJob() {
 
 function setPay153Status(message, error = false) { pay153StatusText.value = message; pay153StatusError.value = error }
 function persistPay153JobState(fallback = {}) {
-  const payload = paymentJobSnapshot(pay153Job.value?.id || fallback.jobId, pay153Job.value, pay153Logs.value, pay153Result.value, pay153StatusText.value, pay153StatusError.value, fallback)
+  const jobId = pay153Job.value?.id || fallback.jobId
+  const claimedPhonePoolKeys = fallback.claimedPhonePoolKeys || pay153ClaimedPhonePoolKeysByJob.get(jobId) || []
+  const payload = paymentJobSnapshot(jobId, pay153Job.value, pay153Logs.value, pay153Result.value, pay153StatusText.value, pay153StatusError.value, { ...fallback, claimedPhonePoolKeys })
   if (payload.jobId || payload.logs.length || payload.result) localStorage.setItem(PAY153_JOB_STORAGE_KEY, JSON.stringify(payload))
 }
 function restorePay153JobState(saved = {}) {
@@ -1964,6 +2177,7 @@ function restorePay153JobState(saved = {}) {
   pay153Job.value = saved.job || { id: saved.jobId, status: 'queued', total: Number(saved.accountCount || 1), completed: 0, concurrency: Number(saved.concurrency || 1), children: {} }
   pay153Logs.value = Array.isArray(saved.logs) ? saved.logs : []
   pay153Result.value = saved.result || null
+  if (saved.jobId && Array.isArray(saved.claimedPhonePoolKeys)) pay153ClaimedPhonePoolKeysByJob.set(saved.jobId, saved.claimedPhonePoolKeys)
   if (saved.statusText) setPay153Status(saved.statusText, Boolean(saved.statusError))
   return true
 }
@@ -2017,6 +2231,14 @@ function selectAllPay153Accounts() {
 function clearSelectedPay153Accounts() {
   selectedPay153AccountEmails.value = new Set()
 }
+function currentPay153BaPayload() {
+  const selectedEmail = pay153SelectedEmails.value[0] || ''
+  const selected = selectedEmail ? pay153LinkAccountOptions.value.find(item => item.email === selectedEmail) : null
+  return {
+    paypalLink: selected?.paypalLink || '',
+    baToken: displayBaToken(selected?.paypalLink || ''),
+  }
+}
 function validatePay153Payment(targetEmails = pay153SelectedEmails.value) {
   const batchCount = Array.isArray(targetEmails) ? targetEmails.length : 0
   const phoneCount = splitProtocolLines(pay153Form.value.phone).length
@@ -2051,6 +2273,8 @@ async function startPay153Payment(options = {}) {
   pay153Job.value = null
   activeTab.value = 'pay153'
   setPay153Status('153支付任务已提交，正在创建远端任务。')
+  const claimedPhonePoolEntries = pay153Form.value.smsProvider === 'sms_record' ? claimPhonePoolEntriesForSubmission(pay153Form.value.phonePool, selectedEmails.length, 'pay153') : []
+  const claimedPhonePoolKeys = claimedPhonePoolEntries.map(item => item.key).filter(Boolean)
   try {
     savePay153Form({ silent: true })
     const data = await api.startUsPaypal153Batch({
@@ -2058,7 +2282,7 @@ async function startPay153Payment(options = {}) {
       country: pay153Form.value.country,
       smsProvider: pay153Form.value.smsProvider,
       phone: pay153Form.value.phone,
-      phonePool: pay153Form.value.smsProvider === 'sms_record' ? phonePoolPayloadForSubmission(pay153Form.value.phonePool, 'pay153') : pay153Form.value.phonePool,
+      phonePool: pay153Form.value.smsProvider === 'sms_record' ? (phonePoolReuseEnabled.value ? phonePoolPayloadForSubmission(pay153Form.value.phonePool, 'pay153') : formatPhonePoolEntries(claimedPhonePoolEntries)) : pay153Form.value.phonePool,
       smsRecordUrl: pay153Form.value.smsRecordUrl,
       proxies: pay153Form.value.proxies,
       buyerMode: pay153Form.value.buyerMode,
@@ -2068,12 +2292,13 @@ async function startPay153Payment(options = {}) {
       phonePoolReuseEnabled: phonePoolReuseEnabled.value,
     })
     if (!data.job_id) throw new Error('后端没有返回153支付任务 ID')
-    if (pay153Form.value.smsProvider === 'sms_record') markPhonePoolClaimedForSubmission(pay153Form.value.phonePool, selectedEmails.length, 'pay153')
+    if (claimedPhonePoolKeys.length) pay153ClaimedPhonePoolKeysByJob.set(data.job_id, claimedPhonePoolKeys)
     pay153Job.value = { id: data.job_id, status: 'queued', total: selectedEmails.length, completed: 0, concurrency: pay153Form.value.concurrency, children: {} }
-    persistPay153JobState({ jobId: data.job_id, accountCount: selectedEmails.length, concurrency: pay153Form.value.concurrency, startedAt: Date.now() })
+    persistPay153JobState({ jobId: data.job_id, accountCount: selectedEmails.length, concurrency: pay153Form.value.concurrency, startedAt: Date.now(), claimedPhonePoolKeys })
     await pollPay153Job(data.job_id)
     return true
   } catch (error) {
+    releaseClaimedPhonePoolEntriesAfterJob({}, 'pay153', claimedPhonePoolKeys, pay153Form.value.phonePool)
     setPay153Status(cleanError(error), true)
     persistPay153JobState()
     return false
@@ -2100,6 +2325,23 @@ async function retryFailedPay153Payment() {
   setPay153Status(`已选择上一轮失败账号 ${retryEmails.length} 个，正在重试153支付。`)
   await startPay153Payment()
 }
+async function cancelPay153RemoteByCurrentBa() {
+  const payload = currentPay153BaPayload()
+  if (!payload.paypalLink && !payload.baToken) {
+    setPay153Status('请先在153支付链接列表选择一个要清理的 BA。', true)
+    return
+  }
+  pay153Canceling.value = true
+  try {
+    const data = await api.cancelUsPaypal153RemoteByBa(payload)
+    const cancelled = Array.isArray(data.remote_cancelled) ? data.remote_cancelled : []
+    setPay153Status(cancelled.length ? `已清理153卡住任务：${cancelled.join(', ')}` : `没有找到可清理的153远端任务：${data.ba_token || payload.baToken}`)
+  } catch (error) {
+    setPay153Status(`清理153卡住任务失败：${cleanError(error)}`, true)
+  } finally {
+    pay153Canceling.value = false
+  }
+}
 async function pollPay153Job(jobId) {
   for (;;) {
     if (componentUnmounted) return
@@ -2112,6 +2354,7 @@ async function pollPay153Job(jobId) {
     if (pay153LogRef.value) pay153LogRef.value.scrollTop = pay153LogRef.value.scrollHeight
     if (job.status === 'success') {
       syncPhonePoolStatusFromJobResult(job.result || {}, 'pay153')
+      releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'pay153', pay153ClaimedPhonePoolKeysByJob.get(jobId) || [], pay153Form.value.phonePool)
       setPay153Status(`153支付完成，已完成 ${job.completed || 0}/${job.total || 0}。`)
       persistPay153JobState({ jobId })
       await refreshAccounts()
@@ -2119,12 +2362,14 @@ async function pollPay153Job(jobId) {
     }
     if (job.status === 'cancelled') {
       syncPhonePoolStatusFromJobResult(job.result || {}, 'pay153')
+      releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'pay153', pay153ClaimedPhonePoolKeysByJob.get(jobId) || [], pay153Form.value.phonePool)
       setPay153Status('153支付任务已取消。')
       persistPay153JobState({ jobId })
       return
     }
     if (job.status === 'error' || job.status === 'failed') {
       syncPhonePoolStatusFromJobResult(job.result || {}, 'pay153')
+      releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'pay153', pay153ClaimedPhonePoolKeysByJob.get(jobId) || [], pay153Form.value.phonePool)
       setPay153Status(job.error || '153支付失败', true)
       persistPay153JobState({ jobId })
       throw new Error(job.error || '153支付失败')

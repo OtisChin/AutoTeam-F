@@ -211,6 +211,7 @@ export const api = {
   startUsPaypal153Batch: (payload) => request('POST', '/us-paypal/pay153/batch/start', payload),
   getUsPaypal153Job: (jobId) => request('GET', `/us-paypal/pay153/jobs/${encodeURIComponent(jobId)}`),
   cancelUsPaypal153Job: (jobId) => request('POST', `/us-paypal/pay153/jobs/${encodeURIComponent(jobId)}/cancel`),
+  cancelUsPaypal153RemoteByBa: (payload) => request('POST', '/us-paypal/pay153/remote/cancel-by-ba', payload),
   submitUsPaypal153Otp: (jobId, payload) => request('POST', `/us-paypal/pay153/jobs/${encodeURIComponent(jobId)}/otp`, payload),
   submitUsPaypal153Captcha: (jobId, payload) => request('POST', `/us-paypal/pay153/jobs/${encodeURIComponent(jobId)}/captcha`, payload),
   getUsPaypal153SupportedCountries: () => request('GET', '/us-paypal/pay153/supported-countries'),

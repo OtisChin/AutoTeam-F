@@ -736,11 +736,27 @@
             </option>
           </select>
           <select
-            v-model="kakaoExtractFilter"
+            v-model="registerDateFilter"
             class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
-            <option value="">全部Kakao提链</option>
-            <option v-for="option in kakaoExtractOptions" :key="option.value" :value="option.value">
-              {{ option.label }} ({{ option.count }})
+            <option value="">全部注册日期</option>
+            <option v-for="option in registerDateOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="registerStartTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">注册开始</option>
+            <option v-for="option in bindTimeOptions" :key="`register-start-${option.value}`" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select
+            v-model="registerEndTimeFilter"
+            class="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+            <option value="">注册结束</option>
+            <option v-for="option in bindTimeOptions" :key="`register-end-${option.value}`" :value="option.value">
+              {{ option.label }}
             </option>
           </select>
           <select
@@ -816,7 +832,7 @@
             </option>
           </select>
           <button
-            v-if="emailFilter || statusFilter || accountTypeFilter || kakaoExtractFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
+            v-if="emailFilter || statusFilter || accountTypeFilter || registerDateFilter || registerStartTimeFilter || registerEndTimeFilter || credentialExportFilter || exportDateFilter || exportStartTimeFilter || exportEndTimeFilter || accountHubSyncFilter || authCredentialFilter || bindDateFilter || bindStartTimeFilter || bindEndTimeFilter"
             @click="clearFilters"
             class="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
             清空筛选
@@ -1681,7 +1697,9 @@ const messageClass = ref('')
 const emailFilter = ref('')
 const statusFilter = ref('')
 const accountTypeFilter = ref('')
-const kakaoExtractFilter = ref('')
+const registerDateFilter = ref('')
+const registerStartTimeFilter = ref('')
+const registerEndTimeFilter = ref('')
 const credentialExportFilter = ref('')
 const exportDateFilter = ref('')
 const exportStartTimeFilter = ref('')
@@ -2332,6 +2350,10 @@ function accountBindTs(acc) {
   return Number(acc?.plus_bound_at || acc?.last_bind_at || 0) || 0
 }
 
+function accountRegisterTs(acc) {
+  return Number(acc?.created_at || acc?.registered_at || acc?.register_at || 0) || 0
+}
+
 function accountExportTs(acc) {
   return Number(acc?.credentials_exported_at || 0) || 0
 }
@@ -2419,6 +2441,19 @@ const bindDateOptions = computed(() => {
     .map(value => ({ value, label: dateLabel(value) }))
 })
 
+const registerDateOptions = computed(() => {
+  const values = new Set()
+  for (const acc of allAccounts.value) {
+    const ts = accountRegisterTs(acc)
+    if (!ts) continue
+    values.add(dateKey(ts * 1000))
+  }
+  return Array.from(values)
+    .filter(Boolean)
+    .sort((a, b) => b.localeCompare(a))
+    .map(value => ({ value, label: dateLabel(value) }))
+})
+
 const exportDateOptions = computed(() => {
   const values = new Set()
   for (const acc of allAccounts.value) {
@@ -2461,6 +2496,18 @@ const bindTimeRange = computed(() => {
   }
 })
 
+const registerTimeRange = computed(() => {
+  if (!registerDateFilter.value) return { start: 0, end: 0 }
+  const start = dateTimeFilterTimestamp(registerDateFilter.value, registerStartTimeFilter.value, '00:00')
+  const end = registerEndTimeFilter.value
+    ? dateTimeFilterTimestamp(registerDateFilter.value, registerEndTimeFilter.value, '23:59') + 3599
+    : dateTimeFilterTimestamp(registerDateFilter.value, '', '23:59', 59)
+  return {
+    start,
+    end,
+  }
+})
+
 const exportTimeRange = computed(() => {
   if (!exportDateFilter.value) return { start: 0, end: 0 }
   const start = dateTimeFilterTimestamp(exportDateFilter.value, exportStartTimeFilter.value, '00:00')
@@ -2484,7 +2531,9 @@ watch(
     emailFilter,
     statusFilter,
     accountTypeFilter,
-    kakaoExtractFilter,
+    registerDateFilter,
+    registerStartTimeFilter,
+    registerEndTimeFilter,
     credentialExportFilter,
     exportDateFilter,
     exportStartTimeFilter,
@@ -2504,7 +2553,7 @@ const filteredAccounts = computed(() => {
   const emailNeedle = emailFilter.value.trim().toLowerCase()
   const statusNeedle = statusFilter.value
   const typeNeedle = accountTypeFilter.value
-  const kakaoNeedle = kakaoExtractFilter.value
+  const registerRange = registerTimeRange.value
   const exportNeedle = credentialExportFilter.value
   const exportRange = exportTimeRange.value
   const hubSyncNeedle = accountHubSyncFilter.value
@@ -2522,7 +2571,12 @@ const filteredAccounts = computed(() => {
       if (emailNeedle && !email.includes(emailNeedle)) return false
       if (statusNeedle && status !== statusNeedle) return false
       if (typeNeedle && accountType !== typeNeedle) return false
-      if (kakaoNeedle === 'extracted' && !accountKakaoLinkExtracted(acc)) return false
+      if (registerRange.start || registerRange.end) {
+        const registerTs = accountRegisterTs(acc)
+        if (!registerTs) return false
+        if (registerRange.start && registerTs < registerRange.start) return false
+        if (registerRange.end && registerTs > registerRange.end) return false
+      }
       if (exportNeedle && exportStatus !== exportNeedle) return false
       if (exportRange.start || exportRange.end) {
         const exportTs = accountExportTs(acc)
@@ -2595,15 +2649,6 @@ const accountTypeOptions = computed(() => {
   return Array.from(counts.entries())
     .sort((a, b) => accountTypeLabel(a[0]).localeCompare(accountTypeLabel(b[0]), 'zh-Hans-CN'))
     .map(([value, count]) => ({ value, label: accountTypeLabel(value), count }))
-})
-const kakaoExtractOptions = computed(() => {
-  let extracted = 0
-  for (const acc of allAccounts.value) {
-    if (accountKakaoLinkExtracted(acc)) extracted += 1
-  }
-  return [
-    { value: 'extracted', label: 'Kakao已提链（含失效）', count: extracted },
-  ]
 })
 const credentialExportOptions = computed(() => {
   let exported = 0
@@ -2945,7 +2990,9 @@ function clearFilters() {
   emailFilter.value = ''
   statusFilter.value = ''
   accountTypeFilter.value = ''
-  kakaoExtractFilter.value = ''
+  registerDateFilter.value = ''
+  registerStartTimeFilter.value = ''
+  registerEndTimeFilter.value = ''
   credentialExportFilter.value = ''
   exportDateFilter.value = ''
   exportStartTimeFilter.value = ''
@@ -3608,7 +3655,11 @@ function exportAccounts() {
       email: emailFilter.value || '',
       status: statusFilter.value || '',
       account_type: accountTypeFilter.value || '',
-      kakao_extract: kakaoExtractFilter.value || '',
+      register_date: registerDateFilter.value || '',
+      register_start_time: registerStartTimeFilter.value || '',
+      register_end_time: registerEndTimeFilter.value || '',
+      register_time_start: registerTimeRange.value.start || null,
+      register_time_end: registerTimeRange.value.end || null,
       credentials_exported: credentialExportFilter.value || '',
       account_hub_synced: accountHubSyncFilter.value || '',
       auth_credential: authCredentialFilter.value || '',
@@ -3624,6 +3675,7 @@ function exportAccounts() {
       display_email: displayEmail(acc),
       original_email: acc.original_email || '',
       status: acc.status || '',
+      created_at: acc.created_at || null,
       seat_type: acc.seat_type || '',
       auth_file: acc.auth_file || '',
       auth_session_file: acc.auth_session_file || '',

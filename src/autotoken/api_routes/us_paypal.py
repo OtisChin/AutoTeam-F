@@ -54,8 +54,16 @@ PAYPAL_STATUS_PENDING = "pending"
 PAYPAL_STATUS_RUNNING = "running"
 PAYPAL_STATUS_SUCCESS = "success"
 PAYPAL_STATUS_FAILED = "failed"
+PAYPAL_STATUS_NO_PROMO = "no_promo"
 PAYPAL_STATUS_PAID = "paid"
-PAYPAL_STATUS_TEXT = {"pending": "未提链", "running": "提链中", "success": "已提链", "failed": "提链失败", "paid": "已支付"}
+PAYPAL_STATUS_TEXT = {
+    "pending": "未提链",
+    "running": "提链中",
+    "success": "已提链",
+    "failed": "提链失败",
+    "no_promo": "无优惠",
+    "paid": "已支付",
+}
 ACCOUNT_UI_FIELDS = (
     "email", "status", "account_type", "seat_type", "ttl_seconds", "expires_at", "last_active_at", "updated_at", "note",
 )
@@ -322,6 +330,12 @@ class UsPaypal153BatchStartRequest(BaseModel):
 class UsPaypal153InteractiveRequest(BaseModel):
     remote_job_id: str = Field("", alias="remoteJobId")
     value: str = ""
+    model_config = {"populate_by_name": True}
+
+
+class UsPaypal153CancelByBaRequest(BaseModel):
+    paypal_link: str = Field("", alias="paypalLink")
+    ba_token: str = Field("", alias="baToken")
     model_config = {"populate_by_name": True}
 
 
@@ -822,17 +836,13 @@ def _run_batch_account(
                         "status": status,
                     }
                 if _is_paypal_non_zero_amount_error(last_error):
-                    status = _set_account_status(email, PAYPAL_STATUS_FAILED, error=last_error, job_id=job_id)
-                    _append_log(job_id, f"[{index}/{total}] PayPal 金额非 0，账号保留：{email}")
+                    status = _set_account_status(email, PAYPAL_STATUS_NO_PROMO, error=last_error, job_id=job_id)
+                    reason = "账号无优惠，账单金额非 0"
+                    _append_log(job_id, f"[{index}/{total}] {reason}：{email}")
                     return {
-                        "ok": False,
+                        "skipped": True,
                         "email": email,
-                        "error": {
-                            "email": email,
-                            "elapsed_s": round(time.monotonic() - started, 1),
-                            "attempts": attempt,
-                            "error": f"PayPal 金额非 0，账号保留：{last_error}",
-                        },
+                        "reason": reason,
                         "status": status,
                         "account_deleted": False,
                     }
@@ -1521,6 +1531,10 @@ def _pay153_get_job(remote_job_id: str, client: Pay153Client | None = None) -> d
     return _pay153_request("GET", f"/jobs/{urllib.parse.quote(str(remote_job_id), safe='')}?log_offset=0", timeout=30.0, client=client)
 
 
+def _pay153_list_jobs(client: Pay153Client | None = None) -> dict[str, Any]:
+    return _pay153_request("GET", "/jobs?limit=200", timeout=30.0, client=client)
+
+
 def _pay153_submit_otp(remote_job_id: str, value: str, client: Pay153Client | None = None) -> dict[str, Any]:
     return _pay153_request("POST", f"/jobs/{urllib.parse.quote(str(remote_job_id), safe='')}/otp", {"value": value}, timeout=30.0, client=client)
 
@@ -1531,6 +1545,54 @@ def _pay153_submit_captcha(remote_job_id: str, value: str, client: Pay153Client 
 
 def _pay153_cancel_job(remote_job_id: str, client: Pay153Client | None = None) -> dict[str, Any]:
     return _pay153_request("POST", f"/jobs/{urllib.parse.quote(str(remote_job_id), safe='')}/cancel", {}, timeout=30.0, client=client)
+
+
+def _pay153_normalize_ba_token(value: str) -> str:
+    text = str(value or "").strip()
+    return extract_protocol_ba_token(text) or (text if text.upper().startswith("BA-") else "")
+
+
+def _pay153_job_matches_ba(remote_job: dict[str, Any], ba_token: str) -> bool:
+    target = _pay153_normalize_ba_token(ba_token)
+    if not target:
+        return False
+    candidates = [
+        remote_job.get("ba_token"),
+        remote_job.get("paypal_url"),
+        remote_job.get("paypal_link"),
+        remote_job.get("url"),
+    ]
+    result = remote_job.get("result")
+    if isinstance(result, dict):
+        candidates.extend([result.get("ba_token"), result.get("paypal_url"), result.get("paypal_link")])
+    return any(_pay153_normalize_ba_token(str(value or "")) == target for value in candidates)
+
+
+def _pay153_cancel_existing_jobs_for_ba(ba_token_or_url: str, client: Pay153Client | None = None) -> list[str]:
+    target = _pay153_normalize_ba_token(ba_token_or_url)
+    if not target:
+        return []
+    data = _pay153_list_jobs(client=client)
+    jobs = data.get("jobs") if isinstance(data, dict) else []
+    cancelled: list[str] = []
+    for remote_job in jobs if isinstance(jobs, list) else []:
+        if not isinstance(remote_job, dict):
+            continue
+        status = str(remote_job.get("status") or "").strip().lower()
+        if status in {"completed", "failed", "cancelled"}:
+            continue
+        if not _pay153_job_matches_ba(remote_job, target):
+            continue
+        remote_job_id = str(remote_job.get("id") or remote_job.get("job_id") or "").strip()
+        if not remote_job_id:
+            continue
+        _pay153_cancel_job(remote_job_id, client=client)
+        cancelled.append(remote_job_id)
+    return cancelled
+
+
+def _pay153_is_already_processing_error(message: str) -> bool:
+    return "already being processed" in str(message or "").lower()
 
 
 def _split_pay153_values(value: str | list[str]) -> list[str]:
@@ -1865,7 +1927,7 @@ def _run_pay153_batch_account(
             last_item = item
             if retry_index >= PAY153_ACCOUNT_MAX_RETRIES or not _pay153_account_failure_retryable(item):
                 return item
-        return last_item or {"ok": False, "email": email, "error": {"email": email, "error": "153支付失败"}, "status": _set_account_status(email, PAYPAL_STATUS_SUCCESS, error="153支付失败", job_id=job_id)}
+        return last_item or {"ok": False, "email": email, "error": {"email": email, "error": "153支付失败"}, "status": _set_account_status(email, PAYPAL_STATUS_FAILED, error="153支付失败", job_id=job_id)}
     finally:
         _set_job_running_delta(job_id, -1)
 
@@ -1878,6 +1940,8 @@ def _pay153_account_failure_retryable(item: dict[str, Any]) -> bool:
         "SMS record 号池已领完",
         "任务已取消",
         "153支付已取消",
+        "already being processed",
+        "This PayPal link is already being processed by another task",
     )
     return not any(marker in message for marker in non_retryable_markers)
 
@@ -1996,16 +2060,27 @@ def _run_pay153_batch_account_once(
         message = child.get("error") or child.get("stage") or "153支付失败"
         if otp_provider is not None and activation is not None and hasattr(otp_provider, "register_confirmation_result"):
             otp_provider.register_confirmation_result(activation, False)
-        status = _set_account_status(email, PAYPAL_STATUS_SUCCESS, error=str(message), job_id=job_id)
+        status = _set_account_status(email, PAYPAL_STATUS_FAILED, error=str(message), job_id=job_id)
         _append_log(job_id, f"[{index}/{total}] 153支付失败：{email} {message}")
         return {"ok": False, "email": email, "error": {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "country": country, "phone": phone, "sms_record_url": record_url, "error": str(message), "remote_job_id": remote_job_id, "result": child.get("result") or {}}, "status": status}
     except Exception as exc:
         error = sanitize_protocol_log_text(str(exc))
         if otp_provider is not None and activation is not None and hasattr(otp_provider, "abandon"):
             otp_provider.abandon(activation, error)
-        status = _set_account_status(email, PAYPAL_STATUS_SUCCESS, error=error, job_id=job_id)
+        remote_cancelled: list[str] = []
+        if _pay153_is_already_processing_error(error):
+            try:
+                remote_cancelled = _pay153_cancel_existing_jobs_for_ba(paypal_link, client=client)
+                if remote_cancelled:
+                    _append_log(job_id, f"[{index}/{total}] 已取消153远端卡住任务：{email} remote={','.join(remote_cancelled)}")
+                else:
+                    _append_log(job_id, f"[{index}/{total}] 未找到可取消的153远端卡住任务：{email} ba={ba_token}")
+            except Exception as cancel_exc:
+                cancel_error = sanitize_protocol_log_text(str(cancel_exc))
+                _append_log(job_id, f"[{index}/{total}] 清理153远端卡住任务失败：{email} {cancel_error}")
+        status = _set_account_status(email, PAYPAL_STATUS_FAILED, error=error, job_id=job_id)
         _append_log(job_id, f"[{index}/{total}] 153支付异常：{email} {error}")
-        return {"ok": False, "email": email, "error": {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "country": country, "phone": phone, "sms_record_url": record_url, "error": error}, "status": status}
+        return {"ok": False, "email": email, "error": {"email": email, "elapsed_s": round(time.monotonic() - started, 1), "country": country, "phone": phone, "sms_record_url": record_url, "error": error, "remote_cancelled": remote_cancelled}, "status": status}
 
 
 def _run_pay153_batch_payment_job(job_id: str, req: UsPaypal153BatchStartRequest) -> None:
@@ -2203,6 +2278,14 @@ def create_us_paypal_router() -> APIRouter:
     @router.get("/api/us-paypal/pay153/stats")
     def get_us_paypal_pay153_stats() -> dict[str, Any]:
         return _pay153_request("GET", "/stats")
+
+    @router.post("/api/us-paypal/pay153/remote/cancel-by-ba")
+    def cancel_us_paypal_pay153_remote_by_ba(req: UsPaypal153CancelByBaRequest) -> dict[str, Any]:
+        target = _pay153_normalize_ba_token(req.ba_token or req.paypal_link)
+        if not target:
+            raise HTTPException(status_code=400, detail={"ok": False, "code": "bad_body", "message": "请提供有效 BA 链接或 BA token"})
+        cancelled = _pay153_cancel_existing_jobs_for_ba(target)
+        return {"ok": True, "ba_token": target, "remote_cancelled": cancelled}
 
     @router.get("/api/us-paypal/pay153/jobs/{job_id}")
     def get_us_paypal_pay153_job(job_id: str) -> dict[str, Any]:

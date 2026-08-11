@@ -514,7 +514,25 @@ def test_batch_job_passes_target_region_and_configurable_attempts(monkeypatch):
     assert captured["regions"] == [("GB", "VN"), ("GB", "VN"), ("GB", "VN")]
 
 
-def test_batch_account_keeps_paypal_nonzero_amount_account(monkeypatch):
+def test_accounts_show_no_promo_paypal_status(monkeypatch):
+    app = _app()
+    email = "nopromo@example.com"
+    us_paypal.ACCOUNT_STATUS_FILE.write_text(
+        json.dumps({email: {"status": "no_promo", "error": "PayPal 金额非 0"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(us_paypal.account_store, "load_accounts", lambda: [])
+    monkeypatch.setattr(us_paypal, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": email, "auth_file": "auth.json"},
+    ])
+
+    result = _endpoint(app, "/api/us-paypal/accounts", "GET")()
+
+    assert result["accounts"][0]["paypal_status"] == "no_promo"
+    assert result["accounts"][0]["paypal_status_text"] == "无优惠"
+
+
+def test_batch_account_marks_paypal_nonzero_amount_as_no_promo_skip(monkeypatch):
     email = "AngelesGuttman0186@outlook.com"
     deleted_accounts: list[str] = []
     deleted_sessions: list[str] = []
@@ -539,12 +557,43 @@ def test_batch_account_keeps_paypal_nonzero_amount_account(monkeypatch):
     })
     result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
 
-    assert result["ok"] is False
+    assert result["skipped"] is True
+    assert result["reason"].startswith("账号无优惠")
+    assert result["status"]["status"] == "no_promo"
     assert result.get("account_deleted") is not True
-    assert "已从账号池删除" not in result["error"]["error"]
-    assert "金额非 0" in result["error"]["error"]
     assert deleted_accounts == []
     assert deleted_sessions == []
+    statuses = json.loads(us_paypal.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert statuses[email.lower()]["status"] == "no_promo"
+
+
+def test_batch_job_excludes_paypal_nonzero_amount_from_retry_errors(monkeypatch):
+    email = "nopromo-batch@example.com"
+    monkeypatch.setattr(us_paypal, "_iter_auth_accounts", lambda include_paid=False: [{"email": email, "auth_file": "auth.json"}])
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda _email: "token")
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", lambda cfg, log: (_ for _ in ()).throw(RuntimeError("PayPal 金额必须为 0: 1667")))
+    job_id = "paypal-nonzero-batch-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 0,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-BR-sid-old-t-120:pass",
+        "region": "BR",
+        "promoMode": "promo",
+        "maxAttempts": 5,
+    })
+    us_paypal._run_batch_job(job_id, req)
+
+    job = us_paypal.JOBS[job_id]
+    assert job["status"] == "success"
+    assert job["result"]["errors"] == []
+    assert job["result"]["skipped"] == [{"email": email, "reason": "账号无优惠，账单金额非 0"}]
+    assert job["account_statuses"][email]["status"] == "no_promo"
 
 
 def test_protocol_batch_job_assigns_account_link_phone_and_proxy(monkeypatch):
@@ -1332,7 +1381,7 @@ def test_pay153_batch_account_cancel_requested_maps_to_skipped_not_failed(monkey
     assert us_paypal.JOBS[job_id]["children"]["remote-cancel"]["status"] == "cancelled"
 
 
-def test_pay153_batch_account_failure_keeps_link_status_retryable(monkeypatch):
+def test_pay153_batch_account_failure_marks_account_payment_failed(monkeypatch):
     def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
         return {"job": {"id": "remote-failed", "status": "failed", "stage": "auth challenge", "logs": [], "error": "PAYPAL_GRAPHQL_AUTH_CHALLENGE"}}
 
@@ -1361,8 +1410,82 @@ def test_pay153_batch_account_failure_keeps_link_status_retryable(monkeypatch):
     )
 
     assert result["ok"] is False
-    assert result["status"]["status"] == us_paypal.PAYPAL_STATUS_SUCCESS
+    assert result["status"]["status"] == us_paypal.PAYPAL_STATUS_FAILED
     assert result["error"]["phone"] == "+447700900001"
+
+
+def test_pay153_already_processing_error_is_not_retried(monkeypatch):
+    calls = []
+    cancelled = []
+
+    def fake_create_job(paypal_url, phone, country, proxies, buyer_mode, client=None):
+        calls.append(phone)
+        raise RuntimeError("This PayPal link is already being processed by another task")
+
+    monkeypatch.setattr(us_paypal, "_pay153_create_job", fake_create_job)
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {
+        "jobs": [
+            {"id": "remote-match", "status": "running", "paypal_url": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345"},
+            {"id": "remote-done", "status": "completed", "ba_token": "BA-A12345"},
+            {"id": "remote-other", "status": "running", "paypal_url": "https://www.paypal.com/agreements/approve?ba_token=BA-OTHER"},
+        ]
+    })
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_job", lambda remote_job_id, client=None: cancelled.append(remote_job_id) or {"job": {"id": remote_job_id, "status": "cancelled"}})
+
+    job_id = us_paypal._new_pay153_batch_job(["gb@example.com"], concurrency=1)
+    req = us_paypal.UsPaypal153BatchStartRequest.model_validate({
+        "accountEmails": ["gb@example.com"],
+        "phonePool": "+447700900001----https://api.sms8.net/api/record?token=one\n+447700900002----https://api.sms8.net/api/record?token=two",
+        "proxies": "proxy-one",
+    })
+    pool = us_paypal._pay153_sms_record_pool(req)
+    lock = us_paypal.threading.Lock()
+
+    result = us_paypal._run_pay153_batch_account(
+        job_id,
+        req,
+        {
+            "email": "gb@example.com",
+            "ba_token": "BA-A12345",
+            "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-A12345",
+            "country": "GB",
+        },
+        1,
+        1,
+        [],
+        ["proxy-one"],
+        [],
+        pool,
+        lock,
+    )
+
+    assert calls == ["+447700900001"]
+    assert cancelled == ["remote-match"]
+    assert result["ok"] is False
+    assert result["status"]["status"] == us_paypal.PAYPAL_STATUS_FAILED
+    assert "already being processed" in result["error"]["error"]
+    assert result["error"]["remote_cancelled"] == ["remote-match"]
+
+
+def test_pay153_cancel_remote_by_ba_route(monkeypatch):
+    app = _app()
+    cancelled = []
+    monkeypatch.setattr(us_paypal, "_pay153_list_jobs", lambda client=None: {
+        "jobs": [
+            {"id": "remote-match", "status": "awaiting_otp", "ba_token": "BA-91G197898H813770D"},
+            {"id": "remote-other", "status": "running", "ba_token": "BA-OTHER"},
+        ]
+    })
+    monkeypatch.setattr(us_paypal, "_pay153_cancel_job", lambda remote_job_id, client=None: cancelled.append(remote_job_id) or {"job": {"id": remote_job_id, "status": "cancelled"}})
+
+    result = _endpoint(app, "/api/us-paypal/pay153/remote/cancel-by-ba", "POST")(
+        us_paypal.UsPaypal153CancelByBaRequest.model_validate({
+            "paypalLink": "https://www.paypal.com/agreements/approve?ba_token=BA-91G197898H813770D",
+        })
+    )
+
+    assert result == {"ok": True, "ba_token": "BA-91G197898H813770D", "remote_cancelled": ["remote-match"]}
+    assert cancelled == ["remote-match"]
 
 
 def test_pay153_batch_start_route_returns_local_job_id(monkeypatch):
