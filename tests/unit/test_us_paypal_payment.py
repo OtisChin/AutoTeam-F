@@ -288,8 +288,9 @@ def test_generate_paypal_trial_approve_reuses_preflighted_checkout_proxy(monkeyp
     assert result["fields"]["ba_token"] == "BA-PREFLIGHTED"
 
 
-def test_generate_paypal_trial_rejects_openai_custom_checkout_session_id_before_stripe_init(monkeypatch):
+def test_generate_paypal_trial_routes_openai_custom_checkout_session_id_before_stripe_init(monkeypatch):
     stripe_session_ids = []
+    oaics_calls = []
 
     class FakeChatgptSession:
         def post(self, url, **kwargs):
@@ -313,12 +314,61 @@ def test_generate_paypal_trial_rejects_openai_custom_checkout_session_id_before_
     monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
     monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(us_paypal, "stripe_init", fake_stripe_init)
+    monkeypatch.setattr(
+        us_paypal,
+        "generate_paypal_oaics_trial_experimental",
+        lambda **kwargs: oaics_calls.append(kwargs) or {
+            "ok": True,
+            "amount": "0",
+            "fields": {
+                "paypal_link": "https://www.paypal.com/agreements/approve?ba_token=BA-OAICS",
+                "provider_redirect_url": "https://www.paypal.com/agreements/approve?ba_token=BA-OAICS",
+                "ba_token": "BA-OAICS",
+                "cs_id": kwargs["cs_id"],
+            },
+            "billing": {"country": "US"},
+        },
+    )
 
-    with pytest.raises(RuntimeError, match="openai_custom_checkout_unsupported"):
-        us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"]))
+    result = us_paypal.generate_paypal_trial(us_paypal.PaypalJobConfig(access_token="token", direct_proxies=["proxy"]))
 
     assert us_paypal.is_checkout_session_id("cs_test") is True
     assert us_paypal.is_checkout_session_id("oaics_test_custom") is False
+    assert stripe_session_ids == []
+    assert result["fields"]["ba_token"] == "BA-OAICS"
+    assert oaics_calls[0]["cs_id"] == "oaics_test_custom"
+
+
+def test_generate_paypal_trial_only_oaics_skips_cs_checkout_before_stripe_init(monkeypatch):
+    stripe_session_ids = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            return _JsonResponse({
+                "checkout_session_id": "cs_live_not_oaics",
+                "publishable_key": "pk_test",
+                "processor_entity": "openai_llc",
+            })
+
+    def fake_stripe_init(_stripe, cs_id, *_args, **_kwargs):
+        stripe_session_ids.append(cs_id)
+        return {"total_summary": {"due": 0}, "payment_method_types": ["paypal"]}
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", fake_stripe_init)
+
+    with pytest.raises(us_paypal.PaypalOnlyOaicsSkipped, match="非 OAICS checkout"):
+        us_paypal.generate_paypal_trial(
+            us_paypal.PaypalJobConfig(
+                access_token="token",
+                direct_proxies=["proxy"],
+                only_oaics=True,
+            )
+        )
+
     assert stripe_session_ids == []
 
 
@@ -430,6 +480,62 @@ def test_generate_paypal_trial_applies_promo_after_initial_us_stripe_init(monkey
     assert result["fields"]["ba_token"] == "BA-LATEPROMO"
     assert result["fields"]["link_source"] == "stripe_payment_pages_confirm"
     assert result["fields"]["link_binding"] == "chatgpt_checkout_session"
+
+
+def test_generate_paypal_trial_keeps_br_cs_checkout_promo_late_in_normal_mode(monkeypatch):
+    calls = []
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            calls.append(("chatgpt_post", url, kwargs.get("json")))
+            if url.endswith("/checkout/update"):
+                return _JsonResponse({"success": True, "checkout_session": {}})
+            return _JsonResponse({
+                "checkout_session_id": "cs_br_test",
+                "processor_entity": "openai_llc",
+                "public_key": "pk_test",
+            })
+
+    init_payloads = iter([
+        {
+            "total_summary": {"due": 9990},
+            "payment_method_types": ["card", "paypal"],
+            "ordered_payment_method_types": ["card", "paypal"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_br_test",
+        },
+        {
+            "total_summary": {"due": 0},
+            "payment_method_types": ["card", "paypal"],
+            "ordered_payment_method_types": ["card", "paypal"],
+            "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_br_test",
+        },
+    ])
+
+    monkeypatch.setattr(us_paypal, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(us_paypal, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(us_paypal, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(us_paypal, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(us_paypal, "stripe_init", lambda *args, **kwargs: next(init_payloads))
+    monkeypatch.setattr(us_paypal, "_confirm_paypal_inline", lambda *args, **kwargs: {
+        "_ba_approve_url": "https://www.paypal.com/agreements/approve?ba_token=BA-BRLATE",
+    })
+
+    result = us_paypal.generate_paypal_trial(
+        us_paypal.PaypalJobConfig(
+            access_token="token",
+            direct_proxies=["proxy"],
+            region="BR",
+            promo_region="BR",
+            apply_promo=True,
+            only_oaics=False,
+        )
+    )
+
+    checkout_payload = next(payload for _kind, url, payload in calls if url.endswith("/payments/checkout"))
+    promo_payload = next(payload for _kind, url, payload in calls if url.endswith("/checkout/update"))
+    assert "promo_campaign" not in checkout_payload
+    assert promo_payload["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+    assert result["fields"]["ba_token"] == "BA-BRLATE"
 
 
 def test_generate_paypal_trial_uses_target_proxy_country_and_mapped_checkout_billing(monkeypatch):

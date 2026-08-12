@@ -115,6 +115,14 @@
             </label>
           </div>
 
+          <label class="flex items-start gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+            <input v-model="form.onlyOaics" type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-950 text-emerald-500 focus:ring-emerald-500" :disabled="busy" />
+            <span>
+              <span class="block text-sm font-semibold text-emerald-200">仅 OAICS</span>
+              <span class="mt-1 block text-xs text-gray-500">开启后返回 cs_* 的账号会直接跳过，只继续 oaics_* native PayPal 提链。</span>
+            </span>
+          </label>
+
           <div class="flex flex-wrap items-center gap-3 border-t border-gray-800 pt-4">
             <button @click="start" :disabled="busy" class="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50">
               {{ busy ? '提取中...' : `开始提链 (${selectedEmails.length})` }}
@@ -150,6 +158,7 @@
             <option value="pending">未提链</option>
             <option value="failed">提链失败</option>
             <option value="no_promo">无优惠</option>
+            <option value="non_oaics">非Oaics</option>
             <option value="success">已提链</option>
             <option value="paid">已支付</option>
           </select>
@@ -826,7 +835,7 @@ const PHONE_POOL_MANAGEMENT_STORAGE_KEY = 'autotoken_us_paypal_phone_pool_manage
 const TERMINAL_STATUSES = new Set(['success', 'error', 'failed', 'cancelled', 'not_implemented'])
 const AUTO_PAYMENT_POLL_MS = 60 * 1000
 const AUTO_PAYMENT_IDLE_LIMIT_MS = 30 * 60 * 1000
-const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', no_promo: '无优惠', paid: '已支付' }
+const ACCOUNT_STATUS_TEXT = { pending: '未提链', running: '提链中', success: '已提链', failed: '提链失败', no_promo: '无优惠', non_oaics: '非Oaics', paid: '已支付' }
 const PROTOCOL_COUNTRIES = new Set(['AU', 'BR', 'CA', 'GB', 'ID', 'JP', 'MX', 'PH', 'TH', 'NL', 'US'])
 const linkTimeFilterOptions = [
   { value: 'all', label: '全部时间' },
@@ -874,6 +883,7 @@ const form = ref({
   proxyPreflightAttempts: 5,
   region: 'US',
   promoRegion: 'JP',
+  onlyOaics: false,
   notificationSoundEnabled: true,
 })
 const accounts = ref([])
@@ -1352,7 +1362,7 @@ function linkValidityText(link) {
   return `${ttlText(Math.floor(remaining / 1000))} · ${shortDateTime(expiresAt)}`
 }
 function accountStatusText(account) { const jobStatus = accountJobStatus(account); if (jobStatus) return jobStatus.status_text || ACCOUNT_STATUS_TEXT[jobStatus.status] || '未提链'; return account.paypal_status_text || ACCOUNT_STATUS_TEXT[account.paypal_status] || '未提链' }
-function accountStatusClass(account) { const status = accountStatus(account); return ({ running: 'border-blue-500/30 bg-blue-500/10 text-blue-300', success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300', failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300', no_promo: 'border-amber-500/30 bg-amber-500/10 text-amber-200', paid: 'border-violet-500/30 bg-violet-500/10 text-violet-300' })[status] || 'border-gray-700 bg-gray-900 text-gray-400' }
+function accountStatusClass(account) { const status = accountStatus(account); return ({ running: 'border-blue-500/30 bg-blue-500/10 text-blue-300', success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300', failed: 'border-rose-500/30 bg-rose-500/10 text-rose-300', no_promo: 'border-amber-500/30 bg-amber-500/10 text-amber-200', non_oaics: 'border-slate-500/30 bg-slate-500/10 text-slate-300', paid: 'border-violet-500/30 bg-violet-500/10 text-violet-300' })[status] || 'border-gray-700 bg-gray-900 text-gray-400' }
 function accountStatusError(account) { return accountJobStatus(account)?.error || account.paypal_error || '' }
 function accountSelectable(account) { return account.paypal_selectable !== false && accountStatus(account) !== 'paid' }
 function paymentAccountJobStatus(job, email) {
@@ -1456,7 +1466,7 @@ async function startWithEmails(emails, actionText = '提取') {
   logs.value = []
   currentResult.value = null
   currentJob.value = null
-  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PayPal，目标国家 ${form.value.region}，优惠区 ${form.value.promoRegion}，并发 ${form.value.concurrency}，重试 ${form.value.maxAttempts}。`)
+  setStatus(`任务已提交，正在为 ${accountEmails.length} 个账号${actionText} PayPal，目标国家 ${form.value.region}，优惠区 ${form.value.promoRegion}，并发 ${form.value.concurrency}，重试 ${form.value.maxAttempts}${form.value.onlyOaics ? '，仅 OAICS' : ''}。`)
   try {
     saveProxy({ silent: true })
     const payload = {
@@ -1466,6 +1476,7 @@ async function startWithEmails(emails, actionText = '提取') {
       proxyPreflightAttempts: form.value.proxyPreflightAttempts,
       region: form.value.region,
       promoRegion: form.value.promoRegion,
+      onlyOaics: form.value.onlyOaics,
       phonePoolReuseEnabled: phonePoolReuseEnabled.value,
     }
     const data = await api.startUsPaypalBatch({ ...payload, accountEmails })

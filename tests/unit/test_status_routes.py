@@ -66,9 +66,11 @@ def test_status_route_builds_summary_and_quota_cache():
     assert result["summary"] == {
         "active": 2,
         "standby": 1,
+        "stashed": 0,
         "exhausted": 1,
         "pending": 0,
         "auth_invalid": 0,
+        "auth_revoked": 0,
         "orphan": 0,
         "fail": 0,
         "free": 1,

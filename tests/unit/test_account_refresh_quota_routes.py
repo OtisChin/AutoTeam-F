@@ -216,6 +216,48 @@ def test_refresh_quota_does_not_discard_token_expired_accounts(tmp_path, monkeyp
     ]
 
 
+def test_refresh_quota_marks_token_revoked_as_auth_revoked_without_discarding(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    account = {"email": "user@example.com", "auth_file": _auth_file(tmp_path, "revoked"), "status": "active"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+    monkeypatch.setattr(
+        "autotoken.codex_auth.check_codex_quota",
+        lambda *_args, **_kwargs: (
+            "auth_error",
+            {
+                "status_code": 401,
+                "code": "token_revoked",
+                "message": "token_revoked: Encountered invalidated oauth token for user, failing request",
+            },
+        ),
+    )
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert run_result["failed"] == []
+    assert run_result["network_error"] == [{"email": "user@example.com", "reason": "token_revoked"}]
+    assert updated == [
+        (
+            "user@example.com",
+            {
+                "status": "auth_revoked",
+                "last_quota_check_at": updated[0][1]["last_quota_check_at"],
+                "last_bind_status": "failed",
+                "last_bind_failure_stage": "auth_token_revoked",
+                "last_bind_message": (
+                    "刷新额度返回 token_revoked: Encountered invalidated oauth token for user, failing request，"
+                    "账号掉授权，未标记废弃"
+                ),
+            },
+        )
+    ]
+
+
 def test_refresh_quota_rechecks_legacy_token_expired_fail_accounts(tmp_path, monkeypatch):
     started = []
     updated = []
@@ -254,6 +296,50 @@ def test_refresh_quota_rechecks_legacy_token_expired_fail_accounts(tmp_path, mon
     assert run_result["network_error"] == [{"email": "user@example.com", "reason": "token_expired"}]
     assert updated[0][1]["status"] == "auth_invalid"
     assert updated[0][1]["last_bind_failure_stage"] == "auth_token_expired"
+
+
+def test_refresh_quota_rechecks_legacy_token_revoked_fail_accounts(tmp_path, monkeypatch):
+    started = []
+    updated = []
+    quota_calls = []
+    account = {
+        "email": "user@example.com",
+        "auth_file": _auth_file(tmp_path, "revoked"),
+        "status": "fail",
+        "discarded_reason": "quota_refresh_401",
+        "last_bind_message": (
+            "刷新额度返回 401: token_revoked: Encountered invalidated oauth token for user, failing request，"
+            "账号已标记为 Fail/废弃"
+        ),
+    }
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _rows, email: account if email == "user@example.com" else None)
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **payload: updated.append((email, payload)))
+
+    def fake_check(*_args, **_kwargs):
+        quota_calls.append(True)
+        return (
+            "auth_error",
+            {
+                "status_code": 401,
+                "code": "token_revoked",
+                "message": "token_revoked: Encountered invalidated oauth token for user, failing request",
+            },
+        )
+
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", fake_check)
+
+    routes = _routes(started)
+    routes["post_accounts_refresh_quota"](AccountEmailBatchParams(emails=["user@example.com"]))
+    run_result = started[0]["func"]("task-refresh")
+
+    assert quota_calls == [True]
+    assert run_result["skipped"] == []
+    assert run_result["failed"] == []
+    assert run_result["network_error"] == [{"email": "user@example.com", "reason": "token_revoked"}]
+    assert updated[0][1]["status"] == "auth_revoked"
+    assert updated[0][1]["last_bind_failure_stage"] == "auth_token_revoked"
+    assert "discarded_reason" not in updated[0][1]
 
 
 def test_refresh_quota_does_not_discard_network_error_accounts(tmp_path, monkeypatch):

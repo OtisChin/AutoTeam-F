@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, resolve } from 'node:path'
 import {
   successfulPayPalLinkAccounts,
   paypalAccountCountryOptions,
   resolveSelectedPayPalLinkAccount,
 } from '../src/paypalAccountOptions.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const accounts = [
   { email: 'new-nl@example.com', paypal_status: 'success', paypal_country: 'NL', last_active_at: 300 },
@@ -62,8 +67,24 @@ function testUsesTargetCountryAndHidesPaidOrExpiredLinks() {
   assert.equal(successfulPayPalLinkAccounts(accounts, links, 'BR', { nowMs }).length, 0)
 }
 
+function testUsPaypalPageSubmitsOnlyOaicsFlag() {
+  const page = readFileSync(resolve(__dirname, '../src/components/UsPaypalPage.vue'), 'utf8')
+  assert.match(page, /onlyOaics:\s*false/, 'PayPal form defaults onlyOaics to false')
+  assert.match(page, /v-model="form\.onlyOaics"/, 'PayPal form exposes onlyOaics checkbox')
+  assert.match(page, /onlyOaics:\s*form\.value\.onlyOaics/, 'PayPal batch payload includes onlyOaics')
+  assert.match(page, /仅\s*OAICS|仅Oaics/, 'PayPal page labels the only OAICS option')
+}
+
+function testUsPaypalPageCanFilterNonOaicsAccounts() {
+  const page = readFileSync(resolve(__dirname, '../src/components/UsPaypalPage.vue'), 'utf8')
+  assert.match(page, /non_oaics:\s*['"]非Oaics['"]/, 'PayPal page maps non_oaics status text')
+  assert.match(page, /<option value="non_oaics">非Oaics<\/option>/, 'PayPal account status filter includes non_oaics')
+}
+
 testSuccessfulAccountsJoinLatestLinkAndFilterByCountry()
 testCountryOptionsComeFromSuccessfulLinkedAccounts()
 testSelectedAccountPopulatesProtocolFormFields()
 testUsesTargetCountryAndHidesPaidOrExpiredLinks()
+testUsPaypalPageSubmitsOnlyOaicsFlag()
+testUsPaypalPageCanFilterNonOaicsAccounts()
 console.log('paypal account option tests passed')

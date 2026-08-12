@@ -453,6 +453,65 @@ def test_batch_job_passes_apply_promo_mode(monkeypatch):
     assert captured["apply_promo"] is True
 
 
+def test_start_request_parses_only_oaics_flag():
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({"accountEmails": ["user@example.com"], "onlyOaics": True})
+
+    assert req.only_oaics is True
+
+
+def test_batch_account_maps_only_oaics_cs_checkout_to_skipped(monkeypatch):
+    email = "cs-skip@example.com"
+    captured = {}
+    monkeypatch.setattr(us_paypal, "_load_token_for_email", lambda _email: "token")
+
+    def fake_generate_paypal_trial(cfg, log):
+        captured["only_oaics"] = cfg.only_oaics
+        raise us_paypal.PaypalOnlyOaicsSkipped("非 OAICS checkout，已跳过: cs_live_skip")
+
+    monkeypatch.setattr(us_paypal, "generate_paypal_trial", fake_generate_paypal_trial)
+    job_id = "paypal-only-oaics-skip-job"
+    us_paypal.JOBS[job_id] = {
+        "id": job_id, "status": "queued", "logs": [], "result": None, "error": None,
+        "created_at": 1.0, "finished_at": None, "account_email": "", "total": 1,
+        "completed": 0, "concurrency": 1, "cancel_requested": False,
+        "running_count": 0, "skipped": [], "account_statuses": {},
+    }
+
+    req = us_paypal.UsPaypalBatchStartRequest.model_validate({
+        "accountEmails": [email],
+        "proxies": "proxy.example:1000:user-region-BR-sid-old-t-120:pass",
+        "region": "BR",
+        "promoMode": "promo",
+        "onlyOaics": True,
+    })
+    result = us_paypal._run_batch_account(job_id, req, {"email": email}, 1, 1, us_paypal._parse_proxies(req.proxies))
+
+    assert captured["only_oaics"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "非 OAICS checkout，已跳过"
+    assert result["status"]["status"] == "non_oaics"
+    assert result["status"]["status_text"] == "非Oaics"
+    statuses = json.loads(us_paypal.ACCOUNT_STATUS_FILE.read_text(encoding="utf-8"))
+    assert statuses[email]["status"] == "non_oaics"
+
+
+def test_accounts_show_non_oaics_paypal_status(monkeypatch):
+    email = "non-oaics@example.com"
+    us_paypal.ACCOUNT_STATUS_FILE.write_text(
+        json.dumps({email: {"status": "non_oaics", "error": ""}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(us_paypal.account_store, "load_accounts", lambda: [])
+    monkeypatch.setattr(us_paypal, "_iter_auth_accounts", lambda include_paid=False: [
+        {"email": email, "auth_file": "auth.json"},
+    ])
+
+    result = _endpoint(_app(), "/api/us-paypal/accounts", "GET")()
+
+    assert result["accounts"][0]["paypal_status"] == "non_oaics"
+    assert result["accounts"][0]["paypal_status_text"] == "非Oaics"
+
+
 def test_batch_job_passes_custom_promo_region(monkeypatch):
     email = "promo-region@example.com"
     captured = {}

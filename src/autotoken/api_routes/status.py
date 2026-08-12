@@ -16,6 +16,7 @@ def build_status_response(
     from autotoken.storage.accounts import (
         STATUS_ACTIVE,
         STATUS_AUTH_INVALID,
+        STATUS_AUTH_REVOKED,
         STATUS_EXHAUSTED,
         STATUS_FAIL,
         STATUS_ORPHAN,
@@ -41,6 +42,7 @@ def build_status_response(
             "exhausted": sum(1 for account in sanitized_accounts if account["status"] == STATUS_EXHAUSTED),
             "pending": sum(1 for account in sanitized_accounts if account["status"] == STATUS_PENDING),
             "auth_invalid": sum(1 for account in sanitized_accounts if account["status"] == STATUS_AUTH_INVALID),
+            "auth_revoked": sum(1 for account in sanitized_accounts if account["status"] == STATUS_AUTH_REVOKED),
             "orphan": sum(1 for account in sanitized_accounts if account["status"] == STATUS_ORPHAN),
             "fail": sum(1 for account in sanitized_accounts if account["status"] == STATUS_FAIL),
             "free": sum(1 for account in sanitized_accounts if account.get("account_type") == "free"),

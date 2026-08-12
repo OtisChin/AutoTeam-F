@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from autotoken.api_routes import brazil_pix as pix_routes
 from autotoken.core.paths import PROJECT_ROOT
 from autotoken.payments.us_paypal import (
+    PaypalOnlyOaicsSkipped,
     PaypalJobConfig,
     build_paypal_dynamic_proxy,
     generate_paypal_trial,
@@ -55,6 +56,7 @@ PAYPAL_STATUS_RUNNING = "running"
 PAYPAL_STATUS_SUCCESS = "success"
 PAYPAL_STATUS_FAILED = "failed"
 PAYPAL_STATUS_NO_PROMO = "no_promo"
+PAYPAL_STATUS_NON_OAICS = "non_oaics"
 PAYPAL_STATUS_PAID = "paid"
 PAYPAL_STATUS_TEXT = {
     "pending": "未提链",
@@ -62,6 +64,7 @@ PAYPAL_STATUS_TEXT = {
     "success": "已提链",
     "failed": "提链失败",
     "no_promo": "无优惠",
+    "non_oaics": "非Oaics",
     "paid": "已支付",
 }
 ACCOUNT_UI_FIELDS = (
@@ -85,6 +88,7 @@ class UsPaypalStartRequest(BaseModel):
     region: str = "US"
     promo_region: str = Field("JP", alias="promoRegion")
     promo_mode: str = Field("promo", alias="promoMode")
+    only_oaics: bool = Field(False, alias="onlyOaics")
     max_attempts: int = Field(MAX_ACCOUNT_ATTEMPTS, alias="maxAttempts")
     proxy_preflight_attempts: int = Field(PROXY_PREFLIGHT_MAX_ATTEMPTS, alias="proxyPreflightAttempts")
     model_config = {"populate_by_name": True}
@@ -392,6 +396,7 @@ def _set_account_status(email: str, status: str, *, error: str = "", job_id: str
         normalized = PAYPAL_STATUS_PENDING
     item = {
         "status": normalized,
+        "status_text": PAYPAL_STATUS_TEXT[normalized],
         "error": str(error or ""),
         "job_id": str(job_id or ""),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -792,6 +797,7 @@ def _run_batch_account(
                 promo_region=(req.promo_region or "JP").strip().upper() or "JP",
                 direct_proxies=attempt_proxies,
                 apply_promo=req.promo_mode == "promo",
+                only_oaics=bool(req.only_oaics),
             )
             try:
                 cfg = _preflight_paypal_link_proxies_or_raise(cfg, account_log, req.proxy_preflight_attempts)
@@ -845,6 +851,16 @@ def _run_batch_account(
                         "reason": reason,
                         "status": status,
                         "account_deleted": False,
+                    }
+                if isinstance(exc, PaypalOnlyOaicsSkipped):
+                    status = _set_account_status(email, PAYPAL_STATUS_NON_OAICS, error="", job_id=job_id)
+                    reason = "非 OAICS checkout，已跳过"
+                    _append_log(job_id, f"[{index}/{total}] {reason}：{email}")
+                    return {
+                        "skipped": True,
+                        "email": email,
+                        "reason": reason,
+                        "status": status,
                     }
                 _append_log(job_id, f"[{index}/{total}] 第 {attempt}/{max_attempts} 次失败：{email} {last_error}")
                 if attempt >= max_attempts:

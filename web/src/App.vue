@@ -430,6 +430,7 @@ function buildDashboardStatusFromAccounts(payload) {
     exhausted: 0,
     pending: 0,
     auth_invalid: 0,
+    auth_revoked: 0,
     orphan: 0,
     fail: 0,
     free: 0,

@@ -125,6 +125,14 @@ def create_account_refresh_quota_router(
                 message = str(acc.get("last_bind_message") or "").strip().lower()
                 return "token_expired" in message
 
+            def _is_token_revoked_quota_failure(acc: dict | None) -> bool:
+                if not isinstance(acc, dict):
+                    return False
+                if str(acc.get("discarded_reason") or "").strip().lower() != "quota_refresh_401":
+                    return False
+                message = str(acc.get("last_bind_message") or "").strip().lower()
+                return "token_revoked" in message
+
             def _apply_plan_type(
                 update_payload: dict,
                 info: dict | None,
@@ -326,7 +334,11 @@ def create_account_refresh_quota_router(
                         "reason": "main_account",
                         "message": f"跳过主账号: {email}",
                     }
-                if str(acc.get("status") or "").strip().lower() == STATUS_FAIL and not _is_token_expired_quota_failure(acc):
+                if (
+                    str(acc.get("status") or "").strip().lower() == STATUS_FAIL
+                    and not _is_token_expired_quota_failure(acc)
+                    and not _is_token_revoked_quota_failure(acc)
+                ):
                     return {
                         "kind": "skipped",
                         "email": email,
@@ -500,6 +512,30 @@ def create_account_refresh_quota_router(
                                 f"刷新额度返回 token_expired，未标记废弃: {email}"
                                 if not auth_error_detail
                                 else f"刷新额度返回 {auth_error_detail}，未标记废弃: {email}"
+                            ),
+                        }
+                    if auth_error_code == "token_revoked" or auth_error_detail.lower().startswith("token_revoked"):
+                        return {
+                            "kind": "network_error",
+                            "email": email,
+                            "index": index,
+                            "reason": "token_revoked",
+                            "attempts": attempts,
+                            "update": {
+                                "status": "auth_revoked",
+                                "last_quota_check_at": now_ts,
+                                "last_bind_status": "failed",
+                                "last_bind_failure_stage": "auth_token_revoked",
+                                "last_bind_message": (
+                                    f"刷新额度返回 {auth_error_detail}，账号掉授权，未标记废弃"
+                                    if auth_error_detail
+                                    else "刷新额度返回 token_revoked，账号掉授权，未标记废弃"
+                                ),
+                            },
+                            "message": (
+                                f"刷新额度返回 token_revoked，账号掉授权，未标记废弃: {email}"
+                                if not auth_error_detail
+                                else f"刷新额度返回 {auth_error_detail}，账号掉授权，未标记废弃: {email}"
                             ),
                         }
                     auth_error_message = (

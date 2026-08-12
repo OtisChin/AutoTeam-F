@@ -16,6 +16,7 @@ MAIL_ACCOUNT_CHECK_STATUSES = {"unchecked", "valid", "invalid", "error"}
 REGISTERED_ACCOUNT_POOL_STATUSES = {
     "active",
     "auth_invalid",
+    "auth_revoked",
     "exhausted",
     "orphan",
     "personal",

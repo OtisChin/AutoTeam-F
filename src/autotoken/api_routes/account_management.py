@@ -66,6 +66,7 @@ def _clean_account_status_or_raise(value: str) -> str:
     from autotoken.storage.accounts import (
         STATUS_ACTIVE,
         STATUS_AUTH_INVALID,
+        STATUS_AUTH_REVOKED,
         STATUS_EXHAUSTED,
         STATUS_FAIL,
         STATUS_ORPHAN,
@@ -87,6 +88,7 @@ def _clean_account_status_or_raise(value: str) -> str:
         STATUS_PLUS,
         STATUS_STASHED,
         STATUS_AUTH_INVALID,
+        STATUS_AUTH_REVOKED,
         STATUS_ORPHAN,
         STATUS_FAIL,
         STATUS_SESSION_ONLY,

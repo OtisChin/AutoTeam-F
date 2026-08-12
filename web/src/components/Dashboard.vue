@@ -2328,6 +2328,7 @@ const editableAccountStatusOptions = [
   { value: 'plus', label: 'Plus' },
   { value: 'session_only', label: 'Session Only/Active' },
   { value: 'auth_invalid', label: 'token失效' },
+  { value: 'auth_revoked', label: '掉授权' },
   { value: 'orphan', label: '孤立' },
   { value: 'fail', label: 'Fail/废弃' },
 ]
@@ -2381,7 +2382,7 @@ function isBindableFreeAccount(acc) {
   if (String(acc?.account_type || '').toLowerCase() !== 'free') return false
   if (!acc?.auth_session_file) return false
   const status = String(acc?.status || '').toLowerCase()
-  if (['fail', 'auth_invalid', 'orphan', 'exhausted', 'standby'].includes(status)) return false
+  if (['fail', 'auth_invalid', 'auth_revoked', 'orphan', 'exhausted', 'standby'].includes(status)) return false
   return true
 }
 
@@ -2630,6 +2631,7 @@ const accountPageEndDisplay = computed(() =>
 const accountStatusOptions = computed(() => {
   const counts = new Map()
   counts.set('auth_invalid', 0)
+  counts.set('auth_revoked', 0)
   counts.set('stashed', 0)
   for (const acc of allAccounts.value) {
     const status = normalizedStatus(acc?.status)
@@ -3209,6 +3211,7 @@ function statusClass(s) {
     pending: 'bg-gray-500/10 text-gray-400',
     session_only: 'bg-green-500/10 text-green-400',
     auth_invalid: 'bg-orange-500/10 text-orange-400',
+    auth_revoked: 'bg-orange-500/10 text-orange-300',
     orphan: 'bg-amber-500/10 text-amber-300',
     fail: 'bg-red-500/10 text-red-300',
   }[s] || 'bg-gray-500/10 text-gray-400'
@@ -3224,6 +3227,7 @@ function dotClass(s) {
     pending: 'bg-gray-400',
     session_only: 'bg-green-400',
     auth_invalid: 'bg-orange-400',
+    auth_revoked: 'bg-orange-300',
     orphan: 'bg-amber-300',
     fail: 'bg-red-300',
   }[s] || 'bg-gray-400'
@@ -3239,6 +3243,7 @@ function statusLabel(s) {
     pending: 'Pending',
     session_only: 'Active',
     auth_invalid: 'token失效',
+    auth_revoked: '掉授权',
     orphan: '孤立',
     fail: 'Fail/废弃',
   }[s] || s
@@ -4067,7 +4072,7 @@ async function saveBatchAccountMetadata() {
 
 function canLogin(acc) {
   if (!acc?.email || acc.is_main_account) return false
-  if (String(acc.status || '').toLowerCase() === 'auth_invalid' || String(acc.status || '').toLowerCase() === 'orphan') return true
+  if (['auth_invalid', 'auth_revoked', 'orphan'].includes(String(acc.status || '').toLowerCase())) return true
   if (Boolean(acc.codex_auth_synthetic)) return true
   return needsCodexLogin(acc)
 }
@@ -4080,7 +4085,7 @@ function isPhoneOnlyAccount(acc) {
 function loginLabel(acc) {
   if (isPhoneOnlyAccount(acc)) return '补登录/绑邮箱'
   if (Boolean(acc.codex_auth_synthetic)) return '重新补登录'
-  if (needsCodexLogin(acc) || acc.status === 'auth_invalid' || acc.status === 'orphan') return '补登录'
+  if (needsCodexLogin(acc) || ['auth_invalid', 'auth_revoked', 'orphan'].includes(String(acc.status || '').toLowerCase())) return '补登录'
   return '补登录'
 }
 

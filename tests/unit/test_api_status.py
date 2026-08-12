@@ -426,9 +426,11 @@ def test_get_status_normalizes_main_account_status_from_saved_auth(tmp_path, mon
     assert result["summary"] == {
         "active": 1,
         "standby": 0,
+        "stashed": 0,
         "exhausted": 0,
         "pending": 0,
         "auth_invalid": 0,
+        "auth_revoked": 0,
         "orphan": 0,
         "fail": 0,
         "free": 0,
