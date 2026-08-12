@@ -56,3 +56,28 @@ def test_compact_helpers_handle_invalid_inputs():
     assert compact_task_params(None) == {}
     assert compact_task_progress(None) == {}
     assert compact_task_result(["a", "b"]) == ["a", "b"]
+
+
+def test_compact_task_result_keeps_refresh_quota_summary_fields():
+    compact = compact_task_result(
+        {
+            "ok": [{"email": "ok@example.com"}],
+            "exhausted": [{"email": "exhausted@example.com"}],
+            "failed": [{"email": "failed@example.com"}],
+            "skipped": [{"email": "skipped@example.com"}],
+            "network_error": [{"email": "network@example.com"}],
+            "missing": ["missing@example.com"],
+            "total": 5,
+            "access_token": "secret",
+        }
+    )
+
+    assert compact == {
+        "ok": {"count": 1},
+        "exhausted": {"count": 1},
+        "failed": {"count": 1},
+        "skipped": {"count": 1},
+        "network_error": {"count": 1},
+        "missing": ["missing@example.com"],
+        "total": 5,
+    }

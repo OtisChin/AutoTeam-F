@@ -1036,7 +1036,7 @@ def test_plus_account_login_uses_native_oauth_and_updates_plan(monkeypatch):
     monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: updates.append((email, kwargs)))
     monkeypatch.setattr("autotoken.cpa_sync.sync_to_cpa", lambda: captured.setdefault("synced", True))
 
-    result = api.post_account_login(api.LoginAccountParams(email=account["email"]))
+    result = api.post_account_login(api.LoginAccountParams(email=account["email"], protocol_only=False))
     task_result = captured["func"]()
 
     assert result["task_id"] == "task-login"
@@ -1048,7 +1048,7 @@ def test_plus_account_login_uses_native_oauth_and_updates_plan(monkeypatch):
     assert ("plus@example.com", {"last_quota": {"primary_pct": 1}}) in updates
     assert any(
         email == "plus@example.com"
-        and update.get("status") == accounts.STATUS_ACTIVE
+        and update.get("status") == accounts.STATUS_PLUS
         and update.get("account_type") == accounts.ACCOUNT_TYPE_PLUS
         and update.get("auth_file") == "auths/codex-plus@example.com-plus.json"
         for email, update in updates
@@ -1229,6 +1229,7 @@ def test_protocol_account_login_bind_phone_uses_saved_oauth_phone_config(monkeyp
         oauth_phone_sms_country=None,
         oauth_phone_sms_max_price=None,
         oauth_oasis_sms_cdks=None,
+        totp_secret=None,
         progress_callback=None,
     ):
         captured["protocol_login"] = {
@@ -1340,6 +1341,103 @@ def test_protocol_account_login_uses_saved_oauth_phone_config_without_bind_phone
     assert captured["protocol_login"]["oauth_oasis_sms_cdks"] == ""
 
 
+def test_protocol_account_login_refresh_auth_session_saves_protocol_session(monkeypatch):
+    saved_sessions = []
+    account = {
+        "email": "plus@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": "mail-id",
+    }
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_protocol_login(mail_client, **kwargs):
+        return {
+            "email": kwargs["email"],
+            "data": {"accessToken": "chatgpt-token", "sessionToken": "session-token"},
+            "account": {"id": "acct-session"},
+            "codex_oauth_bundle": {
+                "email": kwargs["email"],
+                "access_token": "codex-access",
+                "refresh_token": "codex-refresh",
+                "id_token": "id",
+                "account_id": "acct-plus",
+                "plan_type": "plus",
+            },
+        }
+
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr("autotoken.auth_session_store.save_auth_session", lambda email, data: saved_sessions.append((email, data)) or f"session/{email}.json")
+    monkeypatch.setattr("autotoken.auth.protocol_register.login_once", fake_protocol_login)
+    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: None)
+
+    result = api._run_account_codex_login_once(account["email"], account, protocol_only=True, refresh_auth_session=True)
+
+    assert result["email"] == "plus@example.com"
+    assert result["auth_session_file"] == "session/plus@example.com.json"
+    assert saved_sessions[0][0] == "plus@example.com"
+    assert saved_sessions[0][1]["data"]["accessToken"] == "chatgpt-token"
+
+
+def test_refresh_auth_session_with_codex_auth_file_forces_protocol_oauth(monkeypatch):
+    account = {
+        "email": "plus@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "auth_file": "auths/codex-plus@example.com-plus.json",
+    }
+    captured = {}
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_protocol_login(mail_client, **kwargs):
+        captured["protocol_login"] = kwargs
+        return {
+            "email": kwargs["email"],
+            "data": {"accessToken": "chatgpt-token"},
+            "codex_oauth_bundle": {
+                "email": kwargs["email"],
+                "access_token": "codex-access",
+                "refresh_token": "codex-refresh",
+                "id_token": "id",
+                "account_id": "acct-plus",
+                "plan_type": "plus",
+            },
+        }
+
+    def fail_browser(*_args, **_kwargs):
+        raise AssertionError("有 Codex auth 文件的补登录不应打开 Playwright/浏览器 OAuth")
+
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr("autotoken.auth_session_store.save_auth_session", lambda email, _data: f"session/{email}.json")
+    monkeypatch.setattr("autotoken.auth.protocol_register.login_once", fake_protocol_login)
+    monkeypatch.setattr("autotoken.codex_auth.login_codex_via_browser", fail_browser)
+    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: None)
+
+    result = api._run_account_codex_login_once(
+        account["email"],
+        account,
+        protocol_only=False,
+        refresh_auth_session=True,
+    )
+
+    assert captured["protocol_login"]["email"] == "plus@example.com"
+    assert result["auth_file"] == "auths/plus@example.com.json"
+
+
 def test_account_login_restores_missing_luckmail_token_before_browser_oauth(monkeypatch):
     captured = {}
     account = {
@@ -1447,7 +1545,7 @@ def test_team_account_login_keeps_team_oauth(monkeypatch):
     monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: None)
     monkeypatch.setattr("autotoken.cpa_sync.sync_to_cpa", lambda: None)
 
-    api.post_account_login(api.LoginAccountParams(email=account["email"]))
+    api.post_account_login(api.LoginAccountParams(email=account["email"], protocol_only=False))
     captured["func"]()
 
     assert captured["use_personal"] is False

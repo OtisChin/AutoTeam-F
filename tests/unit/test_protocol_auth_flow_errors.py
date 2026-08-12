@@ -752,6 +752,71 @@ def test_protocol_login_rebuilds_authorize_state_after_login_invalid_state(monke
     assert signup_sentinels == ["sentinel-2"]
 
 
+def test_protocol_login_auth_session_only_retries_login_after_invalid_state(monkeypatch):
+    auth_flow = _load_auth_flow_module()
+
+    class FakeConfig:
+        proxy = None
+
+    class FakeMailProvider:
+        pass
+
+    flow = auth_flow.AuthFlow(FakeConfig())
+    monkeypatch.setenv("AUTH_SESSION_ONLY", "1")
+    monkeypatch.setenv("LOCALAUTH_EXISTING_LOGIN_USE_LOGIN_HINT", "1")
+    monkeypatch.setenv("OAUTH_CODEX_RT_BEFORE_CALLBACK", "0")
+    monkeypatch.setenv("OAUTH_EXCHANGE_BEFORE_CALLBACK", "0")
+    monkeypatch.setenv("OAUTH_CODEX_RT_EXCHANGE", "0")
+    monkeypatch.setenv("OAUTH_INVALID_STATE_RETRIES", "3")
+    flow.check_proxy = lambda: True
+
+    csrf_calls = []
+    flow.get_csrf_token = lambda: csrf_calls.append(1) or f"csrf-{len(csrf_calls)}"
+    flow.get_auth_url = lambda csrf: f"https://auth.openai.test/authorize?csrf={csrf}"
+    flow.auth_oauth_init = lambda auth_url: f"device-{auth_url.rsplit('-', 1)[-1]}"
+    flow.get_sentinel_token = lambda device_id: f"sentinel-{device_id.rsplit('-', 1)[-1]}"
+    reset_reasons = []
+    flow._reset_authorize_http_session = lambda reason="": reset_reasons.append(reason)
+    authorize_calls = []
+
+    def fake_authorize_continue(**kwargs):
+        authorize_calls.append(kwargs["screen_hint"])
+        if len(authorize_calls) == 1:
+            raise RuntimeError(
+                'authorize/continue 失败(screen_hint=login): HTTP 409 - {"error":{"code":"invalid_state",'
+                '"message":"Your sign-in session is no longer valid. Please start over to continue."}}'
+            )
+        assert kwargs["screen_hint"] == "login"
+        return {
+            "page": {"type": "login_password", "payload": {}},
+            "continue_url": "https://auth.openai.com/log-in/password",
+        }
+
+    flow.authorize_continue = fake_authorize_continue
+    flow.login_password_verify = lambda _password: {
+        "page": {"type": "email_otp_verification", "payload": {}},
+        "continue_url": "https://auth.openai.com/email-verification",
+    }
+    flow.kickoff_otp_delivery = lambda _mode="": True
+    flow._wait_for_email_otp = lambda *_args, **_kwargs: "123456"
+    flow._verify_email_otp_with_retries = lambda *_args, **_kwargs: {
+        "continue_url": "https://auth.openai.com/authorize/resume?state=ok"
+    }
+    flow._is_add_phone_state = lambda **_kwargs: False
+    flow.follow_redirect_chain = lambda _url: ("https://chatgpt.com/backend-api/accounts/check/v4", "https://chatgpt.com/")
+    flow.fetch_client_auth_session_dump = lambda _stage="": {}
+    flow.get_auth_session = lambda: (
+        setattr(flow.result, "session_token", "session-token"),
+        setattr(flow.result, "access_token", "access-token"),
+    )
+
+    result = flow.run_protocol_login(FakeMailProvider(), "exists@example.com")
+
+    assert result.is_valid()
+    assert authorize_calls == ["login", "login"]
+    assert reset_reasons == ["login_probe_invalid_state_retry_login_1"]
+
+
 def test_preflight_oauth_proxy_url_retries_signup_after_login_403(monkeypatch):
     from autotoken.auth import protocol_register
 

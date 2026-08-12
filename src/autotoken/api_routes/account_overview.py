@@ -23,12 +23,31 @@ class ExportAccessTokensParams(BaseModel):
 
 
 def _extract_access_token(auth_data: dict[str, Any]) -> str:
-    return str(auth_data.get("access_token", "") or auth_data.get("accessToken", "") or "").strip()
+    data = auth_data.get("data") if isinstance(auth_data.get("data"), dict) else {}
+    return str(
+        auth_data.get("access_token", "")
+        or auth_data.get("accessToken", "")
+        or auth_data.get("chatgpt_access_token", "")
+        or data.get("access_token", "")
+        or data.get("accessToken", "")
+        or data.get("chatgpt_access_token", "")
+        or ""
+    ).strip()
 
 
 def _extract_account_id(auth_data: dict[str, Any]) -> str:
     account = auth_data.get("account") if isinstance(auth_data.get("account"), dict) else {}
-    account_id = str(auth_data.get("account_id", "") or account.get("id") or "").strip()
+    data = auth_data.get("data") if isinstance(auth_data.get("data"), dict) else {}
+    data_account = data.get("account") if isinstance(data.get("account"), dict) else {}
+    account_id = str(
+        auth_data.get("account_id", "")
+        or auth_data.get("accountId", "")
+        or account.get("id")
+        or data.get("account_id", "")
+        or data.get("accountId", "")
+        or data_account.get("id")
+        or ""
+    ).strip()
     if account_id:
         return account_id
     access_token = _extract_access_token(auth_data)
@@ -418,19 +437,20 @@ def query_chatgpt_subscription(access_token: str, account_id: str = "") -> dict[
             break
         if raw is not None:
             break
-        if no_subscription_404 and not attempt_auth_error:
+        if no_subscription_404:
             break
         if attempt_auth_error and attempt < CHATGPT_SUBSCRIPTION_MAX_ATTEMPTS - 1:
             _warmup_chatgpt_subscription_session(session)
 
-    if raw is None and auth_errors:
-        raise HTTPException(status_code=403, detail="ChatGPT 订阅接口临时拒绝，请稍后重试；如果持续失败再刷新该账号 auth_session")
     if raw is None:
-        if not no_subscription_404:
+        if no_subscription_404:
+            raw = {}
+            queried_url = urls[0]
+        elif auth_errors:
+            raise HTTPException(status_code=403, detail="ChatGPT 订阅接口临时拒绝，请稍后重试；如果持续失败再刷新该账号 auth_session")
+        else:
             detail = f"ChatGPT 订阅接口请求失败: {last_error or f'HTTP {last_status}'}"
             raise HTTPException(status_code=502, detail=detail)
-        raw = {}
-        queried_url = urls[0]
 
     account_check_url = CHATGPT_ACCOUNT_CHECK_URL
     if queried_url.startswith("https://chat.openai.com/"):

@@ -2654,6 +2654,9 @@ def _run_account_codex_login_once(
         ACCOUNT_TYPE_PLUS,
         ACCOUNT_TYPE_PRO,
     }
+    if refresh_auth_session and str(acc.get("auth_file") or "").strip() and not protocol_only:
+        logger.info("[账号登录] 有 Codex auth 文件的补登录强制使用协议 OAuth，避免浏览器 OAuth: %s", email)
+        protocol_only = True
 
     phone_only_target = "@" not in str(email or "")
     requested_mail_provider = str(mail_provider or "").strip().lower()
@@ -2850,7 +2853,7 @@ def _run_account_codex_login_once(
                 logger.info("[账号登录] 协议 OAuth 落到登录页，将尝试浏览器兜底: %s", email)
         except Exception as exc:
             logger.warning("[账号登录] auth_session 协议 OAuth 异常，回退浏览器 OAuth: %s", exc)
-    elif auth_session_data:
+    elif auth_session_data and not protocol_only:
         logger.info("[账号登录] 跳过 auth_session 协议 OAuth，直接走浏览器邮箱验证码流程: %s", email)
 
     auth_session_refresh_outcome = {}
@@ -2900,6 +2903,21 @@ def _run_account_codex_login_once(
         )
     if not bundle:
         raise RuntimeError(f"Codex 登录失败: {email}")
+    if refresh_auth_session and protocol_only and session_payload:
+        try:
+            protocol_session_file = save_auth_session(
+                _normalized_email((session_payload or {}).get("email") or email),
+                session_payload,
+            )
+            auth_session_refresh_outcome.update(
+                {
+                    "status": "success",
+                    "auth_file": protocol_session_file,
+                    "auth_session_file": protocol_session_file,
+                }
+            )
+        except Exception as exc:
+            auth_session_refresh_outcome.update({"status": "failed", "reason": f"保存协议 auth_session 失败: {exc}"})
     if refresh_auth_session and auth_session_refresh_outcome.get("status") != "success":
         raise RuntimeError(auth_session_refresh_outcome.get("reason") or f"刷新 auth_session 失败: {email}")
 
@@ -2940,7 +2958,7 @@ def _run_account_codex_login_once(
         update_fields["cloudmail_account_id"] = acc.get("cloudmail_account_id")
     if effective_mail_provider:
         update_fields["mail_provider"] = effective_mail_provider
-    if protocol_only and session_payload:
+    if protocol_only and session_payload and not (refresh_auth_session and auth_session_refresh_outcome.get("status") == "success"):
         if actual_email:
             try:
                 save_auth_session(actual_email, session_payload)

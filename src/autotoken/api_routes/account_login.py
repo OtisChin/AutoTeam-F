@@ -105,6 +105,7 @@ class LoginAccountParams(BaseModel):
         "",
         validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
     )
+    refresh_auth_session: bool = Field(False, validation_alias=AliasChoices("refresh_auth_session", "refreshAuthSession"))
     exclusive: bool = Field(True, validation_alias=AliasChoices("exclusive", "task_exclusive", "taskExclusive"))
 
 
@@ -143,6 +144,7 @@ class AccountEmailBatchParams(BaseModel):
         "",
         validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
     )
+    refresh_auth_session: bool = Field(False, validation_alias=AliasChoices("refresh_auth_session", "refreshAuthSession"))
 
 
 class AccountEmailBatchAppendParams(BaseModel):
@@ -164,6 +166,8 @@ def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) ->
     }
     if bind_phone:
         kwargs["bind_phone"] = True
+    if bool(getattr(params, "refresh_auth_session", False)):
+        kwargs["refresh_auth_session"] = True
     text_fields = {
         "mail_provider": params.mail_provider,
         "luckmail_email_type": params.luckmail_email_type,
@@ -192,6 +196,18 @@ def _apply_stored_totp_secret(login_kwargs: dict[str, Any], email: str) -> None:
             login_kwargs["totp_secret"] = str(totp_credentials.get("secret") or "")
     except Exception:
         pass
+
+
+def relogin_account_auth_session_once(email: str, acc: dict, **kwargs: Any) -> dict[str, Any]:
+    from autotoken.services.account_auth_session_relogin import relogin_account_auth_session_once as _relogin
+
+    return _relogin(email, acc, **kwargs)
+
+
+def _account_has_codex_auth_file(acc: dict) -> bool:
+    auth_file = str((acc or {}).get("auth_file") or "").strip()
+    return bool(auth_file)
+
 
 def create_account_login_router(
     *,
@@ -238,6 +254,7 @@ def create_account_login_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        plain_relogin = bool(params.refresh_auth_session) and not _account_has_codex_auth_file(acc)
         oauth_proxy_api_enabled = bool(oauth_proxy_meta.get("proxy_api_url_present")) or int(
             oauth_proxy_meta.get("proxy_pool_count") or 0
         ) > 0
@@ -357,6 +374,18 @@ def create_account_login_router(
                         if selected_oauth_proxy:
                             login_kwargs["proxy_url"] = selected_oauth_proxy
                         _apply_stored_totp_secret(login_kwargs, email)
+                        if plain_relogin:
+                            login_kwargs.pop("refresh_auth_session", None)
+                            login_kwargs.pop("protocol_only", None)
+                            login_kwargs.pop("bind_email", None)
+                            login_kwargs.pop("bind_phone", None)
+                            return relogin_account_auth_session_once(
+                                email,
+                                acc,
+                                **login_kwargs,
+                            )
+                        if bool(params.refresh_auth_session) and _account_has_codex_auth_file(acc):
+                            login_kwargs["protocol_only"] = True
                         return run_account_codex_login_once(email, acc, **login_kwargs)
                     except Exception as exc:
                         last_error = safe_error_summary(exc, limit=220)
@@ -493,6 +522,7 @@ def create_account_login_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        plain_relogin = bool(params.refresh_auth_session)
         oauth_proxy_api_enabled = bool(oauth_proxy_meta.get("proxy_api_url_present")) or int(
             oauth_proxy_meta.get("proxy_pool_count") or 0
         ) > 0
@@ -763,7 +793,20 @@ def create_account_login_router(
                             if selected_oauth_proxy:
                                 login_kwargs["proxy_url"] = selected_oauth_proxy
                             _apply_stored_totp_secret(login_kwargs, email)
-                            login_result = run_account_codex_login_once(email, acc, **login_kwargs)
+                            if plain_relogin and not _account_has_codex_auth_file(acc):
+                                login_kwargs.pop("refresh_auth_session", None)
+                                login_kwargs.pop("protocol_only", None)
+                                login_kwargs.pop("bind_email", None)
+                                login_kwargs.pop("bind_phone", None)
+                                login_result = relogin_account_auth_session_once(
+                                    email,
+                                    acc,
+                                    **login_kwargs,
+                                )
+                            else:
+                                if bool(params.refresh_auth_session) and _account_has_codex_auth_file(acc):
+                                    login_kwargs["protocol_only"] = True
+                                login_result = run_account_codex_login_once(email, acc, **login_kwargs)
                             logger.info(
                                 "[账号登录] 批量 worker 成功: email=%s elapsed=%.1fs thread=%s",
                                 email,
@@ -1084,10 +1127,13 @@ def create_account_login_router(
                 "skipped": skipped,
             }
 
+        task_params = {"emails": emails, "missing": missing}
+        if bool(params.refresh_auth_session):
+            task_params["refresh_auth_session"] = True
         return start_task(
             "login-batch",
             _run,
-            {"emails": emails, "missing": missing},
+            task_params,
             task_group=TASK_GROUP_OAUTH,
             pass_task_id=True,
         )

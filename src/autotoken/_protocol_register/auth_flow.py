@@ -3500,9 +3500,11 @@ class AuthFlow:
             "yes",
             "on",
         )
+        auth_session_only = self._env_flag("AUTH_SESSION_ONLY", "0")
 
         if prefer_login_screen_first:
-            for attempt in range(1):
+            login_probe_attempts = invalid_state_retries if auth_session_only else 1
+            for attempt in range(login_probe_attempts):
                 try:
                     logger.info("已有账号协议登录：优先走 login screen_hint 探测 password/otp 分支")
                     login_step = self.authorize_continue(
@@ -3532,13 +3534,25 @@ class AuthFlow:
                             "login screen_hint 未直接命中已有账号完成态: page_type=%s continue_url=%s",
                             page_type or "(empty)",
                             (continue_url or "")[:180] or "(empty)",
-                        )
+                    )
                     break
                 except Exception as e:
                     continue_url = ""
                     page_type = ""
                     mode = ""
-                    if self._is_invalid_state_error(e):
+                    if self._is_invalid_state_error(e) and auth_session_only and attempt < login_probe_attempts - 1:
+                        logger.warning(
+                            "login screen_hint 探测状态已失效，重建干净会话后重试 login 探测: %s/%s: %s",
+                            attempt + 1,
+                            login_probe_attempts,
+                            e,
+                        )
+                        auth_url, sentinel = start_authorize_state(
+                            f"login_probe_invalid_state_retry_login_{attempt + 1}",
+                            reset_session=True,
+                        )
+                        continue
+                    elif self._is_invalid_state_error(e):
                         logger.warning(
                             "login screen_hint 探测状态已失效，重建干净会话后回退 signup 探测: %s",
                             e,

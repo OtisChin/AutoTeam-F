@@ -535,7 +535,7 @@
                 <button @click="startProtocolPayment" :disabled="protocolBusy" class="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50">
                   {{ protocolBusy ? '支付中...' : `开始协议支付${protocolSelectedEmails.length ? ` (${protocolSelectedEmails.length})` : ''}` }}
                 </button>
-                <button type="button" @click="toggleProtocolAutoPay" :disabled="protocolBusy && !protocolAutoPayActive" class="rounded-lg border px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50" :class="protocolAutoPayActive ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20' : 'border-indigo-500/40 bg-indigo-500/10 text-indigo-100 hover:bg-indigo-500/20'">
+                <button type="button" @click="toggleProtocolAutoPay" class="rounded-lg border px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50" :class="protocolAutoPayActive ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20' : 'border-indigo-500/40 bg-indigo-500/10 text-indigo-100 hover:bg-indigo-500/20'">
                   {{ protocolAutoPayActive ? `停止自动支付 (${protocolAutoPayQueue.length})` : '自动支付' }}
                 </button>
                 <button v-if="protocolBusy" @click="cancelProtocolJob" :disabled="protocolCanceling" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50">
@@ -754,7 +754,7 @@
                 <button @click="startPay153Payment" :disabled="pay153Busy" class="rounded-lg bg-cyan-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-50">
                   {{ pay153Busy ? '153支付中...' : `开始153支付 (${pay153SelectedEmails.length})` }}
                 </button>
-                <button type="button" @click="togglePay153AutoPay" :disabled="pay153Busy && !pay153AutoPayActive" class="rounded-lg border px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50" :class="pay153AutoPayActive ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20' : 'border-cyan-500/40 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20'">
+                <button type="button" @click="togglePay153AutoPay" class="rounded-lg border px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50" :class="pay153AutoPayActive ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20' : 'border-cyan-500/40 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20'">
                   {{ pay153AutoPayActive ? `停止自动支付 (${pay153AutoPayQueue.length})` : '自动支付' }}
                 </button>
                 <button @click="retryFailedPay153Payment" :disabled="pay153Busy || !pay153FailedEmails.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50">
@@ -1827,6 +1827,7 @@ async function scanProtocolAutoPayLinks() {
     void drainProtocolAutoPayQueue()
     return
   }
+  void drainProtocolAutoPayQueue()
   const idleMs = Date.now() - Number(protocolAutoPayLastNewAt.value || Date.now())
   protocolAutoPayStatusText.value = `协议自动支付等待新链接中，队列 ${protocolAutoPayQueue.value.length} 个，已空闲 ${Math.floor(idleMs / 60000)} 分钟。`
   if (idleMs >= AUTO_PAYMENT_IDLE_LIMIT_MS && !protocolAutoPayQueue.value.length && !protocolAutoPayActiveJobs.value.length) stopProtocolAutoPay('协议自动支付已结束：30分钟没有新链接。')
@@ -1853,6 +1854,7 @@ async function scanPay153AutoPayLinks() {
     void drainPay153AutoPayQueue()
     return
   }
+  void drainPay153AutoPayQueue()
   const idleMs = Date.now() - Number(pay153AutoPayLastNewAt.value || Date.now())
   pay153AutoPayStatusText.value = `153自动支付等待新链接中，队列 ${pay153AutoPayQueue.value.length} 个，已空闲 ${Math.floor(idleMs / 60000)} 分钟。`
   if (idleMs >= AUTO_PAYMENT_IDLE_LIMIT_MS && !pay153AutoPayQueue.value.length && !pay153AutoPayActiveJobs.value.length) stopPay153AutoPay('153自动支付已结束：30分钟没有新链接。')
@@ -1879,6 +1881,14 @@ function updateAutoPayActiveJob(activeRef, email, patch) {
 }
 function removeAutoPayActiveJob(activeRef, email) {
   activeRef.value = activeRef.value.filter(item => item.email !== email)
+}
+function protocolManualOccupiedSlots() {
+  if (!protocolBusy.value) return 0
+  return Math.max(1, Number(protocolJob.value?.running_count || 1))
+}
+function pay153ManualOccupiedSlots() {
+  if (!pay153Busy.value) return 0
+  return Math.max(1, Number(pay153Job.value?.running_count || 1))
 }
 async function launchProtocolAutoPayItem(item) {
   const email = String(item?.email || '').trim()
@@ -2014,7 +2024,7 @@ async function drainProtocolAutoPayQueue() {
   try {
     while (protocolAutoPayActive.value && protocolAutoPayQueue.value.length) {
       const limit = Math.max(1, Number(protocolForm.value.concurrency || 1))
-      const availableSlots = Math.max(0, limit - protocolAutoPayActiveJobs.value.length)
+      const availableSlots = Math.max(0, limit - protocolManualOccupiedSlots() - protocolAutoPayActiveJobs.value.length)
       if (!availableSlots) break
       const batch = protocolAutoPayQueue.value.splice(0, availableSlots)
       protocolAutoPayQueue.value = [...protocolAutoPayQueue.value]
@@ -2031,7 +2041,7 @@ async function drainPay153AutoPayQueue() {
   try {
     while (pay153AutoPayActive.value && pay153AutoPayQueue.value.length) {
       const limit = Math.max(1, Number(pay153Form.value.concurrency || 1))
-      const availableSlots = Math.max(0, limit - pay153AutoPayActiveJobs.value.length)
+      const availableSlots = Math.max(0, limit - pay153ManualOccupiedSlots() - pay153AutoPayActiveJobs.value.length)
       if (!availableSlots) break
       const batch = pay153AutoPayQueue.value.splice(0, availableSlots)
       pay153AutoPayQueue.value = [...pay153AutoPayQueue.value]
@@ -2120,6 +2130,7 @@ async function startProtocolPayment(options = {}) {
   } finally {
     protocolBusy.value = false
     protocolCanceling.value = false
+    void drainProtocolAutoPayQueue()
   }
 }
 
@@ -2139,6 +2150,7 @@ async function pollProtocolJob(jobId) {
       setProtocolStatus(Number(job.total || 0) > 1 ? `协议批量支付完成，已完成 ${job.completed || 0}/${job.total || 0}。` : '协议支付成功。')
       persistProtocolJobState({ jobId })
       await refreshAccounts()
+      void drainProtocolAutoPayQueue()
       return
     }
     if (job.status === 'cancelled') {
@@ -2146,6 +2158,7 @@ async function pollProtocolJob(jobId) {
       releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'protocol', protocolClaimedPhonePoolKeysByJob.get(jobId) || [], protocolForm.value.phonePool)
       setProtocolStatus('协议支付任务已取消。')
       persistProtocolJobState({ jobId })
+      void drainProtocolAutoPayQueue()
       return
     }
     if (job.status === 'error' || job.status === 'failed') {
@@ -2153,6 +2166,7 @@ async function pollProtocolJob(jobId) {
       releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'protocol', protocolClaimedPhonePoolKeysByJob.get(jobId) || [], protocolForm.value.phonePool)
       setProtocolStatus(job.error || '协议支付失败', true)
       persistProtocolJobState({ jobId })
+      void drainProtocolAutoPayQueue()
       throw new Error(job.error || '协议支付失败')
     }
     const total = Number(job.total || 0)
@@ -2316,6 +2330,7 @@ async function startPay153Payment(options = {}) {
   } finally {
     pay153Busy.value = false
     pay153Canceling.value = false
+    void drainPay153AutoPayQueue()
   }
 }
 async function retryFailedPay153Payment() {
@@ -2369,6 +2384,7 @@ async function pollPay153Job(jobId) {
       setPay153Status(`153支付完成，已完成 ${job.completed || 0}/${job.total || 0}。`)
       persistPay153JobState({ jobId })
       await refreshAccounts()
+      void drainPay153AutoPayQueue()
       return
     }
     if (job.status === 'cancelled') {
@@ -2376,6 +2392,7 @@ async function pollPay153Job(jobId) {
       releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'pay153', pay153ClaimedPhonePoolKeysByJob.get(jobId) || [], pay153Form.value.phonePool)
       setPay153Status('153支付任务已取消。')
       persistPay153JobState({ jobId })
+      void drainPay153AutoPayQueue()
       return
     }
     if (job.status === 'error' || job.status === 'failed') {
@@ -2383,6 +2400,7 @@ async function pollPay153Job(jobId) {
       releaseClaimedPhonePoolEntriesAfterJob(job.result || {}, 'pay153', pay153ClaimedPhonePoolKeysByJob.get(jobId) || [], pay153Form.value.phonePool)
       setPay153Status(job.error || '153支付失败', true)
       persistPay153JobState({ jobId })
+      void drainPay153AutoPayQueue()
       throw new Error(job.error || '153支付失败')
     }
     const total = Number(job.total || 0)

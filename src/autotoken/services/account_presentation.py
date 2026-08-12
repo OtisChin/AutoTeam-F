@@ -43,7 +43,13 @@ def token_revoked_quota_failure_display_status(acc: dict, status: str) -> str:
         return status
     if str(acc.get("discarded_reason") or "").strip().lower() != "quota_refresh_401":
         return status
-    if "token_revoked" not in str(acc.get("last_bind_message") or "").strip().lower():
+    message = str(acc.get("last_bind_message") or "").strip().lower()
+    if not (
+        "token_revoked" in message
+        or "token_invalidated" in message
+        or "authentication token has been invalidated" in message
+        or "invalidated oauth token" in message
+    ):
         return status
     return "auth_revoked"
 

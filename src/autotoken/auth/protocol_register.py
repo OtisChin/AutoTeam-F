@@ -1278,8 +1278,10 @@ def login_once(
         email=email,
     )
     adapter = ProtocolMailAdapter(mail_client, email=email, account_id=account_id)
+    auth_session_only = str(os.environ.get("AUTH_SESSION_ONLY") or "").strip().lower() in {"1", "true", "yes", "on"}
     logger.info(
-        "[协议登录] 开始协议登录 OAuth: email=%s mailbox_id_present=%s proxy=%s",
+        "[协议登录] 开始协议登录%s: email=%s mailbox_id_present=%s proxy=%s",
+        " auth_session" if auth_session_only else " OAuth",
         email,
         bool(account_id),
         "enabled" if cfg.proxy else "disabled",
@@ -1301,6 +1303,9 @@ def login_once(
         raise RuntimeError(f"协议登录未返回有效 auth_session: {email}")
     payload = _session_data_from_auth_result(result)
     if not payload.get("codex_oauth_bundle"):
+        if auth_session_only:
+            logger.info("[协议登录] auth_session-only 已完成，跳过 CPA OAuth bundle 校验: %s", email)
+            return payload
         detail = str(getattr(flow, "_last_codex_oauth_error", "") or "").strip()
         message = f"协议登录完成但未生成 CPA OAuth bundle: {email}"
         if detail:

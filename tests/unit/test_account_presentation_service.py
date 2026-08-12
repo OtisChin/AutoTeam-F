@@ -44,6 +44,30 @@ def test_sanitize_account_displays_token_expired_quota_failure_as_auth_invalid()
     assert sanitized["status"] == "auth_invalid"
 
 
+def test_sanitize_account_displays_token_invalidated_quota_failure_as_auth_revoked():
+    sanitized = account_presentation.sanitize_account_with_indexes(
+        {
+            "email": "user@example.com",
+            "status": "fail",
+            "discarded_reason": "quota_refresh_401",
+            "last_bind_message": (
+                "刷新额度返回 401: token_invalidated: Your authentication token has been invalidated. "
+                "Please try signing in again.，账号已标记为 Fail/废弃"
+            ),
+        },
+        None,
+        {},
+        {},
+        "",
+        normalize_email=lambda value: str(value or "").strip().lower(),
+        resolve_status_auth_file_func=lambda _account: "",
+        resolve_codex_auth_file_func=lambda _account: "",
+    )
+
+    assert sanitized["raw_status"] == "fail"
+    assert sanitized["status"] == "auth_revoked"
+
+
 def test_sanitize_account_exposes_display_email_from_original_email():
     sanitized = account_presentation.sanitize_account_with_indexes(
         {"email": "amandamiller143152@hotmail.com", "original_email": "AmandaMiller143152@hotmail.com", "status": "active"},

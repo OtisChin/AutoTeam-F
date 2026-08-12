@@ -26,7 +26,7 @@
       <div class="dashboard-table-header">
         <div>
           <h2 class="text-lg font-semibold text-white">账号列表</h2>
-          <p class="mt-1 text-xs text-gray-500">批量导出、补登录、刷新额度和清理无效凭证。</p>
+          <p class="mt-1 text-xs text-gray-500">批量导出、OAuth授权、补登录、刷新额度和清理无效凭证。</p>
         </div>
         <div class="dashboard-actions">
           <button
@@ -94,13 +94,22 @@
             {{ subExporting ? '导出中...' : `导出Sub2API认证 (${cpaExportableAccounts.length})` }}
           </button>
           <button
-            @click="batchLoginAccounts"
-            :disabled="loginDisabled || batchLoggingIn || !oauthBatchActionAccounts.length"
+            @click="batchOauthAuthorizeAccounts"
+            :disabled="loginDisabled || batchOauthAuthorizing || !oauthBatchActionAccounts.length"
             class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
-            :class="loginDisabled || batchLoggingIn || !oauthBatchActionAccounts.length
+            :class="loginDisabled || batchOauthAuthorizing || !oauthBatchActionAccounts.length
               ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
               : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
             {{ oauthBatchButtonLabel }}
+          </button>
+          <button
+            @click="batchReloginAccounts"
+            :disabled="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+            :class="loginDisabled || batchReloggingIn || reloginBatchRunning || !reloginableAccounts.length
+              ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+              : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">
+            {{ batchReloginButtonLabel }}
           </button>
           <button
             @click="oauthConfigOpen = true"
@@ -195,7 +204,7 @@
           <div class="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-4">
             <div>
               <h3 class="text-lg font-semibold text-white">OAuth 配置</h3>
-              <p class="mt-1 text-xs text-gray-500">配置补登录代理和绑定方式；绑定邮箱/绑定手机号二选一。</p>
+              <p class="mt-1 text-xs text-gray-500">配置 OAuth授权/补登录代理和绑定方式；绑定邮箱/绑定手机号二选一。</p>
             </div>
             <button @click="oauthConfigOpen = false" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700">关闭</button>
           </div>
@@ -205,7 +214,7 @@
               @click="oauthConfigTab = 'proxy'"
               class="px-4 py-2 text-sm font-medium border-b-2 transition"
               :class="oauthConfigTab === 'proxy' ? 'text-cyan-300 border-cyan-500' : 'text-gray-500 border-transparent hover:text-gray-300'">
-              补登录代理
+              OAuth授权/补登录代理
             </button>
             <button
               @click="oauthConfigTab = 'email'"
@@ -232,8 +241,8 @@
             <div v-if="oauthConfigTab === 'proxy'">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <div class="text-sm font-semibold text-cyan-100">OAuth 补登录代理</div>
-                  <div class="mt-1 text-xs text-gray-500">用于仪表盘单个补登录和批量 OAuth 补登录；不开启时保持直连。</div>
+                  <div class="text-sm font-semibold text-cyan-100">OAuth授权/补登录代理</div>
+                  <div class="mt-1 text-xs text-gray-500">用于仪表盘单个/批量 OAuth授权和补登录；不开启时保持直连。</div>
                 </div>
                 <label class="inline-flex items-center gap-2 text-sm text-gray-300">
                   <input v-model="oauthProxyEnabled" type="checkbox" class="h-4 w-4 rounded border-gray-700 bg-gray-950 text-cyan-500 focus:ring-cyan-500/30" />
@@ -283,7 +292,7 @@
             <!-- Email Binding Tab -->
             <div v-if="oauthConfigTab === 'email'">
               <div class="text-sm font-semibold text-amber-100">邮箱绑定配置</div>
-              <div class="mt-1 text-xs text-gray-500">选择邮箱绑定时使用这些邮件供应商和域名参数；如果启用手机号绑定，补登录请求不会同时绑定邮箱。</div>
+              <div class="mt-1 text-xs text-gray-500">选择邮箱绑定时使用这些邮件供应商和域名参数；如果启用手机号绑定，OAuth授权/补登录请求不会同时绑定邮箱。</div>
               <div class="mt-4 space-y-4">
                 <div>
                   <label class="block text-xs text-gray-500 mb-1">邮件供应商</label>
@@ -323,7 +332,7 @@
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div class="text-sm font-semibold text-emerald-100">手机号绑定</div>
-                  <div class="mt-1 text-xs text-gray-500">开启后，仪表盘单个/批量 OAuth 补登录遇到 add-phone 会自动绑定手机号。</div>
+                  <div class="mt-1 text-xs text-gray-500">开启后，仪表盘单个/批量 OAuth授权和补登录遇到 add-phone 会自动绑定手机号。</div>
                 </div>
                 <label class="inline-flex items-center gap-2 text-sm text-gray-300">
                   <input v-model="oauthBindPhone" type="checkbox" class="h-4 w-4 rounded border-gray-700 bg-gray-950 text-emerald-500 focus:ring-emerald-500/30" />
@@ -341,7 +350,7 @@
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div class="text-sm font-semibold text-emerald-100">OAuth 手机号接码配置</div>
-                  <div class="mt-1 text-xs text-gray-500">用于补登录需要 add-phone 时取号和收验证码；保存后写入后端 OAuth 接码配置。</div>
+                  <div class="mt-1 text-xs text-gray-500">用于 OAuth授权/补登录需要 add-phone 时取号和收验证码；保存后写入后端 OAuth 接码配置。</div>
                 </div>
                 <span
                   class="min-w-[72px] rounded-full border px-3 py-1.5 text-center text-xs whitespace-nowrap"
@@ -373,7 +382,7 @@
                   <div class="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300">
                     服务：OpenAI（service: dr）
                   </div>
-                  <div class="mt-1 text-xs text-gray-500">国家会随补登录请求传给后端；列表来自所选接码供应商。</div>
+                  <div class="mt-1 text-xs text-gray-500">国家会随 OAuth授权/补登录请求传给后端；列表来自所选接码供应商。</div>
                 </div>
                 <div v-if="['hero_sms', 'smsbower', 'smscloud'].includes(oauthPhoneSmsForm.provider)">
                   <label class="block text-xs text-gray-500 mb-1">手机号国家</label>
@@ -873,8 +882,8 @@
               <th class="px-4 py-3 font-medium">Hub同步</th>
               <th class="px-4 py-3 font-medium text-right">5h 剩余</th>
               <th class="px-4 py-3 font-medium text-right">周 剩余</th>
-              <th class="px-4 py-3 font-medium">5h 重置</th>
-              <th class="px-4 py-3 font-medium">周 重置</th>
+              <th class="px-4 py-3 font-medium">注册时间</th>
+              <th class="px-4 py-3 font-medium">激活时间</th>
               <th class="px-4 py-3 font-medium text-right">
                 <div class="inline-flex items-center justify-end gap-2">
                   <span>操作</span>
@@ -959,8 +968,8 @@
                 :title="quotaWindow(acc, 'weekly') ? 'OpenAI 返回的周限额窗口' : 'OpenAI 未返回周限额窗口'">
                 {{ quotaPct(acc, 'weekly') }}
               </td>
-              <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'primary') }}</td>
-              <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'weekly') }}</td>
+              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ registerTimeLabel(acc) }}</td>
+              <td class="px-4 py-3 text-gray-400 text-xs font-mono">{{ activationTimeLabel(acc) }}</td>
               <td class="px-4 py-3 text-right space-x-2">
                 <button
                   @click="copyAccountAccessToken(acc.email)"
@@ -989,22 +998,25 @@
                     : 'bg-sky-600/10 text-sky-300 border-sky-500/30 hover:bg-sky-600/20'">
                   {{ actionEmail === acc.email && actionType === 'latest-mail' ? '取件中...' : '获取邮件' }}
                 </button>
-                <!-- 缺认证标识：账号没有 data/auths 下的 Codex auth_file → 在订阅查询后提示 -->
-                <span
-                  v-if="needsCodexLogin(acc)"
-                  class="inline-block px-2 py-0.5 mr-1 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30"
-                  title="未拿到 data/auths 下的 Codex auth 文件，请点击补登录">
-                  缺认证
-                </span>
                 <button
-                  v-if="canLogin(acc)"
-                  @click="loginAccount(acc.email)"
+                  v-if="canOauthAuthorize(acc)"
+                  @click="oauthAuthorizeAccount(acc.email)"
                   :disabled="loginDisabled || actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
                   :class="loginDisabled || actionEmail === acc.email
                     ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-                    : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'">
-                  {{ actionEmail === acc.email && actionType === 'login' ? '登录中...' : loginLabel(acc) }}
+                    : 'bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20'">
+                  {{ actionEmail === acc.email && actionType === 'oauth-authorize' ? '授权中...' : oauthAuthorizeLabel(acc) }}
+                </button>
+                <button
+                  v-if="canRelogin(acc)"
+                  @click="reloginAccount(acc.email)"
+                  :disabled="loginDisabled || actionEmail === acc.email"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+                  :class="loginDisabled || actionEmail === acc.email
+                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                    : 'bg-cyan-600/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-600/20'">
+                  {{ actionEmail === acc.email && actionType === 'relogin' ? '补登录中...' : reloginLabel(acc) }}
                 </button>
                 <button
                   v-if="!acc.is_main_account"
@@ -1644,6 +1656,10 @@ const props = defineProps({
   status: Object,
   loading: Boolean,
   runningTask: Object,
+  refreshQuotaResultTask: {
+    type: Object,
+    default: null,
+  },
   adminStatus: {
     type: Object,
     default: null,
@@ -1737,7 +1753,8 @@ const cpaExporting = ref(false)
 const subExporting = ref(false)
 const accessTokenExporting = ref(false)
 const exportStatusUpdating = ref(false)
-const batchLoggingIn = ref(false)
+const batchOauthAuthorizing = ref(false)
+const batchReloggingIn = ref(false)
 const quotaRefreshing = ref(false)
 const invalidDeleting = ref(false)
 const oauthConfigOpen = ref(false)
@@ -2189,13 +2206,13 @@ function buildDashboardOauthPayload() {
 }
 
 const oauthProxySummary = computed(() => {
-  if (!oauthProxyEnabled.value) return 'OAuth 补登录当前直连。'
-  if (oauthProxyMode.value === 'single') return oauthProxyUrl.value ? '单个/批量补登录会使用这条代理。' : '请填写单条代理地址。'
+  if (!oauthProxyEnabled.value) return 'OAuth授权/补登录当前直连。'
+  if (oauthProxyMode.value === 'single') return oauthProxyUrl.value ? '单个/批量 OAuth授权和补登录会使用这条代理。' : '请填写单条代理地址。'
   if (oauthProxyMode.value === 'pool') {
     const count = oauthProxyPoolText.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean).length
-    return count ? `批量补登录会从 ${count} 条代理中按账号随机选择。` : '请导入或粘贴代理池。'
+    return count ? `批量 OAuth授权和补登录会从 ${count} 条代理中按账号随机选择。` : '请导入或粘贴代理池。'
   }
-  return `补登录会通过 ${oauthProxyApiProvider.value} API 每个账号取一次 ${String(oauthProxyApiCountry.value || 'US').trim().toUpperCase() || 'US'} 代理。`
+  return `OAuth授权/补登录会通过 ${oauthProxyApiProvider.value} API 每个账号取一次 ${String(oauthProxyApiCountry.value || 'US').trim().toUpperCase() || 'US'} 代理。`
 })
 
 const oauthPhoneSmsConfigured = computed(() => {
@@ -2708,14 +2725,30 @@ const scopedAccounts = computed(() => {
     ? filteredAccounts.value.filter(acc => selected.has(String(acc.email || '').toLowerCase()))
     : filteredAccounts.value
 })
+const oauthAuthorizableAccounts = computed(() => {
+  return scopedAccounts.value.filter(acc => canOauthAuthorize(acc))
+})
+const reloginableAccounts = computed(() => {
+  return scopedAccounts.value.filter(acc => canRelogin(acc))
+})
 const batchLoginableAccounts = computed(() => {
-  return scopedAccounts.value.filter(acc => canLogin(acc))
+  return oauthAuthorizableAccounts.value
 })
 const oauthBatchTask = computed(() => {
   const task = props.runningTask
   if (!task || task.command !== 'login-batch') return null
   if (!['running', 'pending'].includes(String(task.status || ''))) return null
+  if (Boolean(task.params?.refresh_auth_session)) return null
   return task
+})
+const reloginBatchRunning = computed(() => {
+  const task = props.runningTask
+  return Boolean(
+    task
+      && task.command === 'login-batch'
+      && ['running', 'pending'].includes(String(task.status || ''))
+      && Boolean(task.params?.refresh_auth_session),
+  )
 })
 const oauthBatchRunning = computed(() => !!oauthBatchTask.value)
 const oauthBatchQueuedEmails = computed(() => {
@@ -2734,9 +2767,14 @@ const oauthBatchActionAccounts = computed(() =>
   oauthBatchRunning.value ? oauthBatchAppendableAccounts.value : batchLoginableAccounts.value
 )
 const oauthBatchButtonLabel = computed(() => {
-  if (batchLoggingIn.value) return oauthBatchRunning.value ? '追加中...' : '提交中...'
+  if (batchOauthAuthorizing.value) return oauthBatchRunning.value ? '追加中...' : '提交中...'
   const count = oauthBatchActionAccounts.value.length
-  return oauthBatchRunning.value ? `追加OAuth补登录 (${count})` : `批量OAuth补登录 (${count})`
+  return oauthBatchRunning.value ? `追加OAuth授权 (${count})` : `批量OAuth授权 (${count})`
+})
+const batchReloginButtonLabel = computed(() => {
+  if (batchReloggingIn.value) return '提交中...'
+  if (reloginBatchRunning.value) return '补登录运行中...'
+  return `批量补登录 (${reloginableAccounts.value.length})`
 })
 const cpaExportableAccounts = computed(() => {
   return scopedAccounts.value.filter(acc => !acc.is_main_account && hasCodexAuthFile(acc))
@@ -2780,6 +2818,84 @@ const refreshQuotaButtonLabel = computed(() => {
     ? `刷新选中额度 (${refreshableQuotaAccounts.value.length})`
     : `刷新筛选额度 (${refreshableQuotaAccounts.value.length})`
 })
+const lastRefreshQuotaTaskId = ref('')
+const pendingRefreshQuotaTaskId = ref('')
+
+function refreshQuotaResultCount(result, key) {
+  const value = result?.[key]
+  if (Array.isArray(value)) return value.length
+  if (value && typeof value === 'object' && Number.isFinite(Number(value.count))) return Number(value.count)
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+function formatRefreshQuotaResultSummary(task) {
+  const result = task?.result || {}
+  const progress = task?.progress || {}
+  const total = Number(result.total ?? progress.total ?? 0)
+  const ok = refreshQuotaResultCount(result, 'ok') || Number(progress.ok || 0)
+  const exhausted = refreshQuotaResultCount(result, 'exhausted') || Number(progress.exhausted || 0)
+  const failed = refreshQuotaResultCount(result, 'failed') || Number(progress.failed || 0)
+  const skipped = refreshQuotaResultCount(result, 'skipped') || Number(progress.skipped || 0)
+  const networkError = refreshQuotaResultCount(result, 'network_error') || Number(progress.network_error || 0)
+  const missing = refreshQuotaResultCount(result, 'missing')
+  const parts = [
+    `成功 ${Number.isFinite(ok) ? ok : 0}`,
+    `额度用尽 ${Number.isFinite(exhausted) ? exhausted : 0}`,
+    `认证失败 ${Number.isFinite(failed) ? failed : 0}`,
+    `跳过 ${Number.isFinite(skipped) ? skipped : 0}`,
+    `临时错误 ${Number.isFinite(networkError) ? networkError : 0}`,
+  ]
+  if (missing) parts.push(`不存在 ${missing}`)
+  const totalText = Number.isFinite(total) && total > 0 ? `，共 ${total} 个` : ''
+  return `刷新额度完成${totalText}: ${parts.join('，')}`
+}
+
+watch(
+  () => props.runningTask,
+  (task) => {
+    if (!task || task.command !== 'refresh-quota') return
+    const progress = task.progress || {}
+    const current = Number(progress.current || 0)
+    const total = Number(progress.total || task.result?.total || 0)
+    const ok = Number(progress.ok || 0)
+    const exhausted = Number(progress.exhausted || 0)
+    const failed = Number(progress.failed || 0)
+    const skipped = Number(progress.skipped || 0)
+    const networkError = Number(progress.network_error || 0)
+    const progressText = Number.isFinite(total) && total > 0
+      ? `${Number.isFinite(current) ? current : 0}/${total}`
+      : '进行中'
+    message.value = `刷新额度中 (${progressText}): 成功 ${Number.isFinite(ok) ? ok : 0}，额度用尽 ${Number.isFinite(exhausted) ? exhausted : 0}，认证失败 ${Number.isFinite(failed) ? failed : 0}，跳过 ${Number.isFinite(skipped) ? skipped : 0}，临时错误 ${Number.isFinite(networkError) ? networkError : 0}`
+    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+  }
+)
+
+watch(
+  () => props.refreshQuotaResultTask,
+  (task) => {
+    if (!task || task.command !== 'refresh-quota') return
+    const taskId = String(task.task_id || '')
+    if (!pendingRefreshQuotaTaskId.value) {
+      if (taskId) lastRefreshQuotaTaskId.value = taskId
+      return
+    }
+    if (pendingRefreshQuotaTaskId.value && taskId !== pendingRefreshQuotaTaskId.value) return
+    if (taskId && taskId === lastRefreshQuotaTaskId.value) return
+    lastRefreshQuotaTaskId.value = taskId
+    if (String(task.status || '') === 'failed') {
+      message.value = `刷新额度失败: ${task.error || task.result?.message || taskId || '后台任务失败'}`
+      messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+    } else {
+      message.value = formatRefreshQuotaResultSummary(task)
+      messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
+    }
+    pendingRefreshQuotaTaskId.value = ''
+    setTimeout(() => {
+      if (!refreshQuotaRunning.value && taskId === lastRefreshQuotaTaskId.value) message.value = ''
+    }, 15000)
+  }
+)
 const allSelectableChecked = computed(() =>
   selectableEmails.value.length > 0 && selectedEmails.value.length === selectableEmails.value.length
 )
@@ -3324,6 +3440,18 @@ function exportTimeLabel(acc) {
   return accountExportTs(acc) ? fmtTs(accountExportTs(acc)) : '-'
 }
 
+function registerTimeLabel(acc) {
+  return accountRegisterTs(acc) ? fmtTs(accountRegisterTs(acc)) : '-'
+}
+
+function accountActivationTs(acc) {
+  return Number(acc?.plus_bound_at || acc?.activated_at || acc?.activation_at || acc?.upgraded_at || acc?.last_bind_at || 0) || 0
+}
+
+function activationTimeLabel(acc) {
+  return accountActivationTs(acc) ? fmtTs(accountActivationTs(acc)) : '-'
+}
+
 function accountHubSyncLabel(acc) {
   return acc?.account_hub_synced ? '已同步' : '未同步'
 }
@@ -3858,28 +3986,28 @@ async function batchUpdateExportStatus(exported) {
   }
 }
 
-async function batchLoginAccounts() {
-  if (loginDisabled.value || batchLoggingIn.value) return
+async function batchOauthAuthorizeAccounts() {
+  if (loginDisabled.value || batchOauthAuthorizing.value) return
   const appendMode = oauthBatchRunning.value
   const emails = oauthBatchActionAccounts.value.map(acc => acc.email).filter(Boolean)
   if (!emails.length) return
 
-  batchLoggingIn.value = true
+  batchOauthAuthorizing.value = true
   message.value = ''
   try {
     if (appendMode) {
       const result = await api.appendLoginAccountsBatch(emails, oauthBatchTask.value?.task_id || '')
       const skipped = Array.isArray(result.missing) && result.missing.length ? `，跳过不存在账号 ${result.missing.length} 个` : ''
       const duplicates = Array.isArray(result.duplicates) && result.duplicates.length ? `，已在队列 ${result.duplicates.length} 个` : ''
-      message.value = `已追加到当前 OAuth 补登录任务: ${result.task_id}，新增 ${result.added_emails?.length || 0} 个${skipped}${duplicates}`
+      message.value = `已追加到当前 OAuth授权任务: ${result.task_id}，新增 ${result.added_emails?.length || 0} 个${skipped}${duplicates}`
     } else {
       await loadOauthPhoneSmsConfig({ silent: true })
       const oauthPayload = buildDashboardOauthPayload()
       const result = await api.loginAccountsBatch(emails, oauthPayload)
       const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
-      const bindText = batchLoginableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
+      const bindText = oauthAuthorizableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
       const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-      message.value = `已提交批量协议补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}${phoneText}`
+      message.value = `已提交批量 OAuth授权任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}${phoneText}`
     }
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
@@ -3888,7 +4016,34 @@ async function batchLoginAccounts() {
     message.value = e.message
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
-    batchLoggingIn.value = false
+    batchOauthAuthorizing.value = false
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function batchReloginAccounts() {
+  if (loginDisabled.value || batchReloggingIn.value || reloginBatchRunning.value) return
+  const emails = reloginableAccounts.value.map(acc => acc.email).filter(Boolean)
+  if (!emails.length) return
+
+  batchReloggingIn.value = true
+  message.value = ''
+  try {
+    await loadOauthPhoneSmsConfig({ silent: true })
+    const reloginPayload = { ...buildDashboardOauthPayload(), refresh_auth_session: true }
+    const result = await api.loginAccountsBatch(emails, reloginPayload)
+    const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+    const bindText = reloginableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
+    const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
+    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}${phoneText}`
+    messageClass.value = 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
+    emit('task-started')
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    batchReloggingIn.value = false
     setTimeout(() => { message.value = '' }, 8000)
   }
 }
@@ -3902,6 +4057,7 @@ async function refreshAllQuota() {
   try {
     const result = await api.refreshAccountsQuota(emails)
     const scope = selectedEmails.value.length ? '选中' : '筛选'
+    pendingRefreshQuotaTaskId.value = String(result.task_id || '')
     message.value = `已提交刷新${scope}额度任务: ${result.task_id}，账号 ${emails.length} 个`
     messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/20'
     emit('task-started')
@@ -3911,7 +4067,9 @@ async function refreshAllQuota() {
     messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
   } finally {
     quotaRefreshing.value = false
-    setTimeout(() => { message.value = '' }, 8000)
+    setTimeout(() => {
+      if (!pendingRefreshQuotaTaskId.value && !refreshQuotaRunning.value) message.value = ''
+    }, 8000)
   }
 }
 
@@ -4070,11 +4228,15 @@ async function saveBatchAccountMetadata() {
   }
 }
 
-function canLogin(acc) {
+function canOauthAuthorize(acc) {
   if (!acc?.email || acc.is_main_account) return false
   if (['auth_invalid', 'auth_revoked', 'orphan'].includes(String(acc.status || '').toLowerCase())) return true
   if (Boolean(acc.codex_auth_synthetic)) return true
   return needsCodexLogin(acc)
+}
+
+function canRelogin(acc) {
+  return Boolean(acc?.email) && !acc.is_main_account
 }
 
 function isPhoneOnlyAccount(acc) {
@@ -4082,10 +4244,14 @@ function isPhoneOnlyAccount(acc) {
   return Boolean(email) && !email.includes('@')
 }
 
-function loginLabel(acc) {
+function oauthAuthorizeLabel(acc) {
+  if (isPhoneOnlyAccount(acc)) return 'OAuth授权/绑邮箱'
+  if (Boolean(acc.codex_auth_synthetic)) return '重新OAuth授权'
+  return 'OAuth授权'
+}
+
+function reloginLabel(acc) {
   if (isPhoneOnlyAccount(acc)) return '补登录/绑邮箱'
-  if (Boolean(acc.codex_auth_synthetic)) return '重新补登录'
-  if (needsCodexLogin(acc) || ['auth_invalid', 'auth_revoked', 'orphan'].includes(String(acc.status || '').toLowerCase())) return '补登录'
   return '补登录'
 }
 
@@ -4101,11 +4267,11 @@ function needsCodexLogin(acc) {
   return !hasCodexAuthFile(acc)
 }
 
-async function loginAccount(email) {
+async function oauthAuthorizeAccount(email) {
   if (loginDisabled.value) return
 
   actionEmail.value = email
-  actionType.value = 'login'
+  actionType.value = 'oauth-authorize'
   message.value = ''
   try {
     await loadOauthPhoneSmsConfig({ silent: true })
@@ -4114,8 +4280,35 @@ async function loginAccount(email) {
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
     const bindText = email.includes('@') ? '' : '，成功后会绑定邮箱并迁移账号'
     const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-    message.value = `已提交 ${email} 的协议补登录任务: ${result.task_id}${proxyText}${bindText}${phoneText}`
+    message.value = `已提交 ${email} 的 OAuth授权任务: ${result.task_id}${proxyText}${bindText}${phoneText}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+    emit('task-started')
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    actionEmail.value = ''
+    actionType.value = ''
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function reloginAccount(email) {
+  if (loginDisabled.value) return
+
+  actionEmail.value = email
+  actionType.value = 'relogin'
+  message.value = ''
+  try {
+    await loadOauthPhoneSmsConfig({ silent: true })
+    const reloginPayload = { ...buildDashboardOauthPayload(), refresh_auth_session: true }
+    const result = await api.loginAccount(email, reloginPayload)
+    const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+    const bindText = email.includes('@') ? '' : '，成功后会绑定邮箱并迁移账号'
+    const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
+    message.value = `已提交 ${email} 的补登录任务: ${result.task_id}${proxyText}${bindText}${phoneText}`
+    messageClass.value = 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
     emit('task-started')
     emit('refresh')
   } catch (e) {

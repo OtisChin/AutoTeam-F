@@ -11,6 +11,7 @@ assert.match(api, /getAccountAccessToken:\s*\(email\)\s*=>\s*request\('GET',\s*`
 assert.match(api, /exportAccountAccessTokens:\s*\(emails\)\s*=>\s*request\('POST',\s*'\/accounts\/export-access-tokens',\s*\{\s*emails\s*\}\)/, 'API exposes batch access token export route')
 assert.match(api, /getAccountSubscription:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/subscription`\)/, 'API exposes per-account subscription route')
 assert.match(api, /getAccountLatestMail:\s*\(email\)\s*=>\s*request\('GET',\s*`\/accounts\/\$\{encodeURIComponent\(email\)\}\/latest-mail`\)/, 'API exposes per-account latest mail route')
+assert.match(api, /loginAccount:\s*\(email,\s*payload\s*=\s*\{\}\)\s*=>\s*request\('POST',\s*'\/accounts\/login',\s*\{\s*\.\.\.payload,\s*email\s*\}\)/, 'API account login accepts arbitrary payload for OAuth authorization and relogin')
 
 assert.match(dashboard, /@click="copyAccountAccessToken\(acc\.email\)"/, 'account row has 获取ac action')
 assert.match(dashboard, /@click="exportSelectedAccessTokens"/, 'dashboard has one-click selected access token export action')
@@ -23,6 +24,20 @@ assert.match(dashboard, /@click="queryAccountLatestMail\(acc\.email\)"/, 'accoun
 assert.match(dashboard, /最近一封邮件/, 'dashboard renders latest mail dialog')
 assert.match(dashboard, /activeLatestMail/, 'dashboard tracks latest mail message')
 assert.match(dashboard, /getAccountLatestMail\(email\)/, '获取邮件 action calls latest mail API')
+assert.match(dashboard, /OAuth授权/, 'existing OAuth credential action is labelled OAuth授权')
+assert.match(dashboard, /@click="oauthAuthorizeAccount\(acc\.email\)"/, 'account row OAuth credential action is distinct from relogin')
+assert.match(dashboard, /@click="reloginAccount\(acc\.email\)"/, 'account row has new 补登录 action')
+assert.match(dashboard, /batchReloginAccounts/, 'dashboard has batch relogin action')
+assert.match(dashboard, /refresh_auth_session:\s*true/, 'relogin action refreshes auth_session while OAuth authorization keeps old payload')
+assert.match(dashboard, /Boolean\(task\.params\?\.refresh_auth_session\)/, 'dashboard distinguishes relogin batches from OAuth authorization batches')
+assert.match(dashboard, /批量补登录/, 'dashboard renders batch relogin button')
+assert.doesNotMatch(dashboard, /批量OAuth补登录/, 'dashboard no longer calls existing OAuth credential action 批量OAuth补登录')
+assert.doesNotMatch(dashboard, /5h 重置/, 'dashboard no longer renders 5h reset column')
+assert.doesNotMatch(dashboard, /周 重置/, 'dashboard no longer renders weekly reset column')
+assert.match(dashboard, /注册时间/, 'dashboard renders registration time column')
+assert.match(dashboard, /激活时间/, 'dashboard renders activation time column')
+assert.match(dashboard, /registerTimeLabel\(acc\)/, 'dashboard displays account registration timestamp')
+assert.match(dashboard, /activationTimeLabel\(acc\)/, 'dashboard displays account activation timestamp')
 assert.match(dashboard, /手机号绑定/, 'OAuth config exposes phone binding tab')
 assert.match(dashboard, /oauthBindPhone/, 'dashboard stores OAuth phone binding toggle')
 assert.match(dashboard, /bind_email:\s*!bindPhone/, 'dashboard treats OAuth email and phone binding as mutually exclusive')
@@ -69,11 +84,7 @@ assert.match(dashboard, /toggleAccountDisplayOrder/, 'operation header has accou
 assert.match(dashboard, /accountDisplayOrder/, 'dashboard tracks account display order')
 assert.match(dashboard, /↑↓/, 'operation header shows requested ↑↓ icon')
 assert.doesNotMatch(dashboard, /accounts-query-change/, 'account filters and order stay in the frontend')
-assert.ok(
-  dashboard.indexOf("{{ actionEmail === acc.email && actionType === 'subscription' ? '查询中...' : '订阅查询' }}")
-    < dashboard.indexOf('缺认证'),
-  '缺认证 badge is rendered after 订阅查询 action'
-)
+assert.doesNotMatch(dashboard, /缺认证/, 'dashboard no longer renders 缺认证 badge')
 assert.match(dashboard, /subscriptionDialog/, 'dashboard renders subscription dialog state')
 assert.match(dashboard, /accountActionBusy/, 'account actions share a global busy guard')
 assert.match(dashboard, /accountActionRequestId/, 'account actions guard stale async responses')
@@ -118,6 +129,11 @@ assert.match(dashboard, /limit_window_seconds|primary_window_seconds/, 'dashboar
 assert.match(dashboard, /resetAfterSeconds > 0/, 'dashboard does not render current time when reset_after_seconds is zero')
 assert.match(dashboard, /resetAfterSeconds <= 0 && ts <= checkedAt/, 'dashboard suppresses historical reset_at values created from zero reset_after_seconds')
 assert.match(dashboard, /suppressFullUnusedWindowReset/, 'dashboard hides full-window reset times for unused quota windows')
+assert.match(dashboard, /formatRefreshQuotaResultSummary/, 'dashboard formats refresh quota task results for page notification')
+assert.match(dashboard, /刷新额度完成/, 'dashboard notifies refresh quota completion on page')
+assert.match(dashboard, /额度用尽/, 'refresh quota result notification includes exhausted count')
+assert.match(dashboard, /临时错误/, 'refresh quota result notification includes network error count')
+assert.match(dashboard, /watch\(\s*\(\) => props\.runningTask[\s\S]*lastRefreshQuotaTaskId/, 'dashboard watches refresh quota task changes to show result')
 assert.doesNotMatch(dashboard, /@click="exportCodexAuth\(acc\.email\)"/, 'per-account row 导出 button has been removed')
 assert.doesNotMatch(
   dashboard,
@@ -126,6 +142,8 @@ assert.doesNotMatch(
 )
 
 assert.match(app, /refreshTaskStateOnly/, 'App has lightweight task-only polling while background tasks run')
+assert.match(app, /lastDashboardRefreshQuotaTask/, 'App keeps last refresh quota task so Dashboard can display completion result')
+assert.match(app, /:refresh-quota-result-task="lastDashboardRefreshQuotaTask"/, 'App passes last refresh quota task result to Dashboard')
 assert.match(app, /await refreshTaskStateOnly\(\)/, 'active polling avoids reloading dashboard accounts every tick')
 assert.match(app, /hadBusyTasks && !busyTasks\.value\.length[\s\S]*await refresh\(\)/, 'App refreshes dashboard accounts once after active tasks finish')
 

@@ -46,7 +46,9 @@
         <div class="workspace-main">
           <!-- 页面内容 -->
           <Dashboard v-if="currentPage === 'dashboard'"
-            :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus"
+            :status="status" :loading="loading" :running-task="busyTask"
+            :refresh-quota-result-task="lastDashboardRefreshQuotaTask"
+            :admin-status="adminStatus"
             @task-started="onTaskStarted" @refresh="refresh" />
 
           <RegisterAccountPage v-else-if="currentPage === 'register'"
@@ -212,6 +214,12 @@ const busyTasks = computed(() => {
   return items
 })
 const busyTask = computed(() => busyTasks.value[0] || null)
+const lastDashboardRefreshQuotaTask = computed(() =>
+  (tasks.value || []).find(task => {
+    if (task?.command !== 'refresh-quota') return false
+    return !['running', 'pending'].includes(String(task?.status || ''))
+  }) || null
+)
 const taskPanelStyle = computed(() => {
   const position = taskPanelPosition.value
   if (!position) return { top: '1rem', right: '1rem' }
@@ -315,7 +323,7 @@ let dashboardStatusRequestId = 0
 
 function taskCommandLabel(command) {
   const value = String(command || '')
-  if (value.startsWith('login:')) return 'OAuth 补登录'
+  if (value.startsWith('login:')) return 'OAuth授权'
   return {
     'admin-login': '管理员登录',
     'main-codex-sync': '主号 Codex 同步',
@@ -323,7 +331,7 @@ function taskCommandLabel(command) {
     register: '注册账号',
     'bind-card': '绑卡任务',
     'gopay-bind': 'GoPay 绑定',
-    'login-batch': '批量补登录',
+    'login-batch': '批量OAuth授权/补登录',
     'refresh-quota': '刷新额度',
     check: '额度检测',
     rotate: '账号轮换',

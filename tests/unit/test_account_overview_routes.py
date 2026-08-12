@@ -239,6 +239,38 @@ def test_account_overview_access_token_copies_from_auth_session(monkeypatch, tmp
     assert result == {"email": "user@example.com", "access_token": "session-access-token"}
 
 
+def test_account_overview_access_token_reads_nested_auth_session_data(monkeypatch, tmp_path):
+    auth_dir = tmp_path / "auths"
+    session_dir = tmp_path / "auth_session"
+    auth_dir.mkdir()
+    session_dir.mkdir()
+    session_file = session_dir / "user@example.com.json"
+    session_file.write_text(
+        json.dumps(
+            {
+                "status": 200,
+                "email": "user@example.com",
+                "data": {
+                    "access_token": "nested-session-token",
+                    "account": {"id": "account-1"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app, _captured = _app()
+
+    monkeypatch.setattr(auth_storage, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", session_dir)
+    monkeypatch.setattr(accounts, "load_accounts", lambda: [{"email": "user@example.com", "auth_file": ""}])
+    monkeypatch.setattr(accounts, "find_account", lambda loaded, email: loaded[0] if email == "user@example.com" else None)
+    monkeypatch.setattr(auth_session_store, "get_auth_session_file", lambda _email: str(session_file))
+
+    result = _endpoint(app, "/api/accounts/{email}/access-token", "GET")("User@example.com")
+
+    assert result == {"email": "user@example.com", "access_token": "nested-session-token"}
+
+
 def test_account_overview_export_access_tokens_for_selected_accounts(monkeypatch, tmp_path):
     auth_dir = tmp_path / "auths"
     session_dir = tmp_path / "auth_session"
@@ -687,6 +719,79 @@ def test_query_chatgpt_subscription_handles_no_subscription_404_with_account_che
     assert normalized["active"] is False
     assert normalized["paid"] is False
     assert normalized["available_plans"] == ["chatgptfreeplan", "chatgptplusplan"]
+
+
+def test_query_chatgpt_subscription_uses_account_check_when_primary_404_and_fallback_401(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload if payload is not None else {}
+
+        @property
+        def text(self):
+            return json.dumps(self._payload)
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            if url.startswith("https://chatgpt.com/backend-api/subscriptions?"):
+                return FakeResponse(404, {"detail": "No subscription found for account"})
+            if url.startswith("https://chat.openai.com/backend-api/subscriptions?"):
+                return FakeResponse(401, {"detail": {"message": "Unauthorized - Access token is missing"}})
+            if "/backend-api/accounts/check/" in url:
+                return FakeResponse(
+                    200,
+                    {
+                        "accounts": {
+                            "acc-plus": {
+                                "account": {"plan_type": "plus", "has_previously_paid_subscription": True},
+                                "entitlement": {
+                                    "has_active_subscription": True,
+                                    "subscription_plan": "chatgptplusplan",
+                                    "applied_discounts": [{"promo_campaign_id": "plus-1-month-free"}],
+                                },
+                            }
+                        }
+                    },
+                )
+            return FakeResponse(200, {})
+
+    monkeypatch.setattr(account_overview, "_new_chatgpt_subscription_session", lambda token: FakeSession(), raising=False)
+    monkeypatch.setattr(account_overview, "_browser_timezone_offset_min", lambda: 480, raising=False)
+
+    result = account_overview.query_chatgpt_subscription("valid-token", account_id="acc-plus")
+    normalized = account_overview.normalize_chatgpt_subscription(result["raw"], account_id="acc-plus")
+
+    assert calls == [
+        "https://chatgpt.com/backend-api/subscriptions?account_id=acc-plus",
+        "https://chat.openai.com/backend-api/subscriptions?account_id=acc-plus",
+        "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=480",
+    ]
+    assert normalized["plan_label"] == "Plus"
+    assert normalized["plan_key"] == "chatgptplusplan"
+    assert normalized["active"] is True
+    assert normalized["paid"] is True
+    assert normalized["applied_discounts"] == [
+        {
+            "id": "plus-1-month-free",
+            "percent_off": None,
+            "duration_in_months": None,
+            "ends_at": "",
+            "end_behavior": "",
+        }
+    ]
 
 
 def test_query_chatgpt_subscription_falls_back_to_chat_openai_when_chatgpt_forbidden(monkeypatch):

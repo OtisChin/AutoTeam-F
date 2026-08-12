@@ -131,7 +131,27 @@ def create_account_refresh_quota_router(
                 if str(acc.get("discarded_reason") or "").strip().lower() != "quota_refresh_401":
                     return False
                 message = str(acc.get("last_bind_message") or "").strip().lower()
-                return "token_revoked" in message
+                return (
+                    "token_revoked" in message
+                    or "token_invalidated" in message
+                    or "authentication token has been invalidated" in message
+                    or "invalidated oauth token" in message
+                )
+
+            def _clear_quota_401_discard_marker(update_payload: dict, acc: dict | None) -> None:
+                if not isinstance(acc, dict):
+                    return
+                if str(acc.get("discarded_reason") or "").strip().lower() != "quota_refresh_401":
+                    return
+                update_payload.update(
+                    {
+                        "discarded_at": None,
+                        "discarded_reason": "",
+                        "last_bind_status": "",
+                        "last_bind_failure_stage": "",
+                        "last_bind_message": "",
+                    }
+                )
 
             def _apply_plan_type(
                 update_payload: dict,
@@ -269,20 +289,45 @@ def create_account_refresh_quota_router(
 
                 return _quota_with_subscription_plan(info, subscription_plan), False
 
+            def _align_paid_account_with_subscription(
+                *,
+                access_token: str,
+                account_id: str,
+                info: dict | None,
+                current_account_type: str,
+            ) -> tuple[dict | None, bool]:
+                if current_account_type not in {ACCOUNT_TYPE_PLUS, ACCOUNT_TYPE_PRO, ACCOUNT_TYPE_TEAM}:
+                    return info, False
+                subscription_plan, subscription_confirmed = _subscription_account_type(access_token, account_id)
+                if subscription_plan == ACCOUNT_TYPE_FREE and subscription_confirmed:
+                    patched = deepcopy(info) if isinstance(info, dict) else {}
+                    patched["plan_type"] = ACCOUNT_TYPE_FREE
+                    return patched, True
+                return info, False
+
             def _access_token_from_auth_data(auth_data: dict) -> str:
+                data = auth_data.get("data") if isinstance(auth_data.get("data"), dict) else {}
                 return str(
                     auth_data.get("access_token")
                     or auth_data.get("accessToken")
                     or auth_data.get("chatgpt_access_token")
+                    or data.get("access_token")
+                    or data.get("accessToken")
+                    or data.get("chatgpt_access_token")
                     or ""
                 ).strip()
 
             def _account_id_from_auth_data(auth_data: dict) -> str:
                 account = auth_data.get("account") if isinstance(auth_data.get("account"), dict) else {}
+                data = auth_data.get("data") if isinstance(auth_data.get("data"), dict) else {}
+                data_account = data.get("account") if isinstance(data.get("account"), dict) else {}
                 return str(
                     account_id_from_auth_data(auth_data)
                     or auth_data.get("accountId")
                     or account.get("id")
+                    or data.get("account_id")
+                    or data.get("accountId")
+                    or data_account.get("id")
                     or ""
                 ).strip()
 
@@ -413,13 +458,21 @@ def create_account_refresh_quota_router(
                 quota_preserved_statuses = {STATUS_PLUS, STATUS_STANDBY, STATUS_STASHED}
 
                 if status == "ok":
+                    account_id = _account_id_from_auth_data(auth_data)
                     info, allow_free_downgrade = _align_free_monthly_quota_with_subscription(
                         access_token=access_token,
-                        account_id=_account_id_from_auth_data(auth_data),
+                        account_id=account_id,
                         info=info,
                         auth_data=auth_data,
                         existing_paid_plan=_existing_paid_plan(account_type, acc.get("last_quota")),
                     )
+                    if not allow_free_downgrade:
+                        info, allow_free_downgrade = _align_paid_account_with_subscription(
+                            access_token=access_token,
+                            account_id=account_id,
+                            info=info,
+                            current_account_type=account_type,
+                        )
                     update_payload = {"last_quota": info, "last_quota_check_at": now_ts}
                     _apply_plan_type(
                         update_payload,
@@ -431,8 +484,11 @@ def create_account_refresh_quota_router(
                     effective_account_type = update_payload.get("account_type") or account_type
                     if effective_account_type == ACCOUNT_TYPE_FREE and current_status in recoverable_free_statuses:
                         update_payload["status"] = STATUS_PERSONAL
+                    elif effective_account_type == ACCOUNT_TYPE_FREE and allow_free_downgrade:
+                        update_payload["status"] = STATUS_PERSONAL
                     elif current_status not in quota_preserved_statuses:
                         update_payload["status"] = STATUS_ACTIVE
+                    _clear_quota_401_discard_marker(update_payload, acc)
                     return {
                         "kind": "ok",
                         "email": email,
@@ -465,6 +521,7 @@ def create_account_refresh_quota_router(
                             update_payload["status"] = STATUS_PERSONAL
                     elif current_status not in quota_preserved_statuses:
                         update_payload["status"] = STATUS_EXHAUSTED
+                    _clear_quota_401_discard_marker(update_payload, acc)
                     return {
                         "kind": "exhausted",
                         "email": email,
@@ -514,12 +571,20 @@ def create_account_refresh_quota_router(
                                 else f"刷新额度返回 {auth_error_detail}，未标记废弃: {email}"
                             ),
                         }
-                    if auth_error_code == "token_revoked" or auth_error_detail.lower().startswith("token_revoked"):
+                    auth_error_detail_lower = auth_error_detail.lower()
+                    if (
+                        auth_error_code in {"token_revoked", "token_invalidated"}
+                        or auth_error_detail_lower.startswith("token_revoked")
+                        or auth_error_detail_lower.startswith("token_invalidated")
+                        or "authentication token has been invalidated" in auth_error_detail_lower
+                        or "invalidated oauth token" in auth_error_detail_lower
+                    ):
+                        reason = "token_invalidated" if auth_error_code == "token_invalidated" or auth_error_detail_lower.startswith("token_invalidated") else "token_revoked"
                         return {
                             "kind": "network_error",
                             "email": email,
                             "index": index,
-                            "reason": "token_revoked",
+                            "reason": reason,
                             "attempts": attempts,
                             "update": {
                                 "status": "auth_revoked",
@@ -533,7 +598,7 @@ def create_account_refresh_quota_router(
                                 ),
                             },
                             "message": (
-                                f"刷新额度返回 token_revoked，账号掉授权，未标记废弃: {email}"
+                                f"刷新额度返回 {reason}，账号掉授权，未标记废弃: {email}"
                                 if not auth_error_detail
                                 else f"刷新额度返回 {auth_error_detail}，账号掉授权，未标记废弃: {email}"
                             ),
