@@ -3,12 +3,14 @@
   "provider_failures": {
     "truemove": 154,
     "orange": 6,
-    "hero_sms": 10,
+    "hero_sms": 14,
     "ee": 131,
     "three": 1,
     "my": 1,
-    "algartelecom": 18,
-    "links_field": 12,
-    "tim": 71
+    "algartelecom": 40,
+    "links_field": 17,
+    "tim": 222,
+    "any": 1,
+    "surf": 17
   }
 }

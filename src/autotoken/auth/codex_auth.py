@@ -105,6 +105,49 @@ def _close_codex_oauth_chromium(browser, context) -> None:
             pass
 
 
+def _launch_codex_oauth_browser_context(
+    playwright,
+    *,
+    headless: bool = False,
+    proxy_url: str | None = None,
+    proxy_bypass: str | None = None,
+    use_roxybrowser: bool = False,
+    email: str = "",
+):
+    if not use_roxybrowser:
+        browser, context = _launch_codex_oauth_chromium(
+            playwright,
+            headless=headless,
+            proxy_url=proxy_url,
+            proxy_bypass=proxy_bypass,
+        )
+        return browser, context, lambda: _close_codex_oauth_chromium(browser, context)
+
+    from autotoken.roxybrowser_client import RoxyBrowserClient, cleanup_roxybrowser_launch, pick_roxybrowser_endpoint
+    from autotoken.settings.config import get_roxybrowser_config
+
+    cfg = get_roxybrowser_config()
+    client = RoxyBrowserClient(cfg["api_host"], cfg["api_token"])
+    launch = client.launch(
+        window_name=f"autotoken-oauth-{email or 'account'}",
+        proxy_url=proxy_url,
+        clear_profile_data=True,
+        force_new_profile=True,
+    )
+    endpoint = pick_roxybrowser_endpoint(launch.connection)
+    logger.info("[Codex] OAuth RoxyBrowser enabled: email=%s workspace=%s dir=%s", email, launch.workspace_id, launch.dir_id)
+    browser = playwright.chromium.connect_over_cdp(endpoint_url=endpoint)
+    context = browser.contexts[0] if getattr(browser, "contexts", None) else browser.new_context()
+
+    def _cleanup_roxy_oauth_browser() -> None:
+        try:
+            _close_codex_oauth_chromium(browser, None)
+        finally:
+            cleanup_roxybrowser_launch(client, launch)
+
+    return browser, context, _cleanup_roxy_oauth_browser
+
+
 class CodexOAuthPhoneRequired(RuntimeError):
     """Codex OAuth was blocked by OpenAI's phone verification gate."""
 
@@ -129,6 +172,17 @@ class CodexOAuthPhoneRateLimited(RuntimeError):
 
 class CodexOAuthHeroSmsFirstCodeTimeout(RuntimeError):
     """Hero-SMS did not receive the first OTP within the expected window."""
+
+
+class CodexOAuthTransientPageError(RuntimeError):
+    """OAuth page state/proxy temporarily returned an auth error page."""
+
+    def __init__(self, detail: str = ""):
+        self.detail = detail or ""
+        message = "OAuth 页面临时错误"
+        if self.detail:
+            message = f"{message}: {self.detail}"
+        super().__init__(message)
 
 
 class CodexOAuthLoginRequired(RuntimeError):
@@ -535,17 +589,38 @@ def _exchange_auth_code(auth_code, code_verifier, fallback_email=None):
 
     import requests
 
-    resp = requests.post(
-        CODEX_TOKEN_URL,
-        data={
-            "grant_type": "authorization_code",
-            "client_id": CODEX_CLIENT_ID,
-            "code": auth_code,
-            "redirect_uri": CODEX_REDIRECT_URI,
-            "code_verifier": code_verifier,
-        },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    resp = None
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(
+                CODEX_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": CODEX_CLIENT_ID,
+                    "code": auth_code,
+                    "redirect_uri": CODEX_REDIRECT_URI,
+                    "code_verifier": code_verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt >= 3:
+                raise
+            logger.warning("[Codex] Token 交换网络异常，重试 %s/3: %s", attempt + 1, exc)
+            time.sleep(2 * attempt)
+            continue
+        if resp.status_code in {429, 500, 502, 503, 504} and attempt < 3:
+            logger.warning("[Codex] Token 交换临时失败 HTTP %s，重试 %s/3: %s", resp.status_code, attempt + 1, resp.text[:160])
+            time.sleep(2 * attempt)
+            continue
+        break
+    if resp is None:
+        if last_error:
+            raise last_error
+        return None
 
     if resp.status_code != 200:
         logger.error("[Codex] Token 交换失败: %d %s", resp.status_code, resp.text[:200])
@@ -594,7 +669,9 @@ def _click_primary_auth_button(page, field, labels):
     """
     只点击当前输入框所在表单的主按钮，避免误点 Continue with Google/Apple/Microsoft。
     """
-    label_re = re.compile(rf"^(?:{'|'.join(re.escape(label) for label in labels)})$", re.I)
+    extra_labels = ("Continue", "继续", "繼續", "続行", "Log in", "登录", "登入", "ログイン", "Verify", "Submit", "验证", "確認")
+    all_labels = tuple(dict.fromkeys([*(labels or ()), *extra_labels]))
+    label_re = re.compile(rf"^(?:{'|'.join(re.escape(label) for label in all_labels)})$", re.I)
 
     def click_if_ready(btn):
         try:
@@ -634,8 +711,51 @@ def _click_primary_auth_button(page, field, labels):
         pass
 
     try:
+        clicked = page.evaluate(
+            """({extraLabels}) => {
+              const visible = (el) => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style && style.visibility !== 'hidden' && style.display !== 'none'
+                  && rect.width > 0 && rect.height > 0;
+              };
+              const norm = (text) => String(text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+              const labels = (extraLabels || []).map(norm).filter(Boolean);
+              const blocked = /(google|apple|microsoft|phone|電話番号|电话号码|手机号|使用电话号码|passkey|resend|重新发送|重發|privacy|terms|隐私|使用条款)/i;
+              const localizedPrimary = /^(continue|log in|login|verify|submit|继续|繼續|続行|登录|登入|ログイン|验证|確認)$/i;
+              const targets = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]'));
+              for (const el of targets) {
+                if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+                const text = norm(el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+                if (text && blocked.test(text)) continue;
+                if (text && (labels.includes(text) || localizedPrimary.test(text))) {
+                  el.scrollIntoView({block: 'center', inline: 'center'});
+                  el.click();
+                  return text;
+                }
+              }
+              const submits = Array.from(document.querySelectorAll('button[type="submit"], input[type="submit"]'));
+              for (const el of submits) {
+                if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+                const text = norm(el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+                if (text && blocked.test(text)) continue;
+                el.scrollIntoView({block: 'center', inline: 'center'});
+                el.click();
+                return text || 'submit';
+              }
+              return '';
+            }""",
+            {"extraLabels": list(all_labels)},
+        )
+        if clicked:
+            return True
+    except Exception:
+        pass
+
+    try:
         field.press("Enter")
-        return True
+        return False
     except Exception:
         return False
 
@@ -955,8 +1075,16 @@ def _is_email_verification_page(page) -> bool:
             "检查收件箱",
             "check your inbox",
             "check your email",
+            "受信箱を確認",
+            "メールを確認",
         )
-        return any(hint in text for hint in inbox_hints) and ("验证码" in text or "verification code" in text)
+        code_hints = (
+            "验证码",
+            "verification code",
+            "検証コード",
+            "確認コード",
+        )
+        return any(hint in text for hint in inbox_hints) and any(hint in text for hint in code_hints)
     except Exception:
         return False
 
@@ -1107,6 +1235,9 @@ def _looks_like_operation_timed_out_text(text: str) -> bool:
         or "操作超时" in lower
         or "糟糕，出错了" in lower
         or "oops, an error occurred" in lower
+        or "route error" in lower
+        or "internal server error" in lower
+        or "不明なエラーが発生しました" in lower
         or "not valid json" in lower
         or "unexpected token '<'" in lower
     )
@@ -1117,17 +1248,22 @@ def _click_auth_retry_if_timed_out(page):
         text = page.locator("body").inner_text(timeout=1000)
     except Exception:
         return False
+    if _detect_auth_route_error(page):
+        return False
     if not _looks_like_operation_timed_out_text(text):
         return False
     for selector in (
         'button:has-text("重试")',
         'button:has-text("Retry")',
         'button:has-text("Try again")',
+        'button:has-text("もう一度試す")',
         'button:has-text("再试一次")',
         '[role="button"]:has-text("重试")',
         '[role="button"]:has-text("Retry")',
         '[role="button"]:has-text("Try again")',
+        '[role="button"]:has-text("もう一度試す")',
         'a:has-text("Try again")',
+        'a:has-text("もう一度試す")',
     ):
         try:
             btn = page.locator(selector).first
@@ -1215,6 +1351,133 @@ def _detect_otp_error(page):
     return None
 
 
+def _detect_auth_route_error(page) -> str:
+    try:
+        body = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return ""
+    lower = (body or "").lower().replace("\n", " ")
+    if (
+        "400 bad request" in lower
+        or "bad request" in lower
+        or "invalid_state" in lower
+        or "invalid state" in lower
+        or "route error (400" in lower
+    ):
+        return (body or "").strip()[:500]
+    return ""
+
+
+def _detect_auth_html_json_error(page) -> str:
+    try:
+        body = page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return ""
+    lower = (body or "").lower().replace("\n", " ")
+    if (
+        "not valid json" in lower
+        or "unexpected token '<'" in lower
+        or "unexpected token \"<\"" in lower
+        or "<!doctype" in lower
+    ):
+        return (body or "").strip()[:500]
+    return ""
+
+
+def _is_oauth_cloudflare_challenge_page(page) -> bool:
+    try:
+        url = (getattr(page, "url", "") or "").lower()
+        if "challenge" in url and "auth.openai.com" in url:
+            return True
+    except Exception:
+        pass
+    try:
+        html = (page.content() or "")[:12000].lower()
+    except Exception:
+        html = ""
+    return (
+        "verify you are human" in html
+        or "正在进行安全验证" in html
+        or "请验证您是真人" in html
+        or "challenges.cloudflare.com" in html
+        or "cf-turnstile" in html
+        or "just a moment" in html
+    )
+
+
+def _try_click_oauth_cloudflare_turnstile(page) -> bool:
+    frame_selectors = [
+        'iframe[src*="challenges.cloudflare.com"]',
+        'iframe[title*="Cloudflare" i]',
+        'iframe[title*="challenge" i]',
+    ]
+    for frame_selector in frame_selectors:
+        try:
+            frame = page.frame_locator(frame_selector).first
+            for selector in ('input[type="checkbox"]', "label", "button", '[role="checkbox"]'):
+                locator = frame.locator(selector).first
+                if locator.is_visible(timeout=1000):
+                    locator.click(timeout=3000, force=True)
+                    return True
+        except Exception:
+            pass
+
+    for frame_selector in frame_selectors:
+        try:
+            iframe = page.locator(frame_selector).first
+            if not iframe.is_visible(timeout=1000):
+                continue
+            box = iframe.bounding_box()
+            if not box:
+                continue
+            page.mouse.click(box["x"] + min(32, box["width"] / 2), box["y"] + box["height"] / 2)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def _wait_for_oauth_cloudflare_challenge(page, *, stage: str, timeout=90) -> bool:
+    deadline = time.time() + max(1, int(timeout or 90))
+    clicked = False
+    while time.time() < deadline:
+        if not _is_oauth_cloudflare_challenge_page(page):
+            return True
+        if not clicked:
+            logger.info("[Codex] %s 检测到 Cloudflare 验证，尝试触发验证控件", stage)
+            clicked = _try_click_oauth_cloudflare_turnstile(page)
+        time.sleep(3)
+    logger.warning("[Codex] %s Cloudflare 验证等待超时 | URL: %s", stage, getattr(page, "url", ""))
+    return not _is_oauth_cloudflare_challenge_page(page)
+
+
+def _goto_oauth_auth_page(page, auth_url: str, *, stage: str, attempts: int = 4, timeout: int = 60000) -> None:
+    last_exc = None
+    for attempt in range(1, max(1, int(attempts or 1)) + 1):
+        try:
+            page.goto(auth_url, wait_until="domcontentloaded", timeout=timeout)
+            return
+        except Exception as exc:
+            last_exc = exc
+            text = str(exc or "")
+            retryable = any(
+                marker in text
+                for marker in (
+                    "ERR_CONNECTION_CLOSED",
+                    "ERR_CONNECTION_RESET",
+                    "ERR_TIMED_OUT",
+                    "net::ERR",
+                    "Page.goto",
+                )
+            )
+            if attempt >= max(1, int(attempts or 1)) or not retryable:
+                raise
+            logger.warning("[Codex] %s 打开授权页失败，重试 %s/%s: %s", stage, attempt + 1, attempts, text[:220])
+            time.sleep(3)
+    if last_exc:
+        raise last_exc
+
+
 def _wait_for_otp_submit_result(page, timeout=12):
     """
     等待验证码提交结果：
@@ -1225,6 +1488,9 @@ def _wait_for_otp_submit_result(page, timeout=12):
     deadline = time.time() + timeout
 
     while time.time() < deadline:
+        route_error = _detect_auth_route_error(page)
+        if route_error:
+            return "failed", route_error
         err = _detect_otp_error(page)
         if err:
             return "invalid", err
@@ -1232,6 +1498,9 @@ def _wait_for_otp_submit_result(page, timeout=12):
             return "accepted", None
         time.sleep(0.5)
 
+    route_error = _detect_auth_route_error(page)
+    if route_error:
+        return "failed", route_error
     err = _detect_otp_error(page)
     if err:
         return "invalid", err
@@ -1396,12 +1665,18 @@ def _is_phone_otp_page(page) -> bool:
         "输入代码",
         "输入验证码",
         "我们发送",
+        "認証コード",
+        "確認コード",
+        "コードを入力",
+        "携帯電話を確認",
     )
     phone_entry_hints = (
         "phone number is required",
         "电话号码是必填项",
         "继续添加电话号码",
         "continue adding your phone number",
+        "電話番号が必要",
+        "電話番号を追加",
     )
     return any(hint in text for hint in otp_hints) and not any(hint in text for hint in phone_entry_hints)
 
@@ -3406,6 +3681,9 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         rejected = _detect_phone_rejected(page)
         if rejected:
             return False, rejected
+        page_error = _detect_auth_html_json_error(page) or _detect_auth_route_error(page)
+        if page_error:
+            return False, f"手机号提交后页面错误: {page_error}".strip()
         otp_input = _phone_otp_input_locator(page)
         if otp_input:
             break
@@ -3422,9 +3700,12 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         if whatsapp_fallback:
             return False, f"WHATSAPP_FALLBACK:{whatsapp_fallback}"
         rejected = _detect_phone_rejected(page)
+        page_error = _detect_auth_html_json_error(page) or _detect_auth_route_error(page)
         return (
             False,
-            rejected or f"页面填写失败: 手机号提交后未进入验证码输入页; inputs={_compact_input_snapshots(page)}",
+            rejected
+            or (f"手机号提交后页面错误: {page_error}".strip() if page_error else "")
+            or f"页面填写失败: 手机号提交后未进入验证码输入页; inputs={_compact_input_snapshots(page)}",
         )
 
     provider = _make_phone_item_otp_provider(phone_item)
@@ -3459,10 +3740,14 @@ def _submit_oauth_add_phone_candidate(page, *, email: str, phone_item: dict) -> 
         whatsapp_fallback = _detect_phone_whatsapp_fallback(page)
         if whatsapp_fallback:
             return False, f"WHATSAPP_FALLBACK:{whatsapp_fallback}"
-        if submit_status != "invalid":
-            if submit_status == "pending" and _phone_otp_input_locator(page):
-                return False, "手机验证码提交后页面未前进"
+        if submit_status == "accepted":
             return True, ""
+        if submit_status == "failed":
+            return False, f"手机验证码提交后页面错误: {submit_detail or ''}".strip()
+        if submit_status == "pending" and _phone_otp_input_locator(page):
+            return False, "手机验证码提交后页面未前进"
+        if submit_status != "invalid":
+            return False, f"手机验证码提交后状态异常: {submit_status or 'unknown'} {submit_detail or ''}".strip()
 
         ignored_codes.add(str(code or "").strip())
         if code_attempt > max_invalid_retries:
@@ -3526,6 +3811,27 @@ def _classify_oauth_phone_rate_limit_exception(error: str) -> str:
     if any(hint in text for hint in _PHONE_RATE_LIMIT_HINTS):
         return "account_rate_limited"
     return _classify_oauth_phone_failure(error)
+
+
+def _is_oauth_transient_html_error(error: str) -> bool:
+    text = str(error or "").lower()
+    if not text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "oauth 页面临时错误",
+            "手机号提交后页面错误",
+            "手机验证码提交后页面错误",
+            "not valid json",
+            "unexpected token '<'",
+            'unexpected token "<"',
+            "<!doctype",
+            "html_challenge",
+            "just a moment",
+            "cloudflare",
+        )
+    )
 
 
 def _handle_oauth_add_phone_if_present(
@@ -3759,6 +4065,15 @@ def _handle_oauth_add_phone_if_present(
             logger.info("[Codex] add-phone 手机号绑定成功: email=%s phone=%s", email, phone_item.get("phone_number"))
             return True
         last_error = error or "手机号绑定失败"
+        if _is_oauth_transient_html_error(last_error):
+            release_phone_item(phone_item, last_error)
+            logger.warning(
+                "[Codex] add-phone 遇到 OAuth 页面临时错误，已释放号码并交由外层重启 OAuth: email=%s phone=%s reason=%s",
+                email,
+                phone_item.get("phone_number"),
+                last_error,
+            )
+            raise CodexOAuthTransientPageError(last_error)
         failure_action = _classify_oauth_phone_failure(last_error)
         mark_phone_failed(phone_item, failure_action, last_error)
         action_text = ""
@@ -3882,13 +4197,32 @@ def _poll_login_otp(
         for em in emails:
             code = mail_client.extract_verification_code(em)
             if code:
+                code = str(code).strip()
+                email_id = int(em.get("emailId") or 0)
+                if email_id and email_id in used_email_ids:
+                    logger.info(
+                        "[Codex] 跳过已提交过的验证码邮件: email=%s emailId=%s subject=%s",
+                        email,
+                        email_id,
+                        _compact_log_text(em.get("subject") or "", limit=80),
+                    )
+                    continue
+                if len(code) >= 4 and len(set(code)) == 1:
+                    logger.info(
+                        "[Codex] 跳过疑似占位验证码: email=%s emailId=%s code=%s subject=%s",
+                        email,
+                        email_id or "",
+                        code,
+                        _compact_log_text(em.get("subject") or "", limit=80),
+                    )
+                    continue
                 logger.info(
                     "[Codex] 首轮/轮询已从邮件提取验证码: email=%s emailId=%s subject=%s",
                     email,
-                    em.get("emailId") or "",
+                    email_id or "",
                     _compact_log_text(em.get("subject") or "", limit=80),
                 )
-                return str(code), int(em.get("emailId") or 0)
+                return code, email_id
         if emails:
             logger.info(
                 "[Codex] 查询到 %d 封邮件但未提取到验证码: email=%s subjects=%s",
@@ -4064,6 +4398,7 @@ def _login_codex_via_browser_simple(
     auth_session_callback=None,
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
+    use_roxybrowser: bool = False,
     phone_sms_provider: str | None = None,
     phone_sms_country: str | None = None,
     phone_sms_oasis_cdks: str | None = None,
@@ -4117,11 +4452,13 @@ def _login_codex_via_browser_simple(
 
     logger.info("[Codex] 开始极简 OAuth 登录: %s", email)
     with sync_playwright() as p:
-        browser, context = _launch_codex_oauth_chromium(
+        browser, context, cleanup_browser = _launch_codex_oauth_browser_context(
             p,
             headless=headless,
             proxy_url=proxy_url,
             proxy_bypass=proxy_bypass,
+            use_roxybrowser=use_roxybrowser,
+            email=email,
         )
 
         def on_request(request):
@@ -4148,7 +4485,7 @@ def _login_codex_via_browser_simple(
         page.on("request", on_request)
         page.on("response", on_response)
         logger.info("[Codex] 极简 OAuth 打开授权页: %s", email)
-        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+        _goto_oauth_auth_page(page, auth_url, stage="极简 OAuth")
         time.sleep(2)
         logger.info("[Codex] 极简 OAuth 授权页已加载: email=%s url=%s", email, page.url)
         _screenshot(page, "codex_simple_01_auth_page.png")
@@ -4176,7 +4513,7 @@ def _login_codex_via_browser_simple(
                 break
             deactivated_detail = _detect_account_deactivated(page)
             if deactivated_detail:
-                _close_codex_oauth_chromium(browser, context)
+                cleanup_browser()
                 raise CodexOAuthAccountDeactivated(deactivated_detail)
 
             if _click_auth_retry_if_timed_out(page):
@@ -4214,6 +4551,7 @@ def _login_codex_via_browser_simple(
                 ).first.click()
                 time.sleep(3)
                 _screenshot(page, "codex_simple_02_after_otp.png")
+                _wait_for_oauth_cloudflare_challenge(page, stage="极简 OAuth 提交验证码后", timeout=90)
                 continue
             try:
                 pwd_input = page.locator(_PASSWORD_INPUT_SELECTORS).first
@@ -4291,6 +4629,9 @@ def _login_codex_via_browser_simple(
                 if auth_code:
                     break
                 try:
+                    if _is_oauth_cloudflare_challenge_page(page):
+                        _wait_for_oauth_cloudflare_challenge(page, stage="极简 OAuth 等待回调时", timeout=90)
+                        continue
                     cur = page.url
                     if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in cur:
                         parsed = urllib.parse.urlparse(cur)
@@ -4312,7 +4653,7 @@ def _login_codex_via_browser_simple(
             except Exception:
                 logger.warning("[Codex] 极简 OAuth 刷新 auth_session 回调失败: %s", email, exc_info=True)
 
-        _close_codex_oauth_chromium(browser, context)
+        cleanup_browser()
 
     if phone_required_url:
         raise CodexOAuthPhoneRequired(phone_required_url)
@@ -4345,6 +4686,7 @@ def login_codex_via_browser(
     auth_session_callback=None,
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
+    use_roxybrowser: bool = False,
     phone_sms_provider: str | None = None,
     phone_sms_country: str | None = None,
     phone_sms_oasis_cdks: str | None = None,
@@ -4371,6 +4713,7 @@ def login_codex_via_browser(
             auth_session_callback=auth_session_callback,
             proxy_url=proxy_url,
             proxy_bypass=proxy_bypass,
+            use_roxybrowser=use_roxybrowser,
             phone_sms_provider=phone_sms_provider,
             phone_sms_country=phone_sms_country,
             phone_sms_oasis_cdks=phone_sms_oasis_cdks,
@@ -4402,11 +4745,13 @@ def login_codex_via_browser(
     final_oauth_url = ""
 
     with sync_playwright() as p:
-        browser, context = _launch_codex_oauth_chromium(
+        browser, context, cleanup_browser = _launch_codex_oauth_browser_context(
             p,
             headless=headless,
             proxy_url=proxy_url,
             proxy_bypass=proxy_bypass,
+            use_roxybrowser=use_roxybrowser,
+            email=email,
         )
 
         # === Step 0: 先登录 ChatGPT 并切换到 Team workspace ===
@@ -4594,7 +4939,7 @@ def login_codex_via_browser(
         page = context.new_page()
         page.on("request", on_request)
         page.on("response", on_response)
-        page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+        _goto_oauth_auth_page(page, auth_url, stage="OAuth")
         time.sleep(3)
         _screenshot(page, "codex_01_auth_page.png")
 
@@ -4974,6 +5319,7 @@ def login_codex_via_browser(
 
                             submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=12)
                             if submit_status == "accepted":
+                                _wait_for_oauth_cloudflare_challenge(page, stage="OAuth 提交验证码后", timeout=90)
                                 submit_ok = True
                                 break
                             if submit_status == "invalid":
@@ -5027,6 +5373,9 @@ def login_codex_via_browser(
                     break
                 # 也从当前 URL 尝试提取（CPA 可能接收了回调）
                 try:
+                    if _is_oauth_cloudflare_challenge_page(page):
+                        _wait_for_oauth_cloudflare_challenge(page, stage="OAuth 等待回调时", timeout=90)
+                        continue
                     cur = page.url
                     if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in cur:
                         parsed = urllib.parse.urlparse(cur)
@@ -5083,7 +5432,7 @@ def login_codex_via_browser(
             else:
                 logger.warning("[Codex] 未获取到 auth code，当前 URL: %s", page.url)
 
-        _close_codex_oauth_chromium(browser, context)
+        cleanup_browser()
 
     if phone_required_url:
         raise CodexOAuthPhoneRequired(phone_required_url)
@@ -5212,10 +5561,10 @@ def login_codex_via_session():
                 qs = urllib.parse.parse_qs(parsed.query)
                 auth_code = qs.get("code", [None])[0]
 
-        def open_oauth_page(tag):
-            page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(3)
-            _screenshot(page, f"codex_main_{tag}.png")
+            def open_oauth_page(tag):
+                _goto_oauth_auth_page(page, auth_url, stage=f"OAuth {tag}")
+                time.sleep(3)
+                _screenshot(page, f"codex_main_{tag}.png")
 
         page.on("request", on_request)
         page.on("response", on_response)

@@ -78,6 +78,7 @@ def login_mailcom_auth_session_once(
             account_id=normalized,
             totp_secret=((accounts.get_totp_credentials(normalized) or {}).get("secret") or None),
             progress_callback=progress_callback,
+            auth_session_only=True,
         )
 
     auth_session_file = auth_session_store.save_auth_session(normalized, session_payload)

@@ -2590,6 +2590,7 @@ def _run_account_codex_login_once(
     refresh_auth_session: bool = False,
     proxy_url: str | None = None,
     proxy_bypass: str | None = None,
+    use_roxybrowser: bool = False,
     protocol_only: bool = False,
     bind_email: bool = False,
     bind_phone: bool = False,
@@ -2654,7 +2655,7 @@ def _run_account_codex_login_once(
         ACCOUNT_TYPE_PLUS,
         ACCOUNT_TYPE_PRO,
     }
-    if refresh_auth_session and str(acc.get("auth_file") or "").strip() and not protocol_only:
+    if refresh_auth_session and str(acc.get("auth_file") or "").strip() and not protocol_only and not use_roxybrowser:
         logger.info("[账号登录] 有 Codex auth 文件的补登录强制使用协议 OAuth，避免浏览器 OAuth: %s", email)
         protocol_only = True
 
@@ -2736,6 +2737,50 @@ def _run_account_codex_login_once(
                 )
     session_payload: dict | None = None
 
+    def _auth_session_from_codex_bundle(bundle_data: dict | None) -> dict:
+        if not isinstance(bundle_data, dict):
+            return {}
+        access_token = str(bundle_data.get("access_token") or bundle_data.get("accessToken") or "").strip()
+        if not access_token:
+            return {}
+        refresh_token = str(bundle_data.get("refresh_token") or bundle_data.get("refreshToken") or "").strip()
+        id_token = str(bundle_data.get("id_token") or bundle_data.get("idToken") or "").strip()
+        bundle_email = _normalized_email(str(bundle_data.get("email") or email))
+        account_id = str(bundle_data.get("account_id") or bundle_data.get("accountId") or "").strip()
+        plan_type = str(bundle_data.get("plan_type") or bundle_data.get("chatgpt_plan_type") or "").strip().lower()
+        try:
+            from autotoken.core.jwt import decode_jwt_payload
+
+            claims = decode_jwt_payload(access_token)
+            auth_claims = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+            profile = claims.get("https://api.openai.com/profile", {}) if isinstance(claims, dict) else {}
+            if isinstance(auth_claims, dict):
+                account_id = account_id or str(auth_claims.get("chatgpt_account_id") or "").strip()
+                plan_type = plan_type or str(auth_claims.get("chatgpt_plan_type") or "").strip().lower()
+            if isinstance(profile, dict):
+                bundle_email = _normalized_email(str(profile.get("email") or bundle_email))
+        except Exception:
+            pass
+
+        session = {
+            "accessToken": access_token,
+            "access_token": access_token,
+            "chatgpt_access_token": access_token,
+            "refreshToken": refresh_token,
+            "refresh_token": refresh_token,
+            "idToken": id_token,
+            "id_token": id_token,
+            "user": {"email": bundle_email or email},
+        }
+        if account_id:
+            session["accountId"] = account_id
+            session["account"] = {"id": account_id}
+        if plan_type:
+            session["planType"] = plan_type
+            session["plan_type"] = plan_type
+            session.setdefault("account", {})["planType"] = plan_type
+        return session
+
     if protocol_only:
         try:
             if phone_only_target:
@@ -2790,10 +2835,30 @@ def _run_account_codex_login_once(
                     oauth_oasis_sms_cdks=effective_oauth_oasis_sms_cdks,
                     totp_secret=totp_secret,
                     progress_callback=progress_callback,
+                    **({"auth_session_only": True} if refresh_auth_session else {}),
                 )
-            bundle = (session_payload or {}).get("codex_oauth_bundle")
-            if not isinstance(bundle, dict):
-                raise RuntimeError(f"协议补登录未返回 Codex OAuth bundle: {email}")
+                bundle = (session_payload or {}).get("codex_oauth_bundle")
+                if not isinstance(bundle, dict):
+                    if refresh_auth_session and session_payload:
+                        protocol_session_email = _normalized_email((session_payload or {}).get("email") or email)
+                        protocol_session_file = save_auth_session(protocol_session_email, session_payload)
+                        update_fields = {
+                            "status": STATUS_ACTIVE,
+                            "account_type": account_type,
+                            "last_active_at": time.time(),
+                        }
+                        if acc.get("cloudmail_account_id"):
+                            update_fields["cloudmail_account_id"] = acc.get("cloudmail_account_id")
+                        if effective_mail_provider:
+                            update_fields["mail_provider"] = effective_mail_provider
+                        update_account(email, **update_fields)
+                        return {
+                            "email": protocol_session_email or email,
+                            "auth_session_file": protocol_session_file,
+                            "codex_auth_updated": False,
+                            "mode": "auth_session",
+                        }
+                    raise RuntimeError(f"协议补登录未返回 Codex OAuth bundle: {email}")
         except (CodexOAuthPhoneRequired, CodexOAuthAccountDeactivated):
             raise
         except Exception as exc:
@@ -2858,26 +2923,6 @@ def _run_account_codex_login_once(
 
     auth_session_refresh_outcome = {}
 
-    def _capture_refreshed_auth_session(page, context):
-        if not refresh_auth_session:
-            return
-        from autotoken.interfaces.manager import _fetch_auth_session_from_page, _save_auth_from_session_page
-
-        session_data = _fetch_auth_session_from_page(page, context, max_attempts=4, retry_delay_seconds=3.0)
-        auth_session_result = _save_auth_from_session_page(
-            email,
-            acc.get("password", ""),
-            acc.get("cloudmail_account_id"),
-            session_data,
-            out_outcome=auth_session_refresh_outcome,
-        )
-        auth_session_file = ""
-        if isinstance(auth_session_result, dict):
-            auth_session_file = str(auth_session_result.get("auth_file") or "")
-        auth_session_file = auth_session_file or str(auth_session_refresh_outcome.get("auth_file") or "")
-        if auth_session_file:
-            auth_session_refresh_outcome["auth_session_file"] = auth_session_file
-
     if not bundle:
         browser_login_kwargs = {
             "mail_client": mail_client,
@@ -2886,12 +2931,12 @@ def _run_account_codex_login_once(
             "headless": headless,
             "mail_account_id": acc.get("cloudmail_account_id"),
         }
+        if use_roxybrowser:
+            browser_login_kwargs["use_roxybrowser"] = True
         if oauth_proxy_url:
             browser_login_kwargs["proxy_url"] = oauth_proxy_url
             if oauth_proxy_bypass:
                 browser_login_kwargs["proxy_bypass"] = oauth_proxy_bypass
-        if refresh_auth_session:
-            browser_login_kwargs["auth_session_callback"] = _capture_refreshed_auth_session
         if bind_phone or effective_oauth_phone_sms_provider:
             browser_login_kwargs["phone_sms_provider"] = effective_oauth_phone_sms_provider or None
             browser_login_kwargs["phone_sms_country"] = effective_oauth_phone_sms_country or None
@@ -2918,8 +2963,33 @@ def _run_account_codex_login_once(
             )
         except Exception as exc:
             auth_session_refresh_outcome.update({"status": "failed", "reason": f"保存协议 auth_session 失败: {exc}"})
+    elif refresh_auth_session:
+        try:
+            bundle_session = _auth_session_from_codex_bundle(bundle)
+            if bundle_session:
+                bundle_session_email = _normalized_email(str(bundle_session.get("user", {}).get("email") or email))
+                bundle_session_file = save_auth_session(bundle_session_email, bundle_session)
+                auth_session_refresh_outcome.update(
+                    {
+                        "status": "success",
+                        "auth_file": bundle_session_file,
+                        "auth_session_file": bundle_session_file,
+                    }
+                )
+            else:
+                auth_session_refresh_outcome.update({"status": "failed", "reason": "Codex 认证文件缺少 access_token"})
+        except Exception as exc:
+            auth_session_refresh_outcome.update({"status": "failed", "reason": f"保存 Codex access_token 到 auth_session 失败: {exc}"})
+    auth_session_refresh_warning = ""
     if refresh_auth_session and auth_session_refresh_outcome.get("status") != "success":
-        raise RuntimeError(auth_session_refresh_outcome.get("reason") or f"刷新 auth_session 失败: {email}")
+        auth_session_refresh_warning = auth_session_refresh_outcome.get("reason") or f"刷新 auth_session 失败: {email}"
+        if protocol_only:
+            raise RuntimeError(auth_session_refresh_warning)
+        logger.warning(
+            "[账号登录] 浏览器 OAuth 已成功，但刷新 auth_session 失败，继续保存 Codex auth_file: %s reason=%s",
+            email,
+            auth_session_refresh_warning,
+        )
 
     session_account_id = ""
     for source in (session_payload, auth_session_data):
@@ -3003,6 +3073,8 @@ def _run_account_codex_login_once(
         result_payload["previous_email"] = email
     if refresh_auth_session and auth_session_refresh_outcome.get("auth_session_file"):
         result_payload["auth_session_file"] = auth_session_refresh_outcome.get("auth_session_file")
+    elif auth_session_refresh_warning:
+        result_payload["auth_session_refresh_warning"] = auth_session_refresh_warning
     return result_payload
 
 

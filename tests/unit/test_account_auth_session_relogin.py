@@ -1,4 +1,5 @@
 from autotoken.storage import accounts, auth_session_store
+from contextlib import contextmanager
 
 
 def test_relogin_account_auth_session_without_auth_file_saves_session_only(monkeypatch, tmp_path):
@@ -92,3 +93,45 @@ def test_relogin_account_auth_session_promotes_nested_access_token(monkeypatch, 
     assert saved["chatgpt_access_token"] == "nested-chatgpt-at"
     assert saved["sessionToken"] == "nested-session-token"
     assert saved["account"] == {"id": "account-1"}
+
+
+def test_relogin_account_auth_session_releases_provider_env_lock_before_chatgpt_login(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOTOKEN_DB_FILE", str(tmp_path / "autotoken.sqlite3"))
+    monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", tmp_path / "auth_session")
+    monkeypatch.setattr(accounts, "get_admin_email", lambda: "")
+
+    accounts.add_account(
+        "parallel@example.com",
+        "pw",
+        cloudmail_account_id="mail-id",
+        seat_type=accounts.SEAT_CODEX,
+        mail_provider="icloud",
+    )
+    provider_context_active = {"value": False}
+
+    @contextmanager
+    def fake_temporary_mail_provider(_provider, _overrides=None):
+        provider_context_active["value"] = True
+        try:
+            yield
+        finally:
+            provider_context_active["value"] = False
+
+    class FakeMailClient:
+        def login(self):
+            assert provider_context_active["value"] is True
+
+    def fake_login_once(_mail_client, **_kwargs):
+        assert provider_context_active["value"] is False
+        return {"user": {"email": "parallel@example.com"}, "access_token": "chatgpt-at", "sessionToken": "session-token"}
+
+    monkeypatch.setattr("autotoken.interfaces.manager._temporary_mail_provider", fake_temporary_mail_provider)
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth.protocol_register.login_once", fake_login_once)
+
+    from autotoken.services.account_auth_session_relogin import relogin_account_auth_session_once
+
+    account = accounts.load_accounts()[0]
+    result = relogin_account_auth_session_once("parallel@example.com", account)
+
+    assert result["status"] == "success"

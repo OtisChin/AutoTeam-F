@@ -14,22 +14,34 @@ from autotoken.codex_auth import (
     WindowsUICodexAuthFlow,
     _build_auth_url,
     _click_oauth_consent_if_present,
+    _click_primary_auth_button,
     _compact_input_snapshots,
     _extract_auth_code_from_url,
     _extract_session_token_from_cookie_header,
+    _exchange_auth_code,
     _fill_auth_email_if_present,
     _fill_otp_input_and_verify,
     _follow_codex_oauth_redirects_protocol,
     _format_oauth_phone_for_input,
+    _click_auth_retry_if_timed_out,
+    _goto_oauth_auth_page,
+    _wait_for_oauth_cloudflare_challenge,
     _is_add_phone_page,
     _is_browser_open_url,
     _is_codex_oauth_callback_url,
+    _is_email_verification_page,
     _is_personal_codex_plan,
+    _is_phone_otp_page,
+    _otp_input_locator,
+    _phone_otp_input_locator,
+    _launch_codex_oauth_browser_context,
     _login_codex_via_browser_simple,
     _open_real_chrome_url,
     _parse_codex_oauth_callback_url,
     _poll_login_otp,
     _should_invalidate_oauth_phone,
+    _handle_oauth_add_phone_if_present,
+    _submit_oauth_add_phone_candidate,
     is_chrome_cdp_available,
     login_codex_via_auth_session_protocol,
     login_codex_via_browser,
@@ -145,6 +157,36 @@ def test_codex_oauth_callback_parser_uses_error_description_fallback():
 
     assert _is_codex_oauth_callback_url(callback) is True
     assert _parse_codex_oauth_callback_url(callback)["error"] == "access_denied"
+
+
+def test_exchange_auth_code_retries_transient_remote_disconnect(monkeypatch):
+    calls = {"count": 0}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "access_token": _jwt({"https://api.openai.com/auth": {"chatgpt_plan_type": "plus"}}),
+                "refresh_token": "refresh-token",
+                "id_token": _jwt({"email": "user@example.com", "sub": "acct-1"}),
+                "expires_in": 3600,
+            }
+
+    def fake_post(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise requests.exceptions.ConnectionError("Remote end closed connection without response")
+        return FakeResponse()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(codex_auth_module.time, "sleep", lambda _seconds: None)
+
+    bundle = _exchange_auth_code("auth-code", "verifier", fallback_email="user@example.com")
+
+    assert calls["count"] == 2
+    assert bundle["email"] == "user@example.com"
+    assert bundle["refresh_token"] == "refresh-token"
 
 
 def test_team_codex_auth_url_keeps_legacy_consent_prompt():
@@ -287,6 +329,66 @@ def test_is_add_phone_page_matches_required_phone_title():
     assert _is_add_phone_page(FakePage()) is True
 
 
+def test_japanese_email_verification_page_is_detected_as_otp_page():
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return "受信箱を確認してください\nclays60_pitcher@icloud.com にお送りした検証コードを入力してください。"
+
+    class FakeInput:
+        def __init__(self, selector):
+            self.selector = selector
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self, timeout=0):
+            return "input" in self.selector
+
+    class FakePage:
+        url = "https://auth.openai.com/log-in"
+
+        def locator(self, selector):
+            if selector == "body":
+                return FakeBody()
+            return FakeInput(selector)
+
+    page = FakePage()
+
+    assert _is_email_verification_page(page) is True
+    assert _otp_input_locator(page) is not None
+
+
+def test_japanese_phone_verification_page_is_detected_as_phone_otp_page():
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return "携帯電話を確認してください\n+1 (430) 216-6265 にお送りした認証コードを入力してください。"
+
+    class FakeInput:
+        def __init__(self, selector):
+            self.selector = selector
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self, timeout=0):
+            return "input" in self.selector
+
+    class FakePage:
+        url = "https://auth.openai.com/phone-verification"
+
+        def locator(self, selector):
+            if selector == "body":
+                return FakeBody()
+            return FakeInput(selector)
+
+    page = FakePage()
+
+    assert _is_phone_otp_page(page) is True
+    assert _phone_otp_input_locator(page) is not None
+
+
 def test_format_oauth_phone_for_input_prefixes_non_us_dynamic_country():
     class FakeBody:
         def inner_text(self, timeout=0):
@@ -346,6 +448,373 @@ def test_native_browser_oauth_uses_simple_email_code_flow(monkeypatch):
     assert captured["kwargs"]["native_oauth"] is True
     assert captured["kwargs"]["headless"] is True
     assert captured["kwargs"]["mail_account_id"] == 123
+
+
+def test_roxy_oauth_browser_context_uses_roxybrowser_cdp(monkeypatch):
+    calls = []
+
+    class FakeRoxyClient:
+        def __init__(self, api_host, api_token):
+            calls.append(("client", api_host, api_token))
+
+        def launch(self, **kwargs):
+            calls.append(("launch", kwargs))
+            return type(
+                "Launch",
+                (),
+                {
+                    "connection": {"http": "127.0.0.1:54444"},
+                    "workspace_id": "workspace-1",
+                    "dir_id": "dir-1",
+                    "created_profile": False,
+                },
+            )()
+
+    class FakeContext:
+        pass
+
+    class FakeBrowser:
+        def __init__(self):
+            self.contexts = [FakeContext()]
+
+    class FakeChromium:
+        def connect_over_cdp(self, endpoint_url):
+            calls.append(("cdp", endpoint_url))
+            return FakeBrowser()
+
+    monkeypatch.setattr("autotoken.settings.config.get_roxybrowser_config", lambda: {"api_host": "http://127.0.0.1:50000", "api_token": "token"})
+    monkeypatch.setattr("autotoken.roxybrowser_client.RoxyBrowserClient", FakeRoxyClient)
+
+    browser, context, cleanup = _launch_codex_oauth_browser_context(
+        type("FakePlaywright", (), {"chromium": FakeChromium()})(),
+        use_roxybrowser=True,
+        email="user@example.com",
+        proxy_url="socks5h://proxy.example:10000",
+    )
+
+    assert isinstance(browser, FakeBrowser)
+    assert isinstance(context, FakeContext)
+    assert callable(cleanup)
+    assert calls == [
+        ("client", "http://127.0.0.1:50000", "token"),
+        (
+            "launch",
+            {
+                "window_name": "autotoken-oauth-user@example.com",
+                "proxy_url": "socks5h://proxy.example:10000",
+                "clear_profile_data": True,
+                "force_new_profile": True,
+            },
+        ),
+        ("cdp", "http://127.0.0.1:54444"),
+    ]
+
+
+def test_oauth_cloudflare_wait_clicks_turnstile_until_challenge_clears(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    now = {"value": 0.0}
+    monkeypatch.setattr(time, "time", lambda: now.__setitem__("value", now["value"] + 0.25) or now["value"])
+
+    class FakeLocator:
+        def __init__(self, page, selector):
+            self.page = page
+            self.selector = selector
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self, timeout=0):
+            return self.page.challenge and "iframe" in self.selector
+
+        def bounding_box(self):
+            return {"x": 10, "y": 20, "width": 300, "height": 80}
+
+    class FakeFrameLocator:
+        def __init__(self, page):
+            self.page = page
+
+        @property
+        def first(self):
+            return self
+
+        def locator(self, _selector):
+            return self
+
+        def is_visible(self, timeout=0):
+            return self.page.challenge
+
+        def click(self, timeout=0, force=False):
+            self.page.clicked += 1
+            self.page.challenge = False
+
+    class FakeMouse:
+        def __init__(self, page):
+            self.page = page
+
+        def click(self, _x, _y):
+            self.page.clicked += 1
+            self.page.challenge = False
+
+    class FakePage:
+        url = "https://auth.openai.com/oauth/authorize"
+
+        def __init__(self):
+            self.challenge = True
+            self.clicked = 0
+            self.mouse = FakeMouse(self)
+
+        def content(self):
+            if self.challenge:
+                return '<iframe src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform"></iframe>请验证您是真人'
+            return "<html>ok</html>"
+
+        def frame_locator(self, _selector):
+            return FakeFrameLocator(self)
+
+        def locator(self, selector):
+            return FakeLocator(self, selector)
+
+    page = FakePage()
+
+    assert _wait_for_oauth_cloudflare_challenge(page, stage="提交验证码后", timeout=5) is True
+    assert page.clicked == 1
+
+
+
+
+
+
+def test_add_phone_submit_html_json_error_is_returned_as_page_error(monkeypatch):
+    monkeypatch.setattr(codex_auth_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(codex_auth_module, "_screenshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(codex_auth_module, "_phone_input_locator", lambda page: page.phone_input)
+    monkeypatch.setattr(codex_auth_module, "_format_oauth_phone_for_input", lambda *_args, **_kwargs: "(913) 416-8508")
+    monkeypatch.setattr(codex_auth_module, "_fill_oauth_phone_field", lambda *_args, **_kwargs: (True, ""))
+    monkeypatch.setattr(codex_auth_module, "_true_oauth_phone_has_digits", lambda *_args, **_kwargs: (True, {}))
+    monkeypatch.setattr(codex_auth_module, "_click_primary_auth_button", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(codex_auth_module, "_phone_otp_input_locator", lambda _page: None)
+    monkeypatch.setattr(codex_auth_module, "_detect_phone_rate_limited", lambda _page: "")
+    monkeypatch.setattr(codex_auth_module, "_detect_phone_whatsapp_fallback", lambda _page: "")
+    monkeypatch.setattr(codex_auth_module, "_detect_phone_rejected", lambda _page: "")
+
+    class FakeInput:
+        pass
+
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return "不明なエラーが発生しました\nUnexpected token '<', '<!DOCTYPE '... is not valid JSON\nもう一度試す"
+
+    class FakePage:
+        url = "https://auth.openai.com/add-phone"
+
+        def __init__(self):
+            self.phone_input = FakeInput()
+
+        def locator(self, selector):
+            if selector == "body":
+                return FakeBody()
+            raise RuntimeError(selector)
+
+    ok, error = _submit_oauth_add_phone_candidate(
+        FakePage(),
+        email="innate_shout9h@icloud.com",
+        phone_item={"phone_number": "19134168508", "source": "smsbower", "sms_url": "dynamic"},
+    )
+
+    assert ok is False
+    assert "not valid JSON" in error
+    assert "手机号提交后页面错误" in error
+
+
+def test_add_phone_html_json_error_retries_whole_oauth_without_marking_phone_invalid(monkeypatch):
+    releases = []
+    phone_item = {
+        "phone_number": "19134168508",
+        "source": "smsbower",
+        "sms_url": "dynamic",
+        "activation_id": "act-1",
+        "activation": object(),
+    }
+
+    class FakePage:
+        url = "https://auth.openai.com/add-phone"
+
+    monkeypatch.setattr(codex_auth_module, "_is_add_phone_page", lambda _page: True)
+    monkeypatch.setattr(
+        codex_auth_module,
+        "_acquire_oauth_smsbower_phone",
+        lambda *_args, **_kwargs: (phone_item, ""),
+    )
+    monkeypatch.setattr(
+        codex_auth_module,
+        "_submit_oauth_add_phone_candidate",
+        lambda *_args, **_kwargs: (
+            False,
+            "手机号提交后页面错误: Unexpected token '<', '<!DOCTYPE '... is not valid JSON",
+        ),
+    )
+
+    def fake_release(item, **kwargs):
+        releases.append({"item": item, **kwargs})
+
+    monkeypatch.setattr(codex_auth_module, "_release_oauth_sms_activation_phone", fake_release)
+
+    with pytest.raises(RuntimeError, match="OAuth 页面临时错误"):
+        _handle_oauth_add_phone_if_present(
+            FakePage(),
+            email="innate_shout9h@icloud.com",
+            phone_sms_provider="smsbower",
+        )
+
+    assert releases
+    assert releases[0]["item"] is phone_item
+    assert releases[0].get("cancel") is not True
+    assert "not valid JSON" in releases[0]["reason"]
+
+def test_add_phone_otp_route_error_400_is_not_treated_as_success(monkeypatch):
+    monkeypatch.setattr(codex_auth_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(codex_auth_module, "_screenshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(codex_auth_module, "_phone_input_locator", lambda page: page.phone_input)
+    monkeypatch.setattr(codex_auth_module, "_format_oauth_phone_for_input", lambda *_args, **_kwargs: "(903) 505-8637")
+    monkeypatch.setattr(codex_auth_module, "_fill_oauth_phone_field", lambda *_args, **_kwargs: (True, ""))
+    monkeypatch.setattr(codex_auth_module, "_true_oauth_phone_has_digits", lambda *_args, **_kwargs: (True, {}))
+    monkeypatch.setattr(codex_auth_module, "_click_primary_auth_button", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(codex_auth_module, "_phone_otp_input_locator", lambda page: page.otp_input if page.stage == "phone_otp" else None)
+    monkeypatch.setattr(codex_auth_module, "_detect_phone_rate_limited", lambda _page: "")
+    monkeypatch.setattr(codex_auth_module, "_detect_phone_whatsapp_fallback", lambda _page: "")
+    monkeypatch.setattr(codex_auth_module, "_detect_phone_rejected", lambda _page: "")
+    monkeypatch.setattr(codex_auth_module, "_make_phone_item_otp_provider", lambda _phone_item: lambda: "123456")
+
+    class FakeInput:
+        def __init__(self, page):
+            self.page = page
+            self.value = ""
+
+        def fill(self, value):
+            self.value = value
+
+        def evaluate(self, _script, value=None):
+            if value is not None:
+                self.value = value
+            return None
+
+        def input_value(self, timeout=0):
+            return self.value
+
+        def press(self, _key):
+            pass
+
+    class FakeBody:
+        def __init__(self, page):
+            self.page = page
+
+        def inner_text(self, timeout=0):
+            if self.page.stage == "route_error":
+                return 'Route Error (400 Bad Request): {"error":"invalid_state"}\nもう一度試す'
+            return "携帯電話を確認 認証コード コードを入力"
+
+    class FakeButton:
+        def __init__(self, page):
+            self.page = page
+
+        @property
+        def first(self):
+            return self
+
+        def click(self, *args, **kwargs):
+            self.page.stage = "route_error"
+
+    class FakePage:
+        url = "https://auth.openai.com/add-phone/phone-verification"
+
+        def __init__(self):
+            self.stage = "phone_otp"
+            self.phone_input = FakeInput(self)
+            self.otp_input = FakeInput(self)
+
+        def locator(self, selector):
+            if selector == "body":
+                return FakeBody(self)
+            return FakeButton(self)
+
+    ok, error = _submit_oauth_add_phone_candidate(
+        FakePage(),
+        email="innate_shout9h@icloud.com",
+        phone_item={"phone_number": "19035058637", "source": "smsbower", "sms_url": "dynamic"},
+    )
+
+    assert ok is False
+    assert "400" in error or "Route Error" in error
+
+
+
+def test_auth_retry_does_not_click_retry_for_auth_400_invalid_state():
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return 'Route Error (400 Bad Request): {"error":"invalid_state"}\nもう一度試す'
+
+    class FakeButton:
+        def __init__(self, page):
+            self.page = page
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self, timeout=0):
+            return True
+
+        def click(self):
+            self.page.clicked += 1
+
+    class FakePage:
+        def __init__(self):
+            self.clicked = 0
+
+        def locator(self, selector):
+            if selector == "body":
+                return FakeBody()
+            return FakeButton(self)
+
+    page = FakePage()
+
+    assert _click_auth_retry_if_timed_out(page) is False
+    assert page.clicked == 0
+
+def test_auth_retry_clicks_japanese_route_error_retry_button():
+    class FakeBody:
+        def inner_text(self, timeout=0):
+            return '不明なエラーが発生しました\\nRoute Error (500 Internal Server Error): {"isTrusted": true}\\nもう一度試す'
+
+    class FakeButton:
+        def __init__(self, page, selector):
+            self.page = page
+            self.selector = selector
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self, timeout=0):
+            return "もう一度試す" in self.selector
+
+        def click(self):
+            self.page.clicked = True
+
+    class FakePage:
+        def __init__(self):
+            self.clicked = False
+
+        def locator(self, selector):
+            if selector == "body":
+                return FakeBody()
+            return FakeButton(self, selector)
+
+    page = FakePage()
+
+    assert _click_auth_retry_if_timed_out(page) is True
+    assert page.clicked is True
 
 
 def test_simple_oauth_mail_lookup_falls_back_from_account_id_to_email(monkeypatch):
@@ -468,6 +937,126 @@ def test_simple_oauth_mail_lookup_falls_back_from_account_id_to_email(monkeypatc
     assert result["plan_type"] == "plus"
     assert ("user@example.com", 10, 999) in calls
     assert ("user@example.com", 10, None) in calls
+
+
+def test_simple_oauth_retries_initial_auth_page_navigation_once(monkeypatch):
+    goto_calls = {"count": 0}
+
+    class FakeMailClient:
+        def search_emails_by_recipient(self, email, size=10, account_id=None):
+            return [{"emailId": 1, "text": "Your code is 123456"}]
+
+        def extract_verification_code(self, item):
+            return "123456"
+
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+        def __init__(self):
+            self.handlers = {}
+            self.keyboard = type("Keyboard", (), {"type": lambda *_args, **_kwargs: None})()
+
+        def on(self, name, callback):
+            self.handlers[name] = callback
+
+        def goto(self, *_args, **_kwargs):
+            goto_calls["count"] += 1
+            if goto_calls["count"] == 1:
+                raise RuntimeError("Page.goto: net::ERR_CONNECTION_CLOSED")
+
+        def locator(self, selector):
+            return FakeLocator(selector, self)
+
+    class FakeLocator:
+        def __init__(self, selector, page):
+            self.selector = selector
+            self.page = page
+            self.value = ""
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self, timeout=0):
+            return "input" in self.selector or "button" in self.selector
+
+        def click(self, *args, **kwargs):
+            if "button" in self.selector and self.page.handlers.get("request"):
+                self.page.handlers["request"](type("Request", (), {"url": "http://localhost:1455/auth/callback?code=abc"})())
+
+        def input_value(self, timeout=0):
+            return self.value
+
+        def press(self, *_args, **_kwargs):
+            pass
+
+        def fill(self, value):
+            self.value = value
+
+        def evaluate(self, _script, value=None):
+            if value is not None:
+                self.value = value
+
+        def inner_text(self, timeout=0):
+            return "检查您的收件箱 验证码"
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            pass
+
+    class FakeBrowser:
+        def new_context(self, **_kwargs):
+            return FakeContext()
+
+        def close(self):
+            pass
+
+    class FakeChromium:
+        def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("autotoken.codex_auth.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr("autotoken.codex_auth.LOGIN_OTP_INITIAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr("autotoken.codex_auth._fill_auth_email_if_present", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("autotoken.codex_auth._click_email_code_login_if_present", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("autotoken.codex_auth._screenshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("autotoken.codex_auth._exchange_auth_code", lambda *_args, **_kwargs: {"plan_type": "plus"})
+
+    result = _login_codex_via_browser_simple("user@example.com", "", FakeMailClient(), native_oauth=True)
+
+    assert result["plan_type"] == "plus"
+    assert goto_calls["count"] == 2
+
+
+def test_oauth_auth_page_navigation_retries_multiple_roxy_connection_closes(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    class FakePage:
+        def __init__(self):
+            self.calls = 0
+
+        def goto(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls < 4:
+                raise RuntimeError("Page.goto: net::ERR_CONNECTION_CLOSED")
+
+    page = FakePage()
+
+    _goto_oauth_auth_page(page, "https://auth.openai.com/oauth/authorize", stage="Roxy OAuth")
+
+    assert page.calls == 4
 
 
 def test_manual_account_flow_uses_native_codex_oauth_url():
@@ -599,23 +1188,47 @@ def test_poll_login_otp_does_not_require_openai_sender():
     assert (code, email_id) == ("654321", 11)
 
 
-def test_poll_login_otp_matches_registration_without_snapshot_filters():
+def test_poll_login_otp_skips_used_email_ids_and_placeholder_codes(monkeypatch):
     class FakeMailClient:
         def extract_verification_code(self, item):
             return item.get("code")
 
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    calls = {"count": 0}
+
+    def search(size=10):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return [
+                {
+                    "emailId": 9,
+                    "createTime": 1,
+                    "sendEmail": "relay@example.net",
+                    "subject": "Already submitted code",
+                    "code": "111222",
+                },
+                {
+                    "emailId": 10,
+                    "createTime": 2,
+                    "sendEmail": "relay@example.net",
+                    "subject": "Placeholder code",
+                    "code": "000000",
+                },
+            ]
+        return [
+            {
+                "emailId": 11,
+                "createTime": 3,
+                "sendEmail": "relay@example.net",
+                "subject": "New login code",
+                "code": "333444",
+            }
+        ]
+
     code, email_id = _poll_login_otp(
         email="user@example.com",
         mail_client=FakeMailClient(),
-        search_login_emails=lambda size=10: [
-            {
-                "emailId": 9,
-                "createTime": 1,
-                "sendEmail": "relay@example.net",
-                "subject": "Invitation plus code",
-                "code": "111222",
-            }
-        ],
+        search_login_emails=search,
         latest_email_id=10,
         used_email_ids={9},
         window_started_at=time.time(),
@@ -623,7 +1236,7 @@ def test_poll_login_otp_matches_registration_without_snapshot_filters():
         require_openai_sender=True,
     )
 
-    assert (code, email_id) == ("111222", 9)
+    assert (code, email_id) == ("333444", 11)
 
 
 def test_fill_otp_input_rejects_partial_single_digit_fill():
@@ -774,6 +1387,142 @@ def test_fill_auth_email_does_not_run_on_visible_password_page(monkeypatch):
 
     assert _fill_auth_email_if_present(page, "rjtr26009@outlook.com", timeout=10) is False
     assert page.field.value == ""
+
+
+def test_click_primary_auth_button_clicks_form_submit_before_enter_for_localized_labels():
+    class HiddenLocator:
+        @property
+        def first(self):
+            return self
+
+        @property
+        def last(self):
+            return self
+
+        def is_visible(self, timeout=0):
+            return False
+
+        def is_enabled(self, timeout=0):
+            return False
+
+        def get_attribute(self, *_args, **_kwargs):
+            return ""
+
+        def click(self, *args, **kwargs):
+            raise AssertionError("hidden locator should not be clicked")
+
+    class SubmitButton:
+        @property
+        def first(self):
+            return self
+
+        def __init__(self, page):
+            self.page = page
+
+        def is_visible(self, timeout=0):
+            return True
+
+        def is_enabled(self, timeout=0):
+            return True
+
+        def get_attribute(self, *_args, **_kwargs):
+            return ""
+
+        def click(self, *args, **kwargs):
+            self.page.clicked_submit = True
+
+    class FormLocator:
+        @property
+        def first(self):
+            return self
+
+        def __init__(self, page):
+            self.page = page
+
+        def get_by_role(self, *_args, **_kwargs):
+            return HiddenLocator()
+
+        def locator(self, selector):
+            assert 'button[type="submit"]' in selector
+            return SubmitButton(self.page)
+
+    class Field:
+        def __init__(self, page):
+            self.page = page
+
+        def locator(self, selector):
+            assert selector == "xpath=ancestor::form[1]"
+            return FormLocator(self.page)
+
+        def press(self, key):
+            self.page.pressed.append(key)
+
+    class Page:
+        def __init__(self):
+            self.clicked_submit = False
+            self.pressed = []
+
+        def get_by_role(self, *_args, **_kwargs):
+            return HiddenLocator()
+
+    page = Page()
+
+    assert _click_primary_auth_button(page, Field(page), ["Continue", "继续"]) is True
+    assert page.clicked_submit is True
+    assert page.pressed == []
+
+
+def test_click_primary_auth_button_clicks_localized_page_button_before_enter():
+    class HiddenLocator:
+        @property
+        def first(self):
+            return self
+
+        @property
+        def last(self):
+            return self
+
+        def is_visible(self, timeout=0):
+            return False
+
+        def is_enabled(self, timeout=0):
+            return False
+
+        def get_attribute(self, *_args, **_kwargs):
+            return ""
+
+        def click(self, *args, **kwargs):
+            raise AssertionError("hidden locator should not be clicked")
+
+    class Field:
+        def __init__(self, page):
+            self.page = page
+
+        def locator(self, selector):
+            assert selector == "xpath=ancestor::form[1]"
+            raise RuntimeError("no form ancestor")
+
+        def press(self, key):
+            self.page.pressed.append(key)
+
+    class Page:
+        def __init__(self):
+            self.clicked_js = False
+            self.pressed = []
+
+        def get_by_role(self, *_args, **_kwargs):
+            return HiddenLocator()
+
+        def evaluate(self, script, arg):
+            assert "続行" in arg["extraLabels"]
+            self.clicked_js = True
+            return "続行"
+
+    page = Page()
+
+    assert _click_primary_auth_button(page, Field(page), ["Continue", "继续"]) is True
+    assert page.clicked_js is True
+    assert page.pressed == []
 
 
 def test_click_oauth_consent_clicks_continue_on_consent_page():
@@ -1106,6 +1855,144 @@ def test_account_login_skips_protocol_oauth_by_default(monkeypatch):
     }
 
 
+
+
+def test_browser_oauth_refresh_auth_session_saves_bundle_token_without_session_fetch(monkeypatch):
+    updates = []
+    saved_sessions = []
+    account = {
+        "email": "plus@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": 956,
+        "auth_file": "",
+    }
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_login(email, password, mail_client=None, **kwargs):
+        assert kwargs.get("auth_session_callback") is None
+        return {
+            "email": email,
+            "access_token": "codex-access",
+            "refresh_token": "codex-refresh",
+            "id_token": "id",
+            "account_id": "acct-plus",
+            "plan_type": "plus",
+        }
+
+    monkeypatch.delenv("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL", raising=False)
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr("autotoken.codex_auth.login_codex_via_browser", fake_login)
+    monkeypatch.setattr(
+        "autotoken.interfaces.manager._fetch_auth_session_from_page",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应再调用 /api/auth/session")),
+    )
+    monkeypatch.setattr(
+        "autotoken.interfaces.manager._save_auth_from_session_page",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应依赖页面 session 保存")),
+    )
+    monkeypatch.setattr(
+        "autotoken.auth_session_store.save_auth_session",
+        lambda email, data: saved_sessions.append((email, data)) or f"session/{email}.json",
+    )
+    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: updates.append((email, kwargs)))
+
+    result = api._run_account_codex_login_once(
+        account["email"],
+        account,
+        refresh_auth_session=True,
+        protocol_only=False,
+        use_roxybrowser=True,
+    )
+
+    assert result["auth_session_file"] == "session/plus@example.com.json"
+    assert saved_sessions == [
+        (
+            "plus@example.com",
+            {
+                "accessToken": "codex-access",
+                "access_token": "codex-access",
+                "chatgpt_access_token": "codex-access",
+                "refreshToken": "codex-refresh",
+                "refresh_token": "codex-refresh",
+                "idToken": "id",
+                "id_token": "id",
+                "user": {"email": "plus@example.com"},
+                "accountId": "acct-plus",
+                "account": {"id": "acct-plus", "planType": "plus"},
+                "planType": "plus",
+                "plan_type": "plus",
+            },
+        )
+    ]
+    assert any(update.get("auth_file") == "auths/plus@example.com.json" for _email, update in updates)
+
+def test_browser_oauth_success_updates_auth_session_from_bundle_without_page_session(monkeypatch):
+    captured = {}
+    updates = []
+    saved_sessions = []
+    account = {
+        "email": "plus@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": 956,
+        "auth_file": "",
+    }
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_login(email, password, mail_client=None, **kwargs):
+        captured["login_kwargs"] = kwargs
+        return {
+            "email": email,
+            "access_token": "codex-access",
+            "refresh_token": "codex-refresh",
+            "id_token": "id",
+            "account_id": "acct-plus",
+            "plan_type": "plus",
+        }
+
+    monkeypatch.delenv("CODEX_OAUTH_USE_AUTH_SESSION_PROTOCOL", raising=False)
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr("autotoken.codex_auth.login_codex_via_browser", fake_login)
+    monkeypatch.setattr(
+        "autotoken.interfaces.manager._fetch_auth_session_from_page",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应再调用 /api/auth/session")),
+    )
+    monkeypatch.setattr(
+        "autotoken.auth_session_store.save_auth_session",
+        lambda email, data: saved_sessions.append((email, data)) or f"session/{email}.json",
+    )
+    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: updates.append((email, kwargs)))
+
+    result = api._run_account_codex_login_once(
+        account["email"],
+        account,
+        refresh_auth_session=True,
+        protocol_only=False,
+        use_roxybrowser=True,
+    )
+
+    assert "auth_session_callback" not in captured["login_kwargs"]
+    assert result["auth_file"] == "auths/plus@example.com.json"
+    assert result["auth_session_file"] == "session/plus@example.com.json"
+    assert saved_sessions[0][1]["accessToken"] == "codex-access"
+    assert saved_sessions[0][1]["refreshToken"] == "codex-refresh"
+    assert any(update.get("auth_file") == "auths/plus@example.com.json" for _email, update in updates)
+
 def test_account_login_uses_luckmail_provider_for_token_account_id(monkeypatch):
     captured = {}
     account = {
@@ -1384,6 +2271,113 @@ def test_protocol_account_login_refresh_auth_session_saves_protocol_session(monk
     assert result["auth_session_file"] == "session/plus@example.com.json"
     assert saved_sessions[0][0] == "plus@example.com"
     assert saved_sessions[0][1]["data"]["accessToken"] == "chatgpt-token"
+
+
+def test_protocol_account_login_auth_session_only_does_not_require_codex_bundle(monkeypatch):
+    saved_sessions = []
+    account = {
+        "email": "plain@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": "mail-id",
+    }
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_protocol_login(mail_client, **kwargs):
+        return {
+            "email": kwargs["email"],
+            "data": {
+                "accessToken": "chatgpt-token",
+                "sessionToken": "session-token",
+                "account": {"id": "acct-session", "planType": "plus"},
+            },
+        }
+
+    monkeypatch.setenv("AUTH_SESSION_ONLY", "1")
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr(
+        "autotoken.auth_session_store.save_auth_session",
+        lambda email, data: saved_sessions.append((email, data)) or f"session/{email}.json",
+    )
+    monkeypatch.setattr("autotoken.auth.protocol_register.login_once", fake_protocol_login)
+    monkeypatch.setattr(
+        "autotoken.codex_auth.login_codex_via_browser",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("auth_session-only 不应打开浏览器 OAuth")),
+    )
+    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda _bundle: (_ for _ in ()).throw(AssertionError("auth_session-only 不应保存 Codex auth_file")))
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: None)
+
+    result = api._run_account_codex_login_once(
+        account["email"],
+        account,
+        protocol_only=True,
+        refresh_auth_session=True,
+    )
+
+    assert result["email"] == "plain@example.com"
+    assert result["auth_session_file"] == "session/plain@example.com.json"
+    assert result["codex_auth_updated"] is False
+    assert saved_sessions[0][1]["data"]["accessToken"] == "chatgpt-token"
+
+
+def test_protocol_account_login_auth_session_only_env_does_not_leak_into_other_thread(monkeypatch):
+    saved_sessions = []
+    account = {
+        "email": "plain@example.com",
+        "password": "pw",
+        "status": accounts.STATUS_ACTIVE,
+        "account_type": accounts.ACCOUNT_TYPE_PLUS,
+        "cloudmail_account_id": "mail-id",
+    }
+
+    class FakeMailClient:
+        def login(self):
+            pass
+
+    def fake_protocol_login(_mail_client, **kwargs):
+        if kwargs["email"] == "plain@example.com":
+            return {
+                "email": kwargs["email"],
+                "data": {"accessToken": "chatgpt-token", "sessionToken": "session-token"},
+            }
+        return {
+            "email": kwargs["email"],
+            "data": {"accessToken": "chatgpt-token", "sessionToken": "session-token"},
+            "codex_oauth_bundle": {
+                "email": kwargs["email"],
+                "access_token": "codex-access",
+                "refresh_token": "codex-refresh",
+                "id_token": "id",
+                "account_id": "acct-plus",
+                "plan_type": "plus",
+            },
+        }
+
+    monkeypatch.setattr("autotoken.mail.TemporaryEmailClient", FakeMailClient)
+    monkeypatch.setattr("autotoken.auth_session_store.load_auth_session", lambda _email: None)
+    monkeypatch.setattr(
+        "autotoken.auth_session_store.save_auth_session",
+        lambda email, data: saved_sessions.append((email, data)) or f"session/{email}.json",
+    )
+    monkeypatch.setattr("autotoken.auth.protocol_register.login_once", fake_protocol_login)
+    monkeypatch.setattr("autotoken.codex_auth.save_auth_file", lambda bundle: f"auths/{bundle['email']}.json")
+    monkeypatch.setattr("autotoken.codex_auth.check_codex_quota", lambda token, account_id=None: ("ok", {}))
+    monkeypatch.setattr("autotoken.accounts.update_account", lambda email, **kwargs: None)
+
+    result = api._run_account_codex_login_once(
+        account["email"],
+        account,
+        protocol_only=True,
+        refresh_auth_session=True,
+    )
+
+    assert result["email"] == "plain@example.com"
+    assert result["auth_session_file"] == "session/plain@example.com.json"
 
 
 def test_refresh_auth_session_with_codex_auth_file_forces_protocol_oauth(monkeypatch):

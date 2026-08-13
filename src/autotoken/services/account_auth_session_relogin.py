@@ -167,20 +167,21 @@ def relogin_account_auth_session_once(
                 account["cloudmail_account_id"] = resolved_mail_id
                 update_account(normalized, cloudmail_account_id=resolved_mail_id)
 
-        with _temporary_env(_plain_login_env()):
-            session_payload = login_once(
-                mail_client,
-                email=normalized,
-                password=password,
-                account_id=(account or {}).get("cloudmail_account_id") or normalized,
-                proxy=str(proxy_url or "").strip() or None,
-                oauth_phone_sms_provider=str(oauth_phone_sms_provider or "").strip() or None,
-                oauth_phone_sms_country=str(oauth_phone_sms_country or "").strip() or None,
-                oauth_phone_sms_max_price=str(oauth_phone_sms_max_price or "").strip() or None,
-                oauth_oasis_sms_cdks=str(oauth_oasis_sms_cdks or "").strip() or None,
-                totp_secret=totp_secret,
-                progress_callback=progress_callback,
-            )
+    with _temporary_env(_plain_login_env()):
+        session_payload = login_once(
+            mail_client,
+            email=normalized,
+            password=password,
+            account_id=(account or {}).get("cloudmail_account_id") or normalized,
+            proxy=str(proxy_url or "").strip() or None,
+            oauth_phone_sms_provider=str(oauth_phone_sms_provider or "").strip() or None,
+            oauth_phone_sms_country=str(oauth_phone_sms_country or "").strip() or None,
+            oauth_phone_sms_max_price=str(oauth_phone_sms_max_price or "").strip() or None,
+            oauth_oasis_sms_cdks=str(oauth_oasis_sms_cdks or "").strip() or None,
+            totp_secret=totp_secret,
+            progress_callback=progress_callback,
+            auth_session_only=True,
+        )
 
     if not _auth_session_has_web_session(session_payload):
         raise RuntimeError(f"补登录未返回有效 auth_session: {normalized}")

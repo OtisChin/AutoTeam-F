@@ -1257,6 +1257,7 @@ def login_once(
     oauth_oasis_sms_cdks: str | None = None,
     totp_secret: str | None = None,
     progress_callback=None,
+    auth_session_only: bool = False,
 ) -> dict:
     """Pure protocol login for an existing account; returns auth_session and optional Codex OAuth bundle."""
 
@@ -1278,7 +1279,7 @@ def login_once(
         email=email,
     )
     adapter = ProtocolMailAdapter(mail_client, email=email, account_id=account_id)
-    auth_session_only = str(os.environ.get("AUTH_SESSION_ONLY") or "").strip().lower() in {"1", "true", "yes", "on"}
+    auth_session_only = bool(auth_session_only or str(os.environ.get("AUTH_SESSION_ONLY") or "").strip().lower() in {"1", "true", "yes", "on"})
     logger.info(
         "[协议登录] 开始协议登录%s: email=%s mailbox_id_present=%s proxy=%s",
         " auth_session" if auth_session_only else " OAuth",

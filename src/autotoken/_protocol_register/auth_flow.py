@@ -3500,7 +3500,9 @@ class AuthFlow:
             "yes",
             "on",
         )
-        auth_session_only = self._env_flag("AUTH_SESSION_ONLY", "0")
+        auth_session_only = bool(getattr(self, "_auth_session_only_override", False)) or self._env_flag(
+            "AUTH_SESSION_ONLY", "0"
+        )
 
         if prefer_login_screen_first:
             login_probe_attempts = invalid_state_retries if auth_session_only else 1
@@ -3676,7 +3678,7 @@ class AuthFlow:
 
         if not refresh_only_mode:
             self.get_auth_session()
-            if self._env_flag("AUTH_SESSION_ONLY", "0"):
+            if auth_session_only:
                 if not self.result.is_valid():
                     raise RuntimeError("协议登录完成，但未拿到有效 auth_session")
                 logger.info("纯协议登录 auth_session-only 模式完成，跳过 OAuth token 交换")

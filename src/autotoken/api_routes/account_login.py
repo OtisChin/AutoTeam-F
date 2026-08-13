@@ -65,6 +65,17 @@ def _is_retryable_oauth_proxy_error(message: str | None) -> bool:
     text = str(message or "").lower()
     if "未返回可用代理" in text or "no proxy" in text:
         return True
+    if any(
+        marker in text
+        for marker in (
+            "oauth 页面临时错误",
+            "not valid json",
+            "unexpected token '<'",
+            'unexpected token "<"',
+            "<!doctype",
+        )
+    ):
+        return True
     if "403" not in text:
         return False
     return any(marker in text for marker in ("cloudflare", "challenge", "just a moment", "access denied", "html_challenge"))
@@ -106,6 +117,10 @@ class LoginAccountParams(BaseModel):
         validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
     )
     refresh_auth_session: bool = Field(False, validation_alias=AliasChoices("refresh_auth_session", "refreshAuthSession"))
+    oauth_browser_mode: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_browser_mode", "oauthBrowserMode", "browser_mode", "browserMode"),
+    )
     exclusive: bool = Field(True, validation_alias=AliasChoices("exclusive", "task_exclusive", "taskExclusive"))
 
 
@@ -145,6 +160,10 @@ class AccountEmailBatchParams(BaseModel):
         validation_alias=AliasChoices("oauth_oasis_sms_cdks", "oauthOasisSmsCdks", "oasis_sms_cdks", "oasisSmsCdks"),
     )
     refresh_auth_session: bool = Field(False, validation_alias=AliasChoices("refresh_auth_session", "refreshAuthSession"))
+    oauth_browser_mode: str = Field(
+        "",
+        validation_alias=AliasChoices("oauth_browser_mode", "oauthBrowserMode", "browser_mode", "browserMode"),
+    )
 
 
 class AccountEmailBatchAppendParams(BaseModel):
@@ -158,9 +177,11 @@ class MailAccountAuthSessionBatchParams(BaseModel):
 
 def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) -> dict[str, Any]:
     bind_phone = bool(getattr(params, "bind_phone", False))
+    oauth_browser_mode = str(getattr(params, "oauth_browser_mode", "") or "").strip().lower()
+    use_roxybrowser = oauth_browser_mode in {"roxy", "roxybrowser", "roxy-browser"}
     kwargs: dict[str, Any] = {
         "headless": False,
-        "protocol_only": bool(params.protocol_only),
+        "protocol_only": False if use_roxybrowser else bool(params.protocol_only),
         # 绑定邮箱/绑定手机号是互斥关系；旧前端或手工 API 同时传 true 时，手机号绑定优先。
         "bind_email": bool(params.bind_email) and not bind_phone,
     }
@@ -168,6 +189,8 @@ def _oauth_login_kwargs(params: LoginAccountParams | AccountEmailBatchParams) ->
         kwargs["bind_phone"] = True
     if bool(getattr(params, "refresh_auth_session", False)):
         kwargs["refresh_auth_session"] = True
+    if use_roxybrowser:
+        kwargs["use_roxybrowser"] = True
     text_fields = {
         "mail_provider": params.mail_provider,
         "luckmail_email_type": params.luckmail_email_type,
@@ -254,7 +277,11 @@ def create_account_login_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        plain_relogin = bool(params.refresh_auth_session) and not _account_has_codex_auth_file(acc)
+        plain_relogin = (
+            bool(params.refresh_auth_session)
+            and not _account_has_codex_auth_file(acc)
+            and str(params.oauth_browser_mode or "").strip().lower() not in {"roxy", "roxybrowser", "roxy-browser"}
+        )
         oauth_proxy_api_enabled = bool(oauth_proxy_meta.get("proxy_api_url_present")) or int(
             oauth_proxy_meta.get("proxy_pool_count") or 0
         ) > 0
@@ -266,6 +293,7 @@ def create_account_login_router(
                 CodexOAuthLoginRequired,
                 CodexOAuthPhoneRateLimited,
                 CodexOAuthPhoneRequired,
+                CodexOAuthTransientPageError,
             )
 
             def _resolve_oauth_proxy_or_raise(proxy_attempt: int) -> str:
@@ -384,7 +412,11 @@ def create_account_login_router(
                                 acc,
                                 **login_kwargs,
                             )
-                        if bool(params.refresh_auth_session) and _account_has_codex_auth_file(acc):
+                        if (
+                            bool(params.refresh_auth_session)
+                            and _account_has_codex_auth_file(acc)
+                            and not bool(login_kwargs.get("use_roxybrowser"))
+                        ):
                             login_kwargs["protocol_only"] = True
                         return run_account_codex_login_once(email, acc, **login_kwargs)
                     except Exception as exc:
@@ -392,7 +424,10 @@ def create_account_login_router(
                         if (
                             oauth_proxy_api_enabled
                             and proxy_attempt < oauth_proxy_attempts
-                            and _is_retryable_oauth_proxy_error(last_error)
+                            and (
+                                isinstance(exc, CodexOAuthTransientPageError)
+                                or _is_retryable_oauth_proxy_error(last_error)
+                            )
                         ):
                             append_task_progress(
                                 task_id,
@@ -402,12 +437,12 @@ def create_account_login_router(
                                     **oauth_proxy_meta,
                                     "proxy_attempt": proxy_attempt,
                                     "proxy_attempts": oauth_proxy_attempts,
-                                    "message": f"OAuth 代理命中 403，重试下一条代理: {last_error}",
+                                    "message": f"OAuth 代理遇到可重试错误，重试下一条代理: {last_error}",
                                     "level": "warn",
                                 },
                             )
                             logger.warning(
-                                "[账号登录] OAuth 代理命中 403，切换下一条代理: email=%s attempt=%s/%s error=%s",
+                                "[账号登录] OAuth 代理遇到可重试错误，切换下一条代理: email=%s attempt=%s/%s error=%s",
                                 email,
                                 proxy_attempt,
                                 oauth_proxy_attempts,
@@ -522,7 +557,11 @@ def create_account_login_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        plain_relogin = bool(params.refresh_auth_session)
+        plain_relogin = bool(params.refresh_auth_session) and str(params.oauth_browser_mode or "").strip().lower() not in {
+            "roxy",
+            "roxybrowser",
+            "roxy-browser",
+        }
         oauth_proxy_api_enabled = bool(oauth_proxy_meta.get("proxy_api_url_present")) or int(
             oauth_proxy_meta.get("proxy_pool_count") or 0
         ) > 0
@@ -534,6 +573,7 @@ def create_account_login_router(
                 CodexOAuthLoginRequired,
                 CodexOAuthPhoneRateLimited,
                 CodexOAuthPhoneRequired,
+                CodexOAuthTransientPageError,
             )
             from autotoken.storage.accounts import update_account
 
@@ -804,7 +844,7 @@ def create_account_login_router(
                                     **login_kwargs,
                                 )
                             else:
-                                if bool(params.refresh_auth_session) and _account_has_codex_auth_file(acc):
+                                if bool(params.refresh_auth_session) and _account_has_codex_auth_file(acc) and not bool(login_kwargs.get("use_roxybrowser")):
                                     login_kwargs["protocol_only"] = True
                                 login_result = run_account_codex_login_once(email, acc, **login_kwargs)
                             logger.info(
@@ -819,7 +859,10 @@ def create_account_login_router(
                             if (
                                 oauth_proxy_api_enabled
                                 and proxy_attempt < oauth_proxy_attempts
-                                and _is_retryable_oauth_proxy_error(error_summary)
+                                and (
+                                    isinstance(exc, CodexOAuthTransientPageError)
+                                    or _is_retryable_oauth_proxy_error(error_summary)
+                                )
                             ):
                                 append_task_progress(
                                     task_id,
@@ -831,12 +874,12 @@ def create_account_login_router(
                                         **oauth_proxy_meta,
                                         "proxy_attempt": proxy_attempt,
                                         "proxy_attempts": oauth_proxy_attempts,
-                                        "message": f"OAuth 代理命中 403，重试下一条代理: {error_summary}",
+                                        "message": f"OAuth 代理遇到可重试错误，重试下一条代理: {error_summary}",
                                         "level": "warn",
                                     },
                                 )
                                 logger.warning(
-                                    "[账号登录] OAuth 代理命中 403，切换下一条代理: email=%s attempt=%s/%s error=%s",
+                                    "[账号登录] OAuth 代理遇到可重试错误，切换下一条代理: email=%s attempt=%s/%s error=%s",
                                     email,
                                     proxy_attempt,
                                     oauth_proxy_attempts,

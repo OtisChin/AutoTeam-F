@@ -205,6 +205,63 @@ def test_post_account_login_refresh_session_with_auth_file_uses_oauth_authorizat
     assert oauth_calls[0][2]["protocol_only"] is True
 
 
+def test_post_account_login_roxy_mode_keeps_browser_oauth_for_auth_file_refresh(monkeypatch):
+    started = []
+    oauth_calls = []
+    account = {"email": "revoked@example.com", "status": "auth_revoked", "auth_file": "auths/old.json"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "revoked@example.com" else None)
+
+    def fake_oauth_run(email, acc, **kwargs):
+        oauth_calls.append((email, acc, kwargs))
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
+    routes["post_account_login"](
+        LoginAccountParams(
+            email="revoked@example.com",
+            refresh_auth_session=True,
+            protocol_only=False,
+            oauth_browser_mode="roxy",
+        )
+    )
+    task_result = started[0]["func"]("task-1")
+
+    assert task_result == {"email": "revoked@example.com", "plan": "plus"}
+    assert oauth_calls[0][2]["refresh_auth_session"] is True
+    assert oauth_calls[0][2]["protocol_only"] is False
+    assert oauth_calls[0][2]["use_roxybrowser"] is True
+
+
+def test_post_accounts_login_batch_roxy_mode_passes_browser_mode(monkeypatch):
+    started = []
+    oauth_calls = []
+    account = {"email": "revoked@example.com", "status": "auth_revoked", "auth_file": "auths/old.json"}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "revoked@example.com" else None)
+    monkeypatch.setenv("CODEX_OAUTH_BATCH_CONCURRENCY", "1")
+
+    def fake_oauth_run(email, acc, **kwargs):
+        oauth_calls.append((email, acc, kwargs))
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
+    routes["post_accounts_login_batch"](
+        AccountEmailBatchParams(
+            emails=["revoked@example.com"],
+            refresh_auth_session=True,
+            protocol_only=False,
+            oauth_browser_mode="roxy",
+        )
+    )
+    task_result = started[0]["func"]("task-batch")
+
+    assert task_result["ok"] == [{"email": "revoked@example.com", "plan": "plus"}]
+    assert oauth_calls[0][2]["refresh_auth_session"] is True
+    assert oauth_calls[0][2]["protocol_only"] is False
+    assert oauth_calls[0][2]["use_roxybrowser"] is True
+
+
 def test_post_account_login_refresh_session_without_auth_file_uses_plain_relogin(monkeypatch):
     started = []
     oauth_calls = []
@@ -234,6 +291,45 @@ def test_post_account_login_refresh_session_without_auth_file_uses_plain_relogin
     assert oauth_calls == []
     assert plain_calls[0][0] == "missing-auth@example.com"
     assert "update_codex_auth" not in plain_calls[0][2]
+
+
+def test_post_account_login_roxy_mode_without_auth_file_uses_browser_oauth(monkeypatch):
+    started = []
+    oauth_calls = []
+    plain_calls = []
+    account = {"email": "missing-auth@example.com", "password": "pw", "auth_file": ""}
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "missing-auth@example.com" else None)
+
+    def fake_oauth_run(email, acc, **kwargs):
+        oauth_calls.append((email, acc, kwargs))
+        return {"email": email, "plan": "free", "auth_session_file": "auth_session/missing-auth.json"}
+
+    def fake_plain_relogin(email, acc, **kwargs):
+        plain_calls.append((email, acc, kwargs))
+        return {"email": email, "status": "success", "auth_session_file": "auth_session/missing-auth.json"}
+
+    routes, _accounts = _routes(started, accounts=[account], run_account_codex_login_once=fake_oauth_run)
+    monkeypatch.setattr(
+        "autotoken.api_routes.account_login.relogin_account_auth_session_once",
+        fake_plain_relogin,
+        raising=False,
+    )
+    routes["post_account_login"](
+        LoginAccountParams(
+            email="missing-auth@example.com",
+            refresh_auth_session=True,
+            oauth_browser_mode="roxy",
+        )
+    )
+    task_result = started[0]["func"]("task-1")
+
+    assert task_result == {"email": "missing-auth@example.com", "plan": "free", "auth_session_file": "auth_session/missing-auth.json"}
+    assert plain_calls == []
+    assert oauth_calls[0][2]["refresh_auth_session"] is True
+    assert oauth_calls[0][2]["protocol_only"] is False
+    assert oauth_calls[0][2]["use_roxybrowser"] is True
+    assert oauth_calls[0][2]["headless"] is False
 
 
 def test_post_accounts_login_batch_refresh_session_with_auth_file_uses_oauth_authorization(monkeypatch):
@@ -581,6 +677,46 @@ def test_post_account_login_retries_oauth_proxy_api_until_preflight_passes(monke
         ("socks5h://good-proxy.example:1001", "first@example.com"),
     ]
     assert captured["kwargs"]["proxy_url"] == "socks5h://good-proxy.example:1001"
+
+
+def test_post_account_login_retries_oauth_proxy_on_html_json_page_error(monkeypatch):
+    started = []
+    account = {"email": "first@example.com"}
+    proxies = ["socks5h://proxy-one.example:1000", "socks5h://proxy-two.example:1001"]
+    run_proxies = []
+    monkeypatch.setattr("autotoken.accounts.load_accounts", lambda: [account])
+    monkeypatch.setattr("autotoken.accounts.find_account", lambda _accounts, email: account if email == "first@example.com" else None)
+
+    def build_selector(**_kwargs):
+        def selector():
+            return proxies.pop(0)
+
+        return selector, {"proxy_api_provider": "cliproxy", "proxy_api_url_present": True}
+
+    def fake_run(email, acc, **kwargs):
+        run_proxies.append(kwargs.get("proxy_url"))
+        if len(run_proxies) == 1:
+            raise RuntimeError("OAuth 页面临时错误: Unexpected token '<', '<!DOCTYPE '... is not valid JSON")
+        return {"email": email, "plan": "plus"}
+
+    routes, _accounts = _routes(
+        started,
+        accounts=[account],
+        build_oauth_proxy_selector=build_selector,
+        run_account_codex_login_once=fake_run,
+    )
+    routes["post_account_login"](
+        LoginAccountParams(
+            email="first@example.com",
+            proxy_api_provider="cliproxy",
+            proxy_api_url="https://proxy-api.example/get",
+        )
+    )
+
+    result = started[0]["func"]("task-1")
+
+    assert result == {"email": "first@example.com", "plan": "plus"}
+    assert run_proxies == ["socks5h://proxy-one.example:1000", "socks5h://proxy-two.example:1001"]
 
 
 def test_post_account_login_raises_when_all_oauth_proxy_preflights_fail(monkeypatch):
@@ -936,3 +1072,4 @@ def test_single_account_login_passes_totp_secret_when_account_has_2fa(monkeypatc
     assert response["task_id"] == "task-1"
     assert started[0]["func"]("task-1") == {"status": "success"}
     assert captured["kwargs"]["totp_secret"] == ("GEZDGNBVGY3TQOJQ" + "GEZDGNBVGY3TQOJQ")
+

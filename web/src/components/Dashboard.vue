@@ -249,6 +249,18 @@
                   启用代理
                 </label>
               </div>
+              <div class="mt-4 grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
+                <div>
+                  <label class="text-xs text-gray-500">登录模式</label>
+                  <select v-model="oauthBrowserMode" class="mt-1 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500/60">
+                    <option value="protocol">协议模式</option>
+                    <option value="roxy">RoxyBrowser 模式</option>
+                  </select>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2 text-xs text-gray-400">
+                  {{ oauthBrowserMode === 'roxy' ? 'OAuth授权/补登录将使用设置页的 RoxyBrowser 配置打开浏览器，适合协议风控较强时手动使用。' : '默认协议模式，速度快；遇到风控时可手动切换 RoxyBrowser。' }}
+                </div>
+              </div>
               <div v-if="oauthProxyEnabled" class="mt-4 grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
                 <div>
                   <label class="text-xs text-gray-500">代理模式</label>
@@ -1852,6 +1864,7 @@ const oauthPhoneSmsCountryFallbackOptions = {
 const oauthPhoneSmsCountryOptions = ref(oauthPhoneSmsCountryFallbackOptions.hero_sms)
 const oauthProxyEnabled = ref(false)
 const oauthProxyMode = ref('single')
+const oauthBrowserMode = ref('protocol')
 const oauthProxyUrl = ref('')
 const oauthProxyPoolText = ref('')
 const oauthProxyApiProvider = ref('cliproxy')
@@ -2075,6 +2088,7 @@ function loadOauthProxyConfig() {
     const saved = JSON.parse(localStorage.getItem(OAUTH_PROXY_STORAGE_KEY) || '{}')
     oauthProxyEnabled.value = Boolean(saved.enabled)
     oauthProxyMode.value = ['single', 'pool', 'api'].includes(saved.mode) ? saved.mode : 'single'
+    oauthBrowserMode.value = ['protocol', 'roxy'].includes(saved.browserMode) ? saved.browserMode : 'protocol'
     oauthProxyUrl.value = saved.proxyUrl || ''
     oauthProxyPoolText.value = saved.proxyPoolText || ''
     oauthProxyApiProvider.value = saved.proxyApiProvider === '1024proxy' ? '1024proxy' : 'cliproxy'
@@ -2108,6 +2122,7 @@ function saveOauthProxyConfig() {
     localStorage.setItem(OAUTH_PROXY_STORAGE_KEY, JSON.stringify({
       enabled: oauthProxyEnabled.value,
       mode: oauthProxyMode.value,
+      browserMode: oauthBrowserMode.value,
       proxyUrl: oauthProxyUrl.value,
       proxyPoolText: oauthProxyPoolText.value,
       proxyApiProvider: oauthProxyApiProvider.value,
@@ -2121,6 +2136,7 @@ function saveOauthProxyConfig() {
 function resetOauthProxyConfig() {
   oauthProxyEnabled.value = false
   oauthProxyMode.value = 'single'
+  oauthBrowserMode.value = 'protocol'
   oauthProxyUrl.value = ''
   oauthProxyPoolText.value = ''
   oauthProxyApiProvider.value = 'cliproxy'
@@ -2128,14 +2144,16 @@ function resetOauthProxyConfig() {
 }
 
 function buildOauthProxyPayload() {
-  if (!oauthProxyEnabled.value) return {}
+  const browserPayload = oauthBrowserMode.value === 'roxy' ? { oauth_browser_mode: 'roxy' } : {}
+  if (!oauthProxyEnabled.value) return browserPayload
   if (oauthProxyMode.value === 'single') {
-    return oauthProxyUrl.value ? { proxy_url: oauthProxyUrl.value } : {}
+    return oauthProxyUrl.value ? { ...browserPayload, proxy_url: oauthProxyUrl.value } : browserPayload
   }
   if (oauthProxyMode.value === 'pool') {
-    return oauthProxyPoolText.value ? { proxy_pool_text: oauthProxyPoolText.value } : {}
+    return oauthProxyPoolText.value ? { ...browserPayload, proxy_pool_text: oauthProxyPoolText.value } : browserPayload
   }
   return {
+    ...browserPayload,
     proxy_api_provider: oauthProxyApiProvider.value || 'cliproxy',
     proxy_api_country: String(oauthProxyApiCountry.value || 'US').trim().toUpperCase() || 'US',
     ...(oauthProxyUrl.value ? { proxy_url: oauthProxyUrl.value } : {}),
@@ -2144,8 +2162,9 @@ function buildOauthProxyPayload() {
 
 function buildOauthEmailPayload() {
   const bindPhone = Boolean(oauthBindPhone.value)
+  const useRoxyBrowser = oauthBrowserMode.value === 'roxy'
   return {
-    protocol_only: true,
+    protocol_only: !useRoxyBrowser,
     bind_email: !bindPhone,
     bind_phone: bindPhone,
     ...(oauthEmailMailProvider.value ? { mail_provider: oauthEmailMailProvider.value } : {}),
@@ -2206,6 +2225,8 @@ function buildDashboardOauthPayload() {
 }
 
 const oauthProxySummary = computed(() => {
+  if (oauthBrowserMode.value === 'roxy' && !oauthProxyEnabled.value) return 'OAuth授权/补登录将使用 RoxyBrowser 模式直连。'
+  if (oauthBrowserMode.value === 'roxy' && oauthProxyEnabled.value) return 'OAuth授权/补登录将使用 RoxyBrowser 模式，并应用下方代理配置。'
   if (!oauthProxyEnabled.value) return 'OAuth授权/补登录当前直连。'
   if (oauthProxyMode.value === 'single') return oauthProxyUrl.value ? '单个/批量 OAuth授权和补登录会使用这条代理。' : '请填写单条代理地址。'
   if (oauthProxyMode.value === 'pool') {
@@ -2307,7 +2328,7 @@ onMounted(() => {
   })
 })
 watch(
-  [oauthProxyEnabled, oauthProxyMode, oauthProxyUrl, oauthProxyPoolText, oauthProxyApiProvider, oauthProxyApiCountry],
+  [oauthProxyEnabled, oauthProxyMode, oauthBrowserMode, oauthProxyUrl, oauthProxyPoolText, oauthProxyApiProvider, oauthProxyApiCountry],
   saveOauthProxyConfig,
 )
 watch(oauthBindPhone, saveOauthPhoneConfig)
@@ -4005,9 +4026,10 @@ async function batchOauthAuthorizeAccounts() {
       const oauthPayload = buildDashboardOauthPayload()
       const result = await api.loginAccountsBatch(emails, oauthPayload)
       const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+      const browserText = oauthBrowserMode.value === 'roxy' ? '，RoxyBrowser模式' : ''
       const bindText = oauthAuthorizableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
       const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-      message.value = `已提交批量 OAuth授权任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}${phoneText}`
+      message.value = `已提交批量 OAuth授权任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${browserText}${bindText}${phoneText}`
     }
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
@@ -4033,9 +4055,10 @@ async function batchReloginAccounts() {
     const reloginPayload = { ...buildDashboardOauthPayload(), refresh_auth_session: true }
     const result = await api.loginAccountsBatch(emails, reloginPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+    const browserText = oauthBrowserMode.value === 'roxy' ? '，RoxyBrowser模式' : ''
     const bindText = reloginableAccounts.value.some(isPhoneOnlyAccount) ? '，手机号账号会协议绑邮箱' : ''
     const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${bindText}${phoneText}`
+    message.value = `已提交批量补登录任务: ${result.task_id}，账号 ${emails.length} 个${proxyText}${browserText}${bindText}${phoneText}`
     messageClass.value = 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
     emit('task-started')
     emit('refresh')
@@ -4278,9 +4301,10 @@ async function oauthAuthorizeAccount(email) {
     const oauthPayload = buildDashboardOauthPayload()
     const result = await api.loginAccount(email, oauthPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+    const browserText = oauthBrowserMode.value === 'roxy' ? '，RoxyBrowser模式' : ''
     const bindText = email.includes('@') ? '' : '，成功后会绑定邮箱并迁移账号'
     const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-    message.value = `已提交 ${email} 的 OAuth授权任务: ${result.task_id}${proxyText}${bindText}${phoneText}`
+    message.value = `已提交 ${email} 的 OAuth授权任务: ${result.task_id}${proxyText}${browserText}${bindText}${phoneText}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
     emit('task-started')
     emit('refresh')
@@ -4305,9 +4329,10 @@ async function reloginAccount(email) {
     const reloginPayload = { ...buildDashboardOauthPayload(), refresh_auth_session: true }
     const result = await api.loginAccount(email, reloginPayload)
     const proxyText = Object.keys(buildOauthProxyPayload()).length ? '，OAuth代理已启用' : ''
+    const browserText = oauthBrowserMode.value === 'roxy' ? '，RoxyBrowser模式' : ''
     const bindText = email.includes('@') ? '' : '，成功后会绑定邮箱并迁移账号'
     const phoneText = oauthBindPhone.value ? '，已启用手机号绑定' : ''
-    message.value = `已提交 ${email} 的补登录任务: ${result.task_id}${proxyText}${bindText}${phoneText}`
+    message.value = `已提交 ${email} 的补登录任务: ${result.task_id}${proxyText}${browserText}${bindText}${phoneText}`
     messageClass.value = 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
     emit('task-started')
     emit('refresh')
