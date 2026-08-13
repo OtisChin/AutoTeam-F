@@ -3320,7 +3320,6 @@ const cards = computed(() => {
   const s = props.status.summary
   return [
     { label: '活跃', value: s.active, color: 'text-green-400' },
-    { label: '待命', value: s.standby, color: 'text-yellow-400' },
     { label: '暂存', value: s.stashed || 0, color: 'text-slate-300' },
     { label: '废弃', value: s.fail || 0, color: 'text-orange-400' },
     { label: 'Free', value: s.free || 0, color: 'text-fuchsia-400' },
@@ -3333,7 +3332,6 @@ const cards = computed(() => {
 
 const kiroCards = [
   { label: '活跃', value: 0, color: 'text-green-400' },
-  { label: '待命', value: 0, color: 'text-yellow-400' },
   { label: '废弃', value: 0, color: 'text-orange-400' },
   { label: '总计', value: 0, color: 'text-white' },
 ]

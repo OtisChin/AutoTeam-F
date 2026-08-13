@@ -34,12 +34,15 @@ MAX_ACCOUNT_ATTEMPTS = 5
 MAX_CONFIGURABLE_ACCOUNT_ATTEMPTS = 20
 PROXY_PREFLIGHT_MAX_ATTEMPTS = 5
 MAX_CONFIGURABLE_PROXY_PREFLIGHT_ATTEMPTS = 100
+AUTH_ACCOUNTS_CACHE_TTL_SECONDS = 30.0
 JOBS: dict[str, dict[str, Any]] = {}
 PAYMENT_JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 PAYMENT_JOBS_LOCK = threading.RLock()
 LINKS_LOCK = threading.RLock()
 ACCOUNT_STATUS_LOCK = threading.RLock()
+AUTH_ACCOUNTS_CACHE_LOCK = threading.RLock()
+AUTH_ACCOUNTS_CACHE: dict[tuple[bool, str], tuple[float, list[dict[str, Any]]]] = {}
 TEMP_CDK_STATUS_CACHE_TTL_S = 120
 TEMP_CDK_STATUS_STALE_TTL_S = 1800
 TEMP_CDK_STATUS_MIN_INTERVAL_S = 0.25
@@ -232,7 +235,38 @@ def _pix_pool_excluded_emails() -> set[str]:
     return _pix_paid_emails()
 
 
+def clear_auth_accounts_cache() -> None:
+    """Clear the shared payment-page auth account cache."""
+    with AUTH_ACCOUNTS_CACHE_LOCK:
+        AUTH_ACCOUNTS_CACHE.clear()
+
+
+def _auth_accounts_cache_key(*, include_paid: bool) -> tuple[bool, str]:
+    try:
+        auth_dir = str(AUTH_SESSION_DIR.resolve())
+    except Exception:
+        auth_dir = str(AUTH_SESSION_DIR)
+    return bool(include_paid), auth_dir
+
+
+def _copy_auth_account_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(item) for item in rows]
+
+
+def _store_auth_accounts_cache(cache_key: tuple[bool, str], accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    with AUTH_ACCOUNTS_CACHE_LOCK:
+        AUTH_ACCOUNTS_CACHE[cache_key] = (time.monotonic(), _copy_auth_account_rows(accounts))
+    return accounts
+
+
 def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
+    cache_key = _auth_accounts_cache_key(include_paid=include_paid)
+    now_monotonic = time.monotonic()
+    with AUTH_ACCOUNTS_CACHE_LOCK:
+        cached = AUTH_ACCOUNTS_CACHE.get(cache_key)
+        if cached and now_monotonic - cached[0] <= AUTH_ACCOUNTS_CACHE_TTL_SECONDS:
+            return _copy_auth_account_rows(cached[1])
+
     now = time.time()
     accounts: list[dict[str, Any]] = []
     dashboard_accounts = _dashboard_accounts_by_email()
@@ -278,7 +312,7 @@ def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
             )
             included_emails.add(email.lower())
     if not AUTH_SESSION_DIR.exists():
-        return accounts
+        return _store_auth_accounts_cache(cache_key, accounts)
     for path in sorted(AUTH_SESSION_DIR.glob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -309,7 +343,7 @@ def _iter_auth_accounts(*, include_paid: bool = False) -> list[dict[str, Any]]:
         )
         included_emails.add(email.lower())
     accounts.sort(key=lambda item: (float(item.get("updated_at") or 0), item["email"].lower()), reverse=True)
-    return accounts
+    return _store_auth_accounts_cache(cache_key, accounts)
 
 
 def _normalize_account_status(value: Any) -> str:

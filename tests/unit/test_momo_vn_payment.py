@@ -79,11 +79,11 @@ def _eligible_context() -> dict[str, object]:
     }
 
 
-def test_momo_job_config_defaults_to_jp_promotion_region():
+def test_momo_job_config_defaults_to_vn_promotion_region():
     cfg = momo_vn.MomoVnJobConfig(access_token="token", direct_proxies=["proxy"])
 
-    assert cfg.promotion_region == "JP"
-    assert momo_vn._stage_region(cfg, 1) == "JP"
+    assert cfg.promotion_region == "VN"
+    assert momo_vn._stage_region(cfg, 1) == "VN"
 
 
 def test_extract_momo_result_recurses_nested_redirect():
@@ -199,8 +199,10 @@ def test_detect_momo_eligibility_returns_ineligible_when_momo_missing(monkeypatc
     assert result["payment_method_types"] == ["card"]
 
 
-def test_detect_momo_eligibility_rejects_oaics_checkout_session_id(monkeypatch):
+def test_detect_momo_eligibility_handles_oaics_without_payment_pages(monkeypatch):
     stripe_init_called = {"value": False}
+    fetched = {"value": False}
+    promoted = {"value": False}
 
     class FakeChatgptSession:
         def post(self, url, **kwargs):
@@ -212,18 +214,135 @@ def test_detect_momo_eligibility_rejects_oaics_checkout_session_id(monkeypatch):
 
     def fake_stripe_init(stripe, cs_id, stripe_pk, ctx):
         stripe_init_called["value"] = True
-        raise AssertionError("oaics flow should fail before stripe_init")
+        raise AssertionError("oaics flow should not call payment_pages stripe_init")
 
     monkeypatch.setattr(momo_vn, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
     monkeypatch.setattr(momo_vn, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
     monkeypatch.setattr(momo_vn, "build_stripe_session", lambda *args, **kwargs: object())
     monkeypatch.setattr(momo_vn, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
     monkeypatch.setattr(momo_vn, "stripe_init", fake_stripe_init)
+    monkeypatch.setattr(momo_vn, "update_momo_checkout_promotion", lambda *args, **kwargs: promoted.__setitem__("value", True))
+    monkeypatch.setattr(
+        momo_vn,
+        "fetch_oaics_checkout_session",
+        lambda *args, **kwargs: (
+            pytest.fail("oaics eligibility must inject promo before fetch") if not promoted["value"] else fetched.__setitem__("value", True)
+        )
+        or {
+            "checkout_amount_minor": 0,
+            "currency": "vnd",
+            "payment_method_types": ["card", "momo"],
+            "publishable_key": "pk_test",
+            "customer_session_client_secret": "cuss_test",
+        },
+    )
+    monkeypatch.setattr(
+        momo_vn,
+        "submit_oaics_checkout_taxes",
+        lambda *args, **kwargs: {
+            "checkout_amount_minor": 0,
+            "currency": "vnd",
+            "payment_method_types": ["card", "momo"],
+        },
+    )
 
-    with pytest.raises(RuntimeError, match="oaics checkout cannot use Stripe payment_pages MoMo flow"):
-        momo_vn.detect_momo_eligibility(momo_vn.MomoVnJobConfig(access_token="token", direct_proxies=["proxy"]))
+    result = momo_vn.detect_momo_eligibility(momo_vn.MomoVnJobConfig(access_token="token", direct_proxies=["proxy"]))
 
     assert stripe_init_called["value"] is False
+    assert promoted["value"] is True
+    assert fetched["value"] is True
+    assert result["status"] == "eligible"
+    assert result["has_momo"] is True
+    assert result["cs_id"] == "oaics_test_custom"
+    assert result["payment_method_types"] == ["card", "momo"]
+    assert result["checkout_flow"] == "oaics"
+
+
+def test_detect_momo_eligibility_can_create_checkout_with_front_promo(monkeypatch):
+    checkout_body = {}
+
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            if url.endswith("/payments/checkout"):
+                checkout_body.update(kwargs.get("json") or {})
+                return _JsonResponse({
+                    "checkout_session_id": "oaics_test_custom",
+                    "processor_entity": "openai_llc",
+                    "publishable_key": "pk_test",
+                })
+            raise AssertionError("front-promo oaics probe should not update promo after checkout")
+
+    monkeypatch.setattr(momo_vn, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(momo_vn, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(momo_vn, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(momo_vn, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        momo_vn,
+        "fetch_oaics_checkout_session",
+        lambda *args, **kwargs: {
+            "checkout_amount_minor": 0,
+            "currency": "vnd",
+            "payment_method_types": ["card", "momo"],
+            "publishable_key": "pk_test",
+            "customer_session_client_secret": "cuss_test",
+        },
+    )
+    monkeypatch.setattr(
+        momo_vn,
+        "submit_oaics_checkout_taxes",
+        lambda *args, **kwargs: {"checkout_amount_minor": 0, "currency": "vnd", "payment_method_types": ["card", "momo"]},
+    )
+
+    result = momo_vn.detect_momo_eligibility(
+        momo_vn.MomoVnJobConfig(access_token="token", direct_proxies=["proxy"], front_promo=True)
+    )
+
+    assert checkout_body["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+    assert result["checkout_flow"] == "oaics"
+    assert result["front_promo"] is True
+
+
+def test_detect_momo_eligibility_reports_oaics_nonzero_as_ineligible(monkeypatch):
+    class FakeChatgptSession:
+        def post(self, url, **kwargs):
+            return _JsonResponse({
+                "checkout_session_id": "oaics_test_custom",
+                "processor_entity": "openai_llc",
+                "publishable_key": "pk_test",
+            })
+
+    monkeypatch.setattr(momo_vn, "pix_proxy_context", lambda local, dynamic, log: _ProxyContext(dynamic))
+    monkeypatch.setattr(momo_vn, "build_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(momo_vn, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(momo_vn, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(momo_vn, "update_momo_checkout_promotion", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        momo_vn,
+        "fetch_oaics_checkout_session",
+        lambda *args, **kwargs: {
+            "total": {"total": 522500},
+            "amount_total": 522500,
+            "currency": "vnd",
+            "payment_method_types": ["card", "momo"],
+            "publishable_key": "pk_test",
+            "customer_session_client_secret": "cuss_test",
+        },
+    )
+    monkeypatch.setattr(
+        momo_vn,
+        "submit_oaics_checkout_taxes",
+        lambda *args, **kwargs: {"total": {"total": 522500}, "amount_total": 522500, "payment_method_types": ["card", "momo"]},
+    )
+
+    result = momo_vn.detect_momo_eligibility(
+        momo_vn.MomoVnJobConfig(access_token="token", direct_proxies=["proxy"], front_promo=True)
+    )
+
+    assert result["checkout_flow"] == "oaics"
+    assert result["status"] == "ineligible"
+    assert result["has_momo"] is True
+    assert result["amount"] == "522500"
+    assert "金额必须为 0" in result["error"]
 
 
 def test_generate_momo_vn_trial_requires_eligibility_before_extract(monkeypatch):
@@ -274,16 +393,160 @@ def test_generate_momo_vn_trial_rejects_nonzero_after_promo(monkeypatch):
     assert init_calls
 
 
-def test_generate_momo_vn_trial_rejects_oaics_preflight_result(monkeypatch):
-    eligibility = _eligible_context() | {"cs_id": "oaics_test_custom"}
-    with pytest.raises(RuntimeError, match="oaics checkout cannot use Stripe payment_pages MoMo flow"):
-        momo_vn.generate_momo_vn_trial(
-            momo_vn.MomoVnJobConfig(
-                access_token="token",
-                direct_proxies=["proxy"],
-                preflight_result=eligibility,
-            )
+def test_generate_momo_vn_trial_routes_oaics_preflight_result(monkeypatch):
+    eligibility = _eligible_context() | {"cs_id": "oaics_test_custom", "front_promo": True}
+    called = {}
+
+    def fake_oaics_trial(**kwargs):
+        called.update(kwargs)
+        return {"ok": True, "amount": "0", "fields": {"momo_link": "https://payment.momo.vn/pay/app?token=test"}}
+
+    monkeypatch.setattr(momo_vn, "generate_momo_oaics_trial_experimental", fake_oaics_trial)
+
+    result = momo_vn.generate_momo_vn_trial(
+        momo_vn.MomoVnJobConfig(
+            access_token="token",
+            direct_proxies=["proxy"],
+            preflight_result=eligibility,
         )
+    )
+
+    assert result["ok"] is True
+    assert called["cs_id"] == "oaics_test_custom"
+    assert called["processor"] == "openai_llc"
+    assert called["country"] == "VN"
+    assert called["currency"] == "VND"
+    assert called["promo_already_applied"] is True
+
+
+def test_generate_momo_oaics_standard_flow_resolves_provider_redirect(monkeypatch):
+    class FakeChatgptSession:
+        pass
+
+    stripe = object()
+    calls = []
+
+    monkeypatch.setattr(momo_vn, "build_momo_chatgpt_session", lambda *args, **kwargs: FakeChatgptSession())
+    monkeypatch.setattr(momo_vn, "build_stripe_session", lambda *args, **kwargs: stripe)
+    monkeypatch.setattr(momo_vn, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(momo_vn, "update_momo_checkout_promotion", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        momo_vn,
+        "fetch_oaics_checkout_session",
+        lambda *args, **kwargs: {
+            "checkout_amount_minor": 0,
+            "payment_method_types": ["card", "momo"],
+            "publishable_key": "pk_test",
+            "customer_session_client_secret": "cuss_test",
+        },
+    )
+    monkeypatch.setattr(
+        momo_vn,
+        "submit_oaics_checkout_taxes",
+        lambda *args, **kwargs: {"checkout_amount_minor": 0, "payment_method_types": ["card", "momo"]},
+    )
+    monkeypatch.setattr(
+        momo_vn,
+        "create_oaics_elements_session",
+        lambda *args, **kwargs: {
+            "_oaics_publishable_key": "pk_test",
+            "_oaics_payment_method_types": ["card", "momo"],
+            "session_id": "elements_session_test",
+            "config_id": "config_test",
+        },
+    )
+    monkeypatch.setattr(momo_vn, "create_oaics_momo_confirmation_token", lambda *args, **kwargs: "ctoken_test")
+    monkeypatch.setattr(
+        momo_vn,
+        "confirm_oaics_standard_momo",
+        lambda *args, **kwargs: {"client_secret": "seti_test_secret_123", "confirm_return_url": "https://chatgpt.com/checkout/success"},
+    )
+    monkeypatch.setattr(
+        momo_vn,
+        "confirm_oaics_momo_intent",
+        lambda *args, **kwargs: {
+            "next_action": {
+                "type": "redirect_to_url",
+                "redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/acct/momo_test"},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        momo_vn,
+        "resolve_momo_redirect",
+        lambda stripe_arg, redirect_url, max_hops=3: calls.append((stripe_arg, redirect_url))
+        or "https://payment.momo.vn/pay/app?token=test",
+    )
+
+    result = momo_vn.generate_momo_oaics_trial_experimental(
+        access_token="token",
+        cs_id="oaics_test_custom",
+        processor="openai_llc",
+        proxy_url="http://proxy",
+        device_id="device-test",
+        billing=dict(_eligible_context()["billing"]),
+        country="VN",
+        currency="VND",
+    )
+
+    assert calls == [(stripe, "https://pm-redirects.stripe.com/authorize/acct/momo_test")]
+    assert result["fields"]["momo_link"] == "https://payment.momo.vn/pay/app?token=test"
+    assert result["fields"]["stripe_redirect_url"] == "https://pm-redirects.stripe.com/authorize/acct/momo_test"
+    assert result["fields"]["link_source"] == "oaics_standard_momo_intent_confirm"
+    assert result["fields"]["link_binding"] == "chatgpt_oaics_checkout_session"
+
+
+def test_generate_momo_oaics_skips_update_when_front_promo_already_applied(monkeypatch):
+    promoted = {"value": False}
+
+    monkeypatch.setattr(momo_vn, "build_momo_chatgpt_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(momo_vn, "build_stripe_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(momo_vn, "warm_chatgpt_checkout_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(momo_vn, "update_momo_checkout_promotion", lambda *args, **kwargs: promoted.__setitem__("value", True))
+    monkeypatch.setattr(
+        momo_vn,
+        "fetch_oaics_checkout_session",
+        lambda *args, **kwargs: {
+            "checkout_amount_minor": 0,
+            "payment_method_types": ["momo"],
+            "publishable_key": "pk_test",
+            "customer_session_client_secret": "cuss_test",
+        },
+    )
+    monkeypatch.setattr(momo_vn, "submit_oaics_checkout_taxes", lambda *args, **kwargs: {"checkout_amount_minor": 0, "payment_method_types": ["momo"]})
+    monkeypatch.setattr(momo_vn, "create_oaics_elements_session", lambda *args, **kwargs: {"_oaics_publishable_key": "pk_test", "_oaics_payment_method_types": ["momo"]})
+    monkeypatch.setattr(momo_vn, "create_oaics_momo_confirmation_token", lambda *args, **kwargs: "ctoken_test")
+    monkeypatch.setattr(
+        momo_vn,
+        "confirm_oaics_standard_momo",
+        lambda *args, **kwargs: {"next_action": {"redirect_to_url": {"url": "https://pm-redirects.stripe.com/authorize/acct/momo_test"}}},
+    )
+    monkeypatch.setattr(momo_vn, "resolve_momo_redirect", lambda *args, **kwargs: "https://payment.momo.vn/pay/app?token=test")
+
+    momo_vn.generate_momo_oaics_trial_experimental(
+        access_token="token",
+        cs_id="oaics_test_custom",
+        processor="openai_llc",
+        proxy_url="http://proxy",
+        device_id="device-test",
+        billing=dict(_eligible_context()["billing"]),
+        country="VN",
+        currency="VND",
+        promo_already_applied=True,
+    )
+
+    assert promoted["value"] is False
+
+
+def test_oaics_momo_custom_payment_methods_filters_to_momo():
+    payload = {
+        "custom_payment_methods": [
+            {"id": "cpmt_card_like", "display_name": "Bank redirect"},
+            {"id": "cpmt_momo", "display_name": "MoMo"},
+        ]
+    }
+
+    assert momo_vn.oaics_momo_custom_payment_methods(payload) == [{"id": "cpmt_momo", "display_name": "MoMo"}]
 
 
 def test_generate_momo_vn_trial_approve_poll_resolves_provider_redirect(monkeypatch):

@@ -50,6 +50,16 @@ TOTP_STATUS_ENABLED = "enabled"
 TOTP_STATUS_RECOVERY_REQUIRED = "recovery_required"
 _accounts_write_lock = threading.RLock()
 
+
+def _invalidate_payment_account_caches() -> None:
+    try:
+        from autotoken.api_routes import brazil_pix
+
+        brazil_pix.clear_auth_accounts_cache()
+    except Exception:
+        pass
+
+
 def _normalized_email(value):
     return _core_normalized_email(value)
 
@@ -219,6 +229,7 @@ def save_accounts(accounts):
             conn.execute("DELETE FROM accounts")
             for account in accounts or []:
                 _upsert_account(conn, account)
+    _invalidate_payment_account_caches()
 
 
 def find_account(accounts, email):
@@ -264,6 +275,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                         changed = True
                 if changed:
                     _upsert_account(conn, existing)
+                    _invalidate_payment_account_caches()
                 return
 
             _upsert_account(
@@ -298,6 +310,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                     "account_source": ACCOUNT_SOURCE_MANAGED,
                 },
             )
+            _invalidate_payment_account_caches()
             return
 
 
@@ -338,6 +351,7 @@ def ensure_session_only_account(email):
                     if changed:
                         _upsert_account(conn, existing)
                         existing = _get_account_by_email(conn, normalized, include_private=True) or existing
+                        _invalidate_payment_account_caches()
                 return _public_account(existing)
 
             stub = {
@@ -368,7 +382,9 @@ def ensure_session_only_account(email):
                 "account_source": ACCOUNT_SOURCE_AUTH_SESSION_STUB,
             }
             _upsert_account(conn, stub)
-            return _get_account_by_email(conn, normalized)
+            created = _get_account_by_email(conn, normalized)
+            _invalidate_payment_account_caches()
+            return created
 
 
 def update_account(email, **kwargs):
@@ -412,7 +428,9 @@ def update_account(email, **kwargs):
             if acc:
                 acc.update(kwargs)
                 _upsert_account(conn, acc)
-                return _get_account_by_email(conn, email) or _public_account(acc)
+                updated = _get_account_by_email(conn, email) or _public_account(acc)
+                _invalidate_payment_account_caches()
+                return updated
             return None
 
 
@@ -436,7 +454,9 @@ def replace_account_email(old_email, new_email, **kwargs):
             _upsert_account(conn, merged)
             if old_target != new_target:
                 conn.execute("DELETE FROM accounts WHERE email = ?", (old_target,))
-            return _get_account_by_email(conn, new_target) or _public_account(merged)
+            updated = _get_account_by_email(conn, new_target) or _public_account(merged)
+            _invalidate_payment_account_caches()
+            return updated
 
 
 def delete_account(email):
@@ -447,7 +467,10 @@ def delete_account(email):
     sqlite_store.initialize(_db_path())
     with sqlite_store.connect(_db_path()) as conn:
         cursor = conn.execute("DELETE FROM accounts WHERE email = ?", (target,))
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+    if deleted:
+        _invalidate_payment_account_caches()
+    return deleted
 
 
 def get_active_accounts():

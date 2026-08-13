@@ -10,6 +10,15 @@ from autotoken.storage import sqlite_store
 AUTH_SESSION_DIR = PROJECT_ROOT / "data" / "auth_session"
 
 
+def _invalidate_payment_account_caches() -> None:
+    try:
+        from autotoken.api_routes import brazil_pix
+
+        brazil_pix.clear_auth_accounts_cache()
+    except Exception:
+        pass
+
+
 def _safe_email_name(email: str) -> str:
     safe_name = (email or "").strip().lower().replace(".", "_")
     safe_name = re.sub(r"[^a-z0-9@_-]+", "_", safe_name)
@@ -82,6 +91,7 @@ def save_auth_session(email: str, session_data: dict) -> str:
             ensure_session_only_account(normalized)
         except Exception:
             pass
+        _invalidate_payment_account_caches()
     return path
 
 
@@ -105,6 +115,8 @@ def delete_auth_session(email: str) -> bool:
     if path.exists():
         path.unlink()
         deleted = True
+    if deleted:
+        _invalidate_payment_account_caches()
     return deleted
 
 

@@ -22,6 +22,7 @@ def _write_session(directory, email: str, token: str = "token-" + "x" * 80) -> N
 
 def _isolate_files(monkeypatch, tmp_path):
     auth_dir = tmp_path / "auth_session"
+    brazil_pix.clear_auth_accounts_cache()
     monkeypatch.setattr(brazil_pix, "AUTH_SESSION_DIR", auth_dir)
     monkeypatch.setattr(auth_session_store, "AUTH_SESSION_DIR", auth_dir)
     monkeypatch.setattr(brazil_pix.account_store, "ACCOUNTS_FILE", tmp_path / "accounts.json")
@@ -30,6 +31,64 @@ def _isolate_files(monkeypatch, tmp_path):
     monkeypatch.setattr(proxy_runtime, "preflight_payment_proxy_url", lambda proxy_url: (True, "HTTP 200"))
     monkeypatch.setattr(proxy_runtime, "preflight_chatgpt_authenticated_proxy_url", lambda proxy_url, access_token: (True, "auth_api HTTP 200"))
     return auth_dir
+
+
+def test_iter_auth_accounts_reuses_short_lived_scan_cache(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(brazil_pix, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(brazil_pix, "AUTH_SESSION_DIR", tmp_path / "data" / "auth_session")
+    brazil_pix.clear_auth_accounts_cache()
+    monkeypatch.setattr(brazil_pix.account_store, "load_accounts", lambda: [{"email": "cached@example.com"}])
+    calls = 0
+
+    def fake_records():
+        nonlocal calls
+        calls += 1
+        return [
+            {
+                "email": "cached@example.com",
+                "file_path": "auth.json",
+                "data": {"accessToken": "token-" + "x" * 80},
+                "updated_at": 123,
+            }
+        ]
+
+    monkeypatch.setattr(brazil_pix.auth_session_store, "list_auth_session_records", fake_records)
+
+    assert [item["email"] for item in brazil_pix._iter_auth_accounts(include_paid=True)] == ["cached@example.com"]
+    assert [item["email"] for item in brazil_pix._iter_auth_accounts(include_paid=True)] == ["cached@example.com"]
+    assert calls == 1
+
+
+def test_account_update_invalidates_payment_account_cache(monkeypatch, tmp_path):
+    _isolate_files(monkeypatch, tmp_path)
+    monkeypatch.setattr(brazil_pix, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(brazil_pix, "AUTH_SESSION_DIR", tmp_path / "data" / "auth_session")
+    brazil_pix.clear_auth_accounts_cache()
+    brazil_pix.account_store.add_account("cached@example.com", "")
+    calls = 0
+
+    def fake_records():
+        nonlocal calls
+        calls += 1
+        return [
+            {
+                "email": "cached@example.com",
+                "file_path": "auth.json",
+                "data": {"accessToken": "token-" + "x" * 80},
+                "updated_at": calls,
+            }
+        ]
+
+    monkeypatch.setattr(brazil_pix.auth_session_store, "list_auth_session_records", fake_records)
+
+    assert [item["email"] for item in brazil_pix._iter_auth_accounts(include_paid=True)] == ["cached@example.com"]
+    assert calls == 1
+    assert [item["email"] for item in brazil_pix._iter_auth_accounts(include_paid=True)] == ["cached@example.com"]
+    assert calls == 1
+    brazil_pix.account_store.update_account("cached@example.com", note="invalidate")
+    assert [item["email"] for item in brazil_pix._iter_auth_accounts(include_paid=True)] == ["cached@example.com"]
+    assert calls == 2
 
 
 def test_accounts_include_pix_status_from_links_and_status_file(monkeypatch, tmp_path):

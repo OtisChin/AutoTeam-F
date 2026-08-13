@@ -24,6 +24,10 @@ assert.match(dashboard, /@click="queryAccountLatestMail\(acc\.email\)"/, 'accoun
 assert.match(dashboard, /最近一封邮件/, 'dashboard renders latest mail dialog')
 assert.match(dashboard, /activeLatestMail/, 'dashboard tracks latest mail message')
 assert.match(dashboard, /getAccountLatestMail\(email\)/, '获取邮件 action calls latest mail API')
+const dashboardCardsBlock = dashboard.match(/const cards = computed\(\(\) => \{[\s\S]*?\n\}\)/)?.[0] || ''
+const kiroCardsBlock = dashboard.match(/const kiroCards = \[[\s\S]*?\n\]/)?.[0] || ''
+assert.doesNotMatch(dashboardCardsBlock, /label:\s*'待命'/, 'ChatGPT 仪表盘摘要不再显示待命卡片')
+assert.doesNotMatch(kiroCardsBlock, /label:\s*'待命'/, 'Kiro 仪表盘摘要不再显示待命卡片')
 assert.match(dashboard, /OAuth授权/, 'existing OAuth credential action is labelled OAuth授权')
 assert.match(dashboard, /RoxyBrowser 模式/, 'dashboard exposes manual RoxyBrowser mode for OAuth/relogin')
 assert.match(dashboard, /oauth_browser_mode:\s*'roxy'/, 'dashboard sends roxy OAuth browser mode when selected')

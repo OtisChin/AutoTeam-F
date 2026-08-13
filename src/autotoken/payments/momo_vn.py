@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import json
 import re
 import time
 import uuid
@@ -36,7 +37,7 @@ from autotoken.payments.us_paypal import (
 
 LogFn = Callable[[str], None]
 MOMO_COUNTRY = "VN"
-MOMO_PROMOTION_COUNTRY = "JP"
+MOMO_PROMOTION_COUNTRY = "VN"
 MOMO_CURRENCY = "VND"
 MOMO_PROMO_ID = "plus-1-month-free"
 MOMO_STRIPE_VERSION = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
@@ -67,6 +68,7 @@ class MomoVnJobConfig:
     preflighted_promotion_proxy_url: str = ""
     preflighted_provider_proxy_url: str = ""
     preflight_result: dict[str, Any] | None = None
+    front_promo: bool = False
 
 
 def normalize_momo_proxy_url(value: str) -> str:
@@ -559,6 +561,634 @@ def _checkout_email(init_payload: dict[str, Any], billing: dict[str, str]) -> st
     return str(customer.get("email") or billing.get("email") or "")
 
 
+def _walk_payload_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for nested in value.values():
+            yield from _walk_payload_dicts(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _walk_payload_dicts(nested)
+
+
+def _nested_string(payload: Any, names: tuple[str, ...], *, prefixes: tuple[str, ...] = ()) -> str:
+    for item in _walk_payload_dicts(payload):
+        for name in names:
+            value = item.get(name)
+            if isinstance(value, str):
+                text = value.strip()
+                if text and (not prefixes or text.startswith(prefixes)):
+                    return text
+    return ""
+
+
+def _minor_amount(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, dict):
+        for key in ("minorUnitsAmount", "minor_units_amount", "amount", "value"):
+            parsed = _minor_amount(value.get(key))
+            if parsed is not None:
+                return parsed
+    text = str(value).strip()
+    if re.fullmatch(r"[+-]?\d+(?:\.0+)?", text):
+        return int(text.split(".", 1)[0])
+    return None
+
+
+def oaics_amount_observations(payload: Any) -> list[tuple[str, int]]:
+    paths = (
+        ("checkout_amount_minor",),
+        ("total_summary", "due"),
+        ("totalSummary", "due"),
+        ("invoice", "amount_due"),
+        ("invoice", "amountDue"),
+        ("amount_due",),
+        ("amountDue",),
+        ("amount_total",),
+        ("amountTotal",),
+        ("total", "total"),
+        ("total", "due"),
+        ("total", "taxInclusive"),
+        ("total", "taxInclusiveAmount"),
+    )
+    found: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in _walk_payload_dicts(payload):
+        for path in paths:
+            current: Any = item
+            for key in path:
+                if not isinstance(current, dict) or key not in current:
+                    current = None
+                    break
+                current = current.get(key)
+            amount = _minor_amount(current)
+            if amount is None:
+                continue
+            marker = (".".join(path), amount)
+            if marker not in seen:
+                seen.add(marker)
+                found.append(marker)
+    return found
+
+
+def verify_oaics_zero_snapshot(payload: Any, *, cs_id: str, currency: str) -> int:
+    observations = oaics_amount_observations(payload)
+    if not observations:
+        raise RuntimeError(f"OAICS 未返回可核验的应付金额: {cs_id}")
+    nonzero = [(label, amount) for label, amount in observations if amount != 0]
+    if nonzero:
+        detail = ", ".join(f"{label}={amount}" for label, amount in nonzero)
+        raise RuntimeError(f"MoMo 金额必须为 0: {detail} {str(currency or '').upper()}")
+    return 0
+
+
+def _oaics_observed_amount_text(payload: Any, default: str = "") -> str:
+    observations = oaics_amount_observations(payload)
+    if not observations:
+        return default
+    first_nonzero = next((amount for _label, amount in observations if amount != 0), None)
+    return str(first_nonzero if first_nonzero is not None else observations[0][1])
+
+
+def oaics_payment_method_types(payload: Any) -> list[str]:
+    methods: list[str] = []
+    seen: set[str] = set()
+    for item in _walk_payload_dicts(payload):
+        candidates = item.get("payment_method_types")
+        if candidates is None:
+            candidates = item.get("paymentMethodTypes")
+        if not isinstance(candidates, list):
+            continue
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                candidate = candidate.get("type")
+            method = str(candidate or "").strip().lower()
+            if method and method not in seen:
+                seen.add(method)
+                methods.append(method)
+    return methods
+
+
+def oaics_custom_payment_methods(payload: Any) -> list[dict[str, Any]]:
+    methods: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in _walk_payload_dicts(payload):
+        candidates = item.get("custom_payment_methods")
+        if candidates is None:
+            candidates = item.get("customPaymentMethods")
+        if not isinstance(candidates, list):
+            continue
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            method_id = str(candidate.get("id") or "").strip()
+            if not method_id.startswith("cpmt_") or method_id in seen:
+                continue
+            seen.add(method_id)
+            methods.append(candidate)
+    methods.sort(key=lambda item: 0 if "momo" in json.dumps(item, ensure_ascii=True).lower() else 1)
+    return methods
+
+
+def oaics_momo_custom_payment_methods(payload: Any) -> list[dict[str, Any]]:
+    return [item for item in oaics_custom_payment_methods(payload) if "momo" in json.dumps(item, ensure_ascii=True).lower()]
+
+
+def extract_oaics_redirect_to_url(payload: Any) -> str:
+    redirect_url, _action_type = _redirect_url(payload)
+    if redirect_url:
+        return redirect_url
+    if isinstance(payload, dict):
+        nested_url = _find_url_string(payload, ("pm-redirects.stripe.com", "momo.vn"))
+        if nested_url:
+            return nested_url
+    return ""
+
+
+def _find_url_string(value: Any, preferred_hosts: tuple[str, ...]) -> str:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        if any(host in text.lower() for host in preferred_hosts):
+            match = re.search(r"https?://[^\\\s\"'<>]+", text)
+            return match.group(0) if match else text
+        return ""
+    if isinstance(value, dict):
+        for key in ("url", "redirect_url", "redirectUrl", "hosted_url", "hostedUrl"):
+            found = _find_url_string(value.get(key), preferred_hosts)
+            if found:
+                return found
+        for nested in value.values():
+            found = _find_url_string(nested, preferred_hosts)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _find_url_string(nested, preferred_hosts)
+            if found:
+                return found
+    return ""
+
+
+def fetch_oaics_checkout_session(
+    chatgpt: requests.Session,
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    *,
+    country: str,
+    device_id: str,
+) -> dict[str, Any]:
+    if not is_openai_custom_checkout_session_id(cs_id):
+        raise RuntimeError(f"不是 oaics checkout: {cs_id}")
+    checkout_url = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
+    resp = chatgpt.get(
+        f"https://chatgpt.com/backend-api/payments/checkout/{processor}/{cs_id}",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Referer": checkout_url,
+            "x-openai-target-path": "/backend-api/payments/checkout/{processor_entity}/{checkout_session_id}",
+            "x-openai-target-route": "/backend-api/payments/checkout/{processor_entity}/{checkout_session_id}",
+            "oai-device-id": device_id,
+            "oai-language": f"{str(country or MOMO_COUNTRY).lower()}",
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"读取 OAICS Checkout 失败 HTTP {resp.status_code}: {short(resp.text)}")
+    return resp.json() or {}
+
+
+def submit_oaics_checkout_taxes(
+    chatgpt: requests.Session,
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    *,
+    billing: dict[str, str],
+    country: str,
+    currency: str,
+    device_id: str,
+) -> dict[str, Any]:
+    checkout_url = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
+    body = {
+        "checkout_session_id": cs_id,
+        "checkout_email": str(billing.get("email") or ""),
+        "billing_country": str(country or billing.get("country") or MOMO_COUNTRY).upper(),
+        "billing_name": str(billing.get("name") or ""),
+        "currency": str(currency or MOMO_CURRENCY).upper(),
+        "tax_id": str(billing.get("tax_id") or "") or None,
+        "processor_entity": processor,
+        "billing_address": {
+            "country": str(country or billing.get("country") or MOMO_COUNTRY).upper(),
+            "line1": str(billing.get("line1") or ""),
+            "line2": str(billing.get("line2") or ""),
+            "city": str(billing.get("city") or ""),
+            "state": str(billing.get("state") or ""),
+            "postal_code": str(billing.get("postal_code") or ""),
+        },
+    }
+    resp = chatgpt.post(
+        "https://chatgpt.com/backend-api/payments/checkout/taxes",
+        json=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Referer": checkout_url,
+            "x-openai-target-path": "/backend-api/payments/checkout/taxes",
+            "x-openai-target-route": "/backend-api/payments/checkout/taxes",
+            "oai-device-id": device_id,
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OAICS taxes failed: HTTP {resp.status_code} {short(resp.text)}")
+    return resp.json() or {}
+
+
+def create_oaics_elements_session(
+    stripe: requests.Session,
+    state: dict[str, Any],
+    *,
+    country: str,
+    currency: str,
+) -> dict[str, Any]:
+    publishable_key = str(state.get("publishable_key") or state.get("stripe_publishable_key") or state.get("public_key") or "").strip()
+    customer_secret = str(state.get("customer_session_client_secret") or "").strip()
+    if not publishable_key.startswith(("pk_live_", "pk_test_")):
+        raise RuntimeError("OAICS MoMo 缺少 Stripe publishable_key")
+    if not customer_secret:
+        raise RuntimeError("OAICS MoMo 缺少 customer_session_client_secret")
+    stripe_js_id = str(uuid.uuid4())
+    params: dict[str, Any] = {
+        "customer_session_client_secret": customer_secret,
+        "client_betas[0]": "custom_checkout_server_updates_1",
+        "client_betas[1]": "custom_checkout_manual_approval_1",
+        "deferred_intent[mode]": "subscription",
+        "deferred_intent[amount]": "0",
+        "deferred_intent[currency]": str(currency or MOMO_CURRENCY).lower(),
+        "deferred_intent[setup_future_usage]": "off_session",
+        "currency": str(currency or MOMO_CURRENCY).lower(),
+        "key": publishable_key,
+        "_stripe_version": MOMO_STRIPE_VERSION,
+        "elements_init_source": "stripe.elements",
+        "referrer_host": "chatgpt.com",
+        "stripe_js_id": stripe_js_id,
+        "locale": "vi-VN",
+        "type": "deferred_intent",
+    }
+    for index, method in enumerate(oaics_payment_method_types(state)):
+        params[f"deferred_intent[payment_method_types][{index}]"] = method
+    resp = stripe.get("https://api.stripe.com/v1/elements/sessions", params=params, timeout=TIMEOUT)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OAICS MoMo Elements Session 失败 HTTP {resp.status_code}: {short(resp.text)}")
+    payload = resp.json() or {}
+    payload["_oaics_publishable_key"] = publishable_key
+    payload["_oaics_stripe_js_id"] = stripe_js_id
+    payload["_oaics_payment_method_types"] = oaics_payment_method_types(state)
+    return payload
+
+
+def create_oaics_momo_confirmation_token(
+    stripe: requests.Session,
+    elements: dict[str, Any],
+    *,
+    billing: dict[str, str],
+    currency: str,
+) -> str:
+    pk = str(elements.get("_oaics_publishable_key") or "").strip()
+    if not pk:
+        raise RuntimeError("OAICS MoMo ConfirmationToken 缺少 publishable_key")
+    body: dict[str, Any] = {
+        "payment_method_data[type]": "momo",
+        "payment_method_data[billing_details][name]": str(billing.get("name") or ""),
+        "payment_method_data[billing_details][email]": str(billing.get("email") or ""),
+        "payment_method_data[billing_details][address][country]": str(billing.get("country") or MOMO_COUNTRY).upper(),
+        "payment_method_data[billing_details][address][line1]": str(billing.get("line1") or ""),
+        "payment_method_data[billing_details][address][city]": str(billing.get("city") or ""),
+        "payment_method_data[billing_details][address][postal_code]": str(billing.get("postal_code") or ""),
+        "payment_method_data[referrer]": "https://chatgpt.com",
+        "payment_method_data[time_on_page]": str(random.randint(25000, 55000)),
+        "setup_future_usage": "off_session",
+        "set_as_default_payment_method": "false",
+        "mandate_data[customer_acceptance][type]": "online",
+        "mandate_data[customer_acceptance][online][infer_from_client]": "true",
+        "client_context[currency]": str(currency or MOMO_CURRENCY).lower(),
+        "client_context[mode]": "subscription",
+        "client_attribution_metadata[merchant_integration_source]": "elements",
+        "client_attribution_metadata[merchant_integration_subtype]": "payment-element",
+        "client_attribution_metadata[merchant_integration_version]": "2021",
+        "client_attribution_metadata[payment_intent_creation_flow]": "deferred",
+        "client_attribution_metadata[payment_method_selection_flow]": "automatic",
+        "key": pk,
+    }
+    if billing.get("state"):
+        body["payment_method_data[billing_details][address][state]"] = str(billing.get("state") or "")
+    for index, method in enumerate(elements.get("_oaics_payment_method_types") or []):
+        body[f"client_context[payment_method_types][{index}]"] = method
+    for name, value in (
+        ("elements_session_id", _nested_string(elements, ("session_id", "sessionId", "id"), prefixes=("elements_session_",))),
+        ("elements_session_config_id", _nested_string(elements, ("config_id", "elements_session_config_id", "elementsSessionConfigId"))),
+    ):
+        if value:
+            body[f"client_attribution_metadata[{name}]"] = value
+            body[f"payment_method_data[client_attribution_metadata][{name}]"] = value
+    customer = _nested_string(elements, ("customer", "customer_id", "customerId"), prefixes=("cus_",))
+    if customer:
+        body["client_context[customer]"] = customer
+    resp = stripe.post(
+        "https://api.stripe.com/v1/confirmation_tokens",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {pk}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Stripe-Version": MOMO_STRIPE_VERSION,
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OAICS MoMo ConfirmationToken 失败 HTTP {resp.status_code}: {short(resp.text)}")
+    payload = resp.json() or {}
+    token = str(payload.get("id") or payload.get("confirmation_token") or payload.get("confirmationToken") or "").strip()
+    if not token.startswith(("ctoken_", "ct_")):
+        raise RuntimeError("OAICS MoMo ConfirmationToken 响应缺少 token")
+    return token
+
+
+def confirm_oaics_standard_momo(
+    chatgpt: requests.Session,
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    confirmation_token: str,
+    *,
+    country: str,
+    device_id: str,
+) -> dict[str, Any]:
+    resp = chatgpt.post(
+        "https://chatgpt.com/backend-api/payments/checkout/confirm",
+        json={
+            "checkout_session_id": cs_id,
+            "confirm_token": confirmation_token,
+            "selected_payment_method_type": "momo",
+        },
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
+            "x-openai-target-path": "/backend-api/payments/checkout/confirm",
+            "x-openai-target-route": "/backend-api/payments/checkout/confirm",
+            "oai-device-id": device_id,
+            "oai-language": f"{str(country or MOMO_COUNTRY).lower()}",
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OAICS MoMo confirm 失败 HTTP {resp.status_code}: {short(resp.text)}")
+    payload = resp.json() or {}
+    status = str(payload.get("status") or "").strip().lower()
+    if status == "blocked":
+        raise RuntimeError("OAICS MoMo confirm blocked")
+    return payload
+
+
+def confirm_oaics_momo_intent(
+    stripe: requests.Session,
+    confirmation_token: str,
+    app_confirm: dict[str, Any],
+    elements: dict[str, Any],
+) -> dict[str, Any]:
+    pk = str(elements.get("_oaics_publishable_key") or "").strip()
+    client_secret = str(app_confirm.get("client_secret") or "").strip()
+    if "_secret_" not in client_secret:
+        raise RuntimeError("OAICS MoMo confirm 未返回 Intent client_secret")
+    intent_id = client_secret.split("_secret_", 1)[0]
+    if intent_id.startswith("pi_"):
+        collection = "payment_intents"
+    elif intent_id.startswith("seti_"):
+        collection = "setup_intents"
+    else:
+        raise RuntimeError("OAICS MoMo confirm 返回了未知 Intent")
+    body = {
+        "confirmation_token": confirmation_token,
+        "client_secret": client_secret,
+        "use_stripe_sdk": "true",
+        "key": pk,
+    }
+    return_url = str(app_confirm.get("confirm_return_url") or "").strip()
+    if return_url:
+        body["return_url"] = return_url
+    resp = stripe.post(
+        f"https://api.stripe.com/v1/{collection}/{intent_id}/confirm",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {pk}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Stripe-Version": MOMO_STRIPE_VERSION,
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OAICS MoMo Intent confirm 失败 HTTP {resp.status_code}: {short(resp.text)}")
+    return resp.json() or {}
+
+
+def confirm_oaics_custom_payment_method(
+    chatgpt: requests.Session,
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    custom_payment_method_id: str,
+    *,
+    country: str,
+    device_id: str,
+) -> dict[str, Any]:
+    resp = chatgpt.post(
+        "https://chatgpt.com/backend-api/payments/checkout/confirm",
+        json={
+            "checkout_session_id": cs_id,
+            "processor_entity": processor,
+            "selected_payment_method_type": custom_payment_method_id,
+        },
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
+            "x-openai-target-path": "/backend-api/payments/checkout/confirm",
+            "x-openai-target-route": "/backend-api/payments/checkout/confirm",
+            "oai-device-id": device_id,
+            "oai-language": f"{str(country or MOMO_COUNTRY).lower()}",
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"确认 OAICS MoMo 支付方式失败 HTTP {resp.status_code}: {short(resp.text)}")
+    payload = resp.json() or {}
+    status = str(payload.get("status") or "").strip().lower()
+    if status == "blocked":
+        raise RuntimeError("OAICS MoMo confirm blocked")
+    if status and status != "success":
+        raise RuntimeError(f"确认 OAICS MoMo 支付方式失败 status={status}")
+    return payload
+
+
+def start_oaics_custom_payment_method(
+    chatgpt: requests.Session,
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    custom_payment_method_id: str,
+    *,
+    country: str,
+    device_id: str,
+) -> dict[str, Any]:
+    resp = chatgpt.post(
+        "https://chatgpt.com/backend-api/payments/checkout/custom_payment_method/start",
+        json={
+            "checkout_session_id": cs_id,
+            "processor_entity": processor,
+            "custom_payment_method_type_id": custom_payment_method_id,
+        },
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{cs_id}",
+            "x-openai-target-path": "/backend-api/payments/checkout/custom_payment_method/start",
+            "x-openai-target-route": "/backend-api/payments/checkout/custom_payment_method/start",
+            "oai-device-id": device_id,
+            "oai-language": f"{str(country or MOMO_COUNTRY).lower()}",
+        },
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"启动 OAICS MoMo 支付失败 HTTP {resp.status_code}: {short(resp.text)}")
+    payload = resp.json() or {}
+    action = payload.get("next_action") if isinstance(payload.get("next_action"), dict) else {}
+    if str(payload.get("status") or "").strip().lower() != "requires_action" or not str(action.get("url") or "").strip():
+        raise RuntimeError("OAICS MoMo start 未返回跳转地址")
+    return payload
+
+
+def _finish_oaics_momo_redirect(
+    stripe: requests.Session,
+    redirect: str,
+    *,
+    cs_id: str,
+    billing: dict[str, str],
+    methods: list[str],
+    link_source: str,
+    processor: str,
+) -> dict[str, Any]:
+    fields = extract_momo_result({"next_action": {"redirect_to_url": {"url": redirect}}}, cs_id)
+    if not is_success(fields) or not finalize_momo_result(stripe, fields, link_source=link_source):
+        raise RuntimeError("OAICS MoMo 未返回 MoMo 链接")
+    fields["amount"] = "0"
+    fields["currency"] = MOMO_CURRENCY
+    fields["payment_method_types"] = methods
+    fields["ordered_payment_method_types"] = methods
+    fields["chatgpt_checkout_url"] = f"https://chatgpt.com/checkout/{processor}/{cs_id}"
+    fields["billing"] = billing
+    fields["link_binding"] = "chatgpt_oaics_checkout_session"
+    return {"ok": True, "amount": "0", "currency": MOMO_CURRENCY, "fields": fields, "billing": billing}
+
+
+def generate_momo_oaics_trial_experimental(
+    *,
+    access_token: str,
+    cs_id: str,
+    processor: str,
+    proxy_url: str,
+    device_id: str,
+    billing: dict[str, str],
+    country: str,
+    currency: str,
+    promo_already_applied: bool = False,
+    log: LogFn | None = None,
+) -> dict[str, Any]:
+    log = log or (lambda _m: None)
+    chatgpt = build_momo_chatgpt_session(access_token, proxy_url, device_id)
+    stripe = build_stripe_session(proxy_url)
+    warm_chatgpt_checkout_context(chatgpt, country, log)
+    if not promo_already_applied:
+        update_momo_checkout_promotion(chatgpt, cs_id=cs_id, processor=processor)
+    state = fetch_oaics_checkout_session(chatgpt, access_token, cs_id, processor, country=country, device_id=device_id)
+    taxes = submit_oaics_checkout_taxes(
+        chatgpt,
+        access_token,
+        cs_id,
+        processor,
+        billing=billing,
+        country=country,
+        currency=currency,
+        device_id=device_id,
+    )
+    merged_state = dict(state)
+    merged_state.update(taxes)
+    verify_oaics_zero_snapshot(merged_state, cs_id=cs_id, currency=currency)
+    methods = oaics_payment_method_types(merged_state)
+    log(f"[oaics] amount=0 payment_method_types={methods}")
+    if "momo" not in methods:
+        cpmt = oaics_momo_custom_payment_methods(merged_state)
+        if not cpmt:
+            raise RuntimeError(f"OAICS payment_method_types 未包含 momo: methods={methods}")
+        method_id = str(cpmt[0].get("id") or "")
+        confirm_oaics_custom_payment_method(
+            chatgpt,
+            access_token,
+            cs_id,
+            processor,
+            method_id,
+            country=country,
+            device_id=device_id,
+        )
+        started = start_oaics_custom_payment_method(
+            chatgpt,
+            access_token,
+            cs_id,
+            processor,
+            method_id,
+            country=country,
+            device_id=device_id,
+        )
+        action = started.get("next_action") if isinstance(started.get("next_action"), dict) else {}
+        redirect = str(action.get("url") or "").strip()
+        return _finish_oaics_momo_redirect(
+            stripe,
+            redirect,
+            cs_id=cs_id,
+            billing=billing,
+            methods=[method_id],
+            link_source="oaics_custom_payment_method_start",
+            processor=processor,
+        )
+    elements = create_oaics_elements_session(stripe, merged_state, country=country, currency=currency)
+    confirmation_token = create_oaics_momo_confirmation_token(stripe, elements, billing=billing, currency=currency)
+    app_confirm = confirm_oaics_standard_momo(
+        chatgpt,
+        access_token,
+        cs_id,
+        processor,
+        confirmation_token,
+        country=country,
+        device_id=device_id,
+    )
+    redirect = extract_oaics_redirect_to_url(app_confirm)
+    if not redirect:
+        intent_confirm = confirm_oaics_momo_intent(stripe, confirmation_token, app_confirm, elements)
+        redirect = extract_oaics_redirect_to_url(intent_confirm)
+    return _finish_oaics_momo_redirect(
+        stripe,
+        redirect,
+        cs_id=cs_id,
+        billing=billing,
+        methods=methods,
+        link_source="oaics_standard_momo_intent_confirm",
+        processor=processor,
+    )
+
+
 def detect_momo_eligibility(cfg: MomoVnJobConfig, log: LogFn | None = None) -> dict[str, Any]:
     log = log or (lambda _m: None)
     token = str(cfg.access_token or "").strip()
@@ -575,15 +1205,18 @@ def detect_momo_eligibility(cfg: MomoVnJobConfig, log: LogFn | None = None) -> d
         checkout_proxy_url = chain1.url
         cg = build_momo_chatgpt_session(token, checkout_proxy_url, device_id)
         warm_chatgpt_checkout_context(cg, MOMO_COUNTRY, log)
+        checkout_body: dict[str, Any] = {
+            "entry_point": "all_plans_pricing_modal",
+            "plan_name": "chatgptplusplan",
+            "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
+            "cancel_url": "https://chatgpt.com/#pricing",
+            "checkout_ui_mode": "custom",
+        }
+        if cfg.front_promo:
+            checkout_body["promo_campaign"] = {"promo_campaign_id": MOMO_PROMO_ID, "is_coupon_from_query_param": False}
         resp = cg.post(
             "https://chatgpt.com/backend-api/payments/checkout",
-            json={
-                "entry_point": "all_plans_pricing_modal",
-                "plan_name": "chatgptplusplan",
-                "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
-                "cancel_url": "https://chatgpt.com/#pricing",
-                "checkout_ui_mode": "custom",
-            },
+            json=checkout_body,
             headers={
                 "x-openai-target-path": "/backend-api/payments/checkout",
                 "x-openai-target-route": "/backend-api/payments/checkout",
@@ -596,10 +1229,57 @@ def detect_momo_eligibility(cfg: MomoVnJobConfig, log: LogFn | None = None) -> d
         cs_id = str(data.get("checkout_session_id") or data.get("session_id") or data.get("id") or "")
         if not is_momo_checkout_session_id(cs_id):
             raise RuntimeError(f"checkout missing cs_id: {short(data)}")
-        if is_openai_custom_checkout_session_id(cs_id):
-            raise RuntimeError("openai_custom_checkout_unsupported: oaics checkout cannot use Stripe payment_pages MoMo flow")
         pk = str(data.get("publishable_key") or data.get("public_key") or extract_pk(data) or DEFAULT_STRIPE_PK)
         processor = str(data.get("processor_entity") or "openai_llc")
+        if is_openai_custom_checkout_session_id(cs_id):
+            if not cfg.front_promo:
+                update_momo_checkout_promotion(cg, cs_id=cs_id, processor=processor)
+            state = fetch_oaics_checkout_session(cg, token, cs_id, processor, country=MOMO_COUNTRY, device_id=device_id)
+            taxes = submit_oaics_checkout_taxes(
+                cg,
+                token,
+                cs_id,
+                processor,
+                billing=billing,
+                country=MOMO_COUNTRY,
+                currency=MOMO_CURRENCY,
+                device_id=device_id,
+            )
+            merged_state = dict(state)
+            merged_state.update(taxes)
+            zero_error = ""
+            try:
+                amount = verify_oaics_zero_snapshot(merged_state, cs_id=cs_id, currency=MOMO_CURRENCY)
+            except RuntimeError as exc:
+                amount = _oaics_observed_amount_text(merged_state, "")
+                zero_error = str(exc)
+            pmt = oaics_payment_method_types(merged_state)
+            cpmt = oaics_momo_custom_payment_methods(merged_state)
+            has_momo = "momo" in pmt or bool(cpmt)
+            status = "eligible" if has_momo and not zero_error else "ineligible"
+            log(f"[2/2] oaics eligibility amount={amount} pmt={pmt} custom={len(cpmt)} has_momo={has_momo}")
+            return {
+                "ok": True,
+                "status": status,
+                "has_momo": has_momo,
+                "amount": str(amount),
+                "currency": MOMO_CURRENCY.lower(),
+                "cs_id": cs_id,
+                "processor": processor,
+                "stripe_pk": pk,
+                "device_id": device_id,
+                "checkout_proxy_url": checkout_proxy_url,
+                "promotion_proxy_url": checkout_proxy_url,
+                "provider_proxy_url": checkout_proxy_url,
+                "payment_method_types": pmt,
+                "ordered_payment_method_types": pmt,
+                "custom_payment_methods": cpmt,
+                "billing": billing,
+                "ctx": _ctx(),
+                "checkout_flow": "oaics",
+                "front_promo": bool(cfg.front_promo),
+                "error": zero_error,
+            }
         ctx = _ctx()
         stripe = build_stripe_session(checkout_proxy_url)
         init_payload = stripe_init(stripe, cs_id, pk, ctx)
@@ -642,7 +1322,26 @@ def generate_momo_vn_trial(cfg: MomoVnJobConfig, log: LogFn | None = None) -> di
     if not is_momo_checkout_session_id(cs_id):
         raise RuntimeError("资格检测缺少 checkout session")
     if is_openai_custom_checkout_session_id(cs_id):
-        raise RuntimeError("openai_custom_checkout_unsupported: oaics checkout cannot use Stripe payment_pages MoMo flow")
+        processor = str(eligibility.get("processor") or "openai_llc")
+        device_id = str(eligibility.get("device_id") or uuid.uuid4())
+        billing = dict(eligibility.get("billing") or momo_billing())
+        proxy_url = str(eligibility.get("provider_proxy_url") or eligibility.get("checkout_proxy_url") or "")
+        if not proxy_url:
+            dyn, sid = build_momo_dynamic_proxy(cfg, 2)
+            log(f"[oaics] 使用 provider 代理 sid={sid}")
+            proxy_url = dyn
+        return generate_momo_oaics_trial_experimental(
+            access_token=token,
+            cs_id=cs_id,
+            processor=processor,
+            proxy_url=proxy_url,
+            device_id=device_id,
+            billing=billing,
+            country=MOMO_COUNTRY,
+            currency=MOMO_CURRENCY,
+            promo_already_applied=bool(eligibility.get("front_promo")),
+            log=log,
+        )
     processor = str(eligibility.get("processor") or "openai_llc")
     stripe_pk = str(eligibility.get("stripe_pk") or DEFAULT_STRIPE_PK)
     device_id = str(eligibility.get("device_id") or uuid.uuid4())
