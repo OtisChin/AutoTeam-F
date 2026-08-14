@@ -513,7 +513,6 @@ def _parse_result_from_output(output: str) -> dict[str, Any]:
 def _protocol_internal_base_url() -> str:
     explicit = str(
         os.getenv("PAYPAL_PROTOCOL_INTERNAL_BASE_URL")
-        or os.getenv("PAYPAL_WEB_PAY153_INTERNAL_BASE")
         or ""
     ).strip()
     if explicit:
